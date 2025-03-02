@@ -421,7 +421,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         if dirName in self.ignore_image_sequence_paths:
             return None
 
-        extensions = ["png", "jpg", "jpeg", "gif", "tif", "svg"]
+        extensions = ["png", "jpg", "jpeg", "tif", "svg"]
         match = re.findall(r"(.*[^\d])?(0*)(\d+)\.(%s)" % "|".join(extensions), fileName, re.I)
 
         if not match:
