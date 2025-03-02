@@ -32,7 +32,6 @@ def is_image(file_object):
         ".bmp",
         ".dpx",
         ".exr",
-        ".gif",
         ".jpg",
         ".jpeg",
         ".pam",
