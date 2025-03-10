@@ -27,14 +27,15 @@
 
 from PyQt5.QtWidgets import QColorDialog, QPushButton, QDialog
 from PyQt5.QtGui import QColor, QPainter, QPen, QCursor
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QRect
 from classes.logger import log
 from classes.app import get_app
 
 
 class ColorPicker(QColorDialog):
     def __init__(self, initial_color, parent=None, title=None, callback=None, *args, **kwargs):
-        super().__init__(initial_color, parent, *args, **kwargs)
+        # Initialize with parent only first
+        super().__init__(parent=parent, *args, **kwargs)
         self.parent_window = parent
         self.callback = callback
         self.picked_pixmap = None
@@ -42,7 +43,12 @@ class ColorPicker(QColorDialog):
         if title:
             self.setWindowTitle(title)
 
+        # Enable alpha channel and disable native dialog
         self.setOption(QColorDialog.DontUseNativeDialog)
+        self.setOption(QColorDialog.ShowAlphaChannel)
+
+        # Set the current color after options are set
+        self.setCurrentColor(initial_color)
         self.colorSelected.connect(self.on_color_selected)
 
         # Override the "Pick Screen Color" button signal
@@ -54,12 +60,10 @@ class ColorPicker(QColorDialog):
     def _override_pick_screen_color(self):
         # Get first pushbutton (color picker)
         color_picker_button = self.findChildren(QPushButton)[0]
-        log.debug(f"Color picker button text: {color_picker_button.text()}")
 
         # Connect to button signals
         color_picker_button.clicked.disconnect()
         color_picker_button.clicked.connect(self.start_color_picking)
-        log.debug("Overridden the 'Pick Screen Color' button action")
 
     def start_color_picking(self):
         if self.parent_window:
@@ -74,7 +78,6 @@ class ColorPicker(QColorDialog):
         self.raise_()
 
     def on_color_selected(self, color):
-        log.debug(f"Color selected: {color.name()}")
         if self.callback:
             self.callback(color)
 
@@ -98,13 +101,27 @@ class PickingDialog(QDialog):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.drawPixmap(self.rect(), self.pixmap)
+
         # Draw color preview rectangle near the cursor
         if self.color_preview:
+            cursor_pos = self.mapFromGlobal(QCursor.pos())
+            preview_x = cursor_pos.x() + 15
+            preview_y = cursor_pos.y() + 15
+            preview_size = 50
+
+            # Draw checkerboard pattern for transparency
+            preview_rect = QRect(preview_x, preview_y, preview_size, preview_size)
+
+            # Draw the color with proper alpha over the checkerboard
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+            painter.fillRect(preview_rect, self.color_preview)
+
+            # Draw border around preview
             pen = QPen(Qt.black, 2)
             painter.setPen(pen)
-            painter.setBrush(self.color_preview)
-            cursor_pos = self.mapFromGlobal(QCursor.pos())
-            painter.drawRect(cursor_pos.x() + 15, cursor_pos.y() + 15, 50, 50)  # Rectangle offset from cursor
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(preview_x, preview_y, preview_size, preview_size)
+
         painter.end()
 
     def mouseMoveEvent(self, event):
@@ -114,8 +131,15 @@ class PickingDialog(QDialog):
             scaled_x = int(event.x() * self.device_pixel_ratio)
             scaled_y = int(event.y() * self.device_pixel_ratio)
             if 0 <= scaled_x < image.width() and 0 <= scaled_y < image.height():
-                color = QColor(image.pixel(scaled_x, scaled_y))
+                pixel = image.pixel(scaled_x, scaled_y)
+                color = QColor(pixel)
+                # Ensure alpha channel is preserved in preview
+                # Get alpha value from pixel (first 8 bits are alpha in ARGB format)
+                alpha = (pixel >> 24) & 0xff
+                color.setAlpha(alpha)
                 self.color_preview = color
+
+                # Force update display
                 self.update()
 
     def mousePressEvent(self, event):
@@ -125,7 +149,13 @@ class PickingDialog(QDialog):
             scaled_x = int(event.x() * self.device_pixel_ratio)
             scaled_y = int(event.y() * self.device_pixel_ratio)
             if 0 <= scaled_x < image.width() and 0 <= scaled_y < image.height():
-                color = QColor(image.pixel(scaled_x, scaled_y))
+                pixel = image.pixel(scaled_x, scaled_y)
+                color = QColor(pixel)
+                # Ensure alpha channel is preserved
+                # Get alpha value from pixel (first 8 bits are alpha in ARGB format)
+                alpha = (pixel >> 24) & 0xff
+                color.setAlpha(alpha)
+
+                # Set the selected color in the dialog
                 self.color_picker.setCurrentColor(color)
-                log.debug(f"Picked color: {color.name()}")
         self.accept()  # Close the dialog
