@@ -40,7 +40,7 @@ import threading
 from xml.dom import minidom
 
 from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal
-from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo
+from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QWidget,
     QMessageBox, QDialog, QColorDialog, QFontDialog,
@@ -53,7 +53,7 @@ from classes import info, ui_util
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
-from windows.color_picker import ColorPicker
+from windows.color_picker import ColorPicker, draw_checkerboard
 from classes.style_tools import style_to_dict, dict_to_style, set_if_existing
 from windows.views.titles_listview import TitlesListView
 
@@ -213,7 +213,7 @@ class TitleEditor(QDialog):
         self.update_timer.start()
 
     def display_svg(self):
-        # Create a temp file for this thumbnail image
+        # Create a temp file for the thumbnail image
         new_file, tmp_filename = tempfile.mkstemp(suffix=".png")
         os.close(new_file)
 
@@ -221,32 +221,42 @@ class TitleEditor(QDialog):
         clip = openshot.Clip(self.filename)
         reader = clip.Reader()
 
-        # Scale preview for high DPI display (if any)
+        # Scale preview for high DPI (if needed)
         scale = get_app().devicePixelRatio()
         if scale > 1.0:
             clip.scale_x.AddPoint(1.0, 1.0 * scale)
             clip.scale_y.AddPoint(1.0, 1.0 * scale)
 
-        # Open reader
+        # Open the reader and generate thumbnail
         reader.Open()
-
-        # Overwrite temp file with thumbnail image and close readers
         reader.GetFrame(1).Thumbnail(
             tmp_filename,
             round(self.lblPreviewLabel.width() * scale),
             round(self.lblPreviewLabel.height() * scale),
-            "", "", "#000", False, "png", 85, 0.0)
+            "", "", "#00000000", False, "png", 85, 0.0)
         reader.Close()
         clip.Close()
 
-        # Attempt to load saved thumbnail
-        display_pixmap = QIcon(tmp_filename).pixmap(self.lblPreviewLabel.size())
-
-        # Display temp image
-        self.thumbnailReady.emit(display_pixmap)
+        # Load the generated thumbnail pixmap
+        preview_pixmap = QIcon(tmp_filename).pixmap(self.lblPreviewLabel.size())
 
         # Remove temporary file
         os.unlink(tmp_filename)
+
+        # Create a new pixmap to composite the checkerboard and the preview image
+        final_pixmap = QPixmap(preview_pixmap.size())
+        final_pixmap.fill(Qt.transparent)
+
+        # Create a painter for compositing
+        painter = QPainter(final_pixmap)
+        # Draw the checkerboard pattern in the entire pixmap area
+        draw_checkerboard(painter, final_pixmap.rect())
+        # Draw the preview image on top
+        painter.drawPixmap(0, 0, preview_pixmap)
+        painter.end()
+
+        # Emit the final pixmap
+        self.thumbnailReady.emit(final_pixmap)
 
     def create_temp_title(self, template_path):
         """Set temp file path & make copy of template"""
