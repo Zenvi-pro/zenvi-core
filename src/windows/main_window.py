@@ -744,7 +744,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 file_path = "%s.osp" % file_path
 
             # Save project
-            threading.Thread(target=self.save_project, args=(file_path,), daemon=True).start()
+            self.save_project(file_path)
 
     def auto_save_project(self):
         """Auto save the project"""
