@@ -781,9 +781,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 x_motion = event.pos().x() - self.mouse_position.x()
                 y_motion = event.pos().y() - self.mouse_position.y()
 
-                # For all interactions except rotation, adjust the motion vector
+                # For all interactions except rotation and location, adjust the motion vector
                 # to account for the clip's current rotation.
-                if self.transform_mode != 'rotation':
+                if self.transform_mode not in ['rotation', 'location']:
                     import math
                     current_rotation = raw_properties.get('rotation').get('value')
                     if abs(current_rotation) > 0.001:
@@ -846,9 +846,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Calculate new location coordinates
                     aspect_ratio = (self.clipBounds.width() / self.clipBounds.height()) * 2.0
-                    shear_x -= (
-                        x_motion) / (
-                        (self.clipBounds.width() * scale_x) / aspect_ratio)
+                    shear_x -= x_motion / ((self.clipBounds.width() * scale_x) / aspect_ratio)
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -862,9 +860,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Calculate new location coordinates
                     aspect_ratio = (self.clipBounds.width() / self.clipBounds.height()) * 2.0
-                    shear_x += (
-                        x_motion) / (
-                        (self.clipBounds.width() * scale_x) / aspect_ratio)
+                    shear_x += x_motion / ((self.clipBounds.width() * scale_x) / aspect_ratio)
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -877,11 +873,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     scale_y = raw_properties.get('scale_y').get('value')
 
                     # Calculate new location coordinates
-                    aspect_ratio = (
-                        self.clipBounds.height() / self.clipBounds.width()) * 2.0
-                    shear_y -= (
-                        y_motion) / (
-                        self.clipBounds.height() * scale_y / aspect_ratio)
+                    aspect_ratio = (self.clipBounds.height() / self.clipBounds.width()) * 2.0
+                    shear_y -= y_motion / (self.clipBounds.height() * scale_y / aspect_ratio)
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -894,11 +887,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     shear_y = raw_properties.get('shear_y').get('value')
 
                     # Calculate new location coordinates
-                    aspect_ratio = (
-                        self.clipBounds.height() / self.clipBounds.width()) * 2.0
-                    shear_y += (
-                        y_motion) / (
-                        self.clipBounds.height() * scale_y / aspect_ratio)
+                    aspect_ratio = (self.clipBounds.height() / self.clipBounds.width()) * 2.0
+                    shear_y += y_motion / (self.clipBounds.height() * scale_y / aspect_ratio)
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
