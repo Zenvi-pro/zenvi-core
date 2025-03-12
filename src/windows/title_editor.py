@@ -39,8 +39,8 @@ import threading
 # Is one even necessary, or is it safe to use xml.dom.minidom for that?
 from xml.dom import minidom
 
-from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal
-from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo
+from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal, QRect, QPoint, QSize, QEvent
+from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
 from PyQt5.QtWidgets import (
     QWidget,
     QMessageBox, QDialog, QColorDialog, QFontDialog,
@@ -53,7 +53,7 @@ from classes import info, ui_util
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
-from windows.color_picker import ColorPicker
+from windows.color_picker import ColorPicker, draw_checkerboard
 from classes.style_tools import style_to_dict, dict_to_style, set_if_existing
 from windows.views.titles_listview import TitlesListView
 
@@ -83,12 +83,16 @@ class TitleEditor(QDialog):
         self.project = self.app.project
         self.edit_file_path = edit_file_path
         self.duplicate = duplicate
+        self.filename = None
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
 
         # Init UI
         ui_util.init_ui(self)
+
+        # In your widget's initialization:
+        self.lblPreviewLabel.installEventFilter(self)
 
         # Set up the buttons
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -161,6 +165,12 @@ class TitleEditor(QDialog):
             # Display image (slight delay to allow screen to be shown first)
             QTimer.singleShot(50, self.display_svg)
 
+    def eventFilter(self, obj, event):
+        if obj is self.lblPreviewLabel and event.type() == QEvent.Resize:
+            # Update preview image when label is resized
+            self.update_timer.start(50)
+        return super(TitleEditor, self).eventFilter(obj, event)
+
     def get_font(self, requested_font_name):
         """
         Checks for a valid font name and returns a QFont object.
@@ -213,7 +223,7 @@ class TitleEditor(QDialog):
         self.update_timer.start()
 
     def display_svg(self):
-        # Create a temp file for this thumbnail image
+        # Create a temp file for the thumbnail image
         new_file, tmp_filename = tempfile.mkstemp(suffix=".png")
         os.close(new_file)
 
@@ -221,32 +231,51 @@ class TitleEditor(QDialog):
         clip = openshot.Clip(self.filename)
         reader = clip.Reader()
 
-        # Scale preview for high DPI display (if any)
+        # Get the device pixel ratio (for high DPI)
         scale = get_app().devicePixelRatio()
-        if scale > 1.0:
-            clip.scale_x.AddPoint(1.0, 1.0 * scale)
-            clip.scale_y.AddPoint(1.0, 1.0 * scale)
 
-        # Open reader
+        # Get the available size (logical) and the original title size
+        avail_size = self.lblPreviewLabel.rect().size()
+        orig_size = QSize(reader.info.width, reader.info.height)
+
+        # Compute the target rectangle that preserves the title's aspect ratio
+        target_size = orig_size.scaled(avail_size, Qt.KeepAspectRatio)
+        target_rect = QRect(QPoint(0, 0), target_size)
+        target_rect.moveCenter(self.lblPreviewLabel.rect().center())
+
+        # Determine thumbnail dimensions in physical pixels
+        thumb_width = round(target_rect.width() * scale)
+        thumb_height = round(target_rect.height() * scale)
+
+        # Generate the thumbnail.
         reader.Open()
-
-        # Overwrite temp file with thumbnail image and close readers
         reader.GetFrame(1).Thumbnail(
             tmp_filename,
-            round(self.lblPreviewLabel.width() * scale),
-            round(self.lblPreviewLabel.height() * scale),
-            "", "", "#000", False, "png", 85, 0.0)
+            thumb_width,
+            thumb_height,
+            "", "", "#00000000", False, "png", 85, 0.0)
         reader.Close()
         clip.Close()
 
-        # Attempt to load saved thumbnail
-        display_pixmap = QIcon(tmp_filename).pixmap(self.lblPreviewLabel.size())
-
-        # Display temp image
-        self.thumbnailReady.emit(display_pixmap)
-
-        # Remove temporary file
+        # Load the thumbnail pixmap and set its device pixel ratio
+        preview_pixmap = QIcon(tmp_filename).pixmap(thumb_width, thumb_height)
+        preview_pixmap.setDevicePixelRatio(scale)
         os.unlink(tmp_filename)
+
+        # Create the final pixmap filled with the label's background color
+        final_pixmap = QPixmap(avail_size * scale)
+        final_pixmap.setDevicePixelRatio(scale)
+        bg_color = self.lblPreviewLabel.palette().color(self.lblPreviewLabel.backgroundRole())
+        final_pixmap.fill(bg_color)
+
+        # Composite the checkerboard and the preview image into the target area
+        painter = QPainter(final_pixmap)
+        draw_checkerboard(painter, target_rect)
+        painter.drawPixmap(target_rect, preview_pixmap)
+        painter.end()
+
+        # Emit the final pixmap
+        self.thumbnailReady.emit(final_pixmap)
 
     def create_temp_title(self, template_path):
         """Set temp file path & make copy of template"""
@@ -468,6 +497,9 @@ class TitleEditor(QDialog):
 
     def save_and_reload_thread(self):
         """Run inside thread, to update and display new SVG - so we don't block the main UI thread"""
+        if not self.filename:
+            return
+
         self.is_thread_busy = True
         self.writeToFile(self.xmldoc)
         self.display_svg()

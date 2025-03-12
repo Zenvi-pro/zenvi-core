@@ -350,14 +350,20 @@ class PropertiesModel(updates.UpdateInterface):
                     log_id = "{}/{}".format(clip_id, object_id) if object_id else clip_id
                     log.debug("%s: update color property %s. %s", log_id, property_key, clip_data.get(property_key))
 
-                    # Loop through each keyframe (red, blue, and green)
+                    # Loop through each keyframe (red, blue, green, and alpha)
                     for color, new_value in [
                             ("red", new_color.red()),
                             ("blue", new_color.blue()),
                             ("green", new_color.green()),
+                            ("alpha", new_color.alpha()),
                             ]:
 
                         # Keyframe
+                        # Make sure this color property exists in the clip data
+                        if color not in clip_data[property_key]:
+                            log.debug(f"Creating new color component: {color}")
+                            clip_data[property_key][color] = {"Points": []}
+
                         # Loop through points, find a matching points on this frame
                         found_point = False
                         for point in clip_data[property_key][color].get("Points", []):
@@ -806,7 +812,8 @@ class PropertiesModel(updates.UpdateInterface):
                 red = int(property[1]["red"]["value"])
                 green = int(property[1]["green"]["value"])
                 blue = int(property[1]["blue"]["value"])
-                col.setBackground(QColor(red, green, blue))
+                alpha = int(property[1]["alpha"]["value"])
+                col.setBackground(QColor(red, green, blue, alpha))
 
             if readonly or type in ["color", "font", "caption"] or choices or label == "Track":
                 col.setFlags(Qt.ItemIsEnabled)
@@ -907,7 +914,8 @@ class PropertiesModel(updates.UpdateInterface):
                 red = int(property[1]["red"]["value"])
                 green = int(property[1]["green"]["value"])
                 blue = int(property[1]["blue"]["value"])
-                col.setBackground(QColor(red, green, blue))
+                alpha = int(property[1]["alpha"]["value"])
+                col.setBackground(QColor(red, green, blue, alpha))
 
             # Update helper dictionary
             row.append(col)

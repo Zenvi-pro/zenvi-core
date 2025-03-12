@@ -358,6 +358,7 @@ class PropertiesTableView(QTableView):
     def color_callback(self, newColor: QColor):
         # Set the new color keyframe
         if newColor.isValid():
+            log.debug(f"Color callback received: {newColor.name()}, Alpha: {newColor.alpha()}")
             self.clip_properties_model.color_update(
                 self.selected_item, newColor)
 
@@ -383,10 +384,17 @@ class PropertiesTableView(QTableView):
                 red = cur_property[1]["red"]["value"]
                 green = cur_property[1]["green"]["value"]
                 blue = cur_property[1]["blue"]["value"]
+                # Get alpha value (if present) or default to fully opaque
+                alpha = cur_property[1].get("alpha", {}).get("value", 255)
 
-                # Show color dialog
-                currentColor = QColor(int(red), int(green), int(blue))
-                log.debug("Launching ColorPicker for %s", currentColor.name())
+                # Show color dialog with alpha support
+                try:
+                    # Create color with alpha
+                    currentColor = QColor(int(red), int(green), int(blue), int(alpha))
+                except (ValueError, TypeError):
+                    # Default to opaque red if conversion fails
+                    currentColor = QColor(255, 0, 0, 255)
+                
                 ColorPicker(
                     currentColor, parent=self, title=_("Select a Color"),
                     callback=self.color_callback)
@@ -855,10 +863,17 @@ class PropertiesTableView(QTableView):
         red = int(cur_property[1]["red"]["value"])
         green = int(cur_property[1]["green"]["value"])
         blue = int(cur_property[1]["blue"]["value"])
+        # Get alpha value (if present) or default to fully opaque
+        alpha = int(cur_property[1].get("alpha", {}).get("value", 255))
 
-        # Show color dialog
-        currentColor = QColor(red, green, blue)
-        log.debug("Launching ColorPicker for %s", currentColor.name())
+        # Show color dialog with alpha support
+        try:
+            # Create color with alpha
+            currentColor = QColor(red, green, blue, alpha)
+        except (ValueError, TypeError):
+            # Default to opaque red if conversion fails
+            currentColor = QColor(255, 0, 0, 255)
+            
         ColorPicker(
             currentColor, parent=self, title=_("Select a Color"),
             callback=self.color_callback)
