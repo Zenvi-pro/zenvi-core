@@ -37,7 +37,7 @@ def draw_checkerboard(painter, rect):
     """Draw a checkerboard pattern for transparent backgrounds."""
     # Use logical pixels for the checker size that scales with different DPIs
     scale = get_app().devicePixelRatio()
-    effective_checker_size = 16 / scale
+    effective_checker_size = round(8.0 * scale)
     light_color = QColor(220, 220, 220)
     dark_color = QColor(170, 170, 170)
 
