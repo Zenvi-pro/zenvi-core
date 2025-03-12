@@ -60,7 +60,7 @@
 	<param name="strength" type="spinner" title="Emission Strength" description="">
 		<min>0.0</min>
 		<max>30.0</max>
-		<default>6.0</default>
+		<default>0.75</default>
 	</param>
 
 	<param name="glare1_type" type="dropdown" title="Glare 1: Type of Glare" description="">
