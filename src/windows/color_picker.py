@@ -34,27 +34,31 @@ from classes.app import get_app
 
 
 def draw_checkerboard(painter, rect):
-    """Draw a checkerboard pattern for transparent backgrounds"""
-    checker_size = 8
+    """Draw a checkerboard pattern for transparent backgrounds."""
+    # Use logical pixels for the checker size that scales with different DPIs
+    scale = get_app().devicePixelRatio()
+    effective_checker_size = 16 / scale
     light_color = QColor(220, 220, 220)
     dark_color = QColor(170, 170, 170)
 
     # Save current brush
     old_brush = painter.brush()
 
-    # Draw checkerboard pattern
+    # Draw checkerboard pattern in logical coordinates
+    checker_size = int(effective_checker_size)
     for x in range(0, rect.width(), checker_size):
         for y in range(0, rect.height(), checker_size):
-            if (x // checker_size + y // checker_size) % 2 == 0:
-                painter.fillRect(rect.x() + x, rect.y() + y,
-                                min(checker_size, rect.width() - x),
-                                min(checker_size, rect.height() - y),
-                                light_color)
+            if ((x // checker_size) + (y // checker_size)) % 2 == 0:
+                color = light_color
             else:
-                painter.fillRect(rect.x() + x, rect.y() + y,
-                                min(checker_size, rect.width() - x),
-                                min(checker_size, rect.height() - y),
-                                dark_color)
+                color = dark_color
+            painter.fillRect(
+                rect.x() + x,
+                rect.y() + y,
+                min(checker_size, rect.width() - x),
+                min(checker_size, rect.height() - y),
+                color
+            )
 
     # Restore brush
     painter.setBrush(old_brush)
