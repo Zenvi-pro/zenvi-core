@@ -312,6 +312,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         # Loop through legacy profiles
         LEGACY_PROFILE_PATH = os.path.join(info.PROFILES_PATH, "legacy")
         legacy_profile = None
+        legacy_profile_match = None  # Find the equivalent match of this legacy (if any)
         for legacy_filename in os.listdir(LEGACY_PROFILE_PATH):
             legacy_profile_path = os.path.join(LEGACY_PROFILE_PATH, legacy_filename)
             try:
@@ -341,12 +342,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                         break
                     if legacy_profile and legacy_profile.Key() == temp_profile.Key():
                         # Switch from legacy profile to new profile
-                        profile = self.apply_profile(temp_profile)
-                        break
+                        legacy_profile_match = temp_profile
 
                 except RuntimeError as e:
                     # This exception occurs when there's a problem parsing the Profile file - display a message and continue
                     log.error("Failed to parse file '%s' as a profile: %s" % (profile_path, e))
+
+        # Upgrade a legacy profile (if needed). Sometimes legacy profiles do match a new profile description, so
+        # only upgrade if we have not already found a profile matching the description
+        if not profile and legacy_profile_match:
+            profile = self.apply_profile(legacy_profile_match)
 
         return profile
 
