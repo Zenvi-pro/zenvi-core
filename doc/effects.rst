@@ -503,7 +503,7 @@ creating visual separation, and adding an artistic flair to your videos.
    ==========================  ============
    Property Name               Description
    ==========================  ============
-   width                       ``(float, 0 to 10000)`` The width of the outline in pixels.
+   width                       ``(float, 0 to 100)``   The width of the outline in pixels.
    red                         ``(float, 0 to 255)``   The red color component of the outline.
    green                       ``(float, 0 to 255)``   The green color component of the outline.
    blue                        ``(float, 0 to 255)``   The blue color component of the outline.
