@@ -73,6 +73,7 @@ the name and short description of each effect.
    Hue                            Adjust hue / color.
    Negative                       Produce a negative image.
    Object Detector                Detect objects in video.
+   Outline                        Add outline around any image or text.
    Pixelate                       Increase or decrease visible pixels.
    Shift                          Shift image in different directions.
    Stabilizer                     Reduce video shake.
@@ -486,6 +487,27 @@ Properties
    background_alpha            ``(float, 0 to 1)`` Opacity of the background fill inside the tracked object box
    background_corner           ``(int, 0 to 150)`` Radius of the corners for the background fill inside the tracked object box
    background                  ``(color)`` Color of the background fill inside the tracked object box
+   ==========================  ============
+
+Outline
+"""""""
+The Outline effect adds a customizable border around images or text within a video frame. It works by extracting the
+image’s alpha channel, blurring it to generate a smooth outline mask, and then combining this mask with a solid
+color layer. Users can adjust the outline’s width as well as its color components (red, green, blue) and
+transparency (alpha), allowing for a wide range of visual styles. This effect is ideal for emphasizing text,
+creating visual separation, and adding an artistic flair to your videos.
+
+.. table::
+   :widths: 26 80
+
+   ==========================  ============
+   Property Name               Description
+   ==========================  ============
+   width                       ``(float, 0 to 100)``   The width of the outline in pixels.
+   red                         ``(float, 0 to 255)``   The red color component of the outline.
+   green                       ``(float, 0 to 255)``   The green color component of the outline.
+   blue                        ``(float, 0 to 255)``   The blue color component of the outline.
+   alpha                       ``(float, 0 to 255)``   The transparency (alpha) value for the outline.
    ==========================  ============
 
 Pixelate
