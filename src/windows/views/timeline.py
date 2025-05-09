@@ -1893,7 +1893,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_transition_data(tran.data, only_basic_props=False)
 
-    def Fade_Triggered(self, action, clip_ids, position="Entire Clip"):
+    def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
         """Callback for fade context menus"""
         log.debug(action)
 
@@ -1901,73 +1901,83 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Loop through each selected clip
-        for clip_id in clip_ids:
+        # Create a transaction ID for all operations in this function (if not provided)
+        tid = transaction_id or self.get_uuid()
 
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+        try:
+            # Set transaction ID
+            get_app().updates.transaction_id = tid
 
-            start_of_clip = round(float(clip.data["start"]) * fps_float) + 1
-            end_of_clip = round(float(clip.data["end"]) * fps_float) + 1
+            # Loop through each selected clip
+            for clip_id in clip_ids:
 
-            # Determine the beginning and ending of this animation
-            # ["Start of Clip", "End of Clip", "Entire Clip"]
-            start_animation = start_of_clip
-            end_animation = end_of_clip
-            if position == "Start of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
+                    continue
+
+                start_of_clip = round(float(clip.data["start"]) * fps_float) + 1
+                end_of_clip = round(float(clip.data["end"]) * fps_float) + 1
+
+                # Determine the beginning and ending of this animation
+                # ["Start of Clip", "End of Clip", "Entire Clip"]
                 start_animation = start_of_clip
-                end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
-            elif position == "Start of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
-                start_animation = start_of_clip
-                end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
-            elif position == "End of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
-                start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
                 end_animation = end_of_clip
-            elif position == "End of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
-                start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
-                end_animation = end_of_clip
+                if position == "Start of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
+                    start_animation = start_of_clip
+                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
+                elif position == "Start of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
+                    start_animation = start_of_clip
+                    end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                elif position == "End of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
+                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
+                    end_animation = end_of_clip
+                elif position == "End of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
+                    start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
+                    end_animation = end_of_clip
 
-            # Fade in and out (special case)
-            if position == "Entire Clip" and action == MenuFade.IN_OUT_FAST:
-                # Call this method for the start and end of the clip
-                self.Fade_Triggered(MenuFade.IN_FAST, clip_ids, "Start of Clip")
-                self.Fade_Triggered(MenuFade.OUT_FAST, clip_ids, "End of Clip")
-                return
-            if position == "Entire Clip" and action == MenuFade.IN_OUT_SLOW:
-                # Call this method for the start and end of the clip
-                self.Fade_Triggered(MenuFade.IN_SLOW, clip_ids, "Start of Clip")
-                self.Fade_Triggered(MenuFade.OUT_SLOW, clip_ids, "End of Clip")
-                return
+                # Fade in and out (special case)
+                if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
+                    # Call this method for the start and end of the clip
+                    if action == MenuFade.IN_OUT_FAST:
+                        self.Fade_Triggered(MenuFade.IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
+                        self.Fade_Triggered(MenuFade.OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
+                    elif action == MenuFade.IN_OUT_SLOW:
+                        self.Fade_Triggered(MenuFade.IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
+                        self.Fade_Triggered(MenuFade.OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
+                    return
 
-            if action == MenuFade.NONE:
-                # Clear all keyframes
-                p = openshot.Point(1, 1.0, openshot.BEZIER)
-                p_object = json.loads(p.Json())
-                clip.data['alpha'] = {"Points": [p_object]}
+                if action == MenuFade.NONE:
+                    # Clear all keyframes
+                    p = openshot.Point(1, 1.0, openshot.BEZIER)
+                    p_object = json.loads(p.Json())
+                    clip.data['alpha'] = {"Points": [p_object]}
 
-            if action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
-                # Add keyframes
-                start = openshot.Point(start_animation, 0.0, openshot.BEZIER)
-                start_object = json.loads(start.Json())
-                end = openshot.Point(end_animation, 1.0, openshot.BEZIER)
-                end_object = json.loads(end.Json())
-                self.AddPoint(clip.data['alpha'], start_object)
-                self.AddPoint(clip.data['alpha'], end_object)
+                if action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
+                    # Add keyframes
+                    start = openshot.Point(start_animation, 0.0, openshot.BEZIER)
+                    start_object = json.loads(start.Json())
+                    end = openshot.Point(end_animation, 1.0, openshot.BEZIER)
+                    end_object = json.loads(end.Json())
+                    self.AddPoint(clip.data['alpha'], start_object)
+                    self.AddPoint(clip.data['alpha'], end_object)
 
-            if action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
-                # Add keyframes
-                start = openshot.Point(start_animation, 1.0, openshot.BEZIER)
-                start_object = json.loads(start.Json())
-                end = openshot.Point(end_animation, 0.0, openshot.BEZIER)
-                end_object = json.loads(end.Json())
-                self.AddPoint(clip.data['alpha'], start_object)
-                self.AddPoint(clip.data['alpha'], end_object)
+                if action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
+                    # Add keyframes
+                    start = openshot.Point(start_animation, 1.0, openshot.BEZIER)
+                    start_object = json.loads(start.Json())
+                    end = openshot.Point(end_animation, 0.0, openshot.BEZIER)
+                    end_object = json.loads(end.Json())
+                    self.AddPoint(clip.data['alpha'], start_object)
+                    self.AddPoint(clip.data['alpha'], end_object)
 
-            # Save changes
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                # Save changes
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+        finally:
+            # Reset transaction id only if we created it (not if it was passed in)
+            if not transaction_id:
+                get_app().updates.transaction_id = None
 
     @pyqtSlot(str, str, float)
     def RazorSliceAtCursor(self, clip_id, trans_id, cursor_position):
@@ -3457,4 +3467,3 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Connect Selection signals
         self.window.SelectionChanged.connect(self.handle_selection)
-
