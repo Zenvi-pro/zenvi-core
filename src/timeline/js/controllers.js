@@ -1642,8 +1642,12 @@ $scope.updateLayerIndex = function () {
         // Re-sort clips and transitions array
         $scope.sortItems();
 
-        // Re-index Layer Y values
-        $scope.updateLayerIndex();
+        // Re-index Layer Y values after DOM has been updated
+        setTimeout(function() {
+          $scope.$apply(function () {
+            $scope.updateLayerIndex();
+          });
+        }, 0);
       }
     }
 
