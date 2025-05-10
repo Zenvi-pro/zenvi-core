@@ -39,34 +39,57 @@ $(document).ready(function () {
   // Initialize Qt Mixin (WebEngine or WebKit)
   init_mixin();
 
-  // Always ensure caching thread has been resumed on any mouse-up event.
-  // The cache thread can be disabled while scrubbing, and the normal mouse-up event
-  // can be missed if the cursor is dragged outside the timeline.
-  $(document).on("mouseup", function (e) {
-      if (body_object.scope().Qt) {
-          // Enable caching thread after scrubbing
-          timeline.EnableCacheThread();
+  // Ensure caching thread is resumed on any mouse-up event during scrubbing
+  $(document).on("mouseup", function () {
+    if (body_object.scope().Qt) {
+      timeline.EnableCacheThread();
+    }
+  });
+
+  /// Capture window resize event, and resize scrollable track divs and playhead-line height
+  (function () {
+    var trackControls   = document.getElementById("track_controls");
+    var scrollTracks    = document.getElementById("scrolling_tracks");
+    var trackContainer  = document.getElementById("track-container");
+    var playheadLine    = document.querySelector(".playhead-line");
+
+    function syncAll() {
+      // Resize both control and tracks container to fill window height
+      if (trackControls && scrollTracks) {
+        var offsetTop = trackControls.getBoundingClientRect().top;
+        var newH = window.innerHeight - offsetTop;
+        trackControls.style.height   = newH + "px";
+        scrollTracks.style.height    = newH + "px";
       }
-  });
+      // Adjust playhead-line height to match track stack
+      if (trackContainer && playheadLine) {
+        var h = trackContainer.getBoundingClientRect().height;
+        playheadLine.style.height = h + "px";
+      }
 
-  /// Capture window resize event, and resize scrollable divs (i.e. track container)
-  $(window).resize(function () {
+      // force Angular to re-digest so clips get re-positioned instantly anytime the resize happens (i.e. tracks added/removed/resized)
+      var scope = body_object.scope();
+      if (!scope.$$phase) {
+        scope.$apply();
+      }
+    }
 
-    // Determine Y offset for track container div
-    var track_controls = $("#track_controls");
-    var track_offset = track_controls.offset().top;
+    // Re-sync on window resize
+    window.addEventListener("resize", syncAll);
 
-    // Set the height of the scrollable divs. This resizes the tracks to fit the remaining
-    // height of the web page. As the user changes the size of the web page, this will continue
-    // to fire, and resize the child divs to fit.
-    var new_track_height = $(this).height() - track_offset;
+    // Observe structural changes in the track container
+    if (window.ResizeObserver && trackContainer) {
+      new ResizeObserver(syncAll).observe(trackContainer);
+    } else if (trackContainer) {
+      new MutationObserver(syncAll).observe(trackContainer, { childList: true });
+    }
 
-    track_controls.height(new_track_height);
-    $("#scrolling_tracks").height(new_track_height);
-    body_object.scope().playhead_height = $("#track-container").height();
-    $(".playhead-line").height(body_object.scope().playhead_height);
-  });
+    // Observe Angular's style override on playhead-line
+    if (window.MutationObserver && playheadLine) {
+      new MutationObserver(syncAll).observe(playheadLine, { attributes: true, attributeFilter: ["style"] });
+    }
 
-  // Manually trigger the window resize code (to verify it runs at least once)
-  $(window).trigger("resize");
+    // Initial sync
+    syncAll();
+  })();
 });
