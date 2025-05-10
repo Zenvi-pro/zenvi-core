@@ -57,7 +57,6 @@ App.controller("TimelineCtrl", function ($scope) {
   // Additional variables used to control the rendering of HTML
   $scope.pixelsPerSecond = parseFloat($scope.project.tick_pixels) / parseFloat($scope.project.scale);
   $scope.playhead_animating = false;
-  $scope.playhead_height = 300;
   $scope.playheadTime = secondsToTime($scope.project.playhead_position, $scope.project.fps.num, $scope.project.fps.den);
   $scope.snapline_position = 0.0;
   $scope.snapline = false;
@@ -1208,10 +1207,6 @@ $scope.updateLayerIndex = function () {
       layer.height = layer_elem.outerHeight();
     }
   }
-
-  // Update playhead height
-  $scope.playhead_height = $("#track-container").height();
-  $(".playhead-line").height($scope.playhead_height);
 };
 
   // Sort clips and transitions by position
@@ -1647,8 +1642,12 @@ $scope.updateLayerIndex = function () {
         // Re-sort clips and transitions array
         $scope.sortItems();
 
-        // Re-index Layer Y values
-        $scope.updateLayerIndex();
+        // Re-index Layer Y values after DOM has been updated
+        setTimeout(function() {
+          $scope.$apply(function () {
+            $scope.updateLayerIndex();
+          });
+        }, 0);
       }
     }
 
