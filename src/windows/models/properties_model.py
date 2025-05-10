@@ -655,11 +655,16 @@ class PropertiesModel(updates.UpdateInterface):
                     # Transition
                     clip_updated = True
                     try:
-                        clip_object = openshot.Clip(value)
-                        clip_object.Open()
-                        clip_data[property_key] = json.loads(clip_object.Reader().Json())
-                        clip_object.Close()
-                        clip_object = None
+                        if value:
+                            # Set a new source
+                            clip_object = openshot.Clip(value)
+                            clip_object.Open()
+                            clip_data[property_key] = json.loads(clip_object.Reader().Json())
+                            clip_object.Close()
+                            clip_object = None
+                        else:
+                            # Clear the source (set to a dict with a type field)
+                            clip_data[property_key] = {"type": ""}
                     except Exception:
                         log.warn('Invalid Reader value passed to property: %s', value, exc_info=1)
 
