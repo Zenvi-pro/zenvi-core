@@ -28,13 +28,13 @@
 
 // Initialize Angular application
 /*global App, angular, timeline, init_mixin*/
-var App = angular.module("openshot-timeline", ["ui.bootstrap", "ngAnimate"]);
+const App = angular.module("openshot-timeline", ["ui.bootstrap", "ngAnimate"]);
 
 
 // Wait for document ready event
 $(document).ready(function () {
 
-  var body_object = $("body");
+  const body_object = $("body");
 
   // Initialize Qt Mixin (WebEngine or WebKit)
   init_mixin();
@@ -48,23 +48,29 @@ $(document).ready(function () {
 
   /// Capture window resize event, and resize scrollable track divs and playhead-line height
   (function () {
-    var trackControls   = document.getElementById("track_controls");
-    var scrollTracks    = document.getElementById("scrolling_tracks");
-    var trackContainer  = document.getElementById("track-container");
-    var playheadLine    = document.querySelector(".playhead-line");
+    const trackControls   = document.getElementById("track_controls");
+    const scrollTracks    = document.getElementById("scrolling_tracks");
+    const trackContainer  = document.getElementById("track-container");
+    const playheadLine    = document.querySelector(".playhead-line");
 
     function syncAll() {
       // Resize both control and tracks container to fill window height
       if (trackControls && scrollTracks) {
-        var offsetTop = trackControls.getBoundingClientRect().top;
-        var newH = window.innerHeight - offsetTop;
+        const offsetTop = trackControls.getBoundingClientRect().top;
+        const newH = window.innerHeight - offsetTop;
         trackControls.style.height   = newH + "px";
         scrollTracks.style.height    = newH + "px";
       }
       // Adjust playhead-line height to match track stack
       if (trackContainer && playheadLine) {
-        var h = trackContainer.getBoundingClientRect().height;
+        const h = trackContainer.getBoundingClientRect().height;
         playheadLine.style.height = h + "px";
+      }
+      // Adjust snapping-line height to match track stack
+      const snappingLine = document.querySelector(".snapping-line");
+      if (trackContainer && snappingLine) {
+        const h = trackContainer.getBoundingClientRect().height;
+        snappingLine.style.height = h + "px";
       }
     }
 
@@ -81,6 +87,12 @@ $(document).ready(function () {
     // Observe Angular's style override on playhead-line
     if (window.MutationObserver && playheadLine) {
       new MutationObserver(syncAll).observe(playheadLine, { attributes: true, attributeFilter: ["style"] });
+    }
+
+    // Observe Angular's style override on snapping-line
+    const snappingLine = document.querySelector(".snapping-line");
+    if (window.MutationObserver && snappingLine) {
+      new MutationObserver(syncAll).observe(snappingLine, { attributes: true, attributeFilter: ["style"] });
     }
 
     // Initial sync
