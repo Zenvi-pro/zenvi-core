@@ -66,12 +66,6 @@ $(document).ready(function () {
         var h = trackContainer.getBoundingClientRect().height;
         playheadLine.style.height = h + "px";
       }
-
-      // force Angular to re-digest so clips get re-positioned instantly anytime the resize happens (i.e. tracks added/removed/resized)
-      var scope = body_object.scope();
-      if (!scope.$$phase) {
-        scope.$apply();
-      }
     }
 
     // Re-sync on window resize
