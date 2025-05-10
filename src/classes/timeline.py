@@ -104,6 +104,11 @@ class TimelineSync(UpdateInterface):
                 self.window.refreshFrameSignal.emit()
 
             else:
+                if action.type == "delete":
+                    # Clear selection for the deleted object
+                    object_id = action.key[1].get("id", None)
+                    self.window.removeSelection(object_id)
+
                 # This JSON DIFF is passed to libopenshot to update the timeline
                 self.timeline.ApplyJsonDiff(action.json(is_array=True))
 
