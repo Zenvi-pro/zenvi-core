@@ -779,16 +779,13 @@ class Worker(QObject):
         self.canceled = True
 
     def blender_version_check(self):
-        log.debug("=== blender_version_check START ===")
-        log.debug("Blender exec path: %s", self.blender_exec_path)
-        log.debug("Env dict being passed to Popen:\n%s", pprint.pformat(self.env))
-
         command_get_version = [
             self.blender_exec_path,
             '--factory-startup',
             '-v',
         ]
-        log.debug("Command to run: %r", command_get_version)
+        log.debug("Checking Blender version, command: {}".format(
+            " ".join([shlex.quote(x) for x in command_get_version])))
 
         try:
             if self.process:
