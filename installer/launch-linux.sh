@@ -1,16 +1,24 @@
 #!/bin/bash
 
-# Add the current folder the library path
+# Locate this script
 HERE=$(dirname "$(realpath "$0")")
-export LD_LIBRARY_PATH="${HERE}"
 
-# Set some environment variables
+# Ensure our local libs and plugins load first
+export LD_LIBRARY_PATH="${HERE}"
 export QT_PLUGIN_PATH="${HERE}"
 
-# For Debian-based systems with newer openssl, see:
-# https://github.com/OpenShot/openshot-qt/issues/3242
-# https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=918727 
+# Workaround for newer OpenSSL on Debian/Ubuntu
 export OPENSSL_CONF="/dev/null"
 
-# Launch application
-exec "${HERE}"/openshot-qt "$@"
+# Add /snap/bin to PATH if it exists and isn’t already there,
+# so the user can simply set “/snap/bin/blender” or rely on
+# “blender” pointing to the snap shim.
+if [ -d /snap/bin ]; then
+    case ":$PATH:" in
+        *":/snap/bin:"*) ;;
+        *) export PATH="/snap/bin:$PATH" ;;
+    esac
+fi
+
+# Finally, launch OpenShot
+exec "${HERE}/openshot-qt" "$@"
