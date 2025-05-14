@@ -1171,9 +1171,17 @@ $scope.moveItem = function (x, y) {
   bounding_box.previous_x = results.position.left;
   bounding_box.previous_y = results.position.top;
 
+  // protect against empty .first()
+  if (!bounding_box.elements || !bounding_box.elements.length) return;
+  const $first = bounding_box.elements.first();
+  if (!$first.length) return;
+  const firstId = $first.attr("id");
+  const firstStart = bounding_box.start_clips[firstId];
+  if (!firstStart) return;
+
   // Apply snapping results to the first clip and calculate the delta for the remaining clips
-  var delta_x = results.position.left - bounding_box.start_clips[bounding_box.elements.first().attr("id")].left;
-  var delta_y = results.position.top - bounding_box.start_clips[bounding_box.elements.first().attr("id")].top;
+  const delta_x = results.position.left - firstStart.left;
+  const delta_y = results.position.top - firstStart.top;
 
   // Update the position of each selected element by applying the delta
   if (bounding_box.elements) {
