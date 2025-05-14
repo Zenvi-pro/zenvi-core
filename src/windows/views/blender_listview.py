@@ -27,7 +27,6 @@
 
 import os
 import copy
-import pprint
 import subprocess
 import sys
 import re
