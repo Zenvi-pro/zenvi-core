@@ -107,13 +107,13 @@ class TimelineSync(UpdateInterface):
                 if action.type == "delete":
                     # Clear selection for the deleted object
                     object_id = action.key[1].get("id", None)
-                    self.window.removeSelection(object_id)
+                    self.window.removeSelection(object_id, None)
 
                 # This JSON DIFF is passed to libopenshot to update the timeline
                 self.timeline.ApplyJsonDiff(action.json(is_array=True))
 
         except Exception as e:
-            log.info("Error applying JSON to timeline object in libopenshot: %s. %s" %
+            log.error("Error applying JSON to timeline object in libopenshot: %s. %s" %
                      (e, action.json(is_array=True)))
 
         # Resume video caching original value
