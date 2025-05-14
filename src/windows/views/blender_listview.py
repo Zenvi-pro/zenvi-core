@@ -799,7 +799,8 @@ class Worker(QObject):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 startupinfo=self.startupinfo,
-                env=self.env
+                env=self.env,
+                cwd=info.HOME_PATH
             )
             out, _ = self.process.communicate(timeout=10)
             elapsed = time.time() - start_time
@@ -917,7 +918,7 @@ class Worker(QObject):
             self.process = subprocess.Popen(
                 command_render, bufsize=512,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                startupinfo=self.startupinfo, env=self.env
+                startupinfo=self.startupinfo, env=self.env, cwd=info.HOME_PATH
             )
             # Signal UI that background task is running
             self.start_processing.emit()

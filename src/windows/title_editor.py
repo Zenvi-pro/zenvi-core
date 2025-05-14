@@ -778,7 +778,7 @@ class TitleEditor(QDialog):
         try:
             # launch advanced title editor
             log.info("Advanced title editor command: %s", str([prog, self.filename]))
-            p = subprocess.Popen([prog, self.filename], env=self.env)
+            p = subprocess.Popen([prog, self.filename], env=self.env, cwd=info.HOME_PATH)
 
             # wait for process to finish, then update preview
             p.communicate()
