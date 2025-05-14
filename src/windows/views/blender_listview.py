@@ -26,7 +26,6 @@
  """
 
 import os
-import copy
 import subprocess
 import sys
 import re
@@ -34,7 +33,6 @@ import functools
 import shlex
 import json
 from time import sleep
-import time
 
 # Try to get the security-patched XML functions from defusedxml
 try:
@@ -778,60 +776,54 @@ class Worker(QObject):
         self.canceled = True
 
     def blender_version_check(self):
+        # Check the version of Blender
         command_get_version = [
             self.blender_exec_path,
             '--factory-startup',
             '-v',
-        ]
+            ]
         log.debug("Checking Blender version, command: {}".format(
             " ".join([shlex.quote(x) for x in command_get_version])))
 
         try:
             if self.process:
                 self.process.terminate()
-            start_time = time.time()
             self.process = subprocess.Popen(
                 command_get_version,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                startupinfo=self.startupinfo,
-                env=self.env,
-                cwd=info.HOME_PATH
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                startupinfo=self.startupinfo, env=self.env, cwd=info.HOME_PATH
             )
-            out, _ = self.process.communicate(timeout=10)
-            elapsed = time.time() - start_time
-            log.debug("Blender exited with code %s in %.2fs",
-                      self.process.returncode, elapsed)
+            # Give Blender up to 10 seconds to respond
+            (out, err) = self.process.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             log.error("Blender version check timed out")
             self.process.kill()
             self.blender_error_nodata.emit()
             return False
         except FileNotFoundError:
-            log.error("Blender executable not found at path: %s",
-                      self.blender_exec_path)
+            log.error("Blender executable not found at path: %s", self.blender_exec_path)
             self.blender_error_nodata.emit()
             return False
         except Exception:
-            log.error("Exception during Blender version check", exc_info=1)
+            # Error running command.  Most likely the blender executable path in
+            # the settings is incorrect, or is not a supported Blender version
+            log.error("Version check exception", exc_info=1)
             self.blender_error_nodata.emit()
             return False
 
         ver_string = out.decode('utf-8', errors='ignore')
-        log.debug("Raw Blender output:\n%s", ver_string)
+        log.debug("Blender output:\n%s", ver_string)
 
         ver_match = self.blender_version_re.search(ver_string)
         if not ver_match:
-            log.error("No regex match for version. Pattern: %r",
-                      self.blender_version_re.pattern)
-            log.error("Full stdout:\n%s", ver_string)
             raise Exception("No Blender version detected in output")
+        log.debug("Matched %s in output", str(ver_match.group(0)))
 
         self.version = ver_match.group(1)
-        log.info("Detected Blender version %s", self.version)
-        log.debug("=== blender_version_check END ===")
+        log.info("Found Blender version {}".format(self.version))
 
         if self.version < info.BLENDER_MIN_VERSION:
+            # Wrong version of Blender.
             self.blender_version_error.emit(self.version)
         return (self.version >= info.BLENDER_MIN_VERSION)
 
