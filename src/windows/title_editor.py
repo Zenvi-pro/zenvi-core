@@ -770,11 +770,19 @@ class TitleEditor(QDialog):
         prog = s.get("title_editor").strip()
         filename_text = self.txtFileName.text().strip()
 
-        # Define the title and message for all platforms
+        # Define the title and both platform-specific messages
         error_title = _("Error launching editor")
-        error_msg = _("The editor did not launch: <b>{cmd}</b><br/><br/>"
-                      "If you used Snap or Flatpak, try installing the "
-                      "editor with your package manager.").format(cmd=prog)
+        error_msg_linux = _(
+            "The editor did not launch: <b>{cmd}</b><br><br>"
+            "If you used Snap or Flatpak, try installing the editor with your package manager."
+        ).format(cmd=prog)
+        error_msg_other = _(
+            "The editor did not launch: <b>{cmd}</b><br><br>"
+            "Please check that the editor is installed and working."
+        ).format(cmd=prog)
+
+        # Pick the message for this platform
+        error_msg = error_msg_linux if sys.platform.startswith("linux") else error_msg_other
 
         try:
             log.info("Advanced title editor command: %s", str([prog, self.filename]))
