@@ -34,6 +34,7 @@ import functools
 import subprocess
 import tempfile
 import threading
+import time
 
 # TODO: Is there a defusedxml substitute for getDOMImplementation?
 # Is one even necessary, or is it safe to use xml.dom.minidom for that?
@@ -84,6 +85,7 @@ class TitleEditor(QDialog):
         self.edit_file_path = edit_file_path
         self.duplicate = duplicate
         self.filename = None
+        self.env = dict(os.environ)
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -113,7 +115,6 @@ class TitleEditor(QDialog):
 
         # Get environment variables needed for launching a process without trying to load libraries
         # from our frozen app bundle
-        self.env = dict(os.environ)
         if sys.platform == "linux":
             self.env.pop('LD_LIBRARY_PATH', None)
             log.debug('Removing custom LD_LIBRARY_PATH from environment variables when launching Inkscape')
@@ -764,27 +765,37 @@ class TitleEditor(QDialog):
 
     def btnAdvanced_clicked(self):
         """Use an external editor to edit the image"""
-        # Get editor executable from settings (or placeholder text)
         _ = self.app._tr
         s = get_app().get_settings()
         prog = s.get("title_editor").strip()
-        setting_name = _("Advanced Title Editor (path)")
-        prog_warning = ""
-        if prog.strip():
-            prog_warning = f": [{prog}]"
-
-        # Get filename field to display on reload
         filename_text = self.txtFileName.text().strip()
+
+        # Define the title and message for all platforms
+        error_title = _("Error launching editor")
+        error_msg = _("The editor did not launch: <b>{cmd}</b><br/><br/>"
+                      "If you used Snap or Flatpak, try installing the "
+                      "editor with your package manager.").format(cmd=prog)
+
         try:
-            # launch advanced title editor
             log.info("Advanced title editor command: %s", str([prog, self.filename]))
-            p = subprocess.Popen([prog, self.filename], env=self.env, cwd=info.HOME_PATH)
-
-            # wait for process to finish, then update preview
+            start_time = time.time()
+            p = subprocess.Popen(
+                [prog, self.filename],
+                env=self.env,
+                cwd=info.HOME_PATH,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
             p.communicate()
-            self.load_svg_template(filename_field=filename_text)
-            self.display_svg()
+            elapsed = time.time() - start_time
 
-        except OSError:
-            QMessageBox.warning(self, _("Settings Error"),
-                                _("Please install %s to use this function" % f"<b>{setting_name}{prog_warning}</b>"))
+            # Show error if the editor exited too quickly
+            if elapsed < 4:
+                QMessageBox.warning(self, error_title, error_msg)
+            else:
+                self.load_svg_template(filename_field=filename_text)
+                self.display_svg()
+
+        except Exception as ex:
+            log.error("Failed to launch advanced title editor: %s", ex)
+            QMessageBox.warning(self, error_title, error_msg)
