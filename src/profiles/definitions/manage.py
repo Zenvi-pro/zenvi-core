@@ -70,27 +70,6 @@ def save_profile(definition_path, json_details):
         f1.write(formatted_json)
 
 
-def replace_preset_profile(match):
-    """Replace matched string"""
-    legacy_profile_name = match.groups(0)[0]
-    # LEGACY PROFILES
-    for profile_details in legacy_profiles.values():
-        for profile_tuple in profile_details:
-            legacy_profile = profile_tuple[0]
-            if legacy_profile_name == legacy_profile.info.description:
-                new_profile_path = os.path.join(PROFILE_PATH, legacy_profile.Key())
-                profile_obj = openshot.Profile(new_profile_path)
-                return f"\t<projectprofile>{profile_obj.info.description}</projectprofile>"
-    # NEW PROFILES (if needed)
-    for new_profile_name in sorted(os.listdir(PROFILE_PATH)):
-        new_profile_path = os.path.join(PROFILE_PATH, new_profile_name)
-        if not os.path.isdir(new_profile_path):
-            profile_obj = openshot.Profile(new_profile_path)
-            if legacy_profile_name == profile_obj.info.description:
-                return f"\t<projectprofile>{profile_obj.info.description}</projectprofile>"
-    raise Exception(f"No matching legacy profile found for {legacy_profile_name}")
-
-
 # Check for arg value
 mode = ""
 if len(sys.argv) <= 1:
@@ -301,17 +280,6 @@ display_aspect_den={profile.info.display_ratio.den}"""
         print(f"Generating profile file: {profile_name}")
         with open(profile_path, "w") as profile_file_object:
             profile_file_object.write(profile_body)
-
-    # Migrate any related presets
-    PRESETS_PATH = os.path.join(os.path.dirname(os.path.dirname(PATH)), "presets")
-    for preset_name in os.listdir(PRESETS_PATH):
-        preset_path = os.path.join(PRESETS_PATH, preset_name)
-        print(f"Updating preset file: {preset_name}")
-        with open(preset_path, "r") as f:
-            preset_body = f.read()
-            preset_body = re.sub(PRESET_REGEX, replace_preset_profile, preset_body)
-            with open(preset_path, "w") as f1:
-                f1.write(preset_body)
 
     # Iterate through duplicate profile names (and give a unique descriptive name)
     # For now, we'll add the DAR to the end of the description
