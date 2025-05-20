@@ -487,6 +487,15 @@ class Export(QDialog):
             self.cboInterlaced.setCurrentIndex(1)
         else:
             self.cboInterlaced.setCurrentIndex(0)
+            
+        # Load the 360° / Spherical options
+        self.cboSpherical.clear()
+        self.cboSpherical.addItem(_("No"), 0)
+        self.cboSpherical.addItem(_("Yes"), 1)
+        if hasattr(profile.info, "spherical") and profile.info.spherical:
+            self.cboSpherical.setCurrentIndex(1)
+        else:
+            self.cboSpherical.setCurrentIndex(0)
 
     def cboSimpleTarget_index_changed(self, widget, index):
         selected_target = widget.itemData(index)
@@ -903,6 +912,7 @@ class Export(QDialog):
 
         # Init export settings
         interlacedIndex = self.cboInterlaced.currentIndex()
+        sphericalIndex = self.cboSpherical.currentIndex()
         video_settings = {  "vformat": self.txtVideoFormat.text(),
                             "vcodec": self.txtVideoCodec.text(),
                             "fps": { "num" : self.txtFrameRateNum.value(), "den": self.txtFrameRateDen.value()},
@@ -913,7 +923,8 @@ class Export(QDialog):
                             "start_frame": self.txtStartFrame.value(),
                             "end_frame": self.txtEndFrame.value(),
                             "interlace": interlacedIndex in [1, 2],
-                            "topfirst": interlacedIndex == 1
+                            "topfirst": interlacedIndex == 1,
+                            "spherical": sphericalIndex == 1
                           }
 
         audio_settings = {"acodec": self.txtAudioCodec.text(),
@@ -986,6 +997,11 @@ class Export(QDialog):
                                   video_settings.get("interlace"),
                                   video_settings.get("topfirst"),
                                   video_settings.get("video_bitrate"))
+                
+                # Set spherical/360° metadata if needed
+                # TODO: Implement FFmpegWriter.SetSphericalMetadata method
+                # if video_settings.get("spherical"):
+                #     w.SetSphericalMetadata(True)
 
             # Set audio options
             if export_type in [_("Video & Audio"), _("Audio Only")]:
