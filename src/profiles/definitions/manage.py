@@ -214,6 +214,7 @@ if mode == "generate":
             profile.info.pixel_ratio.num = p[1].get("sar").get("num")
             profile.info.pixel_ratio.den = p[1].get("sar").get("den")
             profile.info.interlaced_frame = not p[1].get("progressive")
+            profile.info.spherical = p[0].get("spherical", False)
 
             # Format file name for new profile
             profile_abr = p[2]
@@ -265,6 +266,11 @@ if mode == "generate":
             print(f"Error: Anamorphic property is NOT needed for {profile.Key()}")
 
         # Create new profile file
+        # Check if spherical attribute should be included
+        spherical_string = ""
+        if hasattr(profile.info, "spherical") and profile.info.spherical:
+            spherical_string = "\nspherical=true"
+
         profile_body = f"""description={profile.info.description}
 frame_rate_num={profile.info.fps.num}
 frame_rate_den={profile.info.fps.den}
@@ -274,7 +280,7 @@ progressive={progressive_string}
 sample_aspect_num={profile.info.pixel_ratio.num}
 sample_aspect_den={profile.info.pixel_ratio.den}
 display_aspect_num={profile.info.display_ratio.num}
-display_aspect_den={profile.info.display_ratio.den}"""
+display_aspect_den={profile.info.display_ratio.den}{spherical_string}"""
 
         # Write file
         print(f"Generating profile file: {profile_name}")
@@ -315,6 +321,9 @@ if mode == "preview":
             profile.info.pixel_ratio.num = p[1].get("sar").get("num")
             profile.info.pixel_ratio.den = p[1].get("sar").get("den")
             profile.info.interlaced_frame = not p[1].get("progressive")
+            # Set spherical property if it exists in the profile
+            if p[0].get("spherical"):
+                profile.info.spherical = True
 
             sar = profile.info.pixel_ratio
             sar.Reduce()
