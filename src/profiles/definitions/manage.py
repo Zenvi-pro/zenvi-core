@@ -268,8 +268,8 @@ if mode == "generate":
         # Create new profile file
         # Check if spherical attribute should be included
         spherical_string = ""
-        if hasattr(profile.info, "spherical") and profile.info.spherical:
-            spherical_string = "\nspherical=true"
+        if hasattr(profile.info, "spherical") and profile.info.spherical == 1:
+            spherical_string = "\nspherical=1"
 
         profile_body = f"""description={profile.info.description}
 frame_rate_num={profile.info.fps.num}
@@ -321,9 +321,7 @@ if mode == "preview":
             profile.info.pixel_ratio.num = p[1].get("sar").get("num")
             profile.info.pixel_ratio.den = p[1].get("sar").get("den")
             profile.info.interlaced_frame = not p[1].get("progressive")
-            # Set spherical property if it exists in the profile
-            if p[0].get("spherical"):
-                profile.info.spherical = True
+            profile.info.spherical = p[0].get("spherical", False)
 
             sar = profile.info.pixel_ratio
             sar.Reduce()
