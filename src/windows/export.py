@@ -487,7 +487,7 @@ class Export(QDialog):
             self.cboInterlaced.setCurrentIndex(1)
         else:
             self.cboInterlaced.setCurrentIndex(0)
-            
+
         # Load the 360° / Spherical options
         self.cboSpherical.clear()
         self.cboSpherical.addItem(_("No"), 0)
@@ -997,11 +997,6 @@ class Export(QDialog):
                                   video_settings.get("interlace"),
                                   video_settings.get("topfirst"),
                                   video_settings.get("video_bitrate"))
-                
-                # Set spherical/360° metadata if needed
-                # TODO: Implement FFmpegWriter.SetSphericalMetadata method
-                # if video_settings.get("spherical"):
-                #     w.SetSphericalMetadata(True)
 
             # Set audio options
             if export_type in [_("Video & Audio"), _("Audio Only")]:
@@ -1014,6 +1009,13 @@ class Export(QDialog):
 
             # Prepare the streams
             w.PrepareStreams()
+
+            # Set spherical/360° metadata if needed
+            if video_settings.get("spherical"):
+                yaw = 0.0
+                pitch = 0.0
+                roll = 0.0
+                w.AddSphericalMetadata("equirectangular", yaw, pitch, roll)
 
             # These extra options should be set in an extra method
             # No feedback is given to the user
