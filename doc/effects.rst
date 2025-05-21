@@ -76,6 +76,7 @@ the name and short description of each effect.
    Outline                        Add outline around any image or text.
    Pixelate                       Increase or decrease visible pixels.
    Shift                          Shift image in different directions.
+   Spherical Projection           Flatten or project 360° videos.
    Stabilizer                     Reduce video shake.
    Tracker                        Track bounding box in video.
    Wave                           Distort image into a wave pattern.
@@ -544,6 +545,38 @@ add dynamic motion to static shots.
    x                           ``(float, -1 to 1)`` Shift the X coordinates (left or right)
    y                           ``(float, -1 to 1)`` Shift the Y coordinates (up or down)
    ==========================  ============
+
+Spherical Projection
+""""""""""""""""""""
+
+The Spherical Projection effect lets you flatten and re-project 360° or fisheye video into a normal rectangular view.
+You can steer the virtual camera with yaw, pitch and roll, zoom in or out with the field-of-view (FOV), choose between
+full-sphere, hemisphere or raw fisheye input, and select nearest-neighbor or bilinear sampling for quality vs. speed.
+This is ideal for editing keyframed “virtual camera” moves inside your 360° clips.
+
+.. table::
+   :widths: 26 80
+
+   ==========================  ===========================================
+   Property Name               Description
+   ==========================  ===========================================
+   yaw                         ``(float, -180 to 180)``
+                               Horizontal rotation around the up axis (degrees).
+   pitch                       ``(float, -90 to 90)``
+                               Vertical rotation around the right axis (degrees).
+   roll                        ``(float, -180 to 180)``
+                               Roll (tilt) around the forward axis (degrees).
+   fov                         ``(float, 1 to 179)``
+                               Horizontal field-of-view of the virtual camera (degrees).
+   projection_mode             ``(int)``
+                               **Sphere (0)**: full 360×180° equirectangular, **Hemisphere (1)**: front or back half of an equirectangular, **Fisheye (2)**: raw circular fisheye source
+   invert                      ``(int)``
+                               Flip the view by 180° or switch front/back in fisheye:
+                               Normal (0), Inverted (1).
+   interpolation               ``(int)``
+                               Sampling method: Nearest-neighbor (0) or Bilinear (1).
+   ==========================  ===========================================
+
 
 Stabilizer
 """"""""""
