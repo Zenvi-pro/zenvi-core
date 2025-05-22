@@ -295,7 +295,7 @@ display_aspect_den={profile.info.display_ratio.den}{spherical_string}"""
                 profile_path = os.path.join(PROFILE_PATH, key)
                 profile = openshot.Profile(profile_path)
                 # Create unique name (since more than 2 profiles use the same name)
-                unique_profile_name = f'{profile_name} - {profile.info.width}x{profile.info.height} | {profile.info.display_ratio.num}:{profile.info.display_ratio.den}'
+                unique_profile_name = f'{profile_name} | {profile.info.display_ratio.num}:{profile.info.display_ratio.den}'
                 print(f'Updating name for uniqueness: {unique_profile_name} in profile: {profile.Key()}')
 
                 # Write file with description updated for uniqueness
@@ -428,10 +428,10 @@ if mode == "doc":
                 print("".ljust(len(preset.get('title')), "~"))
                 print()
                 print(f".. table::")
-                print(f"   :widths: 26")
+                print(f"   :widths: 30 30")
                 print(f"")
                 print(f"   =======================  ============")
-                print(f"   Attribute                Description")
+                print(f"   Preset Attribute         Description")
                 print(f"   =======================  ============")
                 print(f"   Video Format             {preset.get('videoformat').upper()}")
                 if preset.get('videocodec'):
