@@ -75,6 +75,7 @@ the name and short description of each effect.
    Object Detector                Detect objects in video.
    Outline                        Add outline around any image or text.
    Pixelate                       Increase or decrease visible pixels.
+   Sharpen                        Boost edge contrast to make video details look crisper.
    Shift                          Shift image in different directions.
    Stabilizer                     Reduce video shake.
    Tracker                        Track bounding box in video.
@@ -528,6 +529,45 @@ to evoke a retro, digital, or abstract aesthetic.
    right                       ``(float, 0 to 1)`` The curve to adjust the right margin size
    top                         ``(float, 0 to 1)`` The curve to adjust the top margin size
    ==========================  ============
+
+Sharpen
+"""""""
+The Sharpen effect enhances perceived detail by first blurring the frame slightly and then adding a scaled
+difference (the *un-sharp mask*) back on top. This boosts edge contrast, making textures and outlines appear
+crisper without changing overall brightness.
+
+Modes
+^^^^^
+
+* **Unsharp** – Classic un-sharp mask: the edge detail is added back to the *original* frame.
+  Produces the familiar punchy sharpen seen in photo editors.
+
+* **HighPass** – High-pass blend: the edge detail is added to the *blurred* frame, then the result replaces
+  the original.  Gives a softer, more “contrasty” look and can rescue highlights that would otherwise clip.
+
+Channels
+^^^^^^^^
+
+* **All** – Apply the edge mask to the full RGB signal (strongest effect – colour and brightness sharpened).
+* **Luma** – Apply only to luma (brightness).  Colours stay untouched, so chroma noise is not amplified.
+* **Chroma** – Apply only to the chroma (colour difference) channels.  Useful for gently reviving colour
+  edges without changing perceived brightness.
+
+Properties
+^^^^^^^^^^
+
+.. table::
+   :widths: 26 80
+
+   ==========================  ============================================================
+   Property Name               Description
+   ==========================  ============================================================
+   amount                      ``(float, 0 to 40)`` Strength multiplier / up to 100% edge boost
+   radius                      ``(float, 0 to 10)`` Blur radius in pixels at 720p (auto-scaled to clip size)
+   threshold                   ``(float, 0 to 1)`` Minimum luma difference that will be sharpened
+   mode                        ``(int, choices: ['Unsharp', 'HighPass'])`` Math style of the sharpening mask
+   channel                     ``(int, choices: ['All', 'Luma', 'Chroma'])`` Which colour channels receive sharpening
+   ==========================  ============================================================
 
 Shift
 """""
