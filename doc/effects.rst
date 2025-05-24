@@ -66,6 +66,7 @@ the name and short description of each effect.
    Brightness & Contrast          Modify frame's brightness and contrast.
    Caption                        Add text captions to any clip.
    Chroma Key (Greenscreen)       Replace color with transparency.
+   Color Map                      Applies color grading by using a LUT file (.cube)
    Color Saturation               Adjust color intensity.
    Color Shift                    Shift image colors in various directions.
    Crop                           Crop out parts of your video.
@@ -323,6 +324,30 @@ impossible or impractical to shoot in.
    halo                        ``(float, 0 to 125)`` The additional threshold for halo elimination.
    keymethod                   ``(int, choices: ['Basic keying', 'HSV/HSL hue', 'HSV saturation', 'HSL saturation', 'HSV value', 'HSL luminance', 'LCH luminosity', 'LCH chroma', 'LCH hue', 'CIE Distance', 'Cb,Cr vector'])`` The keying method or algorithm to use.
    ==========================  ============
+
+Color Map
+"""""""""
+The Color Map effect applies a 3D LUT (Lookup Table) to your footage, instantly transforming its
+colors to achieve a consistent look or mood. A 3D LUT is simply a table that remaps every input hue to a new output
+palette. With separate keyframe curves for red, green, and blue channels, you can precisely control, and even
+animate, how much each channel is influenced by the LUT, making it easy to fine-tune or blend your grade over time.
+
+LUT files (`.cube` format) can be downloaded from many online resources, including free packs on
+photography blogs or marketplaces, such as https://freshluts.com/.
+
+
+.. table::
+   :widths: 20 80
+
+   ===================  ========================================================================
+   Property Name        Description
+   ===================  ========================================================================
+   lut_path             ``(string)`` Filesystem path to the `.cube` LUT file.
+   intensity_r          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s red channel (0.0 = no LUT, 1.0 = full LUT).
+   intensity_g          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s green channel (0.0 = no LUT, 1.0 = full LUT).
+   intensity_b          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s blue channel (0.0 = no LUT, 1.0 = full LUT).
+   ===================  ========================================================================
+
 
 Color Saturation
 """"""""""""""""
