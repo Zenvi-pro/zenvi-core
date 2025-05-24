@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: OpenShot Video Editor (version: 3.3.0)\n"
 "Report-Msgid-Bugs-To: Jonathan Thomas <Jonathan.Oomph@gmail.com>\n"
-"POT-Creation-Date: 2025-05-14 22:58:07.238535\n"
+"POT-Creation-Date: 2025-05-23 17:44:11.281529\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: Jonathan Thomas <Jonathan.Oomph@gmail.com>\n"
 "Language-Team: https://translations.launchpad.net/+groups/launchpad-translators\n"
@@ -1704,11 +1704,18 @@ msgstr ""
 msgid "Error launching editor"
 msgstr ""
 
-#: /home/jonathan/apps/openshot-qt/src/windows/title_editor.py:775
+#: /home/jonathan/apps/openshot-qt/src/windows/title_editor.py:776
 #, python-brace-format
 msgid ""
-"The editor did not launch: <b>{cmd}</b><br/><br/>If you used Snap or "
-"Flatpak, try installing the editor with your package manager."
+"The editor did not launch: <b>{cmd}</b><br><br>If you used Snap or Flatpak, "
+"try installing the editor with your package manager."
+msgstr ""
+
+#: /home/jonathan/apps/openshot-qt/src/windows/title_editor.py:780
+#, python-brace-format
+msgid ""
+"The editor did not launch: <b>{cmd}</b><br><br>Please check that the editor "
+"is installed and working."
 msgstr ""
 
 #: /home/jonathan/apps/openshot-qt/src/windows/about.py:128
@@ -2405,6 +2412,14 @@ msgstr ""
 
 #: libopenshot (Effect Metadata)
 msgid "Adjust the color saturation."
+msgstr ""
+
+#: libopenshot (Effect Metadata)
+msgid "Sharpen"
+msgstr ""
+
+#: libopenshot (Effect Metadata)
+msgid "Boost edge contrast to make video details look crisper."
 msgstr ""
 
 #: libopenshot (Effect Metadata)
