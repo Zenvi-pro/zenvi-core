@@ -307,11 +307,9 @@ class JsonDataStore:
 
         # Determine if @colors path is found
         elif info.COLORS_PATH in folder_path:
-            log.debug("Generating relative @colors path for %s in %s",
-                      file_path, folder_path)
-            new_path = os.path.join("@colors", file_path).replace("\\", "/")
-            new_path = json.dumps(new_path, ensure_ascii=False)
-            return '"%s": %s' % (key, new_path)
+            rel = os.path.relpath(os.path.join(folder_path, file_path), info.COLORS_PATH)
+            path = json.dumps(f"@colors/{rel.replace(os.sep, '/')}", ensure_ascii=False)
+            return f'"{key}": {path}'
 
         # Determine if @emojis path is found
         elif os.path.join(info.PATH, "emojis") in folder_path:

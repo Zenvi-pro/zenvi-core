@@ -703,36 +703,50 @@ class PropertiesTableView(QTableView):
                 self.choices.append({"name": _("Transitions"), "value": trans_choices, "selected": False})
 
             elif property_key == "lut_path":
-                # “None” option to clear
-                self.choices = []
-                self.choices.append({
-                    "name": _("None"),
-                    "value": "",
-                    "selected": False,
-                    "icon": None
-                })
+                # “None” option
+                self.choices = [{"name": _("None"), "value": "", "selected": False, "icon": None}]
 
-                # Order: user-defined first, then built-in
-                for directory in (info.USER_COLORS_PATH, info.COLORS_PATH):
+                def _gather(dir_path):
                     try:
-                        entries = os.listdir(directory)
+                        names = sorted(os.listdir(dir_path), key=str.lower)
                     except OSError:
-                        continue
+                        return []
+                    result = []
+                    for name in names:
+                        full = os.path.join(dir_path, name)
+                        pretty = _(name.replace("_", " ").replace("&", "&&").title())
+                        if os.path.isdir(full):
+                            # folder → submenu
+                            children = [
+                                {"name": _(os.path.splitext(fn)[0]
+                                           .replace("_", " ")
+                                           .replace("&", "&&")
+                                           .title()),
+                                 "value": os.path.join(full, fn),
+                                 "selected": False,
+                                 "icon": None}
+                                for fn in sorted(os.listdir(full), key=str.lower)
+                                if fn.lower().endswith(".cube")
+                            ]
+                            if children:
+                                result.append({"name": pretty, "value": children})
+                        elif name.lower().endswith(".cube"):
+                            # loose .cube file
+                            result.append({
+                                "name": pretty,
+                                "value": full,
+                                "selected": False,
+                                "icon": None
+                            })
+                    return result
 
-                    # Filter and sort .cube files
-                    cube_files = [fn for fn in entries if fn.lower().endswith(".cube")]
-                    cube_files.sort(key=lambda fn: fn.lower())
+                # user-defined group
+                user_choices = _gather(info.USER_COLORS_PATH)
+                if user_choices:
+                    self.choices.append({"name": _("User-Defined"), "value": user_choices})
 
-                    for filename in cube_files:
-                        full_path = os.path.join(directory, filename)
-                        base = os.path.splitext(filename)[0]
-                        display = _(base.replace("_", " ").title())
-                        self.choices.append({
-                            "name": display,
-                            "value": full_path,
-                            "selected": False,
-                            "icon": None
-                        })
+                # built-in LUTs
+                self.choices.extend(_gather(info.COLORS_PATH))
 
             # Handle reader type values
             if property_name == "Track" and self.property_type == "int" and not self.choices:
