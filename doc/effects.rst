@@ -335,7 +335,6 @@ animate, how much each channel is influenced by the LUT, making it easy to fine-
 LUT files (`.cube` format) can be downloaded from many online resources, including free packs on
 photography blogs or marketplaces, such as https://freshluts.com/.
 
-
 .. table::
    :widths: 20 80
 
@@ -343,11 +342,11 @@ photography blogs or marketplaces, such as https://freshluts.com/.
    Property Name        Description
    ===================  ========================================================================
    lut_path             ``(string)`` Filesystem path to the `.cube` LUT file.
-   intensity_r          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s red channel (0.0 = no LUT, 1.0 = full LUT).
-   intensity_g          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s green channel (0.0 = no LUT, 1.0 = full LUT).
-   intensity_b          ``(float, 0.0 to 1.0)`` Keyframe curve for blending the LUT’s blue channel (0.0 = no LUT, 1.0 = full LUT).
+   intensity            ``(float, 0.0 to 1.0)`` % Blending overall intensity (0.0 = no LUT, 1.0 = full LUT).
+   intensity_r          ``(float, 0.0 to 1.0)`` % Blending the LUT’s red channel (0.0 = no LUT, 1.0 = full LUT).
+   intensity_g          ``(float, 0.0 to 1.0)`` % Blending the LUT’s green channel (0.0 = no LUT, 1.0 = full LUT).
+   intensity_b          ``(float, 0.0 to 1.0)`` % Blending the LUT’s blue channel (0.0 = no LUT, 1.0 = full LUT).
    ===================  ========================================================================
-
 
 Color Saturation
 """"""""""""""""
