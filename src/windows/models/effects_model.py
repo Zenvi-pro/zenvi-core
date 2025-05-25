@@ -59,12 +59,12 @@ class EffectsProxyModel(QSortFilterProxyModel):
             # Return, if regExp match in displayed format.
             if get_app().window.actionEffectsShowVideo.isChecked():
                 return effect_type == "Video" and \
-                    (self.filterRegExp().indexIn(effect_name) >= 0 or \
-                       self.filterRegExp().indexIn(effect_desc) >= 0)
+                    (self.filterRegExp().indexIn(effect_name) >= 0 or
+                     self.filterRegExp().indexIn(effect_desc) >= 0)
             else:
                 return effect_type == "Audio" and \
-                    (self.filterRegExp().indexIn(effect_name) >= 0 or \
-                       self.filterRegExp().indexIn(effect_desc) >= 0)
+                    (self.filterRegExp().indexIn(effect_name) >= 0 or
+                     self.filterRegExp().indexIn(effect_desc) >= 0)
 
         # Continue running built-in parent filter logic
         return super(EffectsProxyModel, self).filterAcceptsRow(sourceRow, sourceParent)
