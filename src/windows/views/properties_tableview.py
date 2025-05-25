@@ -702,6 +702,38 @@ class PropertiesTableView(QTableView):
                 # Add root transitions choice
                 self.choices.append({"name": _("Transitions"), "value": trans_choices, "selected": False})
 
+            elif property_key == "lut_path":
+                # “None” option to clear
+                self.choices = []
+                self.choices.append({
+                    "name": _("None"),
+                    "value": "",
+                    "selected": False,
+                    "icon": None
+                })
+
+                # Order: user-defined first, then built-in
+                for directory in (info.USER_COLORS_PATH, info.COLORS_PATH):
+                    try:
+                        entries = os.listdir(directory)
+                    except OSError:
+                        continue
+
+                    # Filter and sort .cube files
+                    cube_files = [fn for fn in entries if fn.lower().endswith(".cube")]
+                    cube_files.sort(key=lambda fn: fn.lower())
+
+                    for filename in cube_files:
+                        full_path = os.path.join(directory, filename)
+                        base = os.path.splitext(filename)[0]
+                        display = _(base.replace("_", " ").title())
+                        self.choices.append({
+                            "name": display,
+                            "value": full_path,
+                            "selected": False,
+                            "icon": None
+                        })
+
             # Handle reader type values
             if property_name == "Track" and self.property_type == "int" and not self.choices:
                 # Populate all display track names
