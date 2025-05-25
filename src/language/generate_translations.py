@@ -156,46 +156,37 @@ for temp_file in temp_files:
     f.close()
 
 log.info("-----------------------------------------------------")
-log.info(" Scanning custom XML files and finding text")
+log.info(" Scanning effects & resources used by OpenShot")
 log.info("-----------------------------------------------------")
 
-# Loop through the Effects XML
+props = json.loads(openshot.Clip().PropertiesJSON(1))
+
+# Loop through props
 effects_text = {}
-for file in os.listdir(effects_path):
-    if os.path.isfile(os.path.join(effects_path, file)):
-        # load xml effect file
-        full_file_path = os.path.join(effects_path, file)
-        xmldoc = xml.parse(os.path.join(effects_path, file))
+for key in props.keys():
+    property = props[key]
+    if "name" in property:
+        effects_text[property["name"]] = "libopenshot (Clip Properties)"
+    if "choices" in property:
+        for choice in property["choices"]:
+            effects_text[choice["name"]] = "libopenshot (Clip Properties)"
 
-        # add text to list
-        effects_text[xmldoc.getElementsByTagName("title")[0].childNodes[0].data] = full_file_path
-        effects_text[xmldoc.getElementsByTagName("description")[0].childNodes[0].data] = full_file_path
-
-        # get params
-        params = xmldoc.getElementsByTagName("param")
-
-        # Loop through params
-        for param in params:
-            if param.attributes["title"]:
-                effects_text[param.attributes["title"].value] = full_file_path
-
-# Append on properties from libopenshot
-objects = [openshot.Clip(), openshot.Bars(), openshot.Blur(), openshot.Brightness(),
-           openshot.ChromaKey(), openshot.ColorShift(), openshot.Crop(), openshot.Deinterlace(), openshot.Hue(), openshot.Mask(),
-           openshot.Negate(), openshot.Pixelate(), openshot.Saturation(), openshot.Shift(), openshot.Wave()]
-
-# Loop through each libopenshot object
+# Loop through each libopenshot effect
+objects = json.loads(openshot.EffectInfo.Json())
 for object in objects:
-    props = json.loads(object.PropertiesJSON(1))
+    class_name = object.get("class_name")
+    props = json.loads(openshot.EffectInfo().CreateEffect(class_name).PropertiesJSON(1))
 
     # Loop through props
     for key in props.keys():
-        object = props[key]
-        if "name" in object:
-            effects_text[object["name"]] = "libopenshot (Clip Properties)"
+        property = props[key]
+        if key == "objects":
+            continue # Skip tracker / object detection property
+        if "name" in property:
+            effects_text[property["name"]] = "libopenshot (Effect Properties)"
         if "choices" in object:
-            for choice in object["choices"]:
-                effects_text[choice["name"]] = "libopenshot (Clip Properties)"
+            for choice in property["choices"]:
+                effects_text[choice["name"]] = "libopenshot (Effect Properties)"
 
 # Append Effect Init Data
 # Loop through props
