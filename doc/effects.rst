@@ -66,7 +66,7 @@ the name and short description of each effect.
    Brightness & Contrast          Modify frame's brightness and contrast.
    Caption                        Add text captions to any clip.
    Chroma Key (Greenscreen)       Replace color with transparency.
-   Color Map                      Applies color grading by using a LUT file (.cube)
+   Color Map / Lookup             Adjust colors using 3D LUT lookup tables (.cube format)
    Color Saturation               Adjust color intensity.
    Color Shift                    Shift image colors in various directions.
    Crop                           Crop out parts of your video.
@@ -325,8 +325,8 @@ impossible or impractical to shoot in.
    keymethod                   ``(int, choices: ['Basic keying', 'HSV/HSL hue', 'HSV saturation', 'HSL saturation', 'HSV value', 'HSL luminance', 'LCH luminosity', 'LCH chroma', 'LCH hue', 'CIE Distance', 'Cb,Cr vector'])`` The keying method or algorithm to use.
    ==========================  ============
 
-Color Map
-"""""""""
+Color Map / Lookup
+""""""""""""""""""
 The Color Map effect applies a 3D LUT (Lookup Table) to your footage, instantly transforming its
 colors to achieve a consistent look or mood. A 3D LUT is simply a table that remaps every input hue to a new output
 palette. With separate keyframe curves for red, green, and blue channels, you can precisely control, and even
