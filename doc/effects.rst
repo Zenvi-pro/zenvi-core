@@ -348,6 +348,190 @@ photography blogs or marketplaces, such as https://freshluts.com/.
    intensity_b          ``(float, 0.0 to 1.0)`` % Blending the LUT’s blue channel (0.0 = no LUT, 1.0 = full LUT).
    ===================  ========================================================================
 
+Cinematic & Blockbuster
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/cinematic_&_blockbuster_bold_red_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_city_neon_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_cool_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_dreamy_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_elegant_dark_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_heroic_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_romantic_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_sunlit_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_teal_&_orange_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_teal_cinema.jpg
+      :width: 30%
+
+   .. image:: images/colors/cinematic_&_blockbuster_warm_cinema.jpg
+      :width: 30%
+
+
+Dark & Moody
+^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/dark_&_moody_city_night_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_cold_shadows.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_cool_haze.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_dramatic_warmth.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_icy_drama.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_mystic_emerald_drama.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_night_glow.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_noir_era.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_retro_red_shadows.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_spy_night.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_teal_horror.jpg
+      :width: 30%
+
+   .. image:: images/colors/dark_&_moody_woodland_drama.jpg
+      :width: 30%
+
+
+Film Stock & Vintage
+^^^^^^^^^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/film_stock_&_vintage_classic_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_dark_orange_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_emerald_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_faded_memories.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_golden_wood_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_golden_years_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_green_film_pop.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_low_key_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_red_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_standard_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_vintage_400_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_vintage_green_film.jpg
+      :width: 30%
+
+   .. image:: images/colors/film_stock_&_vintage_warm_roast_film.jpg
+      :width: 30%
+
+Teal & Orange Vibes
+^^^^^^^^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/teal_&_orange_vibes_moonlight_orange.jpg
+      :width: 30%
+
+   .. image:: images/colors/teal_&_orange_vibes_signature_teal_&_orange.jpg
+      :width: 30%
+
+   .. image:: images/colors/teal_&_orange_vibes_sunset_orange.jpg
+      :width: 30%
+
+   .. image:: images/colors/teal_&_orange_vibes_teal_punch.jpg
+      :width: 30%
+
+   .. image:: images/colors/teal_&_orange_vibes_tropical_teal.jpg
+      :width: 30%
+
+   .. image:: images/colors/teal_&_orange_vibes_western_sunset.jpg
+      :width: 30%
+
+
+Utility & Correction
+^^^^^^^^^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/utility_&_correction_clean_&_denoise.jpg
+      :width: 30%
+
+   .. image:: images/colors/utility_&_correction_protect_highlights.jpg
+      :width: 30%
+
+   .. image:: images/colors/utility_&_correction_warm_correction.jpg
+      :width: 30%
+
+
+Vibrant & Colorful
+^^^^^^^^^^^^^^^^^^
+
+.. container:: gallery
+
+   .. image:: images/colors/vibrant_&_colorful_color_pop.jpg
+      :width: 30%
+
+   .. image:: images/colors/vibrant_&_colorful_photo_contrast.jpg
+      :width: 30%
+
+   .. image:: images/colors/vibrant_&_colorful_valentine_pop.jpg
+      :width: 30%
+
+   .. image:: images/colors/vibrant_&_colorful_warm_pop.jpg
+      :width: 30%
+
+   .. image:: images/colors/vibrant_&_colorful_warm_to_cool.jpg
+      :width: 30%
+
 Color Saturation
 """"""""""""""""
 The Color Saturation effect adjusts the intensity and vibrancy of colors within the video. Increasing saturation
