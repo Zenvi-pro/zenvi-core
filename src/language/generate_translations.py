@@ -209,12 +209,24 @@ for effect in props:
     if "description" in effect:
         effects_text[effect["description"]] = "libopenshot (Effect Metadata)"
 
+# Append LUT category and file names (for ColorMap effect)
+for folder in os.listdir(info.COLORS_PATH):
+    category_name = folder.replace("_", " ").title()
+    folder_path = os.path.join(info.COLORS_PATH, folder)
+    if os.path.isdir(folder_path):
+        for filename in os.listdir(folder_path):
+            basename, extension = os.path.splitext(filename)
+            if filename.endswith(".cube"):
+                lut_name = basename.replace("_", " ").title()
+                effects_text[category_name] = "ColorMap effect lookup (Category)"
+                effects_text[lut_name] = "ColorMap effect lookup (Name)"
+
 # Append Emoji Data
 emoji_text = { "translator-credits": "Translator credits to be translated by LaunchPad" }
 emoji_metadata_path = os.path.join(info.PATH, "emojis", "data", "openmoji-optimized.json")
 emoji_ignore_keys = ("Keyboard", "Sunset", "Key", "Right arrow", "Left arrow", "Bubbles",
                      "Twitter", "Instagram", "Scale", "Simple", "Close", "Forward", "Copy",
-                     "Filter", "Details", "Duplicate")
+                     "Filter", "Details", "Duplicate", "Edit", "Delete")
 with open(emoji_metadata_path, 'r', encoding="utf-8") as f:
     emoji_metadata = json.load(f)
 

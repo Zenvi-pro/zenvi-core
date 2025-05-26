@@ -714,14 +714,13 @@ class PropertiesTableView(QTableView):
                     result = []
                     for name in names:
                         full = os.path.join(dir_path, name)
-                        pretty = _(name.replace("_", " ").replace("&", "&&").title())
+                        pretty = _(name.replace("_", " ").title()).replace("&", "&&")
                         if os.path.isdir(full):
                             # folder → submenu
                             children = [
                                 {"name": _(os.path.splitext(fn)[0]
                                            .replace("_", " ")
-                                           .replace("&", "&&")
-                                           .title()),
+                                           .title()).replace("&", "&&"),
                                  "value": os.path.join(full, fn),
                                  "selected": False,
                                  "icon": None}
