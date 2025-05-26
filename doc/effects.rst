@@ -333,7 +333,8 @@ palette. With separate keyframe curves for red, green, and blue channels, you ca
 animate, how much each channel is influenced by the LUT, making it easy to fine-tune or blend your grade over time.
 
 LUT files (`.cube` format) can be downloaded from many online resources, including free packs on
-photography blogs or marketplaces, such as https://freshluts.com/.
+photography blogs or marketplaces, such as https://freshluts.com/. OpenShot includes a selection of popular LUTs
+designed for **Rec 709** gamma out of the box.
 
 .. table::
    :widths: 20 80
@@ -347,6 +348,18 @@ photography blogs or marketplaces, such as https://freshluts.com/.
    intensity_g          ``(float, 0.0 to 1.0)`` % Blending the LUT’s green channel (0.0 = no LUT, 1.0 = full LUT).
    intensity_b          ``(float, 0.0 to 1.0)`` % Blending the LUT’s blue channel (0.0 = no LUT, 1.0 = full LUT).
    ===================  ========================================================================
+
+Gamma and Rec 709
+^^^^^^^^^^^^^^^^^
+Gamma is the way video systems brighten or darken the midtones of an image. **Rec 709** is the standard gamma curve
+used for most HD and online video today. By shipping with **Rec 709** LUTs, OpenShot makes it simple to apply a grade
+that matches the vast majority of footage you’ll edit.
+
+If your camera or workflow uses a different gamma (for example a LOG profile), you can still use a LUT made for
+that curve. Simply use a `.cube` file designed for your gamma under the Color Map effect’s **LUT Path**.
+Just be sure your footage gamma matches the LUT gamma—or the colors may look incorrect.
+
+The following **Rec 709** LUT files are included in OpenShot, organized into the following categories:
 
 Cinematic & Blockbuster
 ^^^^^^^^^^^^^^^^^^^^^^^
