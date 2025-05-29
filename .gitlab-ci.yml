@@ -173,6 +173,15 @@ windows-builder-x86:
   tags:
     - windows
 
+re-init-builders:
+  stage: deploy
+  when: manual
+  tags:
+    - gitlab
+  script:
+    - send-ci-sqs linux
+    - send-ci-sqs windows
+
 deployer:
   stage: deploy
   artifacts:
