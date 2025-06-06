@@ -138,6 +138,9 @@ class Export(QDialog):
         self.timeline.info.video_length = project_timeline.info.video_length
         self.timeline.info.duration = project_timeline.info.duration
 
+        # Create cache thread
+        self.cache_thread = openshot.VideoCacheThread()
+
         # Load the "export" Timeline reader with the JSON from the real timeline
         try:
             json_timeline = json.dumps(self.project._data)
@@ -950,7 +953,7 @@ class Export(QDialog):
         get_app().project.has_unsaved_changes = True
 
         # Set lossless cache settings (temporarily)
-        export_cache_object = openshot.CacheMemory(500)
+        export_cache_object = openshot.CacheMemory(250 * 1024 * 1024)
         self.timeline.SetCache(export_cache_object)
 
         # Rescale all keyframes (if needed)
@@ -979,6 +982,11 @@ class Export(QDialog):
 
         # Precision of the progress bar
         format_of_progress_string = "%4.1f%% "
+
+        # Start video cache thread (to start caching frames)
+        self.cache_thread.Reader(self.timeline)
+        self.cache_thread.setSpeed(1)
+        self.cache_thread.StartThread()
 
         # Create FFmpegWriter
         try:
@@ -1095,6 +1103,7 @@ class Export(QDialog):
 
                 # Write the frame object to the video
                 w.WriteFrame(self.timeline.GetFrame(frame))
+                self.cache_thread.Seek(frame)
 
                 # Check if we need to bail out
                 if not self.exporting:
@@ -1149,6 +1158,10 @@ class Export(QDialog):
             msg.setWindowTitle(_("Export Error"))
             msg.setText(_("Sorry, there was an error exporting your video: \n%s") % friendly_error)
             msg.exec_()
+
+        self.cache_thread.StopThread(10000)
+        self.cache_thread.Reader(None)
+        self.cache_thread = None
 
         # Notify window of export started
         self.ExportEnded.emit(export_file_path)
