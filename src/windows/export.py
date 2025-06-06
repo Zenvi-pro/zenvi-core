@@ -114,8 +114,16 @@ class Export(QDialog):
         self.project = copy.deepcopy(get_app().project)
 
         # Clear timeline preview cache (to get more available memory)
+        self.old_cache_object = None
         project_timeline = get_app().window.timeline_sync.timeline
-        project_timeline.ClearAllCache()
+        if get_app().window.cache_object:
+            self.old_cache_object = get_app().window.cache_object
+            get_app().window.cache_object = openshot.CacheMemory(1 * 1024 * 1024) # 1 MB (limit cache for main project during export)
+            project_timeline.SetCache(get_app().window.cache_object)
+            self.old_cache_object.Clear()
+
+        # Create cache thread
+        self.cache_thread = openshot.VideoCacheThread()
 
         # Get the original timeline settings
         width = int(project_timeline.info.width)
@@ -137,9 +145,6 @@ class Export(QDialog):
         self.timeline.info.has_video = project_timeline.info.has_video
         self.timeline.info.video_length = project_timeline.info.video_length
         self.timeline.info.duration = project_timeline.info.duration
-
-        # Create cache thread
-        self.cache_thread = openshot.VideoCacheThread()
 
         # Load the "export" Timeline reader with the JSON from the real timeline
         try:
@@ -1159,10 +1164,6 @@ class Export(QDialog):
             msg.setText(_("Sorry, there was an error exporting your video: \n%s") % friendly_error)
             msg.exec_()
 
-        self.cache_thread.StopThread(10000)
-        self.cache_thread.Reader(None)
-        self.cache_thread = None
-
         # Notify window of export started
         self.ExportEnded.emit(export_file_path)
 
@@ -1174,6 +1175,12 @@ class Export(QDialog):
 
         # Return scale mode to lower quality scaling (for faster previews)
         openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
+
+        # Stop cache thread and restore project cache
+        self.cache_thread.StopThread(10000)
+        self.cache_thread.Reader(None)
+        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
+        get_app().window.cache_object = self.old_cache_object
 
         # Handle end of export (for non-canceled exports)
         if self.s.get("show_finished_window") and self.exporting:
@@ -1281,6 +1288,13 @@ class Export(QDialog):
 
         # Return scale mode to lower quality scaling (for faster previews)
         openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
+
+        # Stop cache thread and restore project cache
+        self.cache_thread.StopThread(10000)
+        self.cache_thread.Reader(None)
+        self.cache_thread = None
+        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
+        get_app().window.cache_object = self.old_cache_object
 
         # Cancel dialog
         self.exporting = False
