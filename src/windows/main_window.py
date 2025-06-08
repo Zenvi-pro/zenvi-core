@@ -2662,27 +2662,19 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Clear existing selection (if needed)
         if clear_existing:
+            self.selected_items = [s for s in self.selected_items if s["type"] != item_type]
             if item_type == "clip":
-                self.selected_clips.clear()
                 self.TransformSignal.emit("")
-            elif item_type == "transition":
-                self.selected_transitions.clear()
-            elif item_type == "effect":
-                self.selected_effects.clear()
 
-            # Clear caption editor (if nothing is selected)
-            get_app().window.CaptionTextLoaded.emit("", None)
+        # Clear caption editor (if nothing is selected)
+        get_app().window.CaptionTextLoaded.emit("", None)
 
         if item_id:
-            # If item_id is not blank, store it
-            if item_type == "clip" and item_id not in self.selected_clips:
-                self.selected_clips.append(item_id)
-                if s.get("auto-transform"):
-                    self.TransformSignal.emit(self.selected_clips[-1])
-            elif item_type == "transition" and item_id not in self.selected_transitions:
-                self.selected_transitions.append(item_id)
-            elif item_type == "effect" and item_id not in self.selected_effects:
-                self.selected_effects.append(item_id)
+            existing = any(s for s in self.selected_items if s["id"] == item_id and s["type"] == item_type)
+            if not existing:
+                self.selected_items.append({"id": item_id, "type": item_type})
+                if item_type == "clip" and s.get("auto-transform"):
+                    self.TransformSignal.emit(item_id)
 
                 effect = Effect.get(id=item_id)
                 if effect:
@@ -2693,8 +2685,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
 
             # Change selected item in properties view
-            self.show_property_id = item_id
-            self.show_property_type = item_type
             self.show_property_timer.start()
 
         # Notify UI that selection has been potentially changed
@@ -2704,26 +2694,22 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def removeSelection(self, item_id, item_type):
         # Remove existing selection (if any)
         if item_id:
-            if item_type == "clip" and item_id in self.selected_clips:
-                self.selected_clips.remove(item_id)
-            elif item_type == "transition" and item_id in self.selected_transitions:
-                self.selected_transitions.remove(item_id)
-            elif item_type == "effect" and item_id in self.selected_effects:
-                self.selected_effects.remove(item_id)
-            elif item_id:
-                # Fallback (wrong type or missing type)
-                # When the UNDO system deletes an object, this happens
-                if item_id in self.selected_clips:
-                    self.selected_clips.remove(item_id)
-                elif item_id in self.selected_transitions:
-                    self.selected_transitions.remove(item_id)
-                elif item_id in self.selected_effects:
-                    self.selected_effects.remove(item_id)
+            found = False
+            for sel in list(self.selected_items):
+                if sel["id"] == item_id and sel["type"] == item_type:
+                    self.selected_items.remove(sel)
+                    found = True
+                    break
+            if not found:
+                for sel in list(self.selected_items):
+                    if sel["id"] == item_id:
+                        self.selected_items.remove(sel)
+                        break
 
-        if not self.selected_clips and not self.selected_effects and not self.selected_transitions:
+        if not self.selected_items:
             # Clear properties view (if no other items are selected)
             if self.propertyTableView:
-                self.propertyTableView.loadProperties.emit("", "")
+                self.propertyTableView.loadProperties.emit([])
 
             # Clear transform (if no other clips are selected)
             self.TransformSignal.emit("")
@@ -2734,15 +2720,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Move selection to next selected clip (if any)
         self.show_property_id = ""
         self.show_property_type = ""
-        if item_type == "clip" and self.selected_clips:
-            self.show_property_id = self.selected_clips[0]
-            self.show_property_type = item_type
-        elif item_type == "transition" and self.selected_transitions:
-            self.show_property_id = self.selected_transitions[0]
-            self.show_property_type = item_type
-        elif item_type == "effect" and self.selected_effects:
-            self.show_property_id = self.selected_effects[0]
-            self.show_property_type = item_type
+        if self.selected_items:
+            self.show_property_id = self.selected_items[0]["id"]
+            self.show_property_type = self.selected_items[0]["type"]
 
         # Change selected item
         self.show_property_timer.start()
@@ -2760,6 +2740,22 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def selected_file_ids(self):
         """ Return a list of File IDs for the Project Files dock's selection """
         return self.files_model.selected_file_ids()
+
+    def selected_ids(self, item_type):
+        """Return list of selected ids matching item_type"""
+        return [s["id"] for s in self.selected_items if s["type"] == item_type]
+
+    @property
+    def selected_clips(self):
+        return self.selected_ids("clip")
+
+    @property
+    def selected_transitions(self):
+        return self.selected_ids("transition")
+
+    @property
+    def selected_effects(self):
+        return self.selected_ids("effect")
 
     def current_file(self):
         """ Return the Project Files dock's currently-active item as a File object """
@@ -3096,32 +3092,26 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def clearSelections(self):
         """Clear all selection containers"""
-        self.selected_clips = []
-        self.selected_transitions = []
+        self.selected_items = []
         self.selected_markers = []
         self.selected_tracks = []
-        self.selected_effects = []
 
         # Clear transform
         self.TransformSignal.emit("")
 
         # Clear selection in properties view
         if self.propertyTableView:
-            self.propertyTableView.loadProperties.emit("", "")
+            self.propertyTableView.loadProperties.emit([])
 
     def verifySelections(self):
         """Clear any invalid selections"""
-        for clip_id in self.selected_clips:
-            if not Clip.get(id=clip_id):
-                self.removeSelection(clip_id, "clip")
-
-        for tran_id in self.selected_transitions:
-            if not Transition.get(id=tran_id):
-                self.removeSelection(tran_id, "transition")
-
-        for effect_id in self.selected_effects:
-            if not Effect.get(id=effect_id):
-                self.removeSelection(effect_id, "effect")
+        for sel in list(self.selected_items):
+            if sel["type"] == "clip" and not Clip.get(id=sel["id"]):
+                self.removeSelection(sel["id"], "clip")
+            elif sel["type"] == "transition" and not Transition.get(id=sel["id"]):
+                self.removeSelection(sel["id"], "transition")
+            elif sel["type"] == "effect" and not Effect.get(id=sel["id"]):
+                self.removeSelection(sel["id"], "effect")
 
     def foundCurrentVersion(self, version):
         """Handle the callback for detecting the current version on openshot.org"""
@@ -3192,10 +3182,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def show_property_timeout(self):
         """Callback for show property timer"""
 
-        # Emit load properties signal
-        self.propertyTableView.loadProperties.emit(
-            self.show_property_id,
-            self.show_property_type)
+        # Emit load properties signal with current selection list
+        self.propertyTableView.loadProperties.emit(list(self.selected_items))
 
     def InitCacheSettings(self):
         """Set the correct cache settings for the timeline"""
