@@ -46,7 +46,8 @@ from PyQt5.QtWidgets import (
 from classes.logger import log
 from classes.app import get_app
 from classes import info
-from classes.query import Clip, Effect, Transition
+from classes.query import Clip, Effect, Transition, File
+from classes.thumbnail import GetThumbPath
 
 from windows.models.properties_model import PropertiesModel
 from windows.color_picker import ColorPicker
@@ -1181,8 +1182,26 @@ class SelectionLabel(QFrame):
                 if not clip:
                     continue
                 item_name = clip.title()
-                item_icon = QIcon(QPixmap(clip.data.get('image')))
-                action = menu.addAction(item_icon, item_name)
+
+                # Get file for clip (if any)
+                file_id = clip.data.get("file_id")
+                file = File.get(id=file_id)
+                if not file:
+                    continue
+
+                # Generate thumbnail for file (if needed)
+                media_type = file.data.get("media_type")
+                if media_type in ["video", "image"]:
+                    # Video thumbnail
+                    fps = file.data["fps"]
+                    fps_float = float(fps["num"]) / float(fps["den"])
+                    thumbnail_frame = round(float(clip.data['start']) * fps_float) + 1
+                    thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
+                else:
+                    # Audio thumbnail
+                    thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+
+                action = menu.addAction(thumb_icon, item_name)
                 action.setData({'item_id': item_id, 'item_type': 'clip'})
                 action.triggered.connect(self.Action_Triggered)
 
