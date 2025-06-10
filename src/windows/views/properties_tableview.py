@@ -30,6 +30,7 @@ import json
 import functools
 from operator import itemgetter
 import sip
+import uuid
 
 from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent
 from PyQt5.QtGui import (
@@ -194,6 +195,93 @@ class PropertiesTableView(QTableView):
         # otherwise, default processing
         return super().event(event)
 
+    def start_transaction(self, item):
+        """Start a new undo/redo transaction and cache original values."""
+        if (
+            self.transaction_id
+            or not item
+            or self.clip_properties_model.ignore_update_signal
+        ):
+            return
+
+        item_data = item.data()
+        if not isinstance(item_data, list):
+            return
+
+        self.transaction_id = str(uuid.uuid4())
+        get_app().updates.transaction_id = self.transaction_id
+        get_app().updates.ignore_history = True
+
+        self.original_data_map = {}
+
+        for item_id, item_type in item_data:
+            obj = None
+            if item_type == "clip":
+                obj = Clip.get(id=item_id)
+            elif item_type == "transition":
+                obj = Transition.get(id=item_id)
+            elif item_type == "effect":
+                obj = Effect.get(id=item_id)
+
+            if obj and obj.data:
+                self.original_data_map[item_id] = {
+                    "type": item_type,
+                    "data": json.loads(json.dumps(obj.data)),
+                }
+
+    def finalize_transaction(self):
+        """Finalize current transaction and add actions to history."""
+        if not self.transaction_id:
+            return
+
+        for item_id, info in self.original_data_map.items():
+            item_type = info.get("type")
+            original = info.get("data")
+            obj = None
+            if item_type == "clip":
+                obj = Clip.get(id=item_id)
+            elif item_type == "transition":
+                obj = Transition.get(id=item_id)
+            elif item_type == "effect":
+                obj = Effect.get(id=item_id)
+
+            if obj:
+                get_app().updates.ignore_history = True
+                get_app().updates.transaction_id = self.transaction_id
+                obj.save()
+                get_app().updates.apply_last_action_to_history(original)
+                get_app().updates.ignore_history = False
+
+        get_app().updates.transaction_id = None
+        self.transaction_id = None
+        self.original_data_map = {}
+        self.update_in_progress = False
+
+    def value_updated_wrapper(self, item):
+        """Wrap PropertiesModel.value_updated to manage transactions."""
+        if (
+            self.clip_properties_model.ignore_update_signal
+            or not item
+            or item.column() != 1
+        ):
+            return
+
+        self.start_transaction(item)
+        self.update_in_progress = True
+        self.clip_properties_model.value_updated(item)
+        if not self.mouse_pressed:
+            self.finalize_transaction()
+
+    def mousePressEvent(self, event):
+        self.mouse_pressed = True
+        row = self.indexAt(event.pos()).row()
+        model = self.clip_properties_model.model
+        if model.item(row, 1):
+            self.selected_item = model.item(row, 1)
+            if not self.clip_properties_model.ignore_update_signal:
+                self.start_transaction(self.selected_item)
+        super().mousePressEvent(event)
+
     def mouseMoveEvent(self, event):
         # Get data model and selection
         model = self.clip_properties_model.model
@@ -262,32 +350,13 @@ class PropertiesTableView(QTableView):
                 if readonly:
                     return
 
-                # Get the original data of this item (prior to any updates, for the undo/redo system)
-                if not self.original_data:
-                    # Find this clip
-                    c = None
-                    if item_type == "clip":
-                        # Get clip object
-                        c = Clip.get(id=item_id)
-                    elif item_type == "transition":
-                        # Get transition object
-                        c = Transition.get(id=item_id)
-                    elif item_type == "effect":
-                        # Get effect object
-                        c = Effect.get(id=item_id)
-
-                    if c and c.data:
-                        # Grab the original data for this item/property
-                        if property_key in c.data:
-                            self.original_data = c.data
-                        else:
-                            # If the property is not found, search in the tracked objects (if any)
-                            objects_dict = c.data.get("objects", {})
-                            for obj_id, obj in objects_dict.items():
-                                if property_key in obj:
-                                    # use parent effect data (if match found)
-                                    self.original_data = c.data
-                                    break
+                if (
+                    not self.transaction_id
+                    and not self.clip_properties_model.ignore_update_signal
+                ):
+                    # Start transaction on first movement
+                    self.start_transaction(self.selected_item)
+                self.update_in_progress = True
 
                 # For numeric values, apply percentage within parameter's allowable range
                 if property_type in ["float", "int"] and property_name != "Track":
@@ -345,16 +414,14 @@ class PropertiesTableView(QTableView):
         # Inform UpdateManager to accept updates, and only store our final update
         event.accept()
         get_app().updates.ignore_history = False
+        self.mouse_pressed = False
 
         # Enable video caching again
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
         log.debug('mouseReleaseEvent: apply_last_action to history')
 
-        # Add final update to undo/redo history
-        get_app().updates.apply_last_action_to_history(self.original_data)
-
-        # Clear original data
-        self.original_data = None
+        if self.update_in_progress:
+            self.finalize_transaction()
 
         # Get data model and selection
         model = self.clip_properties_model.model
@@ -372,8 +439,13 @@ class PropertiesTableView(QTableView):
         # Set the new color keyframe
         if newColor.isValid():
             log.debug(f"Color callback received: {newColor.name()}, Alpha: {newColor.alpha()}")
+            if not self.clip_properties_model.ignore_update_signal:
+                self.start_transaction(self.selected_item)
+            self.update_in_progress = True
             self.clip_properties_model.color_update(
                 self.selected_item, newColor)
+            if not self.mouse_pressed:
+                self.finalize_transaction()
 
     def doubleClickedCB(self, model_index):
         """Double click handler for the property table"""
@@ -427,7 +499,12 @@ class PropertiesTableView(QTableView):
                                      "font_style": fontinfo.styleName(),
                                      "font_weight": fontinfo.weight(),
                                      "font_size_pixel": fontinfo.pixelSize() }
+                    if not self.clip_properties_model.ignore_update_signal:
+                        self.start_transaction(self.selected_item)
+                    self.update_in_progress = True
                     self.clip_properties_model.value_updated(self.selected_item, value=fontinfo.family())
+                    if not self.mouse_pressed:
+                        self.finalize_transaction()
 
     def caption_text_updated(self, new_caption_text, caption_model_row):
         """Caption text has been updated in the caption editor, and needs saving"""
@@ -450,7 +527,11 @@ class PropertiesTableView(QTableView):
 
         # Save caption text
         if property_type == "caption" and cur_property[1].get('memo') != new_caption_text:
+            self.start_transaction(caption_model_value)
+            self.update_in_progress = True
             self.clip_properties_model.value_updated(caption_model_value, value=new_caption_text)
+            if not self.mouse_pressed:
+                self.finalize_transaction()
 
     def select_item(self, selection):
         """Update the selected items in the properties window"""
@@ -955,14 +1036,24 @@ class PropertiesTableView(QTableView):
 
     def Remove_Action_Triggered(self):
         log.info("Remove_Action_Triggered")
+        if not self.clip_properties_model.ignore_update_signal:
+            self.start_transaction(self.selected_item)
+        self.update_in_progress = True
         self.clip_properties_model.remove_keyframe(self.selected_item)
+        if not self.mouse_pressed:
+            self.finalize_transaction()
 
     def Choice_Action_Triggered(self):
         log.info("Choice_Action_Triggered")
         choice_value = self.sender().data()
 
         # Update value of dropdown item
+        if not self.clip_properties_model.ignore_update_signal:
+            self.start_transaction(self.selected_item)
+        self.update_in_progress = True
         self.clip_properties_model.value_updated(self.selected_item, value=choice_value)
+        if not self.mouse_pressed:
+            self.finalize_transaction()
 
     def refresh_menu(self):
         """ Ensure we update the menu when our source models change """
@@ -977,6 +1068,13 @@ class PropertiesTableView(QTableView):
 
         # Create properties model
         self.clip_properties_model = PropertiesModel(self)
+
+        # Reconnect itemChanged signal to intercept edits
+        try:
+            self.clip_properties_model.model.itemChanged.disconnect(self.clip_properties_model.value_updated)
+        except Exception:
+            pass
+        self.clip_properties_model.model.itemChanged.connect(self.value_updated_wrapper)
 
         # Get base models for files, transitions
         self.transition_model = self.win.transition_model.model
@@ -993,6 +1091,10 @@ class PropertiesTableView(QTableView):
         self.selected_item = None
         self.new_value = None
         self.original_data = None
+        self.original_data_map = {}
+        self.transaction_id = None
+        self.update_in_progress = False
+        self.mouse_pressed = False
         self.lock_selection = False
         self.prev_row = None
         self.menu = None
