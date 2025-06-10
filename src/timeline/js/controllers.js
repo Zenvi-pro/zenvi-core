@@ -596,18 +596,18 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             if (item_type === "clip") {
                 $scope.project.clips.forEach(function (clip) {
                     clip.selected = false;
-                    if ($scope.Qt) timeline.removeSelection(clip.id, "clip");
+                    if ($scope.Qt) { timeline.removeSelection(clip.id, "clip"); }
                 });
             } else if (item_type === "transition") {
                 $scope.project.effects.forEach(function (tran) {
                     tran.selected = false;
-                    if ($scope.Qt) timeline.removeSelection(tran.id, "transition");
+                    if ($scope.Qt) { timeline.removeSelection(tran.id, "transition"); }
                 });
             } else if (item_type === "effect") {
                 // Clear both global effects and all clip effects!
                 $scope.project.effects.forEach(function (eff) {
                     eff.selected = false;
-                    if ($scope.Qt) timeline.removeSelection(eff.id, "effect");
+                    if ($scope.Qt) { timeline.removeSelection(eff.id, "effect"); }
                 });
                 $scope.project.clips.forEach(function (clip) {
                     if (clip.effects) {
@@ -637,19 +637,19 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
     if (is_alt || force_ripple) {
         var selected_item = null;
         if (item_type === "clip") {
-            selected_item = $scope.project.clips.find(item => item.id === id);
+            selected_item = $scope.project.clips.find((item) => item.id === id);
         } else if (item_type === "transition") {
-            selected_item = $scope.project.effects.find(item => item.id === id);
+            selected_item = $scope.project.effects.find((item) => item.id === id);
         } else if (item_type === "effect") {
             // Try global effects first, then all clip effects
-            selected_item = $scope.project.effects.find(item => item.id === id);
+            selected_item = $scope.project.effects.find((item) => item.id === id);
             if (!selected_item) {
-                for (var i = 0; i < $scope.project.clips.length; i++) {
-                    var clip = $scope.project.clips[i];
-                    if (clip.effects) {
-                        var eff = clip.effects.find(e => e.id === id);
-                        if (eff) {
-                            selected_item = eff;
+                for (var j = 0; j < $scope.project.clips.length; j++) {
+                    var clipItem = $scope.project.clips[j];
+                    if (clipItem.effects) {
+                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        if (effItem) {
+                            selected_item = effItem;
                             break;
                         }
                     }
@@ -720,7 +720,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
         }
 
         // Get the selected item
-        var selectedItem = (item_type === "clip" ? $scope.project.clips : $scope.project.effects).find(item => item.id === id);
+        var selectedItem = (item_type === "clip" ? $scope.project.clips : $scope.project.effects).find((item) => item.id === id);
 
         if (selectedItem && $scope.lastSelectedItem) {
             // Get the start (left edge) and end (right edge) of both selected items
@@ -780,20 +780,20 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
         // Update selection for the clicked item (clip, transition, or effect)
         var item = null;
         if (item_type === "clip") {
-            item = $scope.project.clips.find(item => item.id === id);
+            item = $scope.project.clips.find((item) => item.id === id);
         } else if (item_type === "transition") {
-            item = $scope.project.effects.find(item => item.id === id);
+            item = $scope.project.effects.find((item) => item.id === id);
         } else if (item_type === "effect") {
             // Try global effect first
-            item = $scope.project.effects.find(item => item.id === id);
+            item = $scope.project.effects.find((item) => item.id === id);
             // If not found, try to find in all clips
             if (!item) {
-                for (var i = 0; i < $scope.project.clips.length; i++) {
-                    var clip = $scope.project.clips[i];
-                    if (clip.effects) {
-                        var eff = clip.effects.find(e => e.id === id);
-                        if (eff) {
-                            item = eff;
+                for (var j = 0; j < $scope.project.clips.length; j++) {
+                    var clipItem = $scope.project.clips[j];
+                    if (clipItem.effects) {
+                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        if (effItem) {
+                            item = effItem;
                             break;
                         }
                     }
@@ -816,19 +816,19 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
     if (!is_alt) {
         var last = null;
         if (item_type === "clip") {
-            last = $scope.project.clips.find(item => item.id === id);
+            last = $scope.project.clips.find((item) => item.id === id);
         } else if (item_type === "transition") {
-            last = $scope.project.effects.find(item => item.id === id);
+            last = $scope.project.effects.find((item) => item.id === id);
         } else if (item_type === "effect") {
             // Try global effect first
-            last = $scope.project.effects.find(item => item.id === id);
+            last = $scope.project.effects.find((item) => item.id === id);
             if (!last) {
-                for (var i = 0; i < $scope.project.clips.length; i++) {
-                    var clip = $scope.project.clips[i];
-                    if (clip.effects) {
-                        var eff = clip.effects.find(e => e.id === id);
-                        if (eff) {
-                            last = eff;
+                for (var j = 0; j < $scope.project.clips.length; j++) {
+                    var clipItem = $scope.project.clips[j];
+                    if (clipItem.effects) {
+                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        if (effItem) {
+                            last = effItem;
                             break;
                         }
                     }

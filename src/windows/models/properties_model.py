@@ -44,7 +44,6 @@ from classes.app import get_app
 import openshot
 
 import json
-import uuid
 
 
 class ClipStandardItemModel(QStandardItemModel):
