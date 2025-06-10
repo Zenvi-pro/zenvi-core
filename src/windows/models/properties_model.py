@@ -800,7 +800,7 @@ class PropertiesModel(updates.UpdateInterface):
                 if value == "" or value is None:
                     col.setText("")
                 else:
-                    col.setText(QLocale().system().toString(float(value), "f", precision=2))
+                    col.setText(QLocale().system().toString(float(value), "f", precision=3))
             col.setData([(obj.Id(), t) for obj, t in self.selected])
             if points > 1:
                 # Apply icon to cell
@@ -898,7 +898,7 @@ class PropertiesModel(updates.UpdateInterface):
                 if value == "" or value is None:
                     col.setText("")
                 else:
-                    col.setText(QLocale().system().toString(float(value), "f", precision=2))
+                    col.setText(QLocale().system().toString(float(value), "f", precision=3))
 
             if points > 1:
                 # Apply icon to cell
@@ -938,6 +938,13 @@ class PropertiesModel(updates.UpdateInterface):
         log.debug("updating clip properties model.")
         app = get_app()
         _ = app._tr
+
+        if self.ignore_update_signal:
+            log.debug("ignoring update signal, because we are already in an update...")
+            return
+
+        # Ignore any events from this method
+        self.ignore_update_signal = True
 
         # Check for a selected clip
         if self.selected and self.selected[0]:
@@ -1003,9 +1010,6 @@ class PropertiesModel(updates.UpdateInterface):
             if self.previous_filter != filter:
                 self.previous_filter = filter
                 self.new_item = True  # filter changed, so we need to regenerate the entire model
-
-            # Ignore any events from this method
-            self.ignore_update_signal = True
 
             # Clear previous model data (if item is different)
             if self.new_item:

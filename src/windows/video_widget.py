@@ -27,6 +27,7 @@
 
 import json
 import time
+import uuid
 
 from PyQt5.QtCore import (
     Qt, QCoreApplication, QMutex, QTimer,
@@ -350,124 +351,56 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             # Calculate center of QWidget and Draw image
             painter.drawImage(viewport_rect, scaledPix)
 
-        if self.transforming_clip and self.transforming_clip_object:
+        if self.transforming_clips and self.transforming_clip_objects:
             # Draw transform handles on top of video preview
-            # Get framerate
             fps = get_app().project.get("fps")
             fps_float = float(fps["num"]) / float(fps["den"])
 
-            # Determine frame # of clip
-            start_of_clip = round(float(self.transforming_clip.data["start"]) * fps_float)
-            position_of_clip = (float(self.transforming_clip.data["position"]) * fps_float) + 1
-            playhead_position = float(get_app().window.preview_thread.current_frame)
-            clip_frame_number = round(playhead_position - position_of_clip) + start_of_clip + 1
+            union_rect = None
+            first_props = None
+            for clip, obj in zip(self.transforming_clips, self.transforming_clip_objects):
+                frame = self._get_clip_frame_number(clip, fps_float)
+                rect, props = self._clip_rect(clip, obj, viewport_rect, frame)
+                if union_rect is None:
+                    union_rect = rect
+                    first_props = props
+                else:
+                    union_rect = union_rect.united(rect)
 
-            # Get properties of clip at current frame
-            raw_properties = json.loads(self.transforming_clip_object.PropertiesJSON(clip_frame_number))
+            if union_rect and first_props:
+                x = union_rect.x()
+                y = union_rect.y()
 
-            # Get size of current video player
-            player_width = viewport_rect.width()
-            player_height = viewport_rect.height()
+                sx = max(float(first_props.get('scale_x').get('value')), 0.001)
+                sy = max(float(first_props.get('scale_y').get('value')), 0.001)
+                rotation = first_props.get('rotation').get('value')
+                shear_x = first_props.get('shear_x').get('value')
+                shear_y = first_props.get('shear_y').get('value')
+                origin_x = first_props.get('origin_x').get('value')
+                origin_y = first_props.get('origin_y').get('value')
 
-            # Determine original size of clip's reader
-            source_width = self.transforming_clip.data['reader']['width']
-            source_height = self.transforming_clip.data['reader']['height']
-            pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
-            source_size = QSize(
-                int(source_width),
-                int(source_height * pixel_adjust))
+                source_width = union_rect.width()
+                source_height = union_rect.height()
 
-            # Determine scale of clip
-            scale = self.transforming_clip.data['scale']
+                self.transform = QTransform()
+                if x or y:
+                    self.transform.translate(x, y)
 
-            # Set scale as STRETCH if the clip is attached to an object
-            if (
-                    raw_properties.get('parentObjectId').get('memo') != ''
-                    and len(raw_properties.get('parentObjectId').get('memo')) > 0
-            ):
-                scale = openshot.SCALE_STRETCH
+                origin_x_value = source_width * origin_x
+                origin_y_value = source_height * origin_y
+                self.originHandle = QPointF(x + origin_x_value, y + origin_y_value)
+                if rotation or shear_x or shear_y:
+                    self.transform.translate(origin_x_value, origin_y_value)
+                    self.transform.rotate(rotation)
+                    self.transform.shear(shear_x, shear_y)
+                    self.transform.translate(-origin_x_value, -origin_y_value)
 
-            if scale == openshot.SCALE_FIT:
-                source_size.scale(player_width, player_height, Qt.KeepAspectRatio)
+                # Apply scale
+                if sx or sy:
+                    self.transform.scale(sx, sy)
 
-            elif scale == openshot.SCALE_STRETCH:
-                source_size.scale(player_width, player_height, Qt.IgnoreAspectRatio)
-
-            elif scale == openshot.SCALE_CROP:
-                source_size.scale(player_width, player_height, Qt.KeepAspectRatioByExpanding)
-
-            # Get new source width / height (after scaling mode applied)
-            source_width = source_size.width()
-            source_height = source_size.height()
-
-            # Init X/Y
-            x = viewport_rect.x()
-            y = viewport_rect.y()
-
-            # Get scaled source image size (scale_x, scale_y)
-            sx = max(float(raw_properties.get('scale_x').get('value')), 0.001)
-            sy = max(float(raw_properties.get('scale_y').get('value')), 0.001)
-            scaled_source_width = source_width * sx
-            scaled_source_height = source_height * sy
-
-            # Determine gravity of clip
-            gravity = self.transforming_clip.data['gravity']
-            if gravity == openshot.GRAVITY_TOP_LEFT:
-                pass
-            elif gravity == openshot.GRAVITY_TOP:
-                x += (player_width - scaled_source_width) / 2.0  # center
-            elif gravity == openshot.GRAVITY_TOP_RIGHT:
-                x += player_width - scaled_source_width  # right
-            elif gravity == openshot.GRAVITY_LEFT:
-                y += (player_height - scaled_source_height) / 2.0  # center
-            elif gravity == openshot.GRAVITY_CENTER:
-                x += (player_width - scaled_source_width) / 2.0  # center
-                y += (player_height - scaled_source_height) / 2.0  # center
-            elif gravity == openshot.GRAVITY_RIGHT:
-                x += player_width - scaled_source_width  # right
-                y += (player_height - scaled_source_height) / 2.0  # center
-            elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
-                y += (player_height - scaled_source_height)  # bottom
-            elif gravity == openshot.GRAVITY_BOTTOM:
-                x += (player_width - scaled_source_width) / 2.0  # center
-                y += (player_height - scaled_source_height)  # bottom
-            elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
-                x += player_width - scaled_source_width  # right
-                y += (player_height - scaled_source_height)  # bottom
-
-            # Adjust x,y for location
-            x_offset = raw_properties.get('location_x').get('value')
-            y_offset = raw_properties.get('location_y').get('value')
-            x += (player_width * x_offset)
-            y += (player_height * y_offset)
-
-            self.transform = QTransform()
-
-            # Apply translate/move
-            if x or y:
-                self.transform.translate(x, y)
-
-            # Apply rotation
-            rotation = raw_properties.get('rotation').get('value')
-            shear_x = raw_properties.get('shear_x').get('value')
-            shear_y = raw_properties.get('shear_y').get('value')
-            origin_x = raw_properties.get('origin_x').get('value')
-            origin_y = raw_properties.get('origin_y').get('value')
-            origin_x_value = scaled_source_width * origin_x
-            origin_y_value = scaled_source_height * origin_y
-            self.originHandle = QPointF(x + origin_x_value, y + origin_y_value)
-            if rotation or shear_x or shear_y:
-                self.transform.translate(origin_x_value, origin_y_value)
-                self.transform.rotate(rotation)
-                self.transform.shear(shear_x, shear_y)
-                self.transform.translate(-origin_x_value, -origin_y_value)
-
-            # Apply scale
-            if sx or sy:
-                self.transform.scale(sx, sy)
-
-            # Apply transform
-            painter.setTransform(self.transform)
+                # Apply transform
+                painter.setTransform(self.transform)
 
             if self.transforming_effect:
                 # Check if the effect has a tracked object
@@ -532,16 +465,16 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
                 pen.setCosmetic(True)
                 painter.setPen(pen)
-                painter.drawRect(
+                painter.drawRect(QRectF(
                     self.regionTopLeftHandle.x() - (cs / 2.0 / self.zoom),
                     self.regionTopLeftHandle.y() - (cs / 2.0 / self.zoom),
                     self.regionTopLeftHandle.width() / self.zoom,
-                    self.regionTopLeftHandle.height() / self.zoom)
-                painter.drawRect(
+                    self.regionTopLeftHandle.height() / self.zoom))
+                painter.drawRect(QRectF(
                     self.regionBottomRightHandle.x() - (cs / 2.0 / self.zoom),
                     self.regionBottomRightHandle.y() - (cs / 2.0 / self.zoom),
                     self.regionBottomRightHandle.width() / self.zoom,
-                    self.regionBottomRightHandle.height() / self.zoom)
+                    self.regionBottomRightHandle.height() / self.zoom))
                 region_rect = QRectF(
                     self.regionTopLeftHandle.x(),
                     self.regionTopLeftHandle.y(),
@@ -605,6 +538,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
         get_app().updates.ignore_history = True
 
+        if self.transforming_clips:
+            self.transaction_id = str(uuid.uuid4())
+            self.original_clip_data_map = {c.id: json.loads(json.dumps(c.data)) for c in self.transforming_clips}
+            get_app().updates.transaction_id = self.transaction_id
+        else:
+            self.transaction_id = None
+            self.original_clip_data_map = {}
+
         # Disable video caching during drag operation (for performance reasons)
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
         log.debug('mousePressEvent: Stop caching frames on timeline')
@@ -666,12 +607,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
         log.debug('mouseReleaseEvent: Start caching frames on timeline')
 
-        # Add final update to undo/redo history
-        if self.original_clip_data:
-            get_app().updates.apply_last_action_to_history(self.original_clip_data)
+        # Record history for all transformed clips
+        for clip in self.transforming_clips:
+            original = self.original_clip_data_map.get(clip.id)
+            if original:
+                get_app().updates.ignore_history = True
+                get_app().updates.transaction_id = self.transaction_id
+                clip.save()
+                get_app().updates.apply_last_action_to_history(original)
+                get_app().updates.ignore_history = False
 
-        # Clear original data
+        # Clear transaction and data
+        get_app().updates.transaction_id = None
+        get_app().updates.ignore_history = False
         self.original_clip_data = None
+        self.original_clip_data_map = {}
 
     def rotateCursor(self, pixmap, rotation, shear_x, shear_y):
         """Rotate cursor based on the current transform"""
@@ -770,8 +720,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             viewport_rect = self.centeredViewport(self.width(), self.height())
 
             # Make back-up of clip data
-            if self.mouse_dragging and not self.transform_mode:
-                self.original_clip_data = self.transforming_clip.data
+            if self.mouse_dragging and not self.transform_mode and self.transforming_clip:
+                if self.transforming_clip.id not in self.original_clip_data_map:
+                    self.original_clip_data_map[self.transforming_clip.id] = json.loads(json.dumps(self.transforming_clip.data))
 
             self.checkTransformMode(rotation, shear_x, shear_y, event)
 
@@ -814,12 +765,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         origin_y = 1.0
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'origin_x', origin_x,
                         refresh=False)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'origin_y', origin_y)
+                    self._apply_delta_to_clips('origin_x', origin_x - raw_properties.get('origin_x').get('value'), fps_float)
+                    self._apply_delta_to_clips('origin_y', origin_y - raw_properties.get('origin_y').get('value'), fps_float)
 
                 elif self.transform_mode == 'location':
                     # Get current keyframe value
@@ -832,12 +785,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'location_x', location_x,
                         refresh=False)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'location_y', location_y)
+                    self._apply_delta_to_clips('location_x', location_x - raw_properties.get('location_x').get('value'), fps_float)
+                    self._apply_delta_to_clips('location_y', location_y - raw_properties.get('location_y').get('value'), fps_float)
 
                 elif self.transform_mode == 'shear_top':
                     # Get current keyframe shear value
@@ -850,8 +805,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'shear_x', shear_x)
+                    self._apply_delta_to_clips('shear_x', shear_x - raw_properties.get('shear_x').get('value'), fps_float)
 
                 elif self.transform_mode == 'shear_bottom':
                     # Get current keyframe shear value
@@ -864,8 +820,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'shear_x', shear_x)
+                    self._apply_delta_to_clips('shear_x', shear_x - raw_properties.get('shear_x').get('value'), fps_float)
 
                 elif self.transform_mode == 'shear_left':
                     # Get current keyframe shear value
@@ -878,8 +835,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'shear_y', shear_y)
+                    self._apply_delta_to_clips('shear_y', shear_y - raw_properties.get('shear_y').get('value'), fps_float)
 
                 elif self.transform_mode == 'shear_right':
                     # Get current keyframe shear value
@@ -892,8 +850,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id, clip_frame_number,
+                        self.transforming_clips[0].id, clip_frame_number,
                         'shear_y', shear_y)
+                    self._apply_delta_to_clips('shear_y', shear_y - raw_properties.get('shear_y').get('value'), fps_float)
 
                 elif self.transform_mode == 'rotation':
                     # Get current rotation keyframe value
@@ -913,9 +872,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
-                        self.transforming_clip.id,
+                        self.transforming_clips[0].id,
                         clip_frame_number,
                         'rotation', rotation)
+                    self._apply_delta_to_clips('rotation', rotation - raw_properties.get('rotation').get('value'), fps_float)
 
                 elif self.transform_mode.startswith('scale_'):
                     # Get current scale keyframe value
@@ -957,13 +917,15 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     both_scaled = scale_x != 0.001 and scale_y != 0.001
                     if scale_x != 0.001:
                         self.updateClipProperty(
-                            self.transforming_clip.id, clip_frame_number,
+                            self.transforming_clips[0].id, clip_frame_number,
                             'scale_x', scale_x,
                             refresh=(not both_scaled))
+                        self._apply_delta_to_clips('scale_x', scale_x - raw_properties.get('scale_x').get('value'), fps_float)
                     if scale_y != 0.001:
                         self.updateClipProperty(
-                            self.transforming_clip.id, clip_frame_number,
+                            self.transforming_clips[0].id, clip_frame_number,
                             'scale_y', scale_y)
+                        self._apply_delta_to_clips('scale_y', scale_y - raw_properties.get('scale_y').get('value'), fps_float)
 
             # Force re-paint
             self.update()
@@ -1052,8 +1014,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             viewport_rect = self.centeredViewport(self.width(), self.height())
 
             # Make back-up of clip data
-            if self.mouse_dragging and not self.transform_mode:
-                self.original_clip_data = self.transforming_clip.data
+            if self.mouse_dragging and not self.transform_mode and self.transforming_clip:
+                if self.transforming_clip.id not in self.original_clip_data_map:
+                    self.original_clip_data_map[self.transforming_clip.id] = json.loads(json.dumps(self.transforming_clip.data))
 
             if self.transforming_effect_object.info.has_tracked_object:
                 # Get properties of effect at current frame
@@ -1222,6 +1185,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         if clip_updated:
             # Reduce # of clip properties we are saving (performance boost)
             c.data = {property_key: c.data.get(property_key)}
+            if self.transaction_id:
+                get_app().updates.transaction_id = self.transaction_id
             c.save()
             # Update the preview
             if refresh:
@@ -1274,34 +1239,130 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             if refresh:
                 get_app().window.refreshFrameSignal.emit()
 
+    def _get_clip_frame_number(self, clip, fps_float):
+        start = round(float(clip.data["start"]) * fps_float) + 1
+        position = (float(clip.data["position"]) * fps_float) + 1
+        playhead = float(get_app().window.preview_thread.current_frame)
+        return round(playhead - position) + start
+
+    def _apply_delta_to_clips(self, property_key, delta, fps_float):
+        for clip, obj in zip(self.transforming_clips[1:], self.transforming_clip_objects[1:]):
+            frame = self._get_clip_frame_number(clip, fps_float)
+            props = json.loads(obj.PropertiesJSON(frame))
+            value = props.get(property_key).get('value')
+            if self.transaction_id:
+                get_app().updates.transaction_id = self.transaction_id
+            self.updateClipProperty(clip.id, frame, property_key, value + delta, refresh=False)
+
+    def _clip_rect(self, clip, clip_object, viewport_rect, frame_number):
+        raw_properties = json.loads(clip_object.PropertiesJSON(frame_number))
+        player_width = viewport_rect.width()
+        player_height = viewport_rect.height()
+
+        source_width = clip.data['reader']['width']
+        source_height = clip.data['reader']['height']
+        pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
+        source_size = QSize(int(source_width), int(source_height * pixel_adjust))
+
+        scale = clip.data['scale']
+        if raw_properties.get('parentObjectId').get('memo') != '' and len(raw_properties.get('parentObjectId').get('memo')) > 0:
+            scale = openshot.SCALE_STRETCH
+
+        if scale == openshot.SCALE_FIT:
+            source_size.scale(player_width, player_height, Qt.KeepAspectRatio)
+        elif scale == openshot.SCALE_STRETCH:
+            source_size.scale(player_width, player_height, Qt.IgnoreAspectRatio)
+        elif scale == openshot.SCALE_CROP:
+            source_size.scale(player_width, player_height, Qt.KeepAspectRatioByExpanding)
+
+        source_width = source_size.width()
+        source_height = source_size.height()
+
+        # Get per-frame scale factors
+        sx = max(float(raw_properties.get('scale_x').get('value')), 0.001)
+        sy = max(float(raw_properties.get('scale_y').get('value')), 0.001)
+
+        # Scaled dimensions used for gravity and location offsets
+        scaled_width = source_width * sx
+        scaled_height = source_height * sy
+
+        x = viewport_rect.x()
+        y = viewport_rect.y()
+
+        gravity = clip.data['gravity']
+        if gravity == openshot.GRAVITY_TOP:
+            x += (player_width - scaled_width) / 2.0
+        elif gravity == openshot.GRAVITY_TOP_RIGHT:
+            x += player_width - scaled_width
+        elif gravity == openshot.GRAVITY_LEFT:
+            y += (player_height - scaled_height) / 2.0
+        elif gravity == openshot.GRAVITY_CENTER:
+            x += (player_width - scaled_width) / 2.0
+            y += (player_height - scaled_height) / 2.0
+        elif gravity == openshot.GRAVITY_RIGHT:
+            x += player_width - scaled_width
+            y += (player_height - scaled_height) / 2.0
+        elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
+            y += player_height - scaled_height
+        elif gravity == openshot.GRAVITY_BOTTOM:
+            x += (player_width - scaled_width) / 2.0
+            y += player_height - scaled_height
+        elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
+            x += player_width - scaled_width
+            y += player_height - scaled_height
+
+        location_x = raw_properties.get('location_x').get('value')
+        location_y = raw_properties.get('location_y').get('value')
+        x += player_width * location_x
+        y += player_height * location_y
+
+        rect = QRectF(x, y, source_width, source_height)
+        return rect, raw_properties
+
     def refreshTriggered(self):
         """Signal to refresh viewport (i.e. a property might have changed that effects the preview)"""
 
-        # Update reference to clip
-        if self.transforming_clip:
-            self.transforming_clip = Clip.get(id=self.transforming_clip.id)
+        # Update reference to clip(s)
+        if self.transforming_clips:
+            self.transforming_clips = [Clip.get(id=c.id) for c in self.transforming_clips if Clip.get(id=c.id)]
+            if self.transforming_clips:
+                self.transforming_clip = self.transforming_clips[0]
+            else:
+                self.transforming_clip = None
 
         if self.transforming_effect:
             self.transforming_effect = Effect.get(id=self.transforming_effect.id)
 
-    def transformTriggered(self, clip_id):
-        """Handle the transform signal when it's emitted"""
+    def transformTriggered(self, clip_ids):
+        """Handle the transform signal when it's emitted. Supports multiple clip IDs."""
         win = get_app().window
         need_refresh = False
 
-        # Disable Transform UI
-        # Is this the same clip_id already being transformed?
-        if self.transforming_clip and not clip_id:
-            # Clear transform
-            self.transforming_clip = None
-            self.transforming_clip_object = None
-            need_refresh = True
+        if not isinstance(clip_ids, list):
+            clip_ids = [clip_ids] if clip_ids else []
 
-        # Get new clip for transform
-        if clip_id:
-            self.transforming_clip = Clip.get(id=clip_id)
-            self.transforming_clip_object = win.timeline_sync.timeline.GetClip(clip_id)
-            if self.transforming_clip and self.transforming_clip_object:
+        if not clip_ids:
+            if self.transforming_clips:
+                self.transforming_clips = []
+                self.transforming_clip_objects = []
+                self.transforming_clip = None
+                self.transforming_clip_object = None
+                need_refresh = True
+            # Reset cursor when no clips are selected
+            self.setCursor(Qt.ArrowCursor)
+        else:
+            self.transforming_clips = []
+            self.transforming_clip_objects = []
+            for cid in clip_ids:
+                c = Clip.get(id=cid)
+                co = win.timeline_sync.timeline.GetClip(cid)
+                if c and co:
+                    self.transforming_clips.append(c)
+                    self.transforming_clip_objects.append(co)
+
+            if self.transforming_clips:
+                self.transforming_clip = self.transforming_clips[0]
+                self.transforming_clip_object = self.transforming_clip_objects[0]
                 self.transforming_effect = None
                 self.transforming_effect_object = None
                 need_refresh = True
@@ -1420,9 +1481,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.aspect_ratio = openshot.Fraction(16, 9)
         self.pixel_ratio = openshot.Fraction(1, 1)
         self.transforming_clip = None
+        self.transforming_clips = []
+        self.transforming_clip_objects = []
         self.transforming_effect = None
         self.transforming_clip_object = None
         self.transforming_effect_object = None
+        self.transaction_id = None
         self.transform = None
         self.topLeftHandle = None
         self.topRightHandle = None
@@ -1444,6 +1508,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_position = None
         self.transform_mode = None
         self.original_clip_data = None
+        self.original_clip_data_map = {}
         self.region_qimage = None
         self.region_transform = None
         self.region_enabled = False

@@ -445,10 +445,20 @@ App.directive("tlMultiSelectable", function () {
           item.selected = false;
         },
         stop: function (event, ui) {
-          // This is called one time after all the selecting/unselecting is done
-          // Large amounts of selected item data could have changed, so
-          // let's force the UI to update
-          scope.$apply();
+          // Check if any clips or transitions are selected
+          var anySelected =
+            scope.project.clips.some(function(c) { return c.selected; }) ||
+            scope.project.effects.some(function(t) { return t.selected; });
+
+          if (!anySelected) {
+            // If nothing is selected, clear all effect selections
+            scope.$apply(function() {
+              scope.selectEffect("", true);
+            });
+          } else {
+            // Otherwise, just update UI as normal
+            scope.$apply();
+          }
         }
       });
     }

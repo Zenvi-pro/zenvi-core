@@ -338,6 +338,12 @@ img {
   border-color: #dfdfdf;
 }
 
+.clip_effects.selected {
+  opacity: 1.0;
+  filter: brightness(1.25);
+  box-shadow: 0 0 4px #fff;
+}
+
 .effect_icon {
   margin-left: 1px;
   margin-right: 1px;

@@ -1027,13 +1027,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def Transform_Triggered(self, action, clip_ids):
         log.debug("Transform_Triggered")
 
-        # Emit signal to transform this clip (for the 1st clip id)
+        # Emit signal to transform these clips
         if clip_ids:
-            # Transform first clip in list
-            self.window.TransformSignal.emit(clip_ids[0])
+            self.window.TransformSignal.emit(clip_ids)
         else:
             # Clear transform
-            self.window.TransformSignal.emit("")
+            self.window.TransformSignal.emit([])
 
     def Show_Waveform_Triggered(self, clip_ids, transaction_id=None):
         """Show a waveform for all selected clips"""
@@ -2988,6 +2987,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.run_js(JS_SCOPE_SELECTOR + ".selectClipRipple('{}', false, null);".format(item_id))
         elif item_type == "transition":
             self.run_js(JS_SCOPE_SELECTOR + ".selectTransitionRipple('{}', false, null);".format(item_id))
+
+    def AddSelectionJS(self, item_id, item_type, clear_existing=False):
+        """Invoke JavaScript selection routine"""
+        clear_js = 'true' if clear_existing else 'false'
+        if item_type == "clip":
+            self.run_js(JS_SCOPE_SELECTOR + ".selectClip('{}', {}, null);".format(item_id, clear_js))
+        elif item_type == "transition":
+            self.run_js(JS_SCOPE_SELECTOR + ".selectTransition('{}', {}, null);".format(item_id, clear_js))
+        elif item_type == "effect":
+            self.run_js(JS_SCOPE_SELECTOR + ".selectEffect('{}', {}, null);".format(item_id, clear_js))
 
     @pyqtSlot(str, str)
     def removeSelection(self, item_id, item_type):

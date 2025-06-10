@@ -31,7 +31,7 @@ import functools
 from operator import itemgetter
 import sip
 
-from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent
 from PyQt5.QtGui import (
     QIcon, QColor, QBrush, QPen, QPalette, QPixmap,
     QPainter, QPainterPath, QLinearGradient, QFont, QFontInfo,
@@ -182,6 +182,17 @@ class PropertyDelegate(QItemDelegate):
 class PropertiesTableView(QTableView):
     """ A Properties Table QWidget used on the main window """
     loadProperties = pyqtSignal(list)
+
+    def event(self, event):
+        # intercept the ShortcutOverride so our "." and "," keys
+        # never reach the global QShortcuts when this view has focus
+        if event.type() == QEvent.ShortcutOverride and self.hasFocus():
+            key = event.key()
+            if key in (Qt.Key_Period, Qt.Key_Comma):
+                event.accept()
+                return True
+        # otherwise, default processing
+        return super().event(event)
 
     def mouseMoveEvent(self, event):
         # Get data model and selection
@@ -1047,69 +1058,113 @@ class SelectionLabel(QFrame):
             if item:
                 self.item_name = item.title()
 
-        # Bail if no item name was found
-        if not self.item_name:
-            return
+        # Choose which selection list to use
+        selection = self.all_selection if self.all_selection else get_app().window.selected_items
+        if not selection:
+            return None
 
-        # Add selected clips
-        for item_id in get_app().window.selected_clips:
-            clip = Clip.get(id=item_id)
-            if clip:
+        # Add multi-selection option (if applicable)
+        if len(selection) > 1:
+            label = _("%d selections") % len(selection)
+            action = menu.addAction(label)
+            action.setData({'selection': list(selection)})
+            action.triggered.connect(self.Action_Triggered)
+            menu.addSeparator()
+
+        for selected in selection:
+            item_id = selected['id']
+            item_type = selected['type']
+
+            if item_type == "clip":
+                clip = Clip.get(id=item_id)
+                if not clip:
+                    continue
                 item_name = clip.title()
                 item_icon = QIcon(QPixmap(clip.data.get('image')))
                 action = menu.addAction(item_icon, item_name)
                 action.setData({'item_id': item_id, 'item_type': 'clip'})
                 action.triggered.connect(self.Action_Triggered)
 
-                # Add effects for these clips (if any)
-                for effect in clip.data.get('effects'):
-                    effect = Effect.get(id=effect.get('id'))
-                    if effect:
-                        item_name = effect.title()
-                        item_icon = QIcon(QPixmap(os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
-                        action = menu.addAction(item_icon, '  >  %s' % _(item_name))
-                        action.setData({'item_id': effect.id, 'item_type': 'effect'})
-                        action.triggered.connect(self.Action_Triggered)
+                for effect_info in clip.data.get('effects', []):
+                    effect = Effect.get(id=effect_info.get('id'))
+                    if not effect:
+                        continue
+                    effect_name = effect.title()
+                    effect_icon = QIcon(QPixmap(
+                        os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
+                    effect_action = menu.addAction(effect_icon, '  >  %s' % _(effect_name))
+                    effect_action.setData({'item_id': effect.id, 'item_type': 'effect'})
+                    effect_action.triggered.connect(self.Action_Triggered)
 
-        # Add selected transitions
-        for item_id in get_app().window.selected_transitions:
-            trans = Transition.get(id=item_id)
-            if trans:
+            elif item_type == "transition":
+                trans = Transition.get(id=item_id)
+                if not trans:
+                    continue
                 item_name = _(trans.title())
                 item_icon = QIcon(QPixmap(trans.data.get('reader', {}).get('path')))
-                action = menu.addAction(item_icon, _(item_name))
+                action = menu.addAction(item_icon, item_name)
                 action.setData({'item_id': item_id, 'item_type': 'transition'})
                 action.triggered.connect(self.Action_Triggered)
 
-        # Add selected effects
-        for item_id in get_app().window.selected_effects:
-            effect = Effect.get(id=item_id)
-            if effect:
+            elif item_type == "effect":
+                effect = Effect.get(id=item_id)
+                if not effect:
+                    continue
                 item_name = _(effect.title())
-                item_icon = QIcon(QPixmap(os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
-                action = menu.addAction(item_icon, _(item_name))
+                item_icon = QIcon(QPixmap(
+                    os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
+                action = menu.addAction(item_icon, item_name)
                 action.setData({'item_id': item_id, 'item_type': 'effect'})
                 action.triggered.connect(self.Action_Triggered)
+
+        # Don't show menu if no actions were added
+        if len(menu.actions()) == 0:
+            return None
 
         # Return the menu object
         return menu
 
+    def _selections_equal(self, first, second):
+        def norm(s):
+            return sorted([(i['id'], i['type']) for i in s])
+        return norm(first) == norm(second)
+
     def Action_Triggered(self):
-        # Switch selection
-        item_id = self.sender().data()['item_id']
-        item_type = self.sender().data()['item_type']
-        log.info('switch selection to %s:%s' % (item_id, item_type))
+        data = self.sender().data()
+        win = get_app().window
 
-        # Set the property tableview to the new item
-        get_app().window.propertyTableView.loadProperties.emit([
-            {'id': item_id, 'type': item_type}])
+        if 'selection' in data:
+            # User picked the multi-selection action → store the multi-selection, clear any target
+            self.all_selection = list(data['selection'])  # Cache for toggling!
+            self.target_selection = None
+            # Restore full selection in timeline
+            for idx, sel in enumerate(self.all_selection):
+                win.timeline.AddSelectionJS(sel['id'], sel['type'], idx == 0)
+        else:
+            # User picked a single item. Don't overwrite all_selection!
+            item_id = data['item_id']
+            item_type = data['item_type']
+            self.target_selection = [{'id': item_id, 'type': item_type}]
+            # If we don't have a cached all_selection, set it now
+            if not self.all_selection:
+                self.all_selection = list(win.selected_items)
+            win.timeline.AddSelectionJS(item_id, item_type, True)
 
-    # Update selected item label
     def select_item(self, selection):
-        self.item_name = None
-        self.item_icon = None
-        self.item_type = None
-        self.item_id = None
+        # Only update our internal selection state if this is a fresh selection
+        if self.target_selection is not None:
+            # We just triggered a toggle (to a single item), check if it's loaded
+            if self._selections_equal(selection, self.target_selection):
+                # UI loaded the requested single item; restore all_selection for the next time
+                self.target_selection = None
+                # Don't touch self.all_selection! Keep it alive for toggling back.
+            else:
+                # Ignore any intermediate reloads
+                return
+        else:
+            # If selection changed outside menu, update all_selection
+            if not self._selections_equal(selection, self.all_selection):
+                self.all_selection = list(selection)
 
         count = len(selection)
         if count == 1:
@@ -1123,8 +1178,11 @@ class SelectionLabel(QFrame):
 
         # Look up item for more info
         if self.item_type == "multi":
-            self.lblSelection.setText(_("<strong>%d items selected</strong>") % count)
-            self.btnSelectionName.setVisible(False)
+            self.lblSelection.setText("<strong>%s</strong>" % _("Selection:"))
+            self.btnSelectionName.setText(_("%d selections") % count)
+            self.btnSelectionName.setVisible(True)
+            self.btnSelectionName.setIcon(QIcon())
+            self.btnSelectionName.setMenu(self.getMenu())
             return
         if self.item_type == "clip":
             clip = Clip.get(id=self.item_id)
@@ -1165,6 +1223,9 @@ class SelectionLabel(QFrame):
         super().__init__(*args)
         self.item_id = None
         self.item_type = None
+        self.item_name = None
+        self.item_icon = None
+        self.all_selection = []
 
         # Get translation object
         _ = get_app()._tr
@@ -1184,6 +1245,10 @@ class SelectionLabel(QFrame):
         hbox.addWidget(self.lblSelection)
         hbox.addWidget(self.btnSelectionName)
         self.setLayout(hbox)
+
+        # Variables for managing dropdown selections
+        self.target_selection = None
+        self.previous_selection = []
 
         # Connect signals
         get_app().window.propertyTableView.loadProperties.connect(self.select_item)

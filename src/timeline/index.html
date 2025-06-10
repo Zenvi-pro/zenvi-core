@@ -93,7 +93,7 @@
 						<!-- CLIP EFFECTS -->
 						<div ng-if="!enable_razor" class="effect-container" id="effects_{{clip.id}}">
                             <div class="clip_effects" ng-if="clip.parentObjectId" uib-tooltip="Parent" tooltip-placement="bottom" tooltip-popup-delay="400">P</div>
-							<div class="clip_effects" ng-repeat="effect in clip.effects" id="effect_{{effect.id}}" style="background-color: {{ getEffectColor(effect.type) }};" ng-click="selectEffect(effect.id); $event.stopPropagation();" ng-right-click="showEffectMenu(effect.id); $event.stopPropagation();" uib-tooltip="{{effect.type}} ({{$index+1}}/{{clip.effects.length}})"  tooltip-placement="bottom" tooltip-popup-delay="400">
+                            <div class="clip_effects" ng-repeat="effect in clip.effects" id="effect_{{effect.id}}" ng-class="{selected: effect.selected}" style="background-color: {{ getEffectColor(effect.type) }};" ng-click="selectEffect(effect.id, !$event.ctrlKey, $event); $event.stopPropagation();" ng-right-click="showEffectMenu(effect.id); $event.stopPropagation();" uib-tooltip="{{effect.type}} ({{$index+1}}/{{clip.effects.length}})"  tooltip-placement="bottom" tooltip-popup-delay="400">
 								{{effect.type[0]}}
 							</div>
 						</div>
