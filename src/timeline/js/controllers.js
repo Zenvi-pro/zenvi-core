@@ -613,7 +613,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
                     if (clip.effects) {
                         clip.effects.forEach(function (eff) {
                             eff.selected = false;
-                            if ($scope.Qt) timeline.removeSelection(eff.id, "effect");
+                            if ($scope.Qt) { timeline.removeSelection(eff.id, "effect"); }
                         });
                     }
                 });
@@ -644,10 +644,10 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             // Try global effects first, then all clip effects
             selected_item = $scope.project.effects.find((item) => item.id === id);
             if (!selected_item) {
-                for (var j = 0; j < $scope.project.clips.length; j++) {
-                    var clipItem = $scope.project.clips[j];
+                for (let j = 0; j < $scope.project.clips.length; j++) {
+                    let clipItem = $scope.project.clips[j];
                     if (clipItem.effects) {
-                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        let effItem = clipItem.effects.find((e) => e.id === id);
                         if (effItem) {
                             selected_item = effItem;
                             break;
@@ -773,7 +773,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             });
             $scope.project.effects.forEach(function (eff) {
                 eff.selected = false;
-                if ($scope.Qt) timeline.removeSelection(eff.id, "effect");
+                if ($scope.Qt) { timeline.removeSelection(eff.id, "effect"); }
             });
         }
 
@@ -788,10 +788,10 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             item = $scope.project.effects.find((item) => item.id === id);
             // If not found, try to find in all clips
             if (!item) {
-                for (var j = 0; j < $scope.project.clips.length; j++) {
-                    var clipItem = $scope.project.clips[j];
+                for (let j = 0; j < $scope.project.clips.length; j++) {
+                    let clipItem = $scope.project.clips[j];
                     if (clipItem.effects) {
-                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        let effItem = clipItem.effects.find((e) => e.id === id);
                         if (effItem) {
                             item = effItem;
                             break;
@@ -823,10 +823,10 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             // Try global effect first
             last = $scope.project.effects.find((item) => item.id === id);
             if (!last) {
-                for (var j = 0; j < $scope.project.clips.length; j++) {
-                    var clipItem = $scope.project.clips[j];
+                for (let j = 0; j < $scope.project.clips.length; j++) {
+                    let clipItem = $scope.project.clips[j];
                     if (clipItem.effects) {
-                        var effItem = clipItem.effects.find((e) => e.id === id);
+                        let effItem = clipItem.effects.find((e) => e.id === id);
                         if (effItem) {
                             last = effItem;
                             break;

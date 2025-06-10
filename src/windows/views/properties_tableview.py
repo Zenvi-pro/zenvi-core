@@ -343,72 +343,69 @@ class PropertiesTableView(QTableView):
             property_min = cur_property[1]["min"]
             readonly = cur_property[1]["readonly"]
 
-            item_data = self.selected_item.data()
-            for item_id, item_type in item_data:
+            # Bail if readonly
+            if readonly:
+                return
 
-                # Bail if readonly
-                if readonly:
-                    return
+            if (
+                not self.transaction_id
+                and not self.clip_properties_model.ignore_update_signal
+            ):
+                # Start transaction on first movement
+                self.start_transaction(self.selected_item)
+            self.update_in_progress = True
 
-                if (
-                    not self.transaction_id
-                    and not self.clip_properties_model.ignore_update_signal
-                ):
-                    # Start transaction on first movement
-                    self.start_transaction(self.selected_item)
-                self.update_in_progress = True
+            # For numeric values, apply percentage within parameter's allowable range
+            if property_type in ["float", "int"] and property_name != "Track":
 
-                # For numeric values, apply percentage within parameter's allowable range
-                if property_type in ["float", "int"] and property_name != "Track":
-
-                    if self.previous_x == -1:
-                        # Start tracking movement (init diff_length and previous_x)
-                        self.diff_length = 10
-                        self.previous_x = event.x()
-
-                    # Calculate # of pixels dragged
-                    drag_diff = self.previous_x - event.x()
-
-                    # update previous x
+                if self.previous_x == -1:
+                    # Start tracking movement (init diff_length and previous_x)
+                    self.diff_length = 10
                     self.previous_x = event.x()
 
-                    # Ignore small initial movements
-                    if abs(drag_diff) < self.diff_length:
-                        # Lower threshold to 0 incrementally, to guarantee it'll eventually be exceeded
-                        self.diff_length = max(0, self.diff_length - 1)
-                        return
+                # Calculate # of pixels dragged
+                drag_diff = self.previous_x - event.x()
 
-                    # Compute size of property's possible values range
-                    min_max_range = float(property_max) - float(property_min)
+                # update previous x
+                self.previous_x = event.x()
 
-                    if min_max_range < 1000.0:
-                        # Small range - use cursor to calculate new value as percentage of total range
-                        self.new_value = property_min + (min_max_range * cursor_value_percent)
-                    else:
-                        # range is unreasonably long (such as position, start, end, etc.... which can be huge #'s)
+                # Ignore small initial movements
+                if abs(drag_diff) < self.diff_length:
+                    # Lower threshold to 0 incrementally, to guarantee it'll eventually be exceeded
+                    self.diff_length = max(0, self.diff_length - 1)
+                    return
 
-                        # Get the current value and apply fixed adjustments in response to motion
-                        self.new_value = QLocale().system().toDouble(self.selected_item.text())[0]
+                # Compute size of property's possible values range
+                min_max_range = float(property_max) - float(property_min)
 
-                        if drag_diff > 0:
-                            # Move to the left by a small amount
-                            self.new_value -= 0.50
-                        elif drag_diff < 0:
-                            # Move to the right by a small amount
-                            self.new_value += 0.50
+                if min_max_range < 1000.0:
+                    # Small range - use cursor to calculate new value as percentage of total range
+                    self.new_value = property_min + (min_max_range * cursor_value_percent)
+                else:
+                    # range is unreasonably long (such as position, start, end, etc.... which can be huge #'s)
 
-                    # Clamp value between min and max (just incase user drags too big)
-                    self.new_value = max(property_min, self.new_value)
-                    self.new_value = min(property_max, self.new_value)
+                    # Get the current value and apply fixed adjustments in response to motion
+                    self.new_value = QLocale().system().toDouble(self.selected_item.text())[0]
 
-                    if property_type == "int":
-                        self.new_value = round(self.new_value, 0)
+                    if drag_diff > 0:
+                        # Move to the left by a small amount
+                        self.new_value -= 0.50
+                    elif drag_diff < 0:
+                        # Move to the right by a small amount
+                        self.new_value += 0.50
 
-                    # Update value of this property
-                    self.clip_properties_model.value_updated(self.selected_item, -1, self.new_value)
+                # Clamp value between min and max (just incase user drags too big)
+                self.new_value = max(property_min, self.new_value)
+                self.new_value = min(property_max, self.new_value)
 
-                    # Repaint
-                    self.viewport().update()
+                if property_type == "int":
+                    self.new_value = round(self.new_value, 0)
+
+                # Update value of this property
+                self.clip_properties_model.value_updated(self.selected_item, -1, self.new_value)
+
+                # Repaint
+                self.viewport().update()
 
     def mouseReleaseEvent(self, event):
         # Inform UpdateManager to accept updates, and only store our final update
@@ -1071,9 +1068,11 @@ class PropertiesTableView(QTableView):
 
         # Reconnect itemChanged signal to intercept edits
         try:
-            self.clip_properties_model.model.itemChanged.disconnect(self.clip_properties_model.value_updated)
-        except Exception:
-            pass
+            self.clip_properties_model.model.itemChanged.disconnect(
+                self.clip_properties_model.value_updated
+            )
+        except (TypeError, RuntimeError) as ex:
+            log.debug("Failed to disconnect itemChanged: %s", ex)
         self.clip_properties_model.model.itemChanged.connect(self.value_updated_wrapper)
 
         # Get base models for files, transitions

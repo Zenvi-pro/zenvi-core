@@ -956,7 +956,7 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Build list of raw properties for all selected items
             all_raw_properties = []
-            for obj, o_type in self.selected:
+            for obj, _item_type in self.selected:
                 props = json.loads(obj.PropertiesJSON(self.frame_number))
                 all_raw_properties.append(props)
 
