@@ -318,7 +318,7 @@ class UpdateManager:
 
             # Ignore updates to UI on all actions except last one
             ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh)
+            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
 
             # Perform next undo action
             self.dispatch_action(reverse)
@@ -349,7 +349,7 @@ class UpdateManager:
 
             # Ignore updates to UI on all actions except last one
             ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh)
+            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
 
             # Perform next redo action
             self.dispatch_action(next_action)

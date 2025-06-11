@@ -706,6 +706,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
               width: 2px;
               background-color: #FABE0A;
               margin: -1px;
+              pointer-events: none;
             }
             .point_bezier {
               background-image: url(../themes/cosmic/images/keyframe-bezier.svg);

@@ -128,7 +128,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
     SetKeyframeFilter = pyqtSignal(str)     # Signal to only show keyframes for the selected property
-    IgnoreUpdates = pyqtSignal(bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
+    IgnoreUpdates = pyqtSignal(bool, bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
     ThemeChangedSignal = pyqtSignal(object)     # Signal when theme is changed
 
     # Docks are closable, movable and floatable
@@ -1973,7 +1973,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         get_app().updates.transaction_id = get_app().updates.transaction_id or str(uuid.uuid4())
 
         # Emit signal to ignore updates (start ignoring updates)
-        get_app().window.IgnoreUpdates.emit(True)
+        get_app().window.IgnoreUpdates.emit(True, True)
 
         try:
             # Loop through each selected clip, delete it, and ripple the remaining clips on the same layer
@@ -2006,7 +2006,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         finally:
             # Emit signal to resume updates (stop ignoring updates)
-            get_app().window.IgnoreUpdates.emit(False)
+            get_app().window.IgnoreUpdates.emit(False, True)
 
             # Clear transaction id
             get_app().updates.transaction_id = None
@@ -3477,16 +3477,18 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Allow all other events to propagate normally
         return super(MainWindow, self).eventFilter(obj, event)
 
-    def ignore_updates_callback(self, ignore):
+    def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
         if ignore and not self.ignore_updates:
-            # Wait for mass updates to finish
-            get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+            if show_wait:
+                # Wait for mass updates to finish
+                get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             get_app().processEvents()
         elif not ignore and self.ignore_updates:
-            # Restore normal updates
-            get_app().restoreOverrideCursor()
+            if show_wait:
+                # Restore normal updates
+                get_app().restoreOverrideCursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:

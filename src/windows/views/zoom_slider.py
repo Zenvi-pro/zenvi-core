@@ -576,7 +576,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.win.preview_thread.position_changed.connect(self.update_playhead_pos)
         self.win.PlaySignal.connect(self.handle_play)
 
-    def ignore_updates_callback(self, ignore):
+    def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
         if not ignore and self.ignore_updates:
             # Force recalculation and repaint

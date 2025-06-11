@@ -33,6 +33,12 @@ body {
   z-index: 8000 !important;
 }
 
+/* keyframe dragging */
+.point.ui-draggable-dragging {
+  cursor: ew-resize !important;
+  z-index: 9000 !important;
+}
+
 /* manually moving selected item */
 .manual-move {
   z-index: 8000 !important;
@@ -251,6 +257,7 @@ img {
   background-color: #ff0024;
   opacity: 1;
   margin: -1px;
+  pointer-events: none;
 }
 
 .playhead-top {
