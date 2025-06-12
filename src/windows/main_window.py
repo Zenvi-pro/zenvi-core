@@ -128,7 +128,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
     SetKeyframeFilter = pyqtSignal(str)     # Signal to only show keyframes for the selected property
-    IgnoreUpdates = pyqtSignal(bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
+    IgnoreUpdates = pyqtSignal(bool, bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
     ThemeChangedSignal = pyqtSignal(object)     # Signal when theme is changed
 
     # Docks are closable, movable and floatable
@@ -1929,8 +1929,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             # Find matching clips (if any)
             clips = Clip.filter(file_id=f.data.get("id"))
             for c in clips:
-                # Clear selected clips
+                # Clear selected clips (and update properties and transform handles - to prevent crashes)
                 self.removeSelection(c.id, "clip")
+                self.emit_selection_signal()
+                self.show_property_timeout()
 
                 # Remove clip
                 c.delete()
@@ -1973,7 +1975,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         get_app().updates.transaction_id = get_app().updates.transaction_id or str(uuid.uuid4())
 
         # Emit signal to ignore updates (start ignoring updates)
-        get_app().window.IgnoreUpdates.emit(True)
+        get_app().window.IgnoreUpdates.emit(True, True)
 
         try:
             # Loop through each selected clip, delete it, and ripple the remaining clips on the same layer
@@ -2006,7 +2008,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         finally:
             # Emit signal to resume updates (stop ignoring updates)
-            get_app().window.IgnoreUpdates.emit(False)
+            get_app().window.IgnoreUpdates.emit(False, True)
 
             # Clear transaction id
             get_app().updates.transaction_id = None
@@ -2658,33 +2660,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.debug('addSelection: item_id: {}, item_type: {}, clear_existing: {}'.format(
                 item_id, item_type, clear_existing))
 
-        s = get_app().get_settings()
-
         # Clear existing selection (if needed)
         if clear_existing:
             self.selected_items = [s for s in self.selected_items if s["type"] != item_type]
-            if item_type == "clip":
-                self.TransformSignal.emit([])
-
-        # Clear caption editor (if nothing is selected)
-        get_app().window.CaptionTextLoaded.emit("", None)
 
         if item_id:
             existing = any(s for s in self.selected_items if s["id"] == item_id and s["type"] == item_type)
             if not existing:
                 self.selected_items.append({"id": item_id, "type": item_type})
-
-            if item_type == "clip" and s.get("auto-transform"):
-                # Emit transform for all currently selected clips
-                self.TransformSignal.emit(self.selected_clips)
-
-                effect = Effect.get(id=item_id)
-                if effect:
-                    if effect.data.get("has_tracked_object"):
-                        # Show bounding boxes transform on preview
-                        clip_id = effect.parent['id']
-                        self.KeyFrameTransformSignal.emit(item_id, clip_id)
-
 
             # Change selected item in properties view
             self.show_property_timer.start()
@@ -2708,21 +2691,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                         self.selected_items.remove(sel)
                         break
 
-        if not self.selected_items:
-            # Clear properties view (if no other items are selected)
-            if self.propertyTableView:
-                self.propertyTableView.loadProperties.emit([])
-
-            # Clear transform (if no other clips are selected)
-            self.TransformSignal.emit([])
-
-            # Clear caption editor (if nothing is selected)
-            get_app().window.CaptionTextLoaded.emit("", None)
-        else:
-            # Update transform handles for remaining clips if enabled
-            if get_app().get_settings().get("auto-transform"):
-                self.TransformSignal.emit(self.selected_clips)
-
         # Move selection to next selected clip (if any)
         self.show_property_id = ""
         self.show_property_type = ""
@@ -2736,8 +2704,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def emit_selection_signal(self):
         """Emit a signal for selection changed. Callback for selection timer."""
+        if not self.selected_items:
+            # Clear properties view (if no other items are selected)
+            if self.propertyTableView:
+                self.propertyTableView.loadProperties.emit([])
+
         # Notify UI that selection has been potentially changed
         self.SelectionChanged.emit()
+
+        # Clear caption editor (if nothing is selected)
+        get_app().window.CaptionTextLoaded.emit("", None)
+
+        # Update transform handles based on current selection
+        if get_app().get_settings().get("auto-transform"):
+            self.TransformSignal.emit(self.selected_clips)
+
+            for sel in self.selected_items:
+                if sel["type"] == "effect":
+                    effect = Effect.get(id=sel["id"])
+                    if effect and effect.data.get("has_tracked_object"):
+                        clip_id = effect.parent['id']
+                        self.KeyFrameTransformSignal.emit(sel["id"], clip_id)
 
     def selected_files(self):
         """ Return a list of File objects for the Project Files dock's selection """
@@ -3102,12 +3089,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.selected_markers = []
         self.selected_tracks = []
 
-        # Clear transform
-        self.TransformSignal.emit([])
-
         # Clear selection in properties view
         if self.propertyTableView:
             self.propertyTableView.loadProperties.emit([])
+
+        # Notify UI that selection has been potentially changed
+        self.selection_timer.start()
 
     def verifySelections(self):
         """Clear any invalid selections"""
@@ -3477,16 +3464,18 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Allow all other events to propagate normally
         return super(MainWindow, self).eventFilter(obj, event)
 
-    def ignore_updates_callback(self, ignore):
+    def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
         if ignore and not self.ignore_updates:
-            # Wait for mass updates to finish
-            get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+            if show_wait:
+                # Wait for mass updates to finish
+                get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             get_app().processEvents()
         elif not ignore and self.ignore_updates:
-            # Restore normal updates
-            get_app().restoreOverrideCursor()
+            if show_wait:
+                # Restore normal updates
+                get_app().restoreOverrideCursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:
@@ -3674,9 +3663,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.dockPropertiesContents.layout().addWidget(self.selectionLabel, 0, 1)
         self.dockPropertiesContents.layout().addWidget(self.propertyTableView, 2, 1)
 
-        # Init selection containers
-        self.clearSelections()
-
         # Show Property timer
         # Timer to use a delay before showing properties
         # (to prevent a mass selection from trying
@@ -3696,6 +3682,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.selection_timer.setInterval(100)
         self.selection_timer.setSingleShot(True)
         self.selection_timer.timeout.connect(self.emit_selection_signal)
+
+        # Init selection containers
+        self.clearSelections()
 
         # Setup video preview QWidget
         self.videoPreview = VideoWidget()

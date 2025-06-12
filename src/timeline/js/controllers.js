@@ -252,6 +252,44 @@ App.controller("TimelineCtrl", function ($scope) {
     return keyframes;
   };
 
+  // Move all keyframes located at old_frame to new_frame within an object
+  $scope.moveKeyframes = function(object, old_frame, new_frame) {
+    function update(obj) {
+      if (!obj || typeof obj !== "object") return;
+
+      if (Array.isArray(obj)) {
+        obj.forEach(update);
+        return;
+      }
+
+      if (obj.Points && Array.isArray(obj.Points)) {
+        obj.Points.forEach(function(p) {
+          if (p.co && p.co.X === old_frame) {
+            p.co.X = new_frame;
+          }
+        });
+      }
+
+      if (obj.red && obj.red.Points) {
+        ["red", "green", "blue"].forEach(function(color) {
+          obj[color].Points.forEach(function(p) {
+            if (p.co && p.co.X === old_frame) {
+              p.co.X = new_frame;
+            }
+          });
+        });
+      }
+
+      for (var k in obj) {
+        if (obj.hasOwnProperty(k) && typeof obj[k] === "object") {
+          update(obj[k]);
+        }
+      }
+    }
+
+    update(object);
+  };
+
   // Determine track top (in vertical pixels)
   $scope.getTrackTop = function (layer) {
     // Get scrollbar position

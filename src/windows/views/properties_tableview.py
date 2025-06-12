@@ -32,10 +32,10 @@ from operator import itemgetter
 import sip
 import uuid
 
-from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent
+from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent, QPoint
 from PyQt5.QtGui import (
     QIcon, QColor, QBrush, QPen, QPalette, QPixmap,
-    QPainter, QPainterPath, QLinearGradient, QFont, QFontInfo,
+    QPainter, QPainterPath, QLinearGradient, QFont, QFontInfo, QCursor,
 )
 from PyQt5.QtWidgets import (
     QTableView, QAbstractItemView, QSizePolicy,
@@ -1173,69 +1173,86 @@ class SelectionLabel(QFrame):
             action.triggered.connect(self.Action_Triggered)
             menu.addSeparator()
 
-        for selected in selection:
-            item_id = selected['id']
-            item_type = selected['type']
+        # Add selections to menu, and switch to "wait"
+        # cursor if things take too long
+        cursor_set = False
+        count = 0
+        try:
+            for selected in selection:
+                count += 1
+                if count > 10 and not cursor_set:
+                    get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+                    cursor_set = True
+                elif cursor_set and count % 10 == 0:
+                    get_app().processEvents()
 
-            if item_type == "clip":
-                clip = Clip.get(id=item_id)
-                if not clip:
-                    continue
-                item_name = clip.title()
+                item_id = selected['id']
+                item_type = selected['type']
 
-                # Get file for clip (if any)
-                file_id = clip.data.get("file_id")
-                file = File.get(id=file_id)
-                if not file:
-                    continue
+                if item_type == "clip":
+                    clip = Clip.get(id=item_id)
+                    if not clip:
+                        continue
+                    item_name = clip.title()
 
-                # Generate thumbnail for file (if needed)
-                media_type = file.data.get("media_type")
-                if media_type in ["video", "image"]:
-                    # Video thumbnail
-                    fps = file.data["fps"]
-                    fps_float = float(fps["num"]) / float(fps["den"])
-                    thumbnail_frame = round(float(clip.data['start']) * fps_float) + 1
-                    thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
-                else:
-                    # Audio thumbnail
-                    thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+                    # Get file for clip (if any)
+                    file_id = clip.data.get("file_id")
+                    file = File.get(id=file_id)
+                    if not file:
+                        continue
 
-                action = menu.addAction(thumb_icon, item_name)
-                action.setData({'item_id': item_id, 'item_type': 'clip'})
-                action.triggered.connect(self.Action_Triggered)
+                    # Generate thumbnail for file (if needed)
+                    media_type = file.data.get("media_type")
+                    if media_type in ["video", "image"]:
+                        # Video thumbnail
+                        fps = file.data["fps"]
+                        fps_float = float(fps["num"]) / float(fps["den"])
+                        thumbnail_frame = round(float(clip.data['start']) * fps_float) + 1
+                        thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
+                    else:
+                        # Audio thumbnail
+                        thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
 
-                for effect_info in clip.data.get('effects', []):
-                    effect = Effect.get(id=effect_info.get('id'))
+                    action = menu.addAction(thumb_icon, item_name)
+                    action.setData({'item_id': item_id, 'item_type': 'clip'})
+                    action.triggered.connect(self.Action_Triggered)
+
+                    for effect_info in clip.data.get('effects', []):
+                        effect = Effect.get(id=effect_info.get('id'))
+                        if not effect:
+                            continue
+                        effect_name = effect.title()
+                        effect_icon = QIcon(QPixmap(
+                            os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
+                        effect_action = menu.addAction(effect_icon, '  >  %s' % _(effect_name))
+                        effect_action.setData({'item_id': effect.id, 'item_type': 'effect'})
+                        effect_action.triggered.connect(self.Action_Triggered)
+
+                elif item_type == "transition":
+                    trans = Transition.get(id=item_id)
+                    if not trans:
+                        continue
+                    item_name = _(trans.title())
+                    item_icon = QIcon(QPixmap(trans.data.get('reader', {}).get('path')))
+                    action = menu.addAction(item_icon, item_name)
+                    action.setData({'item_id': item_id, 'item_type': 'transition'})
+                    action.triggered.connect(self.Action_Triggered)
+
+                elif item_type == "effect":
+                    effect = Effect.get(id=item_id)
                     if not effect:
                         continue
-                    effect_name = effect.title()
-                    effect_icon = QIcon(QPixmap(
+                    item_name = _(effect.title())
+                    item_icon = QIcon(QPixmap(
                         os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
-                    effect_action = menu.addAction(effect_icon, '  >  %s' % _(effect_name))
-                    effect_action.setData({'item_id': effect.id, 'item_type': 'effect'})
-                    effect_action.triggered.connect(self.Action_Triggered)
+                    action = menu.addAction(item_icon, item_name)
+                    action.setData({'item_id': item_id, 'item_type': 'effect'})
+                    action.triggered.connect(self.Action_Triggered)
 
-            elif item_type == "transition":
-                trans = Transition.get(id=item_id)
-                if not trans:
-                    continue
-                item_name = _(trans.title())
-                item_icon = QIcon(QPixmap(trans.data.get('reader', {}).get('path')))
-                action = menu.addAction(item_icon, item_name)
-                action.setData({'item_id': item_id, 'item_type': 'transition'})
-                action.triggered.connect(self.Action_Triggered)
-
-            elif item_type == "effect":
-                effect = Effect.get(id=item_id)
-                if not effect:
-                    continue
-                item_name = _(effect.title())
-                item_icon = QIcon(QPixmap(
-                    os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
-                action = menu.addAction(item_icon, item_name)
-                action.setData({'item_id': item_id, 'item_type': 'effect'})
-                action.triggered.connect(self.Action_Triggered)
+        finally:
+            if cursor_set:
+                # Restore cursor
+                get_app().restoreOverrideCursor()
 
         # Don't show menu if no actions were added
         if len(menu.actions()) == 0:
@@ -1248,6 +1265,12 @@ class SelectionLabel(QFrame):
         def norm(s):
             return sorted([(i['id'], i['type']) for i in s])
         return norm(first) == norm(second)
+
+    def open_menu(self):
+        """Create and display the selection menu when requested."""
+        menu = self.getMenu()
+        if menu:
+            menu.exec_(self.btnSelectionName.mapToGlobal(QPoint(0, self.btnSelectionName.height())))
 
     def Action_Triggered(self):
         data = self.sender().data()
@@ -1302,7 +1325,7 @@ class SelectionLabel(QFrame):
             self.btnSelectionName.setText(_("%d selections") % count)
             self.btnSelectionName.setVisible(True)
             self.btnSelectionName.setIcon(QIcon())
-            self.btnSelectionName.setMenu(self.getMenu())
+            self.btnSelectionName.setMenu(None)
             return
         if self.item_type == "clip":
             clip = Clip.get(id=self.item_id)
@@ -1336,7 +1359,7 @@ class SelectionLabel(QFrame):
             self.btnSelectionName.setVisible(False)
 
         # Set the menu on the button
-        self.btnSelectionName.setMenu(self.getMenu())
+        self.btnSelectionName.setMenu(None)
 
     def __init__(self, *args):
         # Invoke parent init
@@ -1356,6 +1379,7 @@ class SelectionLabel(QFrame):
         self.btnSelectionName = QPushButton()
         self.btnSelectionName.setVisible(False)
         self.btnSelectionName.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.btnSelectionName.clicked.connect(self.open_menu)
 
         # Support rich text
         self.lblSelection.setTextFormat(Qt.RichText)

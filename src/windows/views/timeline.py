@@ -120,8 +120,50 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         thumb_address = "http://%s:%s/thumbnails/" % (thumb_server_details[0], thumb_server_details[1])
         return thumb_address
 
+    @pyqtSlot(str, str, str)
+    def StartKeyframeDrag(self, object_type, object_id, transaction_id):
+        """Begin a keyframe drag operation"""
+        self.keyframe_transaction_id = transaction_id
+        get_app().updates.transaction_id = transaction_id
+        get_app().updates.ignore_history = True
+        # Ignore UI updates without showing the wait cursor
+        self.window.IgnoreUpdates.emit(True, False)
+        self.ignore_webview_updates = True
+        obj = None
+        if object_type == "clip":
+            obj = Clip.get(id=object_id)
+        elif object_type == "transition":
+            obj = Transition.get(id=object_id)
+        if obj:
+            self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+
+    @pyqtSlot(str, str)
+    def FinalizeKeyframeDrag(self, object_type, object_id):
+        """Finalize a keyframe drag operation and record history"""
+        obj = None
+        if object_type == "clip":
+            obj = Clip.get(id=object_id)
+        elif object_type == "transition":
+            obj = Transition.get(id=object_id)
+        self.ignore_webview_updates = False
+        original = self.keyframe_drag_original.pop(object_id, None)
+        if obj:
+            get_app().updates.transaction_id = self.keyframe_transaction_id
+            get_app().updates.ignore_history = True
+            obj.save()
+            if original:
+                get_app().updates.apply_last_action_to_history(original)
+        get_app().updates.transaction_id = None
+        get_app().updates.ignore_history = False
+        self.keyframe_transaction_id = None
+        # Re-enable UI updates
+        self.window.IgnoreUpdates.emit(False, False)
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
+        if self.ignore_webview_updates:
+            return
+
         if ViewClass == TimelineWidget:
             # Propagate to timeline qwidget
             TimelineWidget.changed(self, action)
@@ -235,7 +277,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.transaction_id = None
 
         # Notify UI to ignore OR not ignore updates
-        self.window.IgnoreUpdates.emit(ignore_refresh)
+        self.window.IgnoreUpdates.emit(ignore_refresh, not self.ignore_webview_updates)
 
     # Add missing transition
     @pyqtSlot(str)
@@ -393,7 +435,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.transaction_id = None
 
         # Notify UI to ignore OR not ignore updates
-        self.window.IgnoreUpdates.emit(ignore_refresh)
+        self.window.IgnoreUpdates.emit(ignore_refresh, not self.ignore_webview_updates)
 
     # Prevent default context menu, and ignore, so that javascript can intercept
     def contextMenuEvent(self, event):
@@ -2022,7 +2064,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().updates.transaction_id = tid
 
         # Emit signal to ignore updates (start ignoring updates)
-        get_app().window.IgnoreUpdates.emit(True)
+        get_app().window.IgnoreUpdates.emit(True, True)
         new_starting_frame = -1
 
         try:
@@ -2144,7 +2186,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.transaction_id = None
 
             # Emit signal to resume updates (stop ignoring updates)
-            get_app().window.IgnoreUpdates.emit(False)
+            get_app().window.IgnoreUpdates.emit(False, True)
 
             if new_starting_frame != -1:
                 # Seek to new position (if needed)
@@ -3498,3 +3540,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Connect Selection signals
         self.window.SelectionChanged.connect(self.handle_selection)
+
+        # Keyframe drag support
+        self.keyframe_drag_original = {}
+        self.keyframe_transaction_id = None
+        self.ignore_webview_updates = False
