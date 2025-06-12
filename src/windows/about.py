@@ -29,7 +29,6 @@
 import os
 import codecs
 import re
-from functools import partial
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QDialog
@@ -54,7 +53,7 @@ def parse_changelog(changelog_path):
     """Parse changelog data from specified gitlab-ci generated file."""
     if not os.path.exists(changelog_path):
         return None
-    changelog_regex = re.compile(r'(\w{6,10})\s+(\d{4}-\d{2}-\d{2})\s+(.*)\s{2,99}?(.*)')
+    changelog_regex = re.compile(r'(\w{6,10})\s+(\d{4}-\d{2}-\d{2})\s+(.*?)\s{2,}(.*)')
     changelog_list = []
     try:
         with codecs.open(changelog_path, 'r', encoding='utf_8') as changelog_file:
@@ -333,10 +332,6 @@ class Credits(QDialog):
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'credits.ui')
 
-    def Filter_Triggered(self, textbox, treeview):
-        """Callback for filter being changed"""
-        # Update model for treeview
-        treeview.refresh_view(filter=textbox.text())
 
     def __init__(self):
 
@@ -348,6 +343,7 @@ class Credits(QDialog):
 
         # Init Ui
         ui_util.init_ui(self)
+
 
         # get translations
         self.app = get_app()
@@ -373,10 +369,8 @@ class Credits(QDialog):
         self.developersListView = CreditsTreeView(
             credits=developer_list, columns=["email", "website"])
         self.vboxDevelopers.addWidget(self.developersListView)
-        self.txtDeveloperFilter.textChanged.connect(partial(
-            self.Filter_Triggered,
-            self.txtDeveloperFilter,
-            self.developersListView))
+        self.txtDeveloperFilter.textChanged.connect(
+            self.developersListView.filter_changed)
 
         # Get string of translators for the current language
         translator_credits = []
@@ -405,10 +399,8 @@ class Credits(QDialog):
             self.translatorsListView = CreditsTreeView(
                 translator_credits, columns=["website"])
             self.vboxTranslators.addWidget(self.translatorsListView)
-            self.txtTranslatorFilter.textChanged.connect(partial(
-                self.Filter_Triggered,
-                self.txtTranslatorFilter,
-                self.translatorsListView))
+            self.txtTranslatorFilter.textChanged.connect(
+                self.translatorsListView.filter_changed)
         else:
             # No translations for this language, hide credits
             self.tabCredits.removeTab(1)
@@ -425,21 +417,14 @@ class Credits(QDialog):
         self.supportersListView = CreditsTreeView(
             supporter_list, columns=["website"])
         self.vboxSupporters.addWidget(self.supportersListView)
-        self.txtSupporterFilter.textChanged.connect(partial(
-            self.Filter_Triggered,
-            self.txtSupporterFilter,
-            self.supportersListView))
+        self.txtSupporterFilter.textChanged.connect(
+            self.supportersListView.filter_changed)
 
 
 class Changelog(QDialog):
     """ Changelog Dialog """
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'changelog.ui')
-
-    def Filter_Triggered(self, textbox, treeview):
-        """Callback for filter being changed"""
-        # Update model for treeview
-        treeview.refresh_view(filter=textbox.text())
 
     def __init__(self):
 
@@ -451,6 +436,7 @@ class Changelog(QDialog):
 
         # Init Ui
         ui_util.init_ui(self)
+
 
         # get translations
         _ = get_app()._tr
@@ -465,11 +451,6 @@ class Changelog(QDialog):
             "openshot-qt": self.vbox_openshot_qt,
             "libopenshot": self.vbox_libopenshot,
             "libopenshot-audio": self.vbox_libopenshot_audio,
-        }
-        filter = {
-            "openshot-qt": self.txtChangeLogFilter_openshot_qt,
-            "libopenshot": self.txtChangeLogFilter_libopenshot,
-            "libopenshot-audio": self.txtChangeLogFilter_libopenshot_audio,
         }
 
         # Update github link button
@@ -501,5 +482,9 @@ class Changelog(QDialog):
                 commits=changelog_list,
                 commit_url="https://github.com/OpenShot/{}/commit/%s/".format(project))
             vbox[project].addWidget(cl_treeview)
-            filter[project].textChanged.connect(
-                partial(self.Filter_Triggered, filter[project], cl_treeview))
+            if project == 'openshot-qt':
+                self.txtChangeLogFilter_openshot_qt.textChanged.connect(cl_treeview.filter_changed)
+            elif project == 'libopenshot':
+                self.txtChangeLogFilter_libopenshot.textChanged.connect(cl_treeview.filter_changed)
+            else:
+                self.txtChangeLogFilter_libopenshot_audio.textChanged.connect(cl_treeview.filter_changed)

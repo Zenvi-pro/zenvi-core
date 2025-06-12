@@ -41,7 +41,7 @@ Overview
    1   Blue Property       When the play-head is on an interpolated value, the property appears blue
    2   Value Slider        Click and drag your mouse to adjust the value (this automatically creates a key frame if needed)
    3   Play-head           Position the play-head over a clip where you need a key frame
-   4   Key frame Markers   Small icons are displayed on the bottom of the clip for each active keyframe (`circle=Bézier, diamond=linear, square=constant`). These icons are filtered based on the property window. For example, if you filter only ``scale_x``, you will only see the icons for ``scale_x`` keyframes, for example.
+   4   Key frame Markers   Small icons are displayed on the bottom of the clip for each active keyframe (`circle=Bézier, diamond=linear, square=constant`). These icons are filtered based on the property window. For example, if you filter only ``scale_x``, you will only see the icons for ``scale_x`` keyframes. Click a keyframe icon to select that frame and show its values in the property editor. Drag the icon left or right to move the keyframe (the preview updates while dragging), letting you easily refine the timing of your animation.
    ==  ==================  ============
 
 Key Frames

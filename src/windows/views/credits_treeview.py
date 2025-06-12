@@ -27,7 +27,7 @@
  """
 
 import webbrowser
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QRegExp
 from PyQt5.QtWidgets import QListView, QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
 from PyQt5.QtGui import QCursor
 from functools import partial
@@ -43,8 +43,9 @@ class CreditsTreeView(QTreeView):
     def resize_contents(self):
         pass
 
-    def refresh_view(self, filter=None):
-        self.credits_model.update_model(filter=filter)
+    def refresh_view(self):
+        """Format columns and sort"""
+        # Model is already populated; just adjust view
 
         # Format columns
         self.header().setSectionResizeMode(0, QHeaderView.Fixed)
@@ -61,16 +62,22 @@ class CreditsTreeView(QTreeView):
         if "website" not in self.columns:
             self.setColumnHidden(4, True)
 
+    def filter_changed(self, text=""):
+        """Apply filter text to proxy model"""
+        self.model().setFilterRegExp(QRegExp(text, Qt.CaseInsensitive))
+        self.model().setFilterKeyColumn(-1)
+        self.model().sort(2, Qt.AscendingOrder)
+
     def contextMenuEvent(self, event):
         log.info('contextMenuEvent')
         _ = get_app()._tr
 
-        # Get data model and selection
-        model = self.credits_model.model
-        row = self.indexAt(event.pos()).row()
-        if row != -1:
-            email = model.item(row, 3).text()
-            website = model.item(row, 4).text()
+        # Get proxy model and selection
+        model = self.model()
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            email = model.index(index.row(), 3).data()
+            website = model.index(index.row(), 4).data()
 
             menu = StyledContextMenu(parent=self)
             if email:
@@ -105,7 +112,6 @@ class CreditsTreeView(QTreeView):
         self.selected = []
 
         # Setup header columns
-        self.setModel(self.credits_model.model)
         self.setIndentation(0)
         self.setSelectionBehavior(QTreeView.SelectRows)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -115,9 +121,13 @@ class CreditsTreeView(QTreeView):
         self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
         self.columns = columns
 
+        # Populate model
+        self.credits_model.update_model()
+
+        # Set proxy model and shared selection model
+        self.setModel(self.credits_model.proxy_model)
+        self.selectionModel().deleteLater()
+        self.setSelectionModel(self.credits_model.selection_model)
 
         # Refresh view
         self.refresh_view()
-
-        # setup filter events
-        app = get_app()

@@ -156,6 +156,13 @@ that version of the library will be used instead of the system version (if any).
 We don't install our ``libopenshot`` after building, because we don't need to.
 For testing purposes, we can tell OpenShot to use ``libopenshot`` right from our ``build`` directory.
 
+Language Bindings
+-----------------
+The ``libopenshot`` API is available in several languages through SWIG bindings.  Python is used by the
+OpenShot user interface, and we also provide Ruby and Java bindings.  Experimental support for Godot **4.4**
+is included for developers who wish to integrate video editing features into the Godot game engine.  All of
+these bindings map to the same C++ codebase so you can edit video from the environment you prefer.
+
 openshot-qt (Launch Instructions)
 ---------------------------------
 This is our main PyQt Python application.

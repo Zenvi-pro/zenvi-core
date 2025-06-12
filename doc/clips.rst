@@ -255,9 +255,14 @@ Transform
 The :guilabel:`Transform` preset activates the **transform tool** for a clip, allowing for quick adjustments to 
 location, scale, rotation, shear, and rotation origin point.
 
-To quickly adjust the location, scale, rotation, and shear of a clip, select a clip on the timeline to activate
-the transform tool. By default, the selected clip appears in the preview window with transform controls (blue lines and squares). 
-Or if the transform tool is disabled, right click on a clip and choose **Transform**. 
+To quickly adjust the location, scale, rotation, and shear of a clip, select a
+clip on the timeline to activate the transform tool. By default, the selected
+clip appears in the preview window with transform controls (blue lines and
+squares). You can select multiple clips at once with :kbd:`Ctrl` or :kbd:`Shift`. The
+preview shows a single set of handles surrounding all selected clips, and any
+move, scale or rotation affects them together.
+Or if the transform tool is disabled, right click on a clip and choose
+**Transform**.
 
 - Dragging the blue squares will adjust the **scale** of the image.
 - Dragging the center will move the **location** of the image.
@@ -355,14 +360,20 @@ For the full list of effects, see :ref:`effects_ref`.
 Clip Properties
 ---------------
 Below is a list of clip properties which can be edited, and in most cases, animated over time. To view a clip's properties,
-right click and choose :guilabel:`Properties`. The property editor will appear, where you can change these properties. Note: Pay
-close attention to where the play-head (i.e. red playback line) is. Key frames are automatically created at the current playback
-position, to help quickly create animations. 
+right click and choose :guilabel:`Properties`. The property editor will appear, where you can change these properties.
+You can select multiple clips, transitions or effects at once. The dropdown at
+the top of the dock shows entries for each item plus an entry such as ``2
+Selections``. Pick that entry to edit all selected items together, only
+properties they share will be visible. If a field is blank, the values differ
+between items, but you can still change it or insert a keyframe for all of them.
+
+Note: Pay close attention to where the play-head (i.e. red playback line) is. Key frames are automatically created at the current playback
+position, to help quickly create animations.
 
 When animating clip properties, you can fade a clip from opaque to transparent with ``alpha``, slide a clip around the 
 screen with ``location_x`` and ``location_y``, scale a clip smaller or larger with the ``scale_x`` and ``scale_y``, 
 fade the volume of a clip quieter or louder with ``volume``, and much more. If you want to set a single, static clip property with 
-**no animation**, be sure the playhead is positioned before (to the left) of your clip when adjusting the property value.
+**no animation**, be sure the playhead is positioned at the start of your clip (to the left) when adjusting the property value.
 
 See the table below for a full list of clip properties.
 
