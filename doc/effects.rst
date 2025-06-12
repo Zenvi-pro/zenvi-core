@@ -33,7 +33,9 @@ to help create animations quickly.
 
 To view an effect's properties, right-click on the effect icon, revealing the context menu, and choose :guilabel:`Properties`.
 The property editor will appear, where you can edit these properties. Properties appear alphabetically in the dock,
-with filter options available at the top. See :ref:`clip_properties_ref`.
+with filter options available at the top. Hold :kbd:`Ctrl` and click multiple
+effect icons to select them all, the Properties dock will show an entry such as
+``3 Selections`` so you can adjust their common settings in one step. See :ref:`clip_properties_ref`.
 
 To adjust a property:
 

@@ -47,7 +47,8 @@ multi-threaded CPU, lots of RAM (memory), and a modern GPU. We have listed many 
                        frames to processes in advance. A value too low or too high can cause lag during the real-time
                        video preview. The cache is also related to the available RAM. The higher the cache values, the more
                        RAM and CPU is needed. We recommend experimenting with the Cache Preferences in OpenShot if you are
-                       experiencing issues with smooth playback. See :ref:`preferences_cache_ref`.
+                       experiencing issues with smooth playback. This same caching system also prepares frames ahead of time
+                       during export, speeding up the final render. See :ref:`preferences_cache_ref`.
    Preview Size        The height x width of your preview dock (widget) is very important for smooth real-time previews.
                        The larger the window size, the more pixels must be rendered per frame, and the more CPU and RAM
                        are required. It is recommended to keep reducing the preview window size until you achieve smooth
