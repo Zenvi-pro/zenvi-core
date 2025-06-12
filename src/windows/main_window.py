@@ -1929,8 +1929,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             # Find matching clips (if any)
             clips = Clip.filter(file_id=f.data.get("id"))
             for c in clips:
-                # Clear selected clips
+                # Clear selected clips (and update properties and transform handles - to prevent crashes)
                 self.removeSelection(c.id, "clip")
+                self.emit_selection_signal()
+                self.show_property_timeout()
 
                 # Remove clip
                 c.delete()
