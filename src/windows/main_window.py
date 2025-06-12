@@ -2658,33 +2658,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.debug('addSelection: item_id: {}, item_type: {}, clear_existing: {}'.format(
                 item_id, item_type, clear_existing))
 
-        s = get_app().get_settings()
-
         # Clear existing selection (if needed)
         if clear_existing:
             self.selected_items = [s for s in self.selected_items if s["type"] != item_type]
-            if item_type == "clip":
-                self.TransformSignal.emit([])
-
-        # Clear caption editor (if nothing is selected)
-        get_app().window.CaptionTextLoaded.emit("", None)
 
         if item_id:
             existing = any(s for s in self.selected_items if s["id"] == item_id and s["type"] == item_type)
             if not existing:
                 self.selected_items.append({"id": item_id, "type": item_type})
-
-            if item_type == "clip" and s.get("auto-transform"):
-                # Emit transform for all currently selected clips
-                self.TransformSignal.emit(self.selected_clips)
-
-                effect = Effect.get(id=item_id)
-                if effect:
-                    if effect.data.get("has_tracked_object"):
-                        # Show bounding boxes transform on preview
-                        clip_id = effect.parent['id']
-                        self.KeyFrameTransformSignal.emit(item_id, clip_id)
-
 
             # Change selected item in properties view
             self.show_property_timer.start()
@@ -2708,21 +2689,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                         self.selected_items.remove(sel)
                         break
 
-        if not self.selected_items:
-            # Clear properties view (if no other items are selected)
-            if self.propertyTableView:
-                self.propertyTableView.loadProperties.emit([])
-
-            # Clear transform (if no other clips are selected)
-            self.TransformSignal.emit([])
-
-            # Clear caption editor (if nothing is selected)
-            get_app().window.CaptionTextLoaded.emit("", None)
-        else:
-            # Update transform handles for remaining clips if enabled
-            if get_app().get_settings().get("auto-transform"):
-                self.TransformSignal.emit(self.selected_clips)
-
         # Move selection to next selected clip (if any)
         self.show_property_id = ""
         self.show_property_type = ""
@@ -2736,8 +2702,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def emit_selection_signal(self):
         """Emit a signal for selection changed. Callback for selection timer."""
+        if not self.selected_items:
+            # Clear properties view (if no other items are selected)
+            if self.propertyTableView:
+                self.propertyTableView.loadProperties.emit([])
+
         # Notify UI that selection has been potentially changed
         self.SelectionChanged.emit()
+
+        # Clear caption editor (if nothing is selected)
+        get_app().window.CaptionTextLoaded.emit("", None)
+
+        # Update transform handles based on current selection
+        if get_app().get_settings().get("auto-transform"):
+            self.TransformSignal.emit(self.selected_clips)
+
+            for sel in self.selected_items:
+                if sel["type"] == "effect":
+                    effect = Effect.get(id=sel["id"])
+                    if effect and effect.data.get("has_tracked_object"):
+                        clip_id = effect.parent['id']
+                        self.KeyFrameTransformSignal.emit(sel["id"], clip_id)
 
     def selected_files(self):
         """ Return a list of File objects for the Project Files dock's selection """
@@ -3102,12 +3087,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.selected_markers = []
         self.selected_tracks = []
 
-        # Clear transform
-        self.TransformSignal.emit([])
-
         # Clear selection in properties view
         if self.propertyTableView:
             self.propertyTableView.loadProperties.emit([])
+
+        # Notify UI that selection has been potentially changed
+        self.selection_timer.start()
 
     def verifySelections(self):
         """Clear any invalid selections"""
@@ -3676,9 +3661,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.dockPropertiesContents.layout().addWidget(self.selectionLabel, 0, 1)
         self.dockPropertiesContents.layout().addWidget(self.propertyTableView, 2, 1)
 
-        # Init selection containers
-        self.clearSelections()
-
         # Show Property timer
         # Timer to use a delay before showing properties
         # (to prevent a mass selection from trying
@@ -3698,6 +3680,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.selection_timer.setInterval(100)
         self.selection_timer.setSingleShot(True)
         self.selection_timer.timeout.connect(self.emit_selection_signal)
+
+        # Init selection containers
+        self.clearSelections()
 
         # Setup video preview QWidget
         self.videoPreview = VideoWidget()
