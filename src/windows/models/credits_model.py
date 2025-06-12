@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel
 from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
 
 from classes.logger import log
@@ -39,9 +39,26 @@ class CreditsStandardItemModel(QStandardItemModel):
         QStandardItemModel.__init__(self)
 
 
+
+class CreditsFilterProxyModel(QSortFilterProxyModel):
+    """Proxy class used for sorting and filtering credits"""
+
+    def filterAcceptsRow(self, sourceRow, sourceParent):
+        """Match filter against name, email, or website columns"""
+        if not self.filterRegExp().isEmpty():
+            model = self.sourceModel()
+            for column in [2, 3, 4]:
+                index = model.index(sourceRow, column, sourceParent)
+                value = model.data(index)
+                if self.filterRegExp().indexIn(str(value)) >= 0:
+                    return True
+            return False
+        return True
+
+
 class CreditsModel():
 
-    def update_model(self, filter=None, clear=True):
+    def update_model(self, clear=True):
         log.debug("updating credits model.")
         app = get_app()
         _ = app._tr
@@ -66,12 +83,6 @@ class CreditsModel():
                 # Skip blank names
                 continue
 
-            if filter and not (
-                filter.lower() in person.get("name", "").lower()
-                or filter.lower() in person.get("email", "").lower()
-                or filter.lower() in person.get("website", "").lower()
-            ):
-                continue
 
             row = []
             flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled
@@ -129,3 +140,14 @@ class CreditsModel():
         self.model = CreditsStandardItemModel()
         self.model.setColumnCount(6)
         self.credits_list = credits
+
+        # Create proxy model (for sorting and filtering)
+        self.proxy_model = CreditsFilterProxyModel()
+        self.proxy_model.setDynamicSortFilter(True)
+        self.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.proxy_model.setSortCaseSensitivity(Qt.CaseSensitive)
+        self.proxy_model.setSourceModel(self.model)
+        self.proxy_model.setSortLocaleAware(True)
+
+        # Create selection model to share between views (if needed)
+        self.selection_model = QItemSelectionModel(self.proxy_model)

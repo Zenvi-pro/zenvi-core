@@ -29,6 +29,7 @@
 import webbrowser
 from functools import partial
 
+from PyQt5.QtCore import Qt, QRegExp
 from PyQt5.QtWidgets import QListView, QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
 from PyQt5.QtGui import QCursor
 
@@ -43,8 +44,9 @@ class ChangelogTreeView(QTreeView):
     def resize_contents(self):
         pass
 
-    def refresh_view(self, filter=None):
-        self.changelog_model.update_model(filter=filter)
+    def refresh_view(self):
+        """Format columns and sort"""
+        # Model already populated
 
         # Format columns
         self.header().setSectionResizeMode(0, QHeaderView.Fixed)
@@ -54,15 +56,21 @@ class ChangelogTreeView(QTreeView):
         self.setColumnWidth(2, 125)
         self.setColumnWidth(3, 200)
 
+    def filter_changed(self, text=""):
+        """Apply filter text to proxy model"""
+        self.model().setFilterRegExp(QRegExp(text, Qt.CaseInsensitive))
+        self.model().setFilterKeyColumn(-1)
+        self.model().sort(1, Qt.AscendingOrder)
+
     def contextMenuEvent(self, event):
         log.info('contextMenuEvent')
         _ = get_app()._tr
 
         # Get data model and selection
-        model = self.changelog_model.model
-        row = self.indexAt(event.pos()).row()
-        if row != -1:
-            selected_hash = model.item(row, 0).text()
+        model = self.model()
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            selected_hash = model.index(index.row(), 0).data()
 
             menu = StyledContextMenu(parent=self)
             copy_action = menu.addAction(_("Copy Hash"))
@@ -95,8 +103,11 @@ class ChangelogTreeView(QTreeView):
         self.changelog_model = ChangelogModel(commits)
         self.selected = []
 
+        # Populate model
+        self.changelog_model.update_model()
+
         # Setup header columns
-        self.setModel(self.changelog_model.model)
+        self.setModel(self.changelog_model.proxy_model)
         self.setIndentation(0)
         self.setSelectionBehavior(QTreeView.SelectRows)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -104,10 +115,9 @@ class ChangelogTreeView(QTreeView):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setWordWrap(True)
         self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
+        self.selectionModel().deleteLater()
+        self.setSelectionModel(self.changelog_model.selection_model)
         self.commit_url = commit_url
 
         # Refresh view
         self.refresh_view()
-
-        # setup filter events
-        app = get_app()
