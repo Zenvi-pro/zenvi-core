@@ -53,7 +53,7 @@ def parse_changelog(changelog_path):
     """Parse changelog data from specified gitlab-ci generated file."""
     if not os.path.exists(changelog_path):
         return None
-    changelog_regex = re.compile(r'(\w{6,10})\s+(\d{4}-\d{2}-\d{2})\s+(.*)\s{2,99}?(.*)')
+    changelog_regex = re.compile(r'(\w{6,10})\s+(\d{4}-\d{2}-\d{2})\s+(.*?)\s{2,}(.*)')
     changelog_list = []
     try:
         with codecs.open(changelog_path, 'r', encoding='utf_8') as changelog_file:
