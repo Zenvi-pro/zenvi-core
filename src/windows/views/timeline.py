@@ -3172,15 +3172,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Handle clip creation
                 if self.item_type == "clip":
                     # Load file JSON and create the clip
-                    new_item = self.addClip(drag_id, pos, js_nearest_track, ignore_refresh)
+                    new_item = self.addClip(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
 
                 # Handle transition creation
                 elif self.item_type == "transition":
-                    new_item = self.addTransition(drag_id, pos, js_nearest_track, ignore_refresh)
+                    new_item = self.addTransition(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
 
                 # Adjust position for the next clip/transition
                 if new_item:
                     pos += QPointF(new_item["end"] - new_item["start"], 0)
+
+            # After all items are added, initialize manual move once for the group
+            self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
 
         # Get JS position and pass initial position to the callback
         self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
@@ -3190,7 +3193,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
     # Add Clip
-    def addClip(self, file_id, position, track, ignore_refresh=False):
+    def addClip(self, file_id, position, track, ignore_refresh=False, call_manual_move=True):
         # Retrieve File object by file_id
         file = File.get(id=file_id)
         if not file:
@@ -3241,7 +3244,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.item_ids.append(new_clip.get('id'))
 
         # Trigger manual move event to initialize UI snapping
-        self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
+        if call_manual_move:
+            self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
         return new_clip
 
     @pyqtSlot(list)
@@ -3258,7 +3262,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.TimelineResize.emit()
 
     # Add Transition
-    def addTransition(self, file_path, position, track, ignore_refresh=False):
+    def addTransition(self, file_path, position, track, ignore_refresh=False, call_manual_move=True):
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
@@ -3297,7 +3301,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.item_ids.append(transition_data.get('id'))
 
         # Init javascript bounding box (for snapping support)
-        self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}','{}');".format(self.item_type, json.dumps(self.item_ids)))
+        if call_manual_move:
+            self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}','{}');".format(self.item_type, json.dumps(self.item_ids)))
         return transition_data
 
     # Add Effect
