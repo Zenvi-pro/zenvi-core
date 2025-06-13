@@ -1959,6 +1959,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             for c in clips:
                 # Clear selected clips
                 self.removeSelection(clip_id, "clip")
+                self.emit_selection_signal()
+                self.show_property_timeout()
 
                 # Remove clip
                 c.delete()
@@ -1987,6 +1989,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     duration = float(c.data["end"]) - float(c.data["start"])
 
                     self.removeSelection(c.id, "clip")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
                     c.delete()
 
                     # After deleting, ripple the remaining clips on the same layer
@@ -2001,6 +2005,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     duration = float(t.data["end"]) - float(t.data["start"])
 
                     self.removeSelection(t.id, "transition")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
                     t.delete()
 
                     # After deleting, ripple the remaining transitions on the same layer
@@ -2028,22 +2034,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         for trans in transitions:
             trans.data["position"] -= total_gap
             trans.save()
-
-    # def actionInsertKeyframePosition(self):
-    #     """Insert a 'Location' / 'Position' keyframe"""
-    #     log.info("Inserting keyframe for position")
-    #
-    # def actionInsertKeyframeScale(self):
-    #     """Insert a 'Scale' keyframe"""
-    #     log.info("Inserting keyframe for scale")
-    #
-    # def actionInsertKeyframeRotation(self):
-    #     """Insert a 'Rotation' keyframe"""
-    #     log.info("Inserting keyframe for rotation")
-    #
-    # def actionInsertKeyframeAlpha(self):
-    #     """Insert an 'Alpha' keyframe"""
-    #     log.info("Inserting keyframe for alpha (opacity)")
 
     def actionRippleSelect(self):
         """Selects ALL clips or transitions to the right of the current selected item"""
