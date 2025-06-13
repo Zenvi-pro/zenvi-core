@@ -97,8 +97,12 @@ class Cutting(QDialog):
             self.widgetControls.setVisible(False)
             self.setWindowTitle(_("Preview"))
 
+        self.previous_start = 0.0
         if float(file.data.get("start", 0.0)) > 0.0:
             self.start_frame = round(file.data.get("start", 0) * self.fps) + 1
+
+            # Remember the previous start property (on init)
+            self.previous_start = self.file.data.get("start", 0.0)
         if float(file.data.get("end", 0.0)) > 0.0:
             self.end_frame = round(file.data.get("end", 0) * self.fps)
             self.video_length = (self.end_frame - self.start_frame) + 1
@@ -370,15 +374,12 @@ class Cutting(QDialog):
         if 'name' in self.file.data:
             self.file.data.pop('name')
 
-        # Get initial start / end properties (if any)
-        previous_start = self.file.data.get("start", 0.0)
-
         # Save new file
         self.file.id = None
         self.file.key = None
         self.file.type = 'insert'
-        self.file.data['start'] = previous_start + ((self.start_frame - 1) / self.fps)
-        self.file.data['end'] = previous_start + (self.end_frame / self.fps)
+        self.file.data['start'] = self.previous_start + ((self.start_frame - 1) / self.fps)
+        self.file.data['end'] = self.previous_start + (self.end_frame / self.fps)
         if self.txtName.text():
             self.file.data['name'] = self.txtName.text()
         self.file.save()
