@@ -128,7 +128,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().updates.ignore_history = True
         # Ignore UI updates without showing the wait cursor
         self.window.IgnoreUpdates.emit(True, False)
-        self.ignore_webview_updates = True
+        self.show_wait_spinner = False
         obj = None
         if object_type == "clip":
             obj = Clip.get(id=object_id)
@@ -145,7 +145,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             obj = Clip.get(id=object_id)
         elif object_type == "transition":
             obj = Transition.get(id=object_id)
-        self.ignore_webview_updates = False
+        self.show_wait_spinner = True
         original = self.keyframe_drag_original.pop(object_id, None)
         if obj:
             get_app().updates.transaction_id = self.keyframe_transaction_id
@@ -161,9 +161,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
-        if self.ignore_webview_updates:
-            return
-
         if ViewClass == TimelineWidget:
             # Propagate to timeline qwidget
             TimelineWidget.changed(self, action)
@@ -277,7 +274,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.transaction_id = None
 
         # Notify UI to ignore OR not ignore updates
-        self.window.IgnoreUpdates.emit(ignore_refresh, not self.ignore_webview_updates)
+        self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
 
     # Add missing transition
     @pyqtSlot(str)
@@ -435,7 +432,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.transaction_id = None
 
         # Notify UI to ignore OR not ignore updates
-        self.window.IgnoreUpdates.emit(ignore_refresh, not self.ignore_webview_updates)
+        self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
 
     # Prevent default context menu, and ignore, so that javascript can intercept
     def contextMenuEvent(self, event):
@@ -3549,4 +3546,4 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Keyframe drag support
         self.keyframe_drag_original = {}
         self.keyframe_transaction_id = None
-        self.ignore_webview_updates = False
+        self.show_wait_spinner = True

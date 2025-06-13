@@ -7,10 +7,7 @@
 App.directive("tlKeyframe", function () {
   return {
     link: function (scope, element, attrs) {
-      var obj = null;
-      var objType = attrs.objectType;
-      // Object ids are alphanumeric, so don't coerce them to numbers
-      var objId = attrs.objectId;
+      var obj, objType = attrs.objectType, objId = attrs.objectId;
       var fps = scope.project.fps.num / scope.project.fps.den;
       var transactionId = null;
       var currentFrame = parseInt(attrs.point, 10);
@@ -18,25 +15,26 @@ App.directive("tlKeyframe", function () {
       function locateObject() {
         if (objType === "clip") {
           obj = findElement(scope.project.clips, "id", objId);
-        } else if (objType === "transition") {
+        } else {
           obj = findElement(scope.project.effects, "id", objId);
         }
       }
-      locateObject();
 
-      function updateBackend(ignoreRefresh) {
-        if (!scope.Qt || !obj) return;
+      function pushKeyframeChange(copy, ignoreRefresh) {
+        var json = JSON.stringify(copy);
         if (objType === "clip") {
-          // Pass false so non-basic properties such as keyframes are updated
-          timeline.update_clip_data(JSON.stringify(obj), false, true, ignoreRefresh, transactionId);
-        } else if (objType === "transition") {
-          // Pass false so keyframes move correctly on transitions
-          timeline.update_transition_data(JSON.stringify(obj), false, ignoreRefresh, transactionId);
+          timeline.update_clip_data(
+            json, false /*allow keyframes*/, true /*force JSON diff*/, ignoreRefresh, transactionId
+          );
+        } else {
+          timeline.update_transition_data(
+            json, false, ignoreRefresh, transactionId
+          );
         }
       }
 
       // Prevent parent selectable/drag handlers from interfering
-      element.on("mousedown", function(e) {
+      element.on("mousedown", function (e) {
         e.stopPropagation();
       });
 
@@ -56,39 +54,39 @@ App.directive("tlKeyframe", function () {
         },
         drag: function (e, ui) {
           locateObject();
-          if (!obj || typeof obj.start === "undefined") return;
+          if (!obj || obj.start === undefined) return;
 
-          var newLeft = ui.position.left;
-          var seconds = snapToFPSGridTime(scope, pixelToTime(scope, newLeft) + obj.start);
-          var newFrame = Math.round(seconds * fps) + 1;
+          var left    = ui.position.left;
+          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);
+          var newFrame= Math.round(secs * fps) + 1;
 
           if (newFrame !== currentFrame) {
-            scope.moveKeyframes(obj, currentFrame, newFrame);
+            // work on a copy
+            var copy = angular.copy(obj);
+            scope.moveKeyframes(copy, currentFrame, newFrame);
+            pushKeyframeChange(copy, true);
             currentFrame = newFrame;
-            updateBackend(true);
           }
 
           // Preview frame while dragging
-          var previewSeconds = obj.position + pixelToTime(scope, newLeft);
-          scope.previewFrame(previewSeconds);
+          scope.previewFrame(obj.position + pixelToTime(scope, left));
         },
         stop: function (e, ui) {
           scope.setDragging(false);
           locateObject();
-          if (!obj || typeof obj.start === "undefined") return;
+          if (!obj || obj.start === undefined) return;
 
-          var newLeft = ui.position.left;
-          var seconds = snapToFPSGridTime(scope, pixelToTime(scope, newLeft) + obj.start);
-          var newFrame = Math.round(seconds * fps) + 1;
+          var left    = ui.position.left;
+          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);
+          var newFrame= Math.round(secs * fps) + 1;
 
           if (newFrame !== currentFrame) {
-            scope.moveKeyframes(obj, currentFrame, newFrame);
+            var copy = angular.copy(obj);
+            scope.moveKeyframes(copy, currentFrame, newFrame);
+            pushKeyframeChange(copy, false);
             currentFrame = newFrame;
           }
 
-          attrs.point = currentFrame;
-          scope.$apply(function () {});
-          updateBackend(false);
           if (scope.Qt) {
             timeline.FinalizeKeyframeDrag(objType, objId);
           }
