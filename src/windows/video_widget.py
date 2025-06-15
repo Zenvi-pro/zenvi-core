@@ -631,6 +631,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         return QCursor(rotated_pixmap)
 
     def checkTransformMode(self, rotation, shear_x, shear_y, event):
+        if not self.transform:
+            self.setCursor(Qt.ArrowCursor)
+            self.transform_mode = None
+            return
+
         handle_uis = [
             {"handle": self.centerHandle, "mode": 'origin', "cursor": 'hand'},
             {"handle": self.topRightHandle, "mode": 'scale_top_right', "cursor": 'resize_bdiag'},
