@@ -56,45 +56,174 @@ OpenShot Video Editor has a total of 27 built-in video and audio effects: 18 vid
 These effects can be added to a clip by dragging the effect onto a clip. The following table contains
 the name and short description of each effect.
 
-.. table::
-   :widths: 30 80
+.. |mask_icon| image:: ../src/effects/icons/mask@2x.png
+   :width: 50px
+   :alt: Alpha Mask / Wipe Transition Icon
 
-   =============================  ===============
-   Effect Name                    Effect Description
-   =============================  ===============
-   Alpha Mask / Wipe Transition   Grayscale mask transition between images.
-   Bars                           Add colored bars around your video.
-   Blur                           Adjust image blur.
-   Brightness & Contrast          Modify frame's brightness and contrast.
-   Caption                        Add text captions to any clip.
-   Chroma Key (Greenscreen)       Replace color with transparency.
-   Color Map / Lookup             Adjust colors using 3D LUT lookup tables (.cube format)
-   Color Saturation               Adjust color intensity.
-   Color Shift                    Shift image colors in various directions.
-   Crop                           Crop out parts of your video.
-   Deinterlace                    Remove interlacing from video.
-   Hue                            Adjust hue / color.
-   Lens Flare                     Simulate sunlight hitting a lens with flares.
-   Negative                       Produce a negative image.
-   Object Detector                Detect objects in video.
-   Outline                        Add outline around any image or text.
-   Pixelate                       Increase or decrease visible pixels.
-   Sharpen                        Boost edge contrast to make video details look crisper.
-   Shift                          Shift image in different directions.
-   Spherical Projection           Flatten or project 360° videos.
-   Stabilizer                     Reduce video shake.
-   Tracker                        Track bounding box in video.
-   Wave                           Distort image into a wave pattern.
-   Compressor                     Reduce loudness or amplify quiet sounds.
-   Delay                          Adjust audio-video synchronism.
-   Distortion                     Clip audio signal for distortion.
-   Echo                           Add delayed sound reflection.
-   Expander                       Make loud parts relatively louder.
-   Noise                          Add random equal-intensity signals.
-   Parametric EQ                  Adjust frequency volume in audio.
-   Robotization                   Transform audio into robotic voice.
-   Whisperization                 Transform audio into whispers.
-   =============================  ===============
+.. |bars_icon| image:: ../src/effects/icons/bars@2x.png
+   :width: 50px
+   :alt: Bars Icon
+
+.. |blur_icon| image:: ../src/effects/icons/blur@2x.png
+   :width: 50px
+   :alt: Blur Icon
+
+.. |brightness_icon| image:: ../src/effects/icons/brightness@2x.png
+   :width: 50px
+   :alt: Brightness & Contrast Icon
+
+.. |caption_icon| image:: ../src/effects/icons/caption@2x.png
+   :width: 50px
+   :alt: Caption Icon
+
+.. |chromakey_icon| image:: ../src/effects/icons/chromakey@2x.png
+   :width: 50px
+   :alt: Chroma Key (Greenscreen) Icon
+
+.. |colormap_icon| image:: ../src/effects/icons/colormap@2x.png
+   :width: 50px
+   :alt: Color Map / Lookup Icon
+
+.. |saturation_icon| image:: ../src/effects/icons/saturation@2x.png
+   :width: 50px
+   :alt: Color Saturation Icon
+
+.. |colorshift_icon| image:: ../src/effects/icons/colorshift@2x.png
+   :width: 50px
+   :alt: Color Shift Icon
+
+.. |crop_icon| image:: ../src/effects/icons/crop@2x.png
+   :width: 50px
+   :alt: Crop Icon
+
+.. |deinterlace_icon| image:: ../src/effects/icons/deinterlace@2x.png
+   :width: 50px
+   :alt: Deinterlace Icon
+
+.. |hue_icon| image:: ../src/effects/icons/hue@2x.png
+   :width: 50px
+   :alt: Hue Icon
+
+.. |lensflare_icon| image:: ../src/effects/icons/lensflare@2x.png
+   :width: 50px
+   :alt: Lens Flare Icon
+
+.. |negate_icon| image:: ../src/effects/icons/negate@2x.png
+   :width: 50px
+   :alt: Negative Icon
+
+.. |objectdetection_icon| image:: ../src/effects/icons/objectdetection@2x.png
+   :width: 50px
+   :alt: Object Detector Icon
+
+.. |outline_icon| image:: ../src/effects/icons/outline@2x.png
+   :width: 50px
+   :alt: Outline Icon
+
+.. |pixelate_icon| image:: ../src/effects/icons/pixelate@2x.png
+   :width: 50px
+   :alt: Pixelate Icon
+
+.. |sharpen_icon| image:: ../src/effects/icons/sharpen@2x.png
+   :width: 50px
+   :alt: Sharpen Icon
+
+.. |shift_icon| image:: ../src/effects/icons/shift@2x.png
+   :width: 50px
+   :alt: Shift Icon
+
+.. |sphericalprojection_icon| image:: ../src/effects/icons/sphericalprojection@2x.png
+   :width: 50px
+   :alt: Spherical Projection Icon
+
+.. |stabilizer_icon| image:: ../src/effects/icons/stabilizer@2x.png
+   :width: 50px
+   :alt: Stabilizer Icon
+
+.. |tracker_icon| image:: ../src/effects/icons/tracker@2x.png
+   :width: 50px
+   :alt: Tracker Icon
+
+.. |wave_icon| image:: ../src/effects/icons/wave@2x.png
+   :width: 50px
+   :alt: Wave Icon
+
+.. |compressor_icon| image:: ../src/effects/icons/compressor@2x.png
+   :width: 50px
+   :alt: Compressor Icon
+
+.. |delay_icon| image:: ../src/effects/icons/delay@2x.png
+   :width: 50px
+   :alt: Delay Icon
+
+.. |distortion_icon| image:: ../src/effects/icons/distortion@2x.png
+   :width: 50px
+   :alt: Distortion Icon
+
+.. |echo_icon| image:: ../src/effects/icons/echo@2x.png
+   :width: 50px
+   :alt: Echo Icon
+
+.. |expander_icon| image:: ../src/effects/icons/expander@2x.png
+   :width: 50px
+   :alt: Expander Icon
+
+.. |noise_icon| image:: ../src/effects/icons/noise@2x.png
+   :width: 50px
+   :alt: Noise Icon
+
+.. |parametriceq_icon| image:: ../src/effects/icons/parametriceq@2x.png
+   :width: 50px
+   :alt: Parametric EQ Icon
+
+.. |robotization_icon| image:: ../src/effects/icons/robotization@2x.png
+   :width: 50px
+   :alt: Robotization Icon
+
+.. |whisperization_icon| image:: ../src/effects/icons/whisperization@2x.png
+   :width: 50px
+   :alt: Whisperization Icon
+
+.. table::
+   :widths: 15 30 80
+
+   =========================== ============================= ===============
+   Icon                        Effect Name                   Effect Description
+   =========================== ============================= ===============
+   |mask_icon|                 Alpha Mask / Wipe Transition  Grayscale mask transition between images.
+   |bars_icon|                 Bars                          Add colored bars around your video.
+   |blur_icon|                 Blur                          Adjust image blur.
+   |brightness_icon|           Brightness & Contrast         Modify frame’s brightness and contrast.
+   |caption_icon|              Caption                       Add text captions to any clip.
+   |chromakey_icon|            Chroma Key (Greenscreen)      Replace color with transparency.
+   |colormap_icon|             Color Map / Lookup            Adjust colors using 3D LUT lookup tables (.cube format).
+   |saturation_icon|           Color Saturation              Adjust color intensity.
+   |colorshift_icon|           Color Shift                   Shift image colors in various directions.
+   |crop_icon|                 Crop                          Crop out parts of your video.
+   |deinterlace_icon|          Deinterlace                   Remove interlacing from video.
+   |hue_icon|                  Hue                           Adjust hue / color.
+   |lensflare_icon|            Lens Flare                    Simulate sunlight hitting a lens with flares.
+   |negate_icon|               Negative                      Produce a negative image.
+   |objectdetection_icon|      Object Detector               Detect objects in video.
+   |outline_icon|              Outline                       Add outline around any image or text.
+   |pixelate_icon|             Pixelate                      Increase or decrease visible pixels.
+   |sharpen_icon|              Sharpen                       Boost edge contrast to make video details look crisper.
+   |shift_icon|                Shift                         Shift image in different directions.
+   |sphericalprojection_icon|  Spherical Projection          Flatten or project 360° videos.
+   |stabilizer_icon|           Stabilizer                    Reduce video shake.
+   |tracker_icon|              Tracker                       Track bounding box in video.
+   |wave_icon|                 Wave                          Distort image into a wave pattern.
+   |compressor_icon|           Compressor                    Reduce loudness or amplify quiet sounds.
+   |delay_icon|                Delay                         Adjust audio-video synchronism.
+   |distortion_icon|           Distortion                    Clip audio signal for distortion.
+   |echo_icon|                 Echo                          Add delayed sound reflection.
+   |expander_icon|             Expander                      Make loud parts relatively louder.
+   |noise_icon|                Noise                         Add random equal-intensity signals.
+   |parametriceq_icon|         Parametric EQ                 Adjust frequency volume in audio.
+   |robotization_icon|         Robotization                  Transform audio into robotic voice.
+   |whisperization_icon|       Whisperization                Transform audio into whispers.
+   =========================== ============================= ===============
+
 
 Effect Properties
 -----------------
