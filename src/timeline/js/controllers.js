@@ -510,6 +510,18 @@ App.controller("TimelineCtrl", function ($scope) {
         return "#CC5500";
       case "Saturation":
         return "#ff3d00";
+      case "Sharpen":
+        return "#49759c";
+      case "ColorMap":
+        return "#4d945d";
+      case "LensFlare":
+        return "#7c29d1";
+      case "Normalize":
+        return "#607d3b";
+      case "Outline":
+        return "#be6d33";
+      case "SphericalProjection":
+        return "#b886ea";
       case "Shift":
         return "#8d7960";
       case "Stabilizer":
