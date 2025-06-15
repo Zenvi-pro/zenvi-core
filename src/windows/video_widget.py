@@ -331,149 +331,157 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             True)
 
         # Get theme colors (if any)
-        background_color = self.palette().color(self.backgroundRole())
-        painter.fillRect(event.rect(), background_color)
+        bg_color = self.palette().color(self.backgroundRole())
+        painter.fillRect(event.rect(), bg_color)
 
         # Find centered viewport
-        viewport_rect = self.centeredViewport(self.width(), self.height())
-
+        viewport = self.centeredViewport(self.width(), self.height())
         if self.current_image:
-            # DRAW FRAME
-            # Calculate new frame image size, maintaining aspect ratio
-            pixSize = self.current_image.size()
-            pixSize.scale(event.rect().size(), Qt.KeepAspectRatio)
-            self.curr_frame_size = pixSize
+            pix_size = self.current_image.size()
+            pix_size.scale(event.rect().size(), Qt.KeepAspectRatio)
+            self.curr_frame_size = pix_size
 
             # Scale image (take into account display scaling for High DPI monitors)
             scale = self.devicePixelRatioF()
-            scaledPix = self.current_image.scaled(pixSize * scale, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled_img = self.current_image.scaled(
+                pix_size * scale,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            painter.drawImage(viewport, scaled_img)
 
-            # Calculate center of QWidget and Draw image
-            painter.drawImage(viewport_rect, scaledPix)
+        # Prepare for transform‐box calculation
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
 
+        # Default props for effect-only
+        default_props = {
+            "scale_x": {"value": 1.0},
+            "scale_y": {"value": 1.0},
+            "rotation": {"value": 0.0},
+            "shear_x": {"value": 0.0},
+            "shear_y": {"value": 0.0},
+            "origin_x": {"value": 0.5},
+            "origin_y": {"value": 0.5},
+        }
+
+        # 5a) Collect selected clips
+        clip_pairs = []
         if self.transforming_clips and self.transforming_clip_objects:
-            # Draw transform handles on top of video preview
-            fps = get_app().project.get("fps")
-            fps_float = float(fps["num"]) / float(fps["den"])
+            clip_pairs = list(zip(self.transforming_clips, self.transforming_clip_objects))
 
-            union_rect = None
-            first_props = None
-            for clip, obj in zip(self.transforming_clips, self.transforming_clip_objects):
-                frame = self._get_clip_frame_number(clip, fps_float)
-                rect, props = self._clip_rect(clip, obj, viewport_rect, frame)
-                if union_rect is None:
-                    union_rect = rect
-                    first_props = props
-                else:
-                    union_rect = union_rect.united(rect)
-
-            if union_rect and first_props:
-                x = union_rect.x()
-                y = union_rect.y()
-
-                sx = max(float(first_props.get('scale_x').get('value')), 0.001)
-                sy = max(float(first_props.get('scale_y').get('value')), 0.001)
-                rotation = first_props.get('rotation').get('value')
-                shear_x = first_props.get('shear_x').get('value')
-                shear_y = first_props.get('shear_y').get('value')
-                origin_x = first_props.get('origin_x').get('value')
-                origin_y = first_props.get('origin_y').get('value')
-
-                source_width = union_rect.width()
-                source_height = union_rect.height()
-
-                self.transform = QTransform()
-                if x or y:
-                    self.transform.translate(x, y)
-
-                origin_x_value = source_width * origin_x
-                origin_y_value = source_height * origin_y
-                self.originHandle = QPointF(x + origin_x_value, y + origin_y_value)
-                if rotation or shear_x or shear_y:
-                    self.transform.translate(origin_x_value, origin_y_value)
-                    self.transform.rotate(rotation)
-                    self.transform.shear(shear_x, shear_y)
-                    self.transform.translate(-origin_x_value, -origin_y_value)
-
-                # Apply scale
-                if sx or sy:
-                    self.transform.scale(sx, sy)
-
-                # Apply transform
-                painter.setTransform(self.transform)
-
-            if self.transforming_effect:
-                # Check if the effect has a tracked object
-                if self.transforming_effect_object.info.has_tracked_object:
-                    # Get properties of clip at current frame
-                    raw_properties_effect = json.loads(self.transforming_effect_object.PropertiesJSON(clip_frame_number))
-                    # Get properties for the first object in dict. PropertiesJSON should return one object at the time
-                    tmp = raw_properties_effect.get('objects')
-                    if tmp:
-                        obj_id = list(tmp.keys())[0]
-                        raw_properties_effect = raw_properties_effect.get('objects').get(obj_id)
-
-                        # Check if the tracked object is visible in this frame
-                        if raw_properties_effect.get('visible'):
-                            if raw_properties_effect.get('visible').get('value') == 1:
-                                # Get the selected bounding box values
-                                rotation = raw_properties_effect['rotation']['value']
-                                x1 = raw_properties_effect['x1']['value']
-                                y1 = raw_properties_effect['y1']['value']
-                                x2 = raw_properties_effect['x2']['value']
-                                y2 = raw_properties_effect['y2']['value']
-                                self.drawTransformHandler(
-                                    painter,
-                                    sx, sy,
-                                    source_width, source_height,
-                                    origin_x, origin_y,
-                                    x1, y1, x2, y2,
-                                    rotation)
+        # Build union_rect from selected clips
+        union_rect = None
+        first_props = None
+        for clip, obj in clip_pairs:
+            frame = self._get_clip_frame_number(clip, fps_float)
+            rect, props = self._clip_rect(clip, obj, viewport, frame)
+            if union_rect is None:
+                union_rect = rect
+                first_props = props
             else:
-                self.drawTransformHandler(
-                    painter,
-                    sx, sy,
-                    source_width, source_height,
-                    origin_x, origin_y)
+                union_rect = union_rect.united(rect)
 
+        # Include effect's tracked‐object box
+        if (self.transforming_effect
+                and self.transforming_effect_object.info.has_tracked_object
+                and self.transforming_clip
+                and self.transforming_clip_object):
+            clip = self.transforming_clip
+            obj  = self.transforming_clip_object
+            frame = self._get_clip_frame_number(clip, fps_float)
+            clip_rect, clip_props = self._clip_rect(clip, obj, viewport, frame)
+
+            raw_eff = json.loads(self.transforming_effect_object.PropertiesJSON(frame))
+            objs = raw_eff.get("objects", {}) or {}
+            if objs:
+                oid = next(iter(objs))
+                eprops = objs[oid]
+                if eprops.get("visible", {}).get("value") == 1:
+                    # Compute absolute effect box coordinates
+                    x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
+                    y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
+                    x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
+                    y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
+                    effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
+
+                    if union_rect is None:
+                        union_rect = effect_rect
+                        first_props = default_props
+                    else:
+                        union_rect = union_rect.united(effect_rect)
+
+        # Draw a single unified transform handler
+        if union_rect and first_props:
+            x  = union_rect.x()
+            y  = union_rect.y()
+            sw = union_rect.width()
+            sh = union_rect.height()
+
+            sx  = max(float(first_props["scale_x"]["value"]), 0.001)
+            sy  = max(float(first_props["scale_y"]["value"]), 0.001)
+            rot = first_props["rotation"]["value"]
+            shx = first_props["shear_x"]["value"]
+            shy = first_props["shear_y"]["value"]
+            ox  = first_props["origin_x"]["value"]
+            oy  = first_props["origin_y"]["value"]
+
+            # Build QTransform
+            self.transform = QTransform()
+            if x or y:
+                self.transform.translate(x, y)
+
+            oxv = sw * ox
+            oyv = sh * oy
+            if rot or shx or shy:
+                self.transform.translate(oxv, oyv)
+                self.transform.rotate(rot)
+                self.transform.shear(shx, shy)
+                self.transform.translate(-oxv, -oyv)
+
+            # Apply scale
+            if sx or sy:
+                self.transform.scale(sx, sy)
+
+            # Store for mouseMoveEvent
+            self.originHandle = QPointF(x + oxv, y + oyv)
+
+            # Apply transform
+            painter.setTransform(self.transform)
+            self.drawTransformHandler(painter, sx, sy, sw, sh, ox, oy)
+
+        # Region‐selection drawing (restored from original)
         if self.region_enabled:
             # Paint region selector onto video preview
             self.region_transform = QTransform()
-
-            # Init X/Y
-            x = viewport_rect.x()
-            y = viewport_rect.y()
-
-            # Apply translate/move
-            if x or y:
-                self.region_transform.translate(x, y)
-
-            # Apply scale (if any)
+            # Position at viewport origin
+            rx = viewport.x()
+            ry = viewport.y()
+            if rx or ry:
+                self.region_transform.translate(rx, ry)
             if self.zoom:
                 self.region_transform.scale(self.zoom, self.zoom)
 
-            # Apply transform
+            # Keep inverted for mouse mapping
             self.region_transform_inverted = self.region_transform.inverted()[0]
             painter.setTransform(self.region_transform)
 
-            # Draw transform corners and center origin circle
-            # Corner size
+            # Draw handles and box
             cs = self.cs
-
             if self.regionTopLeftHandle and self.regionBottomRightHandle:
-                # Draw 2 corners and bounding box
+                # Draw corners and bounding box
                 pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
                 pen.setCosmetic(True)
                 painter.setPen(pen)
                 painter.drawRect(QRectF(
                     self.regionTopLeftHandle.x() - (cs / 2.0 / self.zoom),
                     self.regionTopLeftHandle.y() - (cs / 2.0 / self.zoom),
-                    self.regionTopLeftHandle.width() / self.zoom,
+                    self.regionTopLeftHandle.width()  / self.zoom,
                     self.regionTopLeftHandle.height() / self.zoom))
                 painter.drawRect(QRectF(
                     self.regionBottomRightHandle.x() - (cs / 2.0 / self.zoom),
                     self.regionBottomRightHandle.y() - (cs / 2.0 / self.zoom),
-                    self.regionBottomRightHandle.width() / self.zoom,
+                    self.regionBottomRightHandle.width()  / self.zoom,
                     self.regionBottomRightHandle.height() / self.zoom))
                 region_rect = QRectF(
                     self.regionTopLeftHandle.x(),
@@ -1030,10 +1038,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 if not objects:
                     return
 
-                # Get properties for the first object in dict.
-                # PropertiesJSON should return one object at the time
-                obj_id = list(objects.keys())[0]
-                raw_properties = objects.get(obj_id)
+                selected_idx = self.transforming_effect.data.get('selected_object_index')
+                obj_id = str(selected_idx) if selected_idx is not None else list(objects.keys())[0]
+                raw_properties = objects.get(obj_id) or next(iter(objects.values()))
 
                 if not raw_properties.get('visible'):
                     self.mouse_position = event.pos()
