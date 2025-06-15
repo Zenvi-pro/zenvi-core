@@ -711,9 +711,7 @@ class PropertiesTableView(QTableView):
                                                   "value": clip.id,
                                                   "selected": False,
                                                   "icon": clip_instance_icon})
-                            # Get the pixmap of the clip icon
-                            icon_size = 72
-                            icon_pixmap = clip_instance_icon.pixmap(icon_size, icon_size)
+
                             # Add tracked objects to the selection menu
                             tracked_objects = []
                             for effect in clip.data["effects"]:
@@ -736,10 +734,11 @@ class PropertiesTableView(QTableView):
                                             "icon": None
                                         })
 
-                                    tracked_choices.append({"name": clip.data["title"],
-                                                          "value": tracked_objects,
-                                                          "selected": False,
-                                                          "icon": clip_instance_icon})
+                            if tracked_objects:
+                                tracked_choices.append({"name": clip.data["title"],
+                                                      "value": tracked_objects,
+                                                      "selected": False,
+                                                      "icon": clip_instance_icon})
                     self.choices.append({"name": _("None"), "value": "None", "selected": False, "icon": None})
                     if property_key == "parentObjectId" and tracked_choices:
                         self.choices.append({"name": _("Tracked Objects"), "value": tracked_choices, "selected": False, "icon": None})
