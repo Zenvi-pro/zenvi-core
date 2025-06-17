@@ -589,6 +589,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
 
+        # Clear preview selections
+        self.videoPreview.clearTransformState()
+
         # Reset selections
         self.clearSelections()
 

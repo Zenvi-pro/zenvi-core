@@ -88,6 +88,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     "Update: Set video widget pixel aspect ratio to: %s",
                     self.pixel_ratio.ToFloat())
 
+    def clearTransformState(self):
+        """Clear all transform-related state to avoid using invalid clip/effect objects"""
+        self.transforming_clip = None
+        self.transforming_clips.clear()
+        self.transforming_clip_objects.clear()
+        self.transforming_effect = None
+        self.transforming_clip_object = None
+        self.transforming_effect_object = None
+        self.transaction_id = None
+        self.transform_mode = None
+        self.transform = None
+        self.clipBounds = None
+        self.originHandle = None
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
 
     def drawTransformHandler(
         self, painter, sx, sy, source_width, source_height,
