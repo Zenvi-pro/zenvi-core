@@ -699,51 +699,65 @@ class PropertiesTableView(QTableView):
                             parent_clip_id = Effect.get(id=item_id).parent.get("id")
                             log.debug(f"Lookup parent clip ID for effect: '{item_id}' = '{parent_clip_id}'")
 
-                        # Avoid attach a clip to it's own object
-                        if clip.id != parent_clip_id:
-                            # Iterate through all project files (to find matching QIcon)
-                            for file_index in range(self.files_model.rowCount()):
-                                file_row = self.files_model.index(file_index, 0)
-                                project_file_id = file_row.sibling(file_index, 5).data()
-                                if file_id == project_file_id:
-                                    clip_instance_icon = file_row.data(Qt.DecorationRole)
-                                    clip_choices.append({"name": clip.data["title"],
-                                                  "value": clip.id,
-                                                  "selected": False,
-                                                  "icon": clip_instance_icon})
+                        # Skip attaching to itself
+                        if clip.id == parent_clip_id:
+                            continue
 
-                            # Add tracked objects to the selection menu
-                            tracked_objects = []
-                            for effect in clip.data["effects"]:
-                                # Check if effect has a tracked object
-                                if effect.get("has_tracked_object"):
-                                    # Instantiate the effect
-                                    effect_instance = timeline_instance.GetClipEffect(effect["id"])
-                                    # Get the indexes and IDs of the visible objects
-                                    visible_objects = json.loads(effect_instance.GetVisibleObjects(frame_number))
-                                    # Add visible objects as choices
-                                    for enum_index, object_index in enumerate(visible_objects["visible_objects_index"]):
-                                        if "visible_class_names" in visible_objects:
-                                            class_name = visible_objects["visible_class_names"][enum_index]
-                                        else:
-                                            class_name = "Tracked Region"
-                                        tracked_objects.append({
-                                            "name": f"{class_name}: {object_index}",
-                                            "value": str(object_index),
-                                            "selected": False,
-                                            "icon": None
-                                        })
+                        # Get the file's icon
+                        clip_icon = None
+                        for row in range(self.files_model.rowCount()):
+                            idx = self.files_model.index(row, 0)
+                            if idx.sibling(row, 5).data() == file_id:
+                                clip_icon = idx.data(Qt.DecorationRole)
+                                break
 
-                            if tracked_objects:
-                                tracked_choices.append({"name": clip.data["title"],
-                                                      "value": tracked_objects,
-                                                      "selected": False,
-                                                      "icon": clip_instance_icon})
+                        # Add the clip as a choice
+                        clip_choices.append({
+                            "name": clip.data["title"],
+                            "value": clip.id,
+                            "selected": False,
+                            "icon": clip_icon
+                        })
+
+                        # Now gather tracked objects under this clip
+                        tracked_objects = []
+                        for effect in clip.data["effects"]:
+                            if effect.get("has_tracked_object"):
+                                eff_inst = timeline_instance.GetClipEffect(effect["id"])
+                                visible = json.loads(eff_inst.GetVisibleObjects(frame_number))
+                                # Use the new "<effect-UUID>-<index>" IDs directly
+                                for obj_id in visible["visible_objects_id"]:
+                                    tracked_objects.append({
+                                        "name": obj_id,
+                                        "value": obj_id,
+                                        "selected": False,
+                                        "icon": None
+                                    })
+
+                        if tracked_objects:
+                            tracked_choices.append({
+                                "name": clip.data["title"],
+                                "value": tracked_objects,
+                                "selected": False,
+                                "icon": clip_icon
+                            })
+
+                    # Build the final choices list
                     self.choices.append({"name": _("None"), "value": "None", "selected": False, "icon": None})
-                    if property_key == "parentObjectId" and tracked_choices:
-                        self.choices.append({"name": _("Tracked Objects"), "value": tracked_choices, "selected": False, "icon": None})
+                    if tracked_choices:
+                        self.choices.append({
+                            "name": _("Tracked Objects"),
+                            "value": tracked_choices,
+                            "selected": False,
+                            "icon": None
+                        })
                     if clip_choices:
-                        self.choices.append({"name": _("Clips"), "value": clip_choices, "selected": False, "icon": None})
+                        self.choices.append({
+                            "name": _("Clips"),
+                            "value": clip_choices,
+                            "selected": False,
+                            "icon": None
+                        })
 
             # Handle reader type values
             if self.property_type == "reader" and not self.choices:
