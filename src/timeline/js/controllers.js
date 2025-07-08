@@ -1179,8 +1179,24 @@ $scope.updateRecentItemJSON = function (item_type, item_ids, tid) {
 
     // Get recent move data
     var element_id = item_type + "_" + item_id;
-    var top = bounding_box.move_clips[element_id].top;
-    var left = bounding_box.move_clips[element_id].left;
+    var top = 0;
+    var left = 0;
+
+    // Safely read the stored move data, or fall back to DOM values
+    if (
+      bounding_box.move_clips &&
+      Object.prototype.hasOwnProperty.call(bounding_box.move_clips, element_id)
+    ) {
+      top = bounding_box.move_clips[element_id].top;
+      left = bounding_box.move_clips[element_id].left;
+    } else {
+      var elem = $("#" + element_id);
+      if (elem.length) {
+        var scrolling_tracks = $("#scrolling_tracks");
+        top = elem.position().top + scrolling_tracks.scrollTop();
+        left = elem.position().left + scrolling_tracks.scrollLeft();
+      }
+    }
 
     // Get position of item (snapped to FPS grid)
     var clip_position = snapToFPSGridTime($scope, pixelToTime($scope, parseFloat(left)));
@@ -1253,8 +1269,18 @@ $scope.startManualMove = function (item_type, item_ids) {
     }
   });
 
-  // Delay to allow the DOM to update
-  setTimeout(function() {
+  // Helper to initialize bounding box once DOM elements exist
+  function initBoundingBox(attempt) {
+    attempt = attempt || 0;
+
+    var selectedClips = $(".ui-selected");
+
+    // If the DOM hasn't finished updating, retry a few times
+    if (selectedClips.length < item_ids.length && attempt < 10) {
+      setTimeout(function() { initBoundingBox(attempt + 1); }, 10);
+      return;
+    }
+
     // Prepare to store clip positions
     var scrolling_tracks = $("#scrolling_tracks");
     var vert_scroll_offset = scrolling_tracks.scrollTop();
@@ -1264,7 +1290,6 @@ $scope.startManualMove = function (item_type, item_ids) {
     bounding_box = {};
 
     // Set bounding box that contains all selected clips/transitions
-    var selectedClips = $(".ui-selected");
     selectedClips.each(function () {
       setBoundingBox($scope, $(this));
     });
@@ -1298,7 +1323,10 @@ $scope.startManualMove = function (item_type, item_ids) {
     selectedClips.each(function () {
       $(this).addClass("manual-move");
     });
-  }, 0);
+  }
+
+  // Delay to allow the DOM to update before trying to init bounding box
+  setTimeout(function() { initBoundingBox(0); }, 0);
 };
 
 $scope.moveItem = function (x, y) {
