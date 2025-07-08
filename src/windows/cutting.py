@@ -187,12 +187,18 @@ class Cutting(QDialog):
         self.actionPlay.triggered.connect(self.actionPlay_Triggered)
         self.btnPlay.clicked.connect(self.btnPlay_clicked)
         self.sliderVideo.valueChanged.connect(self.sliderVideo_valueChanged)
+        self.sliderVideo.sliderReleased.connect(self.sliderVideo_released)
         self.btnStart.clicked.connect(self.btnStart_clicked)
         self.btnEnd.clicked.connect(self.btnEnd_clicked)
         self.btnClear.clicked.connect(self.btnClear_clicked)
         self.btnAddClip.clicked.connect(self.btnAddClip_clicked)
         self.txtName.installEventFilter(self)
         self.sliderVideo.installEventFilter(self)
+        # Timer to ensure final preview update
+        self.slider_timer = QTimer(self)
+        self.slider_timer.setInterval(100)
+        self.slider_timer.setSingleShot(True)
+        self.slider_timer.timeout.connect(self.sliderVideo_timeout)
         self.initialized = True
 
     def eventFilter(self, obj, event):
@@ -220,6 +226,12 @@ class Cutting(QDialog):
         # Trigger play button (This action is invoked from the preview thread, so it must exist here)
         self.btnPlay.click()
 
+    def frame_to_timestamp(self, frame_number):
+        """Return a timecode string for the given frame"""
+        seconds = (frame_number - 1) / self.fps
+        t = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
+        return "%s:%s:%s:%s" % (t["hour"], t["min"], t["sec"], t["frame"])
+
     def movePlayhead(self, frame_number):
         """Update the playhead position"""
 
@@ -228,15 +240,8 @@ class Cutting(QDialog):
         self.sliderVideo.setValue(frame_number)
         self.sliderIgnoreSignal = False
 
-        # Convert frame to seconds
-        seconds = (frame_number-1) / self.fps
-
-        # Convert seconds to time stamp
-        time_text = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
-        timestamp = "%s:%s:%s:%s" % (time_text["hour"], time_text["min"], time_text["sec"], time_text["frame"])
-
         # Update label
-        self.lblVideoTime.setText(timestamp)
+        self.lblVideoTime.setText(self.frame_to_timestamp(frame_number))
 
     def btnPlay_clicked(self, force=None):
         log.info("btnPlay_clicked")
@@ -261,12 +266,24 @@ class Cutting(QDialog):
     def sliderVideo_valueChanged(self, new_frame):
         if self.preview_thread and not self.sliderIgnoreSignal:
             log.info('sliderVideo_valueChanged')
-
-            # Pause video
+            # Pause video and update preview immediately
             self.btnPlay_clicked(force="pause")
-
-            # Seek to new frame
             self.preview_thread.previewFrame(new_frame)
+            # Start timer to ensure preview updates after dragging stops
+            self.slider_timer.start()
+
+    def sliderVideo_timeout(self):
+        if self.preview_thread and not self.sliderIgnoreSignal:
+            log.info('sliderVideo_timeout')
+            self.btnPlay_clicked(force="pause")
+            self.preview_thread.previewFrame(self.sliderVideo.value())
+
+    def sliderVideo_released(self):
+        if self.preview_thread and not self.sliderIgnoreSignal:
+            log.info('sliderVideo_released')
+            self.btnPlay_clicked(force="pause")
+            self.preview_thread.previewFrame(self.sliderVideo.value())
+            self.slider_timer.start()
 
     def btnStart_clicked(self):
         """Start of clip button was clicked"""
@@ -382,6 +399,11 @@ class Cutting(QDialog):
         self.file.data['end'] = self.previous_start + (self.end_frame / self.fps)
         if self.txtName.text():
             self.file.data['name'] = self.txtName.text()
+        else:
+            global_frame = round(self.previous_start * self.fps) + self.start_frame
+            timestamp = self.frame_to_timestamp(global_frame)
+            base = os.path.splitext(os.path.basename(self.file_path))[0]
+            self.file.data['name'] = f"{base} ({timestamp})"
         self.file.save()
 
         # Move to next frame
