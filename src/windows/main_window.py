@@ -1857,6 +1857,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Update profile (if changed)
         if result == QDialog.Accepted and profile:
+            # Clear any selections before changing the project profile
+            # to prevent invalid selection state from causing crashes
+            self.clearSelections()
+
             proj = get_app().project
 
             # Group transactions
@@ -3077,7 +3081,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.frameWeb.addWidget(self.timelineToolbar)
 
     def clearSelections(self):
-        """Clear all selection containers"""
+        """Clear all selection containers and reset preview transforms"""
+        # Reset any active transform state on the video preview. This prevents
+        # the preview widget from holding references to libopenshot objects that
+        # may become invalid after timeline changes.
+        if hasattr(self, "videoPreview") and self.videoPreview:
+            self.videoPreview.clearTransformState()
+
         self.selected_items = []
         self.selected_markers = []
         self.selected_tracks = []
