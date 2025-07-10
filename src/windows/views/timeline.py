@@ -3072,20 +3072,24 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # Handle changes to zoom level, update js
     def update_zoom(self, newScale):
-        _ = get_app()._tr
-
-        # Determine X coordinate of cursor (to center zoom on)
-        cursor_y = self.mapFromGlobal(self.cursor().pos()).y()
-        if cursor_y >= 0:
-            cursor_x = self.mapFromGlobal(self.cursor().pos()).x()
+        if ViewClass == TimelineWidget:
+            TimelineWidget.setZoomFactor(self, newScale, emit=False)
+            return
         else:
-            cursor_x = 0
+            _ = get_app()._tr
 
-        # Get access to timeline scope and set scale to new computed value
-        self.run_js(JS_SCOPE_SELECTOR + ".setScale(" + str(newScale) + "," + str(cursor_x) + ");")
+            # Determine X coordinate of cursor (to center zoom on)
+            cursor_y = self.mapFromGlobal(self.cursor().pos()).y()
+            if cursor_y >= 0:
+                cursor_x = self.mapFromGlobal(self.cursor().pos()).x()
+            else:
+                cursor_x = 0
 
-        # Start or restart timer to redraw audio
-        self.redraw_audio_timer.start()
+            # Get access to timeline scope and set scale to new computed value
+            self.run_js(JS_SCOPE_SELECTOR + ".setScale(" + str(newScale) + "," + str(cursor_x) + ");")
+
+            # Start or restart timer to redraw audio
+            self.redraw_audio_timer.start()
 
         # Only update scale if different
         current_scale = float(get_app().project.get("scale") or 15.0)
@@ -3098,6 +3102,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # An item is being dragged onto the timeline (mouse is entering the timeline now)
     def dragEnterEvent(self, event):
+        if ViewClass == TimelineWidget:
+            TimelineWidget.dragEnterEvent(self, event)
+            return
         # Wait cursor
         get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
 
@@ -3378,6 +3385,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):
+        if ViewClass == TimelineWidget:
+            TimelineWidget.dragMoveEvent(self, event)
+            return
         # Accept all move events
         event.accept()
 
@@ -3390,6 +3400,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # Drop an item on the timeline
     def dropEvent(self, event):
+        if ViewClass == TimelineWidget:
+            TimelineWidget.dropEvent(self, event)
+            return
+
         log.info("Dropping item on timeline - item_ids: %s, item_type: %s" % (self.item_ids, self.item_type))
 
         # Accept the event
@@ -3488,6 +3502,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def __init__(self, window):
         super().__init__()
+        if ViewClass == TimelineWidget:
+            TimelineWidget.__init__(self)
         self.setObjectName("TimelineView")
 
         app = get_app()
