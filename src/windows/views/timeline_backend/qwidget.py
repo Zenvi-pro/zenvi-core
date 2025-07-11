@@ -5,7 +5,7 @@
 
  @section LICENSE
 
- Copyright (c) 2008-2024 OpenShot Studios, LLC
+ Copyright (c) 2008-2025 OpenShot Studios, LLC
  (http://www.openshotstudios.com). This file is part of
  OpenShot Video Editor (http://www.openshot.org), an open-source project
  dedicated to delivering high quality video editing and animation solutions
@@ -30,12 +30,17 @@ import re
 
 from PyQt5.QtCore import (
     Qt, QRectF, QTimer, QPointF,
-    QStateMachine, QState, QSignalTransition, pyqtSignal, QObject
+    QSignalTransition, pyqtSignal, QObject
 )
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon
 )
 from PyQt5.QtWidgets import QSizePolicy, QWidget
+
+from .geometry import Geometry
+from .paint import ClipPainter, TransitionPainter, MarkerPainter, PlayheadPainter
+from .snap import SnapHelper
+from .state import TimelineStateMachine
 from classes.time_parts import secondsToTime
 
 from classes.app import get_app
@@ -114,6 +119,13 @@ class TimelineWidget(QWidget):
         self.drag_clip_start = 0.0
         self.dragging_playhead = False
 
+        # Cached Qt text flags
+        self._clip_text_flags = Qt.AlignLeft | Qt.AlignTop
+
+        # Frames per second float value
+        fps_info = get_app().project.get("fps")
+        self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
+
         # Default theme colors
         self.theme = {
             "background": QColor("#191919"),
@@ -131,6 +143,14 @@ class TimelineWidget(QWidget):
             "track_border": QColor("#4b92ad"),
             "selection": QColor(0, 120, 215, 80),
         }
+
+        # Helpers for geometry, snapping and painting
+        self.geometry = Geometry(self)
+        self.snap = SnapHelper(self, self.geometry)
+        self.clip_painter = ClipPainter(self)
+        self.transition_painter = TransitionPainter(self)
+        self.marker_painter = MarkerPainter(self)
+        self.playhead_painter = PlayheadPainter(self)
 
         # Load icon (using display DPI)
         self.cursors = {}
@@ -173,16 +193,17 @@ class TimelineWidget(QWidget):
         # State machine for mouse interactions
         self.events = TimelineEvents()
         self._last_event = None
+        self._press_hit = None
         self._buildStateMachine()
 
     def _buildStateMachine(self):
-        sm = QStateMachine(self)
+        sm = TimelineStateMachine(self)
 
-        idle    = QState(sm)
-        drag    = QState(sm)
-        resize  = QState(sm)
-        playhead= QState(sm)
-        boxsel  = QState(sm)
+        idle = sm.idle
+        drag = sm.drag
+        resize = sm.resize
+        playhead = sm.playhead
+        boxsel = sm.box
 
         drag.entered.connect(self._startClipDrag)
         drag.exited.connect(self._finishClipDrag)
@@ -195,19 +216,19 @@ class TimelineWidget(QWidget):
 
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, drag,
-            lambda: self._hitTest(self._last_event.pos()) == "clip"
+            lambda: self._press_hit == "clip"
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, resize,
-            lambda: self._hitTest(self._last_event.pos()) == "handle"
+            lambda: self._press_hit == "handle"
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, playhead,
-            lambda: self._hitTest(self._last_event.pos()) == "ruler"
+            lambda: self._press_hit == "ruler"
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, boxsel,
-            lambda: self._hitTest(self._last_event.pos()) == "background"
+            lambda: self._press_hit == "background"
         ))
 
         drag.entered.connect(lambda: self.events.moved.connect(self._dragMove))
@@ -350,77 +371,15 @@ class TimelineWidget(QWidget):
         if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "profile"]:
             return
 
-        # Clear cached geometry
-        self.clip_rects.clear()
-        self.clip_rects_selected.clear()
-        self.marker_rects.clear()
-        self.track_rects.clear()
+        fps_info = get_app().project.get("fps")
+        self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
-        # Build track list and lookup
-        layers = {}
-        self.track_list = list(reversed(sorted(Track.filter())))
-        for count, layer in enumerate(self.track_list):
-            layers[layer.data.get("number")] = count
+        # Invalidate and rebuild geometry
+        self.geometry.mark_dirty()
+        self.geometry.ensure()
 
-        # Wait for timeline object and valid scrollbar positions
-        if hasattr(get_app().window, "timeline"):  # and self.scrollbar_position[2] != 0.0:
-            project_duration = get_app().project.get("duration")
-            tick_pixels = get_app().project.get("tick_pixels") or 100
-            self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1)
-            width = max(self.width() - self.track_name_width,
-                        project_duration * self.pixels_per_second)
-
-            # Determine scale factor
-            if self.track_height:
-                self.vertical_factor = self.track_height
-            else:
-                self.vertical_factor = max(1, (self.height() - self.ruler_height) / len(layers.keys() or [1]))
-
-            # Build track rectangles
-            for track in self.track_list:
-                y = self.ruler_height + layers[track.data.get("number")] * self.vertical_factor
-                track_rect = QRectF(self.track_name_width, y, width, self.vertical_factor)
-                name_rect = QRectF(0, y, self.track_name_width, self.vertical_factor)
-                self.track_rects.append((track_rect, track, name_rect))
-
-            self.resize_handle_rect = QRectF(self.track_name_width - self._resize_handle_width / 2,
-                                              self.ruler_height,
-                                              self._resize_handle_width,
-                                              len(self.track_list) * self.vertical_factor)
-
-            for clip in Clip.filter():
-                # Calculate clip geometry (and cache it)
-                clip_x = self.track_name_width + (clip.data.get('position', 0.0) * self.pixels_per_second)
-                clip_y = self.ruler_height + layers.get(clip.data.get('layer', 0), 0) * self.vertical_factor
-                clip_width = ((clip.data.get('end', 0.0) - clip.data.get('start', 0.0))
-                              * self.pixels_per_second)
-                clip_rect = QRectF(clip_x, clip_y, clip_width, self.vertical_factor)
-                if clip.id in get_app().window.selected_clips:
-                    # selected clip
-                    self.clip_rects_selected.append((clip_rect, clip))
-                else:
-                    # un-selected clip
-                    self.clip_rects.append((clip_rect, clip))
-
-            for clip in Transition.filter():
-                # Calculate clip geometry (and cache it)
-                clip_x = self.track_name_width + (clip.data.get('position', 0.0) * self.pixels_per_second)
-                clip_y = self.ruler_height + layers.get(clip.data.get('layer', 0), 0) * self.vertical_factor
-                clip_width = ((clip.data.get('end', 0.0) - clip.data.get('start', 0.0))
-                              * self.pixels_per_second)
-                clip_rect = QRectF(clip_x, clip_y, clip_width, self.vertical_factor)
-                if clip.id in get_app().window.selected_transitions:
-                    # selected clip
-                    self.clip_rects_selected.append((clip_rect, clip))
-                else:
-                    # un-selected clip
-                    self.clip_rects.append((clip_rect, clip))
-
-            for marker in Marker.filter():
-                # Calculate clip geometry (and cache it)
-                marker_x = self.track_name_width + (marker.data.get('position', 0.0) * self.pixels_per_second)
-                marker_rect = QRectF(marker_x, self.ruler_height, 0.5, len(layers) * self.vertical_factor)
-                self.marker_rects.append(marker_rect)
+        # Mirror some attributes for compatibility
+        self.track_list = self.geometry.track_list
 
         # Schedule repaint
         self.update()
@@ -456,6 +415,9 @@ class TimelineWidget(QWidget):
         if not get_app().window.timeline:  # nothing to draw yet
             painter.end()
             return
+
+        # Ensure geometry is current
+        self.geometry.ensure()
 
         # ------------------------------------------------------------------ #
         #  Derived constants
@@ -497,7 +459,7 @@ class TimelineWidget(QWidget):
         # ------------------------------------------------------------------ #
         #  Tracks (background + labels)
         # ------------------------------------------------------------------ #
-        for track_rect, track, name_rect in self.track_rects:
+        for track_rect, track, name_rect in self.geometry.track_rects:
             painter.fillRect(track_rect, self.theme["track_bg"])
             painter.setPen(self.theme["track_border"]);
             painter.drawRect(track_rect)
@@ -511,58 +473,12 @@ class TimelineWidget(QWidget):
         painter.fillRect(self.resize_handle_rect, self.theme["track_border"])
 
         # ------------------------------------------------------------------ #
-        #  Un-selected clips & transitions
+        #  Clips, markers and playhead
         # ------------------------------------------------------------------ #
-        for clip_rect, clip in self.clip_rects:
-            if isinstance(clip, Transition):
-                # Solid blue transitions
-                blue = QColor("blue")
-                painter.fillRect(clip_rect, blue)
-                blue_pen = QPen(QBrush(blue), 1.5);
-                blue_pen.setCosmetic(True)
-                painter.setPen(blue_pen);
-                painter.drawRect(clip_rect)
-            else:
-                painter.fillRect(clip_rect, self.theme["clip_bg"])
-                painter.setPen(clip_pen);
-                painter.drawRect(clip_rect)
-                painter.setPen(self.theme["clip_text"])
-                painter.drawText(clip_rect.adjusted(2, 2, -2, -2),
-                                 Qt.AlignLeft | Qt.AlignTop,
-                                 clip.data.get("title", ""))
-
-        # ------------------------------------------------------------------ #
-        #  Selected clips & transitions
-        # ------------------------------------------------------------------ #
-        for clip_rect, clip in self.clip_rects_selected:
-            if isinstance(clip, Transition):
-                # keep the solid blue fill, outline in red (selected_pen colour)
-                blue = QColor("blue")
-                painter.fillRect(clip_rect, blue)
-                painter.setPen(selected_pen);
-                painter.drawRect(clip_rect)
-            else:
-                painter.fillRect(clip_rect, self.theme["clip_bg"])
-                painter.setPen(selected_pen);
-                painter.drawRect(clip_rect)
-                painter.setPen(self.theme["clip_text"])
-                painter.drawText(clip_rect.adjusted(2, 2, -2, -2),
-                                 Qt.AlignLeft | Qt.AlignTop,
-                                 clip.data.get("title", ""))
-
-        # ------------------------------------------------------------------ #
-        #  Markers
-        # ------------------------------------------------------------------ #
-        painter.setPen(marker_pen)
-        for mr in self.marker_rects:
-            painter.drawRect(mr)
-
-        # ------------------------------------------------------------------ #
-        #  Playhead
-        # ------------------------------------------------------------------ #
-        play_x = self.track_name_width + (self.current_frame / fps_float) * pps
-        painter.setPen(playhead_pen)
-        painter.drawLine(QPointF(play_x, 0), QPointF(play_x, event.rect().height()))
+        self.clip_painter.paint(painter)
+        self.transition_painter.paint(painter)
+        self.marker_painter.paint(painter)
+        self.playhead_painter.paint(painter)
 
         # ------------------------------------------------------------------ #
         #  Box-selection rectangle
@@ -739,8 +655,8 @@ class TimelineWidget(QWidget):
 
         self.scrollbar_position = new_positions
 
-        # Check for empty clips rects
-        if not self.clip_rects:
+        # Check for empty clip rectangles
+        if not self.geometry.clip_rects:
             TimelineWidget.changed(self, None)
 
         # Disable auto center
@@ -797,14 +713,20 @@ class TimelineWidget(QWidget):
         return frames
 
     def _calc_item_rect(self, item):
-        layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
+        layers = {t.data.get("number"): idx for idx, t in enumerate(self.geometry.track_list)}
         x = self.track_name_width + item.data.get("position", 0.0) * self.pixels_per_second
         y = self.ruler_height + layers.get(item.data.get("layer", 0), 0) * self.vertical_factor
         width = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.pixels_per_second
         return QRectF(x, y, width, self.vertical_factor)
 
     def _update_item_rect(self, item, rect):
-        for lst in (self.clip_rects_selected, self.clip_rects):
+        """Update cached rects for clips and transitions."""
+        for lst in (
+                self.geometry.selected_rects,
+                self.geometry.clip_rects,
+                self.geometry.selected_transitions,
+                self.geometry.transition_rects
+        ):
             for i, (r, c) in enumerate(lst):
                 if c.id == item.id:
                     lst[i] = (rect, item)
@@ -813,16 +735,11 @@ class TimelineWidget(QWidget):
     # ----- State machine helper methods -----
 
     def _hitTest(self, pos):
-        for rect, _ in self.clip_rects + self.clip_rects_selected:
-            if rect.contains(pos):
-                return "clip"
-        if self.resize_handle_rect.contains(pos):
-            return "handle"
-        if pos.y() <= self.ruler_height:
-            return "ruler"
-        return "background"
+        return self.geometry.hit(pos)
 
     def mousePressEvent(self, event):
+        self.geometry.ensure()
+        self._press_hit = self._hitTest(event.pos())
         self._last_event = event
         self.events.pressed.emit(event)
 
@@ -833,45 +750,53 @@ class TimelineWidget(QWidget):
     def mouseReleaseEvent(self, event):
         self._last_event = event
         self.events.released.emit(event)
+        self._press_hit = None
 
     # ---- Clip drag ----
     def _startClipDrag(self):
         """Begin a drag operation on one or many selected clips/transitions."""
         e = self._last_event
 
-        # Identify the item under the cursor
+        # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
-        for rect, item in self.clip_rects_selected + self.clip_rects:
+        for rect, item in (
+            self.geometry.selected_rects +
+            self.geometry.clip_rects +
+            self.geometry.selected_transitions +
+            self.geometry.transition_rects
+        ):
             if rect.contains(e.pos()):
                 clicked_item = item
                 break
         if clicked_item is None:
             return
 
-        # If that item isn’t already selected, reset selection to just it
-        if clicked_item.id not in self.win.selected_clips and clicked_item.id not in self.win.selected_transitions:
-            for cid in list(self.win.selected_clips):
-                self.win.removeSelection(cid, "clip")
-            for tid in list(self.win.selected_transitions):
-                self.win.removeSelection(tid, "transition")
+        ctrl = bool(e.modifiers() & Qt.ControlModifier)
+        already = (
+            clicked_item.id in self.win.selected_clips or
+            clicked_item.id in self.win.selected_transitions
+        )
+
+        if not already:
+            if not ctrl:
+                for cid in list(self.win.selected_clips):
+                    self.win.removeSelection(cid, "clip")
+                for tid in list(self.win.selected_transitions):
+                    self.win.removeSelection(tid, "transition")
             sel_type = "transition" if isinstance(clicked_item, Transition) else "clip"
             self.win.addSelection(clicked_item.id, sel_type, False)
-            TimelineWidget.changed(self, None)  # refresh visuals
+            TimelineWidget.changed(self, None)
 
-        # All selected items participate in the drag
-        self.dragging_items = [itm for _, itm in self.clip_rects_selected]
+        # All selected clips and transitions participate in the drag
+        self.dragging_items = [itm for _, itm in self.geometry.selected_rects] + [itm for _, itm in self.geometry.selected_transitions]
         if not self.dragging_items:
             self.dragging_items = [clicked_item]
 
-        # Map track number → index (0 is bottom, len-1 is top)
-        self._track_index_from_num = {
-            t.data["number"]: idx for idx, t in enumerate(self.track_list)
-        }
-        self._track_num_from_index = {
-            idx: t.data["number"] for idx, t in enumerate(self.track_list)
-        }
+        # Map track number → index
+        self._track_index_from_num = { t.data["number"]: idx for idx, t in enumerate(self.track_list) }
+        self._track_num_from_index = { idx: t.data["number"] for idx, t in enumerate(self.track_list) }
 
-        # Record each item’s starting (pos_sec, index)
+        # Record each item’s starting position and layer index
         self._drag_initial = {
             itm.id: (
                 itm.data.get("position", 0.0),
@@ -883,10 +808,10 @@ class TimelineWidget(QWidget):
         # Bounding box for snapping calculations
         self.drag_bbox = self._compute_selected_bounding()
 
-        # Horizontal (x) offset from cursor to bbox-left in pixels
+        # Horizontal offset from cursor to bbox-left
         self.drag_clip_offset = e.pos().x() - self.drag_bbox.x()
 
-        # Starting track index under the cursor
+        # Starting track index
         self._drag_layer_idx_start = int(
             (e.pos().y() - self.ruler_height) / self.vertical_factor
         )
@@ -953,11 +878,12 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _compute_selected_bounding(self):
-        """Return a QRectF encompassing all currently-selected clips/transitions."""
-        if not self.clip_rects_selected:
+        """Return a QRectF encompassing all currently-selected clips and transitions."""
+        items = self.geometry.selected_rects + self.geometry.selected_transitions
+        if not items:
             return QRectF()
-        bbox = QRectF(self.clip_rects_selected[0][0])
-        for rect, _ in self.clip_rects_selected[1:]:
+        bbox = QRectF(items[0][0])
+        for rect, _ in items[1:]:
             bbox = bbox.united(rect)
         return bbox
 
@@ -970,25 +896,7 @@ class TimelineWidget(QWidget):
         within ±1.5 seconds.  Snapping is strictly horizontal—layer movement is
         unaffected.
         """
-        snap_px = self.pixels_per_second * 1.5          # 1.5-second window
-
-        # Current bounding-box edges after applying proposed delta
-        cur_left  = self.drag_bbox.x() + delta_seconds * self.pixels_per_second
-        cur_right = cur_left + self.drag_bbox.width()
-
-        best_diff_px = None
-        for rect, _ in self.clip_rects:                  # only other (unselected) clips
-            for edge in (rect.left(), rect.right()):
-                for ours in (cur_left, cur_right):
-                    diff = edge - ours
-                    if abs(diff) <= snap_px:
-                        if best_diff_px is None or abs(diff) < abs(best_diff_px):
-                            best_diff_px = diff
-
-        # Convert pixel diff back to seconds and add to delta
-        if best_diff_px is not None:
-            delta_seconds += best_diff_px / self.pixels_per_second
-        return delta_seconds
+        return self.snap.snap_dx(delta_seconds)
 
     # ---- Resize track names ----
     def _startResize(self):
@@ -1031,19 +939,20 @@ class TimelineWidget(QWidget):
         self.update()
 
     def _finishBoxSelect(self):
-        """Finalize box‐select, update selection, rebuild layout and repaint."""
-        e = self._last_event
-        add = bool(e.modifiers() & Qt.ControlModifier)
+        """Finalize box-select: add items intersecting the selection rectangle."""
+        add = bool(self._last_event.modifiers() & Qt.ControlModifier)
 
-        # If not Ctrl‐adding, clear previous selection
-        if not add:
-            for cid in list(self.win.selected_clips):
-                self.win.removeSelection(cid, "clip")
-            for tid in list(self.win.selected_transitions):
-                self.win.removeSelection(tid, "transition")
+        # Ensure geometry is up-to-date
+        self.geometry.mark_dirty()
+        self.geometry.ensure()
 
-        # Add any item whose rect intersects the final selection box
-        for rect, item in self.clip_rects + self.clip_rects_selected:
+        # Add any item whose rect intersects selection_rect
+        for rect, item in (
+            self.geometry.clip_rects +
+            self.geometry.selected_rects +
+            self.geometry.transition_rects +
+            self.geometry.selected_transitions
+        ):
             if rect.intersects(self.selection_rect):
                 sel_type = "transition" if isinstance(item, Transition) else "clip"
                 # False = don’t emit SelectionChanged (we’ll handle it ourselves)
