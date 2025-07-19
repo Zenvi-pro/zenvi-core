@@ -161,10 +161,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
-        if ViewClass == TimelineWidget:
-            # Propagate to timeline qwidget
-            TimelineWidget.changed(self, action)
-
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
             action = action.copy()
@@ -176,6 +172,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Bail out if change unrelated to webview
         if action and len(action.key) >= 1 and action.key[0] not in ["clips", "effects", "duration", "layers", "markers"]:
             log.debug(f"Skipping unneeded webview update for '{action.key[0]}'")
+            return
+
+        if ViewClass == TimelineWidget:
+            # Propagate to timeline qwidget
+            TimelineWidget.changed(self, action)
             return
 
         # Send a JSON version of the UpdateAction to the timeline webview method: applyJsonDiff()

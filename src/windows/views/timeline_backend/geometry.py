@@ -148,3 +148,24 @@ class Geometry:
         if pos.y() <= self.widget.ruler_height:
             return "ruler"
         return "background"
+
+    def calc_item_rect(self, item):
+        """Return QRectF for *item* (Clip or Transition)."""
+        layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
+        x = self.widget.track_name_width + item.data.get("position", 0.0) * self.widget.pixels_per_second
+        y = self.widget.ruler_height + layers.get(item.data.get("layer", 0), 0) * self.widget.vertical_factor
+        w = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.widget.pixels_per_second
+        return QRectF(x, y, w, self.widget.vertical_factor)
+
+    def update_item_rect(self, item, rect):
+        """Replace cached rect for *item* if present."""
+        for lst in (
+                self.selected_rects,
+                self.clip_rects,
+                self.selected_transitions,
+                self.transition_rects,
+        ):
+            for i, (r, c) in enumerate(lst):
+                if c.id == item.id:
+                    lst[i] = (rect, item)
+                    return

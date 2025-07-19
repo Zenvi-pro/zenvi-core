@@ -38,8 +38,13 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from .geometry import Geometry
-from .paint import ClipPainter, TransitionPainter, MarkerPainter, PlayheadPainter
+from .paint import (
+    BackgroundPainter, ClipPainter, TransitionPainter,
+    MarkerPainter, PlayheadPainter, RulerPainter, TrackPainter,
+    SelectionPainter,
+)
 from .snap import SnapHelper
+from .theme import DEFAULT_THEME, apply_theme as parse_theme
 from .state import TimelineStateMachine
 from classes.time_parts import secondsToTime
 
@@ -104,7 +109,7 @@ class TimelineWidget(QWidget):
         self.track_height = 48
 
         # Geometry constants
-        self.ruler_height = 20
+        self.ruler_height = 40
         self.track_name_width = 140
         self._resize_handle_width = 6
         self.resizing_track_names = False
@@ -126,31 +131,23 @@ class TimelineWidget(QWidget):
         fps_info = get_app().project.get("fps")
         self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
-        # Default theme colors
-        self.theme = {
-            "background": QColor("#191919"),
-            "clip_border": QColor("#53a0ed"),
-            "clip_bg": QColor("#192332"),
-            "clip_selected": QColor("red"),
-            "clip_text": QColor("#FFFFFF"),
-            "text": QColor("#FFFFFF"),
-            "track_bg": QColor("#283241"),
-            "track_name_bg": QColor("#192332"),
-            "ruler_bg": QColor("#141923"),
-            "ruler_tick": QColor("#FABE0A"),
-            "ruler_text": QColor("#c8c8c8"),
-            "playhead": QColor("#ff0024"),
-            "track_border": QColor("#4b92ad"),
-            "selection": QColor(0, 120, 215, 80),
-        }
+        # Theme colors
+        self.theme = {k: v for k, v in DEFAULT_THEME.items()}
 
         # Helpers for geometry, snapping and painting
         self.geometry = Geometry(self)
         self.snap = SnapHelper(self, self.geometry)
+        self.bg_painter = BackgroundPainter(self)
+        self.ruler_painter = RulerPainter(self)
+        self.track_painter = TrackPainter(self)
         self.clip_painter = ClipPainter(self)
         self.transition_painter = TransitionPainter(self)
         self.marker_painter = MarkerPainter(self)
         self.playhead_painter = PlayheadPainter(self)
+        self.selection_painter = SelectionPainter(self)
+
+        # Apply default theme
+        self.apply_theme("")
 
         # Load icon (using display DPI)
         self.cursors = {}
@@ -170,6 +167,7 @@ class TimelineWidget(QWidget):
 
         # Get a reference to the window object
         self.win = get_app().window
+        self.win.ThemeChangedSignal.connect(self.apply_theme)
 
         # Connect zoom functionality
         self.win.TimelineScrolled.connect(self.update_scrollbars)
@@ -265,98 +263,23 @@ class TimelineWidget(QWidget):
         """Placeholder due to webview compatibility"""
 
     def apply_theme(self, css):
-        """Parse basic colors from a CSS theme string"""
-        if not css:
-            return
+        """Apply CSS theme to this widget."""
+        if parse_theme(self, css):
+            TimelineWidget.changed(self, None)
+        self._theme_changed()
 
-        def css_prop(selector, prop):
-            pattern = rf"{re.escape(selector)}\s*\{{[^}}]*{prop}\s*:\s*([^;]+);"
-            m = re.search(pattern, css, re.MULTILINE)
-            return m.group(1).strip() if m else None
-
-        def parse_color(selector, prop):
-            val = css_prop(selector, prop)
-            if not val:
-                return None
-            m = re.search(r'#([0-9a-fA-F]{3,8})', val)
-            if m:
-                return QColor('#' + m.group(1))
-            m = re.search(r'rgba?\([^\)]+\)', val)
-            if m:
-                return QColor(m.group(0))
-            parts = val.split()
-            if parts:
-                return QColor(parts[-1]) if QColor(parts[-1]).isValid() else None
-            return None
-
-        def parse_float(selector, prop):
-            val = css_prop(selector, prop)
-            if val and val.endswith('px'):
-                try:
-                    return float(val[:-2])
-                except ValueError:
-                    pass
-            return None
-
-        bg = parse_color("body", "background")
-        if bg:
-            self.theme["background"] = bg
-
-        clip_border = parse_color(".clip", "border")
-        if clip_border:
-            self.theme["clip_border"] = clip_border
-        clip_bg = parse_color(".clip", "background")
-        if clip_bg:
-            self.theme["clip_bg"] = clip_bg
-
-        text = parse_color(".track_label", "color")
-        if text:
-            self.theme["text"] = text
-        clip_text = parse_color(".clip_label", "color")
-        if clip_text:
-            self.theme["clip_text"] = clip_text
-
-        track_bg = parse_color(".track", "background")
-        if track_bg:
-            self.theme["track_bg"] = track_bg
-
-        track_name_bg = parse_color(".track_name", "background")
-        if track_name_bg:
-            self.theme["track_name_bg"] = track_name_bg
-
-
-        tick_color = parse_color(".tick_mark", "background-color")
-        if tick_color:
-            self.theme["ruler_tick"] = tick_color
-
-        ruler_text = parse_color(".ruler_time", "color")
-        if ruler_text:
-            self.theme["ruler_text"] = ruler_text
-
-        playhead_color = parse_color(".playhead-line", "background-color")
-        if playhead_color:
-            self.theme["playhead"] = playhead_color
-
-        track_border = parse_color(".track", "border-top")
-        if track_border:
-            self.theme["track_border"] = track_border
-
-        track_height = parse_float(".track", "height")
-        if track_height:
-            self.track_height = track_height
-        clip_height = parse_float(".clip", "height")
-        if clip_height:
-            self.track_height = clip_height
-
-        track_name_width = parse_float(".track_name", "width")
-        if track_name_width:
-            self.track_name_width = track_name_width
-
-        ruler_height = parse_float("#ruler_label", "height")
-        if ruler_height:
-            self.ruler_height = ruler_height
-
-        TimelineWidget.changed(self, None)
+    def _theme_changed(self):
+        for p in (
+            self.bg_painter,
+            self.ruler_painter,
+            self.track_painter,
+            self.clip_painter,
+            self.transition_painter,
+            self.marker_painter,
+            self.playhead_painter,
+            self.selection_painter,
+        ):
+            p.update_theme()
         self.update()
 
     def setup_js_data(self):
@@ -392,101 +315,23 @@ class TimelineWidget(QWidget):
             QPainter.Antialiasing |
             QPainter.SmoothPixmapTransform |
             QPainter.TextAntialiasing,
-            True
+            True,
         )
 
-        # ------------------------------------------------------------------ #
-        #  Basic pens, brushes, colours
-        # ------------------------------------------------------------------ #
-        painter.fillRect(event.rect(), self.theme["background"])
-
-        clip_pen = QPen(QBrush(self.theme["clip_border"]), 1.5);
-        clip_pen.setCosmetic(True)
-        selected_pen = QPen(QBrush(self.theme["clip_selected"]), 1.5);
-        selected_pen.setCosmetic(True)
-        marker_pen = QPen(QBrush(self.theme["ruler_tick"]), 1.0);
-        marker_pen.setCosmetic(True)
-
-        playhead_col = QColor(self.theme["playhead"]);
-        playhead_col.setAlphaF(0.5)
-        playhead_pen = QPen(QBrush(playhead_col), 2.0);
-        playhead_pen.setCosmetic(True)
-
-        if not get_app().window.timeline:  # nothing to draw yet
+        if not get_app().window.timeline:
             painter.end()
             return
 
-        # Ensure geometry is current
         self.geometry.ensure()
 
-        # ------------------------------------------------------------------ #
-        #  Derived constants
-        # ------------------------------------------------------------------ #
-        project_duration = get_app().project.get("duration")
-        width = max(1, event.rect().width() - self.track_name_width)
-        fps_info = get_app().project.get("fps")
-        fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
-        pps = self.pixels_per_second
-        vf = self.vertical_factor
-
-        # ------------------------------------------------------------------ #
-        #  Ruler
-        # ------------------------------------------------------------------ #
-        ruler_rect = QRectF(self.track_name_width, 0, width, self.ruler_height)
-        painter.fillRect(ruler_rect, self.theme["ruler_bg"])
-
-        fpt = self._frames_per_tick(pps, fps_float)
-        frame = 0
-        end_frame = int(project_duration * fps_float)
-        while frame <= end_frame:
-            t = frame / fps_float
-            x = self.track_name_width + t * pps
-            ht = self.ruler_height if frame % (fpt * 2) == 0 else self.ruler_height / 2
-
-            painter.setPen(self.theme["ruler_tick"])
-            painter.drawLine(QPointF(x, self.ruler_height - ht), QPointF(x, self.ruler_height))
-
-            if frame % (fpt * 2) == 0:
-                tt = secondsToTime(t, fps_info["num"], fps_info["den"])
-                lbl = f"{tt['hour']}:{tt['min']}:{tt['sec']}"
-                if fpt < round(fps_float):
-                    lbl += f",{tt['frame']}"
-                painter.setPen(self.theme["ruler_text"])
-                painter.drawText(QRectF(x + 2, 0, 50, self.ruler_height - 2),
-                                 Qt.AlignLeft | Qt.AlignBottom, lbl)
-            frame += fpt
-
-        # ------------------------------------------------------------------ #
-        #  Tracks (background + labels)
-        # ------------------------------------------------------------------ #
-        for track_rect, track, name_rect in self.geometry.track_rects:
-            painter.fillRect(track_rect, self.theme["track_bg"])
-            painter.setPen(self.theme["track_border"]);
-            painter.drawRect(track_rect)
-
-            painter.fillRect(name_rect, self.theme["track_name_bg"]);
-            painter.drawRect(name_rect)
-            painter.setPen(self.theme["text"])
-            painter.drawText(name_rect.adjusted(4, 0, -4, 0),
-                             Qt.AlignVCenter | Qt.AlignLeft,
-                             track.data.get("name", f"Track {track.data.get('number')}"))
-        painter.fillRect(self.resize_handle_rect, self.theme["track_border"])
-
-        # ------------------------------------------------------------------ #
-        #  Clips, markers and playhead
-        # ------------------------------------------------------------------ #
+        self.bg_painter.paint(painter, event.rect())
+        self.ruler_painter.paint(painter)
+        self.track_painter.paint(painter)
         self.clip_painter.paint(painter)
         self.transition_painter.paint(painter)
         self.marker_painter.paint(painter)
         self.playhead_painter.paint(painter)
-
-        # ------------------------------------------------------------------ #
-        #  Box-selection rectangle
-        # ------------------------------------------------------------------ #
-        if not self.selection_rect.isNull():
-            painter.setPen(QPen(self.theme["selection"], 1, Qt.DashLine))
-            painter.fillRect(self.selection_rect, self.theme["selection"])
-            painter.drawRect(self.selection_rect)
+        self.selection_painter.paint(painter)
 
         painter.end()
 
@@ -693,44 +538,7 @@ class TimelineWidget(QWidget):
         self.win.preview_thread.position_changed.connect(self.update_playhead_pos)
         self.win.PlaySignal.connect(self.handle_play)
 
-    def _prime_factors(self, n):
-        factors = []
-        d = 2
-        while d * d <= n:
-            while n % d == 0:
-                factors.append(d)
-                n //= d
-            d += 1
-        if n > 1:
-            factors.append(n)
-        return factors
 
-    def _frames_per_tick(self, pps, fps):
-        frames = 1
-        factors = self._prime_factors(round(fps))
-        while (frames / fps) * pps < 40:
-            frames *= factors.pop(0) if factors else 2
-        return frames
-
-    def _calc_item_rect(self, item):
-        layers = {t.data.get("number"): idx for idx, t in enumerate(self.geometry.track_list)}
-        x = self.track_name_width + item.data.get("position", 0.0) * self.pixels_per_second
-        y = self.ruler_height + layers.get(item.data.get("layer", 0), 0) * self.vertical_factor
-        width = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.pixels_per_second
-        return QRectF(x, y, width, self.vertical_factor)
-
-    def _update_item_rect(self, item, rect):
-        """Update cached rects for clips and transitions."""
-        for lst in (
-                self.geometry.selected_rects,
-                self.geometry.clip_rects,
-                self.geometry.selected_transitions,
-                self.geometry.transition_rects
-        ):
-            for i, (r, c) in enumerate(lst):
-                if c.id == item.id:
-                    lst[i] = (rect, item)
-                    return
 
     # ----- State machine helper methods -----
 
@@ -857,8 +665,8 @@ class TimelineWidget(QWidget):
             itm.data["layer"] = new_layer_num
 
             # Update cached rect
-            rect = self._calc_item_rect(itm)
-            self._update_item_rect(itm, rect)
+            rect = self.geometry.calc_item_rect(itm)
+            self.geometry.update_item_rect(itm, rect)
 
         # Immediate visual feedback
         self.update()
@@ -866,11 +674,22 @@ class TimelineWidget(QWidget):
     def _finishClipDrag(self):
         """Persist all moved clips/transitions and refresh geometry."""
         if getattr(self, "dragging_items", None):
-            for itm in self.dragging_items:
+            total = len(self.dragging_items)
+            for idx, itm in enumerate(self.dragging_items):
+                ignore_refresh = idx < total - 1
                 if isinstance(itm, Transition):
-                    self.update_transition_data(itm.data, only_basic_props=False)
+                    self.update_transition_data(
+                        itm.data,
+                        only_basic_props=True,
+                        ignore_refresh=ignore_refresh,
+                    )
                 else:
-                    self.update_clip_data(itm.data, only_basic_props=False, ignore_reader=True)
+                    self.update_clip_data(
+                        itm.data,
+                        only_basic_props=True,
+                        ignore_reader=True,
+                        ignore_refresh=ignore_refresh,
+                    )
 
         self.dragging_items = []
         # Recompute geometry (snap may have shifted) and repaint
