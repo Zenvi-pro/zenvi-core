@@ -37,7 +37,7 @@ import stat
 import subprocess
 import sysconfig
 import traceback
-from github3 import login
+from github3 import login, GitHubError
 from requests.auth import HTTPBasicAuth
 from requests import post
 from version_parser import parse_version_info, parse_build_name
@@ -204,6 +204,9 @@ def upload(file_path, github_release):
                     url = asset.to_json()["browser_download_url"]
             # Successfully uploaded!
             break
+        except GitHubError as ex:
+            output("GitHub: Failed to upload asset: %s" % str(ex.response.json()))
+            raise ex
         except Exception as ex:
             # Quietly fail, and try again
             if attempt < 2:
