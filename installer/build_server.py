@@ -172,10 +172,10 @@ def upload(file_path, github_release):
     def remove_existing_asset():
         """Remove a conflicting asset from the release (if any)"""
         # pick the right asset-list provider
-        if hasattr(github_release, 'assets'):
-            asset_list = github_release.assets()  # note the ()
-        else:
+        if hasattr(github_release, 'original_assets'):
             asset_list = github_release.original_assets
+        else:
+            asset_list = github_release.assets
         for asset in asset_list:
             if asset.name == file_name:
                 output(f"GitHub: Removing conflicting installer asset from {github_release.tag_name}: {file_name}")
