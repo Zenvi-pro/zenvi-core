@@ -107,6 +107,7 @@ class TimelineWidget(QWidget):
         self.pixels_per_second = 1.0
         self.vertical_factor = 1.0
         self.track_height = 48
+        self.track_gap = 8
 
         # Geometry constants
         self.ruler_height = 40
@@ -131,8 +132,8 @@ class TimelineWidget(QWidget):
         fps_info = get_app().project.get("fps")
         self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
-        # Theme colors
-        self.theme = {k: v for k, v in DEFAULT_THEME.items()}
+        # Theme settings
+        self.theme = DEFAULT_THEME
 
         # Helpers for geometry, snapping and painting
         self.geometry = Geometry(self)
@@ -262,8 +263,15 @@ class TimelineWidget(QWidget):
     def run_js(self, code, callback=None, retries=0):
         """Placeholder due to webview compatibility"""
 
-    def apply_theme(self, css):
+    def apply_theme(self, css=None):
         """Apply CSS theme to this widget."""
+        if not isinstance(css, str):
+            # Signal from ThemeChangedSignal passes the theme instance.
+            # The theme has already been applied directly, so simply
+            # refresh painters.
+            self._theme_changed()
+            return
+
         if parse_theme(self, css):
             TimelineWidget.changed(self, None)
         self._theme_changed()

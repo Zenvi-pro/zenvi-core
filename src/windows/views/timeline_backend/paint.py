@@ -17,31 +17,33 @@ class BasePainter:
 
 class BackgroundPainter(BasePainter):
     def paint(self, painter: QPainter, rect: QRectF):
-        painter.fillRect(rect, self.w.theme["background"])
+        painter.fillRect(rect, self.w.theme.background)
 
 
 class ClipPainter(BasePainter):
     def update_theme(self):
-        self.clip_pen = QPen(QBrush(self.w.theme["clip_border"]), 1.5)
+        self.clip_pen = QPen(QBrush(self.w.theme.clip.border_color), 1.5)
         self.clip_pen.setCosmetic(True)
-        self.sel_pen = QPen(QBrush(self.w.theme["clip_selected"]), 1.5)
+        self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), 1.5)
         self.sel_pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
         for rect, clip in self.w.geometry.clip_rects:
-            painter.fillRect(rect, self.w.theme["clip_bg"])
+            painter.fillRect(rect, self.w.theme.clip.background)
             painter.setPen(self.clip_pen)
-            painter.drawRect(rect)
-            painter.setPen(self.w.theme["clip_text"])
+            painter.drawRoundedRect(rect, self.w.theme.clip.border_radius,
+                                     self.w.theme.clip.border_radius)
+            painter.setPen(self.w.theme.clip.font_color)
             painter.drawText(rect.adjusted(2, 2, -2, -2),
                              self.w._clip_text_flags,
                              clip.data.get("title", ""))
 
         for rect, clip in self.w.geometry.selected_rects:
-            painter.fillRect(rect, self.w.theme["clip_bg"])
+            painter.fillRect(rect, self.w.theme.clip.background)
             painter.setPen(self.sel_pen)
-            painter.drawRect(rect)
-            painter.setPen(self.w.theme["clip_text"])
+            painter.drawRoundedRect(rect, self.w.theme.clip.border_radius,
+                                     self.w.theme.clip.border_radius)
+            painter.setPen(self.w.theme.clip.font_color)
             painter.drawText(rect.adjusted(2, 2, -2, -2),
                              self.w._clip_text_flags,
                              clip.data.get("title", ""))
@@ -49,27 +51,38 @@ class ClipPainter(BasePainter):
 
 class TransitionPainter(BasePainter):
     def update_theme(self):
-        self.blue = QColor("#4b73ff")
-        self.blue_pen = QPen(QBrush(self.blue), 1.5)
-        self.blue_pen.setCosmetic(True)
-        self.sel_pen = QPen(QBrush(self.w.theme["clip_selected"]), 1.5)
+        self.col = self.w.theme.transition.background
+        self.pen = QPen(QBrush(self.w.theme.transition.border_color), 1.5)
+        self.pen.setCosmetic(True)
+        self.img = self.w.theme.transition.background_image
+        self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), 1.5)
         self.sel_pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
         for rect, _ in self.w.geometry.transition_rects:
-            painter.fillRect(rect, self.blue)
-            painter.setPen(self.blue_pen)
-            painter.drawRect(rect)
+            painter.fillRect(rect, self.col)
+            if self.img:
+                w = int(rect.width())
+                h = int(rect.height())
+                scaled = self.img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                painter.drawPixmap(rect.toRect(), scaled)
+            painter.setPen(self.pen)
+            painter.drawRoundedRect(rect, self.w.theme.transition.border_radius, self.w.theme.transition.border_radius)
 
         for rect, _ in self.w.geometry.selected_transitions:
-            painter.fillRect(rect, self.blue)
+            painter.fillRect(rect, self.col)
+            if self.img:
+                w = int(rect.width())
+                h = int(rect.height())
+                scaled = self.img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                painter.drawPixmap(rect.toRect(), scaled)
             painter.setPen(self.sel_pen)
-            painter.drawRect(rect)
+            painter.drawRoundedRect(rect, self.w.theme.transition.border_radius, self.w.theme.transition.border_radius)
 
 
 class MarkerPainter(BasePainter):
     def update_theme(self):
-        self.pen = QPen(QBrush(self.w.theme["ruler_tick"]), 1.0)
+        self.pen = QPen(QBrush(self.w.theme.ruler.border_color), 1.0)
         self.pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
@@ -80,9 +93,10 @@ class MarkerPainter(BasePainter):
 
 class PlayheadPainter(BasePainter):
     def update_theme(self):
-        col = QColor(self.w.theme["playhead"])
+        col = QColor(self.w.theme.playhead_color)
         col.setAlphaF(0.5)
-        self.pen = QPen(QBrush(col), 2.0)
+        width = self.w.theme.playhead_width
+        self.pen = QPen(QBrush(col), float(width))
         self.pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
@@ -94,10 +108,10 @@ class PlayheadPainter(BasePainter):
 
 class RulerPainter(BasePainter):
     def update_theme(self):
-        self.bg = self.w.theme["ruler_bg"]
-        self.tick_pen = QPen(self.w.theme["ruler_tick"])
+        self.bg = self.w.theme.ruler.background
+        self.tick_pen = QPen(self.w.theme.ruler.border_color)
         self.tick_pen.setCosmetic(True)
-        self.text_pen = QPen(self.w.theme["ruler_text"])
+        self.text_pen = QPen(self.w.theme.ruler.font_color)
 
     def _prime_factors(self, n: int):
         factors = []
@@ -153,30 +167,32 @@ class RulerPainter(BasePainter):
 
 class TrackPainter(BasePainter):
     def update_theme(self):
-        self.border_pen = QPen(self.w.theme["track_border"])
+        self.border_pen = QPen(self.w.theme.track.border_color)
         self.border_pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
         for track_rect, track, name_rect in self.w.geometry.track_rects:
-            painter.fillRect(track_rect, self.w.theme["track_bg"])
+            painter.fillRect(track_rect, self.w.theme.track.background)
             painter.setPen(self.border_pen)
-            painter.drawRect(track_rect)
+            painter.drawRoundedRect(track_rect, self.w.theme.track.border_radius,
+                                   self.w.theme.track.border_radius)
 
-            painter.fillRect(name_rect, self.w.theme["track_name_bg"])
-            painter.drawRect(name_rect)
-            painter.setPen(self.w.theme["text"])
+            painter.fillRect(name_rect, self.w.theme.track.name_background)
+            painter.drawRoundedRect(name_rect, self.w.theme.track.border_radius,
+                                   self.w.theme.track.border_radius)
+            painter.setPen(self.w.theme.track.font_color)
             painter.drawText(name_rect.adjusted(4, 0, -4, 0),
                              Qt.AlignVCenter | Qt.AlignLeft,
                              track.data.get("name", f"Track {track.data.get('number')}") )
-        painter.fillRect(self.w.resize_handle_rect, self.w.theme["track_border"])
+        painter.fillRect(self.w.resize_handle_rect, self.w.theme.track.border_color)
 
 
 class SelectionPainter(BasePainter):
     def update_theme(self):
-        self.pen = QPen(self.w.theme["selection"], 1, Qt.DashLine)
+        self.pen = QPen(self.w.theme.selection, 1, Qt.DashLine)
 
     def paint(self, painter: QPainter):
         if not self.w.selection_rect.isNull():
             painter.setPen(self.pen)
-            painter.fillRect(self.w.selection_rect, self.w.theme["selection"])
+            painter.fillRect(self.w.selection_rect, self.w.theme.selection)
             painter.drawRect(self.w.selection_rect)

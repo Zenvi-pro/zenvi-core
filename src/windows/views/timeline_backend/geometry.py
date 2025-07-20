@@ -90,8 +90,9 @@ class Geometry:
                 tracks = len(layers.keys() or [1])
                 w.vertical_factor = max(1, (w.height() - w.ruler_height) / tracks)
 
+            spacing = w.vertical_factor + getattr(w, 'track_gap', 0)
             for track in self.track_list:
-                y = w.ruler_height + layers[track.data.get("number")] * w.vertical_factor
+                y = w.ruler_height + layers[track.data.get("number")] * spacing
                 track_rect = QRectF(w.track_name_width, y, width, w.vertical_factor)
                 name_rect = QRectF(0, y, w.track_name_width, w.vertical_factor)
                 self.track_rects.append((track_rect, track, name_rect))
@@ -100,12 +101,12 @@ class Geometry:
                 w.track_name_width - w._resize_handle_width / 2,
                 w.ruler_height,
                 w._resize_handle_width,
-                len(self.track_list) * w.vertical_factor,
+                len(self.track_list) * spacing - getattr(w, 'track_gap', 0),
             )
 
             for clip in Clip.filter():
                 cx = w.track_name_width + clip.data.get("position", 0.0) * w.pixels_per_second
-                cy = w.ruler_height + layers.get(clip.data.get("layer", 0), 0) * w.vertical_factor
+                cy = w.ruler_height + layers.get(clip.data.get("layer", 0), 0) * spacing
                 cw = (clip.data.get("end", 0.0) - clip.data.get("start", 0.0)) * w.pixels_per_second
                 rect = QRectF(cx, cy, cw, w.vertical_factor)
                 if clip.id in win.selected_clips:
@@ -115,7 +116,7 @@ class Geometry:
 
             for tr in Transition.filter():
                 tx = w.track_name_width + tr.data.get("position", 0.0) * w.pixels_per_second
-                ty = w.ruler_height + layers.get(tr.data.get("layer", 0), 0) * w.vertical_factor
+                ty = w.ruler_height + layers.get(tr.data.get("layer", 0), 0) * spacing
                 tw = (tr.data.get("end", 0.0) - tr.data.get("start", 0.0)) * w.pixels_per_second
                 rect = QRectF(tx, ty, tw, w.vertical_factor)
                 if tr.id in win.selected_transitions:
@@ -125,7 +126,7 @@ class Geometry:
 
             for marker in Marker.filter():
                 mx = w.track_name_width + marker.data.get("position", 0.0) * w.pixels_per_second
-                rect = QRectF(mx, w.ruler_height, 0.5, len(layers) * w.vertical_factor)
+                rect = QRectF(mx, w.ruler_height, 0.5, len(layers) * spacing - getattr(w, 'track_gap', 0))
                 self.marker_rects.append(rect)
 
         self.dirty = False
@@ -153,7 +154,8 @@ class Geometry:
         """Return QRectF for *item* (Clip or Transition)."""
         layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
         x = self.widget.track_name_width + item.data.get("position", 0.0) * self.widget.pixels_per_second
-        y = self.widget.ruler_height + layers.get(item.data.get("layer", 0), 0) * self.widget.vertical_factor
+        spacing = self.widget.vertical_factor + getattr(self.widget, 'track_gap', 0)
+        y = self.widget.ruler_height + layers.get(item.data.get("layer", 0), 0) * spacing
         w = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.widget.pixels_per_second
         return QRectF(x, y, w, self.widget.vertical_factor)
 
