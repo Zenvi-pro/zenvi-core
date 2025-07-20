@@ -60,23 +60,31 @@ class BaseTheme:
     def get_color(self, class_name, property_name):
         """Return a QColor from a stylesheet class and property."""
         # Regex to find the class and property with a color for more complex properties
-        pattern = rf"{re.escape(class_name)}\s*{{[^}}]*?{re.escape(property_name)}:\s*(#.*);"
-        match = re.search(pattern, self.style_sheet, re.IGNORECASE)
+        pattern = rf"{re.escape(class_name)}\s*{{([^}}]*)}}"
+        match = re.search(pattern, self.style_sheet, re.IGNORECASE | re.MULTILINE)
         if match:
-            color_code = match.group(1).strip()
-            if QColor(color_code).isValid():
-                return QColor(color_code)
-        return QColor("black")
+            block = match.group(1)
+            m = re.search(rf"(?:^|;)\s*{re.escape(property_name)}\s*:\s*([^;]+)", block)
+            if m:
+                color_code = m.group(1).strip()
+                if QColor(color_code).isValid():
+                    return QColor(color_code)
+        return None
 
     def get_int(self, class_name, property_name):
         """Return an int from a stylesheet class and property."""
         # Regex to find the class and property with a color for more complex properties
-        pattern = rf"{re.escape(class_name)}\s*{{[^}}]*?{re.escape(property_name)}:\s*(.*);"
-        match = re.search(pattern, self.style_sheet, re.IGNORECASE)
+        pattern = rf"{re.escape(class_name)}\s*{{([^}}]*)}}"
+        match = re.search(pattern, self.style_sheet, re.IGNORECASE | re.MULTILINE)
         if match:
-            value = match.group(1).strip()
-            if value:
-                return int(value)
+            block = match.group(1)
+            m = re.search(rf"(?:^|;)\s*{re.escape(property_name)}\s*:\s*([^;]+)", block)
+            if m:
+                value = m.group(1).strip()
+                try:
+                    return int(value)
+                except ValueError:
+                    pass
         return None
 
     def set_dock_margins(self, content_margins=None, layout_margins=None, object_name=None):
