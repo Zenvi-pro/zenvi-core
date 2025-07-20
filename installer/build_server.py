@@ -167,28 +167,36 @@ def upload(file_path, github_release):
     """Upload a file to GitHub (retry 3 times)"""
     url = None
     file_name = os.path.basename(file_path)
+    file_size = os.path.getsize(file_path)
 
-    # Delete any matching assets already in this github release
-    # so we don't have any collisions.
-    if hasattr(github_release, 'original_assets'):
-        asset_list = github_release.original_assets
-    else:
-        asset_list = github_release.assets
-    for asset in asset_list:
-        if asset.name == file_name:
-            output("GitHub: Removing conflicting installer asset from %s: %s" % (github_release.tag_name, file_name))
-            if hasattr(asset, 'delete'):
-                asset.delete()
-            else:
-                asset._delete(asset._api)
-            break
+    def remove_existing_asset():
+        """Remove a conflicting asset from the release (if any)"""
+        if hasattr(github_release, 'original_assets'):
+            asset_list = github_release.original_assets
+        else:
+            asset_list = github_release.assets
+        for a in asset_list:
+            if a.name == file_name:
+                output("GitHub: Removing conflicting installer asset from %s: %s" % (github_release.tag_name, file_name))
+                try:
+                    if hasattr(a, 'delete'):
+                        a.delete()
+                    else:
+                        a._delete(a._api)
+                except Exception as ex:
+                    output("GitHub: Failed to delete asset: %s" % ex)
+                break
+
+    # Delete any matching assets already in this github release so we don't have any collisions.
+    remove_existing_asset()
 
     for attempt in range(3):
         try:
             # Attempt the upload
             with open(file_path, "rb") as f:
                 # Upload to GitHub
-                output("GitHub: Uploading asset from %s: %s" % (github_release.tag_name, file_name))
+                output("GitHub: Uploading asset from %s: %s (size: %d bytes) [attempt %d]" %
+                       (github_release.tag_name, file_name, file_size, attempt + 1))
                 asset = github_release.upload_asset("application/octet-stream", file_name, f)
                 if hasattr(asset, 'browser_download_url'):
                     url = asset.browser_download_url
@@ -200,6 +208,9 @@ def upload(file_path, github_release):
             # Quietly fail, and try again
             if attempt < 2:
                 output("Upload failed... trying again")
+                output(str(ex))
+                # Remove any partial uploads before retrying
+                remove_existing_asset()
             else:
                 # Throw loud exception
                 raise Exception('Upload failed. Verify that this file is not already uploaded: %s' % file_path, ex)
