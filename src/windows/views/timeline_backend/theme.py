@@ -18,7 +18,7 @@ class BasicTheme:
     font_color: QColor = field(default_factory=QColor)
     font_size: int = 0
     height: int = 0
-    background_image: QPixmap | None = None
+    background_image: Optional[QPixmap] = None
 
 
 @dataclass
