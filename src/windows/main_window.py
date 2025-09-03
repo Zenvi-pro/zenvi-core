@@ -2719,7 +2719,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             for sel in self.selected_items:
                 if sel["type"] == "effect":
                     effect = Effect.get(id=sel["id"])
-                    if effect and effect.data.get("has_tracked_object"):
+                    if effect and (
+                        effect.data.get("has_tracked_object")
+                        or effect.data.get("class_name") == "Crop"
+                    ):
                         clip_id = effect.parent['id']
                         self.KeyFrameTransformSignal.emit(sel["id"], clip_id)
 

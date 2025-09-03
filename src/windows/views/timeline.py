@@ -863,6 +863,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.Rotate_Triggered, MenuRotate.FLIP_180, clip_ids))
         menu.addMenu(Rotation_Menu)
 
+        Crop_Menu = StyledContextMenu(title=_("Crop"), parent=self)
+        Crop_None = Crop_Menu.addAction(_("No Crop"))
+        Crop_None.triggered.connect(partial(self.Crop_Triggered, clip_ids, 'none'))
+        Crop_Menu.addSeparator()
+        Crop_NoResize = Crop_Menu.addAction(_("Crop (No Resize)"))
+        Crop_NoResize.triggered.connect(partial(self.Crop_Triggered, clip_ids, 'crop'))
+        Crop_Resize = Crop_Menu.addAction(_("Crop (Resize)"))
+        Crop_Resize.triggered.connect(partial(self.Crop_Triggered, clip_ids, 'resize'))
+        menu.addMenu(Crop_Menu)
+
         # Layout Menu
         Layout_Menu = StyledContextMenu(title=_("Layout"), parent=self)
         Layout_None = Layout_Menu.addAction(_("Reset Layout"))
@@ -1290,6 +1300,45 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Clear transaction
         get_app().updates.transaction_id = None
+
+    def Crop_Triggered(self, clip_ids, mode):
+        """Add/remove/select the Crop effect based on mode"""
+        get_app().window.clearSelections()
+        first_effect_id = None
+        first_clip_id = None
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip:
+                continue
+            effects = clip.data.setdefault('effects', [])
+            existing = next((e for e in effects if e.get('class_name') == 'Crop'), None)
+            if mode == 'none':
+                if existing:
+                    effects.remove(existing)
+                    self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                continue
+
+            if not existing:
+                effect = openshot.EffectInfo().CreateEffect('Crop')
+                effect_json = json.loads(effect.Json())
+                effects.append(effect_json)
+                existing = effect_json
+
+            # Update resize/scale property based on mode
+            resize_val = True if mode == 'resize' else False
+            existing['resize'] = resize_val
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+
+            if not first_effect_id and existing.get('id'):
+                first_effect_id = existing['id']
+                first_clip_id = clip_id
+
+        if first_effect_id:
+            self.addSelection(first_effect_id, 'effect', True)
+            self.window.KeyFrameTransformSignal.emit(first_effect_id, first_clip_id)
+        elif mode == 'none' and clip_ids:
+            self.addSelection(clip_ids[0], 'clip', True)
+            self.window.KeyFrameTransformSignal.emit('', '')
 
     def Layout_Triggered(self, action, clip_ids):
         """Callback for the layout context menus"""

@@ -101,13 +101,15 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform = None
         self.clipBounds = None
         self.originHandle = None
+        self.original_effect_data = None
         self.setCursor(Qt.ArrowCursor)
         self.update()
 
     def drawTransformHandler(
         self, painter, sx, sy, source_width, source_height,
         origin_x, origin_y,
-        x1=None, y1=None, x2=None, y2=None, rotation = None
+        x1=None, y1=None, x2=None, y2=None, rotation = None,
+        skip_origin=False
     ):
         # Draw transform corners and center origin circle
         # Corner size
@@ -269,17 +271,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 os / sx * 2.0,
                 os / sy * 2.0)
 
-        # Draw origin
-        painter.drawEllipse(self.centerHandle)
+        if not skip_origin:
+            painter.drawEllipse(self.centerHandle)
 
-        # Draw cross at origin center, extending beyond ellipse by 25%
-        center = self.centerHandle.center()
-        halfW = QPointF(self.centerHandle.width() * 0.75, 0)
-        halfH = QPointF(0, self.centerHandle.height() * 0.75)
-        painter.drawLines(
-            center - halfW, center + halfW,
-            center - halfH, center + halfH,
-        )
+            # Draw cross at origin center, extending beyond ellipse by 25%
+            center = self.centerHandle.center()
+            halfW = QPointF(self.centerHandle.width() * 0.75, 0)
+            halfH = QPointF(0, self.centerHandle.height() * 0.75)
+            painter.drawLines(
+                center - halfW, center + halfW,
+                center - halfH, center + halfH,
+            )
 
         # Remove transform
         painter.resetTransform()
@@ -306,10 +308,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             # Not a dock widget, ignore title
             return
 
+        transform_label = ""
+        if (self.transforming_effect and self.transforming_effect_object and
+                getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
+            transform_label = _("Crop")
+        elif self.transforming_effect or self.transforming_clips:
+            transform_label = _("Transform")
+        elif self.region_enabled:
+            transform_label = _("Selection")
+
+        base_title = _("Video Preview")
+        if transform_label:
+            base_title += f" ({transform_label})"
+
         if self.settings.get("preview-fps"):
-            # Update window title with FPS output
-            dock.setWindowTitle(_("Video Preview") + _(" (Speed: %(speed)sx, Paint: %(pfps)s FPS, "
-                                                        "Render: %(rfps)s FPS, %(width)sx%(height)s)")
+            dock.setWindowTitle(base_title + _(" (Speed: %(speed)sx, Paint: %(pfps)s FPS, Render: %(rfps)s FPS, %(width)sx%(height)s)")
                                 % {"speed": speed,
                                    "pfps": self.paint_fps,
                                    "rfps": self.present_fps,
@@ -318,9 +331,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         else:
             # Restore window title
             if not speed in [1, 0, -1]:
-                dock.setWindowTitle(_("Video Preview") + f" ({speed}x)")
+                dock.setWindowTitle(base_title + f" ({speed}x)")
             else:
-                dock.setWindowTitle(_("Video Preview"))
+                dock.setWindowTitle(base_title)
 
     def paintEvent(self, event, *args):
         """ Custom paint event """
@@ -397,34 +410,60 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             else:
                 union_rect = union_rect.united(rect)
 
+        crop_params = None
         # Include effect's tracked‐object box
         if (self.transforming_effect
-                and self.transforming_effect_object.info.has_tracked_object
+                and self.transforming_effect_object
                 and self.transforming_clip
                 and self.transforming_clip_object):
             clip = self.transforming_clip
-            obj  = self.transforming_clip_object
+            obj = self.transforming_clip_object
             frame = self._get_clip_frame_number(clip, fps_float)
             clip_rect, clip_props = self._clip_rect(clip, obj, viewport, frame)
 
+            eff_info = self.transforming_effect_object.info
             raw_eff = json.loads(self.transforming_effect_object.PropertiesJSON(frame))
-            objs = raw_eff.get("objects", {}) or {}
-            if objs:
-                oid = next(iter(objs))
-                eprops = objs[oid]
-                if eprops.get("visible", {}).get("value") == 1:
-                    # Compute absolute effect box coordinates
-                    x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
-                    y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
-                    x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
-                    y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
-                    effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
 
-                    if union_rect is None:
-                        union_rect = effect_rect
-                        first_props = default_props
-                    else:
-                        union_rect = union_rect.united(effect_rect)
+            if getattr(eff_info, 'has_tracked_object', False):
+                objs = raw_eff.get("objects", {}) or {}
+                if objs:
+                    oid = next(iter(objs))
+                    eprops = objs[oid]
+                    if eprops.get("visible", {}).get("value") == 1:
+                        x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
+                        y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
+                        x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
+                        y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
+                        effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
+
+                        union_rect = effect_rect if union_rect is None else union_rect.united(effect_rect)
+                        first_props = first_props or default_props
+
+            elif getattr(eff_info, 'class_name', '') == 'Crop':
+                left = raw_eff.get('left', {}).get('value', 0.0)
+                top = raw_eff.get('top', {}).get('value', 0.0)
+                right = raw_eff.get('right', {}).get('value', 0.0)
+                bottom = raw_eff.get('bottom', {}).get('value', 0.0)
+                resize = raw_eff.get('scale', {}).get('value', 0.0)
+                x_off = raw_eff.get('x', {}).get('value', 0.0)
+                y_off = raw_eff.get('y', {}).get('value', 0.0)
+                width = clip_rect.width()
+                height = clip_rect.height()
+                if resize:
+                    fx = 1.0 / max(1.0 - left - right, 0.0001)
+                    fy = 1.0 / max(1.0 - top - bottom, 0.0001)
+                    x1_abs = clip_rect.x() - left * fx * width
+                    y1_abs = clip_rect.y() - top * fy * height
+                    width *= fx
+                    height *= fy
+                else:
+                    x1_abs = clip_rect.x() + left * width
+                    y1_abs = clip_rect.y() + top * height
+                    width *= max(1.0 - left - right, 0.0)
+                    height *= max(1.0 - top - bottom, 0.0)
+                union_rect = QRectF(QPointF(x1_abs, y1_abs), QSizeF(width, height))
+                first_props = default_props
+                crop_params = (left, top, right, bottom, resize, x_off, y_off)
 
         # Draw a single unified transform handler
         if union_rect and first_props:
@@ -463,7 +502,39 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             # Apply transform
             painter.setTransform(self.transform)
-            self.drawTransformHandler(painter, sx, sy, sw, sh, ox, oy)
+            is_crop = crop_params is not None
+            self.drawTransformHandler(painter, sx, sy, sw, sh, ox, oy, skip_origin=is_crop)
+
+            if is_crop:
+                painter.setTransform(self.transform)
+                left, top, right, bottom, resize, crop_x, crop_y = crop_params
+                pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                if resize:
+                    w = self.clipBounds.width() * max(1.0 - left - right, 0.0001)
+                    h = self.clipBounds.height() * max(1.0 - top - bottom, 0.0001)
+                else:
+                    w = self.clipBounds.width() / max(1.0 - left - right, 0.0001)
+                    h = self.clipBounds.height() / max(1.0 - top - bottom, 0.0001)
+                origin = QPointF(
+                    self.clipBounds.center().x() - crop_x * w,
+                    self.clipBounds.center().y() - crop_y * h,
+                )
+                os = 12.0
+                self.centerHandle = QRectF(
+                    origin.x() - (os / sx), origin.y() - (os / sy),
+                    os / sx * 2.0, os / sy * 2.0,
+                )
+                painter.drawEllipse(self.centerHandle)
+                center = self.centerHandle.center()
+                halfW = QPointF(self.centerHandle.width() * 0.75, 0)
+                halfH = QPointF(0, self.centerHandle.height() * 0.75)
+                painter.drawLines(
+                    center - halfW, center + halfW,
+                    center - halfH, center + halfH,
+                )
+                painter.resetTransform()
 
         # Region‐selection drawing (restored from original)
         if self.region_enabled:
@@ -561,13 +632,15 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
         get_app().updates.ignore_history = True
 
-        if self.transforming_clips:
+        if self.transforming_clips or self.transforming_effect:
             self.transaction_id = str(uuid.uuid4())
-            self.original_clip_data_map = {c.id: json.loads(json.dumps(c.data)) for c in self.transforming_clips}
+            self.original_clip_data_map = {c.id: json.loads(json.dumps(c.data)) for c in self.transforming_clips} if self.transforming_clips else {}
+            self.original_effect_data = json.loads(json.dumps(self.transforming_effect.data)) if self.transforming_effect else None
             get_app().updates.transaction_id = self.transaction_id
         else:
             self.transaction_id = None
             self.original_clip_data_map = {}
+            self.original_effect_data = None
 
         # Disable video caching during drag operation (for performance reasons)
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
@@ -640,11 +713,19 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 get_app().updates.apply_last_action_to_history(original)
                 get_app().updates.ignore_history = False
 
+        if self.transforming_effect and self.original_effect_data:
+            get_app().updates.ignore_history = True
+            get_app().updates.transaction_id = self.transaction_id
+            self.transforming_effect.save()
+            get_app().updates.apply_last_action_to_history(self.original_effect_data)
+            get_app().updates.ignore_history = False
+
         # Clear transaction and data
         get_app().updates.transaction_id = None
         get_app().updates.ignore_history = False
         self.original_clip_data = None
         self.original_clip_data_map = {}
+        self.original_effect_data = None
 
     def rotateCursor(self, pixmap, rotation, shear_x, shear_y):
         """Rotate cursor based on the current transform"""
@@ -680,6 +761,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             "outside": {"mode": 'rotation', "cursor": "rotate"}
             }
 
+        if (self.transforming_effect and self.transforming_effect_object and
+                getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
+            handle_uis = [h for h in handle_uis if not h["mode"].startswith('shear_')]
+            non_handle_uis["outside"] = {"mode": None, "cursor": None}
+
         # Mouse over resize button (and not currently dragging)
         if (not self.mouse_dragging
             and self.resize_button.isVisible()
@@ -713,8 +799,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         if self.mouse_dragging and not self.transform_mode:
             self.transform_mode = nh.get("mode")
         if not self.transform_mode or self.transform_mode == nh.get("mode"):
-            self.setCursor(self.rotateCursor(
-                self.cursors.get(nh.get("cursor")), rotation, shear_x, shear_y))
+            cursor_name = nh.get("cursor")
+            if cursor_name:
+                self.setCursor(self.rotateCursor(
+                    self.cursors.get(cursor_name), rotation, shear_x, shear_y))
+            else:
+                self.setCursor(Qt.ArrowCursor)
 
     def mouseMoveEvent(self, event):
         """Capture mouse events on video preview window """
@@ -1025,7 +1115,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             # Repaint widget on zoom
             self.update()
 
-        if self.transforming_effect and self.transforming_clip:
+        if self.transforming_effect and self.transforming_clip and self.transforming_effect_object:
             # Adjust effect keyframes if mouse is on top of the transform handlers
 
             # Get framerate
@@ -1162,6 +1252,82 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                                 clip_frame_number, obj_id,
                                 'scale_y', scale_y)
 
+            elif getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop':
+                raw_properties = json.loads(self.transforming_effect_object.PropertiesJSON(clip_frame_number))
+                crop_left = raw_properties.get('left', {}).get('value', 0.0)
+                crop_top = raw_properties.get('top', {}).get('value', 0.0)
+                crop_right = raw_properties.get('right', {}).get('value', 0.0)
+                crop_bottom = raw_properties.get('bottom', {}).get('value', 0.0)
+                resize = raw_properties.get('scale', {}).get('value', 0.0)
+                crop_x = raw_properties.get('x', {}).get('value', 0.0)
+                crop_y = raw_properties.get('y', {}).get('value', 0.0)
+
+                self.checkTransformMode(0, 0, 0, event)
+
+                if self.transform_mode:
+                    x_motion = event.pos().x() - self.mouse_position.x()
+                    y_motion = event.pos().y() - self.mouse_position.y()
+                    if resize:
+                        width = self.clipBounds.width() * max(1.0 - crop_left - crop_right, 0.0001)
+                        height = self.clipBounds.height() * max(1.0 - crop_top - crop_bottom, 0.0001)
+                    else:
+                        width = self.clipBounds.width() / max(1.0 - crop_left - crop_right, 0.0001)
+                        height = self.clipBounds.height() / max(1.0 - crop_top - crop_bottom, 0.0001)
+
+                    eff_id = self.transforming_effect.id
+
+                    if self.transform_mode == 'origin':
+                        crop_x -= x_motion / width
+                        crop_y -= y_motion / height
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'x', crop_x, refresh=False)
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'y', crop_y)
+                    else:
+                        if self.transform_mode == 'location':
+                            crop_left += x_motion / width
+                            crop_top += y_motion / height
+                            crop_right -= x_motion / width
+                            crop_bottom -= y_motion / height
+                        elif self.transform_mode == 'scale_left':
+                            crop_left += x_motion / width
+                        elif self.transform_mode == 'scale_right':
+                            crop_right -= x_motion / width
+                        elif self.transform_mode == 'scale_top':
+                            crop_top += y_motion / height
+                        elif self.transform_mode == 'scale_bottom':
+                            crop_bottom -= y_motion / height
+                        elif self.transform_mode == 'scale_top_left':
+                            crop_left += x_motion / width
+                            crop_top += y_motion / height
+                        elif self.transform_mode == 'scale_top_right':
+                            crop_top += y_motion / height
+                            crop_right -= x_motion / width
+                        elif self.transform_mode == 'scale_bottom_left':
+                            crop_left += x_motion / width
+                            crop_bottom -= y_motion / height
+                        elif self.transform_mode == 'scale_bottom_right':
+                            crop_right -= x_motion / width
+                            crop_bottom -= y_motion / height
+
+                        crop_left = max(0.0, crop_left)
+                        crop_top = max(0.0, crop_top)
+                        crop_right = max(0.0, crop_right)
+                        crop_bottom = max(0.0, crop_bottom)
+                        if crop_left + crop_right > 1.0:
+                            if 'left' in self.transform_mode or self.transform_mode == 'location':
+                                crop_left = 1.0 - crop_right
+                            else:
+                                crop_right = 1.0 - crop_left
+                        if crop_top + crop_bottom > 1.0:
+                            if 'top' in self.transform_mode or self.transform_mode == 'location':
+                                crop_top = 1.0 - crop_bottom
+                            else:
+                                crop_bottom = 1.0 - crop_top
+
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'left', crop_left, refresh=False)
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'top', crop_top, refresh=False)
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'right', crop_right, refresh=False)
+                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'bottom', crop_bottom)
+
             # Force re-paint
             self.update()
             # ==================================================================================
@@ -1231,11 +1397,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             return
 
         try:
-            props = c.data['objects'][obj_id]
+            if obj_id is not None:
+                props = c.data['objects'][obj_id]
+            else:
+                props = c.data
             points_list = props[property_key]["Points"]
         except (TypeError, KeyError):
             log.error("Corrupted project data!", exc_info=1)
             return
+
+        if property_key in {'left', 'top', 'right', 'bottom'} and new_value is not None:
+            new_value = min(max(float(new_value), 0.0), 1.0)
 
         for point in points_list:
             co = point.get("co", {})
@@ -1259,8 +1431,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         if effect_updated:
             # Reduce # of clip properties we are saving (performance boost)
-            #TODO: This is too slow when draging transform handlers
-            c.data = {'objects': {obj_id: c.data.get('objects', {}).get(obj_id)}}
+            # TODO: This is too slow when dragging transform handlers
+            if obj_id is not None:
+                c.data = {'objects': {obj_id: c.data.get('objects', {}).get(obj_id)}}
+            else:
+                c.data = {property_key: c.data.get(property_key)}
+            if self.transaction_id:
+                get_app().updates.transaction_id = self.transaction_id
             c.save()
             # Update the preview
             if refresh:
@@ -1397,6 +1574,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         # Update the preview and reselect current frame in properties
         if need_refresh:
             win.refreshFrameSignal.emit()
+        self.update_title()
 
     def keyFrameTransformTriggered(self, effect_id, clip_id):
         """Handle the key frame transform signal when it's emitted"""
@@ -1415,25 +1593,36 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Get new clip for transform
         if effect_id and clip_id:
-            self.transforming_clip = Clip.get(id=clip_id)
-            self.transforming_clip_object = win.timeline_sync.timeline.GetClip(clip_id)
-            self.transforming_effect = Effect.get(id=effect_id)
-            self.transforming_effect_object = win.timeline_sync.timeline.GetClipEffect(effect_id)
+            clip = Clip.get(id=clip_id)
+            clip_obj = win.timeline_sync.timeline.GetClip(clip_id)
+            eff = Effect.get(id=effect_id)
+            eff_obj = win.timeline_sync.timeline.GetClipEffect(effect_id)
 
-            if (self.transforming_clip and self.transforming_clip_object and
-                self.transforming_effect and self.transforming_effect_object):
-                need_refresh = True
+            if clip and clip_obj and eff and eff_obj:
+                self.transforming_clip = clip
+                self.transforming_clip_object = clip_obj
+                self.transforming_effect = eff
+                self.transforming_effect_object = eff_obj
+            else:
+                self.transforming_clip = None
+                self.transforming_clip_object = None
+                self.transforming_effect = None
+                self.transforming_effect_object = None
+
+            need_refresh = True
 
         # Update the preview and reselct current frame in properties
         if need_refresh:
             win.refreshFrameSignal.emit()
             win.propertyTableView.select_frame(win.preview_thread.player.Position())
+        self.update_title()
 
     def regionTriggered(self, clip_id):
         """Handle the 'select region' signal when it's emitted"""
         # Clear transform
         self.region_enabled = bool(clip_id)
         get_app().window.refreshFrameSignal.emit()
+        self.update_title()
 
     def resizeEvent(self, event):
         """Widget resize event"""
@@ -1536,6 +1725,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform_mode = None
         self.original_clip_data = None
         self.original_clip_data_map = {}
+        self.original_effect_data = None
         self.region_qimage = None
         self.region_transform = None
         self.region_enabled = False
