@@ -102,6 +102,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.clipBounds = None
         self.originHandle = None
         self.original_effect_data = None
+        self.hover_transform_mode = None
+        self.hover_cursor = Qt.ArrowCursor
         self.setCursor(Qt.ArrowCursor)
         self.update()
 
@@ -627,7 +629,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_pressed = True
         self.mouse_dragging = False
         self.mouse_position = event.pos()
-        self.transform_mode = None
+        self.transform_mode = self.hover_transform_mode
+        self.setCursor(self.hover_cursor)
 
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
         get_app().updates.ignore_history = True
@@ -736,8 +739,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def checkTransformMode(self, rotation, shear_x, shear_y, event):
         if not self.transform:
-            self.setCursor(Qt.ArrowCursor)
-            self.transform_mode = None
+            self.hover_cursor = Qt.ArrowCursor
+            self.hover_transform_mode = None
+            self.setCursor(self.hover_cursor)
+            if self.mouse_dragging:
+                self.transform_mode = None
             return
 
         handle_uis = [
@@ -758,8 +764,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         non_handle_uis = {
             "region": self.clipBounds,
             "inside": {"mode": 'location', "cursor": 'move'},
-            "outside": {"mode": 'rotation', "cursor": "rotate"}
-            }
+            "outside": {"mode": 'rotation', "cursor": "rotate"},
+        }
 
         if (self.transforming_effect and self.transforming_effect_object and
                 getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
@@ -771,23 +777,27 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             and self.resize_button.isVisible()
             and self.resize_button.rect().contains(event.pos())
         ):
-            self.setCursor(Qt.ArrowCursor)
-            self.transform_mode = None
+            self.hover_cursor = Qt.ArrowCursor
+            self.hover_transform_mode = None
+            self.setCursor(self.hover_cursor)
+            if self.mouse_dragging:
+                self.transform_mode = None
             return
 
         # If mouse is over a handle, set corresponding pointer/mode
         for h in handle_uis:
             if self.transform.mapToPolygon(
-                    h["handle"].toRect()
+                    h["handle"].toRect(),
                     ).containsPoint(event.pos(), Qt.OddEvenFill):
-                # Handle contains cursor
                 if self.transform_mode and self.transform_mode != h["mode"]:
-                    # We're in different xform mode, skip
                     continue
-                if self.mouse_dragging:
+                cursor = self.rotateCursor(
+                    self.cursors.get(h["cursor"]), rotation, shear_x, shear_y)
+                self.hover_cursor = cursor
+                self.hover_transform_mode = h["mode"]
+                if self.mouse_dragging and not self.transform_mode:
                     self.transform_mode = h["mode"]
-                self.setCursor(self.rotateCursor(
-                    self.cursors.get(h["cursor"]), rotation, shear_x, shear_y))
+                self.setCursor(cursor)
                 return
 
         # If not over any handles, determne inside/outside clip rectangle
@@ -796,15 +806,18 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             nh = non_handle_uis.get("inside", {})
         else:
             nh = non_handle_uis.get("outside", {})
+        cursor_name = nh.get("cursor")
+        if cursor_name:
+            cursor = self.rotateCursor(
+                self.cursors.get(cursor_name), rotation, shear_x, shear_y)
+        else:
+            cursor = Qt.ArrowCursor
+        self.hover_cursor = cursor
+        self.hover_transform_mode = nh.get("mode")
         if self.mouse_dragging and not self.transform_mode:
-            self.transform_mode = nh.get("mode")
-        if not self.transform_mode or self.transform_mode == nh.get("mode"):
-            cursor_name = nh.get("cursor")
-            if cursor_name:
-                self.setCursor(self.rotateCursor(
-                    self.cursors.get(cursor_name), rotation, shear_x, shear_y))
-            else:
-                self.setCursor(Qt.ArrowCursor)
+            self.transform_mode = self.hover_transform_mode
+        if not self.transform_mode or self.transform_mode == self.hover_transform_mode:
+            self.setCursor(cursor)
 
     def mouseMoveEvent(self, event):
         """Capture mouse events on video preview window """
@@ -1723,6 +1736,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_dragging = False
         self.mouse_position = None
         self.transform_mode = None
+        self.hover_transform_mode = None
+        self.hover_cursor = Qt.ArrowCursor
         self.original_clip_data = None
         self.original_clip_data_map = {}
         self.original_effect_data = None
