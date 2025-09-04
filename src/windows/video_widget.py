@@ -446,26 +446,27 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 top = raw_eff.get('top', {}).get('value', 0.0)
                 right = raw_eff.get('right', {}).get('value', 0.0)
                 bottom = raw_eff.get('bottom', {}).get('value', 0.0)
-                resize = raw_eff.get('scale', {}).get('value', 0.0)
+                resize = raw_eff.get('resize', {}).get('value', 0.0)
                 x_off = raw_eff.get('x', {}).get('value', 0.0)
                 y_off = raw_eff.get('y', {}).get('value', 0.0)
                 width = clip_rect.width()
                 height = clip_rect.height()
+                cw = max(1.0 - left - right, 0.0)
+                ch = max(1.0 - top - bottom, 0.0)
+                crop_w = width * cw
+                crop_h = height * ch
                 if resize:
-                    fx = 1.0 / max(1.0 - left - right, 0.0001)
-                    fy = 1.0 / max(1.0 - top - bottom, 0.0001)
-                    x1_abs = clip_rect.x() - left * fx * width
-                    y1_abs = clip_rect.y() - top * fy * height
-                    width *= fx
-                    height *= fy
+                    scale = max(width / max(crop_w, 0.0001), height / max(crop_h, 0.0001))
+                    crop_w *= scale
+                    crop_h *= scale
+                    x1_abs = clip_rect.center().x() - crop_w / 2.0
+                    y1_abs = clip_rect.center().y() - crop_h / 2.0
                 else:
                     x1_abs = clip_rect.x() + left * width
                     y1_abs = clip_rect.y() + top * height
-                    width *= max(1.0 - left - right, 0.0)
-                    height *= max(1.0 - top - bottom, 0.0)
-                union_rect = QRectF(QPointF(x1_abs, y1_abs), QSizeF(width, height))
+                union_rect = QRectF(QPointF(x1_abs, y1_abs), QSizeF(crop_w, crop_h))
                 first_props = default_props
-                crop_params = (left, top, right, bottom, resize, x_off, y_off)
+                crop_params = (left, top, right, bottom, resize, x_off, y_off, clip_rect)
 
         # Draw a single unified transform handler
         if union_rect and first_props:
@@ -509,23 +510,24 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             if is_crop:
                 painter.setTransform(self.transform)
-                left, top, right, bottom, resize, crop_x, crop_y = crop_params
+                left, top, right, bottom, resize, crop_x, crop_y, full_rect = crop_params
                 pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
                 pen.setCosmetic(True)
                 painter.setPen(pen)
                 if resize:
-                    w = self.clipBounds.width() * max(1.0 - left - right, 0.0001)
-                    h = self.clipBounds.height() * max(1.0 - top - bottom, 0.0001)
+                    w = sw
+                    h = sh
                 else:
-                    w = self.clipBounds.width() / max(1.0 - left - right, 0.0001)
-                    h = self.clipBounds.height() / max(1.0 - top - bottom, 0.0001)
-                origin = QPointF(
-                    self.clipBounds.center().x() - crop_x * w,
-                    self.clipBounds.center().y() - crop_y * h,
+                    w = full_rect.width()
+                    h = full_rect.height()
+                global_origin = QPointF(
+                    full_rect.center().x() - crop_x * w,
+                    full_rect.center().y() - crop_y * h,
                 )
+                local_origin = QPointF(global_origin.x() - x, global_origin.y() - y)
                 os = 12.0
                 self.centerHandle = QRectF(
-                    origin.x() - (os / sx), origin.y() - (os / sy),
+                    local_origin.x() - (os / sx), local_origin.y() - (os / sy),
                     os / sx * 2.0, os / sy * 2.0,
                 )
                 painter.drawEllipse(self.centerHandle)
@@ -1268,21 +1270,34 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 crop_top = raw_properties.get('top', {}).get('value', 0.0)
                 crop_right = raw_properties.get('right', {}).get('value', 0.0)
                 crop_bottom = raw_properties.get('bottom', {}).get('value', 0.0)
-                resize = raw_properties.get('scale', {}).get('value', 0.0)
+                resize = raw_properties.get('resize', {}).get('value', 0.0)
                 crop_x = raw_properties.get('x', {}).get('value', 0.0)
                 crop_y = raw_properties.get('y', {}).get('value', 0.0)
+
+                cw = max(1.0 - crop_left - crop_right, 0.0001)
+                ch = max(1.0 - crop_top - crop_bottom, 0.0001)
 
                 self.checkTransformMode(0, 0, 0, event)
 
                 if self.transform_mode:
                     x_motion = event.pos().x() - self.mouse_position.x()
                     y_motion = event.pos().y() - self.mouse_position.y()
+                    base_w = max(self.clipBounds.width(), 0.0001)
+                    base_h = max(self.clipBounds.height(), 0.0001)
                     if resize:
-                        width = self.clipBounds.width() * max(1.0 - crop_left - crop_right, 0.0001)
-                        height = self.clipBounds.height() * max(1.0 - crop_top - crop_bottom, 0.0001)
+                        scale = 1.0 / max(min(cw, ch), 0.0001)
+                        width = base_w * scale
+                        height = base_h * scale
+                        origin_w = base_w
+                        origin_h = base_h
                     else:
-                        width = self.clipBounds.width() / max(1.0 - crop_left - crop_right, 0.0001)
-                        height = self.clipBounds.height() / max(1.0 - crop_top - crop_bottom, 0.0001)
+                        width = base_w / cw
+                        height = base_h / ch
+                        origin_w = width
+                        origin_h = height
+                    if width <= 0.0001 or height <= 0.0001:
+                        self.mutex.unlock()
+                        return
 
                     eff_id = self.transforming_effect.id
 
@@ -1291,14 +1306,20 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     new_x, new_y = crop_x, crop_y
 
                     if self.transform_mode == 'origin':
-                        new_x -= x_motion / width
-                        new_y -= y_motion / height
+                        new_x -= x_motion / origin_w
+                        new_y -= y_motion / origin_h
+                        new_x = min(max(new_x, -1.0), 1.0)
+                        new_y = min(max(new_y, -1.0), 1.0)
                     else:
                         if self.transform_mode == 'location':
-                            new_left += x_motion / width
-                            new_top += y_motion / height
-                            new_right -= x_motion / width
-                            new_bottom -= y_motion / height
+                            dx = x_motion / width
+                            dy = y_motion / height
+                            dx = max(-crop_left, min(dx, crop_right))
+                            dy = max(-crop_top, min(dy, crop_bottom))
+                            new_left += dx
+                            new_top += dy
+                            new_right -= dx
+                            new_bottom -= dy
                         elif self.transform_mode == 'scale_left':
                             new_left += x_motion / width
                         elif self.transform_mode == 'scale_right':
@@ -1320,10 +1341,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             new_right -= x_motion / width
                             new_bottom -= y_motion / height
 
-                        new_left = max(0.0, new_left)
-                        new_top = max(0.0, new_top)
-                        new_right = max(0.0, new_right)
-                        new_bottom = max(0.0, new_bottom)
+                        new_left = min(max(new_left, 0.0), 1.0)
+                        new_top = min(max(new_top, 0.0), 1.0)
+                        new_right = min(max(new_right, 0.0), 1.0)
+                        new_bottom = min(max(new_bottom, 0.0), 1.0)
                         if new_left + new_right > 1.0:
                             if 'left' in self.transform_mode or self.transform_mode == 'location':
                                 new_left = 1.0 - new_right
@@ -1552,6 +1573,36 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         y += player_height * location_y
 
         rect = QRectF(x, y, source_width, source_height)
+
+        # Apply crop effect (if any) for accurate bounds
+        for eff in clip_object.Effects():
+            if getattr(getattr(eff, 'info', None), 'class_name', '') != 'Crop':
+                continue
+            if self.transforming_effect_object and hasattr(eff, 'Id') \
+                    and eff.Id() == self.transforming_effect_object.Id():
+                continue
+            eff_props = json.loads(eff.PropertiesJSON(frame_number))
+            left = eff_props.get('left', {}).get('value', 0.0)
+            top = eff_props.get('top', {}).get('value', 0.0)
+            right = eff_props.get('right', {}).get('value', 0.0)
+            bottom = eff_props.get('bottom', {}).get('value', 0.0)
+            resize = eff_props.get('resize', {}).get('value', 0.0)
+            width = rect.width()
+            height = rect.height()
+            if resize:
+                fx = 1.0 / max(1.0 - left - right, 0.0001)
+                fy = 1.0 / max(1.0 - top - bottom, 0.0001)
+                rect.setX(rect.x() - left * fx * width)
+                rect.setY(rect.y() - top * fy * height)
+                rect.setWidth(width * fx)
+                rect.setHeight(height * fy)
+            else:
+                rect.setX(rect.x() + left * width)
+                rect.setY(rect.y() + top * height)
+                rect.setWidth(width * max(1.0 - left - right, 0.0))
+                rect.setHeight(height * max(1.0 - top - bottom, 0.0))
+            break
+
         return rect, raw_properties
 
     def refreshTriggered(self):
