@@ -279,7 +279,18 @@ of your clip. You can also manually adjust these same clip properties in the pro
 
 - **Usage Example:** Using transform mode to resize and reposition a clip for a picture-in-picture effect.
 - **Tip:** Utilize this preset to precisely control a clip's appearance.
-- **Tip:** To crop a clip in OpenShot, you must use the :ref:`effects_crop_ref` effect. Cropping is not a feature of the transform tool.
+
+Crop
+"""""
+The :guilabel:`Crop` preset adds a crop effect to the selected clip and displays
+interactive crop handles in the video preview. The submenu offers:
+
+- :guilabel:`No Crop` – remove any existing crop effect.
+- :guilabel:`Crop (No Resize)` – trim the clip without scaling the remaining area.
+- :guilabel:`Crop (Resize)` – trim the clip and scale the cropped region to fill the frame.
+
+Drag the blue handles to adjust the crop boundaries, move the cropped area around, or move the center handle to
+reposition the image inside the cropped area.
 
 Display
 """""""

@@ -734,6 +734,10 @@ primary method for cropping a Clip in OpenShot. The ``left``, ``right``, ``top``
 even be animated, for a moving and resizing cropped area. You can leave the cropped area blank, or you can
 dynamically resize the cropped area to fill the screen.
 
+You can quickly add this effect by right-clicking a clip and choosing
+:guilabel:`Crop`. When active, blue crop handles appear in the video preview so
+you can adjust the crop visually.
+
 .. table::
    :widths: 26 80
 
