@@ -2649,7 +2649,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.SetWindowTitle()
 
     def addSelection(self, item_id, item_type, clear_existing=False):
-        """ Add to (or clear) the selected items list for a given type. """
+        """Add an item to the selection list.
+
+        When ``clear_existing`` is True and ``item_id`` is provided, any
+        existing selections of **all** types are cleared before adding the new
+        item. If ``item_id`` is empty, selections matching ``item_type`` are
+        removed instead. This keeps the method focused on simply managing the
+        selection list without extra special-casing.
+        """
         if not item_id:
             log.debug('addSelection: item_type: {}, clear_existing: {}'.format(
                 item_type, clear_existing))
@@ -2657,19 +2664,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.debug('addSelection: item_id: {}, item_type: {}, clear_existing: {}'.format(
                 item_id, item_type, clear_existing))
 
-        # Clear existing selection (if needed)
         if clear_existing:
-            self.selected_items = [s for s in self.selected_items if s["type"] != item_type]
+            if item_id or not item_type:
+                # Replace the entire selection list
+                self.selected_items = []
+            else:
+                # Remove selections of the specified type only
+                self.selected_items = [s for s in self.selected_items if s["type"] != item_type]
 
         if item_id:
-            existing = any(s for s in self.selected_items if s["id"] == item_id and s["type"] == item_type)
-            if not existing:
+            exists = any(
+                s for s in self.selected_items if s["id"] == item_id and s["type"] == item_type
+            )
+            if not exists:
                 self.selected_items.append({"id": item_id, "type": item_type})
 
             # Change selected item in properties view
             self.show_property_timer.start()
 
-        # Notify UI that selection has been potentially changed
+        # Notify UI that selection has potentially changed
         self.selection_timer.start()
 
     # Remove from the selected items

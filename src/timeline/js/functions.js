@@ -502,13 +502,18 @@ function setSelections(scope, element, id) {
   if (!element.hasClass("ui-selected")) {
     // Clear previous selections?
     var clear_selections = false;
-    if ($(".ui-selected").length > 0) {
+    if ($(".ui-selected").length > 0 || $(".clip_effects.selected").length > 0) {
       clear_selections = true;
 
       // Remove ui-selected class immediately
       $(".ui-selected").each(function () {
           $(this).removeClass("ui-selected");
       });
+    }
+
+    // Always clear effect selections when needed
+    if (clear_selections) {
+      scope.selectEffect("", true);
     }
 
     // selectClip, selectTransition
@@ -522,6 +527,10 @@ function setSelections(scope, element, id) {
       // Select this transition, unselect all others
       scope.selectClip("", clear_selections);
       scope.selectTransition(id, clear_selections);
+    } else if (clear_selections) {
+      // Clicked timeline background, clear clip and transition selections
+      scope.selectClip("", true);
+      scope.selectTransition("", true);
     }
   }
 

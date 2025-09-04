@@ -594,13 +594,9 @@ class TimelineWidget(QWidget):
         )
 
         if not already:
-            if not ctrl:
-                for cid in list(self.win.selected_clips):
-                    self.win.removeSelection(cid, "clip")
-                for tid in list(self.win.selected_transitions):
-                    self.win.removeSelection(tid, "transition")
             sel_type = "transition" if isinstance(clicked_item, Transition) else "clip"
-            self.win.addSelection(clicked_item.id, sel_type, False)
+            # Replace existing selections unless the user is multi-selecting
+            self.win.addSelection(clicked_item.id, sel_type, not ctrl)
             TimelineWidget.changed(self, None)
 
         # All selected clips and transitions participate in the drag
@@ -754,10 +750,8 @@ class TimelineWidget(QWidget):
     def _startBoxSelect(self):
         e = self._last_event
         if not (e.modifiers() & Qt.ControlModifier):
-            for cid in list(self.win.selected_clips):
-                self.win.removeSelection(cid, "clip")
-            for tid in list(self.win.selected_transitions):
-                self.win.removeSelection(tid, "transition")
+            # Starting a new box selection clears existing selections
+            self.win.clearSelections()
         self.box_start = e.pos()
         self.selection_rect = QRectF()
 

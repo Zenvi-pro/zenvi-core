@@ -833,11 +833,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             fps = get_app().project.get("fps")
             fps_float = float(fps["num"]) / float(fps["den"])
 
-            # Determine frame # of clip
-            start_of_clip_frame = round(float(self.transforming_clip.data["start"]) * fps_float) + 1
-            position_of_clip_frame = (float(self.transforming_clip.data["position"]) * fps_float) + 1
-            playhead_position_frame = float(get_app().window.preview_thread.current_frame)
-            clip_frame_number = round(playhead_position_frame - position_of_clip_frame) + start_of_clip_frame
+            # Determine frame # of clip (absolute frame, accounting for clip start trim)
+            clip_frame_number = self._get_clip_frame_number(
+                self.transforming_clip, fps_float)
 
             # Get properties of clip at current frame
             raw_properties = json.loads(self.transforming_clip_object.PropertiesJSON(clip_frame_number))
@@ -1135,11 +1133,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             fps = get_app().project.get("fps")
             fps_float = float(fps["num"]) / float(fps["den"])
 
-            # Determine frame # of clip
-            start_of_clip_frame = round(float(self.transforming_clip.data["start"]) * fps_float) + 1
-            position_of_clip_frame = (float(self.transforming_clip.data["position"]) * fps_float) + 1
-            playhead_position_frame = float(get_app().window.preview_thread.current_frame)
-            clip_frame_number = round(playhead_position_frame - position_of_clip_frame) + start_of_clip_frame
+            # Determine frame # of clip (absolute frame, accounting for clip trim)
+            clip_frame_number = self._get_clip_frame_number(
+                self.transforming_clip, fps_float)
 
             # Get the rect where the video is actually drawn (without the black borders, etc...)
             viewport_rect = self.centeredViewport(self.width(), self.height())
@@ -1266,7 +1262,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                                 'scale_y', scale_y)
 
             elif getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop':
-                raw_properties = json.loads(self.transforming_effect_object.PropertiesJSON(clip_frame_number))
+                raw_properties = json.loads(
+                    self.transforming_effect_object.PropertiesJSON(clip_frame_number))
                 crop_left = raw_properties.get('left', {}).get('value', 0.0)
                 crop_top = raw_properties.get('top', {}).get('value', 0.0)
                 crop_right = raw_properties.get('right', {}).get('value', 0.0)
@@ -1289,57 +1286,78 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     eff_id = self.transforming_effect.id
 
+                    new_left, new_top = crop_left, crop_top
+                    new_right, new_bottom = crop_right, crop_bottom
+                    new_x, new_y = crop_x, crop_y
+
                     if self.transform_mode == 'origin':
-                        crop_x -= x_motion / width
-                        crop_y -= y_motion / height
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'x', crop_x, refresh=False)
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'y', crop_y)
+                        new_x -= x_motion / width
+                        new_y -= y_motion / height
                     else:
                         if self.transform_mode == 'location':
-                            crop_left += x_motion / width
-                            crop_top += y_motion / height
-                            crop_right -= x_motion / width
-                            crop_bottom -= y_motion / height
+                            new_left += x_motion / width
+                            new_top += y_motion / height
+                            new_right -= x_motion / width
+                            new_bottom -= y_motion / height
                         elif self.transform_mode == 'scale_left':
-                            crop_left += x_motion / width
+                            new_left += x_motion / width
                         elif self.transform_mode == 'scale_right':
-                            crop_right -= x_motion / width
+                            new_right -= x_motion / width
                         elif self.transform_mode == 'scale_top':
-                            crop_top += y_motion / height
+                            new_top += y_motion / height
                         elif self.transform_mode == 'scale_bottom':
-                            crop_bottom -= y_motion / height
+                            new_bottom -= y_motion / height
                         elif self.transform_mode == 'scale_top_left':
-                            crop_left += x_motion / width
-                            crop_top += y_motion / height
+                            new_left += x_motion / width
+                            new_top += y_motion / height
                         elif self.transform_mode == 'scale_top_right':
-                            crop_top += y_motion / height
-                            crop_right -= x_motion / width
+                            new_top += y_motion / height
+                            new_right -= x_motion / width
                         elif self.transform_mode == 'scale_bottom_left':
-                            crop_left += x_motion / width
-                            crop_bottom -= y_motion / height
+                            new_left += x_motion / width
+                            new_bottom -= y_motion / height
                         elif self.transform_mode == 'scale_bottom_right':
-                            crop_right -= x_motion / width
-                            crop_bottom -= y_motion / height
+                            new_right -= x_motion / width
+                            new_bottom -= y_motion / height
 
-                        crop_left = max(0.0, crop_left)
-                        crop_top = max(0.0, crop_top)
-                        crop_right = max(0.0, crop_right)
-                        crop_bottom = max(0.0, crop_bottom)
-                        if crop_left + crop_right > 1.0:
+                        new_left = max(0.0, new_left)
+                        new_top = max(0.0, new_top)
+                        new_right = max(0.0, new_right)
+                        new_bottom = max(0.0, new_bottom)
+                        if new_left + new_right > 1.0:
                             if 'left' in self.transform_mode or self.transform_mode == 'location':
-                                crop_left = 1.0 - crop_right
+                                new_left = 1.0 - new_right
                             else:
-                                crop_right = 1.0 - crop_left
-                        if crop_top + crop_bottom > 1.0:
+                                new_right = 1.0 - new_left
+                        if new_top + new_bottom > 1.0:
                             if 'top' in self.transform_mode or self.transform_mode == 'location':
-                                crop_top = 1.0 - crop_bottom
+                                new_top = 1.0 - new_bottom
                             else:
-                                crop_bottom = 1.0 - crop_top
+                                new_bottom = 1.0 - new_top
 
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'left', crop_left, refresh=False)
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'top', crop_top, refresh=False)
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'right', crop_right, refresh=False)
-                        self.updateEffectProperty(eff_id, clip_frame_number, None, 'bottom', crop_bottom)
+                    updates = {}
+                    if abs(new_left - crop_left) > 0.0001:
+                        updates['left'] = new_left
+                    if abs(new_top - crop_top) > 0.0001:
+                        updates['top'] = new_top
+                    if abs(new_right - crop_right) > 0.0001:
+                        updates['right'] = new_right
+                    if abs(new_bottom - crop_bottom) > 0.0001:
+                        updates['bottom'] = new_bottom
+                    if abs(new_x - crop_x) > 0.0001:
+                        updates['x'] = new_x
+                    if abs(new_y - crop_y) > 0.0001:
+                        updates['y'] = new_y
+
+                    for i, (prop, val) in enumerate(updates.items()):
+                        self.updateEffectProperty(
+                            eff_id,
+                            clip_frame_number,
+                            None,
+                            prop,
+                            val,
+                            refresh=(i == len(updates) - 1),
+                        )
 
             # Force re-paint
             self.update()

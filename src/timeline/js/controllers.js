@@ -224,10 +224,12 @@ App.controller("TimelineCtrl", function ($scope) {
             && "Points" in object["effects"][effect][effect_prop] && object["effects"][effect][effect_prop].Points.length > 1) {
             for (var effect_point = 0; effect_point < object["effects"][effect][effect_prop].Points.length; effect_point++) {
               var effect_co = object["effects"][effect][effect_prop].Points[effect_point].co;
-              var effect_interpolation = $scope.lookupInterpolation(object["effects"][effect][effect_prop].Points[effect_point].interpolation);
-              if (effect_co.X >= clip_start_x && effect_co.X <= clip_end_x) {
+              var effect_interpolation = $scope.lookupInterpolation(
+                object["effects"][effect][effect_prop].Points[effect_point].interpolation);
+              var effect_frame = effect_co.X;
+              if (effect_frame >= clip_start_x && effect_frame <= clip_end_x) {
                 // Only add keyframe coordinates that are within the bounds of the clip
-                keyframes[effect_co.X] = effect_interpolation;
+                keyframes[effect_frame] = effect_interpolation;
               }
             }
           }
@@ -237,10 +239,12 @@ App.controller("TimelineCtrl", function ($scope) {
             && object["effects"][effect][effect_prop]["red"].Points.length > 1) {
             for (var effect_color_point = 0; effect_color_point < object["effects"][effect][effect_prop]["red"].Points.length; effect_color_point++) {
               var effect_color_co = object["effects"][effect][effect_prop]["red"].Points[effect_color_point].co;
-              var effect_color_interpolation = $scope.lookupInterpolation(object["effects"][effect][effect_prop]["red"].Points[effect_color_point].interpolation);
-              if (effect_color_co.X >= clip_start_x && effect_color_co.X <= clip_end_x) {
+              var effect_color_interpolation = $scope.lookupInterpolation(
+                object["effects"][effect][effect_prop]["red"].Points[effect_color_point].interpolation);
+              var effect_color_frame = effect_color_co.X;
+              if (effect_color_frame >= clip_start_x && effect_color_frame <= clip_end_x) {
                 // Only add keyframe coordinates that are within the bounds of the clip
-                keyframes[effect_color_co.X] = effect_color_interpolation;
+                keyframes[effect_color_frame] = effect_color_interpolation;
               }
             }
           }
@@ -639,6 +643,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
     var is_ctrl = event && event.ctrlKey;
     var is_shift = event && event.shiftKey;
     var is_alt = event && event.altKey;
+    var parent_clip = null;
 
     // If no ID is provided (id == ""), unselect all items of this type
     if (id === "") {
@@ -836,7 +841,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
         } else if (item_type === "effect") {
             // Try global effect first
             item = $scope.project.effects.find((item) => item.id === id);
-            // If not found, try to find in all clips
+            // If not found, try to find in all clips and keep track of parent clip
             if (!item) {
                 for (let j = 0; j < $scope.project.clips.length; j++) {
                     let clipItem = $scope.project.clips[j];
@@ -844,6 +849,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
                         let effItem = clipItem.effects.find((e) => e.id === id);
                         if (effItem) {
                             item = effItem;
+                            parent_clip = clipItem;
                             break;
                         }
                     }
@@ -858,6 +864,9 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
             } else {
                 item.selected = true;
                 if ($scope.Qt) { timeline.addSelection(item.id, item_type, false); }
+                if (item_type === "effect" && parent_clip) {
+                    parent_clip.selected = true;
+                }
             }
         }
     }
