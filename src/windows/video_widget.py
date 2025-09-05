@@ -50,6 +50,112 @@ from classes.query import Clip, Effect
 class VideoWidget(QWidget, updates.UpdateInterface):
     """ A QWidget used on the video display widget """
 
+    def _compute_handles_opacity(self, fps_float):
+        """
+        Opacity based on playhead vs. selected clip(s) in project seconds:
+          clip_start = position
+          clip_end   = position + (end - start)   [fallbacks to duration/reader duration]
+        Intersects => 1.0
+        Otherwise => 0.60 fading to 0.25 over 90 seconds.
+        Works for both clip transforms and effect (e.g., Crop) transforms by
+        including self.transforming_clip when the list is empty.
+        """
+        fps = max(float(fps_float), 0.0001)
+        playhead_sec = float(get_app().window.preview_thread.current_frame) / fps
+
+        # Build selected set: use list if present, else include single transforming_clip (effect case)
+        selected = []
+        if getattr(self, "transforming_clips", None):
+            selected.extend(self.transforming_clips)
+        if getattr(self, "transforming_clip", None) and self.transforming_clip not in selected:
+            selected.append(self.transforming_clip)
+
+        if not selected:
+            return 1.0
+
+        def clip_bounds_secs(c):
+            position = float(c.data.get("position", 0.0))
+            start = float(c.data.get("start", 0.0))
+
+            if "end" in c.data and c.data["end"] is not None:
+                src_end = float(c.data["end"])
+            elif "duration" in c.data and c.data["duration"] is not None:
+                src_end = start + float(c.data["duration"])
+            else:
+                reader = c.data.get("reader", {}) or {}
+                dur = reader.get("duration")
+                if dur is None:
+                    vf = reader.get("video_length")
+                    fps_num = (reader.get("fps") or {}).get("num", 0)
+                    fps_den = (reader.get("fps") or {}).get("den", 1)
+                    r_fps = (float(fps_num) / float(fps_den)) if fps_num and fps_den else 0.0
+                    dur = (float(vf) / r_fps) if vf and r_fps else 0.0
+                src_end = start + float(dur or 0.0)
+
+            clip_len = max(src_end - start, 0.0)
+            clip_start = position
+            clip_end = position + clip_len
+            if clip_end < clip_start:
+                clip_start, clip_end = clip_end, clip_start
+            return clip_start, clip_end
+
+        # Check all selected clips (union) for intersection or nearest distance
+        min_dist_sec = None
+        for c in selected:
+            try:
+                cs, ce = clip_bounds_secs(c)
+            except Exception:
+                continue
+
+            if cs <= playhead_sec <= ce:
+                return 1.0
+
+            d = (cs - playhead_sec) if playhead_sec < cs else (playhead_sec - ce)
+            d = max(d, 0.0)
+            if min_dist_sec is None or d < min_dist_sec:
+                min_dist_sec = d
+
+        if min_dist_sec is None:
+            return 1.0
+
+        # Fade 0.60 -> 0.25 over 90s when not intersecting
+        BASE, FAR, WINDOW = 0.50, 0.15, 90.0
+        t = min(min_dist_sec / WINDOW, 1.0)
+        return BASE - (BASE - FAR) * t
+
+    def _build_clip_transform(self, x, y, sw, sh, props):
+        """Return (QTransform, unpacked props, originScreenPt) for a clip/effect box.
+           Order: translate(x,y) → translate(origin) → rotate → shear → scale → untranslate(origin)
+           This keeps the origin truly at the rotation/shear/scale center.
+        """
+        sx = max(float(props["scale_x"]["value"]), 0.001)
+        sy = max(float(props["scale_y"]["value"]), 0.001)
+        rot = float(props["rotation"]["value"])
+        shx = float(props["shear_x"]["value"])
+        shy = float(props["shear_y"]["value"])
+        ox = float(props["origin_x"]["value"])
+        oy = float(props["origin_y"]["value"])
+
+        oxv = sw * ox
+        oyv = sh * oy
+
+        t = QTransform()
+        if x or y:
+            t.translate(x, y)
+        if oxv or oyv:
+            t.translate(oxv, oyv)
+        if rot:
+            t.rotate(rot)
+        if shx or shy:
+            t.shear(shx, shy)
+        if sx or sy:
+            t.scale(sx, sy)
+        if oxv or oyv:
+            t.translate(-oxv, -oyv)
+
+        origin_screen = t.map(QPointF(oxv, oyv))
+        return t, (sx, sy, rot, shx, shy, ox, oy), origin_screen
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
         # Handle change
@@ -110,182 +216,115 @@ class VideoWidget(QWidget, updates.UpdateInterface):
     def drawTransformHandler(
         self, painter, sx, sy, source_width, source_height,
         origin_x, origin_y,
-        x1=None, y1=None, x2=None, y2=None, rotation = None,
+        x1=None, y1=None, x2=None, y2=None, rotation=None,
         skip_origin=False
     ):
-        # Draw transform corners and center origin circle
-        # Corner size
+        # Corner and origin glyph on-screen sizes
         cs = self.cs
         os = 12.0
 
         csx = cs / sx
         csy = cs / sy
 
-        # Rotate the transform handler
-        if rotation:
-            bbox_center_x = ((x1*source_width + x2*source_width) / 2.0) - ((os / 2) / sx)
-            bbox_center_y = ((y1*source_height + y2*source_height) / 2.0) - ((os / 2) / sy)
-            painter.translate(bbox_center_x, bbox_center_y)
-            painter.rotate(rotation)
-            painter.translate(-bbox_center_x, -bbox_center_y)
+        # Accept 0.0 values; only treat None as missing
+        has_crop_box = (x1 is not None and y1 is not None and x2 is not None and y2 is not None)
 
-        if all([x1, y1, x2, y2]):
-            # Calculate bounds of clip
+        # Build bounds in local (clip) coords
+        if has_crop_box:
             self.clipBounds = QRectF(
                 QPointF(x1 * source_width, y1 * source_height),
                 QPointF(x2 * source_width, y2 * source_height)
             )
-            # Calculate 4 corners coordinates
+            # Corner handles
             self.topLeftHandle = QRectF(
                 x1 * source_width - (csx / 2.0),
                 y1 * source_height - (csy / 2.0),
-                csx,
-                csy)
+                csx, csy)
             self.topRightHandle = QRectF(
                 x2 * source_width - (csx / 2.0),
                 y1 * source_height - (csy / 2.0),
-                csx,
-                csy)
+                csx, csy)
             self.bottomLeftHandle = QRectF(
                 x1 * source_width - (csx / 2.0),
                 y2 * source_height - (csy / 2.0),
-                csx,
-                csy)
+                csx, csy)
             self.bottomRightHandle = QRectF(
                 x2 * source_width - (csx / 2.0),
                 y2 * source_height - (csy / 2.0),
-                csx,
-                csy)
+                csx, csy)
         else:
-            # Calculate bounds of clip
-            self.clipBounds = QRectF(
-                QPointF(0.0, 0.0),
-                QPointF(source_width, source_height))
-            # Calculate 4 corners coordinates
-            self.topLeftHandle = QRectF(
-                -csx / 2.0, -csy / 2.0, csx, csy)
-            self.topRightHandle = QRectF(
-                source_width - csx / 2.0, -csy / 2.0, csx, csy)
-            self.bottomLeftHandle = QRectF(
-                -csx / 2.0, source_height - csy / 2.0, csx, csy)
-            self.bottomRightHandle = QRectF(
-                source_width - csx / 2.0, source_height - csy / 2.0, csx, csy)
+            self.clipBounds = QRectF(QPointF(0.0, 0.0), QPointF(source_width, source_height))
+            self.topLeftHandle = QRectF(-csx / 2.0, -csy / 2.0, csx, csy)
+            self.topRightHandle = QRectF(source_width - csx / 2.0, -csy / 2.0, csx, csy)
+            self.bottomLeftHandle = QRectF(-csx / 2.0, source_height - csy / 2.0, csx, csy)
+            self.bottomRightHandle = QRectF(source_width - csx / 2.0, source_height - csy / 2.0, csx, csy)
 
-        # Draw 4 corners
-        pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        painter.drawRect(self.topLeftHandle)
-        painter.drawRect(self.topRightHandle)
-        painter.drawRect(self.bottomLeftHandle)
-        painter.drawRect(self.bottomRightHandle)
-
-        if all([x1, y1, x2, y2]):
-            # Calculate 4 side coordinates
+        # Side handles
+        if has_crop_box:
             self.topHandle = QRectF(
                 ((x1 + x2) * source_width - csx) / 2.0,
                 (y1 * source_height) - csy / 2.0,
-                csx,
-                csy)
+                csx, csy)
             self.bottomHandle = QRectF(
                 ((x1 + x2) * source_width - csx) / 2.0,
                 (y2 * source_height) - csy / 2.0,
-                csx,
-                csy)
+                csx, csy)
             self.leftHandle = QRectF(
                 (x1 * source_width) - csx / 2.0,
                 ((y1 + y2) * source_height - csy) / 2.0,
-                csx,
-                csy)
+                csx, csy)
             self.rightHandle = QRectF(
                 (x2 * source_width) - csx / 2.0,
                 ((y1 + y2) * source_height - csy) / 2.0,
                 csx, csy)
-
         else:
-            # Calculate 4 side coordinates
-            self.topHandle = QRectF(
-                (source_width - csx) / 2.0,
-                -csy / 2.0,
-                csx,
-                csy)
-            self.bottomHandle = QRectF(
-                (source_width - csx) / 2.0,
-                source_height - (csy / 2.0),
-                csx,
-                csy)
-            self.leftHandle = QRectF(
-                -csx / 2.0,
-                (source_height - csy) / 2.0,
-                csx,
-                csy)
-            self.rightHandle = QRectF(
-                source_width - (csx / 2.0),
-                (source_height - csy) / 2.0,
-                csx,
-                csy)
+            self.topHandle = QRectF((source_width - csx) / 2.0, -csy / 2.0, csx, csy)
+            self.bottomHandle = QRectF((source_width - csx) / 2.0, source_height - (csy / 2.0), csx, csy)
+            self.leftHandle = QRectF(-csx / 2.0, (source_height - csy) / 2.0, csx, csy)
+            self.rightHandle = QRectF(source_width - (csx / 2.0), (source_height - csy) / 2.0, csx, csy)
 
-        # Calculate shear handles
-        self.topShearHandle = QRectF(
-            self.topLeftHandle.x(),
-            self.topLeftHandle.y(),
-            self.clipBounds.width(),
-            self.topLeftHandle.height())
-        self.leftShearHandle = QRectF(
-            self.topLeftHandle.x(),
-            self.topLeftHandle.y(),
-            self.topLeftHandle.width(),
-            self.clipBounds.height())
-        self.rightShearHandle = QRectF(
-            self.topRightHandle.x(),
-            self.topRightHandle.y(),
-            self.topRightHandle.width(),
-            self.clipBounds.height())
-        self.bottomShearHandle = QRectF(
-            self.bottomLeftHandle.x(),
-            self.bottomLeftHandle.y(),
-            self.clipBounds.width(),
-            self.topLeftHandle.height())
+        # Shear regions span the visible bounds
+        self.topShearHandle = QRectF(self.topLeftHandle.x(), self.topLeftHandle.y(), self.clipBounds.width(),
+                                     self.topLeftHandle.height())
+        self.leftShearHandle = QRectF(self.topLeftHandle.x(), self.topLeftHandle.y(), self.topLeftHandle.width(),
+                                      self.clipBounds.height())
+        self.rightShearHandle = QRectF(self.topRightHandle.x(), self.topRightHandle.y(), self.topRightHandle.width(),
+                                       self.clipBounds.height())
+        self.bottomShearHandle = QRectF(self.bottomLeftHandle.x(), self.bottomLeftHandle.y(), self.clipBounds.width(),
+                                        self.topLeftHandle.height())
 
-        # Draw 4 sides (centered)
+        # Pen color with global opacity applied
+        color_hex = "#d3d3d3" if skip_origin else "#53a0ed"
+        pen_color = QColor(color_hex)
+        pen_color.setAlphaF(getattr(self, "handle_opacity", 1.0))
+        pen = QPen(QBrush(pen_color), 1.5)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+
+        # Draw outline + handles
         painter.drawRects([
-            self.topHandle,
-            self.bottomHandle,
-            self.leftHandle,
-            self.rightHandle,
+            self.topLeftHandle, self.topRightHandle,
+            self.bottomLeftHandle, self.bottomRightHandle,
+            self.topHandle, self.bottomHandle,
+            self.leftHandle, self.rightHandle,
             self.clipBounds,
-            ])
+        ])
 
-        # Calculate center coordinate
-        if all([x1, y1, x2, y2]):
-            cs = 5.0
-            os = 7.0
-            self.centerHandle = QRectF(
-                ((x1 + x2) * source_width / 2.0) - (os / sx),
-                ((y1 + y2) * source_height / 2.0) - (os / sy),
-                os / sx * 2.0,
-                os / sy * 2.0
-            )
-        else:
-            self.centerHandle = QRectF(
+        # Origin glyph (hidden in crop mode; crop draws its own)
+        if not skip_origin:
+            origin_rect = QRectF(
                 source_width * origin_x - (os / sx),
                 source_height * origin_y - (os / sy),
-                os / sx * 2.0,
-                os / sy * 2.0)
-
-        if not skip_origin:
-            painter.drawEllipse(self.centerHandle)
-
-            # Draw cross at origin center, extending beyond ellipse by 25%
-            center = self.centerHandle.center()
-            halfW = QPointF(self.centerHandle.width() * 0.75, 0)
-            halfH = QPointF(0, self.centerHandle.height() * 0.75)
-            painter.drawLines(
-                center - halfW, center + halfW,
-                center - halfH, center + halfH,
+                (os / sx) * 2.0, (os / sy) * 2.0
             )
+            self.centerHandle = origin_rect
+            painter.drawEllipse(origin_rect)
 
-        # Remove transform
+            center = origin_rect.center()
+            halfW = QPointF(origin_rect.width() * 0.75, 0)
+            halfH = QPointF(0, origin_rect.height() * 0.75)
+            painter.drawLines(center - halfW, center + halfW, center - halfH, center + halfH)
+
         painter.resetTransform()
 
     def update_title(self):
@@ -342,6 +381,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         event.accept()
         self.mutex.lock()
 
+        # Ensure screen-space handle attribute exists and reset each paint
+        if not hasattr(self, "cropOriginHandleScreen"):
+            self.cropOriginHandleScreen = None
+        else:
+            self.cropOriginHandleScreen = None
+
         # Calculate "paint" FPS (and update widget title)
         current_sec = time.localtime(time.time()).tm_sec
         if current_sec != self.paint_fps_sec:
@@ -354,239 +399,265 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Paint custom frame image on QWidget
         painter = QPainter(self)
-        painter.setRenderHints(
-            QPainter.Antialiasing
-            | QPainter.SmoothPixmapTransform
-            | QPainter.TextAntialiasing,
-            True)
+        try:
+            painter.setRenderHints(
+                QPainter.Antialiasing
+                | QPainter.SmoothPixmapTransform
+                | QPainter.TextAntialiasing,
+                True)
 
-        # Get theme colors (if any)
-        bg_color = self.palette().color(self.backgroundRole())
-        painter.fillRect(event.rect(), bg_color)
+            # Background
+            bg_color = self.palette().color(self.backgroundRole())
+            painter.fillRect(event.rect(), bg_color)
 
-        # Find centered viewport
-        viewport = self.centeredViewport(self.width(), self.height())
-        if self.current_image:
-            pix_size = self.current_image.size()
-            pix_size.scale(event.rect().size(), Qt.KeepAspectRatio)
-            self.curr_frame_size = pix_size
+            # Viewport and frame
+            viewport = self.centeredViewport(self.width(), self.height())
+            if self.current_image:
+                pix_size = self.current_image.size()
+                pix_size.scale(event.rect().size(), Qt.KeepAspectRatio)
+                self.curr_frame_size = pix_size
 
-            # Scale image (take into account display scaling for High DPI monitors)
-            scale = self.devicePixelRatioF()
-            scaled_img = self.current_image.scaled(
-                pix_size * scale,
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            painter.drawImage(viewport, scaled_img)
+                scale = self.devicePixelRatioF()
+                scaled_img = self.current_image.scaled(
+                    pix_size * scale,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                painter.drawImage(viewport, scaled_img)
 
-        # Prepare for transform‐box calculation
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
+            # Prep for transform UI
+            fps = get_app().project.get("fps")
+            fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Default props for effect-only
-        default_props = {
-            "scale_x": {"value": 1.0},
-            "scale_y": {"value": 1.0},
-            "rotation": {"value": 0.0},
-            "shear_x": {"value": 0.0},
-            "shear_y": {"value": 0.0},
-            "origin_x": {"value": 0.5},
-            "origin_y": {"value": 0.5},
-        }
+            # Compute opacity for all transform UI this frame
+            self.handle_opacity = self._compute_handles_opacity(fps_float)
 
-        # 5a) Collect selected clips
-        clip_pairs = []
-        if self.transforming_clips and self.transforming_clip_objects:
-            clip_pairs = list(zip(self.transforming_clips, self.transforming_clip_objects))
+            default_props = {
+                "scale_x": {"value": 1.0},
+                "scale_y": {"value": 1.0},
+                "rotation": {"value": 0.0},
+                "shear_x": {"value": 0.0},
+                "shear_y": {"value": 0.0},
+                "origin_x": {"value": 0.5},
+                "origin_y": {"value": 0.5},
+            }
 
-        # Build union_rect from selected clips
-        union_rect = None
-        first_props = None
-        for clip, obj in clip_pairs:
-            frame = self._get_clip_frame_number(clip, fps_float)
-            rect, props = self._clip_rect(clip, obj, viewport, frame)
-            if union_rect is None:
-                union_rect = rect
-                first_props = props
-            else:
-                union_rect = union_rect.united(rect)
+            # Collect selected clips and build union rect
+            clip_pairs = []
+            if self.transforming_clips and self.transforming_clip_objects:
+                clip_pairs = list(zip(self.transforming_clips, self.transforming_clip_objects))
 
-        crop_params = None
-        # Include effect's tracked‐object box
-        if (self.transforming_effect
+            union_rect = None
+            first_props = None
+            for clip, obj in clip_pairs:
+                frame = self._get_clip_frame_number(clip, fps_float)
+                rect, props = self._clip_rect(clip, obj, viewport, frame)
+                if union_rect is None:
+                    union_rect = rect
+                    first_props = props
+                else:
+                    union_rect = union_rect.united(rect)
+
+            crop_params = None
+            crop_norm = None
+
+            # Effect overlays
+            if (self.transforming_effect
                 and self.transforming_effect_object
                 and self.transforming_clip
                 and self.transforming_clip_object):
-            clip = self.transforming_clip
-            obj = self.transforming_clip_object
-            frame = self._get_clip_frame_number(clip, fps_float)
-            clip_rect, clip_props = self._clip_rect(clip, obj, viewport, frame)
+                clip = self.transforming_clip
+                obj = self.transforming_clip_object
+                frame = self._get_clip_frame_number(clip, fps_float)
+                clip_rect, clip_props = self._clip_rect(clip, obj, viewport, frame)
 
-            eff_info = self.transforming_effect_object.info
-            raw_eff = json.loads(self.transforming_effect_object.PropertiesJSON(frame))
+                eff_info = self.transforming_effect_object.info
+                raw_eff = json.loads(self.transforming_effect_object.PropertiesJSON(frame))
 
-            if getattr(eff_info, 'has_tracked_object', False):
-                objs = raw_eff.get("objects", {}) or {}
-                if objs:
-                    oid = next(iter(objs))
-                    eprops = objs[oid]
-                    if eprops.get("visible", {}).get("value") == 1:
-                        x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
-                        y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
-                        x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
-                        y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
-                        effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
+                if getattr(eff_info, 'has_tracked_object', False):
+                    objs = raw_eff.get("objects", {}) or {}
+                    if objs:
+                        oid = next(iter(objs))
+                        eprops = objs[oid]
+                        if eprops.get("visible", {}).get("value") == 1:
+                            x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
+                            y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
+                            x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
+                            y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
+                            effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
+                            union_rect = effect_rect if union_rect is None else union_rect.united(effect_rect)
+                            first_props = first_props or default_props
 
-                        union_rect = effect_rect if union_rect is None else union_rect.united(effect_rect)
-                        first_props = first_props or default_props
+                elif getattr(eff_info, 'class_name', '') == 'Crop':
+                    left = raw_eff.get('left', {}).get('value', 0.0)
+                    top = raw_eff.get('top', {}).get('value', 0.0)
+                    right = raw_eff.get('right', {}).get('value', 0.0)
+                    bottom = raw_eff.get('bottom', {}).get('value', 0.0)
+                    resize = raw_eff.get('resize', {}).get('value', 0.0)
+                    x_off = raw_eff.get('x', {}).get('value', 0.0)
+                    y_off = raw_eff.get('y', {}).get('value', 0.0)
 
-            elif getattr(eff_info, 'class_name', '') == 'Crop':
-                left = raw_eff.get('left', {}).get('value', 0.0)
-                top = raw_eff.get('top', {}).get('value', 0.0)
-                right = raw_eff.get('right', {}).get('value', 0.0)
-                bottom = raw_eff.get('bottom', {}).get('value', 0.0)
-                resize = raw_eff.get('resize', {}).get('value', 0.0)
-                x_off = raw_eff.get('x', {}).get('value', 0.0)
-                y_off = raw_eff.get('y', {}).get('value', 0.0)
-                width = clip_rect.width()
-                height = clip_rect.height()
-                cw = max(1.0 - left - right, 0.0)
-                ch = max(1.0 - top - bottom, 0.0)
-                crop_w = width * cw
-                crop_h = height * ch
-                if resize:
-                    scale = max(width / max(crop_w, 0.0001), height / max(crop_h, 0.0001))
-                    crop_w *= scale
-                    crop_h *= scale
-                    x1_abs = clip_rect.center().x() - crop_w / 2.0
-                    y1_abs = clip_rect.center().y() - crop_h / 2.0
-                else:
-                    x1_abs = clip_rect.x() + left * width
-                    y1_abs = clip_rect.y() + top * height
-                union_rect = QRectF(QPointF(x1_abs, y1_abs), QSizeF(crop_w, crop_h))
-                first_props = default_props
-                crop_params = (left, top, right, bottom, resize, x_off, y_off, clip_rect)
+                    width = clip_rect.width()
+                    height = clip_rect.height()
+                    cw = max(1.0 - left - right, 0.0)
+                    ch = max(1.0 - top - bottom, 0.0)
 
-        # Draw a single unified transform handler
-        if union_rect and first_props:
-            x  = union_rect.x()
-            y  = union_rect.y()
-            sw = union_rect.width()
-            sh = union_rect.height()
+                    crop_w = width * cw
+                    crop_h = height * ch
+                    if resize:
+                        scale = max(width / max(crop_w, 0.0001), height / max(crop_h, 0.0001))
+                        crop_w *= scale
+                        crop_h *= scale
+                        x1_abs = clip_rect.center().x() - crop_w / 2.0
+                        y1_abs = clip_rect.center().y() - crop_h / 2.0
+                    else:
+                        x1_abs = clip_rect.x() + left * width
+                        y1_abs = clip_rect.y() + top * height
 
-            sx  = max(float(first_props["scale_x"]["value"]), 0.001)
-            sy  = max(float(first_props["scale_y"]["value"]), 0.001)
-            rot = first_props["rotation"]["value"]
-            shx = first_props["shear_x"]["value"]
-            shy = first_props["shear_y"]["value"]
-            ox  = first_props["origin_x"]["value"]
-            oy  = first_props["origin_y"]["value"]
+                    x1 = (x1_abs - clip_rect.x()) / width
+                    y1 = (y1_abs - clip_rect.y()) / height
+                    x2 = x1 + (crop_w / width)
+                    y2 = y1 + (crop_h / height)
+                    crop_norm = (x1, y1, x2, y2)
 
-            # Build QTransform
-            self.transform = QTransform()
-            if x or y:
-                self.transform.translate(x, y)
+                    union_rect = clip_rect
+                    first_props = clip_props
+                    crop_params = (left, top, right, bottom, resize, x_off, y_off, clip_rect, crop_w, crop_h)
 
-            oxv = sw * ox
-            oyv = sh * oy
-            if rot or shx or shy:
-                self.transform.translate(oxv, oyv)
-                self.transform.rotate(rot)
-                self.transform.shear(shx, shy)
-                self.transform.translate(-oxv, -oyv)
+            # Draw handler(s)
+            if union_rect and first_props:
+                x = union_rect.x()
+                y = union_rect.y()
+                sw = union_rect.width()
+                sh = union_rect.height()
 
-            # Apply scale
-            if sx or sy:
-                self.transform.scale(sx, sy)
+                sx = max(float(first_props["scale_x"]["value"]), 0.001)
+                sy = max(float(first_props["scale_y"]["value"]), 0.001)
+                rot = float(first_props["rotation"]["value"])
+                shx = float(first_props["shear_x"]["value"])
+                shy = float(first_props["shear_y"]["value"])
+                ox = float(first_props["origin_x"]["value"])
+                oy = float(first_props["origin_y"]["value"])
 
-            # Store for mouseMoveEvent
-            self.originHandle = QPointF(x + oxv, y + oyv)
+                # Transform: translate -> scale -> pivot -> rotate/shear -> unpivot
+                self.transform = QTransform()
+                oxv = sw * ox
+                oyv = sh * oy
 
-            # Apply transform
-            painter.setTransform(self.transform)
-            is_crop = crop_params is not None
-            self.drawTransformHandler(painter, sx, sy, sw, sh, ox, oy, skip_origin=is_crop)
+                if x or y:
+                    self.transform.translate(x, y)
+                if sx or sy:
+                    self.transform.scale(sx, sy)
+                if oxv or oyv:
+                    self.transform.translate(oxv, oyv)
+                if rot:
+                    self.transform.rotate(rot)
+                if shx or shy:
+                    self.transform.shear(shx, shy)
+                if oxv or oyv:
+                    self.transform.translate(-oxv, -oyv)
 
-            if is_crop:
+                # On-screen pivot
+                self.originHandle = self.transform.map(QPointF(oxv, oyv))
+
+                # Draw the local-space handlers (blue or gray) with global opacity
                 painter.setTransform(self.transform)
-                left, top, right, bottom, resize, crop_x, crop_y, full_rect = crop_params
-                pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
-                pen.setCosmetic(True)
-                painter.setPen(pen)
-                if resize:
-                    w = sw
-                    h = sh
+                is_crop = crop_params is not None
+                if is_crop and crop_norm:
+                    x1, y1, x2, y2 = crop_norm
                 else:
-                    w = full_rect.width()
-                    h = full_rect.height()
-                global_origin = QPointF(
-                    full_rect.center().x() - crop_x * w,
-                    full_rect.center().y() - crop_y * h,
+                    x1 = y1 = x2 = y2 = None
+                self.drawTransformHandler(
+                    painter, sx, sy, sw, sh, ox, oy,
+                    x1, y1, x2, y2, skip_origin=is_crop
                 )
-                local_origin = QPointF(global_origin.x() - x, global_origin.y() - y)
-                os = 12.0
-                self.centerHandle = QRectF(
-                    local_origin.x() - (os / sx), local_origin.y() - (os / sy),
-                    os / sx * 2.0, os / sy * 2.0,
-                )
-                painter.drawEllipse(self.centerHandle)
-                center = self.centerHandle.center()
-                halfW = QPointF(self.centerHandle.width() * 0.75, 0)
-                halfH = QPointF(0, self.centerHandle.height() * 0.75)
-                painter.drawLines(
-                    center - halfW, center + halfW,
-                    center - halfH, center + halfH,
-                )
+
+                # Crop origin glyph (screen space; constant size; with opacity)
+                if is_crop:
+                    left, top, right, bottom, resize, crop_x, crop_y, full_rect, crop_w, crop_h = crop_params
+                    cw = max(1.0 - left - right, 0.0001)
+                    ch = max(1.0 - top - bottom, 0.0001)
+
+                    base_w = max(self.clipBounds.width(), 0.0001)
+                    base_h = max(self.clipBounds.height(), 0.0001)
+                    if resize:
+                        origin_w = base_w
+                        origin_h = base_h
+                    else:
+                        origin_w = base_w / cw
+                        origin_h = base_h / ch
+
+                    local_center = self.clipBounds.center()
+                    local_origin = QPointF(
+                        local_center.x() - (crop_x * origin_w),
+                        local_center.y() - (crop_y * origin_h)
+                    )
+
+                    screen_pt = self.transform.map(local_origin)
+                    painter.resetTransform()
+
+                    os = 12.0  # fixed on-screen radius
+                    color = QColor("#d3d3d3")
+                    color.setAlphaF(self.handle_opacity)
+                    pen = QPen(QBrush(color), 1.5)
+                    pen.setCosmetic(True)
+                    painter.setPen(pen)
+
+                    self.cropOriginHandleScreen = QRectF(
+                        screen_pt.x() - os, screen_pt.y() - os, os * 2.0, os * 2.0
+                    )
+                    painter.drawEllipse(self.cropOriginHandleScreen)
+
+                    c = self.cropOriginHandleScreen.center()
+                    cross_w = self.cropOriginHandleScreen.width() * 0.75
+                    cross_h = self.cropOriginHandleScreen.height() * 0.75
+                    halfW = QPointF(cross_w / 2.0, 0)
+                    halfH = QPointF(0, cross_h / 2.0)
+                    painter.drawLines(c - halfW, c + halfW, c - halfH, c + halfH)
+
+            # Region selection UI (also uses global opacity)
+            if self.region_enabled:
+                self.region_transform = QTransform()
+                rx = viewport.x()
+                ry = viewport.y()
+                if rx or ry:
+                    self.region_transform.translate(rx, ry)
+                if self.zoom:
+                    self.region_transform.scale(self.zoom, self.zoom)
+
+                self.region_transform_inverted = self.region_transform.inverted()[0]
+                painter.setTransform(self.region_transform)
+
+                cs = self.cs
+                if self.regionTopLeftHandle and self.regionBottomRightHandle:
+                    color = QColor("#53a0ed")
+                    color.setAlphaF(self.handle_opacity)
+                    pen = QPen(QBrush(color), 1.5)
+                    pen.setCosmetic(True)
+                    painter.setPen(pen)
+                    painter.drawRect(QRectF(
+                        self.regionTopLeftHandle.x() - (cs / 2.0 / self.zoom),
+                        self.regionTopLeftHandle.y() - (cs / 2.0 / self.zoom),
+                        self.regionTopLeftHandle.width() / self.zoom,
+                        self.regionTopLeftHandle.height() / self.zoom))
+                    painter.drawRect(QRectF(
+                        self.regionBottomRightHandle.x() - (cs / 2.0 / self.zoom),
+                        self.regionBottomRightHandle.y() - (cs / 2.0 / self.zoom),
+                        self.regionBottomRightHandle.width() / self.zoom,
+                        self.regionBottomRightHandle.height() / self.zoom))
+                    region_rect = QRectF(
+                        self.regionTopLeftHandle.x(),
+                        self.regionTopLeftHandle.y(),
+                        self.regionBottomRightHandle.x() - self.regionTopLeftHandle.x(),
+                        self.regionBottomRightHandle.y() - self.regionTopLeftHandle.y())
+                    painter.drawRect(region_rect)
+
                 painter.resetTransform()
 
-        # Region‐selection drawing (restored from original)
-        if self.region_enabled:
-            # Paint region selector onto video preview
-            self.region_transform = QTransform()
-            # Position at viewport origin
-            rx = viewport.x()
-            ry = viewport.y()
-            if rx or ry:
-                self.region_transform.translate(rx, ry)
-            if self.zoom:
-                self.region_transform.scale(self.zoom, self.zoom)
-
-            # Keep inverted for mouse mapping
-            self.region_transform_inverted = self.region_transform.inverted()[0]
-            painter.setTransform(self.region_transform)
-
-            # Draw handles and box
-            cs = self.cs
-            if self.regionTopLeftHandle and self.regionBottomRightHandle:
-                # Draw corners and bounding box
-                pen = QPen(QBrush(QColor("#53a0ed")), 1.5)
-                pen.setCosmetic(True)
-                painter.setPen(pen)
-                painter.drawRect(QRectF(
-                    self.regionTopLeftHandle.x() - (cs / 2.0 / self.zoom),
-                    self.regionTopLeftHandle.y() - (cs / 2.0 / self.zoom),
-                    self.regionTopLeftHandle.width()  / self.zoom,
-                    self.regionTopLeftHandle.height() / self.zoom))
-                painter.drawRect(QRectF(
-                    self.regionBottomRightHandle.x() - (cs / 2.0 / self.zoom),
-                    self.regionBottomRightHandle.y() - (cs / 2.0 / self.zoom),
-                    self.regionBottomRightHandle.width()  / self.zoom,
-                    self.regionBottomRightHandle.height() / self.zoom))
-                region_rect = QRectF(
-                    self.regionTopLeftHandle.x(),
-                    self.regionTopLeftHandle.y(),
-                    self.regionBottomRightHandle.x() - self.regionTopLeftHandle.x(),
-                    self.regionBottomRightHandle.y() - self.regionTopLeftHandle.y())
-                painter.drawRect(region_rect)
-
-            # Remove transform
-            painter.resetTransform()
-
-        # End painter
-        painter.end()
-
-        self.mutex.unlock()
+        finally:
+            if painter.isActive():
+                painter.end()
+            self.mutex.unlock()
 
     def centeredViewport(self, width, height):
         """ Calculate size of viewport to maintain aspect ratio """
@@ -740,6 +811,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         return QCursor(rotated_pixmap)
 
     def checkTransformMode(self, rotation, shear_x, shear_y, event):
+        # Make sure attr exists even if old sessions
+        if not hasattr(self, "cropOriginHandleScreen"):
+            self.cropOriginHandleScreen = None
+
         if not self.transform:
             self.hover_cursor = Qt.ArrowCursor
             self.hover_transform_mode = None
@@ -747,6 +822,19 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             if self.mouse_dragging:
                 self.transform_mode = None
             return
+
+        # Special-case: Crop effect origin is in SCREEN SPACE
+        if (self.transforming_effect and self.transforming_effect_object and
+            getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
+            # Test the screen-space rect first
+            if self.cropOriginHandleScreen and self.cropOriginHandleScreen.contains(event.pos()):
+                cursor = self.rotateCursor(self.cursors.get('hand'), rotation, shear_x, shear_y)
+                self.hover_cursor = cursor
+                self.hover_transform_mode = 'origin'
+                if self.mouse_dragging and not self.transform_mode:
+                    self.transform_mode = 'origin'
+                self.setCursor(cursor)
+                return
 
         handle_uis = [
             {"handle": self.centerHandle, "mode": 'origin', "cursor": 'hand'},
@@ -770,7 +858,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         }
 
         if (self.transforming_effect and self.transforming_effect_object and
-                getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
+            getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
             handle_uis = [h for h in handle_uis if not h["mode"].startswith('shear_')]
             non_handle_uis["outside"] = {"mode": None, "cursor": None}
 
@@ -786,15 +874,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.transform_mode = None
             return
 
-        # If mouse is over a handle, set corresponding pointer/mode
+        # If mouse is over a LOCAL handle, set corresponding pointer/mode
         for h in handle_uis:
-            if self.transform.mapToPolygon(
-                    h["handle"].toRect(),
-                    ).containsPoint(event.pos(), Qt.OddEvenFill):
+            # Note: the crop-origin case was handled in screen space above
+            if self.transform.mapToPolygon(h["handle"].toRect()).containsPoint(event.pos(), Qt.OddEvenFill):
                 if self.transform_mode and self.transform_mode != h["mode"]:
                     continue
-                cursor = self.rotateCursor(
-                    self.cursors.get(h["cursor"]), rotation, shear_x, shear_y)
+                cursor = self.rotateCursor(self.cursors.get(h["cursor"]), rotation, shear_x, shear_y)
                 self.hover_cursor = cursor
                 self.hover_transform_mode = h["mode"]
                 if self.mouse_dragging and not self.transform_mode:
@@ -802,7 +888,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.setCursor(cursor)
                 return
 
-        # If not over any handles, determne inside/outside clip rectangle
+        # If not over any handles, determine inside/outside clip rectangle
         r = non_handle_uis.get("region")
         if self.transform.mapToPolygon(r.toRect()).containsPoint(event.pos(), Qt.OddEvenFill):
             nh = non_handle_uis.get("inside", {})
@@ -810,8 +896,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             nh = non_handle_uis.get("outside", {})
         cursor_name = nh.get("cursor")
         if cursor_name:
-            cursor = self.rotateCursor(
-                self.cursors.get(cursor_name), rotation, shear_x, shear_y)
+            cursor = self.rotateCursor(self.cursors.get(cursor_name), rotation, shear_x, shear_y)
         else:
             cursor = Qt.ArrowCursor
         self.hover_cursor = cursor
@@ -1266,9 +1351,16 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             elif getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop':
                 raw_properties = json.loads(
                     self.transforming_effect_object.PropertiesJSON(clip_frame_number))
-                crop_left = raw_properties.get('left', {}).get('value', 0.0)
-                crop_top = raw_properties.get('top', {}).get('value', 0.0)
-                crop_right = raw_properties.get('right', {}).get('value', 0.0)
+
+                # Use the clip's transform for cursor orientation
+                clip_props_for_cursors = json.loads(self.transforming_clip_object.PropertiesJSON(clip_frame_number))
+                clip_rot = clip_props_for_cursors.get('rotation', {}).get('value', 0.0)
+                clip_sx  = clip_props_for_cursors.get('shear_x', {}).get('value', 0.0)
+                clip_sy  = clip_props_for_cursors.get('shear_y', {}).get('value', 0.0)
+
+                crop_left   = raw_properties.get('left',   {}).get('value', 0.0)
+                crop_top    = raw_properties.get('top',    {}).get('value', 0.0)
+                crop_right  = raw_properties.get('right',  {}).get('value', 0.0)
                 crop_bottom = raw_properties.get('bottom', {}).get('value', 0.0)
                 resize = raw_properties.get('resize', {}).get('value', 0.0)
                 crop_x = raw_properties.get('x', {}).get('value', 0.0)
@@ -1277,7 +1369,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 cw = max(1.0 - crop_left - crop_right, 0.0001)
                 ch = max(1.0 - crop_top - crop_bottom, 0.0001)
 
-                self.checkTransformMode(0, 0, 0, event)
+                # Use the clip's rotation/shear so the resize/rotate cursors match the tilted overlay
+                self.checkTransformMode(clip_rot, clip_sx, clip_sy, event)
 
                 if self.transform_mode:
                     x_motion = event.pos().x() - self.mouse_position.x()
@@ -1596,12 +1689,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 rect.setY(rect.y() - top * fy * height)
                 rect.setWidth(width * fx)
                 rect.setHeight(height * fy)
+                break
             else:
-                rect.setX(rect.x() + left * width)
-                rect.setY(rect.y() + top * height)
-                rect.setWidth(width * max(1.0 - left - right, 0.0))
-                rect.setHeight(height * max(1.0 - top - bottom, 0.0))
-            break
+                # When not resizing, the crop effect only masks pixels and
+                # does not alter the clip's bounding box. Ignore the crop
+                # dimensions so transform handles continue to track the
+                # original clip size.
+                continue
 
         return rect, raw_properties
 
