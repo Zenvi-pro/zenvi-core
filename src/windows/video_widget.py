@@ -587,7 +587,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         origin_w = base_w / cw
                         origin_h = base_h / ch
 
-                    local_center = self.clipBounds.center()
+                    # The crop origin represents an offset from the center of the clip's image
+                    local_center = full_rect.center()
                     local_origin = QPointF(
                         local_center.x() - (crop_x * origin_w),
                         local_center.y() - (crop_y * origin_h)
@@ -859,8 +860,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         if (self.transforming_effect and self.transforming_effect_object and
             getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
-            handle_uis = [h for h in handle_uis if not h["mode"].startswith('shear_')]
+            handle_uis = [h for h in handle_uis if not h["mode"].startswith('shear_') and h["mode"] != 'origin']
             non_handle_uis["outside"] = {"mode": None, "cursor": None}
+
+        # Ignore any handles that were not drawn
+        handle_uis = [h for h in handle_uis if h["handle"]]
 
         # Mouse over resize button (and not currently dragging)
         if (not self.mouse_dragging
