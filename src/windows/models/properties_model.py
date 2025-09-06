@@ -38,6 +38,7 @@ from PyQt5.QtGui import (
 from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
+from windows.clip_time import clamp_timing_to_media
 from classes.query import Clip, Transition, Effect
 from classes.logger import log
 from classes.app import get_app
@@ -271,6 +272,10 @@ class PropertiesModel(updates.UpdateInterface):
                                     'co': {'X': self.frame_number, 'Y': default_value},
                                     'interpolation': 1})
 
+                # Enforce clip timing constraints
+                if property_key in ("time", "start", "end", "duration"):
+                    clamp_timing_to_media(clip_data, c)
+
                 # Determine if waveforms are impacted by this change
                 has_waveform = False
                 waveform_file_id = None
@@ -281,7 +286,10 @@ class PropertiesModel(updates.UpdateInterface):
 
                 # Reduce # of clip properties we are saving (performance boost)
                 if not object_id:
-                    clip_data = {property_key: clip_data.get(property_key)}
+                    if property_key == "time":
+                        clip_data = {k: clip_data.get(k) for k in ("time", "end", "duration", "start")}
+                    else:
+                        clip_data = {property_key: clip_data.get(property_key)}
                 else:
                     # If objects dict detected - don't reduce the # of objects
                     objects[object_id] = clip_data
@@ -486,6 +494,9 @@ class PropertiesModel(updates.UpdateInterface):
                 "%s for %s changed to %s at frame %s with interpolation: %s at closest x: %s",
                 property_key, item_id, new_value, self.frame_number, interpolation, closest_point_x)
 
+            # Start each iteration with the original value
+            value = new_value
+
             # Find this clip
             c = None
             clip_updated = False
@@ -511,6 +522,16 @@ class PropertiesModel(updates.UpdateInterface):
                         log.debug("No clip data found for this object id")
                         return
 
+                # Clamp time values to reader's frame range
+                if property_key == "time" and value is not None:
+                    reader = c.data.get("reader") or {}
+                    video_length = reader.get("video_length")
+                    if video_length:
+                        value = int(round(max(1.0, min(value, float(video_length)))))
+                        item.setText(
+                            QLocale().system().toString(float(value), "f", precision=3)
+                        )
+
                 # Update clip attribute
                 if property_key in clip_data:
                     log_id = "{}/{}".format(item_id, object_id) if object_id else item_id
@@ -521,7 +542,7 @@ class PropertiesModel(updates.UpdateInterface):
                         # Keyframe
 
                         # Protection from HUGE scale values
-                        if property_key in ['scale_x', 'scale_y', 'shear_x', 'shear_y'] and new_value:
+                        if property_key in ['scale_x', 'scale_y', 'shear_x', 'shear_y'] and value:
                             width = get_app().project.get("width")
                             height = get_app().project.get("height")
                             is_svg = clip_data.get("reader", {}).get("path", "").lower().endswith("svg")
@@ -533,8 +554,8 @@ class PropertiesModel(updates.UpdateInterface):
                                 # Clamp the max scale based on project size
                                 max_multiple = round((2000 * max_multiple) / max(width, height))
 
-                            # Apply the calculated max_multiple to new_value
-                            new_value = max(min(new_value, max_multiple), -max_multiple)
+                            # Apply the calculated max_multiple to value
+                            value = max(min(value, max_multiple), -max_multiple)
 
                         # Loop through points, find a matching points on this frame
                         found_point = False
@@ -546,10 +567,10 @@ class PropertiesModel(updates.UpdateInterface):
                                 found_point = True
                                 clip_updated = True
                                 # Update or delete point
-                                if new_value is not None:
-                                    point["co"]["Y"] = float(new_value)
-                                    log.debug("updating point: co.X = %d to value: %.3f",
-                                              point["co"]["X"], float(new_value))
+                                if value is not None:
+                                    point["co"]["Y"] = int(value) if property_key == "time" else float(value)
+                                    log.debug("updating point: co.X = %d to value: %s",
+                                              point["co"]["X"], value)
                                 else:
                                     point_to_delete = point
                                 break
@@ -594,11 +615,11 @@ class PropertiesModel(updates.UpdateInterface):
                             clip_data[property_key]["Points"].remove(point_to_delete)
 
                         # Create new point (if needed)
-                        elif not found_point and new_value is not None:
+                        elif not found_point and value is not None:
                             clip_updated = True
                             log.debug("Created new point at X=%d", self.frame_number)
                             clip_data[property_key].setdefault('Points', []).append({
-                                'co': {'X': self.frame_number, 'Y': new_value},
+                                'co': {'X': self.frame_number, 'Y': int(value) if property_key == "time" else value},
                                 'interpolation': 1})
 
                 if not clip_updated:
@@ -606,14 +627,14 @@ class PropertiesModel(updates.UpdateInterface):
                     if property_type == "int":
                         clip_updated = True
                         try:
-                            clip_data[property_key] = int(new_value)
+                            clip_data[property_key] = int(value)
                         except Exception:
                             log.warn('Invalid Integer value passed to property', exc_info=1)
 
                     elif property_type == "float":
                         clip_updated = True
                         try:
-                            clip_data[property_key] = float(new_value)
+                            clip_data[property_key] = float(value)
 
                             # Fix precision issues with time properties by snapping to FPS grid
                             if property_key in ['position', 'start', 'end']:
@@ -630,21 +651,21 @@ class PropertiesModel(updates.UpdateInterface):
                     elif property_type == "bool":
                         clip_updated = True
                         try:
-                            clip_data[property_key] = bool(new_value)
+                            clip_data[property_key] = bool(value)
                         except Exception:
                             log.warn('Invalid Boolean value passed to property', exc_info=1)
 
                     elif property_type == "string":
                         clip_updated = True
                         try:
-                            clip_data[property_key] = str(new_value or "")
+                            clip_data[property_key] = str(value or "")
                         except Exception:
                             log.warn('Invalid String value passed to property', exc_info=1)
 
                     elif property_type in ["font", "caption"]:
                         clip_updated = True
                         try:
-                            clip_data[property_key] = str(new_value)
+                            clip_data[property_key] = str(value)
                         except Exception:
                             log.warn('Invalid Font/Caption value passed to property', exc_info=1)
 
@@ -665,6 +686,10 @@ class PropertiesModel(updates.UpdateInterface):
                         except Exception:
                             log.warn('Invalid Reader value passed to property: %s', value, exc_info=1)
 
+                # Enforce clip timing constraints
+                if property_key in ("time", "start", "end", "duration"):
+                    clamp_timing_to_media(clip_data, c)
+
                 # Determine if waveforms are impacted by this change
                 has_waveform = False
                 waveform_file_id = None
@@ -675,7 +700,10 @@ class PropertiesModel(updates.UpdateInterface):
 
                 # Reduce # of clip properties we are saving (performance boost)
                 if not object_id:
-                    clip_data = {property_key: clip_data.get(property_key)}
+                    if property_key == "time":
+                        clip_data = {k: clip_data.get(k) for k in ("time", "end", "duration", "start")}
+                    else:
+                        clip_data = {property_key: clip_data.get(property_key)}
                 else:
                     # If objects dict detected - don't reduce the # of objects
                     objects[object_id] = clip_data
@@ -694,7 +722,7 @@ class PropertiesModel(updates.UpdateInterface):
                     # Update the preview
                     get_app().window.refreshFrameSignal.emit()
 
-                    log.info("Item %s: changed %s to %s at frame %s (x: %s)" % (item_id, property_key, new_value, self.frame_number, closest_point_x))
+                    log.info("Item %s: changed %s to %s at frame %s (x: %s)" % (item_id, property_key, value, self.frame_number, closest_point_x))
 
                 # Clear selection
                 self.parent.clearSelection()
@@ -704,6 +732,15 @@ class PropertiesModel(updates.UpdateInterface):
         _ = app._tr
         label = property[1]["name"]
         name = property[0]
+
+        # Constrain time keyframes to the reader's frame range
+        if name == "time" and getattr(c, "data", None):
+            reader = c.data.get("reader") or {}
+            video_length = reader.get("video_length")
+            if video_length:
+                property[1]["min"] = 1
+                property[1]["max"] = float(video_length)
+
         value = property[1]["value"]
         type = property[1]["type"]
         memo = property[1]["memo"]

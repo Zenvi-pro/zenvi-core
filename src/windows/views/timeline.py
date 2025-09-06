@@ -55,6 +55,7 @@ from .timeline_backend.enums import (
 )
 from .timeline_backend.qwidget import TimelineWidget
 from .menu import StyledContextMenu
+from windows.clip_time import clamp_timing_to_media
 
 # Constants used by this file
 JS_SCOPE_SELECTOR = "$('body').scope()"
@@ -218,9 +219,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return True
         return False
 
-    @pyqtSlot(str, bool, bool, bool, str)
-    def update_clip_data(self, clip_json, only_basic_props=True,
-                         ignore_reader=False, ignore_refresh=False, transaction_id=None):
+    @pyqtSlot(str, bool, bool, bool, str, bool)
+    def update_clip_data(
+        self, clip_json, only_basic_props=True, ignore_reader=False,
+        ignore_refresh=False, transaction_id=None, clamp_to_media=True
+    ):
         """ Javascript callable function to update the project data when a clip changes.
         Create an updateAction and send it to the update manager.
         Transaction ID is for undo/redo grouping (if any) """
@@ -242,6 +245,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Create a new clip (if not exists)
             log.debug("Create new clip object from clip_data: %s" % clip_data)
             existing_clip = Clip()
+
+        if clamp_to_media:
+            # Constrain timing values to the reader's bounds
+            clamp_timing_to_media(clip_data, existing_clip)
 
         # Update clip data
         existing_clip.data = clip_data
@@ -2451,14 +2458,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if clip.data.get("ui", {}).get("audio_data", []):
                 clips_with_waveforms.append(clip.id)
 
-            # Keep original 'end' and 'duration'
-            if "original_data" not in clip.data:
-                clip.data["original_data"] = {
-                    "end": clip.data["end"],
-                    "duration": clip.data["duration"],
-                    "video_length": clip.data["reader"]["video_length"]
-                }
-
             # Determine the beginning and ending of this animation
             start_animation = 1
 
@@ -2471,8 +2470,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 freeze_seconds = float(speed)
 
                 original_duration = clip.data["duration"]
-                if "original_data" in clip.data:
-                    original_duration = clip.data["original_data"]["duration"]
 
                 log.info('Updating timing for clip ID {}, original duration: {}'
                          .format(clip.id, original_duration))
@@ -2578,15 +2575,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     speed_factor = float(speed_label)
                     even_multiple = int(speed_factor)
 
-                if action == MenuTime.NONE and "original_data" in clip.data:
-                    # Reset original end & duration (if available)
-                    orig = clip.data.pop("original_data")
-                    clip.data.update({
-                        "end": orig["end"],
-                        "duration": orig["duration"],
-                    })
-                    clip.data["reader"]["video_length"] = orig["video_length"]
-                    clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": 1}]}
+                if action == MenuTime.NONE:
+                    # Reset to the reader's full length and clear any time curve
+                    c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
+                    reader_len = c_obj.Reader().info.video_length if c_obj else clip.data["reader"].get("video_length")
+                    clip.data["reader"]["video_length"] = reader_len
+                    original_duration = reader_len / fps_float
+                    self._retime_clip(clip, float(clip.data["start"]) + original_duration, clip.data.get("position"))
+                    clip.data["time"] = { "Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}] }
                 else:
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
                     new_duration = self.round_to_multiple(original_duration / speed_factor, even_multiple)
@@ -2613,10 +2609,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         original_end = float(clip.data["end"])
         original_duration = original_end - original_start
 
-        new_end_val = float(new_end)
-        new_duration = new_end_val - original_start
+        requested_end = float(new_end)
+        new_duration = requested_end - original_start
         if new_duration <= 0:
             return False
+
+        # Snap duration/end to frame boundaries
+        new_duration_frames = max(1, round(new_duration * fps_float))
+        new_duration = new_duration_frames / fps_float
+        new_end_val = original_start + new_duration
 
         # Determine start/end frames from existing time keyframes when possible
         reader_frames = int(clip.data.get("reader", {}).get("video_length", 0))
@@ -2634,7 +2635,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         start_output = start_frame if direction == 1 else end_frame
         end_output = end_frame if direction == 1 else start_frame
 
-        new_duration_frames = round(new_duration * fps_float)
         timeline_ratio = float(new_duration) / original_duration if original_duration else 1.0
 
         # Update or create time keyframes
@@ -2651,8 +2651,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         x = 1 + ((x - 1) * timeline_ratio)
                         if direction == -1:
                             x = 1 + (new_duration_frames - (x - 1))
-                        p["co"]["X"] = x
-                    y = max(1, min(p["co"]["Y"], reader_frames))
+                        p["co"]["X"] = round(x)
+                    else:
+                        p["co"]["X"] = round(x)
+                    y = int(round(p["co"]["Y"]))
+                    y = max(1, min(y, reader_frames))
                     if direction == -1:
                         y = start_frame + end_frame - y
                     p["co"]["Y"] = y
@@ -2676,7 +2679,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     x = 1 + ((x - 1) * timeline_ratio)
                     if direction == -1:
                         x = 1 + (new_duration_frames - (x - 1))
-                    p["co"]["X"] = x
+                    p["co"]["X"] = round(x)
 
         # Scale clip property keyframes (skip time curve)
         for key, value in clip.data.items():
@@ -2691,9 +2694,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     scale_points(value)
 
         # Update timing and position
-        clip.data["duration"] = float(new_duration)
+        clip.data["duration"] = new_duration
         clip.data["end"] = new_end_val
         if new_position is not None:
+            new_position = round(new_position * fps_float) / fps_float
             clip.data["position"] = float(new_position)
 
         return True
@@ -2710,7 +2714,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return
 
         tid = str(uuid.uuid4())
-        self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+        self.update_clip_data(
+            clip.data,
+            only_basic_props=False,
+            ignore_reader=True,
+            transaction_id=tid,
+            clamp_to_media=False,
+        )
         get_app().updates.apply_last_action_to_history(original_clip_data)
 
     def round_to_multiple(self, number, multiple):

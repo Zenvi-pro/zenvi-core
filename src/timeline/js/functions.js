@@ -639,7 +639,7 @@ function updateDraggables(scope, ui, itemType) {
     // Batch process updates
     clip_updates.forEach(function(item_data, index) {
         var needs_refresh = (index === clip_updates.length - 1);
-        timeline.update_clip_data(JSON.stringify(item_data), true, true, !needs_refresh, tid);
+        timeline.update_clip_data(JSON.stringify(item_data), true, true, !needs_refresh, tid, true);
     });
 
     transition_updates.forEach(function(item_data, index) {

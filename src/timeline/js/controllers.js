@@ -1343,7 +1343,7 @@ $scope.updateRecentItemJSON = function (item_type, item_ids, tid) {
 
     // Update clip or transition in Qt (very important)
     if (item_type === "clip") {
-      timeline.update_clip_data(JSON.stringify(item_object), true, true, false, tid);
+      timeline.update_clip_data(JSON.stringify(item_object), true, true, false, tid, true);
     } else if (item_type === "transition") {
       timeline.update_transition_data(JSON.stringify(item_object), true, false, tid);
     }

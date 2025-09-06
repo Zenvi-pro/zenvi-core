@@ -194,7 +194,7 @@ App.directive("tlClip", function ($timeout) {
 
             // update clip in Qt (very important =)
             if (scope.Qt) {
-              timeline.update_clip_data(JSON.stringify(scope.clip), true, true, false, null);
+              timeline.update_clip_data(JSON.stringify(scope.clip), true, true, false, null, true);
             }
             element.resizable("option", "maxWidth", scope.clip.duration * scope.pixelsPerSecond);
           }
