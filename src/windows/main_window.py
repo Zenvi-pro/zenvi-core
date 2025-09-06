@@ -1526,7 +1526,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         """Build and return a list of all seekable locations for the currently-selected timeline elements"""
 
         def getTimelineObjectPositions(obj):
-            """ Add boundaries & all keyframes of a timeline object (clip, transition...) to all_marker_positions """
+            """Add clip/transition boundaries & keyframes for timeline navigation"""
             positions = []
 
             fps = get_app().project.get("fps")
@@ -1542,7 +1542,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             positions.append(clip_start_time)
             positions.append(clip_stop_time)
 
-            # add all keyframes
+            # add all object keyframes
             for property in obj.data:
                 try:
                     # Try looping through keyframe points
@@ -1561,36 +1561,16 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 except (TypeError, KeyError):
                     pass
 
-            # Add all Effect keyframes
-            if "effects" in obj.data:
-                for effect_data in obj.data["effects"]:
-                    for prop in effect_data:
-                        try:
-                            # Try looping through keyframe points
-                            for point in effect_data[prop]["Points"]:
-                                keyframe_time = (point["co"]["X"]-1)/fps_float + clip_orig_time
-                                if clip_start_time < keyframe_time < clip_stop_time:
-                                    positions.append(keyframe_time)
-                        except (TypeError, KeyError):
-                            pass
-                        try:
-                            # Try looping through color keyframe points
-                            for point in effect_data[prop]["red"]["Points"]:
-                                keyframe_time = (point["co"]["X"]-1)/fps_float + clip_orig_time
-                                if clip_start_time < keyframe_time < clip_stop_time:
-                                    positions.append(keyframe_time)
-                        except (TypeError, KeyError):
-                            pass
-
             return positions
 
         # We can always jump to the beginning of the timeline
         all_marker_positions = [0]
         fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
         frame_duration = float(fps["den"]) / float(fps["num"])
 
         # If nothing is selected, also add the end of the last clip
-        if not self.selected_clips + self.selected_transitions:
+        if not self.selected_clips + self.selected_transitions + self.selected_effects:
             all_marker_positions.append(
                 # last frame is -1 frame's duration
                 get_app().window.timeline_sync.timeline.GetMaxTime() - frame_duration)
@@ -1599,19 +1579,45 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         for marker in Marker.filter():
             all_marker_positions.append(marker.data["position"])
 
-        # Loop through selected clips (and add key positions)
-        for clip_id in self.selected_clips:
-            # Get selected object
-            selected_clip = Clip.get(id=clip_id)
-            if selected_clip:
-                all_marker_positions.extend(getTimelineObjectPositions(selected_clip))
+        if self.selected_effects:
+            # Only include keyframes for selected effects
+            for effect_id in self.selected_effects:
+                effect = Effect.get(id=effect_id)
+                if not effect:
+                    continue
+                parent = effect.parent
+                clip_start_time = parent["position"]
+                clip_orig_time = clip_start_time - parent["start"]
+                clip_stop_time = clip_orig_time + parent["end"] - frame_duration
+                # Always include parent clip boundaries
+                all_marker_positions.extend([clip_start_time, clip_stop_time])
+                for prop in effect.data:
+                    try:
+                        for point in effect.data[prop]["Points"]:
+                            keyframe_time = (point["co"]["X"]-1)/fps_float + clip_orig_time
+                            if clip_start_time < keyframe_time < clip_stop_time:
+                                all_marker_positions.append(keyframe_time)
+                    except (TypeError, KeyError):
+                        pass
+                    try:
+                        for point in effect.data[prop]["red"]["Points"]:
+                            keyframe_time = (point["co"]["X"]-1)/fps_float + clip_orig_time
+                            if clip_start_time < keyframe_time < clip_stop_time:
+                                all_marker_positions.append(keyframe_time)
+                    except (TypeError, KeyError):
+                        pass
+        else:
+            # Loop through selected clips (and add key positions)
+            for clip_id in self.selected_clips:
+                selected_clip = Clip.get(id=clip_id)
+                if selected_clip:
+                    all_marker_positions.extend(getTimelineObjectPositions(selected_clip))
 
-        # Loop through selected transitions (and add key positions)
-        for tran_id in self.selected_transitions:
-            # Get selected object
-            selected_tran = Transition.get(id=tran_id)
-            if selected_tran:
-                all_marker_positions.extend(getTimelineObjectPositions(selected_tran))
+            # Loop through selected transitions (and add key positions)
+            for tran_id in self.selected_transitions:
+                selected_tran = Transition.get(id=tran_id)
+                if selected_tran:
+                    all_marker_positions.extend(getTimelineObjectPositions(selected_tran))
 
         # remove duplicates
         all_marker_positions = list(set(all_marker_positions))
@@ -2729,6 +2735,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if get_app().get_settings().get("auto-transform"):
             self.TransformSignal.emit(self.selected_clips)
 
+            emitted_transform = False
             for sel in self.selected_items:
                 if sel["type"] == "effect":
                     effect = Effect.get(id=sel["id"])
@@ -2738,6 +2745,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     ):
                         clip_id = effect.parent['id']
                         self.KeyFrameTransformSignal.emit(sel["id"], clip_id)
+                        emitted_transform = True
+
+            if not emitted_transform:
+                self.KeyFrameTransformSignal.emit("", "")
 
     def selected_files(self):
         """ Return a list of File objects for the Project Files dock's selection """

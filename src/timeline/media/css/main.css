@@ -478,6 +478,7 @@ img {
 }
 .point_bezier {
     position: absolute;
+    top: 0;
     width: 10px;
     height: 10px;
     background-image: url(../images/keyframe-bezier.svg);
@@ -488,6 +489,7 @@ img {
 
 .point_linear {
     position: absolute;
+    top: 0;
     width: 10px;
     height: 10px;
     background-image: url(../images/keyframe-linear.svg);
@@ -498,6 +500,7 @@ img {
 
 .point_constant {
     position: absolute;
+    top: 0;
     width: 10px;
     height: 10px;
     background-image: url(../images/keyframe-constant.svg);
@@ -548,6 +551,10 @@ img {
   background-repeat: no-repeat;
   background-position: center;
   background-size: calc(100% + 2px) 66px;
+}
+
+.transition.ui-selected {
+  opacity: 1;
 }
 
 .transition_label {

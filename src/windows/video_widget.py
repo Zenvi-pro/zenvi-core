@@ -522,7 +522,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     union_rect = clip_rect
                     first_props = clip_props
-                    crop_params = (left, top, right, bottom, resize, x_off, y_off, clip_rect, crop_w, crop_h)
+                    crop_params = (left, top, right, bottom, resize, x_off, y_off)
 
             # Draw handler(s)
             if union_rect and first_props:
@@ -574,12 +574,18 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 # Crop origin glyph (screen space; constant size; with opacity)
                 if is_crop:
-                    left, top, right, bottom, resize, crop_x, crop_y, full_rect, crop_w, crop_h = crop_params
+                    left, top, right, bottom, resize, crop_x, crop_y = crop_params
                     cw = max(1.0 - left - right, 0.0001)
                     ch = max(1.0 - top - bottom, 0.0001)
 
                     base_w = max(self.clipBounds.width(), 0.0001)
                     base_h = max(self.clipBounds.height(), 0.0001)
+
+                    # Convert crop offsets into on-screen pixels so zoom level does
+                    # not affect the position of the origin handle.
+                    sx_factor = sw / base_w
+                    sy_factor = sh / base_h
+
                     if resize:
                         origin_w = base_w
                         origin_h = base_h
@@ -587,8 +593,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         origin_w = base_w / cw
                         origin_h = base_h / ch
 
+                    origin_w *= sx_factor
+                    origin_h *= sy_factor
+
                     # The crop origin represents an offset from the center of the clip's image
-                    local_center = full_rect.center()
+                    local_center = QPointF(sw / 2.0, sh / 2.0)
                     local_origin = QPointF(
                         local_center.x() - (crop_x * origin_w),
                         local_center.y() - (crop_y * origin_h)
@@ -1381,15 +1390,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     y_motion = event.pos().y() - self.mouse_position.y()
                     base_w = max(self.clipBounds.width(), 0.0001)
                     base_h = max(self.clipBounds.height(), 0.0001)
+
+                    # Determine how clip space maps to screen space (accounts for zoom)
+                    mapped = self.transform.mapRect(self.clipBounds) if self.transform else self.clipBounds
+                    sx_factor = mapped.width() / base_w
+                    sy_factor = mapped.height() / base_h
+
                     if resize:
                         scale = 1.0 / max(min(cw, ch), 0.0001)
-                        width = base_w * scale
-                        height = base_h * scale
-                        origin_w = base_w
-                        origin_h = base_h
+                        width = base_w * scale * sx_factor
+                        height = base_h * scale * sy_factor
+                        origin_w = base_w * sx_factor
+                        origin_h = base_h * sy_factor
                     else:
-                        width = base_w / cw
-                        height = base_h / ch
+                        width = (base_w / cw) * sx_factor
+                        height = (base_h / ch) * sy_factor
                         origin_w = width
                         origin_h = height
                     if width <= 0.0001 or height <= 0.0001:

@@ -41,7 +41,7 @@ Overview
    1   Blue Property       When the play-head is on an interpolated value, the property appears blue
    2   Value Slider        Click and drag your mouse to adjust the value (this automatically creates a key frame if needed)
    3   Play-head           Position the play-head over a clip where you need a key frame
-   4   Key frame Markers   Small icons are displayed on the bottom of the clip for each active keyframe (`circle=Bézier, diamond=linear, square=constant`). These icons are filtered based on the property window. For example, if you filter only ``scale_x``, you will only see the icons for ``scale_x`` keyframes. Click a keyframe icon to select that frame and show its values in the property editor. Drag the icon left or right to move the keyframe (the preview updates while dragging), letting you easily refine the timing of your animation.
+   4   Key frame Markers   Colorful icons line the bottom of the clip for every keyframe (`circle=Bézier`, `diamond=linear`, `square=constant`). Each icon matches the color of its clip, effect, or transition. The selected item's keyframe icons are shown brighter. Filtering the property list also filters these icons. Click any icon to jump the play-head, load its properties, and select its clip, effect, or transition. Drag an icon left or right to move the keyframe and fine‑tune your animation timing.
    ==  ==================  ============
 
 Key Frames
@@ -51,6 +51,10 @@ and edit properties in the property dialog. If the property supports key frames,
 (`circle=Bézier, diamond=linear, square=constant`) will appear on the bottom of your clip at that position. Move your
 play-head to another point over that clip, and adjust the properties again. All animations require at least 2 key
 frames, but can support an unlimited number of them.
+
+Use the :guilabel:`Next Marker` and :guilabel:`Previous Marker` toolbar buttons to step through the selected item's
+keyframes. They follow whichever clip, effect, or transition is selected. When an effect is selected, navigation also
+stops at the start and end of its parent clip.
 
 To adjust the **interpolation mode**, right click on the small graph icon next to a property value.
 

@@ -113,16 +113,17 @@
 					</div>
 
                     <!-- CLIP KEYFRAME POINTS -->
-                    <div class="point_region" ng-if="clip.selected">
-                        <div ng-repeat="(point, value) in getKeyframes(clip)"
+                    <div class="point_region" ng-if="clip.selected || hasSelectedEffect(clip)">
+                        <img ng-repeat="(point, value) in getKeyframes(clip)"
                              tl-keyframe
                              data-object-type="clip"
                              data-object-id="{{clip.id}}"
                              data-point="{{point}}"
-                             ng-click="selectPoint(clip, point)"
+                             ng-click="clickKeyframe(value, clip, point, $event)"
                              id="point_{{clip.id}}_{{point}}_{{$index}}"
-                             class="point point_{{ value }}"
-                             style="left: {{(((point - 1) / (project.fps.num / project.fps.den) - clip.start) * pixelsPerSecond)}}px;"></div>
+                             class="point point_{{ value.interpolation }}"
+                             ng-src="{{ value.icon || keyframeIconPaths[value.interpolation] }}"
+                             style="left: {{(((point - 1) / (project.fps.num / project.fps.den) - clip.start) * pixelsPerSecond)}}px; opacity: {{value.selected ? 1 : 0.5}};" />
                     </div>
 				</div>
 
@@ -138,15 +139,16 @@
 
                     <!-- TRANSITION KEYFRAME POINTS -->
                     <div class="point_region" ng-if="transition.selected">
-                        <div ng-repeat="(point, value) in getKeyframes(transition)"
+                        <img ng-repeat="(point, value) in getKeyframes(transition)"
                              tl-keyframe
                              data-object-type="transition"
                              data-object-id="{{transition.id}}"
                              data-point="{{point}}"
-                             ng-click="selectPoint(transition, point)"
+                             ng-click="clickKeyframe(value, transition, point, $event)"
                              id="point_{{transition.id}}_{{point}}_{{$index}}"
-                             class="point point_{{ value }}"
-                             style="left: {{(((point - 1) / (project.fps.num / project.fps.den) - transition.start) * pixelsPerSecond)}}px;"></div>
+                             class="point point_{{ value.interpolation }}"
+                             ng-src="{{ keyframeIconPaths[value.interpolation] }}"
+                             style="left: {{(((point - 1) / (project.fps.num / project.fps.den) - transition.start) * pixelsPerSecond)}}px; opacity: 1;" />
                     </div>
 				</div>
 
