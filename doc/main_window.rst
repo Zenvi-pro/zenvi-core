@@ -98,6 +98,7 @@ Timeline Toolbar
    ===========================  ============
    Add Track                    Add a new track to the timeline. New projects start with 5 tracks by default.
    Snapping                     Toggle between snapping and non-snapping modes. Snapping makes it easier to place clips next to other clips.
+   Timing Tool                  Toggle retiming mode. Drag clip edges to slow down or speed up playback without trimming; all keyframes are scaled to fit the new length.
    Razor Tool                   Toggle the razor tool on and off. This tool will cut a clip exactly where you click on it, splitting a clip into 2 clips.
    Add Marker                   Add a marker to the timeline at the current playhead position. This can be useful for returning to a specific position on the timeline.
    Previous Marker              Jump to the previous marker. This moves the playhead to the left, seeking to the next marker or important position (i.e. start / end positions of clips).
@@ -195,6 +196,7 @@ Learning a few of these shortcuts can save you a bunch of time!
    Snapping Toggle                       :kbd:`S`
    Split File                            :kbd:`Alt+S`              :kbd:`Shift+Double Click`
    Thumbnail View                        :kbd:`Ctrl+Page Down`
+   Timing Toggle                         :kbd:`T`
    Title                                 :kbd:`Ctrl+T`
    Transform                             :kbd:`Ctrl+Alt+T`
    Translate this Application...         :kbd:`F6`

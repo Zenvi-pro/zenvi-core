@@ -62,6 +62,7 @@ App.controller("TimelineCtrl", function ($scope) {
   $scope.snapline = false;
   $scope.enable_snapping = true;
   $scope.enable_razor = false;
+  $scope.enable_timing = false;
   $scope.enable_playhead_follow = true;
   $scope.keyframe_prop_filter = "";
   $scope.debug = false;
@@ -569,6 +570,13 @@ App.controller("TimelineCtrl", function ($scope) {
   $scope.setRazorMode = function (enable_razor) {
     $scope.$apply(function () {
       $scope.enable_razor = enable_razor;
+    });
+  };
+
+  // Change the timing mode
+  $scope.setTimingMode = function (enable_timing) {
+    $scope.$apply(function () {
+      $scope.enable_timing = enable_timing;
     });
   };
 
@@ -1525,7 +1533,11 @@ $scope.updateLayerIndex = function () {
       timeline.qt_log("DEBUG", "sortItems");
 
       $scope.$evalAsync(function () {
-        // Sort by position second
+        // Ensure clip list is always an array
+        if (!Array.isArray($scope.project.clips)) {
+          $scope.project.clips = Object.values($scope.project.clips || {});
+        }
+        // Sort clips by position
         $scope.project.clips = $scope.project.clips.sort(function (a, b) {
           if (a.position < b.position) {
             return -1;

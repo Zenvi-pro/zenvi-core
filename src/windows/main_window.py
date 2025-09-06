@@ -1500,6 +1500,20 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.actionRazorTool.setText(_("Enable Razor"))
             self.actionRazorTool.setToolTip(_("Enable Razor"))
 
+    def actionTimingTool_trigger(self, checked=True):
+        """Toggle timing tool on and off"""
+        log.info('actionTimingTool_trigger')
+        _ = get_app()._tr
+
+        # Enable / Disable timing mode
+        self.timeline.SetTimingMode(checked)
+        if self.actionTimingTool.isChecked():
+            self.actionTimingTool.setText(_("Disable Timing"))
+            self.actionTimingTool.setToolTip(_("Disable Timing"))
+        else:
+            self.actionTimingTool.setText(_("Enable Timing"))
+            self.actionTimingTool.setToolTip(_("Enable Timing"))
+
     def actionAddMarker_trigger(self, checked=True):
         log.info("actionAddMarker_trigger")
 
@@ -3460,6 +3474,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             "actionRazorTool",
             "actionAddMarker",
             "actionSnappingTool",
+            "actionTimingTool",
             "actionJumpStart",
             "actionJumpEnd",
             "actionRippleSliceKeepLeft",

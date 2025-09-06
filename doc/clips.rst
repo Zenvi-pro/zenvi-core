@@ -200,11 +200,17 @@ See :ref:`clip_location_x_ref` and :ref:`clip_scale_x_ref` key-frames.
 Time
 """"
 The :guilabel:`Time` preset manipulates clip playback speed, allowing for reverse playback or time-lapse effects. It
-alters the speed and direction of a clip's playback, enhancing visual storytelling. 
+alters the speed and direction of a clip's playback, enhancing visual storytelling.
 See :ref:`clip_time_ref` key-frame.
 
 - **Usage Example:** Creating a slow-motion effect to emphasize a specific action.
 - **Tip:** Use time presets to creatively manipulate the pacing of your video.
+
+Timing Tool
+^^^^^^^^^^^
+Another way to change a clip's speed is with the :guilabel:`Timing` tool on the timeline toolbar. Enable the clock
+icon and drag a clip's edges. Stretching the clip slows playback to fill gaps, while compressing it speeds the clip up.
+All keyframes on the clip and its effects are scaled so their relative positions remain intact.
 
 Volume
 """"""
@@ -648,6 +654,8 @@ The :guilabel:`Time` property is a key-frame curve that represents frames played
 You can use one of the available presets (`normal, fast, slow, freeze, freeze & zoom, forward, backward`), by right clicking
 on a Clip and choosing the :guilabel:`Time` menu. Many presets are available in this menu for reversing,
 speeding up, and slowing down a video clip, see :ref:`clip_presets_ref`.
+The same adjustments can be made interactively with the :guilabel:`Timing` toolbar button by dragging a clip's edges; OpenShot
+adds the necessary time keyframes and scales all other keyframes automatically.
 
 Optionally, you can manually set key-frame values for the :guilabel:`Time` property. The value represents the
 `frame number` at the position of the key-frame. This can be tricky to determine and might require a calculator to find

@@ -986,6 +986,14 @@
   },
   {
     "category": "Keyboard",
+    "title": "Timing Toggle",
+    "restart": false,
+    "setting": "actionTimingTool",
+    "value": "T",
+    "type": "text"
+  },
+  {
+    "category": "Keyboard",
     "title": "Jump To Start",
     "restart": false,
     "setting": "actionJumpStart",
