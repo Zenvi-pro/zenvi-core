@@ -15,10 +15,15 @@ class BasicTheme:
     background: QColor = field(default_factory=QColor)
     border_color: QColor = field(default_factory=QColor)
     border_radius: int = 0
+    border_width: float = 0
     font_color: QColor = field(default_factory=QColor)
     font_size: int = 0
     height: int = 0
     background_image: Optional[QPixmap] = None
+    shadow_color: QColor = field(default_factory=QColor)
+    shadow_blur: int = 0
+    thumb_width: int = 0
+    thumb_height: int = 0
 
 
 @dataclass
@@ -28,6 +33,8 @@ class TrackTheme(BasicTheme):
     name_background: QColor = field(default_factory=QColor)
     name_width: int = 0
     gap: int = 0
+    name_border_color: QColor = field(default_factory=QColor)
+    name_border_width: int = 0
 
 
 @dataclass
@@ -44,6 +51,20 @@ class TimelineTheme:
     transition: BasicTheme = field(default_factory=BasicTheme)
     track: TrackTheme = field(default_factory=TrackTheme)
     ruler: BasicTheme = field(default_factory=BasicTheme)
+    ruler_name_background: QColor = field(default_factory=QColor)
+    ruler_name_background2: QColor = field(default_factory=QColor)
+    ruler_time_font_size: int = 0
+    menu_icon: Optional[QPixmap] = None
+    menu_size: int = 0
+    menu_margin: int = 0
+    playhead_icon: Optional[QPixmap] = None
+    playhead_icon_width: int = 0
+    playhead_icon_height: int = 0
+    playhead_icon_offset_x: int = 0
+    playhead_icon_offset_y: int = 0
+    ruler_time_pad_left: int = 0
+    ruler_time_pad_top: int = 0
+    ruler_label_top: int = 0
 
 
 def default_theme() -> TimelineTheme:
@@ -52,10 +73,15 @@ def default_theme() -> TimelineTheme:
     t = TimelineTheme()
     t.clip.background = QColor("#192332")
     t.clip.border_color = QColor("#53a0ed")
+    t.clip.border_width = 1
     t.clip.font_color = QColor("#FFFFFF")
     t.clip.font_size = 9
     t.clip.border_radius = 8
     t.clip.height = 64
+    t.clip.shadow_color = QColor(0, 0, 0, 255)
+    t.clip.shadow_blur = 10
+    t.clip.thumb_width = 66
+    t.clip.thumb_height = 38
 
     t.transition.background = QColor("#0192c1")
     t.transition.border_color = QColor("#0192c1")
@@ -80,12 +106,44 @@ def default_theme() -> TimelineTheme:
     t.track.height = 62
     t.track.name_width = 140
     t.track.gap = 8
+    t.track.name_border_color = t.track.border_color
+    t.track.name_border_width = 1
 
     t.ruler.background = QColor("#141923")
     t.ruler.border_color = QColor("#FABE0A")
     t.ruler.font_color = QColor("#c8c8c8")
-    t.ruler.font_size = 13
+    t.ruler.font_size = 10
     t.ruler.height = 39
+    t.ruler_name_background = t.track.name_background
+    t.ruler_name_background2 = t.track.name_background
+    t.ruler_time_font_size = 13
+
+    t.menu_icon = QPixmap(
+        os.path.normpath(os.path.join(
+            os.path.dirname(__file__),
+            "../../..",
+            "timeline/media/images/menu.svg",
+        ))
+    )
+    t.menu_size = 12
+    t.menu_margin = 4
+
+    t.playhead_icon = QPixmap(
+        os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../..",
+                "timeline/media/images/playhead.svg",
+            )
+        )
+    )
+    t.playhead_icon_width = 12
+    t.playhead_icon_height = 188
+    t.playhead_icon_offset_x = -6
+    t.playhead_icon_offset_y = 20
+    t.ruler_time_pad_left = 17
+    t.ruler_time_pad_top = 12
+    t.ruler_label_top = 6
 
     return t
 
@@ -133,10 +191,24 @@ def _parse_color(css: str, selector: str, prop: str) -> Optional[QColor]:
     return None
 
 
+def _parse_gradient(css: str, selector: str, prop: str):
+    """Return up to two colors from a CSS gradient."""
+    val = _css_prop(css, selector, prop)
+    if not val:
+        return None, None
+    cols = re.findall(r"#(?:[0-9a-fA-F]{3,8})|rgba?\([^\)]+\)", val)
+    qcols = [QColor(c) for c in cols if QColor(c).isValid()]
+    if not qcols:
+        return None, None
+    first = qcols[0]
+    second = qcols[1] if len(qcols) > 1 else None
+    return first, second
+
+
 def _parse_float(css: str, selector: str, prop: str) -> Optional[float]:
     val = _css_prop(css, selector, prop)
     if val:
-        m = re.search(r"([0-9.]+)", val)
+        m = re.search(r"(-?[0-9.]+)", val)
         if m:
             try:
                 return float(m.group(1))
@@ -153,10 +225,37 @@ def _parse_pixmap(css: str, selector: str, prop: str) -> Optional[QPixmap]:
     if m:
         path = m.group(1).strip('"\'')
         if not os.path.isabs(path):
-            path = os.path.normpath(os.path.join(os.path.dirname(_CSS_PATH), path))
+            base = os.path.dirname(_CSS_PATH)
+            found = None
+            for i in range(3):
+                candidate = os.path.normpath(
+                    os.path.join(base, *([".."] * i), path)
+                )
+                if os.path.exists(candidate):
+                    found = candidate
+                    break
+            path = found or os.path.normpath(os.path.join(base, path))
         if os.path.exists(path):
             return QPixmap(path)
     return None
+
+
+def _parse_box_shadow(css: str, selector: str):
+    """Return (color, blur) from a box-shadow property."""
+    val = _css_prop(css, selector, "box-shadow")
+    if not val:
+        return None, None
+    col = None
+    m = re.search(r"#([0-9a-fA-F]{3,8})", val)
+    if m:
+        col = QColor("#" + m.group(1))
+    else:
+        m = re.search(r"rgba?\([^\)]+\)", val)
+        if m:
+            col = QColor(m.group(0))
+    nums = re.findall(r"(-?[0-9.]+)", val)
+    blur = int(float(nums[2])) if len(nums) >= 3 else None
+    return col, blur
 
 
 def _theme_pixmap(qt_theme, selector: str, prop: str) -> Optional[QPixmap]:
@@ -170,7 +269,10 @@ def _theme_pixmap(qt_theme, selector: str, prop: str) -> Optional[QPixmap]:
         path = m.group(1).strip('"\'')
         module_path = os.path.dirname(__import__(qt_theme.__module__).__file__)
         if not os.path.isabs(path):
-            path = os.path.normpath(os.path.join(module_path, path))
+            candidate = os.path.normpath(os.path.join(module_path, path))
+            if not os.path.exists(candidate):
+                candidate = os.path.normpath(os.path.join(os.path.dirname(module_path), path))
+            path = candidate
         if os.path.exists(path):
             return QPixmap(path)
     return None
@@ -192,8 +294,15 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if col:
         theme.clip.background = col
     col = qt_theme.get_color(".clip", "border-top")
+    if not col:
+        col = qt_theme.get_color(".clip", "border")
     if col:
         theme.clip.border_color = col
+    val = qt_theme.get_int(".clip", "border-top")
+    if val is None:
+        val = qt_theme.get_int(".clip", "border")
+    if val is not None:
+        theme.clip.border_width = float(val)
     val = qt_theme.get_int(".clip", "border-radius")
     if val is not None:
         theme.clip.border_radius = val
@@ -206,6 +315,19 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     val = qt_theme.get_int(".clip", "height")
     if val is not None:
         theme.clip.height = val
+    val = _css_prop(getattr(qt_theme, "style_sheet", ""), ".clip", "box-shadow")
+    if val:
+        col, blur = _parse_box_shadow(qt_theme.style_sheet, ".clip")
+        if col:
+            theme.clip.shadow_color = col
+        if blur is not None:
+            theme.clip.shadow_blur = blur
+    val = qt_theme.get_int(".thumb", "width")
+    if val is not None:
+        theme.clip.thumb_width = val
+    val = qt_theme.get_int(".thumb", "height")
+    if val is not None:
+        theme.clip.thumb_height = val
 
     # Transition settings
     col = qt_theme.get_color(".transition", "background")
@@ -235,6 +357,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if col:
         theme.track.background = col
     col = qt_theme.get_color(".track", "border-top")
+    if not col:
+        col = qt_theme.get_color(".track", "border")
     if col:
         theme.track.border_color = col
     val = qt_theme.get_int(".track", "border-radius")
@@ -260,11 +384,26 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     val = qt_theme.get_int(".track", "margin-bottom")
     if val is not None:
         theme.track.gap = val
+    col = qt_theme.get_color(".track_name", "border-left")
+    if col:
+        theme.track.name_border_color = col
+    val = qt_theme.get_int(".track_name", "border-left")
+    if val is not None:
+        theme.track.name_border_width = val
 
     # Ruler settings
     col = qt_theme.get_color("#ruler", "background")
     if col:
         theme.ruler.background = col
+    col1, col2 = _parse_gradient(getattr(qt_theme, "style_sheet", ""), "#ruler_label", "background")
+    if col1:
+        theme.ruler_name_background = col1
+    if col2:
+        theme.ruler_name_background2 = col2
+    else:
+        col = qt_theme.get_color("#ruler_label", "background")
+        if col:
+            theme.ruler_name_background = col
     col = qt_theme.get_color(".tick_mark", "background-color")
     if col:
         theme.ruler.border_color = col
@@ -274,9 +413,21 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     val = qt_theme.get_int(".ruler_time", "font-size")
     if val is not None:
         theme.ruler.font_size = val
+    val = qt_theme.get_int("#ruler_time", "font-size")
+    if val is not None:
+        theme.ruler_time_font_size = val
+    val = qt_theme.get_int(".ruler_time", "top")
+    if val is not None:
+        theme.ruler_label_top = val
     val = qt_theme.get_int("#ruler", "height")
     if val is not None:
         theme.ruler.height = val
+    val = qt_theme.get_int("#ruler_time", "padding-left")
+    if val is not None:
+        theme.ruler_time_pad_left = val
+    val = qt_theme.get_int("#ruler_time", "padding-top")
+    if val is not None:
+        theme.ruler_time_pad_top = val
 
     # Playhead
     col = qt_theme.get_color(".playhead-line", "background-color")
@@ -285,6 +436,31 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     val = qt_theme.get_int(".playhead-line", "width")
     if val is not None:
         theme.playhead_width = float(val)
+    img = _theme_pixmap(qt_theme, ".playhead-top", "background-image")
+    if img:
+        theme.playhead_icon = img
+    val = qt_theme.get_int(".playhead-top", "width")
+    if val is not None:
+        theme.playhead_icon_width = val
+    val = qt_theme.get_int(".playhead-top", "height")
+    if val is not None:
+        theme.playhead_icon_height = val
+    val = qt_theme.get_int(".playhead-top", "margin-left")
+    if val is not None:
+        theme.playhead_icon_offset_x = val
+    val = qt_theme.get_int(".playhead-top", "margin-top")
+    if val is not None:
+        theme.playhead_icon_offset_y = val
+
+    img = _theme_pixmap(qt_theme, ".menu", "background-image")
+    if img:
+        theme.menu_icon = img
+    val = qt_theme.get_int(".menu", "width")
+    if val is not None:
+        theme.menu_size = val
+    val = qt_theme.get_int(".menu", "margin")
+    if val is not None:
+        theme.menu_margin = val
 
     return theme
 
@@ -304,8 +480,15 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     if col:
         theme.clip.background = col
     col = _parse_color(css, ".clip", "border-top")
+    if not col:
+        col = _parse_color(css, ".clip", "border")
     if col:
         theme.clip.border_color = col
+    val = _parse_float(css, ".clip", "border-top")
+    if val is None:
+        val = _parse_float(css, ".clip", "border")
+    if val is not None:
+        theme.clip.border_width = float(val)
     val = _parse_float(css, ".clip", "border-radius")
     if val is not None:
         theme.clip.border_radius = int(val)
@@ -318,6 +501,17 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     val = _parse_float(css, ".clip", "height")
     if val is not None:
         theme.clip.height = int(val)
+    col2, blur = _parse_box_shadow(css, ".clip")
+    if col2:
+        theme.clip.shadow_color = col2
+    if blur is not None:
+        theme.clip.shadow_blur = blur
+    val = _parse_float(css, ".thumb", "width")
+    if val is not None:
+        theme.clip.thumb_width = int(val)
+    val = _parse_float(css, ".thumb", "height")
+    if val is not None:
+        theme.clip.thumb_height = int(val)
 
     # Transition
     col = _parse_color(css, ".transition", "background")
@@ -347,6 +541,8 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     if col:
         theme.track.background = col
     col = _parse_color(css, ".track", "border-top")
+    if not col:
+        col = _parse_color(css, ".track", "border")
     if col:
         theme.track.border_color = col
     val = _parse_float(css, ".track", "border-radius")
@@ -372,11 +568,22 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     val = _parse_float(css, ".track", "margin-bottom")
     if val is not None:
         theme.track.gap = int(val)
+    col = _parse_color(css, ".track_name", "border-left")
+    if col:
+        theme.track.name_border_color = col
+    val = _parse_float(css, ".track_name", "border-left")
+    if val is not None:
+        theme.track.name_border_width = int(val)
 
     # Ruler
     col = _parse_color(css, "#ruler", "background")
     if col:
         theme.ruler.background = col
+    col1, col2 = _parse_gradient(css, "#ruler_label", "background")
+    if col1:
+        theme.ruler_name_background = col1
+    if col2:
+        theme.ruler_name_background2 = col2
     col = _parse_color(css, ".tick_mark", "background-color")
     if col:
         theme.ruler.border_color = col
@@ -386,9 +593,21 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     val = _parse_float(css, ".ruler_time", "font-size")
     if val is not None:
         theme.ruler.font_size = int(val)
+    val = _parse_float(css, "#ruler_time", "font-size")
+    if val is not None:
+        theme.ruler_time_font_size = int(val)
+    val = _parse_float(css, ".ruler_time", "top")
+    if val is not None:
+        theme.ruler_label_top = int(val)
     val = _parse_float(css, "#ruler", "height")
     if val is not None:
         theme.ruler.height = int(val)
+    val = _parse_float(css, "#ruler_time", "padding-left")
+    if val is not None:
+        theme.ruler_time_pad_left = int(val)
+    val = _parse_float(css, "#ruler_time", "padding-top")
+    if val is not None:
+        theme.ruler_time_pad_top = int(val)
 
     # Playhead
     col = _parse_color(css, ".playhead-line", "background-color")
@@ -397,6 +616,33 @@ def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
     val = _parse_float(css, ".playhead-line", "width")
     if val is not None:
         theme.playhead_width = val
+    img = _parse_pixmap(css, ".playhead-top", "background-image")
+    if img:
+        theme.playhead_icon = img
+    val = _parse_float(css, ".playhead-top", "width")
+    if val is not None:
+        theme.playhead_icon_width = int(val)
+    val = _parse_float(css, ".playhead-top", "height")
+    if val is not None:
+        theme.playhead_icon_height = int(val)
+    val = _parse_float(css, ".playhead-top", "margin-left")
+    if val is not None:
+        theme.playhead_icon_offset_x = int(val)
+    val = _parse_float(css, ".playhead-top", "margin-top")
+    if val is not None:
+        theme.playhead_icon_offset_y = int(val)
+
+    img = _parse_pixmap(css, ".menu", "background-image")
+    if img:
+        theme.menu_icon = img
+    val = _parse_float(css, ".menu", "width")
+    if val is not None:
+        theme.menu_size = int(val)
+    m = _css_prop(css, ".menu", "margin")
+    if m:
+        m_val = re.search(r"(-?[0-9.]+)", m)
+        if m_val:
+            theme.menu_margin = int(float(m_val.group(1)))
 
     return theme
 

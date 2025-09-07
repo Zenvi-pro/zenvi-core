@@ -553,14 +553,90 @@ class TimelineWidget(QWidget):
     def _hitTest(self, pos):
         return self.geometry.hit(pos)
 
+    def _clip_menu_rect(self, rect):
+        if not self.clip_painter.menu_pix:
+            return QRectF()
+        bw = self.clip_painter.clip_pen.widthF()
+        return QRectF(
+            rect.x() + bw + self.clip_painter.menu_margin,
+            rect.y() + bw + self.clip_painter.menu_margin,
+            self.clip_painter.menu_pix.width(),
+            self.clip_painter.menu_pix.height(),
+        )
+
+    def _track_menu_rect(self, name_rect):
+        if not self.track_painter.menu_pix:
+            return QRectF()
+        return QRectF(
+            name_rect.x() + self.track_painter.name_border_width + self.track_painter.menu_margin,
+            name_rect.y() + self.track_painter.menu_margin,
+            self.track_painter.menu_pix.width(),
+            self.track_painter.menu_pix.height(),
+        )
+
+    def _updateCursor(self, pos):
+        self.geometry.ensure()
+
+        # Playhead icon
+        if self.playhead_painter.icon_pix:
+            x = self.track_name_width + (
+                self.current_frame / self.fps_float
+            ) * self.pixels_per_second
+            icon_rect = QRectF(
+                x + self.playhead_painter.icon_offset_x,
+                self.playhead_painter.icon_offset_y,
+                self.playhead_painter.icon_pix.width(),
+                self.playhead_painter.icon_pix.height(),
+            )
+            if icon_rect.contains(pos):
+                self.setCursor(self.cursors["hand"])
+                return
+
+        # Clip menu and edges
+        edge = 5
+        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
+            mrect = self._clip_menu_rect(rect)
+            if mrect.contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+            if rect.contains(pos):
+                if abs(pos.x() - rect.x()) <= edge or abs(pos.x() - rect.right()) <= edge:
+                    self.setCursor(self.cursors["resize_x"])
+                else:
+                    self.setCursor(self.cursors["hand"])
+                return
+
+        # Track menu icons
+        for track_rect, track, name_rect in self.geometry.track_rects:
+            mrect = self._track_menu_rect(name_rect)
+            if mrect.contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+
+        self.unsetCursor()
+
     def mousePressEvent(self, event):
         self.geometry.ensure()
-        self._press_hit = self._hitTest(event.pos())
+        pos = event.pos()
+        # Track menu icons
+        for track_rect, track, name_rect in self.geometry.track_rects:
+            if self._track_menu_rect(name_rect).contains(pos):
+                if hasattr(self.win, "timeline"):
+                    self.win.timeline.ShowTrackMenu(track.id)
+                return
+        # Clip menu icons
+        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
+            if self._clip_menu_rect(rect).contains(pos):
+                if hasattr(self.win, "timeline"):
+                    self.win.timeline.ShowClipMenu(clip.id)
+                return
+        self._press_hit = self._hitTest(pos)
         self._last_event = event
         self.events.pressed.emit(event)
 
     def mouseMoveEvent(self, event):
         self._last_event = event
+        self._updateCursor(event.pos())
         self.events.moved.emit(event)
 
     def mouseReleaseEvent(self, event):
