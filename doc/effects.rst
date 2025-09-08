@@ -966,10 +966,10 @@ add dynamic motion to static shots.
 Spherical Projection
 """"""""""""""""""""
 
-The Spherical Projection effect lets you flatten and re-project 360° or fisheye video into a normal rectangular view.
-You can steer the virtual camera with yaw, pitch and roll, zoom in or out with the field-of-view (FOV), choose between
-full-sphere, hemisphere or raw fisheye input, and select nearest-neighbor or bilinear sampling for quality vs. speed.
-This is ideal for editing keyframed “virtual camera” moves inside your 360° clips.
+The Spherical Projection effect flattens 360° or fisheye footage into a normal rectangular view.
+Steer the virtual camera with yaw, pitch, and roll. Control the output view with FOV. Choose the input type (equirect or fisheye),
+and pick a sampling mode that balances quality vs speed. Ideal for keyframed “virtual camera” moves inside 360° clips
+and for converting circular fisheye shots.
 
 .. table::
    :widths: 26 80
@@ -982,18 +982,32 @@ This is ideal for editing keyframed “virtual camera” moves inside your 360°
    pitch                       ``(float, -90 to 90)``
                                Vertical rotation around the right axis (degrees).
    roll                        ``(float, -180 to 180)``
-                               Roll (tilt) around the forward axis (degrees).
+                               Roll around the forward axis (degrees).
    fov                         ``(float, 1 to 179)``
-                               Horizontal field-of-view of the virtual camera (degrees).
+                               **Out FOV.** Horizontal field of view of the virtual camera (degrees) for the flattened output.
+   in_fov                      ``(float, 1 to 360)``
+                               **In FOV.** Total coverage of the source lens. Used when **Input Model = Fisheye** (typical value 180). Ignored for equirect sources.
    projection_mode             ``(int)``
-                               **Sphere (0)**: full 360×180° equirectangular, **Hemisphere (1)**: front or back half of an equirectangular, **Fisheye (2)**: raw circular fisheye source
+                               **Sphere (0):** full 360×180° equirectangular input.
+                               **Hemisphere (1):** front or back half of an equirectangular.
+                               **Fisheye (2):** raw circular fisheye input.
+   input_model                 ``(int)``
+                               **Equirect (0):** longitude/latitude input.
+                               **Fisheye Equidistant (1):** circular fisheye with radius proportional to angle.
    invert                      ``(int)``
-                               Flip the view by 180° or switch front/back in fisheye:
-                               Normal (0), Inverted (1).
+                               Flip the view by 180° or switch front/back for fisheye.
+                               **Normal (0), Inverted (1)**.
    interpolation               ``(int)``
-                               Sampling method: Nearest-neighbor (0) or Bilinear (1).
+                               Sampling method: **Nearest (0)**, **Bilinear (1)**, **Bicubic (2)**, **Auto (3)**.
+                               Auto picks Bilinear at 1:1, Bicubic when upscaling, and a mipmapped Bilinear when downscaling.
    ==========================  ===========================================
 
+**Usage notes:**
+
+- If the output looks pixelated, reduce **Out FOV** or export width, or capture a higher resolution source. Auto interpolation helps by switching filters based on scale.
+- For fisheye clips, set **Input Model = Fisheye Equidistant** and adjust **In FOV** to match the lens (commonly 180).
+- For 360 equirect clips, set **Input Model = Equirect**. **In FOV** does not apply in that mode.
+- Hemisphere mode clamps longitudes to the front half; use **Invert** to switch to the back half.
 
 Stabilizer
 """"""""""
