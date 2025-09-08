@@ -81,19 +81,99 @@ class Geometry:
             duration = proj.get("duration")
             tick_px = proj.get("tick_pixels") or 100
             w.pixels_per_second = tick_px / float(w.zoom_factor or 1)
-            width = max(w.width() - w.track_name_width,
-                        duration * w.pixels_per_second)
+
+            # Viewport dimensions minus scrollbars
+            view_w = w.width() - w.track_name_width - w.scroll_bar_thickness
+            view_h = w.height() - w.ruler_height - w.scroll_bar_thickness
+
+            # Full content dimensions
+            timeline_w = max(view_w, duration * w.pixels_per_second)
 
             if w.track_height:
                 w.vertical_factor = w.track_height
             else:
                 tracks = len(layers.keys() or [1])
-                w.vertical_factor = max(1, (w.height() - w.ruler_height) / tracks)
+                w.vertical_factor = max(1, view_h / tracks)
 
             spacing = w.vertical_factor + getattr(w, 'track_gap', 0)
+            content_h = len(self.track_list) * spacing - getattr(w, 'track_gap', 0)
+
+            # Horizontal scroll handle dimensions
+            w.scrollbar_position[2] = timeline_w
+            w.scrollbar_position[3] = view_w
+            view_ratio = view_w / timeline_w if timeline_w else 1.0
+            max_left = max(0.0, 1.0 - view_ratio)
+            left = max(0.0, min(w.scrollbar_position[0], max_left))
+            scroll_px = left * timeline_w
+            max_scroll = max(0.0, timeline_w - view_w)
+            if max_scroll:
+                scroll_px = min(scroll_px, max_scroll)
+                left = scroll_px / timeline_w
+            right = left + view_ratio
+            w.scrollbar_position[0] = left
+            w.scrollbar_position[1] = right
+            if view_ratio < 1.0:
+                handle_w = max(20.0, view_ratio * view_w)
+                avail = view_w - handle_w
+                handle_x = w.track_name_width
+                if max_scroll:
+                    handle_x += (scroll_px / max_scroll) * avail
+                w.scroll_bar_rect = QRectF(
+                    handle_x,
+                    w.height() - w.scroll_bar_thickness,
+                    handle_w,
+                    w.scroll_bar_thickness,
+                )
+                h_offset = scroll_px
+            else:
+                w.scroll_bar_rect = QRectF()
+                h_offset = 0.0
+
+            # Vertical scroll handle dimensions
+            w.v_scrollbar_position[2] = content_h
+            w.v_scrollbar_position[3] = view_h
+            v_ratio = view_h / content_h if content_h else 1.0
+            max_top = max(0.0, 1.0 - v_ratio)
+            top = max(0.0, min(w.v_scrollbar_position[0], max_top))
+            scroll_py = top * content_h
+            max_vscroll = max(0.0, content_h - view_h)
+            if max_vscroll:
+                scroll_py = min(scroll_py, max_vscroll)
+                top = scroll_py / content_h
+            bottom = top + v_ratio
+            w.v_scrollbar_position[0] = top
+            w.v_scrollbar_position[1] = bottom
+            if v_ratio < 1.0:
+                handle_h = max(20.0, v_ratio * view_h)
+                avail = view_h - handle_h
+                handle_y = w.ruler_height
+                if max_vscroll:
+                    handle_y += (scroll_py / max_vscroll) * avail
+                w.v_scroll_bar_rect = QRectF(
+                    w.width() - w.scroll_bar_thickness,
+                    handle_y,
+                    w.scroll_bar_thickness,
+                    handle_h,
+                )
+                v_offset = scroll_py
+            else:
+                w.v_scroll_bar_rect = QRectF()
+                v_offset = 0.0
+
             for track in self.track_list:
-                y = w.ruler_height + layers[track.data.get("number")] * spacing
-                track_rect = QRectF(w.track_name_width, y, width, w.vertical_factor)
+                y = (
+                    w.ruler_height
+                    + layers[track.data.get("number")] * spacing
+                    - v_offset
+                )
+                if (
+                    y + w.vertical_factor <= w.ruler_height
+                    or y >= w.ruler_height + view_h
+                ):
+                    continue
+                track_rect = QRectF(
+                    w.track_name_width - h_offset, y, timeline_w, w.vertical_factor
+                )
                 name_rect = QRectF(0, y, w.track_name_width, w.vertical_factor)
                 self.track_rects.append((track_rect, track, name_rect))
 
@@ -101,13 +181,27 @@ class Geometry:
                 w.track_name_width - w._resize_handle_width / 2,
                 w.ruler_height,
                 w._resize_handle_width,
-                len(self.track_list) * spacing - getattr(w, 'track_gap', 0),
+                content_h,
             )
 
             for clip in Clip.filter():
-                cx = w.track_name_width + clip.data.get("position", 0.0) * w.pixels_per_second
-                cy = w.ruler_height + layers.get(clip.data.get("layer", 0), 0) * spacing
+                cx = (
+                    w.track_name_width
+                    + clip.data.get("position", 0.0) * w.pixels_per_second
+                    - h_offset
+                )
+                cy = (
+                    w.ruler_height
+                    + layers.get(clip.data.get("layer", 0), 0) * spacing
+                    - v_offset
+                )
                 cw = (clip.data.get("end", 0.0) - clip.data.get("start", 0.0)) * w.pixels_per_second
+                if (
+                    cx + cw <= w.track_name_width
+                    or cy + w.vertical_factor <= w.ruler_height
+                    or cy >= w.ruler_height + view_h
+                ):
+                    continue
                 rect = QRectF(cx, cy, cw, w.vertical_factor)
                 if clip.id in win.selected_clips:
                     self.selected_rects.append((rect, clip))
@@ -115,9 +209,23 @@ class Geometry:
                     self.clip_rects.append((rect, clip))
 
             for tr in Transition.filter():
-                tx = w.track_name_width + tr.data.get("position", 0.0) * w.pixels_per_second
-                ty = w.ruler_height + layers.get(tr.data.get("layer", 0), 0) * spacing
+                tx = (
+                    w.track_name_width
+                    + tr.data.get("position", 0.0) * w.pixels_per_second
+                    - h_offset
+                )
+                ty = (
+                    w.ruler_height
+                    + layers.get(tr.data.get("layer", 0), 0) * spacing
+                    - v_offset
+                )
                 tw = (tr.data.get("end", 0.0) - tr.data.get("start", 0.0)) * w.pixels_per_second
+                if (
+                    tx + tw <= w.track_name_width
+                    or ty + w.vertical_factor <= w.ruler_height
+                    or ty >= w.ruler_height + view_h
+                ):
+                    continue
                 rect = QRectF(tx, ty, tw, w.vertical_factor)
                 if tr.id in win.selected_transitions:
                     self.selected_transitions.append((rect, tr))
@@ -125,8 +233,17 @@ class Geometry:
                     self.transition_rects.append((rect, tr))
 
             for marker in Marker.filter():
-                mx = w.track_name_width + marker.data.get("position", 0.0) * w.pixels_per_second
-                rect = QRectF(mx, w.ruler_height, 0.5, len(layers) * spacing - getattr(w, 'track_gap', 0))
+                mx = (
+                    w.track_name_width
+                    + marker.data.get("position", 0.0) * w.pixels_per_second
+                    - h_offset
+                )
+                rect = QRectF(
+                    mx,
+                    w.ruler_height - v_offset,
+                    0.5,
+                    content_h,
+                )
                 self.marker_rects.append(rect)
 
         self.dirty = False
@@ -137,13 +254,22 @@ class Geometry:
     def hit(self, pos: QPointF):
         """Return a string describing what lies under *pos*."""
         self.ensure()
-
-        for rect, _ in (
-            self.selected_transitions + self.transition_rects +
-            self.selected_rects + self.clip_rects
+        if (
+            pos.x() >= self.widget.track_name_width
+            and pos.y() >= self.widget.ruler_height
         ):
-            if rect.contains(pos):
-                return "clip"
+            for rect, _ in (
+                self.selected_transitions
+                + self.transition_rects
+                + self.selected_rects
+                + self.clip_rects
+            ):
+                if rect.contains(pos):
+                    return "clip"
+        if self.widget.scroll_bar_rect.contains(pos):
+            return "h-scroll"
+        if getattr(self.widget, "v_scroll_bar_rect", QRectF()).contains(pos):
+            return "v-scroll"
         if self.widget.resize_handle_rect.contains(pos):
             return "handle"
         if pos.y() <= self.widget.ruler_height:
@@ -153,9 +279,31 @@ class Geometry:
     def calc_item_rect(self, item):
         """Return QRectF for *item* (Clip or Transition)."""
         layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
-        x = self.widget.track_name_width + item.data.get("position", 0.0) * self.widget.pixels_per_second
-        spacing = self.widget.vertical_factor + getattr(self.widget, 'track_gap', 0)
-        y = self.widget.ruler_height + layers.get(item.data.get("layer", 0), 0) * spacing
+        spacing = self.widget.vertical_factor + getattr(self.widget, "track_gap", 0)
+        view_w = self.widget.scrollbar_position[3] or 1.0
+        timeline_w = self.widget.scrollbar_position[2] or view_w
+        left = self.widget.scrollbar_position[0]
+        h_offset = left * timeline_w
+        max_scroll = max(0.0, timeline_w - view_w)
+        if h_offset > max_scroll:
+            h_offset = max_scroll
+        view_h = self.widget.v_scrollbar_position[3] or 1.0
+        content_h = self.widget.v_scrollbar_position[2] or view_h
+        top = self.widget.v_scrollbar_position[0]
+        v_offset = top * content_h
+        max_vscroll = max(0.0, content_h - view_h)
+        if v_offset > max_vscroll:
+            v_offset = max_vscroll
+        x = (
+            self.widget.track_name_width
+            + item.data.get("position", 0.0) * self.widget.pixels_per_second
+            - h_offset
+        )
+        y = (
+            self.widget.ruler_height
+            + layers.get(item.data.get("layer", 0), 0) * spacing
+            - v_offset
+        )
         w = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.widget.pixels_per_second
         return QRectF(x, y, w, self.widget.vertical_factor)
 

@@ -61,11 +61,24 @@ class ClipPainter(BasePainter):
         self.menu_margin = self.w.theme.menu_margin
 
     def paint(self, painter: QPainter):
+        area = QRectF(
+            self.w.track_name_width,
+            self.w.ruler_height,
+            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+        painter.save()
+        painter.setClipRect(area)
         for rect, clip in self.w.geometry.clip_rects:
+            if not rect.intersects(area):
+                continue
             self._draw_clip(painter, rect, clip, self.clip_pen)
 
         for rect, clip in self.w.geometry.selected_rects:
+            if not rect.intersects(area):
+                continue
             self._draw_clip(painter, rect, clip, self.sel_pen)
+        painter.restore()
 
     def _thumb(self, clip):
         if clip.id in self.thumb_cache:
@@ -243,7 +256,17 @@ class TransitionPainter(BasePainter):
         self.menu_margin = self.w.theme.menu_margin
 
     def paint(self, painter: QPainter):
+        area = QRectF(
+            self.w.track_name_width,
+            self.w.ruler_height,
+            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+        painter.save()
+        painter.setClipRect(area)
         for rect, _ in self.w.geometry.transition_rects:
+            if not rect.intersects(area):
+                continue
             if self.col2.isValid() and self.col2 != self.col:
                 grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
                 grad.setColorAt(0, self.col)
@@ -267,6 +290,8 @@ class TransitionPainter(BasePainter):
                 )
 
         for rect, _ in self.w.geometry.selected_transitions:
+            if not rect.intersects(area):
+                continue
             if self.col2.isValid() and self.col2 != self.col:
                 grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
                 grad.setColorAt(0, self.col)
@@ -288,6 +313,7 @@ class TransitionPainter(BasePainter):
                     QPointF(inner.x() + self.menu_margin, inner.y() + self.menu_margin),
                     self.menu_pix,
                 )
+        painter.restore()
 
 
 class MarkerPainter(BasePainter):
@@ -296,9 +322,20 @@ class MarkerPainter(BasePainter):
         self.pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
+        area = QRectF(
+            self.w.track_name_width,
+            self.w.ruler_height,
+            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+        painter.save()
         painter.setPen(self.pen)
         for mr in self.w.geometry.marker_rects:
-            painter.drawRect(mr)
+            vis = mr.intersected(area)
+            if vis.isNull():
+                continue
+            painter.drawRect(vis)
+        painter.restore()
 
 
 class PlayheadPainter(BasePainter):
@@ -494,18 +531,46 @@ class TrackPainter(BasePainter):
             )
         self.menu_margin = self.w.theme.menu_margin
 
-    def paint(self, painter: QPainter):
-        for track_rect, track, name_rect in self.w.geometry.track_rects:
-            # Fill track and name backgrounds
+    def paint_background(self, painter: QPainter):
+        area = QRectF(
+            self.w.track_name_width,
+            self.w.ruler_height,
+            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+        painter.save()
+        painter.setClipRect(area)
+        for track_rect, _track, _name_rect in self.w.geometry.track_rects:
+            vis = track_rect.intersected(area)
+            if vis.isNull():
+                continue
             bg = self.w.theme.track.background
             bg2 = self.w.theme.track.background2
             if bg2.isValid() and bg2 != bg:
-                grad = QLinearGradient(track_rect.topLeft(), track_rect.bottomLeft())
+                grad = QLinearGradient(vis.topLeft(), vis.bottomLeft())
                 grad.setColorAt(0, bg)
                 grad.setColorAt(1, bg2)
-                painter.fillRect(track_rect, QBrush(grad))
+                painter.fillRect(vis, QBrush(grad))
             else:
-                painter.fillRect(track_rect, bg)
+                painter.fillRect(vis, bg)
+            painter.setPen(self.border_pen)
+            painter.drawLine(vis.topLeft(), vis.topRight())
+            painter.drawLine(vis.bottomLeft(), vis.bottomRight())
+            painter.drawLine(vis.topRight(), vis.bottomRight())
+
+        painter.fillRect(self.w.resize_handle_rect.intersected(area), self.w.theme.track.border_color)
+        painter.restore()
+
+    def paint_names(self, painter: QPainter):
+        area = QRectF(
+            0,
+            self.w.ruler_height,
+            self.w.track_name_width,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+        painter.save()
+        painter.setClipRect(area)
+        for _track_rect, track, name_rect in self.w.geometry.track_rects:
             painter.setPen(Qt.NoPen)
             painter.setBrush(self.w.theme.track.name_background)
             if self.name_radius_tl or self.name_radius_bl:
@@ -530,13 +595,6 @@ class TrackPainter(BasePainter):
                 painter.drawRect(name_rect)
             painter.setBrush(Qt.NoBrush)
 
-            # Draw track border lines (top, bottom, right)
-            painter.setPen(self.border_pen)
-            painter.drawLine(track_rect.topLeft(), track_rect.topRight())
-            painter.drawLine(track_rect.bottomLeft(), track_rect.bottomRight())
-            painter.drawLine(track_rect.topRight(), track_rect.bottomRight())
-
-            # Draw borders on track name
             if self.name_border_top_width:
                 top_rect = QRectF(
                     name_rect.x(),
@@ -562,7 +620,6 @@ class TrackPainter(BasePainter):
                 )
                 painter.fillRect(left_rect, self.name_border_color)
 
-            # Track menu icon
             if self.menu_pix:
                 painter.drawPixmap(
                     QPointF(
@@ -581,9 +638,7 @@ class TrackPainter(BasePainter):
                 Qt.AlignLeft | Qt.AlignTop,
                 track.data.get("name", f"Track {track.data.get('number')}")
             )
-
-        # Right-side resize handle
-        painter.fillRect(self.w.resize_handle_rect, self.w.theme.track.border_color)
+        painter.restore()
 
 
 class SelectionPainter(BasePainter):
@@ -599,8 +654,57 @@ class SelectionPainter(BasePainter):
 
     def paint(self, painter: QPainter):
         if not self.w.selection_rect.isNull():
-            if self.w.theme.selection.isValid():
-                painter.fillRect(self.w.selection_rect, self.w.theme.selection)
-            if self.pen.color().isValid() and self.pen.widthF() > 0:
-                painter.setPen(self.pen)
-                painter.drawRect(self.w.selection_rect)
+            area = QRectF(
+                self.w.track_name_width,
+                self.w.ruler_height,
+                self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+                self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+            )
+            painter.save()
+            vis = self.w.selection_rect.intersected(area)
+            if not vis.isNull():
+                if self.w.theme.selection.isValid():
+                    painter.fillRect(vis, self.w.theme.selection)
+                if self.pen.color().isValid() and self.pen.widthF() > 0:
+                    painter.setPen(self.pen)
+                    painter.drawRect(vis)
+            painter.restore()
+
+
+class ScrollbarPainter(BasePainter):
+    """Draw horizontal and vertical scrollbars."""
+
+    def update_theme(self):
+        handle = getattr(self.w.theme, "scrollbar_handle", QColor())
+        track = getattr(self.w.theme, "scrollbar_track", QColor())
+        if not handle.isValid():
+            handle = QColor("#4b92ad")
+        if not track.isValid():
+            track = QColor("#000")
+        self.handle_brush = QBrush(handle)
+        self.track_brush = QBrush(track)
+
+    def paint(self, painter: QPainter):
+        # Horizontal scrollbar
+        sb = self.w.scroll_bar_rect
+        if not sb.isNull():
+            track = QRectF(
+                self.w.track_name_width,
+                self.w.height() - self.w.scroll_bar_thickness,
+                self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+                self.w.scroll_bar_thickness,
+            )
+            painter.fillRect(track, self.track_brush)
+            painter.fillRect(sb, self.handle_brush)
+
+        # Vertical scrollbar
+        sbv = getattr(self.w, "v_scroll_bar_rect", QRectF())
+        if not sbv.isNull():
+            track = QRectF(
+                self.w.width() - self.w.scroll_bar_thickness,
+                self.w.ruler_height,
+                self.w.scroll_bar_thickness,
+                self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+            )
+            painter.fillRect(track, self.track_brush)
+            painter.fillRect(sbv, self.handle_brush)

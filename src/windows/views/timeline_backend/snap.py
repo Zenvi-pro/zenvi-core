@@ -33,6 +33,18 @@ class SnapHelper:
         self.widget = widget
         self.geometry = geometry
 
+    # ---- Helpers -----------------------------------------------------
+    def _h_offset(self) -> float:
+        """Return current horizontal scroll offset in pixels."""
+        view_w = self.widget.scrollbar_position[3] or 1.0
+        timeline_w = self.widget.scrollbar_position[2] or view_w
+        left = self.widget.scrollbar_position[0]
+        offset = left * timeline_w
+        max_scroll = max(0.0, timeline_w - view_w)
+        if offset > max_scroll:
+            offset = max_scroll
+        return offset
+
     def snap_dx(self, delta_sec: float) -> float:
         """Return adjusted delta in seconds for horizontal snapping."""
         self.geometry.ensure()
@@ -52,9 +64,13 @@ class SnapHelper:
                             best_diff_px = diff
 
         # Include playhead position as a snap target
-        playhead_x = self.widget.track_name_width + (
-            self.widget.current_frame / self.widget.fps_float
-        ) * self.widget.pixels_per_second
+        h_offset = self._h_offset()
+        playhead_x = (
+            self.widget.track_name_width
+            + (self.widget.current_frame / self.widget.fps_float)
+            * self.widget.pixels_per_second
+            - h_offset
+        )
         for ours in (cur_left, cur_right):
             diff = playhead_x - ours
             if abs(diff) <= snap_px:
@@ -68,8 +84,11 @@ class SnapHelper:
         """Snap a moving edge (in seconds) to nearby clip edges or playhead."""
         self.geometry.ensure()
         snap_px = self.widget.pixels_per_second * 1.5
+        h_offset = self._h_offset()
         edge_px = (
-            self.widget.track_name_width + (orig_edge_sec + delta_sec) * self.widget.pixels_per_second
+            self.widget.track_name_width
+            + (orig_edge_sec + delta_sec) * self.widget.pixels_per_second
+            - h_offset
         )
 
         best_diff_px = None
@@ -81,9 +100,12 @@ class SnapHelper:
                         best_diff_px = diff
 
         # Playhead snap target
-        playhead_x = self.widget.track_name_width + (
-            self.widget.current_frame / self.widget.fps_float
-        ) * self.widget.pixels_per_second
+        playhead_x = (
+            self.widget.track_name_width
+            + (self.widget.current_frame / self.widget.fps_float)
+            * self.widget.pixels_per_second
+            - h_offset
+        )
         diff = playhead_x - edge_px
         if abs(diff) <= snap_px:
             if best_diff_px is None or abs(diff) < abs(best_diff_px):

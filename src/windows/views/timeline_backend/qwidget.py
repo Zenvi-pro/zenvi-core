@@ -41,7 +41,7 @@ from .geometry import Geometry
 from .paint import (
     BackgroundPainter, ClipPainter, TransitionPainter,
     MarkerPainter, PlayheadPainter, RulerPainter, TrackPainter,
-    SelectionPainter,
+    SelectionPainter, ScrollbarPainter,
 )
 from .snap import SnapHelper
 from .theme import DEFAULT_THEME, apply_theme as parse_theme
@@ -90,12 +90,16 @@ class TimelineWidget(QWidget):
         self.zoom_factor = 15.0
         self.scrollbar_position = [0.0, 0.0, 0.0, 0.0]
         self.scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
+        self.v_scrollbar_position = [0.0, 0.0, 0.0, 0.0]
+        self.v_scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
         self.left_handle_rect = QRectF()
         self.left_handle_dragging = False
         self.right_handle_rect = QRectF()
         self.right_handle_dragging = False
         self.scroll_bar_rect = QRectF()
         self.scroll_bar_dragging = False
+        self.v_scroll_bar_rect = QRectF()
+        self.v_scroll_bar_dragging = False
         self.clip_rects = []
         self.clip_rects_selected = []
         self.marker_rects = []
@@ -112,6 +116,7 @@ class TimelineWidget(QWidget):
         # Geometry constants
         self.ruler_height = 40
         self.track_name_width = 140
+        self.scroll_bar_thickness = 12
         self._resize_handle_width = 6
         self.resizing_track_names = False
         self.resize_handle_rect = QRectF()
@@ -156,6 +161,7 @@ class TimelineWidget(QWidget):
         self.marker_painter = MarkerPainter(self)
         self.playhead_painter = PlayheadPainter(self)
         self.selection_painter = SelectionPainter(self)
+        self.scrollbar_painter = ScrollbarPainter(self)
 
         # Apply default theme
         self.apply_theme("")
@@ -182,6 +188,7 @@ class TimelineWidget(QWidget):
 
         # Connect zoom functionality
         self.win.TimelineScrolled.connect(self.update_scrollbars)
+        self.win.TimelineScroll.connect(self.set_scroll_left)
 
         self.win.TimelineResize.connect(self.delayed_resize_callback)
 
@@ -315,6 +322,7 @@ class TimelineWidget(QWidget):
             self.marker_painter,
             self.playhead_painter,
             self.selection_painter,
+            self.scrollbar_painter,
         ):
             p.update_theme()
         self.update()
@@ -362,13 +370,15 @@ class TimelineWidget(QWidget):
         self.geometry.ensure()
 
         self.bg_painter.paint(painter, event.rect())
-        self.ruler_painter.paint(painter)
-        self.track_painter.paint(painter)
+        self.track_painter.paint_background(painter)
         self.clip_painter.paint(painter)
         self.transition_painter.paint(painter)
         self.marker_painter.paint(painter)
-        self.playhead_painter.paint(painter)
         self.selection_painter.paint(painter)
+        self.track_painter.paint_names(painter)
+        self.ruler_painter.paint(painter)
+        self.playhead_painter.paint(painter)
+        self.scrollbar_painter.paint(painter)
 
         painter.end()
 
@@ -440,8 +450,22 @@ class TimelineWidget(QWidget):
         if not file_ids:
             return
 
-        pos_seconds = max(0.0, (event.pos().x() - self.track_name_width) / self.pixels_per_second)
-        track_idx = int((event.pos().y() - self.ruler_height) / self.vertical_factor)
+        view_w = self.scrollbar_position[3] or 1.0
+        timeline_w = self.scrollbar_position[2] or view_w
+        left = self.scrollbar_position[0]
+        h_offset = left * timeline_w
+        max_scroll = max(0.0, timeline_w - view_w)
+        if h_offset > max_scroll:
+            h_offset = max_scroll
+        view_h = self.v_scrollbar_position[3] or 1.0
+        content_h = self.v_scrollbar_position[2] or view_h
+        top = self.v_scrollbar_position[0]
+        v_offset = top * content_h
+        max_vscroll = max(0.0, content_h - view_h)
+        if v_offset > max_vscroll:
+            v_offset = max_vscroll
+        pos_seconds = max(0.0, (event.pos().x() - self.track_name_width + h_offset) / self.pixels_per_second)
+        track_idx = int((event.pos().y() - self.ruler_height + v_offset) / self.vertical_factor)
         track_idx = min(max(track_idx, 0), len(self.track_list)-1)
         track_num = self.track_list[track_idx].data.get("number")
         pos = QPointF(pos_seconds, 0)
@@ -460,6 +484,8 @@ class TimelineWidget(QWidget):
         """Widget resize event"""
         event.accept()
         self.delayed_size = self.size()
+        self.geometry.mark_dirty()
+        self.update()
         self.delayed_resize_timer.start()
 
     def delayed_resize_callback(self):
@@ -479,6 +505,7 @@ class TimelineWidget(QWidget):
 
                 # Emit signal to scroll Timeline
                 get_app().window.TimelineScroll.emit(self.scrollbar_position[0])
+                get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
     # Capture wheel event to alter zoom/scale of widget
     def wheelEvent(self, event):
@@ -487,6 +514,19 @@ class TimelineWidget(QWidget):
                 self.zoomIn()
             else:
                 self.zoomOut()
+            event.accept()
+            return
+
+        # Vertical scrolling
+        if self.v_scrollbar_position[3] > 0 and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]:
+            delta = -event.angleDelta().y() / 120.0
+            view_ratio = self.v_scrollbar_position[1] - self.v_scrollbar_position[0]
+            new_top = self.v_scrollbar_position[0] + delta * view_ratio * 0.1
+            new_top = max(0.0, min(new_top, 1.0 - view_ratio))
+            self.v_scrollbar_position[0] = new_top
+            self.v_scrollbar_position[1] = new_top + view_ratio
+            self.geometry.mark_dirty()
+            self.update()
             event.accept()
         else:
             event.ignore()
@@ -535,16 +575,28 @@ class TimelineWidget(QWidget):
         if self.mouse_dragging:
             return
 
-        self.scrollbar_position = new_positions
+        self.scrollbar_position = list(new_positions)
 
         # Check for empty clip rectangles
         if not self.geometry.clip_rects:
             TimelineWidget.changed(self, None)
 
+        # Recompute geometry for new scrollbar positions
+        self.geometry.mark_dirty()
+
         # Disable auto center
         self.is_auto_center = False
 
         # Schedule repaint
+        self.update()
+
+    def set_scroll_left(self, new_left):
+        width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
+        left = max(0.0, min(new_left, 1.0 - width_norm))
+        self.scrollbar_position[0] = left
+        self.scrollbar_position[1] = left + width_norm
+        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+        self.geometry.mark_dirty()
         self.update()
 
     def handle_selection(self):
@@ -746,16 +798,73 @@ class TimelineWidget(QWidget):
             self._resizing_item = None
             self._resize_edge = None
             self._press_hit = self._hitTest(pos)
+
+        # Start scrollbar drags without involving state machine
+        if self._press_hit == "h-scroll":
+            self.scroll_bar_dragging = True
+            self.mouse_dragging = True
+            self.mouse_position = pos.x()
+            self.scrollbar_position_previous = list(self.scrollbar_position)
+            return
+        if self._press_hit == "v-scroll":
+            self.v_scroll_bar_dragging = True
+            self.mouse_dragging = True
+            self.mouse_position = pos.y()
+            self.v_scrollbar_position_previous = list(self.v_scrollbar_position)
+            return
+
         self._last_event = event
         self.events.pressed.emit(event)
 
     def mouseMoveEvent(self, event):
         self._last_event = event
+
+        if self.scroll_bar_dragging:
+            view_w = self.scrollbar_position[3] or 1.0
+            width_norm = self.scrollbar_position_previous[1] - self.scrollbar_position_previous[0]
+            handle_w = width_norm * view_w
+            avail = view_w - handle_w
+            delta_px = self.mouse_position - event.pos().x()
+            delta = 0.0
+            if avail > 0:
+                delta = (delta_px / avail) * (1.0 - width_norm)
+            new_left = self.scrollbar_position_previous[0] - delta
+            new_left = max(0.0, min(new_left, 1.0 - width_norm))
+            self.scrollbar_position = [new_left, new_left + width_norm,
+                                       self.scrollbar_position[2], self.scrollbar_position[3]]
+            get_app().window.TimelineScroll.emit(new_left)
+            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+            self.geometry.mark_dirty()
+            self.update()
+            return
+
+        if self.v_scroll_bar_dragging:
+            view_h = self.v_scrollbar_position[3] or 1.0
+            height_norm = self.v_scrollbar_position_previous[1] - self.v_scrollbar_position_previous[0]
+            handle_h = height_norm * view_h
+            avail = view_h - handle_h
+            delta_py = self.mouse_position - event.pos().y()
+            delta = 0.0
+            if avail > 0:
+                delta = (delta_py / avail) * (1.0 - height_norm)
+            new_top = self.v_scrollbar_position_previous[0] - delta
+            new_top = max(0.0, min(new_top, 1.0 - height_norm))
+            self.v_scrollbar_position[0] = new_top
+            self.v_scrollbar_position[1] = new_top + height_norm
+            self.geometry.mark_dirty()
+            self.update()
+            return
+
         self._updateCursor(event.pos())
         self.events.moved.emit(event)
 
     def mouseReleaseEvent(self, event):
         self._last_event = event
+        if self.scroll_bar_dragging or self.v_scroll_bar_dragging:
+            self.scroll_bar_dragging = False
+            self.v_scroll_bar_dragging = False
+            self.mouse_dragging = False
+            return
         self.events.released.emit(event)
         self._press_hit = None
 

@@ -76,6 +76,9 @@ class TimelineTheme:
     ruler_time_pad_left: int = 0
     ruler_time_pad_top: int = 0
     ruler_label_top: int = 0
+    scrollbar_handle: QColor = field(default_factory=QColor)
+    scrollbar_track: QColor = field(default_factory=QColor)
+    scrollbar_width: int = 0
 
 
 DEFAULT_THEME = TimelineTheme()
@@ -1136,6 +1139,23 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
         if m_val:
             theme.menu_margin = int(float(m_val.group(1)))
 
+    # Scrollbars
+    col = _parse_color(css, "::-webkit-scrollbar-thumb", "background-color", source, log_miss=False)
+    if col:
+        theme.scrollbar_handle = col
+    col = _parse_color(
+        css,
+        "::-webkit-scrollbar-track",
+        ("background", "background-color"),
+        source,
+        log_miss=False,
+    )
+    if col:
+        theme.scrollbar_track = col
+    val = _parse_float(css, "::-webkit-scrollbar", ("width", "height"), source, log_miss=False)
+    if val is not None:
+        theme.scrollbar_width = int(val)
+
     return theme
 
 
@@ -1184,6 +1204,8 @@ def apply_theme(widget, css: str = "") -> bool:
         widget.track_gap = t.track.gap
     if t.ruler.height:
         widget.ruler_height = t.ruler.height
+    if t.scrollbar_width:
+        widget.scroll_bar_thickness = t.scrollbar_width
 
     return (
         old_track_h != widget.track_height
