@@ -76,7 +76,8 @@ img {
   position: relative;
   line-height: 4px;
   height: 43px;
-  margin-right: 8px; /* Prevent playhead from becoming unaligned due to scrollbars */
+  margin-right: 8px;
+  background: rgba(25, 25, 25, 1);
 }
 
 #scrolling_tracks {
@@ -90,6 +91,7 @@ img {
   width: 140px;
   float: left;
   margin-bottom: 4px;
+  background: rgba(25, 25, 25, 1);
 }
 
 #ruler_time {

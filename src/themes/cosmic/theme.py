@@ -721,6 +721,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             .marker_icon {
               background-image: url(../themes/cosmic/images/marker.svg);
             }
+            #ruler_label {
+              background: #141923;
+            }
+            #scrolling_ruler {
+              background: #141923;
+            }
         """)
 
         # Emit signal
