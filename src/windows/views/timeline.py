@@ -328,102 +328,79 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Send to update manager
         self.update_transition_data(transitions_data, only_basic_props=False)
 
+    def _scale_keyframes(self, keyframe, factor):
+        """Scale the X values of keyframe points"""
+        for point in keyframe.get("Points", []):
+            if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
+                point["co"]["X"] = round(point["co"]["X"] * factor)
+
+    def _reverse_keyframes(self, keyframe, total_frames):
+        """Reverse keyframe positions around total_frames, swapping handles"""
+        new_points = []
+        for point in keyframe.get("Points", []):
+            new_point = json.loads(json.dumps(point))
+            new_point["co"]["X"] = total_frames - point["co"]["X"] + 1
+            hl = new_point.pop("handle_left", None)
+            hr = new_point.pop("handle_right", None)
+            if hr is not None:
+                new_point["handle_left"] = hr
+            if hl is not None:
+                new_point["handle_right"] = hl
+            new_points.append(new_point)
+        keyframe["Points"] = sorted(new_points, key=lambda p: p["co"]["X"])
+
     # Javascript callable function to update the project data when a transition changes
     @pyqtSlot(str, bool, bool, str)
     def update_transition_data(self, transition_json, only_basic_props=True, ignore_refresh=False, transaction_id=None):
-        """ Create an updateAction and send it to the update manager.
-            Transaction ID is for undo/redo grouping (if any) """
+        """Create an updateAction and send it to the update manager.
+        Transaction ID is for undo/redo grouping (if any)"""
 
-        # read clip json
+        # read transition json
         if not isinstance(transition_json, dict):
             transition_data = json.loads(transition_json)
         else:
             transition_data = transition_json
 
-        # Search for matching clip in project data (if any)
+        # Search for matching transition in project data (if any)
         existing_item = Transition.get(id=transition_data["id"])
+        old_data = json.loads(json.dumps(existing_item.data)) if existing_item else {}
         if not existing_item:
-            # Create a new clip (if not exists)
+            # Create a new transition (if not exists)
             existing_item = Transition()
         existing_item.data = transition_data
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
-        duration = existing_item.data["end"] - existing_item.data["start"]
-        position = transition_data["position"]
-        layer = transition_data["layer"]
 
-        # Determine if transition is intersecting a clip
-        # For example, the left side of a clip, or the right side, so we can determine
-        # which direction the wipe should be moving in
-        is_forward_direction = True
-        diff_from_edge = 9999
-        for intersecting_clip in Clip.filter(intersect=position, layer=layer):
-            diff_from_start = abs(intersecting_clip.data.get("position", 0.0) - position)
-            diff_from_end = abs((intersecting_clip.data.get("position", 0.0) + \
-                                (intersecting_clip.data.get("end", 0.0) - intersecting_clip.data.get("start", 0.0))) \
-                                - position)
-            if diff_from_end <= 0.25:
-                # Ignore when a transition is less than 1/2 second from the right edge of a clip
-                continue
-            smallest_diff = min(diff_from_start, diff_from_end)
-            if smallest_diff < diff_from_edge:
-                diff_from_edge = smallest_diff
-                if diff_from_end < diff_from_start:
-                    is_forward_direction = False
-                else:
-                    is_forward_direction = True
-            log.debug(f'Intersecting Clip: pos:{intersecting_clip.data.get("position")}, '
-                      f'from start: {diff_from_start}, from end: {diff_from_end}, '
-                      f'is forward: {is_forward_direction}')
-        log.debug(f"Is transition moving in a forward direction? {is_forward_direction}")
+        # Preserve and scale existing keyframes when only basic props are updated
+        old_duration = old_data.get("end", 0.0) - old_data.get("start", 0.0)
+        new_duration = existing_item.data.get("end", 0.0) - existing_item.data.get("start", 0.0)
+        old_frames = round(old_duration * fps_float) if old_duration > 0 else 0
+        new_frames = round(new_duration * fps_float) if new_duration > 0 else 0
 
-        # Determine existing brightness and contrast ranges (if any)
-        brightness_range = []
-        contrast_range = []
-        if existing_item:
-            for point in existing_item.data["brightness"].get("Points", []):
-                point_value = float(point["co"]["Y"])
-                brightness_range.append(point_value)
-            for point in existing_item.data["contrast"].get("Points", []):
-                point_value = float(point["co"]["Y"])
-                contrast_range.append(point_value)
-        if not brightness_range:
-            brightness_range.extend([1, -1])
-        if not contrast_range:
-            contrast_range.extend([3])
+        if old_data and only_basic_props:
+            if "brightness" in old_data:
+                existing_item.data["brightness"] = old_data["brightness"]
+            if "contrast" in old_data:
+                existing_item.data["contrast"] = old_data["contrast"]
 
-        # Create new brightness Keyframes (using the previous value range)
-        b = openshot.Keyframe()
-        if is_forward_direction:
-            b.AddPoint(1, sorted(brightness_range)[-1], openshot.BEZIER)
-            b.AddPoint(round(duration * fps_float), sorted(brightness_range)[0], openshot.BEZIER)
-        else:
-            b.AddPoint(1, sorted(brightness_range)[0], openshot.BEZIER)
-            b.AddPoint(round(duration * fps_float), sorted(brightness_range)[-1], openshot.BEZIER)
-        brightness = json.loads(b.Json())
-
-        # Create new contrast Keyframes (using the previous value range)
-        c = openshot.Keyframe()
-        if is_forward_direction:
-            c.AddPoint(1, sorted(contrast_range)[-1], openshot.BEZIER)
-            c.AddPoint(round(duration * fps_float), sorted(contrast_range)[0], openshot.BEZIER)
-        else:
-            c.AddPoint(1, sorted(contrast_range)[0], openshot.BEZIER)
-            c.AddPoint(round(duration * fps_float), sorted(contrast_range)[-1], openshot.BEZIER)
-        contrast = json.loads(c.Json())
+            if old_frames and new_frames and old_frames != new_frames:
+                scale = new_frames / old_frames
+                for prop in ("brightness", "contrast"):
+                    if prop in existing_item.data:
+                        self._scale_keyframes(existing_item.data[prop], scale)
 
         # Only include the basic properties (performance boost)
-        if only_basic_props:
+        if only_basic_props and not old_data:
             existing_item.data = {}
             existing_item.data["id"] = transition_data["id"]
             existing_item.data["layer"] = transition_data["layer"]
             existing_item.data["position"] = transition_data["position"]
             existing_item.data["start"] = transition_data["start"]
             existing_item.data["end"] = transition_data["end"]
-            existing_item.data["brightness"] = brightness
-            existing_item.data["contrast"] = contrast
+            existing_item.data["brightness"] = transition_data.get("brightness", {})
+            existing_item.data["contrast"] = transition_data.get("contrast", {})
 
         # Delete invalid items (i.e. negative duration)
         if self.delete_invalid_timeline_item(existing_item):
@@ -2808,24 +2785,26 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Loop through all selected transitions
         for tran_id in tran_ids:
 
-            # Get existing clip object
+            # Get existing transition object
             tran = Transition.get(id=tran_id)
             if not tran:
                 # Invalid transition, skip to next item
                 continue
 
-            # Loop through brightness keyframes
+            # Reverse transition keyframes
             tran_data_copy = json.loads(json.dumps(tran.data))
-            new_index = len(tran.data["brightness"]["Points"])
-            for point in tran.data["brightness"]["Points"]:
-                new_index -= 1
-                tran_data_copy["brightness"]["Points"][new_index]["co"]["Y"] = point["co"]["Y"]
-                if "handle_left" in point:
-                    tran_data_copy["brightness"]["Points"][new_index]["handle_left"]["Y"] = point["handle_left"]["Y"]
-                    tran_data_copy["brightness"]["Points"][new_index]["handle_right"]["Y"] = point["handle_right"]["Y"]
+            fps = get_app().project.get("fps")
+            fps_float = float(fps["num"]) / float(fps["den"])
+            duration = tran.data.get("end", 0.0) - tran.data.get("start", 0.0)
+            total_frames = round(duration * fps_float)
 
-            # Save changes
-            self.update_transition_data(tran_data_copy, only_basic_props=False)
+            for prop in ("brightness", "contrast"):
+                if prop in tran_data_copy:
+                    self._reverse_keyframes(tran_data_copy[prop], total_frames)
+
+            # Update in-memory data and persist changes
+            tran.data = tran_data_copy
+            self.update_transition_data(tran.data, only_basic_props=False)
 
     @pyqtSlot(str)
     def ShowTransitionMenu(self, tran_id=None):
