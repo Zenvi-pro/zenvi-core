@@ -50,6 +50,45 @@ class SnapHelper:
                     if abs(diff) <= snap_px:
                         if best_diff_px is None or abs(diff) < abs(best_diff_px):
                             best_diff_px = diff
+
+        # Include playhead position as a snap target
+        playhead_x = self.widget.track_name_width + (
+            self.widget.current_frame / self.widget.fps_float
+        ) * self.widget.pixels_per_second
+        for ours in (cur_left, cur_right):
+            diff = playhead_x - ours
+            if abs(diff) <= snap_px:
+                if best_diff_px is None or abs(diff) < abs(best_diff_px):
+                    best_diff_px = diff
+        if best_diff_px is not None:
+            delta_sec += best_diff_px / self.widget.pixels_per_second
+        return delta_sec
+
+    def snap_edge(self, orig_edge_sec: float, delta_sec: float) -> float:
+        """Snap a moving edge (in seconds) to nearby clip edges or playhead."""
+        self.geometry.ensure()
+        snap_px = self.widget.pixels_per_second * 1.5
+        edge_px = (
+            self.widget.track_name_width + (orig_edge_sec + delta_sec) * self.widget.pixels_per_second
+        )
+
+        best_diff_px = None
+        for rect, _ in (self.geometry.clip_rects + self.geometry.transition_rects):
+            for other_edge in (rect.left(), rect.right()):
+                diff = other_edge - edge_px
+                if abs(diff) <= snap_px:
+                    if best_diff_px is None or abs(diff) < abs(best_diff_px):
+                        best_diff_px = diff
+
+        # Playhead snap target
+        playhead_x = self.widget.track_name_width + (
+            self.widget.current_frame / self.widget.fps_float
+        ) * self.widget.pixels_per_second
+        diff = playhead_x - edge_px
+        if abs(diff) <= snap_px:
+            if best_diff_px is None or abs(diff) < abs(best_diff_px):
+                best_diff_px = diff
+
         if best_diff_px is not None:
             delta_sec += best_diff_px / self.widget.pixels_per_second
         return delta_sec

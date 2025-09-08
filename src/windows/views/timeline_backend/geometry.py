@@ -139,8 +139,8 @@ class Geometry:
         self.ensure()
 
         for rect, _ in (
-            self.selected_rects + self.clip_rects +
-            self.selected_transitions + self.transition_rects
+            self.selected_transitions + self.transition_rects +
+            self.selected_rects + self.clip_rects
         ):
             if rect.contains(pos):
                 return "clip"

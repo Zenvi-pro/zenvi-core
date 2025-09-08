@@ -3133,7 +3133,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def SetSnappingMode(self, enable_snapping):
         """ Enable / Disable snapping mode """
         # Init snapping state (1 = snapping, 0 = no snapping)
-        self.run_js(JS_SCOPE_SELECTOR + ".setSnappingMode(%s);" % int(enable_snapping))
+        if ViewClass == TimelineWidget:
+            TimelineWidget.setSnappingMode(self, enable_snapping)
+        else:
+            self.run_js(JS_SCOPE_SELECTOR + ".setSnappingMode(%s);" % int(enable_snapping))
 
     @pyqtSlot(int)
     def SetRazorMode(self, enable_razor):
@@ -3145,7 +3148,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def SetTimingMode(self, enable_timing):
         """ Enable / Disable timing mode """
         # Init timing state (1 = timing, 0 = no timing)
-        self.run_js(JS_SCOPE_SELECTOR + ".setTimingMode(%s);" % int(enable_timing))
+        if ViewClass == TimelineWidget:
+            TimelineWidget.setTimingMode(self, enable_timing)
+        else:
+            self.run_js(JS_SCOPE_SELECTOR + ".setTimingMode(%s);" % int(enable_timing))
 
     @pyqtSlot(str)
     def SetPropertyFilter(self, property):

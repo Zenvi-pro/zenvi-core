@@ -169,6 +169,7 @@ class ClipPainter(BasePainter):
         thumb_w = self.w.theme.clip.thumb_width
         thumb_h = self.w.theme.clip.thumb_height
         scaled = None
+        used_w = 0
         if thumb and not thumb.isNull() and thumb_w and thumb_h:
             scaled = thumb.scaled(
                 thumb_w, thumb_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
@@ -178,13 +179,18 @@ class ClipPainter(BasePainter):
                     QPointF(x, inner.y() + (inner.height() - scaled.height()) / 2),
                     scaled,
                 )
-                x += scaled.width() + self.menu_margin
+                used_w = scaled.width()
 
         if self.menu_pix:
             painter.drawPixmap(
-                QPointF(inner.x() + self.menu_margin, inner.y() + self.menu_margin),
+                QPointF(x, inner.y() + self.menu_margin),
                 self.menu_pix,
             )
+            used_w = max(used_w, self.menu_pix.width())
+
+        x += used_w
+        if used_w:
+            x += self.menu_margin
 
         icon_size = min(self.w.theme.clip.font_size or 12, int(inner.height()))
         for eff in clip.data.get("effects", []):
@@ -228,6 +234,13 @@ class TransitionPainter(BasePainter):
         self.img = self.w.theme.transition.background_image
         self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), 1.5)
         self.sel_pen.setCosmetic(True)
+        self.menu_pix = None
+        if self.w.theme.menu_icon:
+            size = self.w.theme.menu_size or self.w.theme.menu_icon.width()
+            self.menu_pix = self.w.theme.menu_icon.scaled(
+                size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        self.menu_margin = self.w.theme.menu_margin
 
     def paint(self, painter: QPainter):
         for rect, _ in self.w.geometry.transition_rects:
@@ -245,6 +258,13 @@ class TransitionPainter(BasePainter):
                 painter.drawPixmap(rect.toRect(), scaled)
             painter.setPen(self.pen)
             painter.drawRoundedRect(rect, self.w.theme.transition.border_radius, self.w.theme.transition.border_radius)
+            if self.menu_pix:
+                bw = self.pen.widthF()
+                inner = rect.adjusted(bw, bw, -bw, -bw)
+                painter.drawPixmap(
+                    QPointF(inner.x() + self.menu_margin, inner.y() + self.menu_margin),
+                    self.menu_pix,
+                )
 
         for rect, _ in self.w.geometry.selected_transitions:
             if self.col2.isValid() and self.col2 != self.col:
@@ -261,6 +281,13 @@ class TransitionPainter(BasePainter):
                 painter.drawPixmap(rect.toRect(), scaled)
             painter.setPen(self.sel_pen)
             painter.drawRoundedRect(rect, self.w.theme.transition.border_radius, self.w.theme.transition.border_radius)
+            if self.menu_pix:
+                bw = self.sel_pen.widthF()
+                inner = rect.adjusted(bw, bw, -bw, -bw)
+                painter.drawPixmap(
+                    QPointF(inner.x() + self.menu_margin, inner.y() + self.menu_margin),
+                    self.menu_pix,
+                )
 
 
 class MarkerPainter(BasePainter):

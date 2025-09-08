@@ -125,6 +125,16 @@ class TimelineWidget(QWidget):
         self.drag_clip_start = 0.0
         self.dragging_playhead = False
 
+        # Resize / timing helpers
+        self.enable_timing = False
+        self.enable_snapping = True
+        self._resizing_item = None
+        self._resize_edge = None
+        self._resize_initial_rect = QRectF()
+        self._resize_initial = {}
+        self._timing_original_start = 0.0
+        self._fixed_cursor = None
+
         # Cached Qt text flags
         self._clip_text_flags = Qt.AlignLeft | Qt.AlignTop
 
@@ -219,7 +229,7 @@ class TimelineWidget(QWidget):
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, resize,
-            lambda: self._press_hit == "handle"
+            lambda: self._press_hit in ("handle", "clip-edge")
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, playhead,
@@ -259,6 +269,25 @@ class TimelineWidget(QWidget):
             signal.disconnect(slot)
         except TypeError:
             pass
+
+    def setSnappingMode(self, enable):
+        """Enable or disable snapping mode."""
+        self.enable_snapping = bool(enable)
+
+    def setTimingMode(self, enable):
+        """Enable or disable timing (retime) mode."""
+        self.enable_timing = bool(enable)
+
+    def _fix_cursor(self, cursor):
+        self._fixed_cursor = cursor
+        self.setCursor(cursor)
+
+    def _release_cursor(self):
+        self._fixed_cursor = None
+
+    def _snap_time(self, seconds):
+        """Snap a time in seconds to the nearest frame boundary."""
+        return round(seconds * self.fps_float) / self.fps_float
 
     def run_js(self, code, callback=None, retries=0):
         """Placeholder due to webview compatibility"""
@@ -564,6 +593,17 @@ class TimelineWidget(QWidget):
             self.clip_painter.menu_pix.height(),
         )
 
+    def _transition_menu_rect(self, rect):
+        if not self.transition_painter.menu_pix:
+            return QRectF()
+        bw = self.transition_painter.pen.widthF()
+        return QRectF(
+            rect.x() + bw + self.transition_painter.menu_margin,
+            rect.y() + bw + self.transition_painter.menu_margin,
+            self.transition_painter.menu_pix.width(),
+            self.transition_painter.menu_pix.height(),
+        )
+
     def _track_menu_rect(self, name_rect):
         if not self.track_painter.menu_pix:
             return QRectF()
@@ -574,7 +614,36 @@ class TimelineWidget(QWidget):
             self.track_painter.menu_pix.height(),
         )
 
+    def _playhead_hit(self, pos):
+        """Return True if *pos* intersects the playhead line or icon."""
+        x = self.track_name_width + (
+            self.current_frame / self.fps_float
+        ) * self.pixels_per_second
+        ix = int(round(x))
+        line_rect = QRectF(
+            ix - max(3, self.playhead_painter.line_width / 2),
+            0,
+            max(6, self.playhead_painter.line_width),
+            self.height(),
+        )
+        if line_rect.contains(pos):
+            return True
+        if self.playhead_painter.icon_pix:
+            icon_rect = QRectF(
+                ix + self.playhead_painter.icon_offset_x,
+                self.playhead_painter.icon_offset_y,
+                self.playhead_painter.icon_pix.width(),
+                self.playhead_painter.icon_pix.height(),
+            )
+            if icon_rect.contains(pos):
+                return True
+        return False
+
     def _updateCursor(self, pos):
+        if self._fixed_cursor is not None:
+            self.setCursor(self._fixed_cursor)
+            return
+
         self.geometry.ensure()
 
         # Playhead icon
@@ -582,8 +651,9 @@ class TimelineWidget(QWidget):
             x = self.track_name_width + (
                 self.current_frame / self.fps_float
             ) * self.pixels_per_second
+            ix = int(round(x))
             icon_rect = QRectF(
-                x + self.playhead_painter.icon_offset_x,
+                ix + self.playhead_painter.icon_offset_x,
                 self.playhead_painter.icon_offset_y,
                 self.playhead_painter.icon_pix.width(),
                 self.playhead_painter.icon_pix.height(),
@@ -592,15 +662,26 @@ class TimelineWidget(QWidget):
                 self.setCursor(self.cursors["hand"])
                 return
 
-        # Clip menu and edges
-        edge = 5
-        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
-            mrect = self._clip_menu_rect(rect)
-            if mrect.contains(pos):
+        # Transition menu icons
+        for rect, _ in self.geometry.selected_transitions + self.geometry.transition_rects:
+            if self._transition_menu_rect(rect).contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
+
+        # Clip menu icons
+        for rect, _ in self.geometry.selected_rects + self.geometry.clip_rects:
+            if self._clip_menu_rect(rect).contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+
+        # Clip/transition edges and drags (transitions prioritized)
+        edge = 5
+        for rect, item in (
+            self.geometry.selected_transitions + self.geometry.transition_rects +
+            self.geometry.selected_rects + self.geometry.clip_rects
+        ):
             if rect.contains(pos):
-                if abs(pos.x() - rect.x()) <= edge or abs(pos.x() - rect.right()) <= edge:
+                if abs(pos.x() - rect.left()) <= edge or abs(pos.x() - rect.right()) <= edge:
                     self.setCursor(self.cursors["resize_x"])
                 else:
                     self.setCursor(self.cursors["hand"])
@@ -616,6 +697,14 @@ class TimelineWidget(QWidget):
         self.unsetCursor()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._last_event = event
+            if self._showContextMenu(event.pos()):
+                event.accept()
+            else:
+                event.ignore()
+            return
+
         self.geometry.ensure()
         pos = event.pos()
         # Track menu icons
@@ -624,13 +713,39 @@ class TimelineWidget(QWidget):
                 if hasattr(self.win, "timeline"):
                     self.win.timeline.ShowTrackMenu(track.id)
                 return
+        # Transition menu icons
+        for rect, tran in self.geometry.transition_rects + self.geometry.selected_transitions:
+            if self._transition_menu_rect(rect).contains(pos):
+                if hasattr(self.win, "timeline"):
+                    self.win.timeline.ShowTransitionMenu(tran.id)
+                return
         # Clip menu icons
         for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
             if self._clip_menu_rect(rect).contains(pos):
                 if hasattr(self.win, "timeline"):
                     self.win.timeline.ShowClipMenu(clip.id)
                 return
-        self._press_hit = self._hitTest(pos)
+        # Detect clip/transition edge resize
+        edge = 5
+        for rect, item in (
+            self.geometry.selected_transitions + self.geometry.transition_rects +
+            self.geometry.selected_rects + self.geometry.clip_rects
+        ):
+            if rect.contains(pos):
+                if abs(pos.x() - rect.left()) <= edge:
+                    self._press_hit = "clip-edge"
+                    self._resizing_item = item
+                    self._resize_edge = "left"
+                    break
+                if abs(pos.x() - rect.right()) <= edge:
+                    self._press_hit = "clip-edge"
+                    self._resizing_item = item
+                    self._resize_edge = "right"
+                    break
+        else:
+            self._resizing_item = None
+            self._resize_edge = None
+            self._press_hit = self._hitTest(pos)
         self._last_event = event
         self.events.pressed.emit(event)
 
@@ -644,6 +759,44 @@ class TimelineWidget(QWidget):
         self.events.released.emit(event)
         self._press_hit = None
 
+    def contextMenuEvent(self, event):
+        if not self._showContextMenu(event.pos()):
+            event.ignore()
+
+    def _showContextMenu(self, pos):
+        """Show appropriate context menu for the position. Returns True if handled."""
+        self.geometry.ensure()
+
+        # Playhead context menu
+        if self._playhead_hit(pos) and hasattr(self.win, "timeline"):
+            # Convert frame number to seconds for backend API
+            self.win.timeline.ShowPlayheadMenu(self.current_frame / self.fps_float)
+            return True
+
+        # Transition context menu (prioritized over clips)
+        for rect, tran in (
+            self.geometry.selected_transitions + self.geometry.transition_rects
+        ):
+            if rect.contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTransitionMenu(tran.id)
+                return True
+
+        # Clip context menu
+        for rect, clip in (
+            self.geometry.selected_rects + self.geometry.clip_rects
+        ):
+            if rect.contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowClipMenu(clip.id)
+                return True
+
+        # Track context menu
+        for track_rect, track, name_rect in self.geometry.track_rects:
+            if (track_rect.contains(pos) or name_rect.contains(pos)) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTrackMenu(track.id)
+                return True
+
+        return False
+
     # ---- Clip drag ----
     def _startClipDrag(self):
         """Begin a drag operation on one or many selected clips/transitions."""
@@ -652,16 +805,18 @@ class TimelineWidget(QWidget):
         # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
         for rect, item in (
-            self.geometry.selected_rects +
-            self.geometry.clip_rects +
             self.geometry.selected_transitions +
-            self.geometry.transition_rects
+            self.geometry.transition_rects +
+            self.geometry.selected_rects +
+            self.geometry.clip_rects
         ):
             if rect.contains(e.pos()):
                 clicked_item = item
                 break
         if clicked_item is None:
             return
+
+        self._fix_cursor(self.cursors["hand"])
 
         ctrl = bool(e.modifiers() & Qt.ControlModifier)
         already = (
@@ -715,7 +870,8 @@ class TimelineWidget(QWidget):
         delta_sec = (new_bbox_x - self.drag_bbox.x()) / self.pixels_per_second
 
         # Snap horizontally ±1.5 s (pure x-axis)
-        delta_sec = self._snap_delta(delta_sec)
+        if self.enable_snapping:
+            delta_sec = self._snap_delta(delta_sec)
 
         # -------- Vertical delta (track indexes) ----
         new_idx_under_cursor = int(
@@ -775,6 +931,9 @@ class TimelineWidget(QWidget):
         # Recompute geometry (snap may have shifted) and repaint
         TimelineWidget.changed(self, None)
         self.update()
+        self._release_cursor()
+        if self._last_event:
+            self._updateCursor(self._last_event.pos())
 
     def _compute_selected_bounding(self):
         """Return a QRectF encompassing all currently-selected clips and transitions."""
@@ -799,20 +958,174 @@ class TimelineWidget(QWidget):
 
     # ---- Resize track names ----
     def _startResize(self):
-        self._resize_start = self.track_name_width
+        if self._press_hit == "clip-edge" and self._resizing_item:
+            self._startItemResize()
+        else:
+            self._resize_start = self.track_name_width
 
     def _resizeMove(self):
-        new_width = max(40, self._last_event.pos().x())
-        if new_width != self.track_name_width:
-            self.track_name_width = new_width
-            TimelineWidget.changed(self, None)
+        if self._press_hit == "clip-edge" and self._resizing_item:
+            self._itemResizeMove()
+        else:
+            new_width = max(40, self._last_event.pos().x())
+            if new_width != self.track_name_width:
+                self.track_name_width = new_width
+                TimelineWidget.changed(self, None)
 
     def _finishResize(self):
-        pass
+        if self._press_hit == "clip-edge" and self._resizing_item:
+            self._finishItemResize()
+        else:
+            pass
+
+    # ---- Clip / Transition resize ----
+    def _startItemResize(self):
+        item = self._resizing_item
+        if not item:
+            return
+        self._fix_cursor(self.cursors["resize_x"])
+        rect = self.geometry.calc_item_rect(item)
+        self._resize_initial_rect = rect
+        self._resize_initial = {
+            "start": float(item.data.get("start", 0.0)),
+            "end": float(item.data.get("end", 0.0)),
+            "position": float(item.data.get("position", 0.0)),
+            "duration": float(item.data.get("duration", item.data.get("end", 0.0) - item.data.get("start", 0.0))),
+        }
+        if isinstance(item, Clip):
+            self._timing_original_start = self._resize_initial["start"]
+            sel_type = "clip"
+        else:
+            sel_type = "transition"
+        # Ensure item is selected
+        self.win.addSelection(item.id, sel_type, False)
+
+    def _itemResizeMove(self):
+        item = self._resizing_item
+        if not item:
+            return
+        e = self._last_event
+        pps = self.pixels_per_second
+        min_len = 1.0 / self.fps_float
+        rect_y = self._resize_initial_rect.y()
+        rect_h = self._resize_initial_rect.height()
+
+        if isinstance(item, Transition):
+            width = self._resize_initial["end"]
+            pos = self._resize_initial["position"]
+            if self._resize_edge == "left":
+                delta_sec = (e.pos().x() - self._resize_initial_rect.left()) / pps
+                if self.enable_snapping:
+                    delta_sec = self.snap.snap_edge(pos, delta_sec)
+                max_delta = width - min_len
+                if delta_sec > max_delta:
+                    delta_sec = max_delta
+                new_position = pos + delta_sec
+                new_end = width - delta_sec
+                if new_position < 0:
+                    adjust = -new_position
+                    new_position = 0
+                    new_end = (pos + width) - new_position
+                rect_left = self.track_name_width + new_position * pps
+            else:
+                delta_sec = (e.pos().x() - self._resize_initial_rect.right()) / pps
+                if self.enable_snapping:
+                    delta_sec = self.snap.snap_edge(pos + width, delta_sec)
+                min_delta = -(width - min_len)
+                if delta_sec < min_delta:
+                    delta_sec = min_delta
+                new_end = width + delta_sec
+                new_position = pos
+                rect_left = self._resize_initial_rect.left()
+            rect_width = new_end * pps
+            self._resize_new_start = 0.0
+            self._resize_new_end = new_end
+            self._resize_new_position = new_position
+            rect = QRectF(rect_left, rect_y, rect_width, rect_h)
+        else:
+            start = self._resize_initial["start"]
+            end = self._resize_initial["end"]
+            pos = self._resize_initial["position"]
+            duration = self._resize_initial["duration"]
+            if self._resize_edge == "left":
+                delta_sec = (e.pos().x() - self._resize_initial_rect.left()) / pps
+                if self.enable_snapping:
+                    delta_sec = self.snap.snap_edge(pos, delta_sec)
+                new_start = start + delta_sec
+                new_position = pos + delta_sec
+                new_end = end
+                max_start = end - min_len
+                if new_start < 0:
+                    new_start = 0.0
+                    new_position = pos - start
+                if new_start > max_start:
+                    new_start = max_start
+                    new_position = pos + (max_start - start)
+                if new_position < 0:
+                    diff = -new_position
+                    new_position = 0
+                    new_start += diff
+                rect_left = self.track_name_width + new_position * pps
+                rect_width = (new_end - new_start) * pps
+            else:
+                delta_sec = (e.pos().x() - self._resize_initial_rect.right()) / pps
+                if self.enable_snapping:
+                    delta_sec = self.snap.snap_edge(pos + (end - start), delta_sec)
+                new_end = end + delta_sec
+                new_start = start
+                new_position = pos
+                min_end = start + min_len
+                if new_end < min_end:
+                    new_end = min_end
+                if not self.enable_timing:
+                    max_end = start + duration
+                    if new_end > max_end:
+                        new_end = max_end
+                rect_left = self._resize_initial_rect.left()
+                rect_width = (new_end - new_start) * pps
+            self._resize_new_start = new_start
+            self._resize_new_end = new_end
+            self._resize_new_position = new_position
+            rect = QRectF(rect_left, rect_y, rect_width, rect_h)
+
+        self.geometry.update_item_rect(item, rect)
+        self.update()
+
+    def _finishItemResize(self):
+        item = self._resizing_item
+        if not item:
+            return
+        start = self._resize_new_start
+        end = self._resize_new_end
+        position = self._resize_new_position
+        if isinstance(item, Clip):
+            if self.enable_timing:
+                duration = end - start
+                item.data["start"] = self._timing_original_start
+                item.data["end"] = self._snap_time(self._timing_original_start + duration)
+                item.data["position"] = self._snap_time(position)
+                self.RetimeClip(item.id, item.data["end"], item.data["position"])
+            else:
+                item.data["start"] = self._snap_time(start)
+                item.data["end"] = self._snap_time(end)
+                item.data["position"] = self._snap_time(position)
+                self.update_clip_data(item.data, only_basic_props=True, ignore_reader=True)
+        else:
+            item.data["position"] = self._snap_time(position)
+            item.data["start"] = 0.0
+            item.data["end"] = self._snap_time(end)
+            self.update_transition_data(item.data, only_basic_props=True)
+
+        self._resizing_item = None
+        TimelineWidget.changed(self, None)
+        self._release_cursor()
+        if self._last_event:
+            self._updateCursor(self._last_event.pos())
 
     # ---- Playhead move ----
     def _startPlayhead(self):
         self.dragging_playhead = True
+        self._fix_cursor(self.cursors["hand"])
         self._move_playhead(self._last_event.pos().x())
 
     def _playheadMove(self):
@@ -821,6 +1134,9 @@ class TimelineWidget(QWidget):
 
     def _finishPlayhead(self):
         self.dragging_playhead = False
+        self._release_cursor()
+        if self._last_event:
+            self._updateCursor(self._last_event.pos())
 
     # ---- Box selection ----
     def _startBoxSelect(self):
@@ -845,10 +1161,10 @@ class TimelineWidget(QWidget):
 
         # Add any item whose rect intersects selection_rect
         for rect, item in (
-            self.geometry.clip_rects +
-            self.geometry.selected_rects +
+            self.geometry.selected_transitions +
             self.geometry.transition_rects +
-            self.geometry.selected_transitions
+            self.geometry.selected_rects +
+            self.geometry.clip_rects
         ):
             if rect.intersects(self.selection_rect):
                 sel_type = "transition" if isinstance(item, Transition) else "clip"
