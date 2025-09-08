@@ -32,7 +32,15 @@ class BasePainter:
 
 class BackgroundPainter(BasePainter):
     def paint(self, painter: QPainter, rect: QRectF):
-        painter.fillRect(rect, self.w.theme.background)
+        bg = self.w.theme.background
+        bg2 = getattr(self.w.theme, "background2", QColor())
+        if bg2.isValid() and bg2 != bg:
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0, bg)
+            grad.setColorAt(1, bg2)
+            painter.fillRect(rect, QBrush(grad))
+        else:
+            painter.fillRect(rect, bg)
 
 
 class ClipPainter(BasePainter):
@@ -133,8 +141,15 @@ class ClipPainter(BasePainter):
             p.end()
             painter.drawImage(img_rect.topLeft(), blurred)
 
-        if self.w.theme.clip.background.isValid():
-            painter.fillRect(rect, self.w.theme.clip.background)
+        bg = self.w.theme.clip.background
+        bg2 = self.w.theme.clip.background2
+        if bg2.isValid() and bg2 != bg:
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0, bg)
+            grad.setColorAt(1, bg2)
+            painter.fillRect(rect, QBrush(grad))
+        elif bg.isValid():
+            painter.fillRect(rect, bg)
 
         if pen.color().isValid() and pen.widthF() > 0:
             painter.setPen(pen)
@@ -207,6 +222,7 @@ class ClipPainter(BasePainter):
 class TransitionPainter(BasePainter):
     def update_theme(self):
         self.col = self.w.theme.transition.background
+        self.col2 = self.w.theme.transition.background2
         self.pen = QPen(QBrush(self.w.theme.transition.border_color), 1.5)
         self.pen.setCosmetic(True)
         self.img = self.w.theme.transition.background_image
@@ -215,7 +231,13 @@ class TransitionPainter(BasePainter):
 
     def paint(self, painter: QPainter):
         for rect, _ in self.w.geometry.transition_rects:
-            painter.fillRect(rect, self.col)
+            if self.col2.isValid() and self.col2 != self.col:
+                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                grad.setColorAt(0, self.col)
+                grad.setColorAt(1, self.col2)
+                painter.fillRect(rect, QBrush(grad))
+            else:
+                painter.fillRect(rect, self.col)
             if self.img:
                 w = int(rect.width())
                 h = int(rect.height())
@@ -225,7 +247,13 @@ class TransitionPainter(BasePainter):
             painter.drawRoundedRect(rect, self.w.theme.transition.border_radius, self.w.theme.transition.border_radius)
 
         for rect, _ in self.w.geometry.selected_transitions:
-            painter.fillRect(rect, self.col)
+            if self.col2.isValid() and self.col2 != self.col:
+                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                grad.setColorAt(0, self.col)
+                grad.setColorAt(1, self.col2)
+                painter.fillRect(rect, QBrush(grad))
+            else:
+                painter.fillRect(rect, self.col)
             if self.img:
                 w = int(rect.width())
                 h = int(rect.height())
@@ -442,7 +470,15 @@ class TrackPainter(BasePainter):
     def paint(self, painter: QPainter):
         for track_rect, track, name_rect in self.w.geometry.track_rects:
             # Fill track and name backgrounds
-            painter.fillRect(track_rect, self.w.theme.track.background)
+            bg = self.w.theme.track.background
+            bg2 = self.w.theme.track.background2
+            if bg2.isValid() and bg2 != bg:
+                grad = QLinearGradient(track_rect.topLeft(), track_rect.bottomLeft())
+                grad.setColorAt(0, bg)
+                grad.setColorAt(1, bg2)
+                painter.fillRect(track_rect, QBrush(grad))
+            else:
+                painter.fillRect(track_rect, bg)
             painter.setPen(Qt.NoPen)
             painter.setBrush(self.w.theme.track.name_background)
             if self.name_radius_tl or self.name_radius_bl:

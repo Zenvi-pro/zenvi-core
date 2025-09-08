@@ -50,6 +50,7 @@ class TimelineTheme:
     """Container for all timeline related themes."""
 
     background: QColor = field(default_factory=lambda: QColor("#000"))
+    background2: QColor = field(default_factory=QColor)
     playhead_color: QColor = field(default_factory=lambda: QColor("#FFF"))
     playhead_width: float = 0.0
     clip_selected: QColor = field(default_factory=lambda: QColor("#FFF"))
@@ -128,6 +129,41 @@ def _css_prop(
     return m2.group(1).strip()
 
 
+def _color_from_str(val: str) -> Optional[QColor]:
+    """Parse a CSS color value into a ``QColor``.
+
+    Supports hex colors and ``rgb/rgba`` declarations with either integer or
+    float components. Returns ``None`` if the string cannot be parsed.
+    """
+    val = val.strip()
+    if not val:
+        return None
+    if val.startswith("#"):
+        col = QColor(val)
+        return col if col.isValid() else None
+    m = re.match(r"rgba?\(([^)]+)\)", val)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        if len(parts) >= 3:
+            try:
+                r = int(float(parts[0]))
+                g = int(float(parts[1]))
+                b = int(float(parts[2]))
+                a = 255
+                if len(parts) >= 4:
+                    a_part = parts[3]
+                    if a_part.endswith("%"):
+                        a = int(float(a_part[:-1]) * 2.55)
+                    else:
+                        fa = float(a_part)
+                        a = int(fa * 255) if fa <= 1 else int(fa)
+                return QColor(r, g, b, a)
+            except ValueError:
+                return None
+    col = QColor(val)
+    return col if col.isValid() else None
+
+
 def _parse_color(
     css: str,
     selector: str,
@@ -161,18 +197,22 @@ def _parse_color(
         return None
     m = re.search(r"#([0-9a-fA-F]{3,8})", val)
     if m:
-        return QColor("#" + m.group(1))
+        col = _color_from_str("#" + m.group(1))
+        if col:
+            return col
     m = re.search(r"rgba?\([^\)]+\)", val)
     if m:
-        return QColor(m.group(0))
+        col = _color_from_str(m.group(0))
+        if col:
+            return col
     # Handle shorthand declarations like "1px solid red !important" by
     # scanning tokens from right to left and returning the first valid color.
     parts = re.split(r"\s+", val.strip())
     for token in reversed(parts):
         if token.lower() == "!important":
             continue
-        col = QColor(token)
-        if col.isValid():
+        col = _color_from_str(token)
+        if col and col.isValid():
             return col
     if log_miss:
         log.info(
@@ -188,14 +228,20 @@ def _parse_color(
 def _parse_gradient(
     css: str, selector: str, prop: str, source: str, *, log_miss: bool = True
 ):
-    """Return up to two colors from a CSS gradient."""
+    """Return up to two colors from a CSS gradient.
+
+    The returned colors are ordered for a top-to-bottom gradient. If the CSS
+    gradient specifies the opposite direction (bottom to top), the order of the
+    colors is swapped so callers can simply paint from top to bottom.
+    """
     val = _css_prop(css, selector, prop, source)
     if not val:
         if log_miss:
             log.info("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
         return None, None
     cols = re.findall(r"#(?:[0-9a-fA-F]{3,8})|rgba?\([^\)]+\)", val)
-    qcols = [QColor(c) for c in cols if QColor(c).isValid()]
+    qcols = [_color_from_str(c) for c in cols]
+    qcols = [c for c in qcols if c and c.isValid()]
     if not qcols:
         if log_miss:
             log.info(
@@ -206,8 +252,29 @@ def _parse_gradient(
                 val,
             )
         return None, None
+
     first = qcols[0]
     second = qcols[1] if len(qcols) > 1 else None
+
+    # Detect bottom-to-top gradients and reverse the color order so callers can
+    # always assume the first color is at the top.
+    val_lower = val.lower()
+    idx_bottom = val_lower.find("bottom")
+    idx_top = val_lower.find("top")
+    reverse = False
+    if idx_bottom != -1 and idx_top != -1:
+        reverse = idx_bottom < idx_top
+    else:
+        m = re.search(r"linear-gradient\((?:to\s+)?(top|bottom)", val_lower)
+        if m:
+            reverse = m.group(1) == "bottom"
+        else:
+            m = re.search(r"-webkit-linear-gradient\((top|bottom)", val_lower)
+            if m:
+                reverse = m.group(1) == "bottom"
+    if reverse and second is not None:
+        first, second = second, first
+
     return first, second
 
 
@@ -448,14 +515,33 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         return theme
 
     # Backgrounds
-    col = _theme_get_color(qt_theme, "body", ("background", "background-color"))
-    if col:
-        theme.background = col
+    css_sheet = getattr(qt_theme, "style_sheet", "")
+    col1, col2 = _parse_gradient(css_sheet, "body", "background", "theme", log_miss=False)
+    if col1:
+        theme.background = col1
+    if col2:
+        theme.background2 = col2
+    elif col1:
+        theme.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _theme_get_color(qt_theme, "body", ("background", "background-color"))
+        if col:
+            theme.background = col
+            theme.background2 = QColor()
 
     # Clip settings
-    col = _theme_get_color(qt_theme, ".clip", ("background", "background-color"))
-    if col:
-        theme.clip.background = col
+    col1, col2 = _parse_gradient(css_sheet, ".clip", "background", "theme", log_miss=False)
+    if col1:
+        theme.clip.background = col1
+    if col2:
+        theme.clip.background2 = col2
+    elif col1:
+        theme.clip.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _theme_get_color(qt_theme, ".clip", ("background", "background-color"))
+        if col:
+            theme.clip.background = col
+            theme.clip.background2 = QColor()
     col = _theme_get_color(qt_theme, ".clip", ("border-top", "border"))
     if col:
         theme.clip.border_color = col
@@ -474,9 +560,9 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     val = _theme_get_int(qt_theme, ".clip", "height")
     if val is not None:
         theme.clip.height = val
-    val = _css_prop(getattr(qt_theme, "style_sheet", ""), ".clip", "box-shadow", "theme", log_selector=False, log_property=False)
+    val = _css_prop(css_sheet, ".clip", "box-shadow", "theme", log_selector=False, log_property=False)
     if val:
-        col, blur = _parse_box_shadow(qt_theme.style_sheet, ".clip", "theme", log_miss=False)
+        col, blur = _parse_box_shadow(css_sheet, ".clip", "theme", log_miss=False)
         if col:
             theme.clip.shadow_color = col
         if blur is not None:
@@ -492,9 +578,9 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if col:
         theme.clip_selected = col
     op = None
-    if hasattr(qt_theme, "style_sheet"):
+    if css_sheet:
         op = _parse_float(
-            qt_theme.style_sheet,
+            css_sheet,
             ".ui-selectable-helper",
             "opacity",
             "theme",
@@ -516,9 +602,18 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         theme.selection_border_width = float(val)
 
     # Transition settings
-    col = _theme_get_color(qt_theme, ".transition", ("background", "background-color"))
-    if col:
-        theme.transition.background = col
+    col1, col2 = _parse_gradient(css_sheet, ".transition", "background", "theme", log_miss=False)
+    if col1:
+        theme.transition.background = col1
+    if col2:
+        theme.transition.background2 = col2
+    elif col1:
+        theme.transition.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _theme_get_color(qt_theme, ".transition", ("background", "background-color"))
+        if col:
+            theme.transition.background = col
+            theme.transition.background2 = QColor()
     col = _theme_get_color(qt_theme, ".transition", ("border-top", "border"))
     if col:
         theme.transition.border_color = col
@@ -539,9 +634,18 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         theme.transition.height = val
 
     # Track settings
-    col = _theme_get_color(qt_theme, ".track", ("background", "background-color"))
-    if col:
-        theme.track.background = col
+    col1, col2 = _parse_gradient(css_sheet, ".track", "background", "theme", log_miss=False)
+    if col1:
+        theme.track.background = col1
+    if col2:
+        theme.track.background2 = col2
+    elif col1:
+        theme.track.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _theme_get_color(qt_theme, ".track", ("background", "background-color"))
+        if col:
+            theme.track.background = col
+            theme.track.background2 = QColor()
     col = _theme_get_color(qt_theme, ".track", ("border-top", "border"))
     if col:
         theme.track.border_color = col
@@ -608,12 +712,25 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         theme.ruler.background = col1
     if col2:
         theme.ruler.background2 = col2
-    if not col1:
-        col = _theme_get_color(qt_theme, "#scrolling_ruler", ("background", "background-color"), log_miss=False)
+    elif col1:
+        theme.ruler.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _theme_get_color(
+            qt_theme,
+            "#scrolling_ruler",
+            ("background", "background-color"),
+            log_miss=False,
+        )
         if not col:
-            col = _theme_get_color(qt_theme, "#ruler", ("background", "background-color"), log_miss=False)
+            col = _theme_get_color(
+                qt_theme,
+                "#ruler",
+                ("background", "background-color"),
+                log_miss=False,
+            )
         if col:
             theme.ruler.background = col
+            theme.ruler.background2 = QColor()
         else:
             log.info("Theme MISS [theme] selector '#scrolling_ruler' property 'background'")
     col1, col2 = _parse_gradient(
@@ -627,10 +744,13 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         theme.ruler_name_background = col1
     if col2:
         theme.ruler_name_background2 = col2
-    else:
+    elif col1:
+        theme.ruler_name_background2 = QColor()
+    if col1 is None and col2 is None:
         col = _theme_get_color(qt_theme, "#ruler_label", "background")
         if col:
             theme.ruler_name_background = col
+            theme.ruler_name_background2 = QColor()
     col = _theme_get_color(qt_theme, ".tick_mark", "background-color")
     if col:
         theme.ruler.border_color = col
@@ -707,14 +827,44 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
 
     log_miss = True
 
-    col = _parse_color(css, "body", ("background", "background-color"), source, log_miss=log_miss)
-    if col:
-        theme.background = col
+    col1, col2 = _parse_gradient(css, "body", "background", source, log_miss=False)
+    if col1:
+        theme.background = col1
+    if col2:
+        theme.background2 = col2
+    elif col1:
+        theme.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _parse_color(
+            css,
+            "body",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        )
+        if col:
+            theme.background = col
+            theme.background2 = QColor()
 
     # Clip
-    col = _parse_color(css, ".clip", ("background", "background-color"), source, log_miss=log_miss)
-    if col:
-        theme.clip.background = col
+    col1, col2 = _parse_gradient(css, ".clip", "background", source, log_miss=False)
+    if col1:
+        theme.clip.background = col1
+    if col2:
+        theme.clip.background2 = col2
+    elif col1:
+        theme.clip.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _parse_color(
+            css,
+            ".clip",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        )
+        if col:
+            theme.clip.background = col
+            theme.clip.background2 = QColor()
     col = _parse_color(css, ".clip", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.clip.border_color = col
@@ -765,9 +915,24 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
         theme.selection_border_width = float(val)
 
     # Transition
-    col = _parse_color(css, ".transition", ("background", "background-color"), source, log_miss=log_miss)
-    if col:
-        theme.transition.background = col
+    col1, col2 = _parse_gradient(css, ".transition", "background", source, log_miss=False)
+    if col1:
+        theme.transition.background = col1
+    if col2:
+        theme.transition.background2 = col2
+    elif col1:
+        theme.transition.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _parse_color(
+            css,
+            ".transition",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        )
+        if col:
+            theme.transition.background = col
+            theme.transition.background2 = QColor()
     col = _parse_color(css, ".transition", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.transition.border_color = col
@@ -788,9 +953,24 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
         theme.transition.height = int(val)
 
     # Track
-    col = _parse_color(css, ".track", ("background", "background-color"), source, log_miss=log_miss)
-    if col:
-        theme.track.background = col
+    col1, col2 = _parse_gradient(css, ".track", "background", source, log_miss=False)
+    if col1:
+        theme.track.background = col1
+    if col2:
+        theme.track.background2 = col2
+    elif col1:
+        theme.track.background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _parse_color(
+            css,
+            ".track",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        )
+        if col:
+            theme.track.background = col
+            theme.track.background2 = QColor()
     col = _parse_color(css, ".track", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.track.border_color = col
@@ -851,7 +1031,9 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
         theme.ruler.background = col1
     if col2:
         theme.ruler.background2 = col2
-    if not col1:
+    elif col1:
+        theme.ruler.background2 = QColor()
+    if col1 is None and col2 is None:
         col = _parse_color(
             css,
             "#scrolling_ruler",
@@ -869,6 +1051,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
             )
         if col:
             theme.ruler.background = col
+            theme.ruler.background2 = QColor()
         else:
             log.info(
                 "Theme MISS [%s] selector '#scrolling_ruler' property 'background'",
@@ -879,6 +1062,19 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
         theme.ruler_name_background = col1
     if col2:
         theme.ruler_name_background2 = col2
+    elif col1:
+        theme.ruler_name_background2 = QColor()
+    if col1 is None and col2 is None:
+        col = _parse_color(
+            css,
+            "#ruler_label",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        )
+        if col:
+            theme.ruler_name_background = col
+            theme.ruler_name_background2 = QColor()
     col = _parse_color(css, ".tick_mark", "background-color", source, log_miss=log_miss)
     if col:
         theme.ruler.border_color = col
