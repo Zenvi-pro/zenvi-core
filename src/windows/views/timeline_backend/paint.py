@@ -13,6 +13,8 @@ from PyQt5.QtGui import (
     QPainterPath,
     QLinearGradient,
 )
+import os
+import re
 from PyQt5.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 from classes.app import get_app
 from classes.time_parts import secondsToTime
@@ -35,7 +37,7 @@ class BackgroundPainter(BasePainter):
 
 class ClipPainter(BasePainter):
     def update_theme(self):
-        bw = self.w.theme.clip.border_width or 1.0
+        bw = self.w.theme.clip.border_width
         self.clip_pen = QPen(QBrush(self.w.theme.clip.border_color), bw)
         self.clip_pen.setCosmetic(True)
         self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), bw)
@@ -47,6 +49,7 @@ class ClipPainter(BasePainter):
                 size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
         self.thumb_cache = {}
+        self.effect_cache = {}
         self.menu_margin = self.w.theme.menu_margin
 
     def paint(self, painter: QPainter):
@@ -70,6 +73,33 @@ class ClipPainter(BasePainter):
         except Exception:
             pix = QPixmap()
         self.thumb_cache[clip.id] = pix
+        return pix
+
+    def _effect_icon(self, eff):
+        name = (
+            eff.get("name")
+            or eff.get("effect")
+            or eff.get("type")
+            or ""
+        )
+        key = re.sub(r"[^a-z0-9]", "", name.lower())
+        if not key:
+            return QPixmap()
+        if key in self.effect_cache:
+            return self.effect_cache[key]
+        path = os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "..",
+                "..",
+                "effects",
+                "icons",
+                f"{key}.png",
+            )
+        )
+        pix = QPixmap(path) if os.path.exists(path) else QPixmap()
+        self.effect_cache[key] = pix
         return pix
 
     def _draw_clip(self, painter, rect, clip, pen):
@@ -103,46 +133,75 @@ class ClipPainter(BasePainter):
             p.end()
             painter.drawImage(img_rect.topLeft(), blurred)
 
-        painter.fillRect(rect, self.w.theme.clip.background)
-        painter.setPen(pen)
-        painter.drawRoundedRect(
-            rect, self.w.theme.clip.border_radius, self.w.theme.clip.border_radius
-        )
+        if self.w.theme.clip.background.isValid():
+            painter.fillRect(rect, self.w.theme.clip.background)
+
+        if pen.color().isValid() and pen.widthF() > 0:
+            painter.setPen(pen)
+            painter.drawRoundedRect(
+                rect, self.w.theme.clip.border_radius, self.w.theme.clip.border_radius
+            )
 
         bw = pen.widthF()
+        inner = rect.adjusted(bw, bw, -bw, -bw)
+        painter.save()
+        painter.setClipRect(inner)
+
+        x = inner.x() + self.menu_margin
+        right = inner.right() - self.menu_margin
+
         thumb = self._thumb(clip)
         thumb_w = self.w.theme.clip.thumb_width
         thumb_h = self.w.theme.clip.thumb_height
-        thumb_x = rect.x() + bw + self.menu_margin
         scaled = None
         if thumb and not thumb.isNull() and thumb_w and thumb_h:
             scaled = thumb.scaled(
                 thumb_w, thumb_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-            painter.drawPixmap(
-                QPointF(thumb_x, rect.y() + (rect.height() - scaled.height()) / 2),
-                scaled,
-            )
+            if x + scaled.width() <= right:
+                painter.drawPixmap(
+                    QPointF(x, inner.y() + (inner.height() - scaled.height()) / 2),
+                    scaled,
+                )
+                x += scaled.width() + self.menu_margin
 
         if self.menu_pix:
             painter.drawPixmap(
-                QPointF(thumb_x, rect.y() + bw + self.menu_margin),
+                QPointF(inner.x() + self.menu_margin, inner.y() + self.menu_margin),
                 self.menu_pix,
             )
 
-        text_x = thumb_x + (scaled.width() if scaled else 0) + self.menu_margin
-        text_rect = QRectF(
-            text_x,
-            rect.y(),
-            rect.right() - text_x - self.menu_margin - bw,
-            rect.height(),
-        )
-        painter.setPen(self.w.theme.clip.font_color)
-        painter.drawText(
-            text_rect.adjusted(2, 2, -2, -2),
-            self.w._clip_text_flags,
-            clip.data.get("title", ""),
-        )
+        icon_size = min(self.w.theme.clip.font_size or 12, int(inner.height()))
+        for eff in clip.data.get("effects", []):
+            icon = self._effect_icon(eff)
+            if icon.isNull():
+                continue
+            pix = icon
+            if icon_size:
+                pix = icon.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if x + pix.width() > right:
+                break
+            painter.drawPixmap(
+                QPointF(x, inner.y() + (inner.height() - pix.height()) / 2),
+                pix,
+            )
+            x += pix.width() + self.menu_margin
+
+        text_width = right - x
+        if text_width > 4:
+            painter.setPen(self.w.theme.clip.font_color)
+            text_rect = QRectF(x, inner.y(), text_width, inner.height())
+            metrics = QFontMetrics(painter.font())
+            title = metrics.elidedText(
+                clip.data.get("title", ""), Qt.ElideRight, int(text_width - 4)
+            )
+            painter.drawText(
+                text_rect.adjusted(2, 2, -2, -2),
+                self.w._clip_text_flags,
+                title,
+            )
+
+        painter.restore()
 
 
 class TransitionPainter(BasePainter):
@@ -209,13 +268,21 @@ class PlayheadPainter(BasePainter):
             self.w.current_frame / self.w.fps_float) * self.w.pixels_per_second
         painter.setRenderHint(QPainter.Antialiasing, False)
         ix = int(round(x))
-        start_y = self.icon_offset_y
+
+        top = self.icon_offset_y
         if self.icon_pix:
-            start_y += self.icon_pix.height() / 2
+            top += self.icon_pix.height() / 2
+
+        self.w.geometry.ensure()
+        bottom = self.w.height()
+        if self.w.geometry.track_rects:
+            bottom = self.w.geometry.track_rects[-1][0].bottom()
+
         painter.fillRect(
-            QRectF(ix - self.line_width / 2, start_y, self.line_width, self.w.height() - start_y),
+            QRectF(ix - self.line_width / 2, top, self.line_width, bottom - top),
             self.line_brush,
         )
+
         if self.icon_pix:
             painter.drawPixmap(
                 QPointF(ix + self.icon_offset_x, self.icon_offset_y),
@@ -226,6 +293,7 @@ class PlayheadPainter(BasePainter):
 class RulerPainter(BasePainter):
     def update_theme(self):
         self.bg = self.w.theme.ruler.background
+        self.bg2 = self.w.theme.ruler.background2
         self.name_bg = (
             self.w.theme.ruler_name_background
             if self.w.theme.ruler_name_background.isValid()
@@ -277,15 +345,19 @@ class RulerPainter(BasePainter):
         width = max(1, self.w.width() - self.w.track_name_width)
 
         rect = QRectF(self.w.track_name_width, 0, width, self.w.ruler_height)
-        painter.fillRect(rect, self.bg)
+        if self.bg2.isValid() and self.bg != self.bg2:
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0, self.bg)
+            grad.setColorAt(1, self.bg2)
+            painter.fillRect(rect, QBrush(grad))
+        elif self.bg.isValid():
+            painter.fillRect(rect, self.bg)
         left_rect = QRectF(0, 0, self.w.track_name_width, self.w.ruler_height)
         if self.name_bg2 != self.name_bg:
             grad = QLinearGradient(left_rect.topLeft(), left_rect.bottomLeft())
             grad.setColorAt(0, self.name_bg)
             grad.setColorAt(1, self.name_bg2)
             painter.fillRect(left_rect, QBrush(grad))
-        else:
-            painter.fillRect(left_rect, self.name_bg)
         painter.setPen(self.text_pen)
         painter.setFont(self.play_font)
         tt = secondsToTime(
@@ -353,6 +425,12 @@ class TrackPainter(BasePainter):
         self.border_pen.setCosmetic(True)
         self.name_border_color = self.w.theme.track.name_border_color
         self.name_border_width = self.w.theme.track.name_border_width
+        self.name_border_top_color = self.w.theme.track.name_border_top_color
+        self.name_border_top_width = self.w.theme.track.name_border_top_width
+        self.name_border_bottom_color = self.w.theme.track.name_border_bottom_color
+        self.name_border_bottom_width = self.w.theme.track.name_border_bottom_width
+        self.name_radius_tl = self.w.theme.track.name_radius_tl
+        self.name_radius_bl = self.w.theme.track.name_radius_bl
         self.menu_pix = None
         if self.w.theme.menu_icon:
             size = self.w.theme.menu_size or self.w.theme.menu_icon.width()
@@ -367,11 +445,26 @@ class TrackPainter(BasePainter):
             painter.fillRect(track_rect, self.w.theme.track.background)
             painter.setPen(Qt.NoPen)
             painter.setBrush(self.w.theme.track.name_background)
-            painter.drawRoundedRect(
-                name_rect,
-                self.w.theme.track.border_radius,
-                self.w.theme.track.border_radius,
-            )
+            if self.name_radius_tl or self.name_radius_bl:
+                r = name_rect
+                path = QPainterPath()
+                path.moveTo(r.x() + self.name_radius_tl, r.y())
+                path.lineTo(r.right(), r.y())
+                path.lineTo(r.right(), r.bottom())
+                path.lineTo(r.x() + self.name_radius_bl, r.bottom())
+                if self.name_radius_bl:
+                    path.quadTo(r.x(), r.bottom(), r.x(), r.bottom() - self.name_radius_bl)
+                else:
+                    path.lineTo(r.x(), r.bottom())
+                if self.name_radius_tl:
+                    path.lineTo(r.x(), r.y() + self.name_radius_tl)
+                    path.quadTo(r.x(), r.y(), r.x() + self.name_radius_tl, r.y())
+                else:
+                    path.lineTo(r.x(), r.y())
+                path.closeSubpath()
+                painter.drawPath(path)
+            else:
+                painter.drawRect(name_rect)
             painter.setBrush(Qt.NoBrush)
 
             # Draw track border lines (top, bottom, right)
@@ -380,7 +473,23 @@ class TrackPainter(BasePainter):
             painter.drawLine(track_rect.bottomLeft(), track_rect.bottomRight())
             painter.drawLine(track_rect.topRight(), track_rect.bottomRight())
 
-            # Draw left border on track name if configured
+            # Draw borders on track name
+            if self.name_border_top_width:
+                top_rect = QRectF(
+                    name_rect.x(),
+                    name_rect.y(),
+                    name_rect.width(),
+                    self.name_border_top_width,
+                )
+                painter.fillRect(top_rect, self.name_border_top_color)
+            if self.name_border_bottom_width:
+                bottom_rect = QRectF(
+                    name_rect.x(),
+                    name_rect.bottom() - self.name_border_bottom_width,
+                    name_rect.width(),
+                    self.name_border_bottom_width,
+                )
+                painter.fillRect(bottom_rect, self.name_border_bottom_color)
             if self.name_border_width:
                 left_rect = QRectF(
                     name_rect.x(),
@@ -416,10 +525,19 @@ class TrackPainter(BasePainter):
 
 class SelectionPainter(BasePainter):
     def update_theme(self):
-        self.pen = QPen(self.w.theme.selection, 1, Qt.DashLine)
+        bw = self.w.theme.selection_border_width
+        col = (
+            self.w.theme.selection_border
+            if self.w.theme.selection_border.isValid()
+            else self.w.theme.selection
+        )
+        self.pen = QPen(col, bw, Qt.SolidLine)
+        self.pen.setCosmetic(True)
 
     def paint(self, painter: QPainter):
         if not self.w.selection_rect.isNull():
-            painter.setPen(self.pen)
-            painter.fillRect(self.w.selection_rect, self.w.theme.selection)
-            painter.drawRect(self.w.selection_rect)
+            if self.w.theme.selection.isValid():
+                painter.fillRect(self.w.selection_rect, self.w.theme.selection)
+            if self.pen.color().isValid() and self.pen.widthF() > 0:
+                painter.setPen(self.pen)
+                painter.drawRect(self.w.selection_rect)

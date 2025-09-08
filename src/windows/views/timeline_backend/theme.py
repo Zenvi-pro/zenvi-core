@@ -3,9 +3,10 @@
 from dataclasses import dataclass, field
 import os
 import re
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from PyQt5.QtGui import QColor, QPixmap
+from classes.logger import log
 
 
 @dataclass
@@ -13,6 +14,7 @@ class BasicTheme:
     """Common style options for timeline elements."""
 
     background: QColor = field(default_factory=QColor)
+    background2: QColor = field(default_factory=QColor)
     border_color: QColor = field(default_factory=QColor)
     border_radius: int = 0
     border_width: float = 0
@@ -35,17 +37,25 @@ class TrackTheme(BasicTheme):
     gap: int = 0
     name_border_color: QColor = field(default_factory=QColor)
     name_border_width: int = 0
+    name_border_top_color: QColor = field(default_factory=QColor)
+    name_border_top_width: int = 0
+    name_border_bottom_color: QColor = field(default_factory=QColor)
+    name_border_bottom_width: int = 0
+    name_radius_tl: int = 0
+    name_radius_bl: int = 0
 
 
 @dataclass
 class TimelineTheme:
     """Container for all timeline related themes."""
 
-    background: QColor = field(default_factory=lambda: QColor("#191919"))
-    playhead_color: QColor = field(default_factory=lambda: QColor("#ff0024"))
-    playhead_width: float = 2.0
-    clip_selected: QColor = field(default_factory=lambda: QColor("red"))
-    selection: QColor = field(default_factory=lambda: QColor(0, 120, 215, 80))
+    background: QColor = field(default_factory=lambda: QColor("#000"))
+    playhead_color: QColor = field(default_factory=lambda: QColor("#FFF"))
+    playhead_width: float = 0.0
+    clip_selected: QColor = field(default_factory=lambda: QColor("#FFF"))
+    selection: QColor = field(default_factory=lambda: QColor(255, 255, 255, 80))
+    selection_border: QColor = field(default_factory=QColor)
+    selection_border_width: float = 0.0
 
     clip: BasicTheme = field(default_factory=BasicTheme)
     transition: BasicTheme = field(default_factory=BasicTheme)
@@ -67,88 +77,7 @@ class TimelineTheme:
     ruler_label_top: int = 0
 
 
-def default_theme() -> TimelineTheme:
-    """Return a TimelineTheme with sensible defaults."""
-
-    t = TimelineTheme()
-    t.clip.background = QColor("#192332")
-    t.clip.border_color = QColor("#53a0ed")
-    t.clip.border_width = 1
-    t.clip.font_color = QColor("#FFFFFF")
-    t.clip.font_size = 9
-    t.clip.border_radius = 8
-    t.clip.height = 64
-    t.clip.shadow_color = QColor(0, 0, 0, 255)
-    t.clip.shadow_blur = 10
-    t.clip.thumb_width = 66
-    t.clip.thumb_height = 38
-
-    t.transition.background = QColor("#0192c1")
-    t.transition.border_color = QColor("#0192c1")
-    t.transition.font_color = QColor("#FFFFFF")
-    t.transition.font_size = 9
-    t.transition.border_radius = 8
-    t.transition.height = 64
-    t.transition.background_image = QPixmap(
-        os.path.normpath(os.path.join(
-            os.path.dirname(__file__),
-            "../../..",
-            "timeline/media/images/transition.svg",
-        ))
-    )
-
-    t.track.background = QColor("#283241")
-    t.track.border_color = QColor("#4b92ad")
-    t.track.name_background = QColor("#192332")
-    t.track.font_color = QColor("#FFFFFF")
-    t.track.font_size = 9
-    t.track.border_radius = 8
-    t.track.height = 62
-    t.track.name_width = 140
-    t.track.gap = 8
-    t.track.name_border_color = t.track.border_color
-    t.track.name_border_width = 1
-
-    t.ruler.background = QColor("#141923")
-    t.ruler.border_color = QColor("#FABE0A")
-    t.ruler.font_color = QColor("#c8c8c8")
-    t.ruler.font_size = 10
-    t.ruler.height = 39
-    t.ruler_name_background = t.track.name_background
-    t.ruler_name_background2 = t.track.name_background
-    t.ruler_time_font_size = 13
-
-    t.menu_icon = QPixmap(
-        os.path.normpath(os.path.join(
-            os.path.dirname(__file__),
-            "../../..",
-            "timeline/media/images/menu.svg",
-        ))
-    )
-    t.menu_size = 12
-    t.menu_margin = 4
-
-    t.playhead_icon = QPixmap(
-        os.path.normpath(
-            os.path.join(
-                os.path.dirname(__file__),
-                "../../..",
-                "timeline/media/images/playhead.svg",
-            )
-        )
-    )
-    t.playhead_icon_width = 12
-    t.playhead_icon_height = 188
-    t.playhead_icon_offset_x = -6
-    t.playhead_icon_offset_y = 20
-    t.ruler_time_pad_left = 17
-    t.ruler_time_pad_top = 12
-    t.ruler_label_top = 6
-
-    return t
-
-
-DEFAULT_THEME = default_theme()
+DEFAULT_THEME = TimelineTheme()
 
 # Load the main timeline CSS used by the web backends. Many timeline style
 # values are defined here and are reused by the QWidget backend.
@@ -164,20 +93,71 @@ except OSError:
     MAIN_CSS = ""
 
 
-def _css_prop(css: str, selector: str, prop: str) -> Optional[str]:
-    """Return property *prop* from the CSS *selector* block."""
+def _css_prop(
+    css: str,
+    selector: str,
+    prop: str,
+    source: str,
+    *,
+    log_selector: bool = True,
+    log_property: bool = True,
+) -> Optional[str]:
+    """Return property *prop* from the CSS *selector* block.
+
+    Logging can be disabled for selector or property misses using the optional
+    flags. This is useful when calling code plans to fall back to alternate
+    property names and does not want intermediate MISS messages.
+    """
     block_pat = rf"{re.escape(selector)}\s*\{{([^}}]*)\}}"
     m = re.search(block_pat, css, re.MULTILINE)
     if not m:
+        if log_selector:
+            log.info("Theme MISS [%s] selector '%s'", source, selector)
         return None
     block = m.group(1)
     m2 = re.search(rf"(?:^|;)\s*{re.escape(prop)}\s*:\s*([^;]+)", block)
-    return m2.group(1).strip() if m2 else None
+    if not m2:
+        if log_property:
+            log.info(
+                "Theme MISS [%s] selector '%s' property '%s'",
+                source,
+                selector,
+                prop,
+            )
+        return None
+    return m2.group(1).strip()
 
 
-def _parse_color(css: str, selector: str, prop: str) -> Optional[QColor]:
-    val = _css_prop(css, selector, prop)
-    if not val:
+def _parse_color(
+    css: str,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    source: str,
+    *,
+    log_miss: bool = True,
+    log_selector: bool = True,
+) -> Optional[QColor]:
+    props = (prop,) if isinstance(prop, str) else tuple(prop)
+    val = None
+    for i, p in enumerate(props):
+        val = _css_prop(
+            css,
+            selector,
+            p,
+            source,
+            log_selector=i == 0 and log_selector,
+            log_property=False,
+        )
+        if val is not None:
+            break
+    if val is None:
+        if log_miss:
+            log.info(
+                "Theme MISS [%s] selector '%s' property '%s'",
+                source,
+                selector,
+                props[0],
+            )
         return None
     m = re.search(r"#([0-9a-fA-F]{3,8})", val)
     if m:
@@ -185,45 +165,120 @@ def _parse_color(css: str, selector: str, prop: str) -> Optional[QColor]:
     m = re.search(r"rgba?\([^\)]+\)", val)
     if m:
         return QColor(m.group(0))
-    parts = val.split()
-    if parts and QColor(parts[-1]).isValid():
-        return QColor(parts[-1])
+    # Handle shorthand declarations like "1px solid red !important" by
+    # scanning tokens from right to left and returning the first valid color.
+    parts = re.split(r"\s+", val.strip())
+    for token in reversed(parts):
+        if token.lower() == "!important":
+            continue
+        col = QColor(token)
+        if col.isValid():
+            return col
+    if log_miss:
+        log.info(
+            "Theme MISS [%s] selector '%s' property '%s' invalid color '%s'",
+            source,
+            selector,
+            prop,
+            val,
+        )
     return None
 
 
-def _parse_gradient(css: str, selector: str, prop: str):
+def _parse_gradient(
+    css: str, selector: str, prop: str, source: str, *, log_miss: bool = True
+):
     """Return up to two colors from a CSS gradient."""
-    val = _css_prop(css, selector, prop)
+    val = _css_prop(css, selector, prop, source)
     if not val:
+        if log_miss:
+            log.info("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
         return None, None
     cols = re.findall(r"#(?:[0-9a-fA-F]{3,8})|rgba?\([^\)]+\)", val)
     qcols = [QColor(c) for c in cols if QColor(c).isValid()]
     if not qcols:
+        if log_miss:
+            log.info(
+                "Theme MISS [%s] selector '%s' property '%s' invalid gradient '%s'",
+                source,
+                selector,
+                prop,
+                val,
+            )
         return None, None
     first = qcols[0]
     second = qcols[1] if len(qcols) > 1 else None
     return first, second
 
 
-def _parse_float(css: str, selector: str, prop: str) -> Optional[float]:
-    val = _css_prop(css, selector, prop)
-    if val:
-        m = re.search(r"(-?[0-9.]+)", val)
-        if m:
-            try:
-                return float(m.group(1))
-            except ValueError:
-                pass
+def _parse_float(
+    css: str,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    source: str,
+    *,
+    log_miss: bool = True,
+    log_selector: bool = True,
+) -> Optional[float]:
+    props = (prop,) if isinstance(prop, str) else tuple(prop)
+    val = None
+    for i, p in enumerate(props):
+        val = _css_prop(
+            css,
+            selector,
+            p,
+            source,
+            log_selector=i == 0 and log_selector,
+            log_property=False,
+        )
+        if val is not None:
+            break
+    if val is None:
+        if log_miss:
+            log.info(
+                "Theme MISS [%s] selector '%s' property '%s'",
+                source,
+                selector,
+                props[0],
+            )
+        return None
+    m = re.search(r"(-?[0-9.]+)", val)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    if log_miss:
+        log.info(
+            "Theme MISS [%s] selector '%s' property '%s' invalid number '%s'",
+            source,
+            selector,
+            props[0],
+            val,
+        )
     return None
 
 
-def _parse_pixmap(css: str, selector: str, prop: str) -> Optional[QPixmap]:
-    val = _css_prop(css, selector, prop)
+def _parse_pixmap(
+    css: str,
+    selector: str,
+    prop: str,
+    source: str,
+    *,
+    log_miss: bool = True,
+) -> Optional[QPixmap]:
+    val = _css_prop(css, selector, prop, source)
     if not val:
+        if log_miss:
+            log.info("Theme MISS [%s] selector '%s' property '%s'", source, selector, prop)
         return None
     m = re.search(r"url\(([^)]+)\)", val)
     if m:
         path = m.group(1).strip('"\'')
+        if path.startswith(":"):
+            img = QPixmap(path)
+            if not img.isNull():
+                return img
         if not os.path.isabs(path):
             base = os.path.dirname(_CSS_PATH)
             found = None
@@ -236,14 +291,41 @@ def _parse_pixmap(css: str, selector: str, prop: str) -> Optional[QPixmap]:
                     break
             path = found or os.path.normpath(os.path.join(base, path))
         if os.path.exists(path):
-            return QPixmap(path)
+            img = QPixmap(path)
+            if not img.isNull():
+                if selector == ".playhead-top" and prop == "background-image":
+                    log.info(
+                        "Theme [%s] %s %s loaded '%s'",
+                        source,
+                        selector,
+                        prop,
+                        path,
+                    )
+                return img
+    if log_miss:
+        log.info(
+            "Theme MISS [%s] selector '%s' property '%s' invalid pixmap '%s'",
+            source,
+            selector,
+            prop,
+            val,
+        )
     return None
 
 
-def _parse_box_shadow(css: str, selector: str):
+def _parse_box_shadow(
+    css: str, selector: str, source: str, *, log_miss: bool = True
+):
     """Return (color, blur) from a box-shadow property."""
-    val = _css_prop(css, selector, "box-shadow")
+    val = _css_prop(css, selector, "box-shadow", source)
     if not val:
+        if log_miss:
+            log.info(
+                "Theme MISS [%s] selector '%s' property '%s'",
+                source,
+                selector,
+                "box-shadow",
+            )
         return None, None
     col = None
     m = re.search(r"#([0-9a-fA-F]{3,8})", val)
@@ -255,18 +337,32 @@ def _parse_box_shadow(css: str, selector: str):
             col = QColor(m.group(0))
     nums = re.findall(r"(-?[0-9.]+)", val)
     blur = int(float(nums[2])) if len(nums) >= 3 else None
+    if col is None and blur is None and log_miss:
+        log.info(
+            "Theme MISS [%s] selector '%s' property '%s' invalid value '%s'",
+            source,
+            selector,
+            "box-shadow",
+            val,
+        )
     return col, blur
 
 
-def _theme_pixmap(qt_theme, selector: str, prop: str) -> Optional[QPixmap]:
+def _theme_pixmap(
+    qt_theme, selector: str, prop: str, *, log_miss: bool = True
+) -> Optional[QPixmap]:
     if not qt_theme or not hasattr(qt_theme, "style_sheet"):
         return None
-    val = _css_prop(qt_theme.style_sheet, selector, prop)
+    val = _css_prop(qt_theme.style_sheet, selector, prop, "theme", log_selector=log_miss, log_property=log_miss)
     if not val:
         return None
     m = re.search(r"url\(([^)]+)\)", val)
     if m:
         path = m.group(1).strip('"\'')
+        if path.startswith(":"):
+            img = QPixmap(path)
+            if not img.isNull():
+                return img
         module_path = os.path.dirname(__import__(qt_theme.__module__).__file__)
         if not os.path.isabs(path):
             candidate = os.path.normpath(os.path.join(module_path, path))
@@ -274,7 +370,74 @@ def _theme_pixmap(qt_theme, selector: str, prop: str) -> Optional[QPixmap]:
                 candidate = os.path.normpath(os.path.join(os.path.dirname(module_path), path))
             path = candidate
         if os.path.exists(path):
-            return QPixmap(path)
+            img = QPixmap(path)
+            if not img.isNull():
+                if selector == ".playhead-top" and prop == "background-image":
+                    log.info(
+                        "Theme [theme] %s %s loaded '%s'",
+                        selector,
+                        prop,
+                        path,
+                    )
+                return img
+    if log_miss:
+        log.info("Theme MISS [theme] %s %s invalid pixmap '%s'", selector, prop, val)
+    return None
+
+
+def _theme_get_color(
+    qt_theme,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    *,
+    log_miss: bool = True,
+):
+    if not qt_theme:
+        return None
+    props = (prop,) if isinstance(prop, str) else tuple(prop)
+    if hasattr(qt_theme, "get_color"):
+        for p in props:
+            col = qt_theme.get_color(selector, p)
+            if col:
+                return col
+    if hasattr(qt_theme, "style_sheet"):
+        return _parse_color(
+            qt_theme.style_sheet,
+            selector,
+            props,
+            "theme",
+            log_miss=log_miss,
+            log_selector=log_miss,
+        )
+    return None
+
+
+def _theme_get_int(
+    qt_theme,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    *,
+    log_miss: bool = True,
+):
+    if not qt_theme:
+        return None
+    props = (prop,) if isinstance(prop, str) else tuple(prop)
+    if hasattr(qt_theme, "get_int"):
+        for p in props:
+            val = qt_theme.get_int(selector, p)
+            if val is not None:
+                return val
+    if hasattr(qt_theme, "style_sheet"):
+        val = _parse_float(
+            qt_theme.style_sheet,
+            selector,
+            props,
+            "theme",
+            log_miss=log_miss,
+            log_selector=log_miss,
+        )
+        if val is not None:
+            return int(val)
     return None
 
 
@@ -285,360 +448,493 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         return theme
 
     # Backgrounds
-    col = qt_theme.get_color("body", "background")
+    col = _theme_get_color(qt_theme, "body", ("background", "background-color"))
     if col:
         theme.background = col
 
     # Clip settings
-    col = qt_theme.get_color(".clip", "background")
+    col = _theme_get_color(qt_theme, ".clip", ("background", "background-color"))
     if col:
         theme.clip.background = col
-    col = qt_theme.get_color(".clip", "border-top")
-    if not col:
-        col = qt_theme.get_color(".clip", "border")
+    col = _theme_get_color(qt_theme, ".clip", ("border-top", "border"))
     if col:
         theme.clip.border_color = col
-    val = qt_theme.get_int(".clip", "border-top")
-    if val is None:
-        val = qt_theme.get_int(".clip", "border")
+    val = _theme_get_int(qt_theme, ".clip", ("border-top", "border"))
     if val is not None:
         theme.clip.border_width = float(val)
-    val = qt_theme.get_int(".clip", "border-radius")
+    val = _theme_get_int(qt_theme, ".clip", "border-radius")
     if val is not None:
         theme.clip.border_radius = val
-    col = qt_theme.get_color(".clip_label", "color")
-    if col:
-        theme.clip.font_color = col
-    val = qt_theme.get_int(".clip", "font-size")
+    val = _theme_get_int(qt_theme, ".clip", "font-size")
     if val is not None:
         theme.clip.font_size = val
-    val = qt_theme.get_int(".clip", "height")
+    col = _theme_get_color(qt_theme, ".clip_label", "color")
+    if col:
+        theme.clip.font_color = col
+    val = _theme_get_int(qt_theme, ".clip", "height")
     if val is not None:
         theme.clip.height = val
-    val = _css_prop(getattr(qt_theme, "style_sheet", ""), ".clip", "box-shadow")
+    val = _css_prop(getattr(qt_theme, "style_sheet", ""), ".clip", "box-shadow", "theme", log_selector=False, log_property=False)
     if val:
-        col, blur = _parse_box_shadow(qt_theme.style_sheet, ".clip")
+        col, blur = _parse_box_shadow(qt_theme.style_sheet, ".clip", "theme", log_miss=False)
         if col:
             theme.clip.shadow_color = col
         if blur is not None:
             theme.clip.shadow_blur = blur
-    val = qt_theme.get_int(".thumb", "width")
+    val = _theme_get_int(qt_theme, ".thumb", "width")
     if val is not None:
         theme.clip.thumb_width = val
-    val = qt_theme.get_int(".thumb", "height")
+    val = _theme_get_int(qt_theme, ".thumb", "height")
     if val is not None:
         theme.clip.thumb_height = val
 
+    col = _theme_get_color(qt_theme, ".ui-selected", ("border-top", "border"))
+    if col:
+        theme.clip_selected = col
+    op = None
+    if hasattr(qt_theme, "style_sheet"):
+        op = _parse_float(
+            qt_theme.style_sheet,
+            ".ui-selectable-helper",
+            "opacity",
+            "theme",
+            log_miss=False,
+            log_selector=False,
+        )
+    col = _theme_get_color(qt_theme, ".ui-selectable-helper", ("background", "background-color"))
+    if col:
+        if op is not None and col.alpha() == 255:
+            col.setAlpha(int(255 * op))
+        theme.selection = col
+    col = _theme_get_color(qt_theme, ".ui-selectable-helper", ("border", "border-color"))
+    if col:
+        if op is not None and col.alpha() == 255:
+            col.setAlpha(int(255 * op))
+        theme.selection_border = col
+    val = _theme_get_int(qt_theme, ".ui-selectable-helper", ("border", "border-width"))
+    if val is not None:
+        theme.selection_border_width = float(val)
+
     # Transition settings
-    col = qt_theme.get_color(".transition", "background")
+    col = _theme_get_color(qt_theme, ".transition", ("background", "background-color"))
     if col:
         theme.transition.background = col
-    col = qt_theme.get_color(".transition", "border-top")
+    col = _theme_get_color(qt_theme, ".transition", ("border-top", "border"))
     if col:
         theme.transition.border_color = col
-    val = qt_theme.get_int(".transition", "border-radius")
+    val = _theme_get_int(qt_theme, ".transition", "border-radius")
     if val is not None:
         theme.transition.border_radius = val
     img = _theme_pixmap(qt_theme, ".transition", "background-image")
     if img:
         theme.transition.background_image = img
-    col = qt_theme.get_color(".transition_label", "color")
+    col = _theme_get_color(qt_theme, ".transition_label", "color")
     if col:
         theme.transition.font_color = col
-    val = qt_theme.get_int(".transition", "font-size")
+    val = _theme_get_int(qt_theme, ".transition", "font-size")
     if val is not None:
         theme.transition.font_size = val
-    val = qt_theme.get_int(".transition", "height")
+    val = _theme_get_int(qt_theme, ".transition", "height")
     if val is not None:
         theme.transition.height = val
 
     # Track settings
-    col = qt_theme.get_color(".track", "background")
+    col = _theme_get_color(qt_theme, ".track", ("background", "background-color"))
     if col:
         theme.track.background = col
-    col = qt_theme.get_color(".track", "border-top")
-    if not col:
-        col = qt_theme.get_color(".track", "border")
+    col = _theme_get_color(qt_theme, ".track", ("border-top", "border"))
     if col:
         theme.track.border_color = col
-    val = qt_theme.get_int(".track", "border-radius")
+    val = _theme_get_int(qt_theme, ".track", "border-radius")
     if val is not None:
         theme.track.border_radius = val
-    col = qt_theme.get_color(".track_name", "color")
+    col = _theme_get_color(qt_theme, ".track_name", "color")
     if not col:
-        col = qt_theme.get_color(".track_label", "color")
+        col = _theme_get_color(qt_theme, ".track_label", "color")
     if col:
         theme.track.font_color = col
-    val = qt_theme.get_int(".track", "font-size")
-    if val is not None:
-        theme.track.font_size = val
-    val = qt_theme.get_int(".track", "height")
+    val = _theme_get_int(qt_theme, ".track", "height")
     if val is not None:
         theme.track.height = val
-    col = qt_theme.get_color(".track_name", "background")
+    val = _theme_get_int(qt_theme, ".track_name", "font-size")
+    if val is not None:
+        theme.track.font_size = val
+    col = _theme_get_color(qt_theme, ".track_name", ("background", "background-color"))
     if col:
         theme.track.name_background = col
-    val = qt_theme.get_int(".track_name", "width")
+    val = _theme_get_int(qt_theme, ".track_name", "width")
     if val is not None:
         theme.track.name_width = val
-    val = qt_theme.get_int(".track", "margin-bottom")
+    val = _theme_get_int(qt_theme, ".track", "margin-bottom")
     if val is not None:
         theme.track.gap = val
-    col = qt_theme.get_color(".track_name", "border-left")
+    col = _theme_get_color(qt_theme, ".track_name", "border-left")
     if col:
         theme.track.name_border_color = col
-    val = qt_theme.get_int(".track_name", "border-left")
+    val = _theme_get_int(qt_theme, ".track_name", "border-left")
     if val is not None:
         theme.track.name_border_width = val
+    col = _theme_get_color(qt_theme, ".track_name", ("border-top", "border"))
+    if col:
+        theme.track.name_border_top_color = col
+    val = _theme_get_int(qt_theme, ".track_name", ("border-top", "border"))
+    if val is not None:
+        theme.track.name_border_top_width = val
+    col = _theme_get_color(qt_theme, ".track_name", ("border-bottom", "border"))
+    if col:
+        theme.track.name_border_bottom_color = col
+    val = _theme_get_int(qt_theme, ".track_name", ("border-bottom", "border"))
+    if val is not None:
+        theme.track.name_border_bottom_width = val
+    val = _theme_get_int(qt_theme, ".track_name", "border-top-left-radius")
+    if val is not None:
+        theme.track.name_radius_tl = val
+    val = _theme_get_int(qt_theme, ".track_name", "border-bottom-left-radius")
+    if val is not None:
+        theme.track.name_radius_bl = val
+    val = _theme_get_int(qt_theme, ".track_name", "border-radius")
+    if val is not None:
+        if not theme.track.name_radius_tl:
+            theme.track.name_radius_tl = val
+        if not theme.track.name_radius_bl:
+            theme.track.name_radius_bl = val
 
     # Ruler settings
-    col = qt_theme.get_color("#ruler", "background")
-    if col:
-        theme.ruler.background = col
-    col1, col2 = _parse_gradient(getattr(qt_theme, "style_sheet", ""), "#ruler_label", "background")
+    css_sheet = getattr(qt_theme, "style_sheet", "")
+    col1, col2 = _parse_gradient(css_sheet, "#scrolling_ruler", "background", "theme", log_miss=False)
+    if not col1 and not col2:
+        col1, col2 = _parse_gradient(css_sheet, "#ruler", "background", "theme", log_miss=False)
+    if col1:
+        theme.ruler.background = col1
+    if col2:
+        theme.ruler.background2 = col2
+    if not col1:
+        col = _theme_get_color(qt_theme, "#scrolling_ruler", ("background", "background-color"), log_miss=False)
+        if not col:
+            col = _theme_get_color(qt_theme, "#ruler", ("background", "background-color"), log_miss=False)
+        if col:
+            theme.ruler.background = col
+        else:
+            log.info("Theme MISS [theme] selector '#scrolling_ruler' property 'background'")
+    col1, col2 = _parse_gradient(
+        css_sheet,
+        "#ruler_label",
+        "background",
+        "theme",
+        log_miss=False,
+    )
     if col1:
         theme.ruler_name_background = col1
     if col2:
         theme.ruler_name_background2 = col2
     else:
-        col = qt_theme.get_color("#ruler_label", "background")
+        col = _theme_get_color(qt_theme, "#ruler_label", "background")
         if col:
             theme.ruler_name_background = col
-    col = qt_theme.get_color(".tick_mark", "background-color")
+    col = _theme_get_color(qt_theme, ".tick_mark", "background-color")
     if col:
         theme.ruler.border_color = col
-    col = qt_theme.get_color(".ruler_time", "color")
+    col = _theme_get_color(qt_theme, "#ruler_time", "color")
     if col:
         theme.ruler.font_color = col
-    val = qt_theme.get_int(".ruler_time", "font-size")
-    if val is not None:
-        theme.ruler.font_size = val
-    val = qt_theme.get_int("#ruler_time", "font-size")
+    val = _theme_get_int(qt_theme, "#ruler_time", "font-size")
     if val is not None:
         theme.ruler_time_font_size = val
-    val = qt_theme.get_int(".ruler_time", "top")
+    fs = _parse_float(
+        getattr(qt_theme, "style_sheet", ""),
+        ".ruler_time",
+        "font-size",
+        "theme",
+        log_miss=False,
+    )
+    if fs is not None:
+        base = theme.ruler_time_font_size or 12
+        theme.ruler.font_size = int(fs * base) if fs < 5 else int(fs)
+    val = _theme_get_int(qt_theme, ".ruler_time", "top")
     if val is not None:
         theme.ruler_label_top = val
-    val = qt_theme.get_int("#ruler", "height")
+    val = _theme_get_int(qt_theme, "#ruler", "height")
     if val is not None:
         theme.ruler.height = val
-    val = qt_theme.get_int("#ruler_time", "padding-left")
+    val = _theme_get_int(qt_theme, "#ruler_time", "padding-left")
     if val is not None:
         theme.ruler_time_pad_left = val
-    val = qt_theme.get_int("#ruler_time", "padding-top")
+    val = _theme_get_int(qt_theme, "#ruler_time", "padding-top")
     if val is not None:
         theme.ruler_time_pad_top = val
 
     # Playhead
-    col = qt_theme.get_color(".playhead-line", "background-color")
+    col = _theme_get_color(qt_theme, ".playhead-line", "background-color")
     if col:
         theme.playhead_color = col
-    val = qt_theme.get_int(".playhead-line", "width")
+    val = _theme_get_int(qt_theme, ".playhead-line", "width")
     if val is not None:
         theme.playhead_width = float(val)
     img = _theme_pixmap(qt_theme, ".playhead-top", "background-image")
     if img:
         theme.playhead_icon = img
-    val = qt_theme.get_int(".playhead-top", "width")
+    val = _theme_get_int(qt_theme, ".playhead-top", "width")
     if val is not None:
         theme.playhead_icon_width = val
-    val = qt_theme.get_int(".playhead-top", "height")
+    val = _theme_get_int(qt_theme, ".playhead-top", "height")
     if val is not None:
         theme.playhead_icon_height = val
-    val = qt_theme.get_int(".playhead-top", "margin-left")
+    val = _theme_get_int(qt_theme, ".playhead-top", "margin-left")
     if val is not None:
         theme.playhead_icon_offset_x = val
-    val = qt_theme.get_int(".playhead-top", "margin-top")
+    val = _theme_get_int(qt_theme, ".playhead-top", "margin-top")
     if val is not None:
         theme.playhead_icon_offset_y = val
 
     img = _theme_pixmap(qt_theme, ".menu", "background-image")
     if img:
         theme.menu_icon = img
-    val = qt_theme.get_int(".menu", "width")
+    val = _theme_get_int(qt_theme, ".menu", "width")
     if val is not None:
         theme.menu_size = val
-    val = qt_theme.get_int(".menu", "margin")
+    val = _theme_get_int(qt_theme, ".menu", "margin")
     if val is not None:
         theme.menu_margin = val
 
     return theme
 
 
-def _apply_css(theme: TimelineTheme, css: str) -> TimelineTheme:
+def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineTheme:
     """Update *theme* with values parsed from *css*."""
 
     if not css:
         return theme
 
-    col = _parse_color(css, "body", "background")
+    log_miss = True
+
+    col = _parse_color(css, "body", ("background", "background-color"), source, log_miss=log_miss)
     if col:
         theme.background = col
 
     # Clip
-    col = _parse_color(css, ".clip", "background")
+    col = _parse_color(css, ".clip", ("background", "background-color"), source, log_miss=log_miss)
     if col:
         theme.clip.background = col
-    col = _parse_color(css, ".clip", "border-top")
-    if not col:
-        col = _parse_color(css, ".clip", "border")
+    col = _parse_color(css, ".clip", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.clip.border_color = col
-    val = _parse_float(css, ".clip", "border-top")
-    if val is None:
-        val = _parse_float(css, ".clip", "border")
+    val = _parse_float(css, ".clip", ("border-top", "border"), source, log_miss=False)
     if val is not None:
         theme.clip.border_width = float(val)
-    val = _parse_float(css, ".clip", "border-radius")
+    val = _parse_float(css, ".clip", "border-radius", source, log_miss=False)
     if val is not None:
         theme.clip.border_radius = int(val)
-    col = _parse_color(css, ".clip_label", "color")
+    col = _parse_color(css, ".clip_label", "color", source, log_miss=log_miss)
     if col:
         theme.clip.font_color = col
-    val = _parse_float(css, ".clip", "font-size")
-    if val is not None:
-        theme.clip.font_size = int(val)
-    val = _parse_float(css, ".clip", "height")
+    val = _parse_float(css, ".clip", "height", source, log_miss=log_miss)
     if val is not None:
         theme.clip.height = int(val)
-    col2, blur = _parse_box_shadow(css, ".clip")
+    col2, blur = _parse_box_shadow(css, ".clip", source, log_miss=log_miss)
     if col2:
         theme.clip.shadow_color = col2
     if blur is not None:
         theme.clip.shadow_blur = blur
-    val = _parse_float(css, ".thumb", "width")
+    val = _parse_float(css, ".thumb", "width", source, log_miss=log_miss)
     if val is not None:
         theme.clip.thumb_width = int(val)
-    val = _parse_float(css, ".thumb", "height")
+    val = _parse_float(css, ".thumb", "height", source, log_miss=log_miss)
     if val is not None:
         theme.clip.thumb_height = int(val)
 
+    val = _parse_float(css, ".clip", "font-size", source, log_miss=log_miss)
+    if val is not None:
+        theme.clip.font_size = int(val)
+
+    col = _parse_color(css, ".ui-selected", ("border-top", "border"), source, log_miss=log_miss)
+    if col:
+        theme.clip_selected = col
+    op = _parse_float(css, ".ui-selectable-helper", "opacity", source, log_miss=log_miss)
+    col = _parse_color(css, ".ui-selectable-helper", ("background", "background-color"), source, log_miss=log_miss)
+    if col:
+        if op is not None and col.alpha() == 255:
+            col.setAlpha(int(255 * op))
+        theme.selection = col
+    col = _parse_color(css, ".ui-selectable-helper", ("border", "border-color"), source, log_miss=log_miss)
+    if col:
+        if op is not None and col.alpha() == 255:
+            col.setAlpha(int(255 * op))
+        theme.selection_border = col
+    val = _parse_float(css, ".ui-selectable-helper", ("border", "border-width"), source, log_miss=log_miss)
+    if val is not None:
+        theme.selection_border_width = float(val)
+
     # Transition
-    col = _parse_color(css, ".transition", "background")
+    col = _parse_color(css, ".transition", ("background", "background-color"), source, log_miss=log_miss)
     if col:
         theme.transition.background = col
-    col = _parse_color(css, ".transition", "border-top")
+    col = _parse_color(css, ".transition", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.transition.border_color = col
-    val = _parse_float(css, ".transition", "border-radius")
+    val = _parse_float(css, ".transition", "border-radius", source, log_miss=False)
     if val is not None:
         theme.transition.border_radius = int(val)
-    img = _parse_pixmap(css, ".transition", "background-image")
+    img = _parse_pixmap(css, ".transition", "background-image", source, log_miss=log_miss)
     if img:
         theme.transition.background_image = img
-    col = _parse_color(css, ".transition_label", "color")
+    col = _parse_color(css, ".transition_label", "color", source, log_miss=log_miss)
     if col:
         theme.transition.font_color = col
-    val = _parse_float(css, ".transition", "font-size")
+    val = _parse_float(css, ".transition", "font-size", source, log_miss=log_miss)
     if val is not None:
         theme.transition.font_size = int(val)
-    val = _parse_float(css, ".transition", "height")
+    val = _parse_float(css, ".transition", "height", source, log_miss=log_miss)
     if val is not None:
         theme.transition.height = int(val)
 
     # Track
-    col = _parse_color(css, ".track", "background")
+    col = _parse_color(css, ".track", ("background", "background-color"), source, log_miss=log_miss)
     if col:
         theme.track.background = col
-    col = _parse_color(css, ".track", "border-top")
-    if not col:
-        col = _parse_color(css, ".track", "border")
+    col = _parse_color(css, ".track", ("border-top", "border"), source, log_miss=False)
     if col:
         theme.track.border_color = col
-    val = _parse_float(css, ".track", "border-radius")
+    val = _parse_float(css, ".track", "border-radius", source, log_miss=False)
     if val is not None:
         theme.track.border_radius = int(val)
-    col = _parse_color(css, ".track_name", "color")
+    col = _parse_color(css, ".track_name", "color", source, log_miss=log_miss)
     if not col:
-        col = _parse_color(css, ".track_label", "color")
+        col = _parse_color(css, ".track_label", "color", source, log_miss=log_miss)
     if col:
         theme.track.font_color = col
-    val = _parse_float(css, ".track", "font-size")
-    if val is not None:
-        theme.track.font_size = int(val)
-    val = _parse_float(css, ".track", "height")
+    val = _parse_float(css, ".track", "height", source, log_miss=log_miss)
     if val is not None:
         theme.track.height = int(val)
-    col = _parse_color(css, ".track_name", "background")
+    col = _parse_color(css, ".track_name", ("background", "background-color"), source, log_miss=log_miss)
     if col:
         theme.track.name_background = col
-    val = _parse_float(css, ".track_name", "width")
+    val = _parse_float(css, ".track_name", "width", source, log_miss=log_miss)
     if val is not None:
         theme.track.name_width = int(val)
-    val = _parse_float(css, ".track", "margin-bottom")
+    val = _parse_float(css, ".track", "margin-bottom", source, log_miss=log_miss)
     if val is not None:
         theme.track.gap = int(val)
-    col = _parse_color(css, ".track_name", "border-left")
+    col = _parse_color(css, ".track_name", "border-left", source, log_miss=log_miss)
     if col:
         theme.track.name_border_color = col
-    val = _parse_float(css, ".track_name", "border-left")
+    val = _parse_float(css, ".track_name", "border-left", source, log_miss=log_miss)
     if val is not None:
         theme.track.name_border_width = int(val)
+    col = _parse_color(css, ".track_name", ("border-top", "border"), source, log_miss=log_miss)
+    if col:
+        theme.track.name_border_top_color = col
+    val = _parse_float(css, ".track_name", ("border-top", "border"), source, log_miss=log_miss)
+    if val is not None:
+        theme.track.name_border_top_width = int(val)
+    col = _parse_color(css, ".track_name", ("border-bottom", "border"), source, log_miss=log_miss)
+    if col:
+        theme.track.name_border_bottom_color = col
+    val = _parse_float(css, ".track_name", ("border-bottom", "border"), source, log_miss=log_miss)
+    if val is not None:
+        theme.track.name_border_bottom_width = int(val)
+    val = _parse_float(css, ".track_name", ("border-top-left-radius", "border-radius"), source, log_miss=log_miss)
+    if val is not None:
+        theme.track.name_radius_tl = int(val)
+    val = _parse_float(css, ".track_name", ("border-bottom-left-radius", "border-radius"), source, log_miss=log_miss)
+    if val is not None:
+        theme.track.name_radius_bl = int(val)
+
+    val = _parse_float(css, ".track_name", "font-size", source, log_miss=log_miss)
+    if val is not None:
+        theme.track.font_size = int(val)
 
     # Ruler
-    col = _parse_color(css, "#ruler", "background")
-    if col:
-        theme.ruler.background = col
-    col1, col2 = _parse_gradient(css, "#ruler_label", "background")
+    col1, col2 = _parse_gradient(css, "#scrolling_ruler", "background", source, log_miss=False)
+    if not col1 and not col2:
+        col1, col2 = _parse_gradient(css, "#ruler", "background", source, log_miss=False)
+    if col1:
+        theme.ruler.background = col1
+    if col2:
+        theme.ruler.background2 = col2
+    if not col1:
+        col = _parse_color(
+            css,
+            "#scrolling_ruler",
+            ("background", "background-color"),
+            source,
+            log_miss=False,
+        )
+        if not col:
+            col = _parse_color(
+                css,
+                "#ruler",
+                ("background", "background-color"),
+                source,
+                log_miss=False,
+            )
+        if col:
+            theme.ruler.background = col
+        else:
+            log.info(
+                "Theme MISS [%s] selector '#scrolling_ruler' property 'background'",
+                source,
+            )
+    col1, col2 = _parse_gradient(css, "#ruler_label", "background", source, log_miss=log_miss)
     if col1:
         theme.ruler_name_background = col1
     if col2:
         theme.ruler_name_background2 = col2
-    col = _parse_color(css, ".tick_mark", "background-color")
+    col = _parse_color(css, ".tick_mark", "background-color", source, log_miss=log_miss)
     if col:
         theme.ruler.border_color = col
-    col = _parse_color(css, ".ruler_time", "color")
+    col = _parse_color(css, "#ruler_time", "color", source, log_miss=log_miss)
     if col:
         theme.ruler.font_color = col
-    val = _parse_float(css, ".ruler_time", "font-size")
-    if val is not None:
-        theme.ruler.font_size = int(val)
-    val = _parse_float(css, "#ruler_time", "font-size")
+    val = _parse_float(css, "#ruler_time", "font-size", source, log_miss=log_miss)
     if val is not None:
         theme.ruler_time_font_size = int(val)
-    val = _parse_float(css, ".ruler_time", "top")
+    fs = _parse_float(css, ".ruler_time", "font-size", source, log_miss=log_miss)
+    if fs is not None:
+        base = theme.ruler_time_font_size or 12
+        theme.ruler.font_size = int(fs * base) if fs < 5 else int(fs)
+    val = _parse_float(css, ".ruler_time", "top", source, log_miss=log_miss)
     if val is not None:
         theme.ruler_label_top = int(val)
-    val = _parse_float(css, "#ruler", "height")
+    val = _parse_float(css, "#ruler", "height", source, log_miss=log_miss)
     if val is not None:
         theme.ruler.height = int(val)
-    val = _parse_float(css, "#ruler_time", "padding-left")
+    val = _parse_float(css, "#ruler_time", "padding-left", source, log_miss=log_miss)
     if val is not None:
         theme.ruler_time_pad_left = int(val)
-    val = _parse_float(css, "#ruler_time", "padding-top")
+    val = _parse_float(css, "#ruler_time", "padding-top", source, log_miss=log_miss)
     if val is not None:
         theme.ruler_time_pad_top = int(val)
 
     # Playhead
-    col = _parse_color(css, ".playhead-line", "background-color")
+    col = _parse_color(css, ".playhead-line", "background-color", source, log_miss=log_miss)
     if col:
         theme.playhead_color = col
-    val = _parse_float(css, ".playhead-line", "width")
+    val = _parse_float(css, ".playhead-line", "width", source, log_miss=log_miss)
     if val is not None:
         theme.playhead_width = val
-    img = _parse_pixmap(css, ".playhead-top", "background-image")
+    img = _parse_pixmap(css, ".playhead-top", "background-image", source, log_miss=log_miss)
     if img:
         theme.playhead_icon = img
-    val = _parse_float(css, ".playhead-top", "width")
+    val = _parse_float(css, ".playhead-top", "width", source, log_miss=log_miss)
     if val is not None:
         theme.playhead_icon_width = int(val)
-    val = _parse_float(css, ".playhead-top", "height")
+    val = _parse_float(css, ".playhead-top", "height", source, log_miss=log_miss)
     if val is not None:
         theme.playhead_icon_height = int(val)
-    val = _parse_float(css, ".playhead-top", "margin-left")
+    val = _parse_float(css, ".playhead-top", "margin-left", source, log_miss=log_miss)
     if val is not None:
         theme.playhead_icon_offset_x = int(val)
-    val = _parse_float(css, ".playhead-top", "margin-top")
+    val = _parse_float(css, ".playhead-top", "margin-top", source, log_miss=log_miss)
     if val is not None:
         theme.playhead_icon_offset_y = int(val)
 
-    img = _parse_pixmap(css, ".menu", "background-image")
+    img = _parse_pixmap(css, ".menu", "background-image", source, log_miss=log_miss)
     if img:
         theme.menu_icon = img
-    val = _parse_float(css, ".menu", "width")
+    val = _parse_float(css, ".menu", "width", source, log_miss=log_miss)
     if val is not None:
         theme.menu_size = int(val)
-    m = _css_prop(css, ".menu", "margin")
+    m = _css_prop(css, ".menu", "margin", source, log_selector=log_miss, log_property=log_miss)
     if m:
         m_val = re.search(r"(-?[0-9.]+)", m)
         if m_val:
@@ -654,18 +950,28 @@ def apply_theme(widget, css: str = "") -> bool:
 
     app_theme = get_app().theme_manager.get_current_theme() if get_app() else None
 
-    t = default_theme()
+    t = TimelineTheme()
 
     # Start with defaults from the main CSS file
-    t = _apply_css(t, MAIN_CSS)
+    t = _apply_css(t, MAIN_CSS, source="main.css")
 
     # Override with values from the active Qt theme instance
     if app_theme:
         t = _apply_theme_obj(t, app_theme)
 
     # Optional additional CSS overrides
-    if isinstance(css, str):
-        t = _apply_css(t, css)
+    if isinstance(css, str) and css.strip():
+        t = _apply_css(t, css, source="override")
+
+    if not t.playhead_icon:
+        base = os.path.dirname(_CSS_PATH)
+        default_path = os.path.normpath(os.path.join(base, "../images/playhead.svg"))
+        if os.path.exists(default_path):
+            t.playhead_icon = QPixmap(default_path)
+            log.info(
+                "Theme [default] .playhead-top background-image loaded '%s'",
+                default_path,
+            )
 
     old_track_h = widget.track_height
     old_name_w = widget.track_name_width
