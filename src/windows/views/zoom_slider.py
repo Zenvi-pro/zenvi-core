@@ -257,7 +257,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.mouse_pressed = True
         self.mouse_dragging = False
         self.mouse_position = event.pos().x()
-        self.scrollbar_position_previous = self.scrollbar_position
+        self.scrollbar_position_previous = list(self.scrollbar_position)  # copy, don't alias
 
     def mouseReleaseEvent(self, event):
         """Capture mouse release event"""
@@ -475,10 +475,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
             # Set scroll width (and send signal)
             if zoom_factor > 0.0:
-                self.setZoomFactor(zoom_factor)
-
-                # Emit signal to scroll Timeline
                 get_app().window.TimelineScroll.emit(self.scrollbar_position[0])
+                self.setZoomFactor(zoom_factor)
 
     # Capture wheel event to alter zoom/scale of widget
     def wheelEvent(self, event):
@@ -487,23 +485,13 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Repaint widget on zoom
         self.repaint()
 
-    def setZoomFactor(self, zoom_factor, center=False):
-        """Set the current zoom factor"""
-        # Force recalculation of clips
+    def setZoomFactor(self, zoom_factor, center=False, emit=True):
+        """Set the current zoom factor (do not clamp width here — backend owns authoritative geometry)."""
         self.zoom_factor = zoom_factor
-
-        # Emit zoom signal
-        get_app().window.TimelineZoom.emit(self.zoom_factor)
+        if emit:
+            get_app().window.TimelineZoom.emit(self.zoom_factor)
         if center:
             get_app().window.TimelineCenter.emit()
-
-        # Prevent scrollbars from exceeding 100% of zoomslider
-        # This is caused by the scrollbars stopping events once zoomed out too much
-        scroll_width, scroll_ratio = self.get_scroll_width()
-        if scroll_ratio >= 1.0 and self.scrollbar_position:
-            # Set to left/right edge - max
-            self.scrollbar_position[0] = 0.0
-            self.scrollbar_position[1] = 1.0
 
         # Force re-paint
         self.repaint()
@@ -640,6 +628,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.win.TimelineScrolled.connect(self.update_scrollbars)
         self.win.TimelineResize.connect(self.timeline_resized)
         self.win.IgnoreUpdates.connect(self.ignore_updates_callback)
+        self.win.TimelineZoom.connect(lambda z: self.setZoomFactor(z, emit=False))
 
         # Connect Selection signals
         self.win.SelectionChanged.connect(self.handle_selection)

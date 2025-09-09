@@ -2677,13 +2677,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         removed instead. This keeps the method focused on simply managing the
         selection list without extra special-casing.
         """
-        if not item_id:
-            log.debug('addSelection: item_type: {}, clear_existing: {}'.format(
-                item_type, clear_existing))
-        else:
-            log.debug('addSelection: item_id: {}, item_type: {}, clear_existing: {}'.format(
-                item_id, item_type, clear_existing))
-
         if clear_existing:
             if item_id or not item_type:
                 # Replace the entire selection list

@@ -50,6 +50,7 @@ from classes.time_parts import secondsToTime
 
 from classes.app import get_app
 from classes.query import Clip, Track, Transition, Marker, File
+from classes.logger import log
 
 
 class TimelineEvents(QObject):
@@ -189,6 +190,7 @@ class TimelineWidget(QWidget):
         # Connect zoom functionality
         self.win.TimelineScrolled.connect(self.update_scrollbars)
         self.win.TimelineScroll.connect(self.set_scroll_left)
+        self.win.TimelineZoom.connect(self._apply_external_zoom)
 
         self.win.TimelineResize.connect(self.delayed_resize_callback)
 
@@ -277,6 +279,15 @@ class TimelineWidget(QWidget):
         except TypeError:
             pass
 
+    def _apply_external_zoom(self, zoom_factor):
+        """Apply zoom requests from the ZoomSlider without feedback."""
+        self.setZoomFactor(zoom_factor, emit=False)
+        project_duration = get_app().project.get("duration") or 0.0
+        tick_pixels = 100.0
+        self.scrollbar_position[2] = (
+            project_duration * tick_pixels / zoom_factor if zoom_factor else 0.0
+        )
+
     def setSnappingMode(self, enable):
         """Enable or disable snapping mode."""
         self.enable_snapping = bool(enable)
@@ -342,7 +353,9 @@ class TimelineWidget(QWidget):
         fps_info = get_app().project.get("fps")
         self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
-        # Invalidate and rebuild geometry
+        # Invalidate caches and geometry
+        self.clip_painter.clear_cache()
+        self.transition_painter.clear_cache()
         self.geometry.mark_dirty()
         self.geometry.ensure()
 
@@ -495,16 +508,17 @@ class TimelineWidget(QWidget):
         normalized_scroll_width = self.scrollbar_position[1] - self.scrollbar_position[0]
         scroll_width_seconds = normalized_scroll_width * project_duration
         tick_pixels = 100
+        if self.delayed_size:
+            self.scrollbar_position[3] = self.delayed_size.width()
+            self.v_scrollbar_position[3] = self.delayed_size.height()
         if self.scrollbar_position[3] > 0.0:
             # Calculate the new zoom factor, based on pixels per tick
             zoom_factor = scroll_width_seconds / (self.scrollbar_position[3] / tick_pixels)
 
             # Set scroll width (and send signal)
             if zoom_factor > 0.0:
-                self.setZoomFactor(zoom_factor)
-
-                # Emit signal to scroll Timeline
-                get_app().window.TimelineScroll.emit(self.scrollbar_position[0])
+                self.setZoomFactor(zoom_factor, emit=False)
+                self.scrollbar_position[2] = project_duration * tick_pixels / zoom_factor if zoom_factor else 0.0
                 get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
     # Capture wheel event to alter zoom/scale of widget
@@ -537,10 +551,22 @@ class TimelineWidget(QWidget):
         self.zoom_factor = zoom_factor
         TimelineWidget.changed(self, None)
 
+        # Update normalized scroll width to match new zoom
+        project_duration = get_app().project.get("duration") or 0.0
+        view_w = self.scrollbar_position[3]
+        if project_duration > 0.0 and view_w > 0.0:
+            tick_pixels = 100.0
+            visible_secs = zoom_factor * (view_w / tick_pixels)
+            width_norm = visible_secs / project_duration
+            width_norm = max(0.0, min(width_norm, 1.0))
+            left = min(self.scrollbar_position[0], 1.0 - width_norm)
+            self.scrollbar_position[0] = max(0.0, left)
+            self.scrollbar_position[1] = self.scrollbar_position[0] + width_norm
+
         if emit:
-            # Emit zoom signal
+            # Emit zoom and scrollbar signals
             get_app().window.TimelineZoom.emit(self.zoom_factor)
-            get_app().window.TimelineCenter.emit()
+            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
         # Schedule repaint
         self.update()
@@ -575,6 +601,9 @@ class TimelineWidget(QWidget):
         if self.mouse_dragging:
             return
 
+        if list(new_positions) == self.scrollbar_position:
+            return
+
         self.scrollbar_position = list(new_positions)
 
         # Check for empty clip rectangles
@@ -593,9 +622,10 @@ class TimelineWidget(QWidget):
     def set_scroll_left(self, new_left):
         width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
         left = max(0.0, min(new_left, 1.0 - width_norm))
+        if abs(left - self.scrollbar_position[0]) < 1e-9:
+            return
         self.scrollbar_position[0] = left
         self.scrollbar_position[1] = left + width_norm
-        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
         self.geometry.mark_dirty()
         self.update()
 
@@ -832,7 +862,6 @@ class TimelineWidget(QWidget):
             new_left = max(0.0, min(new_left, 1.0 - width_norm))
             self.scrollbar_position = [new_left, new_left + width_norm,
                                        self.scrollbar_position[2], self.scrollbar_position[3]]
-            get_app().window.TimelineScroll.emit(new_left)
             get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
             self.geometry.mark_dirty()
             self.update()

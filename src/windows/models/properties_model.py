@@ -115,8 +115,6 @@ class PropertiesModel(updates.UpdateInterface):
                         self.selected.append((e, item_type))
                         self.selected_parent = e.ParentClip()
 
-                log.debug("Update item: %s" % item_type)
-
             # Update frame # from timeline
             self.update_frame(get_app().window.preview_thread.player.Position(), reload_model=False)
 
