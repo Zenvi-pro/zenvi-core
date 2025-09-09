@@ -40,6 +40,17 @@
     "setting": "emoji_group_filter"
   },
   {
+    "max": 3.0,
+    "title": "User Interface Scale (Experimental)",
+    "category": "General",
+    "min": 0.5,
+    "step": 0.1,
+    "setting": "ui-scale",
+    "value": 1.0,
+    "type": "spinner",
+    "restart": true
+  },
+  {
     "max": 10000,
     "title": "Image Length (seconds)",
     "category": "General",

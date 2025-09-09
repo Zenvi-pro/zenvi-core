@@ -45,8 +45,9 @@ The General tab of the Preferences window allows you to modify the settings that
    ================================  =============  ===========
    Setting                           Default        Description
    ================================  =============  ===========
-   Language                          Default        Choose your preferred language for OpenShot menus and windows  
+   Language                          Default        Choose your preferred language for OpenShot menus and windows
    Default Theme                     Humanity:Dark  Choose your theme for OpenShot, either Light, Dark or None
+   User Interface Scale              1.0            Adjust the size of OpenShot's interface (restart required; range 1–3; known issues on Windows)
    Image Length (seconds)            10.00          How long the image displays on the screen when added to the timeline
    Volume                            75.00          The percentage of the volume of the clip when added to the timeline
    Blender Command (path)            *<blank>*      The path to the binary for Blender (version 4.1+)

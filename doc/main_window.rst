@@ -345,9 +345,10 @@ over the scaling. However, these methods are **not recommended** due to potentia
    - Setting this environment variable can disable rounding and allow more precise scaling.
    - **Note:** This may cause visual artifacts, particularly in the timeline, and is not recommended.
 
-- **QT_SCALE_FACTOR=0.75** (or similar value)
+- **QT_SCALE_FACTOR=1.25** (or similar value)
 
    - Manually setting the scale factor can provide finer adjustments to the font and UI scaling.
+   - This can also be set via Preferences (User Interface Scale) - but expect border/line issues on Windows with fractional scales.
    - **Note:** This method can also lead to visual artifacts and make OpenShot harder to use.
 
 For more info on adjusting these environment variables, please visit
