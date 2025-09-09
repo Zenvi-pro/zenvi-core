@@ -578,23 +578,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     cw = max(1.0 - left - right, 0.0001)
                     ch = max(1.0 - top - bottom, 0.0001)
 
-                    base_w = max(self.clipBounds.width(), 0.0001)
-                    base_h = max(self.clipBounds.height(), 0.0001)
+                    # Use the full clip rect dimensions (un-cropped)
+                    base_w = max(sw, 0.0001)
+                    base_h = max(sh, 0.0001)
 
-                    # Convert crop offsets into on-screen pixels so zoom level does
-                    # not affect the position of the origin handle.
+                    # Map clip-space to screen-space
                     sx_factor = sw / base_w
                     sy_factor = sh / base_h
 
-                    if resize:
-                        origin_w = base_w
-                        origin_h = base_h
-                    else:
-                        origin_w = base_w / cw
-                        origin_h = base_h / ch
-
-                    origin_w *= sx_factor
-                    origin_h *= sy_factor
+                    # For origin (x,y) we want full-frame units in both modes
+                    origin_w = base_w * sx_factor
+                    origin_h = base_h * sy_factor
 
                     # The crop origin represents an offset from the center of the clip's image
                     local_center = QPointF(sw / 2.0, sh / 2.0)
