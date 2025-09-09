@@ -57,7 +57,10 @@ def clamp_timing_to_media(clip_data, existing_clip=None):
     fps = get_app().project.get("fps")
     fps_float = float(fps["num"]) / float(fps["den"])
     video_length = float(reader.get("video_length", 0))
-    max_duration = video_length / fps_float if fps_float else 0
+    if reader.get("has_single_image"):
+        max_duration = float(reader.get("duration", 0))
+    else:
+        max_duration = video_length / fps_float if fps_float else 0
 
     time_data = clip_data.get("time")
     points = time_data.get("Points") if isinstance(time_data, dict) else None
