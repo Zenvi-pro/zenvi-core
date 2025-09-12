@@ -332,7 +332,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Scale the X values of keyframe points"""
         for point in keyframe.get("Points", []):
             if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
-                point["co"]["X"] = round(point["co"]["X"] * factor)
+                point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
 
     def _reverse_keyframes(self, keyframe, total_frames):
         """Reverse keyframe positions around total_frames, swapping handles"""
