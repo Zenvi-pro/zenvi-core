@@ -341,7 +341,7 @@ All controls are key-framable and the noise is deterministic (seeded from the ef
     ========================= ===========================================
     tracking                  ``(float, 0–1)`` Horizontal **line wobble** plus a subtle bottom **skew**. Higher values increase amplitude and skew height.
     bleed                     ``(float, 0–1)`` **Chroma bleed / fringing.** Horizontal chroma shift + blur with a slight desaturation. Gives the “rainbow edge” look.
-    softness                  ``(float, 0–1)`` **Luma softness.** Small horizontal blur on Y (≈0–2 px). Keep low to retain detail when noise is high.
+    softness                  ``(float, 0–1)`` **Luma softness.** Small horizontal blur on Y (approx. 0–2 px). Keep low to retain detail when noise is high.
     noise                     ``(float, 0–1)`` **Snow, hiss, and dropouts.** Controls grain strength, probability/length of white **streaks**, and a faint line hum.
     stripe                    ``(float, 0–1)`` **Tracking stripe.** Lifts the bottom band, adds hiss/noise there, and widens the lifted region as the value increases.
     static_bands              ``(float, 0–1)`` **Static bursts.** Short bright bands with **row-clumped streaks** (many “shooting stars” across neighboring rows).
@@ -351,8 +351,8 @@ All controls are key-framable and the noise is deterministic (seeded from the ef
 **Usage notes**
 
 - **Subtle “home video”**: ``tracking=0.25``, ``bleed=0.20``, ``softness=0.20``, ``noise=0.25``, ``stripe=0.10``, ``static_bands=0.05``.
-- **Bad tracking / head clog**: ``tracking=0.8–1.0``, ``stripe=0.6–0.9``, ``noise=0.6–0.8``, ``static_bands=0.4–0.6``, ``bleed≈0.3``, ``softness≤0.2``.
-- **Color fringing only**: raise ``bleed`` (≈0.5) and keep other controls low.
+- **Bad tracking / head clog**: ``tracking=0.8–1.0``, ``stripe=0.6–0.9``, ``noise=0.6–0.8``, ``static_bands=0.4–0.6``, ``softness<=0.2``, and set ``bleed`` to about 0.3.
+- **Color fringing only**: raise ``bleed`` (about 0.5) and keep other controls low.
 - **Different but repeatable snow**: leave the effect ID alone (for deterministic output) and change ``seed_offset`` to get a new, still-repeatable pattern.
 
 Alpha Mask / Wipe Transition
