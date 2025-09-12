@@ -2557,7 +2557,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
                     reader_len = c_obj.Reader().info.video_length if c_obj else clip.data["reader"].get("video_length")
                     clip.data["reader"]["video_length"] = reader_len
-                    original_duration = reader_len / fps_float
+
+                    # Use the reader's FPS when converting frames to seconds
+                    reader_fps = clip.data.get("reader", {}).get("fps") or {"num": fps["num"], "den": fps["den"]}
+                    reader_fps_float = float(reader_fps.get("num", 0)) / float(reader_fps.get("den", 1))
+                    original_duration = reader_len / reader_fps_float if reader_fps_float else 0
                     self._retime_clip(clip, float(clip.data["start"]) + original_duration, clip.data.get("position"))
                     clip.data["time"] = { "Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}] }
                 else:
