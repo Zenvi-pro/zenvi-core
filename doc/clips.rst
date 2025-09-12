@@ -25,7 +25,7 @@ Clips
 In OpenShot, when you add project files (videos, images, and audio) to the timeline, they appear as **clips**
 represented by rounded rectangles. These clips come with different properties that influence how they're rendered
 and composited. These properties include the clip's :guilabel:`position`, :guilabel:`layer`, :guilabel:`scale`,
-:guilabel:`location`, :guilabel:`rotation`, and :guilabel:`alpha`.
+:guilabel:`location`, :guilabel:`rotation`, :guilabel:`alpha`, and :guilabel:`composite (blend mode)`.
 
 You can examine a clip's properties by either right-clicking and selecting :guilabel:`Properties` or by double-clicking the clip.
 The properties are listed alphabetically in the Property dock, and you can use the filter options at the top to
@@ -404,6 +404,7 @@ See the table below for a full list of clip properties.
    Channel Filter          Key-Frame   A number representing an audio channel to filter (clears all other channels)
    Channel Mapping         Key-Frame   A number representing an audio channel to output (only works when filtering a channel)
    Frame Number            Enum        The format to display the frame number (if any)
+   Composite (Blend Mode)  Enum        The blend mode used to composite this clip into lower layers. Default is **Normal**. See :ref:`clip_composite_ref`.
    Duration                Float       The length of the clip (in seconds). Read-only property. This is calculated by: End - Start.
    End                     Float       The end trimming position of the clip (in seconds)
    Gravity                 Enum        The gravity of a clip determines where it snaps to its parent (details below)
@@ -430,6 +431,49 @@ See the table below for a full list of clip properties.
    Wave Color              Key-Frame   Curve representing the color of the audio waveform
    Waveform                Bool        Should a waveform be used instead of the clip's image
    ======================  ==========  ============
+
+.. _clip_composite_ref:
+
+Composite (Blend Mode)
+""""""""""""""""""""""
+The :guilabel:`Composite (Blend Mode)` property controls **how the pixels of this clip mix with the clips on lower tracks**.
+If you are new to this, start with **Normal**. Switch modes when you want a quick creative change without adding an effect.
+
+**Beginner tips**
+
+- Want to **brighten** light effects, flares, or smoke over a dark scene? Try **Screen** or **Add**.
+- Want to **darken** or place a texture over footage (paper grain, grids, shadows)? Try **Multiply** or **Color Burn**.
+- Want **more contrast** without crushing blacks and whites too much? Try **Overlay** or **Soft Light**.
+- Want a **creative/inverted look** or to line things up? Try **Difference** or **Exclusion**.
+
+**Common modes (recommended)**
+
+.. table::
+   :widths: 22 78
+
+   ==================  ======================================================================
+   Mode                What it does
+   ==================  ======================================================================
+   Normal              Standard alpha compositing. Respects transparency from the clip.
+   Darken              Chooses the darker pixel from the two layers, per channel.
+   Multiply            Multiplies colors. Darkens and helps textures sit on top of footage.
+   Color Burn          Pushes shadows darker and boosts contrast; can clip to black.
+   Lighten             Chooses the lighter pixel from the two layers, per channel.
+   Screen              The opposite of Multiply. Brightens; great for light, glow, fire, fog.
+   Color Dodge         Brightens highlights strongly; can blow out to white.
+   Add                 Adds pixel values. Strong brightening; clips at white. Also called *Linear Dodge (Add)*.
+   Overlay             Mix of Multiply and Screen using the lower layer to decide. Adds punchy contrast.
+   Soft Light          Gentle contrast curve; softer than Overlay.
+   Hard Light          Stronger, edgy contrast using the upper layer to drive the change.
+   Difference          Absolute difference between layers. Creates inverted/psychedelic colors; useful for alignment.
+   Exclusion           Softer version of Difference with less contrast.
+   ==================  ======================================================================
+
+**Notes**
+
+- Blend modes affect **color**, while alpha (the :guilabel:`Alpha` property) affects **transparency**. You can use both.
+- Some modes can create very bright or very dark results. If needed, lower the :guilabel:`Alpha` property to soften.
+- The exact look of Multiply/Screen/Overlay family is best when project colors are in a linear color space.
 
 .. _clip_alpha_ref:
 
