@@ -33,7 +33,7 @@ from PyQt5.QtCore import (
     QSignalTransition, pyqtSignal, QObject
 )
 from PyQt5.QtGui import (
-    QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon
+    QPainter, QCursor, QIcon
 )
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
@@ -46,11 +46,9 @@ from .paint import (
 from .snap import SnapHelper
 from .theme import DEFAULT_THEME, apply_theme as parse_theme
 from .state import TimelineStateMachine
-from classes.time_parts import secondsToTime
 
 from classes.app import get_app
-from classes.query import Clip, Track, Transition, Marker, File
-from classes.logger import log
+from classes.query import Clip, Transition, File
 
 
 class TimelineEvents(QObject):
@@ -1161,7 +1159,6 @@ class TimelineWidget(QWidget):
                 new_position = pos + delta_sec
                 new_end = width - delta_sec
                 if new_position < 0:
-                    adjust = -new_position
                     new_position = 0
                     new_end = (pos + width) - new_position
                 rect_left = self.track_name_width + new_position * pps
@@ -1291,8 +1288,6 @@ class TimelineWidget(QWidget):
 
     def _finishBoxSelect(self):
         """Finalize box-select: add items intersecting the selection rectangle."""
-        add = bool(self._last_event.modifiers() & Qt.ControlModifier)
-
         # Ensure geometry is up-to-date
         self.geometry.mark_dirty()
         self.geometry.ensure()
