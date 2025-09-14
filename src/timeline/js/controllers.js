@@ -79,15 +79,15 @@ App.controller("TimelineCtrl", function ($scope) {
 
   function loadKeyframeIcons() {
     var ready = true;
-    ['bezier', 'linear', 'constant'].forEach(function(type) {
-      var el = document.createElement('div');
-      el.className = 'point_' + type;
+    ["bezier", 'linear', 'constant'].forEach(function(type) {
+      var el = document.createElement("div");
+      el.className = "point_" + type;
       document.body.appendChild(el);
-      var url = getComputedStyle(el).getPropertyValue('background-image')
-        .replace(/url\((['"]?)(.*?)\1\)/, '$2');
+      var url = getComputedStyle(el).getPropertyValue("background-image")
+        .replace(/url\((['"]?)(.*?)\1\)/, "$2");
       document.body.removeChild(el);
 
-      if (!url || url === 'none') {
+      if (!url || url === "none") {
         ready = false;
         return;
       }
@@ -100,31 +100,31 @@ App.controller("TimelineCtrl", function ($scope) {
           keyframeSvgTemplates[type] = xhr.responseText;
         }
       };
-      xhr.open('GET', url, true);
+      xhr.open("GET", url, true);
       xhr.send();
     });
 
     if (!ready) {
       // CSS not ready yet, try again once the page has loaded
-      window.addEventListener('load', loadKeyframeIcons, { once: true });
+      window.addEventListener("load", loadKeyframeIcons, { once: true });
       return;
     }
 
     // Remove default background images now that we have their paths
-    var style = document.createElement('style');
-    style.textContent = '.point_bezier,.point_linear,.point_constant{background-image:none;}';
+    var style = document.createElement("style");
+    style.textContent = ".point_bezier,.point_linear,.point_constant{background-image:none;}";
     document.head.appendChild(style);
   }
 
   function coloredIcon(interpolation, color) {
     var tpl = keyframeSvgTemplates[interpolation];
-    if (!tpl) return $scope.keyframeIconPaths[interpolation];
-    var svg = tpl.replace(/fill="[^"]*"/g, 'fill="' + color + '"');
-    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+    if (!tpl) {return $scope.keyframeIconPaths[interpolation];}
+    var svg = tpl.replace(/fill="[^"]*"/g, "fill=\"" + color + '"');
+    return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
   }
 
   // Load keyframe icons after all styles have finished loading
-  window.addEventListener('load', loadKeyframeIcons);
+  window.addEventListener("load", loadKeyframeIcons);
 
   // Method to set if Qt is detected (which clears demo data
   // and updates the document_is_ready variable in openshot-qt)
@@ -217,9 +217,9 @@ App.controller("TimelineCtrl", function ($scope) {
   }
 
   $scope.hasSelectedEffect = function (clip) {
-    if (!clip || !clip.effects) return false;
+    if (!clip || !clip.effects) {return false;}
     for (var i = 0; i < clip.effects.length; i++) {
-      if (clip.effects[i].selected) return true;
+      if (clip.effects[i].selected) {return true;}
     }
     return false;
   };
@@ -228,7 +228,7 @@ App.controller("TimelineCtrl", function ($scope) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
     var clip_start_x = Math.round(object.start * frames_per_second) + 1;
     var clip_end_x = Math.round(object.end * frames_per_second) + 1;
-    var object_type = object.hasOwnProperty('file_id') ? 'clip' : 'transition';
+    var object_type = object.hasOwnProperty("file_id") ? 'clip' : 'transition';
 
     var effect_selected = false;
     var effect_key = "";
@@ -239,7 +239,7 @@ App.controller("TimelineCtrl", function ($scope) {
       }).join(",");
     }
 
-    var cacheKey = object.selected + '|' + effect_key + '|' + $scope.keyframe_prop_filter;
+    var cacheKey = object.selected + "|" + effect_key + '|' + $scope.keyframe_prop_filter;
     var cached = keyframeCache.get(object);
 
     if (!object.selected && !effect_selected) {
@@ -260,7 +260,7 @@ App.controller("TimelineCtrl", function ($scope) {
     }
 
     for (var child in object) {
-      if (!object.hasOwnProperty(child)) continue;
+      if (!object.hasOwnProperty(child)) {continue;}
       if ($scope.keyframe_prop_filter.length > 0 &&
           !child.toLowerCase().includes($scope.keyframe_prop_filter.toLowerCase())) {
         continue;
@@ -272,11 +272,11 @@ App.controller("TimelineCtrl", function ($scope) {
           if (co.X >= clip_start_x && co.X <= clip_end_x) {
             storeKeyframe(co.X, {
               interpolation: interpolation,
-              selected: object_type === 'transition' ? true : object.selected && !effect_selected,
+              selected: object_type === "transition" ? true : object.selected && !effect_selected,
               type: object_type,
               owner: object.id
             });
-            cacheKey += ';c' + co.X + ':' + interpolation;
+            cacheKey += ";c" + co.X + ':' + interpolation;
           }
         }
       }
@@ -291,7 +291,7 @@ App.controller("TimelineCtrl", function ($scope) {
               type: object_type,
               owner: object.id
             });
-            cacheKey += ';cr' + color_co.X + ':' + color_interpolation;
+            cacheKey += ";cr" + color_co.X + ':' + color_interpolation;
           }
         }
       }
@@ -302,7 +302,7 @@ App.controller("TimelineCtrl", function ($scope) {
         var eff = object.effects[e];
         var eff_color = $scope.getEffectColor(eff.type);
         for (var prop in eff) {
-          if (!eff.hasOwnProperty(prop)) continue;
+          if (!eff.hasOwnProperty(prop)) {continue;}
           if ($scope.keyframe_prop_filter.length > 0 &&
               !prop.toLowerCase().includes($scope.keyframe_prop_filter.toLowerCase())) {
             continue;
@@ -318,10 +318,10 @@ App.controller("TimelineCtrl", function ($scope) {
                   interpolation: einterp,
                   icon: icon,
                   selected: eff.selected,
-                  type: 'effect',
+                  type: "effect",
                   owner: eff.id
                 });
-                cacheKey += ';e' + eff.id + ':' + eframe + ':' + einterp;
+                cacheKey += ";e" + eff.id + ':' + eframe + ':' + einterp;
               }
             }
           }
@@ -339,7 +339,7 @@ App.controller("TimelineCtrl", function ($scope) {
                   type: 'effect',
                   owner: eff.id
                 });
-                cacheKey += ';ec' + eff.id + ':' + ecframe + ':' + ecinterp;
+                cacheKey += ";ec" + eff.id + ':' + ecframe + ':' + ecinterp;
               }
             }
           }
@@ -359,11 +359,11 @@ App.controller("TimelineCtrl", function ($scope) {
     if (event && event.stopPropagation) {
       event.stopPropagation();
     }
-    if (value.type === 'clip') {
+    if (value.type === "clip") {
       $scope.selectClip(parent.id, true, event);
-    } else if (value.type === 'effect') {
+    } else if (value.type === "effect") {
       $scope.selectEffect(value.owner, true, event);
-    } else if (value.type === 'transition') {
+    } else if (value.type === "transition") {
       $scope.selectTransition(parent.id, true, event);
     }
     $scope.selectPoint(parent, point);
