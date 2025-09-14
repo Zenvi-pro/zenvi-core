@@ -228,7 +228,7 @@ App.controller("TimelineCtrl", function ($scope) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
     var clip_start_x = Math.round(object.start * frames_per_second) + 1;
     var clip_end_x = Math.round(object.end * frames_per_second) + 1;
-    var object_type = object.hasOwnProperty("file_id") ? "clip" : 'transition';
+    var object_type = object.hasOwnProperty("file_id") ? "clip" : "transition";
 
     var effect_selected = false;
     var effect_key = "";
@@ -321,7 +321,7 @@ App.controller("TimelineCtrl", function ($scope) {
                   type: "effect",
                   owner: eff.id
                 });
-                cacheKey += ";e" + eff.id + ":" + eframe + ':' + einterp;
+                cacheKey += ";e" + eff.id + ":" + eframe + ":" + einterp;
               }
             }
           }
@@ -339,7 +339,7 @@ App.controller("TimelineCtrl", function ($scope) {
                   type: "effect",
                   owner: eff.id
                 });
-                cacheKey += ";ec" + eff.id + ":" + ecframe + ':' + ecinterp;
+                cacheKey += ";ec" + eff.id + ":" + ecframe + ":" + ecinterp;
               }
             }
           }
