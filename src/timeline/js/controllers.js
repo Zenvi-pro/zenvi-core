@@ -79,7 +79,7 @@ App.controller("TimelineCtrl", function ($scope) {
 
   function loadKeyframeIcons() {
     var ready = true;
-    ["bezier", 'linear', 'constant'].forEach(function(type) {
+    ["bezier", "linear", "constant"].forEach(function(type) {
       var el = document.createElement("div");
       el.className = "point_" + type;
       document.body.appendChild(el);
@@ -119,7 +119,7 @@ App.controller("TimelineCtrl", function ($scope) {
   function coloredIcon(interpolation, color) {
     var tpl = keyframeSvgTemplates[interpolation];
     if (!tpl) {return $scope.keyframeIconPaths[interpolation];}
-    var svg = tpl.replace(/fill="[^"]*"/g, "fill=\"" + color + '"');
+    var svg = tpl.replace(/fill="[^"]*"/g, "fill=\"" + color + "\"");
     return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
   }
 
@@ -228,7 +228,7 @@ App.controller("TimelineCtrl", function ($scope) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
     var clip_start_x = Math.round(object.start * frames_per_second) + 1;
     var clip_end_x = Math.round(object.end * frames_per_second) + 1;
-    var object_type = object.hasOwnProperty("file_id") ? 'clip' : 'transition';
+    var object_type = object.hasOwnProperty("file_id") ? "clip" : 'transition';
 
     var effect_selected = false;
     var effect_key = "";
@@ -239,7 +239,7 @@ App.controller("TimelineCtrl", function ($scope) {
       }).join(",");
     }
 
-    var cacheKey = object.selected + "|" + effect_key + '|' + $scope.keyframe_prop_filter;
+    var cacheKey = object.selected + "|" + effect_key + "|" + $scope.keyframe_prop_filter;
     var cached = keyframeCache.get(object);
 
     if (!object.selected && !effect_selected) {
@@ -276,7 +276,7 @@ App.controller("TimelineCtrl", function ($scope) {
               type: object_type,
               owner: object.id
             });
-            cacheKey += ";c" + co.X + ':' + interpolation;
+            cacheKey += ";c" + co.X + ":" + interpolation;
           }
         }
       }
@@ -287,11 +287,11 @@ App.controller("TimelineCtrl", function ($scope) {
           if (color_co.X >= clip_start_x && color_co.X <= clip_end_x) {
             storeKeyframe(color_co.X, {
               interpolation: color_interpolation,
-              selected: object_type === 'transition' ? true : object.selected && !effect_selected,
+              selected: object_type === "transition" ? true : object.selected && !effect_selected,
               type: object_type,
               owner: object.id
             });
-            cacheKey += ";cr" + color_co.X + ':' + color_interpolation;
+            cacheKey += ";cr" + color_co.X + ":" + color_interpolation;
           }
         }
       }
@@ -321,7 +321,7 @@ App.controller("TimelineCtrl", function ($scope) {
                   type: "effect",
                   owner: eff.id
                 });
-                cacheKey += ";e" + eff.id + ':' + eframe + ':' + einterp;
+                cacheKey += ";e" + eff.id + ":" + eframe + ':' + einterp;
               }
             }
           }
@@ -336,10 +336,10 @@ App.controller("TimelineCtrl", function ($scope) {
                   interpolation: ecinterp,
                   icon: color_icon,
                   selected: eff.selected,
-                  type: 'effect',
+                  type: "effect",
                   owner: eff.id
                 });
-                cacheKey += ";ec" + eff.id + ':' + ecframe + ':' + ecinterp;
+                cacheKey += ";ec" + eff.id + ":" + ecframe + ':' + ecinterp;
               }
             }
           }

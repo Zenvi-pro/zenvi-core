@@ -280,7 +280,7 @@ App.directive("tlClip", function ($timeout) {
 
       // Adjust max resize width when toggling timing mode
       scope.$watch("enable_timing", function (val) {
-        element.resizable("option", 'maxWidth', val ? null : scope.clip.duration * scope.pixelsPerSecond);
+        element.resizable("option", "maxWidth", val ? null : scope.clip.duration * scope.pixelsPerSecond);
       });
 
       //handle hover over on the clip
