@@ -520,16 +520,6 @@ class PropertiesModel(updates.UpdateInterface):
                         log.debug("No clip data found for this object id")
                         return
 
-                # Clamp time values to reader's frame range
-                if property_key == "time" and value is not None:
-                    reader = c.data.get("reader") or {}
-                    video_length = reader.get("video_length")
-                    if video_length:
-                        value = int(round(max(1.0, min(value, float(video_length)))))
-                        item.setText(
-                            QLocale().system().toString(float(value), "f", precision=3)
-                        )
-
                 # Update clip attribute
                 if property_key in clip_data:
                     log_id = "{}/{}".format(item_id, object_id) if object_id else item_id

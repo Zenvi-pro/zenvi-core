@@ -2435,29 +2435,19 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if clip.data.get("ui", {}).get("audio_data", []):
                 clips_with_waveforms.append(clip.id)
 
-            # Determine the beginning and ending of this animation
-            start_animation = 1
-
             # Freeze or Speed?
-            if action in [
-                MenuTime.FREEZE,
-                MenuTime.FREEZE_ZOOM
-            ]:
-                # Get freeze details
+            if action in [MenuTime.FREEZE, MenuTime.FREEZE_ZOOM]:
                 freeze_seconds = float(speed)
 
                 original_duration = clip.data["duration"]
-
-                log.info('Updating timing for clip ID {}, original duration: {}'
-                         .format(clip.id, original_duration))
+                log.info('Updating timing for clip ID {}, original duration: {}'.format(clip.id, original_duration))
                 log.debug(clip.data)
 
-                # Extend end & duration (due to freeze)
+                # Extend end & duration (freeze). Do NOT touch reader.video_length.
                 clip.data["end"] = float(clip.data["end"]) + freeze_seconds
                 clip.data["duration"] = float(clip.data["duration"]) + freeze_seconds
-                clip.data["reader"]["video_length"] = float(clip.data["reader"]["video_length"]) + freeze_seconds
 
-                # Determine start frame from position
+                # Determine start frame from position (project frames)
                 start_animation_seconds = float(clip.data["start"]) + (playhead_position - float(clip.data["position"]))
                 start_animation_frames = round(start_animation_seconds * fps_float) + 1
                 start_animation_frames_value = start_animation_frames
@@ -2470,100 +2460,103 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Determine volume start and end
                 start_volume_value = 1.0
 
-                # Do we already have a time curve? Look up intersecting frame # from time curve
+                # If existing time curve, get intersecting Y from libopenshot curve
                 if len(clip.data["time"]["Points"]) > 1:
-                    # Delete last time point (which should be the end of the clip). We have a new end of the clip
-                    # after inserting this freeze.
                     del clip.data["time"]["Points"][-1]
-
-                    # Find actual clip object from libopenshot
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     if c:
-                        # Look up correct position from time curve
                         start_animation_frames_value = c.time.GetLong(start_animation_frames)
 
-                # Do we already have a volume curve? Look up intersecting frame # from volume curve
+                # If existing volume curve, get intersecting value
                 if len(clip.data["volume"]["Points"]) > 1:
-                    # Find actual clip object from libopenshot
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     if c:
-                        # Look up correct volume from time curve
                         start_volume_value = c.volume.GetValue(start_animation_frames)
 
-                # Create Time Freeze keyframe points
+                # Time freeze keyframes
                 p = openshot.Point(start_animation_frames, start_animation_frames_value, openshot.LINEAR)
-                p_object = json.loads(p.Json())
-                self.AddPoint(clip.data['time'], p_object)
+                self.AddPoint(clip.data['time'], json.loads(p.Json()))
                 p1 = openshot.Point(end_animation_frames, start_animation_frames_value, openshot.LINEAR)
-                p1_object = json.loads(p1.Json())
-                self.AddPoint(clip.data['time'], p1_object)
+                self.AddPoint(clip.data['time'], json.loads(p1.Json()))
                 p2 = openshot.Point(end_of_clip_frames, end_of_clip_frames_value, openshot.LINEAR)
-                p2_object = json.loads(p2.Json())
-                self.AddPoint(clip.data['time'], p2_object)
+                self.AddPoint(clip.data['time'], json.loads(p2.Json()))
 
-                # Create Volume mute keyframe points (so the freeze is silent)
+                # Volume mute keyframes
                 p = openshot.Point(start_animation_frames - 1, start_volume_value, openshot.LINEAR)
-                p_object = json.loads(p.Json())
-                self.AddPoint(clip.data['volume'], p_object)
+                self.AddPoint(clip.data['volume'], json.loads(p.Json()))
                 p = openshot.Point(start_animation_frames, 0.0, openshot.LINEAR)
-                p_object = json.loads(p.Json())
-                self.AddPoint(clip.data['volume'], p_object)
+                self.AddPoint(clip.data['volume'], json.loads(p.Json()))
                 p2 = openshot.Point(end_animation_frames - 1, 0.0, openshot.LINEAR)
-                p2_object = json.loads(p2.Json())
-                self.AddPoint(clip.data['volume'], p2_object)
+                self.AddPoint(clip.data['volume'], json.loads(p2.Json()))
                 p3 = openshot.Point(end_animation_frames, start_volume_value, openshot.LINEAR)
-                p3_object = json.loads(p3.Json())
-                self.AddPoint(clip.data['volume'], p3_object)
+                self.AddPoint(clip.data['volume'], json.loads(p3.Json()))
 
-                # Create zoom keyframe points
                 if action == MenuTime.FREEZE_ZOOM:
                     p = openshot.Point(start_animation_frames, 1.0, openshot.BEZIER)
-                    p_object = json.loads(p.Json())
-                    self.AddPoint(clip.data['scale_x'], p_object)
+                    self.AddPoint(clip.data['scale_x'], json.loads(p.Json()))
                     p = openshot.Point(start_animation_frames, 1.0, openshot.BEZIER)
-                    p_object = json.loads(p.Json())
-                    self.AddPoint(clip.data['scale_y'], p_object)
-
+                    self.AddPoint(clip.data['scale_y'], json.loads(p.Json()))
                     diff_halfed = (end_animation_frames - start_animation_frames) / 2.0
                     p1 = openshot.Point(start_animation_frames + diff_halfed, 1.05, openshot.BEZIER)
-                    p1_object = json.loads(p1.Json())
-                    self.AddPoint(clip.data['scale_x'], p1_object)
+                    self.AddPoint(clip.data['scale_x'], json.loads(p1.Json()))
                     p1 = openshot.Point(start_animation_frames + diff_halfed, 1.05, openshot.BEZIER)
-                    p1_object = json.loads(p1.Json())
-                    self.AddPoint(clip.data['scale_y'], p1_object)
-
+                    self.AddPoint(clip.data['scale_y'], json.loads(p1.Json()))
                     p1 = openshot.Point(end_animation_frames, 1.0, openshot.BEZIER)
-                    p1_object = json.loads(p1.Json())
-                    self.AddPoint(clip.data['scale_x'], p1_object)
+                    self.AddPoint(clip.data['scale_x'], json.loads(p1.Json()))
                     p1 = openshot.Point(end_animation_frames, 1.0, openshot.BEZIER)
-                    p1_object = json.loads(p1.Json())
-                    self.AddPoint(clip.data['scale_y'], p1_object)
+                    self.AddPoint(clip.data['scale_y'], json.loads(p1.Json()))
 
             else:
 
                 # Calculate speed factor
                 speed_label = speed.replace('X', '')
-                speed_parts = speed_label.split('/')
-                even_multiple = 1
-                if len(speed_parts) == 2:
-                    speed_factor = float(speed_parts[0]) / float(speed_parts[1])
-                    even_multiple = int(speed_parts[1])
+                parts = speed_label.split('/')
+                if len(parts) == 2:
+                    speed_factor = float(parts[0]) / float(parts[1])
+                    even_multiple = int(parts[1])
                 else:
                     speed_factor = float(speed_label)
                     even_multiple = int(speed_factor)
 
                 if action == MenuTime.NONE:
-                    # Reset to the reader's full length and clear any time curve
+                    # RESET TIME
+                    # Compute target end in PROJECT-FRAME domain to match clamp math
                     c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
-                    reader_len = c_obj.Reader().info.video_length if c_obj else clip.data["reader"].get("video_length")
-                    clip.data["reader"]["video_length"] = reader_len
+                    reader = clip.data.get("reader", {}) or {}
+                    reader_len_src = c_obj.Reader().info.video_length if c_obj else int(reader.get("video_length", 0))
 
-                    # Use the reader's FPS when converting frames to seconds
-                    reader_fps = clip.data.get("reader", {}).get("fps") or {"num": fps["num"], "den": fps["den"]}
-                    reader_fps_float = float(reader_fps.get("num", 0)) / float(reader_fps.get("den", 1))
-                    original_duration = reader_len / reader_fps_float if reader_fps_float else 0
-                    self._retime_clip(clip, float(clip.data["start"]) + original_duration, clip.data.get("position"))
-                    clip.data["time"] = { "Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}] }
+                    # Robust source FPS (prefer live reader)
+                    src_fps = 0.0
+                    try:
+                        if c_obj and getattr(c_obj.Reader().info, "video_fps",
+                                             None) and c_obj.Reader().info.video_fps.den:
+                            src_fps = float(c_obj.Reader().info.video_fps.num) / float(
+                                c_obj.Reader().info.video_fps.den)
+                        elif c_obj and getattr(c_obj.Reader().info, "fps", None) and c_obj.Reader().info.fps.den:
+                            src_fps = float(c_obj.Reader().info.fps.num) / float(c_obj.Reader().info.fps.den)
+                    except Exception:
+                        src_fps = 0.0
+                    if not src_fps:
+                        vf = reader.get("video_fps") or reader.get("fps") or {}
+                        num = vf.get("num") or vf.get("Num") or reader.get("video_fps_num") or reader.get("fps_num")
+                        den = vf.get("den") or vf.get("Den") or reader.get("video_fps_den") or reader.get("fps_den")
+                        try:
+                            src_fps = float(num) / float(den) if (num and den) else 0.0
+                        except Exception:
+                            src_fps = 0.0
+                    if not src_fps:
+                        src_fps = fps_float  # last resort
+
+                    # Convert reader frames -> project frames using the same floor(int) strategy as clamp
+                    target_proj_frames = max(1, int(reader_len_src * (fps_float / src_fps)))
+                    target_end_sec = float(clip.data["start"]) + (target_proj_frames / fps_float)
+
+                    # Retime the clip to that end (rescales ALL X correctly)
+                    self._retime_clip(clip, target_end_sec, clip.data.get("position"), direction=1)
+
+                    # Clear the time curve (default identity point)
+                    clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}]}
+
                 else:
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
                     new_duration = self.round_to_multiple(original_duration / speed_factor, even_multiple)
@@ -2571,121 +2564,133 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     direction = 1 if action == MenuTime.FORWARD else -1
 
                     self._retime_clip(clip, new_end_time, clip.data.get("position"), direction)
-                    clip.data["reader"]["video_length"] = self.round_to_multiple(
-                        float(clip.data["reader"]["video_length"]) / speed_factor, even_multiple)
 
             # Save changes with history
             tid = str(uuid.uuid4())
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+            # Clamp only on Reset Time (so bounds are enforced without truncating timing edits)
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid,
+                clamp_to_media=(action == MenuTime.NONE),
+            )
             get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Update waveforms of all clips that have them
         self.Show_Waveform_Triggered(clips_with_waveforms)
 
     def _retime_clip(self, clip, new_end, new_position=None, direction=1):
-        """Internal helper to retime a clip and scale keyframes."""
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        original_start = float(clip.data["start"])
-        original_end = float(clip.data["end"])
-        original_duration = original_end - original_start
+        """Retimes a clip and uniformly rescales ALL keyframes' X (including 'time').
+           - X and Y are in PROJECT frames.
+           - Flip 'time'.Y for reverse.
+        """
+        proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
+        pfps = float(proj_fps.get("num", 30)) / float(proj_fps.get("den", 1))
 
-        requested_end = float(new_end)
-        new_duration = requested_end - original_start
-        if new_duration <= 0:
+        # Seconds domain
+        start_s = float(clip.data["start"])
+        old_end_s = float(clip.data["end"])
+        req_end_s = float(new_end)
+        new_dur_s = req_end_s - start_s
+        if new_dur_s <= 0:
             return False
 
-        # Snap duration/end to frame boundaries
-        new_duration_frames = max(1, round(new_duration * fps_float))
-        new_duration = new_duration_frames / fps_float
-        new_end_val = original_start + new_duration
+        # Frame snapping and derived X domain
+        new_dur_frames = max(1, int(round(new_dur_s * pfps)))
+        new_dur_s = new_dur_frames / pfps
+        new_end_s = start_s + new_dur_s
 
-        # Determine start/end frames from existing time keyframes when possible
-        reader_frames = int(clip.data.get("reader", {}).get("video_length", 0))
-        time_data = clip.data.get("time", {})
-        time_points = time_data.get("Points") if isinstance(time_data, dict) else None
+        start_x = int(round(start_s * pfps)) + 1
+        old_end_x = int(round(old_end_s * pfps))
+        new_end_x = start_x + new_dur_frames
 
-        if time_points and len(time_points) >= 2:
-            start_frame = max(1, min(int(time_points[0]["co"]["Y"]), reader_frames))
-            end_frame = max(start_frame, min(int(time_points[-1]["co"]["Y"]), reader_frames))
-        else:
-            start_frame = max(1, min(round(original_start * fps_float) + 1, reader_frames))
-            end_frame = max(start_frame, min(round(original_end * fps_float), reader_frames))
+        old_len = max(1, old_end_x - start_x)
+        scale = float(new_end_x - start_x) / float(old_len)
 
-        # Swap frames when reversing direction
-        start_output = start_frame if direction == 1 else end_frame
-        end_output = end_frame if direction == 1 else start_frame
-
-        timeline_ratio = float(new_duration) / original_duration if original_duration else 1.0
-
-        # Update or create time keyframes
-        if time_points:
-            if len(time_points) == 1:
-                start = openshot.Point(1, start_output, openshot.LINEAR)
-                end = openshot.Point(new_duration_frames, end_output, openshot.LINEAR)
-                clip.data["time"] = {"Points": [json.loads(start.Json()), json.loads(end.Json())]}
-                time_points = clip.data["time"]["Points"]
-            else:
-                for p in time_points:
-                    x = p["co"]["X"]
-                    if x >= 1:
-                        x = 1 + ((x - 1) * timeline_ratio)
-                        if direction == -1:
-                            x = 1 + (new_duration_frames - (x - 1))
-                        p["co"]["X"] = round(x)
-                    else:
-                        p["co"]["X"] = round(x)
-                    y = int(round(p["co"]["Y"]))
-                    y = max(1, min(y, reader_frames))
-                    if direction == -1:
-                        y = start_frame + end_frame - y
-                    p["co"]["Y"] = y
-                time_points.sort(key=lambda p: p["co"]["X"])
-            time_points[0]["co"]["Y"] = start_output
-            time_points[-1]["co"]["Y"] = end_output
-            time_points[-1]["co"]["X"] = new_duration_frames
-        else:
-            start = openshot.Point(1, start_output, openshot.LINEAR)
-            end = openshot.Point(new_duration_frames, end_output, openshot.LINEAR)
-            clip.data["time"] = {"Points": [json.loads(start.Json()), json.loads(end.Json())]}
-
-        # Helper to scale points for other keyframes
-        def scale_points(kf):
-            pts = kf.get("Points") if isinstance(kf, dict) else None
-            if not pts:
+        # Helpers to iterate and scale all keyframe lists
+        def _scale_points_x(points, clamp_to_new=True):
+            if not isinstance(points, list):
                 return
-            for p in pts:
-                x = p["co"]["X"]
-                if x >= 1:
-                    x = 1 + ((x - 1) * timeline_ratio)
-                    if direction == -1:
-                        x = 1 + (new_duration_frames - (x - 1))
-                    p["co"]["X"] = round(x)
+            for p in points:
+                co = p.get("co", {})
+                x = co.get("X")
+                if x is None:
+                    continue
+                if x >= start_x:
+                    dx = x - start_x
+                    nx = start_x + dx * scale
+                    nx = int(round(nx))
+                    if clamp_to_new:
+                        if nx < start_x:
+                            nx = start_x
+                        elif nx > new_end_x:
+                            nx = new_end_x
+                    co["X"] = nx
 
-        # Scale clip property keyframes (skip time curve)
-        for key, value in clip.data.items():
-            if key == "time" or not isinstance(value, dict):
-                continue
-            scale_points(value)
+        def _visit_all_keyframe_dicts(clip_dict):
+            # Top-level clip properties
+            for k, v in clip_dict.items():
+                if isinstance(v, dict) and isinstance(v.get("Points"), list):
+                    yield ("clip", k, v["Points"])
+            # Tracked objects (if any)
+            for obj in (clip_dict.get("objects") or {}).values():
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        if isinstance(v, dict) and isinstance(v.get("Points"), list):
+                            yield ("object", k, v["Points"])
+            # Effects on the clip
+            for eff in clip_dict.get("effects", []) or []:
+                if isinstance(eff, dict):
+                    for k, v in eff.items():
+                        if isinstance(v, dict) and isinstance(v.get("Points"), list):
+                            yield ("effect", k, v["Points"])
 
-        # Scale effect keyframes
-        for effect in clip.data.get("effects", []):
-            for key, value in effect.items():
-                if isinstance(value, dict):
-                    scale_points(value)
+        # Scale X for all keyframed properties, including time
+        for _scope, key, points in _visit_all_keyframe_dicts(clip.data):
+            _scale_points_x(points, clamp_to_new=True)
 
-        # Update timing and position
-        clip.data["duration"] = new_duration
-        clip.data["end"] = new_end_val
+        # Build or update the time curve orientation
+        time_points = None
+        if isinstance(clip.data.get("time"), dict):
+            time_points = clip.data["time"].get("Points")
+
+        if not isinstance(time_points, list) or len(time_points) < 2:
+            # Create minimal mapping based on old in/out
+            y0 = start_x
+            y1 = int(round(old_end_s * pfps))
+            if direction == -1:
+                y0, y1 = y1, y0
+            p0 = openshot.Point(start_x, y0, openshot.LINEAR)
+            p1 = openshot.Point(new_end_x, y1, openshot.LINEAR)
+            clip.data["time"] = {"Points": [json.loads(p0.Json()), json.loads(p1.Json())]}
+            time_points = clip.data["time"]["Points"]
+        else:
+            # After X scaling, flip Y for reverse if requested (mirror around endpoints)
+            if direction == -1 and len(time_points) >= 2:
+                y_start = int(round(time_points[0]["co"]["Y"]))
+                y_end = int(round(time_points[-1]["co"]["Y"]))
+                for p in time_points:
+                    co = p.get("co", {})
+                    y = co.get("Y")
+                    if y is None:
+                        continue
+                    co["Y"] = int(round(y_start + y_end - y))
+
+        # Force the last time point X to new_end_x, and first at least start_x
+        if time_points and len(time_points) >= 1:
+            time_points.sort(key=lambda p: int(round(p.get("co", {}).get("X", 0))))
+            time_points[-1]["co"]["X"] = int(new_end_x)
+            if time_points[0]["co"]["X"] < start_x:
+                time_points[0]["co"]["X"] = int(start_x)
+
+        # Update timing and optional position
+        clip.data["duration"] = float(new_dur_s)
+        clip.data["end"] = float(new_end_s)
         if new_position is not None:
-            new_position = round(new_position * fps_float) / fps_float
-            clip.data["position"] = float(new_position)
+            clip.data["position"] = float(int(round(float(new_position) * pfps)) / pfps)
 
         return True
 
     @pyqtSlot(str, float, float)
     def RetimeClip(self, clip_id, new_end, new_position):
-        """Public slot to retime a clip from the timeline UI"""
+        """Public slot to retime a clip from the timeline UI (Timing Mode)."""
         clip = Clip.get(id=clip_id)
         if not clip:
             return
