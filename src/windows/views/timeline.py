@@ -56,6 +56,8 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .menu import StyledContextMenu
 from windows.clip_time import clamp_timing_to_media
+from .retime import retime_clip
+from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
 # Constants used by this file
 JS_SCOPE_SELECTOR = "$('body').scope()"
@@ -893,7 +895,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         Time_None.triggered.connect(partial(self.Time_Triggered, MenuTime.NONE, clip_ids, '1X'))
         Time_Menu.addSeparator()
         for speed, speed_values in [
-            (_("Normal"), ['1X']),
             (_("Fast"), ['2X', '4X', '8X', '16X']),
             (_("Slow"), ['1/2X', '1/4X', '1/8X', '1/16X'])
         ]:
@@ -915,6 +916,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 Speed_Menu.addMenu(Direction_Menu)
             # Add menu to parent
             Time_Menu.addMenu(Speed_Menu)
+
+        # Repeat menu
+        Repeat_Menu = StyledContextMenu(title=_("Repeat"), parent=self)
+        for pattern_title, pattern in [(_("Loop"), "loop"), (_("Ping-Pong"), "pingpong")]:
+            Pattern_Menu = StyledContextMenu(title=pattern_title, parent=self)
+            for direction_title, start_dir in [(_("Forward"), 1), (_("Reverse"), -1)]:
+                Dir_Menu = StyledContextMenu(title=direction_title, parent=self)
+                for count in [2, 3, 4, 5, 8, 10]:
+                    Action = Dir_Menu.addAction(_("{}X").format(count))
+                    Action.triggered.connect(
+                        partial(self.Repeat_Triggered, pattern, start_dir, count, clip_ids))
+                Pattern_Menu.addMenu(Dir_Menu)
+            Repeat_Menu.addMenu(Pattern_Menu)
+        Custom_Action = Repeat_Menu.addAction(_("Custom"))
+        Custom_Action.triggered.connect(partial(self.Repeat_Custom, clip_ids))
+        Time_Menu.addMenu(Repeat_Menu)
 
         # Add Freeze menu options
         Time_Menu.addSeparator()
@@ -2513,13 +2530,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 parts = speed_label.split('/')
                 if len(parts) == 2:
                     speed_factor = float(parts[0]) / float(parts[1])
-                    even_multiple = int(parts[1])
                 else:
                     speed_factor = float(speed_label)
-                    even_multiple = int(speed_factor)
 
                 if action == MenuTime.NONE:
                     # RESET TIME
+                    reset_repeat(clip)
                     # Compute target end in PROJECT-FRAME domain to match clamp math
                     c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
                     reader = clip.data.get("reader", {}) or {}
@@ -2552,18 +2568,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     target_end_sec = float(clip.data["start"]) + (target_proj_frames / fps_float)
 
                     # Retime the clip to that end (rescales ALL X correctly)
-                    self._retime_clip(clip, target_end_sec, clip.data.get("position"), direction=1)
+                    retime_clip(clip, target_end_sec, clip.data.get("position"), direction=1)
 
                     # Clear the time curve (default identity point)
                     clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}]}
 
                 else:
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
-                    new_duration = self.round_to_multiple(original_duration / speed_factor, even_multiple)
+                    new_duration = original_duration / speed_factor
                     new_end_time = float(clip.data["start"]) + new_duration
                     direction = 1 if action == MenuTime.FORWARD else -1
 
-                    self._retime_clip(clip, new_end_time, clip.data.get("position"), direction)
+                    retime_clip(clip, new_end_time, clip.data.get("position"), direction)
 
             # Save changes with history
             tid = str(uuid.uuid4())
@@ -2576,117 +2592,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Update waveforms of all clips that have them
         self.Show_Waveform_Triggered(clips_with_waveforms)
 
-    def _retime_clip(self, clip, new_end, new_position=None, direction=1):
-        """Retimes a clip and uniformly rescales ALL keyframes' X (including 'time').
-           - X and Y are in PROJECT frames.
-           - Flip 'time'.Y for reverse.
-        """
-        proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-        pfps = float(proj_fps.get("num", 30)) / float(proj_fps.get("den", 1))
+    def Repeat_Triggered(self, pattern, direction, passes, clip_ids, delay_frames=0, ramp=0.0):
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        clips_with_waveforms = []
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip:
+                continue
+            if clip.data.get("ui", {}).get("audio_data", []):
+                clips_with_waveforms.append(clip.id)
+            apply_repeat(clip, pattern, direction, passes, delay_frames, ramp, fps_float)
+            tid = str(uuid.uuid4())
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid, clamp_to_media=False)
+        if clips_with_waveforms:
+            self.Show_Waveform_Triggered(clips_with_waveforms)
 
-        # Seconds domain
-        start_s = float(clip.data["start"])
-        old_end_s = float(clip.data["end"])
-        req_end_s = float(new_end)
-        new_dur_s = req_end_s - start_s
-        if new_dur_s <= 0:
-            return False
+    def Repeat_Custom(self, clip_ids):
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        dlg = RepeatDialog(self)
+        if dlg.exec_():
+            pattern, direction, passes, delay_frames, ramp = dlg.get_values(fps_float)
+            self.Repeat_Triggered(pattern, direction, passes, clip_ids, delay_frames, ramp)
 
-        # Frame snapping and derived X domain
-        new_dur_frames = max(1, int(round(new_dur_s * pfps)))
-        new_dur_s = new_dur_frames / pfps
-        new_end_s = start_s + new_dur_s
-
-        start_x = int(round(start_s * pfps)) + 1
-        old_end_x = int(round(old_end_s * pfps))
-        new_end_x = start_x + new_dur_frames
-
-        old_len = max(1, old_end_x - start_x)
-        scale = float(new_end_x - start_x) / float(old_len)
-
-        # Helpers to iterate and scale all keyframe lists
-        def _scale_points_x(points, clamp_to_new=True):
-            if not isinstance(points, list):
-                return
-            for p in points:
-                co = p.get("co", {})
-                x = co.get("X")
-                if x is None:
-                    continue
-                if x >= start_x:
-                    dx = x - start_x
-                    nx = start_x + dx * scale
-                    nx = int(round(nx))
-                    if clamp_to_new:
-                        if nx < start_x:
-                            nx = start_x
-                        elif nx > new_end_x:
-                            nx = new_end_x
-                    co["X"] = nx
-
-        def _visit_all_keyframe_dicts(clip_dict):
-            # Top-level clip properties
-            for k, v in clip_dict.items():
-                if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                    yield ("clip", k, v["Points"])
-            # Tracked objects (if any)
-            for obj in (clip_dict.get("objects") or {}).values():
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                            yield ("object", k, v["Points"])
-            # Effects on the clip
-            for eff in clip_dict.get("effects", []) or []:
-                if isinstance(eff, dict):
-                    for k, v in eff.items():
-                        if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                            yield ("effect", k, v["Points"])
-
-        # Scale X for all keyframed properties, including time
-        for _scope, key, points in _visit_all_keyframe_dicts(clip.data):
-            _scale_points_x(points, clamp_to_new=True)
-
-        # Build or update the time curve orientation
-        time_points = None
-        if isinstance(clip.data.get("time"), dict):
-            time_points = clip.data["time"].get("Points")
-
-        if not isinstance(time_points, list) or len(time_points) < 2:
-            # Create minimal mapping based on old in/out
-            y0 = start_x
-            y1 = int(round(old_end_s * pfps))
-            if direction == -1:
-                y0, y1 = y1, y0
-            p0 = openshot.Point(start_x, y0, openshot.LINEAR)
-            p1 = openshot.Point(new_end_x, y1, openshot.LINEAR)
-            clip.data["time"] = {"Points": [json.loads(p0.Json()), json.loads(p1.Json())]}
-            time_points = clip.data["time"]["Points"]
-        else:
-            # After X scaling, flip Y for reverse if requested (mirror around endpoints)
-            if direction == -1 and len(time_points) >= 2:
-                y_start = int(round(time_points[0]["co"]["Y"]))
-                y_end = int(round(time_points[-1]["co"]["Y"]))
-                for p in time_points:
-                    co = p.get("co", {})
-                    y = co.get("Y")
-                    if y is None:
-                        continue
-                    co["Y"] = int(round(y_start + y_end - y))
-
-        # Force the last time point X to new_end_x, and first at least start_x
-        if time_points and len(time_points) >= 1:
-            time_points.sort(key=lambda p: int(round(p.get("co", {}).get("X", 0))))
-            time_points[-1]["co"]["X"] = int(new_end_x)
-            if time_points[0]["co"]["X"] < start_x:
-                time_points[0]["co"]["X"] = int(start_x)
-
-        # Update timing and optional position
-        clip.data["duration"] = float(new_dur_s)
-        clip.data["end"] = float(new_end_s)
-        if new_position is not None:
-            clip.data["position"] = float(int(round(float(new_position) * pfps)) / pfps)
-
-        return True
 
     @pyqtSlot(str, float, float)
     def RetimeClip(self, clip_id, new_end, new_position):
@@ -2696,7 +2625,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return
 
         original_clip_data = json.loads(json.dumps(clip.data))
-        if not self._retime_clip(clip, new_end, new_position, direction=1):
+        if not retime_clip(clip, new_end, new_position, direction=1):
             return
 
         tid = str(uuid.uuid4())
@@ -2708,10 +2637,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clamp_to_media=False,
         )
         get_app().updates.apply_last_action_to_history(original_clip_data)
-
-    def round_to_multiple(self, number, multiple):
-        """Round this to the closest multiple of a given #"""
-        return number - (number % multiple)
 
     def show_all_clips(self, clip, stretch=False):
         """ Show all clips at the same time (arranged col by col, row by row)  """
