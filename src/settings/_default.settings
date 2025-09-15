@@ -47,7 +47,7 @@
     "step": 0.1,
     "setting": "ui-scale",
     "value": 1.0,
-    "type": "spinner",
+    "type": "hidden",
     "restart": true
   },
   {
