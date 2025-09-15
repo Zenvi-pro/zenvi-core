@@ -221,10 +221,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return True
         return False
 
-    @pyqtSlot(str, bool, bool, bool, str, bool)
+    @pyqtSlot(str, bool, bool, bool, str)
     def update_clip_data(
         self, clip_json, only_basic_props=True, ignore_reader=False,
-        ignore_refresh=False, transaction_id=None, clamp_to_media=True
+        ignore_refresh=False, transaction_id=None
     ):
         """ Javascript callable function to update the project data when a clip changes.
         Create an updateAction and send it to the update manager.
@@ -248,9 +248,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             log.debug("Create new clip object from clip_data: %s" % clip_data)
             existing_clip = Clip()
 
-        if clamp_to_media:
-            # Constrain timing values to the reader's bounds
-            clamp_timing_to_media(clip_data, existing_clip)
+        # Constrain timing values to the reader's bounds
+        clamp_timing_to_media(clip_data, existing_clip)
 
         # Update clip data
         existing_clip.data = clip_data
@@ -2583,10 +2582,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             # Save changes with history
             tid = str(uuid.uuid4())
-            # Clamp only on Reset Time (so bounds are enforced without truncating timing edits)
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid,
-                clamp_to_media=(action == MenuTime.NONE),
-            )
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
             get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Update waveforms of all clips that have them
@@ -2604,7 +2600,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 clips_with_waveforms.append(clip.id)
             apply_repeat(clip, pattern, direction, passes, delay_frames, ramp, fps_float)
             tid = str(uuid.uuid4())
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid, clamp_to_media=False)
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
         if clips_with_waveforms:
             self.Show_Waveform_Triggered(clips_with_waveforms)
 
@@ -2634,7 +2630,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             only_basic_props=False,
             ignore_reader=True,
             transaction_id=tid,
-            clamp_to_media=False,
         )
         get_app().updates.apply_last_action_to_history(original_clip_data)
 

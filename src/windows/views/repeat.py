@@ -117,13 +117,11 @@ def _normalize_points(points, relative_y=False):
     return out
 
 
-def _repeat_curve(points, span_x, dir_sign, passes, delay_frames, ramp, pattern, is_time=False, span_y=None):
+def _repeat_curve(points, span_x, dir_sign, passes, delay_frames, ramp, pattern):
     """Repeat normalized points applying ramp, delay, and direction."""
     new_points = []
     base = 0
     dir_local = dir_sign
-    if is_time and span_y is None and points:
-        span_y = int(round(points[-1]["co"].get("Y", 0)))
     for k in range(passes):
         speed = (1 + ramp) ** k
         scale = 1 / abs(speed)
@@ -132,14 +130,12 @@ def _repeat_curve(points, span_x, dir_sign, passes, delay_frames, ramp, pattern,
         for p in pts_iter:
             x = int(round(p["co"].get("X", 0))) - 1
             y = p["co"].get("Y")
-            nx_off = int(round(x * scale))
+            nx_off = min(int(round(x * scale)), dur - 1)
             if dir_local > 0:
                 nx = base + nx_off + 1
-                ny = y if not is_time else y
             else:
                 nx = base + (dur - nx_off)
-                ny = y if not is_time else span_y - y + 1
-            new_points.append({"co": {"X": nx, "Y": ny}, "interpolation": p.get("interpolation", openshot.LINEAR)})
+            new_points.append({"co": {"X": nx, "Y": y}, "interpolation": p.get("interpolation", openshot.LINEAR)})
         base += dur
         if k < passes - 1 and delay_frames:
             last_y = new_points[-1]["co"].get("Y")
@@ -167,7 +163,6 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
             {"co": {"X": base_frames, "Y": base_frames}, "interpolation": openshot.LINEAR},
         ]
     time_span_x = int(round(base_time[-1]["co"]["X"]))
-    time_span_y = int(round(base_time[-1]["co"]["Y"]))
 
     # Store original data if not already
     if "repeat_cache" not in clip.data:
@@ -185,7 +180,7 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
 
     # Build time curve based on existing keyframes
     time_points, total_frames = _repeat_curve(
-        base_time, time_span_x, dir_sign, passes, delay_frames, ramp, pattern, True, time_span_y
+        base_time, time_span_x, dir_sign, passes, delay_frames, ramp, pattern
     )
     clip.data["time"] = {"Points": time_points}
 

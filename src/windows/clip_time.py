@@ -113,7 +113,9 @@ def clamp_timing_to_media(clip_data, existing_clip=None):
     time_data = clip_data.get("time")
     points = time_data.get("Points") if isinstance(time_data, dict) else None
 
-    if isinstance(points, list) and len(points) > 1:
+    multi_time = isinstance(points, list) and len(points) > 1
+
+    if multi_time:
         for point in points:
             co = point.get("co", {})
             # X is project frames
@@ -128,23 +130,30 @@ def clamp_timing_to_media(clip_data, existing_clip=None):
                     co["Y"] = max_y_project
                 else:
                     co["Y"] = y
-        # Keep duration/end unchanged for multi-point curves
+        # For multi-point time curves, avoid truncating end/duration
+        start_sec = float(clip_data.get("start", 0.0))
+        if start_sec < 0.0:
+            start_sec = 0.0
+        if start_sec > max_duration_sec:
+            start_sec = max_duration_sec
+        clip_data["start"] = start_sec
+        return clip_data
     else:
         # Zero or one time point → reset duration to full media duration
         clip_data["duration"] = float(max_duration_sec)
 
-    # --- Clamp start/end trims in SECONDS domain ---
-    start_sec = float(clip_data.get("start", 0.0))
-    end_sec = float(clip_data.get("end", start_sec))
-    if end_sec > max_duration_sec:
-        end_sec = max_duration_sec
-    if start_sec < 0.0:
-        start_sec = 0.0
-    if start_sec > end_sec:
-        start_sec = end_sec
-    clip_data["start"] = start_sec
-    clip_data["end"] = end_sec
-    # Keep duration consistent with start/end
-    clip_data["duration"] = float(end_sec - start_sec)
+        # --- Clamp start/end trims in SECONDS domain ---
+        start_sec = float(clip_data.get("start", 0.0))
+        end_sec = float(clip_data.get("end", start_sec))
+        if end_sec > max_duration_sec:
+            end_sec = max_duration_sec
+        if start_sec < 0.0:
+            start_sec = 0.0
+        if start_sec > end_sec:
+            start_sec = end_sec
+        clip_data["start"] = start_sec
+        clip_data["end"] = end_sec
+        # Keep duration consistent with start/end
+        clip_data["duration"] = float(end_sec - start_sec)
 
-    return clip_data
+        return clip_data

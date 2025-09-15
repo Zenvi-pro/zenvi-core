@@ -24,7 +24,7 @@ App.directive("tlKeyframe", function () {
         var json = JSON.stringify(copy);
         if (objType === "clip") {
           timeline.update_clip_data(
-            json, false /*allow keyframes*/, true /*force JSON diff*/, ignoreRefresh, transactionId, true
+            json, false /*allow keyframes*/, true /*force JSON diff*/, ignoreRefresh, transactionId
           );
         } else {
           timeline.update_transition_data(
