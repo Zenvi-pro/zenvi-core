@@ -52,7 +52,7 @@ class RepeatDialog(QDialog):
         self.direction_combo = QComboBox(self)
         self.direction_combo.addItems([_("Forward"), _("Reverse")])
         self.direction_combo.setCurrentIndex(0 if direction > 0 else 1)
-        layout.addRow(_("Start direction"), self.direction_combo)
+        layout.addRow(_("Direction"), self.direction_combo)
 
         self.passes_spin = QSpinBox(self)
         self.passes_spin.setRange(2, 500)
@@ -67,12 +67,12 @@ class RepeatDialog(QDialog):
         self.delay_unit.addItems([_("frames"), _("ms"), _("sec")])
         delay_layout.addWidget(self.delay_spin)
         delay_layout.addWidget(self.delay_unit)
-        layout.addRow(_("Delay between passes"), delay_layout)
+        layout.addRow(_("Delay"), delay_layout)
 
         self.ramp_spin = QDoubleSpinBox(self)
         self.ramp_spin.setRange(-1000.0, 1000.0)
         self.ramp_spin.setDecimals(3)
-        layout.addRow(_("Speed ramp per pass (%)"), self.ramp_spin)
+        layout.addRow(_("Speed Ramp (%)"), self.ramp_spin)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self

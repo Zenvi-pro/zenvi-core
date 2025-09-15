@@ -149,7 +149,7 @@ the following menu options:
    Animate             Zoom and slide a clip
    Rotate              Rotate or flip a clip
    Layout              Make a video smaller or larger, and snap to any corner
-   Time                Reverse and speed up or slow down video
+   Time                Reverse, repeat, and speed up or slow down video
    Volume              Fade in or out the volume, reduce or increase the volume of a clip, or mute
    Separate Audio      Separate the audio from a clip. This preset can either create a single detached audio clip (positioned on a layer below the original clip), or multiple detached audio clips (one per audio track, positioned on multiple layers below the original clip)
    Slice               Cut the clip at the play-head position
@@ -206,10 +206,55 @@ See :ref:`clip_time_ref` key-frame.
 - **Usage Example:** Creating a slow-motion effect to emphasize a specific action.
 - **Tip:** Use time presets to creatively manipulate the pacing of your video.
 
+.. _clip_time_repeat_ref:
+
+Repeat
+""""""
+Use :guilabel:`Time → Repeat` to play a clip multiple times, without building the
+time curve by hand. OpenShot writes the needed :guilabel:`Time` keyframes for you (you can edit them later).
+
+**Menu path**
+
+- :guilabel:`Time → Repeat → Loop → Forward` – plays left to right, then starts again from the beginning
+- :guilabel:`Time → Repeat → Loop → Reverse` – plays right to left, then starts again from the end
+- :guilabel:`Time → Repeat → Ping-Pong → Forward` – forward, then backward, then forward…
+- :guilabel:`Time → Repeat → Ping-Pong → Reverse` – backward, then forward, then backward…
+- :guilabel:`Custom…` – opens a dialog for extra options (see below)
+
+Counts are **finite** (2x, 3x, 4x, 5x, 8x, 10x, or a custom number).  
+Example: “Forward then Back and stop” = :guilabel:`Ping-Pong → Forward → 2x`.
+
+**What gets repeated**
+
+- Repeat always acts on the **currently trimmed** in/out of the clip.
+- The :guilabel:`Time` curve is stamped as a simple shape:
+  - Loop Forward = rising saw
+  - Loop Reverse = falling saw
+  - Ping-Pong = triangle (direction flips each pass)
+- To avoid a double frame at the seam, the last frame of each pass is not duplicated.
+
+**Keyframes during Repeat**
+
+- When you use Repeat, OpenShot will also **repeat other keyframes** found inside the trimmed section (location, scale, effects, etc.) into each pass so your animations stay in sync.
+- Repeated keyframes keep their relative timing inside each pass.
+
+**Custom Repeat** (dialog options)
+
+- :guilabel:`Pattern:` Loop | Ping-Pong
+- :guilabel:`Direction:` Forward | Reverse
+- :guilabel:`Passes:` integer (2 or more). This is the number of times it will play.
+- :guilabel:`Delay:` number + units [frames | ms | sec]. This is an optional delay between each repeated pass.
+- :guilabel:`Speed Ramp (%):` % speed change per pass (optional). Positive speeds up each pass; negative slows down each pass.
+
+**Reset**
+
+- :guilabel:`Time → Reset Time` completely removes any Time curve (including Repeat) and restores the clip to its
+  original playback, **without deleting your original non-Time keyframes**.
+
 Timing Tool
 ^^^^^^^^^^^
 Another way to change a clip's speed is with the :guilabel:`Timing` tool on the timeline toolbar. Enable the clock
-icon and drag a clip's edges. Stretching the clip slows playback to fill gaps, while compressing it speeds the clip up.
+icon and drag a clip's edges. Lengthening the clip slows playback, while shotening it speeds the clip up.
 All keyframes on the clip and its effects are scaled so their relative positions remain intact.
 
 Volume
