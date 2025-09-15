@@ -67,7 +67,7 @@ try:
                     scale = float(item.get("value", scale))
                     break
 except Exception as exc:
-    logger.warning("Failed to read UI scale from %%s: %%s", settings_path, exc, exc_info=True)
+    logger.warning("Failed to read UI scale from %s: %s", settings_path, exc, exc_info=True)
 scale = max(1.0, min(3.0, scale))
 if scale != 1.0:
     os.environ["QT_SCALE_FACTOR"] = str(scale)

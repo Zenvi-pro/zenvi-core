@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 import os
 import re
-from typing import Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Tuple, Union
 
 from PyQt5.QtGui import QColor, QPixmap
 from classes.logger import log
@@ -511,6 +511,213 @@ def _theme_get_int(
     return None
 
 
+def _assign_color(target, attr: str, color: Optional[QColor]) -> None:
+    if color:
+        setattr(target, attr, color)
+
+
+def _assign_value(
+    target,
+    attr: str,
+    value: Optional[Union[int, float]],
+    *,
+    transform: Optional[Callable[[Union[int, float]], Union[int, float]]] = None,
+) -> None:
+    if value is not None:
+        if transform:
+            value = transform(value)
+        setattr(target, attr, value)
+
+
+def _apply_gradient_with_fallback(
+    target,
+    attr_primary: str,
+    attr_secondary: str,
+    gradient_func: Callable[[], Tuple[Optional[QColor], Optional[QColor]]],
+    fallback_func: Callable[[], Optional[QColor]],
+    *,
+    miss_log: Optional[Callable[[], None]] = None,
+) -> None:
+    col1, col2 = gradient_func()
+    if col1:
+        setattr(target, attr_primary, col1)
+    if col2:
+        setattr(target, attr_secondary, col2)
+    elif col1:
+        setattr(target, attr_secondary, QColor())
+    if col1 is None and col2 is None:
+        fallback = fallback_func()
+        if fallback:
+            setattr(target, attr_primary, fallback)
+            setattr(target, attr_secondary, QColor())
+        elif miss_log:
+            miss_log()
+
+
+def _theme_apply_color(
+    target,
+    attr: str,
+    qt_theme,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    *,
+    log_miss: bool = True,
+) -> None:
+    col = _theme_get_color(qt_theme, selector, prop, log_miss=log_miss)
+    _assign_color(target, attr, col)
+
+
+def _theme_apply_int(
+    target,
+    attr: str,
+    qt_theme,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    *,
+    transform: Optional[Callable[[Union[int, float]], Union[int, float]]] = None,
+    log_miss: bool = True,
+) -> None:
+    val = _theme_get_int(qt_theme, selector, prop, log_miss=log_miss)
+    _assign_value(target, attr, val, transform=transform)
+
+
+def _theme_get_first_color(
+    qt_theme,
+    queries: Sequence[Sequence],
+) -> Optional[QColor]:
+    for query in queries:
+        selector, prop = query[0], query[1]
+        extra = query[2] if len(query) > 2 else {}
+        col = _theme_get_color(qt_theme, selector, prop, **extra)
+        if col:
+            return col
+    return None
+
+
+def _set_default_if_missing(target, attrs: Sequence[str], value: int) -> None:
+    for attr in attrs:
+        if not getattr(target, attr):
+            setattr(target, attr, value)
+
+
+def _apply_css_color_value(
+    target,
+    attr: str,
+    css: str,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    source: str,
+    *,
+    log_miss: bool = True,
+    log_selector: bool = True,
+) -> None:
+    col = _parse_color(
+        css,
+        selector,
+        prop,
+        source,
+        log_miss=log_miss,
+        log_selector=log_selector,
+    )
+    _assign_color(target, attr, col)
+
+
+def _apply_css_float_value(
+    target,
+    attr: str,
+    css: str,
+    selector: str,
+    prop: Union[str, Sequence[str]],
+    source: str,
+    *,
+    log_miss: bool = True,
+    log_selector: bool = True,
+    transform: Optional[Callable[[float], Union[int, float]]] = None,
+) -> None:
+    val = _parse_float(
+        css,
+        selector,
+        prop,
+        source,
+        log_miss=log_miss,
+        log_selector=log_selector,
+    )
+    _assign_value(target, attr, val, transform=transform)
+
+
+def _apply_clip_box_shadow(
+    theme: TimelineTheme,
+    css: str,
+    source: str,
+    *,
+    log_miss: bool,
+) -> None:
+    val = _css_prop(css, ".clip", "box-shadow", source, log_selector=False, log_property=False)
+    if not val:
+        return
+    col, blur = _parse_box_shadow(css, ".clip", source, log_miss=log_miss)
+    if col:
+        theme.clip.shadow_color = col
+    if blur is not None:
+        theme.clip.shadow_blur = blur
+
+
+def _ruler_gradient(css: str, source: str) -> Tuple[Optional[QColor], Optional[QColor]]:
+    col1, col2 = _parse_gradient(css, "#scrolling_ruler", "background", source, log_miss=False)
+    if not col1 and not col2:
+        col1, col2 = _parse_gradient(css, "#ruler", "background", source, log_miss=False)
+    return col1, col2
+
+
+def _ruler_theme_background(qt_theme) -> Optional[QColor]:
+    col = _theme_get_color(
+        qt_theme,
+        "#scrolling_ruler",
+        ("background", "background-color"),
+        log_miss=False,
+    )
+    if not col:
+        col = _theme_get_color(
+            qt_theme,
+            "#ruler",
+            ("background", "background-color"),
+            log_miss=False,
+        )
+    return col
+
+
+def _ruler_css_background(css: str, source: str) -> Optional[QColor]:
+    col = _parse_color(
+        css,
+        "#scrolling_ruler",
+        ("background", "background-color"),
+        source,
+        log_miss=False,
+    )
+    if not col:
+        col = _parse_color(
+            css,
+            "#ruler",
+            ("background", "background-color"),
+            source,
+            log_miss=False,
+        )
+    return col
+
+
+def _css_get_first_color(
+    css: str,
+    source: str,
+    log_miss: bool,
+    queries: Sequence[Sequence],
+) -> Optional[QColor]:
+    for query in queries:
+        selector, prop = query[0], query[1]
+        col = _parse_color(css, selector, prop, source, log_miss=log_miss)
+        if col:
+            return col
+    return None
+
 def _theme_apply_background(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, "body", "background", "theme", log_miss=False)
     if col1:
@@ -527,49 +734,29 @@ def _theme_apply_background(theme: TimelineTheme, qt_theme, css_sheet: str) -> N
 
 
 def _theme_apply_clip(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
-    col1, col2 = _parse_gradient(css_sheet, ".clip", "background", "theme", log_miss=False)
-    if col1:
-        theme.clip.background = col1
-    if col2:
-        theme.clip.background2 = col2
-    elif col1:
-        theme.clip.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _theme_get_color(qt_theme, ".clip", ("background", "background-color"))
-        if col:
-            theme.clip.background = col
-            theme.clip.background2 = QColor()
-    col = _theme_get_color(qt_theme, ".clip", ("border-top", "border"))
-    if col:
-        theme.clip.border_color = col
-    val = _theme_get_int(qt_theme, ".clip", ("border-top", "border"))
-    if val is not None:
-        theme.clip.border_width = float(val)
-    val = _theme_get_int(qt_theme, ".clip", "border-radius")
-    if val is not None:
-        theme.clip.border_radius = val
-    val = _theme_get_int(qt_theme, ".clip", "font-size")
-    if val is not None:
-        theme.clip.font_size = val
-    col = _theme_get_color(qt_theme, ".clip_label", "color")
-    if col:
-        theme.clip.font_color = col
-    val = _theme_get_int(qt_theme, ".clip", "height")
-    if val is not None:
-        theme.clip.height = val
-    val = _css_prop(css_sheet, ".clip", "box-shadow", "theme", log_selector=False, log_property=False)
-    if val:
-        col, blur = _parse_box_shadow(css_sheet, ".clip", "theme", log_miss=False)
-        if col:
-            theme.clip.shadow_color = col
-        if blur is not None:
-            theme.clip.shadow_blur = blur
-    val = _theme_get_int(qt_theme, ".thumb", "width")
-    if val is not None:
-        theme.clip.thumb_width = val
-    val = _theme_get_int(qt_theme, ".thumb", "height")
-    if val is not None:
-        theme.clip.thumb_height = val
+    _apply_gradient_with_fallback(
+        theme.clip,
+        "background",
+        "background2",
+        lambda: _parse_gradient(css_sheet, ".clip", "background", "theme", log_miss=False),
+        lambda: _theme_get_color(qt_theme, ".clip", ("background", "background-color")),
+    )
+    _theme_apply_color(theme.clip, "border_color", qt_theme, ".clip", ("border-top", "border"))
+    _theme_apply_int(
+        theme.clip,
+        "border_width",
+        qt_theme,
+        ".clip",
+        ("border-top", "border"),
+        transform=float,
+    )
+    _theme_apply_int(theme.clip, "border_radius", qt_theme, ".clip", "border-radius")
+    _theme_apply_int(theme.clip, "font_size", qt_theme, ".clip", "font-size")
+    _theme_apply_color(theme.clip, "font_color", qt_theme, ".clip_label", "color")
+    _theme_apply_int(theme.clip, "height", qt_theme, ".clip", "height")
+    _apply_clip_box_shadow(theme, css_sheet, "theme", log_miss=False)
+    _theme_apply_int(theme.clip, "thumb_width", qt_theme, ".thumb", "width")
+    _theme_apply_int(theme.clip, "thumb_height", qt_theme, ".thumb", "height")
 
 
 def _theme_apply_selection(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
@@ -635,154 +822,88 @@ def _theme_apply_transition(theme: TimelineTheme, qt_theme, css_sheet: str) -> N
 
 
 def _theme_apply_track(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
-    col1, col2 = _parse_gradient(css_sheet, ".track", "background", "theme", log_miss=False)
-    if col1:
-        theme.track.background = col1
-    if col2:
-        theme.track.background2 = col2
-    elif col1:
-        theme.track.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _theme_get_color(qt_theme, ".track", ("background", "background-color"))
-        if col:
-            theme.track.background = col
-            theme.track.background2 = QColor()
-    col = _theme_get_color(qt_theme, ".track", ("border-top", "border"))
-    if col:
-        theme.track.border_color = col
-    val = _theme_get_int(qt_theme, ".track", "border-radius")
-    if val is not None:
-        theme.track.border_radius = val
-    col = _theme_get_color(qt_theme, ".track_name", "color")
-    if not col:
-        col = _theme_get_color(qt_theme, ".track_label", "color")
-    if col:
-        theme.track.font_color = col
-    val = _theme_get_int(qt_theme, ".track", "height")
-    if val is not None:
-        theme.track.height = val
-    val = _theme_get_int(qt_theme, ".track_name", "font-size")
-    if val is not None:
-        theme.track.font_size = val
-    col = _theme_get_color(qt_theme, ".track_name", ("background", "background-color"))
-    if col:
-        theme.track.name_background = col
-    val = _theme_get_int(qt_theme, ".track_name", "width")
-    if val is not None:
-        theme.track.name_width = val
-    val = _theme_get_int(qt_theme, ".track", "margin-bottom")
-    if val is not None:
-        theme.track.gap = val
-    col = _theme_get_color(qt_theme, ".track_name", "border-left")
-    if col:
-        theme.track.name_border_color = col
-    val = _theme_get_int(qt_theme, ".track_name", "border-left")
-    if val is not None:
-        theme.track.name_border_width = val
-    col = _theme_get_color(qt_theme, ".track_name", ("border-top", "border"))
-    if col:
-        theme.track.name_border_top_color = col
-    val = _theme_get_int(qt_theme, ".track_name", ("border-top", "border"))
-    if val is not None:
-        theme.track.name_border_top_width = val
-    col = _theme_get_color(qt_theme, ".track_name", ("border-bottom", "border"))
-    if col:
-        theme.track.name_border_bottom_color = col
-    val = _theme_get_int(qt_theme, ".track_name", ("border-bottom", "border"))
-    if val is not None:
-        theme.track.name_border_bottom_width = val
-    val = _theme_get_int(qt_theme, ".track_name", "border-top-left-radius")
-    if val is not None:
-        theme.track.name_radius_tl = val
-    val = _theme_get_int(qt_theme, ".track_name", "border-bottom-left-radius")
-    if val is not None:
-        theme.track.name_radius_bl = val
+    _apply_gradient_with_fallback(
+        theme.track,
+        "background",
+        "background2",
+        lambda: _parse_gradient(css_sheet, ".track", "background", "theme", log_miss=False),
+        lambda: _theme_get_color(qt_theme, ".track", ("background", "background-color")),
+    )
+    _theme_apply_color(theme.track, "border_color", qt_theme, ".track", ("border-top", "border"))
+    _theme_apply_int(theme.track, "border_radius", qt_theme, ".track", "border-radius")
+    col = _theme_get_first_color(
+        qt_theme,
+        [
+            (".track_name", "color"),
+            (".track_label", "color"),
+        ],
+    )
+    _assign_color(theme.track, "font_color", col)
+    _theme_apply_int(theme.track, "height", qt_theme, ".track", "height")
+    _theme_apply_int(theme.track, "font_size", qt_theme, ".track_name", "font-size")
+    _theme_apply_color(
+        theme.track,
+        "name_background",
+        qt_theme,
+        ".track_name",
+        ("background", "background-color"),
+    )
+    _theme_apply_int(theme.track, "name_width", qt_theme, ".track_name", "width")
+    _theme_apply_int(theme.track, "gap", qt_theme, ".track", "margin-bottom")
+    for attr, prop in (
+        ("name_border_color", "border-left"),
+        ("name_border_top_color", ("border-top", "border")),
+        ("name_border_bottom_color", ("border-bottom", "border")),
+    ):
+        _theme_apply_color(theme.track, attr, qt_theme, ".track_name", prop)
+    for attr, prop in (
+        ("name_border_width", "border-left"),
+        ("name_border_top_width", ("border-top", "border")),
+        ("name_border_bottom_width", ("border-bottom", "border")),
+    ):
+        _theme_apply_int(theme.track, attr, qt_theme, ".track_name", prop)
+    _theme_apply_int(theme.track, "name_radius_tl", qt_theme, ".track_name", "border-top-left-radius")
+    _theme_apply_int(
+        theme.track,
+        "name_radius_bl",
+        qt_theme,
+        ".track_name",
+        "border-bottom-left-radius",
+    )
     val = _theme_get_int(qt_theme, ".track_name", "border-radius")
     if val is not None:
-        if not theme.track.name_radius_tl:
-            theme.track.name_radius_tl = val
-        if not theme.track.name_radius_bl:
-            theme.track.name_radius_bl = val
+        _set_default_if_missing(theme.track, ("name_radius_tl", "name_radius_bl"), val)
 
 
 def _theme_apply_ruler(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
-    col1, col2 = _parse_gradient(css_sheet, "#scrolling_ruler", "background", "theme", log_miss=False)
-    if not col1 and not col2:
-        col1, col2 = _parse_gradient(css_sheet, "#ruler", "background", "theme", log_miss=False)
-    if col1:
-        theme.ruler.background = col1
-    if col2:
-        theme.ruler.background2 = col2
-    elif col1:
-        theme.ruler.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _theme_get_color(
-            qt_theme,
-            "#scrolling_ruler",
-            ("background", "background-color"),
-            log_miss=False,
-        )
-        if not col:
-            col = _theme_get_color(
-                qt_theme,
-                "#ruler",
-                ("background", "background-color"),
-                log_miss=False,
-            )
-        if col:
-            theme.ruler.background = col
-            theme.ruler.background2 = QColor()
-        else:
-            log.info("Theme MISS [theme] selector '#scrolling_ruler' property 'background'")
-    col1, col2 = _parse_gradient(
-        css_sheet,
-        "#ruler_label",
+    _apply_gradient_with_fallback(
+        theme.ruler,
         "background",
-        "theme",
-        log_miss=False,
+        "background2",
+        lambda: _ruler_gradient(css_sheet, "theme"),
+        lambda: _ruler_theme_background(qt_theme),
+        miss_log=lambda: log.info(
+            "Theme MISS [theme] selector '#scrolling_ruler' property 'background'"
+        ),
     )
-    if col1:
-        theme.ruler_name_background = col1
-    if col2:
-        theme.ruler_name_background2 = col2
-    elif col1:
-        theme.ruler_name_background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _theme_get_color(qt_theme, "#ruler_label", "background")
-        if col:
-            theme.ruler_name_background = col
-            theme.ruler_name_background2 = QColor()
-    col = _theme_get_color(qt_theme, ".tick_mark", "background-color")
-    if col:
-        theme.ruler.border_color = col
-    col = _theme_get_color(qt_theme, "#ruler_time", "color")
-    if col:
-        theme.ruler.font_color = col
-    val = _theme_get_int(qt_theme, "#ruler_time", "font-size")
-    if val is not None:
-        theme.ruler_time_font_size = val
-    fs = _parse_float(
-        css_sheet,
-        ".ruler_time",
-        "font-size",
-        "theme",
-        log_miss=False,
+    _apply_gradient_with_fallback(
+        theme,
+        "ruler_name_background",
+        "ruler_name_background2",
+        lambda: _parse_gradient(css_sheet, "#ruler_label", "background", "theme", log_miss=False),
+        lambda: _theme_get_color(qt_theme, "#ruler_label", ("background", "background-color")),
     )
+    _theme_apply_color(theme.ruler, "border_color", qt_theme, ".tick_mark", "background-color")
+    _theme_apply_color(theme.ruler, "font_color", qt_theme, "#ruler_time", "color")
+    _theme_apply_int(theme, "ruler_time_font_size", qt_theme, "#ruler_time", "font-size")
+    fs = _parse_float(css_sheet, ".ruler_time", "font-size", "theme", log_miss=False)
     if fs is not None:
         base = theme.ruler_time_font_size or 12
         theme.ruler.font_size = int(fs * base) if fs < 5 else int(fs)
-    val = _theme_get_int(qt_theme, ".ruler_time", "top")
-    if val is not None:
-        theme.ruler_label_top = val
-    val = _theme_get_int(qt_theme, "#ruler", "height")
-    if val is not None:
-        theme.ruler.height = val
-    val = _theme_get_int(qt_theme, "#ruler_time", "padding-left")
-    if val is not None:
-        theme.ruler_time_pad_left = val
-    val = _theme_get_int(qt_theme, "#ruler_time", "padding-top")
-    if val is not None:
-        theme.ruler_time_pad_top = val
+    _theme_apply_int(theme, "ruler_label_top", qt_theme, ".ruler_time", "top")
+    _theme_apply_int(theme.ruler, "height", qt_theme, "#ruler", "height")
+    _theme_apply_int(theme, "ruler_time_pad_left", qt_theme, "#ruler_time", "padding-left")
+    _theme_apply_int(theme, "ruler_time_pad_top", qt_theme, "#ruler_time", "padding-top")
 
 
 def _theme_apply_playhead(theme: TimelineTheme, qt_theme) -> None:
@@ -856,47 +977,90 @@ def _css_apply_background(theme: TimelineTheme, css: str, source: str, log_miss:
 
 
 def _css_apply_clip(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
-    col1, col2 = _parse_gradient(css, ".clip", "background", source, log_miss=False)
-    if col1:
-        theme.clip.background = col1
-    if col2:
-        theme.clip.background2 = col2
-    elif col1:
-        theme.clip.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _parse_color(css, ".clip", ("background", "background-color"), source, log_miss=log_miss)
-        if col:
-            theme.clip.background = col
-            theme.clip.background2 = QColor()
-    col = _parse_color(css, ".clip", ("border-top", "border"), source, log_miss=False)
-    if col:
-        theme.clip.border_color = col
-    val = _parse_float(css, ".clip", ("border-top", "border"), source, log_miss=False)
-    if val is not None:
-        theme.clip.border_width = float(val)
-    val = _parse_float(css, ".clip", "border-radius", source, log_miss=False)
-    if val is not None:
-        theme.clip.border_radius = int(val)
-    col = _parse_color(css, ".clip_label", "color", source, log_miss=log_miss)
-    if col:
-        theme.clip.font_color = col
-    val = _parse_float(css, ".clip", "height", source, log_miss=log_miss)
-    if val is not None:
-        theme.clip.height = int(val)
-    col2, blur = _parse_box_shadow(css, ".clip", source, log_miss=log_miss)
-    if col2:
-        theme.clip.shadow_color = col2
-    if blur is not None:
-        theme.clip.shadow_blur = blur
-    val = _parse_float(css, ".thumb", "width", source, log_miss=log_miss)
-    if val is not None:
-        theme.clip.thumb_width = int(val)
-    val = _parse_float(css, ".thumb", "height", source, log_miss=log_miss)
-    if val is not None:
-        theme.clip.thumb_height = int(val)
-    val = _parse_float(css, ".clip", "font-size", source, log_miss=log_miss)
-    if val is not None:
-        theme.clip.font_size = int(val)
+    _apply_gradient_with_fallback(
+        theme.clip,
+        "background",
+        "background2",
+        lambda: _parse_gradient(css, ".clip", "background", source, log_miss=False),
+        lambda: _parse_color(
+            css,
+            ".clip",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        ),
+    )
+    _apply_css_color_value(
+        theme.clip,
+        "border_color",
+        css,
+        ".clip",
+        ("border-top", "border"),
+        source,
+        log_miss=False,
+    )
+    _apply_css_float_value(
+        theme.clip,
+        "border_width",
+        css,
+        ".clip",
+        ("border-top", "border"),
+        source,
+        log_miss=False,
+        transform=float,
+    )
+    _apply_css_float_value(
+        theme.clip,
+        "border_radius",
+        css,
+        ".clip",
+        "border-radius",
+        source,
+        log_miss=False,
+        transform=int,
+    )
+    _apply_css_color_value(theme.clip, "font_color", css, ".clip_label", "color", source, log_miss=log_miss)
+    _apply_css_float_value(
+        theme.clip,
+        "height",
+        css,
+        ".clip",
+        "height",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_clip_box_shadow(theme, css, source, log_miss=log_miss)
+    _apply_css_float_value(
+        theme.clip,
+        "thumb_width",
+        css,
+        ".thumb",
+        "width",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.clip,
+        "thumb_height",
+        css,
+        ".thumb",
+        "height",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.clip,
+        "font_size",
+        css,
+        ".clip",
+        "font-size",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
 
 
 def _css_apply_selection(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
@@ -953,126 +1117,237 @@ def _css_apply_transition(theme: TimelineTheme, css: str, source: str, log_miss:
 
 
 def _css_apply_track(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
-    col1, col2 = _parse_gradient(css, ".track", "background", source, log_miss=False)
-    if col1:
-        theme.track.background = col1
-    if col2:
-        theme.track.background2 = col2
-    elif col1:
-        theme.track.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _parse_color(css, ".track", ("background", "background-color"), source, log_miss=log_miss)
-        if col:
-            theme.track.background = col
-            theme.track.background2 = QColor()
-    col = _parse_color(css, ".track", ("border-top", "border"), source, log_miss=False)
-    if col:
-        theme.track.border_color = col
-    val = _parse_float(css, ".track", "border-radius", source, log_miss=False)
-    if val is not None:
-        theme.track.border_radius = int(val)
-    col = _parse_color(css, ".track_name", "color", source, log_miss=log_miss)
-    if not col:
-        col = _parse_color(css, ".track_label", "color", source, log_miss=log_miss)
-    if col:
-        theme.track.font_color = col
-    val = _parse_float(css, ".track", "height", source, log_miss=log_miss)
-    if val is not None:
-        theme.track.height = int(val)
-    col = _parse_color(css, ".track_name", ("background", "background-color"), source, log_miss=log_miss)
-    if col:
-        theme.track.name_background = col
-    val = _parse_float(css, ".track_name", "width", source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_width = int(val)
-    val = _parse_float(css, ".track", "margin-bottom", source, log_miss=log_miss)
-    if val is not None:
-        theme.track.gap = int(val)
-    col = _parse_color(css, ".track_name", "border-left", source, log_miss=log_miss)
-    if col:
-        theme.track.name_border_color = col
-    val = _parse_float(css, ".track_name", "border-left", source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_border_width = int(val)
-    col = _parse_color(css, ".track_name", ("border-top", "border"), source, log_miss=log_miss)
-    if col:
-        theme.track.name_border_top_color = col
-    val = _parse_float(css, ".track_name", ("border-top", "border"), source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_border_top_width = int(val)
-    col = _parse_color(css, ".track_name", ("border-bottom", "border"), source, log_miss=log_miss)
-    if col:
-        theme.track.name_border_bottom_color = col
-    val = _parse_float(css, ".track_name", ("border-bottom", "border"), source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_border_bottom_width = int(val)
-    val = _parse_float(css, ".track_name", ("border-top-left-radius", "border-radius"), source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_radius_tl = int(val)
-    val = _parse_float(css, ".track_name", ("border-bottom-left-radius", "border-radius"), source, log_miss=log_miss)
-    if val is not None:
-        theme.track.name_radius_bl = int(val)
-    val = _parse_float(css, ".track_name", "font-size", source, log_miss=log_miss)
-    if val is not None:
-        theme.track.font_size = int(val)
+    _apply_gradient_with_fallback(
+        theme.track,
+        "background",
+        "background2",
+        lambda: _parse_gradient(css, ".track", "background", source, log_miss=False),
+        lambda: _parse_color(
+            css,
+            ".track",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        ),
+    )
+    _apply_css_color_value(
+        theme.track,
+        "border_color",
+        css,
+        ".track",
+        ("border-top", "border"),
+        source,
+        log_miss=False,
+    )
+    _apply_css_float_value(
+        theme.track,
+        "border_radius",
+        css,
+        ".track",
+        "border-radius",
+        source,
+        log_miss=False,
+        transform=int,
+    )
+    col = _css_get_first_color(
+        css,
+        source,
+        log_miss,
+        [
+            (".track_name", "color"),
+            (".track_label", "color"),
+        ],
+    )
+    _assign_color(theme.track, "font_color", col)
+    _apply_css_float_value(
+        theme.track,
+        "height",
+        css,
+        ".track",
+        "height",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_color_value(
+        theme.track,
+        "name_background",
+        css,
+        ".track_name",
+        ("background", "background-color"),
+        source,
+        log_miss=log_miss,
+    )
+    _apply_css_float_value(
+        theme.track,
+        "name_width",
+        css,
+        ".track_name",
+        "width",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.track,
+        "gap",
+        css,
+        ".track",
+        "margin-bottom",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    for attr, prop in (
+        ("name_border_color", "border-left"),
+        ("name_border_top_color", ("border-top", "border")),
+        ("name_border_bottom_color", ("border-bottom", "border")),
+    ):
+        _apply_css_color_value(theme.track, attr, css, ".track_name", prop, source, log_miss=log_miss)
+    for attr, prop in (
+        ("name_border_width", "border-left"),
+        ("name_border_top_width", ("border-top", "border")),
+        ("name_border_bottom_width", ("border-bottom", "border")),
+    ):
+        _apply_css_float_value(
+            theme.track,
+            attr,
+            css,
+            ".track_name",
+            prop,
+            source,
+            log_miss=log_miss,
+            transform=int,
+        )
+    _apply_css_float_value(
+        theme.track,
+        "name_radius_tl",
+        css,
+        ".track_name",
+        ("border-top-left-radius", "border-radius"),
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.track,
+        "name_radius_bl",
+        css,
+        ".track_name",
+        ("border-bottom-left-radius", "border-radius"),
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.track,
+        "font_size",
+        css,
+        ".track_name",
+        "font-size",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
 
 
 def _css_apply_ruler(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
-    col1, col2 = _parse_gradient(css, "#scrolling_ruler", "background", source, log_miss=False)
-    if not col1 and not col2:
-        col1, col2 = _parse_gradient(css, "#ruler", "background", source, log_miss=False)
-    if col1:
-        theme.ruler.background = col1
-    if col2:
-        theme.ruler.background2 = col2
-    elif col1:
-        theme.ruler.background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _parse_color(css, "#scrolling_ruler", ("background", "background-color"), source, log_miss=False)
-        if not col:
-            col = _parse_color(css, "#ruler", ("background", "background-color"), source, log_miss=False)
-        if col:
-            theme.ruler.background = col
-            theme.ruler.background2 = QColor()
-        else:
-            log.info("Theme MISS [%s] selector '#scrolling_ruler' property 'background'", source)
-    col1, col2 = _parse_gradient(css, "#ruler_label", "background", source, log_miss=log_miss)
-    if col1:
-        theme.ruler_name_background = col1
-    if col2:
-        theme.ruler_name_background2 = col2
-    elif col1:
-        theme.ruler_name_background2 = QColor()
-    if col1 is None and col2 is None:
-        col = _parse_color(css, "#ruler_label", ("background", "background-color"), source, log_miss=log_miss)
-        if col:
-            theme.ruler_name_background = col
-            theme.ruler_name_background2 = QColor()
-    col = _parse_color(css, ".tick_mark", "background-color", source, log_miss=log_miss)
-    if col:
-        theme.ruler.border_color = col
-    col = _parse_color(css, "#ruler_time", "color", source, log_miss=log_miss)
-    if col:
-        theme.ruler.font_color = col
-    val = _parse_float(css, "#ruler_time", "font-size", source, log_miss=log_miss)
-    if val is not None:
-        theme.ruler_time_font_size = int(val)
+    _apply_gradient_with_fallback(
+        theme.ruler,
+        "background",
+        "background2",
+        lambda: _ruler_gradient(css, source),
+        lambda: _ruler_css_background(css, source),
+        miss_log=lambda: log.info(
+            "Theme MISS [%s] selector '#scrolling_ruler' property 'background'",
+            source,
+        ),
+    )
+    _apply_gradient_with_fallback(
+        theme,
+        "ruler_name_background",
+        "ruler_name_background2",
+        lambda: _parse_gradient(css, "#ruler_label", "background", source, log_miss=log_miss),
+        lambda: _parse_color(
+            css,
+            "#ruler_label",
+            ("background", "background-color"),
+            source,
+            log_miss=log_miss,
+        ),
+    )
+    _apply_css_color_value(
+        theme.ruler,
+        "border_color",
+        css,
+        ".tick_mark",
+        "background-color",
+        source,
+        log_miss=log_miss,
+    )
+    _apply_css_color_value(
+        theme.ruler,
+        "font_color",
+        css,
+        "#ruler_time",
+        "color",
+        source,
+        log_miss=log_miss,
+    )
+    _apply_css_float_value(
+        theme,
+        "ruler_time_font_size",
+        css,
+        "#ruler_time",
+        "font-size",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
     fs = _parse_float(css, ".ruler_time", "font-size", source, log_miss=log_miss)
     if fs is not None:
         base = theme.ruler_time_font_size or 12
         theme.ruler.font_size = int(fs * base) if fs < 5 else int(fs)
-    val = _parse_float(css, ".ruler_time", "top", source, log_miss=log_miss)
-    if val is not None:
-        theme.ruler_label_top = int(val)
-    val = _parse_float(css, "#ruler", "height", source, log_miss=log_miss)
-    if val is not None:
-        theme.ruler.height = int(val)
-    val = _parse_float(css, "#ruler_time", "padding-left", source, log_miss=log_miss)
-    if val is not None:
-        theme.ruler_time_pad_left = int(val)
-    val = _parse_float(css, "#ruler_time", "padding-top", source, log_miss=log_miss)
-    if val is not None:
-        theme.ruler_time_pad_top = int(val)
+    _apply_css_float_value(
+        theme,
+        "ruler_label_top",
+        css,
+        ".ruler_time",
+        "top",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme.ruler,
+        "height",
+        css,
+        "#ruler",
+        "height",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme,
+        "ruler_time_pad_left",
+        css,
+        "#ruler_time",
+        "padding-left",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
+    _apply_css_float_value(
+        theme,
+        "ruler_time_pad_top",
+        css,
+        "#ruler_time",
+        "padding-top",
+        source,
+        log_miss=log_miss,
+        transform=int,
+    )
 
 
 def _css_apply_playhead(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:

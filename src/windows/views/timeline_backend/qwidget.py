@@ -767,7 +767,7 @@ class TimelineWidget(QWidget):
                 return
 
         # Track menu icons
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, _track, name_rect in self.geometry.track_rects:
             mrect = self._track_menu_rect(name_rect)
             if mrect.contains(pos):
                 self.setCursor(Qt.PointingHandCursor)

@@ -274,7 +274,6 @@ class Geometry:
             self.marker_rects.append(rect)
 
     def _rebuild(self):
-        w = self.widget
         win = get_app().window
 
         self._reset_cache()
