@@ -42,7 +42,7 @@ import threading
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 from PyQt5.QtCore import (
-    Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent
+    Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent, QUrl
 )
 from PyQt5.QtGui import QIcon, QCursor, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
@@ -3435,8 +3435,181 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def pasteAll(self):
         """Handle Paste QShortcut (at timeline position, same track as original clip)"""
+        clipboard = get_app().clipboard()
+        mime_data = clipboard.mimeData() if clipboard else None
+
+        if mime_data and not mime_data.hasFormat("application/x-openshot-generic"):
+            if self.import_files_from_clipboard(mime_data):
+                return
+
         self.timeline.context_menu_cursor_position = None
         self.timeline.Paste_Triggered(MenuCopy.PASTE, self.selected_clips, self.selected_transitions)
+
+    def clipboard_contains_media(self, mime_data=None):
+        """Check if clipboard contains media files or supported media data."""
+        clipboard = None
+        if mime_data is None:
+            clipboard = get_app().clipboard()
+            if not clipboard:
+                return False
+            mime_data = clipboard.mimeData()
+
+        if not mime_data:
+            return False
+
+        urls, has_binary = self._collect_clipboard_media_urls(mime_data, create_files=False)
+        return bool(urls or has_binary)
+
+    def _collect_clipboard_media_urls(self, mime_data, create_files):
+        """Return a list of QUrls for media items contained in the clipboard."""
+        urls = []
+        seen_paths = set()
+
+        if mime_data.hasUrls():
+            for url in mime_data.urls():
+                if url.isLocalFile():
+                    path = url.toLocalFile()
+                    if path and os.path.exists(path) and path not in seen_paths:
+                        urls.append(url)
+                        seen_paths.add(path)
+
+        if mime_data.hasText():
+            text = mime_data.text()
+            if text:
+                for part in re.split(r'[\r\n]+', text):
+                    part = part.strip()
+                    if not part:
+                        continue
+
+                    url = None
+                    if part.startswith("file://"):
+                        temp_url = QUrl(part)
+                        if temp_url.isLocalFile():
+                            url = temp_url
+                    elif os.path.exists(part):
+                        url = QUrl.fromLocalFile(part)
+
+                    if url:
+                        path = url.toLocalFile()
+                        if path and os.path.exists(path) and path not in seen_paths:
+                            urls.append(url)
+                            seen_paths.add(path)
+
+        if urls:
+            return urls, False
+
+        has_binary = False
+
+        for fmt in mime_data.formats():
+            fmt_str = str(fmt)
+            lower_fmt = fmt_str.lower()
+            if lower_fmt.startswith(("image/", "video/", "audio/")):
+                data = mime_data.data(fmt_str)
+                if data and not data.isEmpty():
+                    has_binary = True
+                    if create_files:
+                        path = self._write_clipboard_bytes(bytes(data), self._extension_for_mime(lower_fmt))
+                        if path:
+                            url = QUrl.fromLocalFile(path)
+                            urls.append(url)
+                            seen_paths.add(path)
+                            break
+                    else:
+                        break
+
+        clipboard = get_app().clipboard()
+        if not urls and create_files and mime_data.hasImage():
+            image = clipboard.image() if clipboard else None
+            if image and not image.isNull():
+                path = self._write_clipboard_image(image)
+                if path:
+                    urls.append(QUrl.fromLocalFile(path))
+                    has_binary = True
+        elif not has_binary and mime_data.hasImage():
+            image = clipboard.image() if clipboard else None
+            has_binary = bool(image and not image.isNull())
+
+        return urls, has_binary
+
+    def _extension_for_mime(self, mime_type):
+        """Return an appropriate file extension for a mime-type."""
+        subtype = mime_type.split('/')[-1]
+        subtype = subtype.split(';')[0]
+        subtype = subtype.split('+')[0]
+        mapping = {
+            "jpeg": "jpg",
+            "x-icon": "ico",
+            "x-matroska": "mkv",
+            "quicktime": "mov",
+            "x-msvideo": "avi",
+            "x-wav": "wav",
+        }
+        return mapping.get(subtype, subtype or "bin")
+
+    def _write_clipboard_bytes(self, data_bytes, extension):
+        """Persist clipboard bytes to a file and return its path."""
+        if not data_bytes:
+            return None
+
+        dest_dir = os.path.join(info.USER_PATH, "clipboard")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        filename = "clipboard-{}-{}.{}".format(
+            datetime.now().strftime("%Y%m%d-%H%M%S"),
+            uuid.uuid4().hex[:6],
+            extension or "bin",
+        )
+        filepath = os.path.join(dest_dir, filename)
+
+        try:
+            with open(filepath, "wb") as handle:
+                handle.write(data_bytes)
+        except OSError:
+            log.warning("Failed to write clipboard media to %s", filepath, exc_info=1)
+            return None
+
+        return filepath
+
+    def _write_clipboard_image(self, image):
+        """Persist a clipboard image to disk and return the new path."""
+        dest_dir = os.path.join(info.USER_PATH, "clipboard")
+        os.makedirs(dest_dir, exist_ok=True)
+
+        filename = "clipboard-{}-{}.png".format(
+            datetime.now().strftime("%Y%m%d-%H%M%S"),
+            uuid.uuid4().hex[:6],
+        )
+        filepath = os.path.join(dest_dir, filename)
+
+        if image.save(filepath):
+            return filepath
+
+        log.warning("Failed to save clipboard image to %s", filepath)
+        return None
+
+    def import_files_from_clipboard(self, mime_data=None):
+        """Import any media files or data currently stored on the clipboard."""
+        clipboard = None
+        if mime_data is None:
+            clipboard = get_app().clipboard()
+            if not clipboard:
+                return False
+            mime_data = clipboard.mimeData()
+
+        if not mime_data:
+            return False
+
+        urls, _ = self._collect_clipboard_media_urls(mime_data, create_files=True)
+        if not urls:
+            return False
+
+        try:
+            get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+            self.files_model.process_urls(urls)
+        finally:
+            get_app().restoreOverrideCursor()
+
+        return True
 
     def nudgeLeft(self):
         """Nudge the selected clips to the left"""

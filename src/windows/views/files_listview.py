@@ -56,6 +56,12 @@ class FilesListView(QListView):
         menu = StyledContextMenu(parent=self)
 
         menu.addAction(self.win.actionImportFiles)
+
+        # Add paste option for clipboard media
+        paste_action = menu.addAction(_("Paste"))
+        paste_action.setEnabled(self.win.clipboard_contains_media())
+        paste_action.triggered.connect(self.win.import_files_from_clipboard)
+
         menu.addAction(self.win.actionDetailsView)
 
         if index.isValid():
