@@ -590,6 +590,8 @@ App.controller("TimelineCtrl", function ($scope) {
   // Get the color of an effect
   $scope.getEffectColor = function (effect_type) {
     switch (effect_type) {
+      case "AnalogTape":
+        return "#907600";
       case "Bars":
         return "#4d7bff";
       case "Blur":
