@@ -125,8 +125,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def _build_clip_transform(self, x, y, sw, sh, props):
         """Return (QTransform, unpacked props, originScreenPt) for a clip/effect box.
-           Order: translate(x,y) → translate(origin) → rotate → shear → scale → untranslate(origin)
-           This keeps the origin truly at the rotation/shear/scale center.
+           Order: translate(x,y) → translate(origin) → rotate → shear → untranslate(origin) → scale,
+           matching libopenshot's Clip::get_transform so shear/scale share the same pivot and basis.
         """
         sx = max(float(props["scale_x"]["value"]), 0.001)
         sy = max(float(props["scale_y"]["value"]), 0.001)
@@ -136,24 +136,27 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         ox = float(props["origin_x"]["value"])
         oy = float(props["origin_y"]["value"])
 
-        oxv = sw * ox
-        oyv = sh * oy
+        # Clip-local pivot (pre-scale) and its translated amount once clip scale is applied.
+        local_origin_x = sw * ox
+        local_origin_y = sh * oy
+        pivot_tx = local_origin_x * sx
+        pivot_ty = local_origin_y * sy
 
         t = QTransform()
         if x or y:
             t.translate(x, y)
-        if oxv or oyv:
-            t.translate(oxv, oyv)
+        if pivot_tx or pivot_ty:
+            t.translate(pivot_tx, pivot_ty)
         if rot:
             t.rotate(rot)
         if shx or shy:
             t.shear(shx, shy)
+        if pivot_tx or pivot_ty:
+            t.translate(-pivot_tx, -pivot_ty)
         if sx or sy:
             t.scale(sx, sy)
-        if oxv or oyv:
-            t.translate(-oxv, -oyv)
 
-        origin_screen = t.map(QPointF(oxv, oyv))
+        origin_screen = t.map(QPointF(local_origin_x, local_origin_y))
         return t, (sx, sy, rot, shx, shy, ox, oy), origin_screen
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
@@ -531,34 +534,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 sw = union_rect.width()
                 sh = union_rect.height()
 
-                sx = max(float(first_props["scale_x"]["value"]), 0.001)
-                sy = max(float(first_props["scale_y"]["value"]), 0.001)
-                rot = float(first_props["rotation"]["value"])
-                shx = float(first_props["shear_x"]["value"])
-                shy = float(first_props["shear_y"]["value"])
-                ox = float(first_props["origin_x"]["value"])
-                oy = float(first_props["origin_y"]["value"])
-
-                # Transform: translate -> scale -> pivot -> rotate/shear -> unpivot
-                self.transform = QTransform()
-                oxv = sw * ox
-                oyv = sh * oy
-
-                if x or y:
-                    self.transform.translate(x, y)
-                if sx or sy:
-                    self.transform.scale(sx, sy)
-                if oxv or oyv:
-                    self.transform.translate(oxv, oyv)
-                if rot:
-                    self.transform.rotate(rot)
-                if shx or shy:
-                    self.transform.shear(shx, shy)
-                if oxv or oyv:
-                    self.transform.translate(-oxv, -oyv)
+                # Transform: translate → translate(origin) → rotate → shear → scale → untranslate(origin)
+                self.transform, unpacked, origin_screen = self._build_clip_transform(
+                    x, y, sw, sh, first_props
+                )
+                sx, sy, _, _, _, ox, oy = unpacked
 
                 # On-screen pivot
-                self.originHandle = self.transform.map(QPointF(oxv, oyv))
+                self.originHandle = origin_screen
 
                 # Draw the local-space handlers (blue or gray) with global opacity
                 painter.setTransform(self.transform)
