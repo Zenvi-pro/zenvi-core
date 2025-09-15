@@ -336,19 +336,43 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
 
     def _reverse_keyframes(self, keyframe, total_frames):
-        """Reverse keyframe positions around total_frames, swapping handles"""
+        """Reverse keyframe positions, swapping handles"""
+        points = keyframe.get("Points", [])
+        x_values = [
+            point["co"]["X"]
+            for point in points
+            if isinstance(point.get("co"), dict) and "X" in point["co"]
+        ]
+
+        if not x_values:
+            return
+
+        min_x = min(x_values)
+        max_x = max(x_values)
+
+        # Keyframe X positions are 1-indexed.  Use the actual min/max X values to
+        # determine the reflection pivot so we don't lose leading keyframes when
+        # total_frames is smaller than the keyframe range (for example, when the
+        # last point is stored at duration + 1).
+        pivot = min_x + max_x
+
         new_points = []
-        for point in keyframe.get("Points", []):
+        for point in points:
             new_point = json.loads(json.dumps(point))
-            new_point["co"]["X"] = total_frames - point["co"]["X"] + 1
-            hl = new_point.pop("handle_left", None)
-            hr = new_point.pop("handle_right", None)
-            if hr is not None:
-                new_point["handle_left"] = hr
-            if hl is not None:
-                new_point["handle_right"] = hl
+            if isinstance(new_point.get("co"), dict) and "X" in new_point["co"]:
+                new_point["co"]["X"] = pivot - point["co"]["X"]
+                hl = new_point.pop("handle_left", None)
+                hr = new_point.pop("handle_right", None)
+                if hr is not None:
+                    new_point["handle_left"] = hr
+                if hl is not None:
+                    new_point["handle_right"] = hl
             new_points.append(new_point)
-        keyframe["Points"] = sorted(new_points, key=lambda p: p["co"]["X"])
+
+        keyframe["Points"] = sorted(
+            new_points,
+            key=lambda p: p.get("co", {}).get("X", 0)
+        )
 
     # Javascript callable function to update the project data when a transition changes
     @pyqtSlot(str, bool, bool, str)
