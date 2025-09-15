@@ -30,21 +30,18 @@ import openshot
 from classes.app import get_app
 
 
-def retime_clip(clip, new_end, new_position=None, direction=1):
-    """Retimes a clip and uniformly rescales ALL keyframes' X (including 'time').
-       - X and Y are in PROJECT frames.
-       - Flip 'time'.Y for reverse.
-    """
+def _project_fps_float():
     proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-    pfps = float(proj_fps.get("num", 30)) / float(proj_fps.get("den", 1))
+    return float(proj_fps.get("num", 30)) / float(proj_fps.get("den", 1))
 
-    # Seconds domain
+
+def _calculate_retime_metrics(clip, new_end, pfps):
     start_s = float(clip.data["start"])
     old_end_s = float(clip.data["end"])
     req_end_s = float(new_end)
     new_dur_s = req_end_s - start_s
     if new_dur_s <= 0:
-        return False
+        return None
 
     # Frame snapping and derived X domain
     new_dur_frames = max(1, int(round(new_dur_s * pfps)))
@@ -58,49 +55,69 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
     old_len = max(1, old_end_x - start_x)
     scale = float(new_end_x - start_x) / float(old_len)
 
-    # Helpers to iterate and scale all keyframe lists
-    def _scale_points_x(points, clamp_to_new=True):
-        if not isinstance(points, list):
-            return
-        for p in points:
-            co = p.get("co", {})
-            x = co.get("X")
-            if x is None:
-                continue
-            if x >= start_x:
-                dx = x - start_x
-                nx = start_x + dx * scale
-                nx = int(round(nx))
-                if clamp_to_new:
-                    if nx < start_x:
-                        nx = start_x
-                    elif nx > new_end_x:
-                        nx = new_end_x
-                co["X"] = nx
+    return {
+        "start_s": start_s,
+        "old_end_s": old_end_s,
+        "new_dur_s": new_dur_s,
+        "new_end_s": new_end_s,
+        "start_x": start_x,
+        "new_end_x": new_end_x,
+        "scale": scale,
+    }
 
-    def _visit_all_keyframe_dicts(clip_dict):
-        for k, v in clip_dict.items():
-            if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                yield ("clip", k, v["Points"])
-        for obj in (clip_dict.get("objects") or {}).values():
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                        yield ("object", k, v["Points"])
-        for eff in clip_dict.get("effects", []) or []:
-            if isinstance(eff, dict):
-                for k, v in eff.items():
-                    if isinstance(v, dict) and isinstance(v.get("Points"), list):
-                        yield ("effect", k, v["Points"])
 
-    for _scope, key, points in _visit_all_keyframe_dicts(clip.data):
-        _scale_points_x(points, clamp_to_new=True)
+def _iterate_keyframe_lists(clip_dict):
+    for value in clip_dict.values():
+        if isinstance(value, dict) and isinstance(value.get("Points"), list):
+            yield value["Points"]
+    objects = clip_dict.get("objects") or {}
+    for obj in objects.values():
+        if not isinstance(obj, dict):
+            continue
+        for value in obj.values():
+            if isinstance(value, dict) and isinstance(value.get("Points"), list):
+                yield value["Points"]
+    for eff in clip_dict.get("effects", []) or []:
+        if not isinstance(eff, dict):
+            continue
+        for value in eff.values():
+            if isinstance(value, dict) and isinstance(value.get("Points"), list):
+                yield value["Points"]
 
-    # Build or update the time curve orientation
-    time_points = None
-    if isinstance(clip.data.get("time"), dict):
-        time_points = clip.data["time"].get("Points")
 
+def _scale_points(points, start_x, new_end_x, scale):
+    if not isinstance(points, list):
+        return
+    for point in points:
+        co = point.get("co", {})
+        x = co.get("X")
+        if x is None or x < start_x:
+            continue
+        nx = start_x + (x - start_x) * scale
+        nx = int(round(nx))
+        if nx < start_x:
+            nx = start_x
+        elif nx > new_end_x:
+            nx = new_end_x
+        co["X"] = nx
+
+
+def _flip_time_points(points):
+    if len(points) < 2:
+        return
+    y_start = int(round(points[0].get("co", {}).get("Y", 0)))
+    y_end = int(round(points[-1].get("co", {}).get("Y", 0)))
+    for point in points:
+        co = point.get("co", {})
+        y = co.get("Y")
+        if y is None:
+            continue
+        co["Y"] = int(round(y_start + y_end - y))
+
+
+def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, pfps, direction):
+    time_data = clip.data.get("time")
+    time_points = time_data.get("Points") if isinstance(time_data, dict) else None
     if not isinstance(time_points, list) or len(time_points) < 2:
         y0 = start_x
         y1 = int(round(old_end_s * pfps))
@@ -109,26 +126,50 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
         p0 = openshot.Point(start_x, y0, openshot.LINEAR)
         p1 = openshot.Point(new_end_x, y1, openshot.LINEAR)
         clip.data["time"] = {"Points": [json.loads(p0.Json()), json.loads(p1.Json())]}
-        time_points = clip.data["time"]["Points"]
-    else:
-        if direction == -1 and len(time_points) >= 2:
-            y_start = int(round(time_points[0]["co"]["Y"]))
-            y_end = int(round(time_points[-1]["co"]["Y"]))
-            for p in time_points:
-                co = p.get("co", {})
-                y = co.get("Y")
-                if y is None:
-                    continue
-                co["Y"] = int(round(y_start + y_end - y))
+        return clip.data["time"]["Points"]
 
-    if time_points and len(time_points) >= 1:
-        time_points.sort(key=lambda p: int(round(p.get("co", {}).get("X", 0))))
-        time_points[-1]["co"]["X"] = int(new_end_x)
-        if time_points[0]["co"]["X"] < start_x:
-            time_points[0]["co"]["X"] = int(start_x)
+    if direction == -1:
+        _flip_time_points(time_points)
+    return time_points
 
-    clip.data["duration"] = float(new_dur_s)
-    clip.data["end"] = float(new_end_s)
+
+def _finalize_time_points(time_points, start_x, new_end_x):
+    if not time_points:
+        return
+    time_points.sort(key=lambda point: int(round(point.get("co", {}).get("X", 0))))
+    last = time_points[-1].get("co", {})
+    last["X"] = int(new_end_x)
+    first = time_points[0].get("co", {})
+    if first.get("X", 0) < start_x:
+        first["X"] = int(start_x)
+
+
+def retime_clip(clip, new_end, new_position=None, direction=1):
+    """Retimes a clip and uniformly rescales ALL keyframes' X (including 'time').
+       - X and Y are in PROJECT frames.
+       - Flip 'time'.Y for reverse.
+    """
+
+    pfps = _project_fps_float()
+    metrics = _calculate_retime_metrics(clip, new_end, pfps)
+    if not metrics:
+        return False
+
+    for points in _iterate_keyframe_lists(clip.data):
+        _scale_points(points, metrics["start_x"], metrics["new_end_x"], metrics["scale"])
+
+    time_points = _ensure_time_curve(
+        clip,
+        metrics["start_x"],
+        metrics["new_end_x"],
+        metrics["old_end_s"],
+        pfps,
+        direction,
+    )
+    _finalize_time_points(time_points, metrics["start_x"], metrics["new_end_x"])
+
+    clip.data["duration"] = float(metrics["new_dur_s"])
+    clip.data["end"] = float(metrics["new_end_s"])
     if new_position is not None:
         clip.data["position"] = float(int(round(float(new_position) * pfps)) / pfps)
 

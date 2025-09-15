@@ -3,7 +3,7 @@
  * @brief Keyframe directive (draggable keyframes on the timeline)
  */
 
-/*global App, findElement, uuidv4, snapToFPSGridTime, pixelToTime, timeline*/
+/*global App, findElement, uuidv4, snapToFPSGridTime, pixelToTime, timeline, angular*/
 App.directive("tlKeyframe", function () {
   return {
     link: function (scope, element, attrs) {
@@ -54,7 +54,7 @@ App.directive("tlKeyframe", function () {
         },
         drag: function (e, ui) {
           locateObject();
-          if (!obj || obj.start === undefined) {return;}
+          if (!obj || typeof obj.start === "undefined") {return;}
 
           var left    = ui.position.left;
           var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);
@@ -74,7 +74,7 @@ App.directive("tlKeyframe", function () {
         stop: function (e, ui) {
           scope.setDragging(false);
           locateObject();
-          if (!obj || obj.start === undefined) {return;}
+          if (!obj || typeof obj.start === "undefined") {return;}
 
           var left    = ui.position.left;
           var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);

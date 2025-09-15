@@ -27,7 +27,7 @@
  */
 
 
-/*global setSelections, setBoundingBox, moveBoundingBox, bounding_box, drawAudio, updateDraggables */
+/*global setSelections, setBoundingBox, moveBoundingBox, bounding_box, drawAudio, updateDraggables, snapToFPSGridTime */
 // Init variables
 var dragging = false;
 var resize_disabled = false;

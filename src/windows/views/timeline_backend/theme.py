@@ -511,14 +511,7 @@ def _theme_get_int(
     return None
 
 
-def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
-    """Update *theme* from a Qt theme instance using BaseTheme helpers."""
-
-    if not qt_theme:
-        return theme
-
-    # Backgrounds
-    css_sheet = getattr(qt_theme, "style_sheet", "")
+def _theme_apply_background(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, "body", "background", "theme", log_miss=False)
     if col1:
         theme.background = col1
@@ -532,7 +525,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
             theme.background = col
             theme.background2 = QColor()
 
-    # Clip settings
+
+def _theme_apply_clip(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, ".clip", "background", "theme", log_miss=False)
     if col1:
         theme.clip.background = col1
@@ -577,6 +571,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.clip.thumb_height = val
 
+
+def _theme_apply_selection(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col = _theme_get_color(qt_theme, ".ui-selected", ("border-top", "border"))
     if col:
         theme.clip_selected = col
@@ -604,7 +600,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.selection_border_width = float(val)
 
-    # Transition settings
+
+def _theme_apply_transition(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, ".transition", "background", "theme", log_miss=False)
     if col1:
         theme.transition.background = col1
@@ -636,7 +633,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.transition.height = val
 
-    # Track settings
+
+def _theme_apply_track(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, ".track", "background", "theme", log_miss=False)
     if col1:
         theme.track.background = col1
@@ -706,8 +704,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
         if not theme.track.name_radius_bl:
             theme.track.name_radius_bl = val
 
-    # Ruler settings
-    css_sheet = getattr(qt_theme, "style_sheet", "")
+
+def _theme_apply_ruler(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     col1, col2 = _parse_gradient(css_sheet, "#scrolling_ruler", "background", "theme", log_miss=False)
     if not col1 and not col2:
         col1, col2 = _parse_gradient(css_sheet, "#ruler", "background", "theme", log_miss=False)
@@ -764,7 +762,7 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.ruler_time_font_size = val
     fs = _parse_float(
-        getattr(qt_theme, "style_sheet", ""),
+        css_sheet,
         ".ruler_time",
         "font-size",
         "theme",
@@ -786,7 +784,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.ruler_time_pad_top = val
 
-    # Playhead
+
+def _theme_apply_playhead(theme: TimelineTheme, qt_theme) -> None:
     col = _theme_get_color(qt_theme, ".playhead-line", "background-color")
     if col:
         theme.playhead_color = col
@@ -809,6 +808,8 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.playhead_icon_offset_y = val
 
+
+def _theme_apply_menu(theme: TimelineTheme, qt_theme) -> None:
     img = _theme_pixmap(qt_theme, ".menu", "background-image")
     if img:
         theme.menu_icon = img
@@ -819,17 +820,27 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     if val is not None:
         theme.menu_margin = val
 
+
+def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
+    """Update *theme* from a Qt theme instance using BaseTheme helpers."""
+
+    if not qt_theme:
+        return theme
+
+    css_sheet = getattr(qt_theme, "style_sheet", "")
+    _theme_apply_background(theme, qt_theme, css_sheet)
+    _theme_apply_clip(theme, qt_theme, css_sheet)
+    _theme_apply_selection(theme, qt_theme, css_sheet)
+    _theme_apply_transition(theme, qt_theme, css_sheet)
+    _theme_apply_track(theme, qt_theme, css_sheet)
+    _theme_apply_ruler(theme, qt_theme, css_sheet)
+    _theme_apply_playhead(theme, qt_theme)
+    _theme_apply_menu(theme, qt_theme)
+
     return theme
 
 
-def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineTheme:
-    """Update *theme* with values parsed from *css*."""
-
-    if not css:
-        return theme
-
-    log_miss = True
-
+def _css_apply_background(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col1, col2 = _parse_gradient(css, "body", "background", source, log_miss=False)
     if col1:
         theme.background = col1
@@ -838,18 +849,13 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            "body",
-            ("background", "background-color"),
-            source,
-            log_miss=log_miss,
-        )
+        col = _parse_color(css, "body", ("background", "background-color"), source, log_miss=log_miss)
         if col:
             theme.background = col
             theme.background2 = QColor()
 
-    # Clip
+
+def _css_apply_clip(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col1, col2 = _parse_gradient(css, ".clip", "background", source, log_miss=False)
     if col1:
         theme.clip.background = col1
@@ -858,13 +864,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.clip.background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            ".clip",
-            ("background", "background-color"),
-            source,
-            log_miss=log_miss,
-        )
+        col = _parse_color(css, ".clip", ("background", "background-color"), source, log_miss=log_miss)
         if col:
             theme.clip.background = col
             theme.clip.background2 = QColor()
@@ -894,11 +894,12 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     val = _parse_float(css, ".thumb", "height", source, log_miss=log_miss)
     if val is not None:
         theme.clip.thumb_height = int(val)
-
     val = _parse_float(css, ".clip", "font-size", source, log_miss=log_miss)
     if val is not None:
         theme.clip.font_size = int(val)
 
+
+def _css_apply_selection(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col = _parse_color(css, ".ui-selected", ("border-top", "border"), source, log_miss=log_miss)
     if col:
         theme.clip_selected = col
@@ -917,7 +918,8 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     if val is not None:
         theme.selection_border_width = float(val)
 
-    # Transition
+
+def _css_apply_transition(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col1, col2 = _parse_gradient(css, ".transition", "background", source, log_miss=False)
     if col1:
         theme.transition.background = col1
@@ -926,13 +928,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.transition.background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            ".transition",
-            ("background", "background-color"),
-            source,
-            log_miss=log_miss,
-        )
+        col = _parse_color(css, ".transition", ("background", "background-color"), source, log_miss=log_miss)
         if col:
             theme.transition.background = col
             theme.transition.background2 = QColor()
@@ -955,7 +951,8 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     if val is not None:
         theme.transition.height = int(val)
 
-    # Track
+
+def _css_apply_track(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col1, col2 = _parse_gradient(css, ".track", "background", source, log_miss=False)
     if col1:
         theme.track.background = col1
@@ -964,13 +961,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.track.background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            ".track",
-            ("background", "background-color"),
-            source,
-            log_miss=log_miss,
-        )
+        col = _parse_color(css, ".track", ("background", "background-color"), source, log_miss=log_miss)
         if col:
             theme.track.background = col
             theme.track.background2 = QColor()
@@ -1021,12 +1012,12 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     val = _parse_float(css, ".track_name", ("border-bottom-left-radius", "border-radius"), source, log_miss=log_miss)
     if val is not None:
         theme.track.name_radius_bl = int(val)
-
     val = _parse_float(css, ".track_name", "font-size", source, log_miss=log_miss)
     if val is not None:
         theme.track.font_size = int(val)
 
-    # Ruler
+
+def _css_apply_ruler(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col1, col2 = _parse_gradient(css, "#scrolling_ruler", "background", source, log_miss=False)
     if not col1 and not col2:
         col1, col2 = _parse_gradient(css, "#ruler", "background", source, log_miss=False)
@@ -1037,29 +1028,14 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.ruler.background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            "#scrolling_ruler",
-            ("background", "background-color"),
-            source,
-            log_miss=False,
-        )
+        col = _parse_color(css, "#scrolling_ruler", ("background", "background-color"), source, log_miss=False)
         if not col:
-            col = _parse_color(
-                css,
-                "#ruler",
-                ("background", "background-color"),
-                source,
-                log_miss=False,
-            )
+            col = _parse_color(css, "#ruler", ("background", "background-color"), source, log_miss=False)
         if col:
             theme.ruler.background = col
             theme.ruler.background2 = QColor()
         else:
-            log.info(
-                "Theme MISS [%s] selector '#scrolling_ruler' property 'background'",
-                source,
-            )
+            log.info("Theme MISS [%s] selector '#scrolling_ruler' property 'background'", source)
     col1, col2 = _parse_gradient(css, "#ruler_label", "background", source, log_miss=log_miss)
     if col1:
         theme.ruler_name_background = col1
@@ -1068,13 +1044,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     elif col1:
         theme.ruler_name_background2 = QColor()
     if col1 is None and col2 is None:
-        col = _parse_color(
-            css,
-            "#ruler_label",
-            ("background", "background-color"),
-            source,
-            log_miss=log_miss,
-        )
+        col = _parse_color(css, "#ruler_label", ("background", "background-color"), source, log_miss=log_miss)
         if col:
             theme.ruler_name_background = col
             theme.ruler_name_background2 = QColor()
@@ -1104,7 +1074,8 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     if val is not None:
         theme.ruler_time_pad_top = int(val)
 
-    # Playhead
+
+def _css_apply_playhead(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     col = _parse_color(css, ".playhead-line", "background-color", source, log_miss=log_miss)
     if col:
         theme.playhead_color = col
@@ -1127,19 +1098,22 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     if val is not None:
         theme.playhead_icon_offset_y = int(val)
 
+
+def _css_apply_menu(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     img = _parse_pixmap(css, ".menu", "background-image", source, log_miss=log_miss)
     if img:
         theme.menu_icon = img
     val = _parse_float(css, ".menu", "width", source, log_miss=log_miss)
     if val is not None:
         theme.menu_size = int(val)
-    m = _css_prop(css, ".menu", "margin", source, log_selector=log_miss, log_property=log_miss)
-    if m:
-        m_val = re.search(r"(-?[0-9.]+)", m)
-        if m_val:
-            theme.menu_margin = int(float(m_val.group(1)))
+    margin = _css_prop(css, ".menu", "margin", source, log_selector=log_miss, log_property=log_miss)
+    if margin:
+        match = re.search(r"(-?[0-9.]+)", margin)
+        if match:
+            theme.menu_margin = int(float(match.group(1)))
 
-    # Scrollbars
+
+def _css_apply_scrollbars(theme: TimelineTheme, css: str, source: str) -> None:
     col = _parse_color(css, "::-webkit-scrollbar-thumb", "background-color", source, log_miss=False)
     if col:
         theme.scrollbar_handle = col
@@ -1156,8 +1130,26 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     if val is not None:
         theme.scrollbar_width = int(val)
 
-    return theme
 
+def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineTheme:
+    """Update *theme* with values parsed from *css*."""
+
+    if not css:
+        return theme
+
+    log_miss = True
+
+    _css_apply_background(theme, css, source, log_miss)
+    _css_apply_clip(theme, css, source, log_miss)
+    _css_apply_selection(theme, css, source, log_miss)
+    _css_apply_transition(theme, css, source, log_miss)
+    _css_apply_track(theme, css, source, log_miss)
+    _css_apply_ruler(theme, css, source, log_miss)
+    _css_apply_playhead(theme, css, source, log_miss)
+    _css_apply_menu(theme, css, source, log_miss)
+    _css_apply_scrollbars(theme, css, source)
+
+    return theme
 
 def apply_theme(widget, css: str = "") -> bool:
     """Load theme values for *widget* and return True if geometry changed."""

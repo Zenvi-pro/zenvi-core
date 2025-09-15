@@ -44,6 +44,7 @@ import sys
 import os
 import argparse
 import json
+import logging
 
 try:
     # This needs to be imported before PyQt5
@@ -54,16 +55,19 @@ except ImportError:
 
 # Load user-configured UI scale before importing PyQt
 scale = 1.0
+logger = logging.getLogger(__name__)
+
+settings_path = os.path.join(os.path.expanduser("~/.openshot_qt"), "openshot.settings")
+
 try:
-    settings_path = os.path.join(os.path.expanduser("~/.openshot_qt"), "openshot.settings")
     if os.path.exists(settings_path):
         with open(settings_path, "r", encoding="utf-8") as fh:
             for item in json.load(fh):
                 if item.get("setting") == "ui-scale":
                     scale = float(item.get("value", scale))
                     break
-except Exception:
-    pass
+except Exception as exc:
+    logger.warning("Failed to read UI scale from %%s: %%s", settings_path, exc, exc_info=True)
 scale = max(1.0, min(3.0, scale))
 if scale != 1.0:
     os.environ["QT_SCALE_FACTOR"] = str(scale)

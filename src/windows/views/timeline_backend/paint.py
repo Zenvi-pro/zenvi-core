@@ -153,128 +153,154 @@ class ClipPainter(BasePainter):
 
         # Shadow with blur
         if blur and shadow_col.isValid():
-            shadow = QImage(img_w, img_h, QImage.Format_ARGB32_Premultiplied)
-            shadow.fill(0)
-            sp = QPainter(shadow)
-            sp.setRenderHint(QPainter.Antialiasing, True)
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(blur, blur, w, h), radius, radius)
-            sp.fillPath(path, shadow_col)
-            sp.end()
+            self._draw_clip_shadow(img, w, h, blur, radius, shadow_col)
 
-            effect = QGraphicsBlurEffect()
-            effect.setBlurRadius(float(blur))
-            scene = QGraphicsScene()
-            item = QGraphicsPixmapItem(QPixmap.fromImage(shadow))
-            item.setGraphicsEffect(effect)
-            scene.addItem(item)
-            blurred = QImage(img_w, img_h, QImage.Format_ARGB32_Premultiplied)
-            blurred.fill(0)
-            sp = QPainter(blurred)
-            scene.render(sp, QRectF(), QRectF(0, 0, img_w, img_h))
-            sp.end()
-
-            p = QPainter(img)
-            p.drawImage(0, 0, blurred)
-            p.end()
-
-        p = QPainter(img)
-        p.setRenderHint(QPainter.Antialiasing, True)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         inner_rect = QRectF(blur, blur, w, h)
 
-        # Background fill (skip when clip extremely small)
         if not tiny:
-            bg = self.w.theme.clip.background
-            bg2 = self.w.theme.clip.background2
-            if bg2.isValid() and bg2 != bg:
-                grad = QLinearGradient(inner_rect.topLeft(), inner_rect.bottomLeft())
-                grad.setColorAt(0, bg)
-                grad.setColorAt(1, bg2)
-                p.fillRect(inner_rect, QBrush(grad))
-            elif bg.isValid():
-                p.fillRect(inner_rect, bg)
-
-        # Border (rounded only when large enough)
-        if pen.color().isValid() and pen.widthF() > 0:
-            p.setPen(pen)
-            if radius:
-                p.drawRoundedRect(inner_rect, radius, radius)
-            else:
-                p.drawRect(inner_rect)
+            self._fill_clip_background(painter, inner_rect)
+        self._draw_clip_border(painter, pen, inner_rect, radius)
 
         if not tiny:
-            bw = pen.widthF()
-            inner = inner_rect.adjusted(bw, bw, -bw, -bw)
-            p.save()
-            p.setClipRect(inner)
+            self._draw_clip_contents(painter, clip, inner_rect, pen)
 
-            x = inner.x() + self.menu_margin
-            right = inner.right() - self.menu_margin
-
-            thumb = self._thumb(clip)
-            thumb_w = self.w.theme.clip.thumb_width
-            thumb_h = self.w.theme.clip.thumb_height
-            scaled = None
-            used_w = 0
-            if thumb and not thumb.isNull() and thumb_w and thumb_h:
-                scaled = thumb.scaled(
-                    thumb_w, thumb_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
-                if x + scaled.width() <= right:
-                    p.drawPixmap(
-                        QPointF(x, inner.y() + (inner.height() - scaled.height()) / 2),
-                        scaled,
-                    )
-                    used_w = scaled.width()
-
-            if self.menu_pix:
-                p.drawPixmap(
-                    QPointF(x, inner.y() + self.menu_margin),
-                    self.menu_pix,
-                )
-                used_w = max(used_w, self.menu_pix.width())
-
-            x += used_w
-            if used_w:
-                x += self.menu_margin
-
-            icon_size = min(self.w.theme.clip.font_size or 12, int(inner.height()))
-            for eff in clip.data.get("effects", []):
-                icon = self._effect_icon(eff)
-                if icon.isNull():
-                    continue
-                pix = icon
-                if icon_size:
-                    pix = icon.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                if x + pix.width() > right:
-                    break
-                p.drawPixmap(
-                    QPointF(x, inner.y() + (inner.height() - pix.height()) / 2),
-                    pix,
-                )
-                x += pix.width() + self.menu_margin
-
-            text_width = right - x
-            if text_width > 4:
-                p.setPen(self.w.theme.clip.font_color)
-                text_rect = QRectF(x, inner.y(), text_width, inner.height())
-                metrics = QFontMetrics(p.font())
-                title = metrics.elidedText(
-                    clip.data.get("title", ""), Qt.ElideRight, int(text_width - 4)
-                )
-                p.drawText(
-                    text_rect.adjusted(2, 2, -2, -2),
-                    self.w._clip_text_flags,
-                    title,
-                )
-
-            p.restore()
-
-        p.end()
+        painter.end()
 
         pix = QPixmap.fromImage(img)
         self.clip_cache[key] = (pix, blur)
         return self.clip_cache[key]
+
+    def _draw_clip_shadow(self, img, w, h, blur, radius, shadow_col):
+        img_w = img.width()
+        img_h = img.height()
+        shadow = QImage(img_w, img_h, QImage.Format_ARGB32_Premultiplied)
+        shadow.fill(0)
+        painter = QPainter(shadow)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(blur, blur, w, h), radius, radius)
+        painter.fillPath(path, shadow_col)
+        painter.end()
+
+        effect = QGraphicsBlurEffect()
+        effect.setBlurRadius(float(blur))
+        scene = QGraphicsScene()
+        item = QGraphicsPixmapItem(QPixmap.fromImage(shadow))
+        item.setGraphicsEffect(effect)
+        scene.addItem(item)
+
+        blurred = QImage(img_w, img_h, QImage.Format_ARGB32_Premultiplied)
+        blurred.fill(0)
+        painter = QPainter(blurred)
+        scene.render(painter, QRectF(), QRectF(0, 0, img_w, img_h))
+        painter.end()
+
+        final = QPainter(img)
+        final.drawImage(0, 0, blurred)
+        final.end()
+
+    def _fill_clip_background(self, painter, inner_rect):
+        bg = self.w.theme.clip.background
+        bg2 = self.w.theme.clip.background2
+        if bg2.isValid() and bg2 != bg:
+            grad = QLinearGradient(inner_rect.topLeft(), inner_rect.bottomLeft())
+            grad.setColorAt(0, bg)
+            grad.setColorAt(1, bg2)
+            painter.fillRect(inner_rect, QBrush(grad))
+        elif bg.isValid():
+            painter.fillRect(inner_rect, bg)
+
+    def _draw_clip_border(self, painter, pen, inner_rect, radius):
+        if not pen.color().isValid() or pen.widthF() <= 0:
+            return
+        painter.setPen(pen)
+        if radius:
+            painter.drawRoundedRect(inner_rect, radius, radius)
+        else:
+            painter.drawRect(inner_rect)
+
+    def _draw_clip_contents(self, painter, clip, inner_rect, pen):
+        bw = pen.widthF()
+        inner = inner_rect.adjusted(bw, bw, -bw, -bw)
+        painter.save()
+        painter.setClipRect(inner)
+
+        x = inner.x() + self.menu_margin
+        right = inner.right() - self.menu_margin
+
+        used_width = self._draw_thumbnail(painter, clip, inner, x, right)
+        used_width = self._draw_menu_icon(painter, inner, x, used_width)
+        x += used_width
+        if used_width:
+            x += self.menu_margin
+
+        x = self._draw_effect_icons(painter, clip, inner, x, right)
+        self._draw_clip_text(painter, clip, inner, x, right)
+
+        painter.restore()
+
+    def _draw_thumbnail(self, painter, clip, inner, x, right):
+        thumb = self._thumb(clip)
+        thumb_w = self.w.theme.clip.thumb_width
+        thumb_h = self.w.theme.clip.thumb_height
+        if not (thumb and not thumb.isNull() and thumb_w and thumb_h):
+            return 0
+        scaled = thumb.scaled(
+            thumb_w, thumb_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        if x + scaled.width() > right:
+            return 0
+        painter.drawPixmap(
+            QPointF(x, inner.y() + (inner.height() - scaled.height()) / 2),
+            scaled,
+        )
+        return scaled.width()
+
+    def _draw_menu_icon(self, painter, inner, x, used_width):
+        if not self.menu_pix:
+            return used_width
+        painter.drawPixmap(
+            QPointF(x, inner.y() + self.menu_margin),
+            self.menu_pix,
+        )
+        return max(used_width, self.menu_pix.width())
+
+    def _draw_effect_icons(self, painter, clip, inner, x, right):
+        icon_size = min(self.w.theme.clip.font_size or 12, int(inner.height()))
+        for eff in clip.data.get("effects", []):
+            icon = self._effect_icon(eff)
+            if icon.isNull():
+                continue
+            pix = icon
+            if icon_size:
+                pix = icon.scaled(icon_size, icon_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if x + pix.width() > right:
+                break
+            painter.drawPixmap(
+                QPointF(x, inner.y() + (inner.height() - pix.height()) / 2),
+                pix,
+            )
+            x += pix.width() + self.menu_margin
+        return x
+
+    def _draw_clip_text(self, painter, clip, inner, x, right):
+        text_width = right - x
+        if text_width <= 4:
+            return
+        painter.setPen(self.w.theme.clip.font_color)
+        text_rect = QRectF(x, inner.y(), text_width, inner.height())
+        metrics = QFontMetrics(painter.font())
+        title = metrics.elidedText(
+            clip.data.get("title", ""), Qt.ElideRight, int(text_width - 4)
+        )
+        painter.drawText(
+            text_rect.adjusted(2, 2, -2, -2),
+            self.w._clip_text_flags,
+            title,
+        )
+
 
     def _draw_clip(self, painter, rect, clip, pen):
         pix, blur = self._clip_pixmap(rect, clip, pen)

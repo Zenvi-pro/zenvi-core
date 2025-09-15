@@ -26,7 +26,6 @@
  """
 
 import json
-import re
 
 from PyQt5.QtCore import (
     Qt, QRectF, QTimer, QPointF,
@@ -756,7 +755,7 @@ class TimelineWidget(QWidget):
 
         # Clip/transition edges and drags (transitions prioritized)
         edge = 5
-        for rect, item in (
+        for rect, _ in (
             self.geometry.selected_transitions + self.geometry.transition_rects +
             self.geometry.selected_rects + self.geometry.clip_rects
         ):
@@ -768,7 +767,7 @@ class TimelineWidget(QWidget):
                 return
 
         # Track menu icons
-        for track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.track_rects:
             mrect = self._track_menu_rect(name_rect)
             if mrect.contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
@@ -787,62 +786,81 @@ class TimelineWidget(QWidget):
 
         self.geometry.ensure()
         pos = event.pos()
-        # Track menu icons
-        for track_rect, track, name_rect in self.geometry.track_rects:
-            if self._track_menu_rect(name_rect).contains(pos):
-                if hasattr(self.win, "timeline"):
-                    self.win.timeline.ShowTrackMenu(track.id)
-                return
-        # Transition menu icons
+        if self._handle_menu_icon_clicks(pos):
+            return
+
+        self._assign_press_target(pos)
+
+        if self._start_scroll_drag_if_needed(pos):
+            return
+
+        self._last_event = event
+        self.events.pressed.emit(event)
+
+    def _handle_menu_icon_clicks(self, pos):
+        return (
+            self._trigger_track_menu_icon(pos)
+            or self._trigger_transition_menu_icon(pos)
+            or self._trigger_clip_menu_icon(pos)
+        )
+
+    def _trigger_track_menu_icon(self, pos):
+        for _track_rect, track, name_rect in self.geometry.track_rects:
+            if self._track_menu_rect(name_rect).contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTrackMenu(track.id)
+                return True
+        return False
+
+    def _trigger_transition_menu_icon(self, pos):
         for rect, tran in self.geometry.transition_rects + self.geometry.selected_transitions:
-            if self._transition_menu_rect(rect).contains(pos):
-                if hasattr(self.win, "timeline"):
-                    self.win.timeline.ShowTransitionMenu(tran.id)
-                return
-        # Clip menu icons
+            if self._transition_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTransitionMenu(tran.id)
+                return True
+        return False
+
+    def _trigger_clip_menu_icon(self, pos):
         for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
-            if self._clip_menu_rect(rect).contains(pos):
-                if hasattr(self.win, "timeline"):
-                    self.win.timeline.ShowClipMenu(clip.id)
-                return
-        # Detect clip/transition edge resize
+            if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowClipMenu(clip.id)
+                return True
+        return False
+
+    def _assign_press_target(self, pos):
         edge = 5
         for rect, item in (
             self.geometry.selected_transitions + self.geometry.transition_rects +
             self.geometry.selected_rects + self.geometry.clip_rects
         ):
-            if rect.contains(pos):
-                if abs(pos.x() - rect.left()) <= edge:
-                    self._press_hit = "clip-edge"
-                    self._resizing_item = item
-                    self._resize_edge = "left"
-                    break
-                if abs(pos.x() - rect.right()) <= edge:
-                    self._press_hit = "clip-edge"
-                    self._resizing_item = item
-                    self._resize_edge = "right"
-                    break
-        else:
-            self._resizing_item = None
-            self._resize_edge = None
-            self._press_hit = self._hitTest(pos)
+            if not rect.contains(pos):
+                continue
+            if abs(pos.x() - rect.left()) <= edge:
+                self._press_hit = "clip-edge"
+                self._resizing_item = item
+                self._resize_edge = "left"
+                return
+            if abs(pos.x() - rect.right()) <= edge:
+                self._press_hit = "clip-edge"
+                self._resizing_item = item
+                self._resize_edge = "right"
+                return
+        self._resizing_item = None
+        self._resize_edge = None
+        self._press_hit = self._hitTest(pos)
 
-        # Start scrollbar drags without involving state machine
+    def _start_scroll_drag_if_needed(self, pos):
         if self._press_hit == "h-scroll":
             self.scroll_bar_dragging = True
             self.mouse_dragging = True
             self.mouse_position = pos.x()
             self.scrollbar_position_previous = list(self.scrollbar_position)
-            return
+            return True
         if self._press_hit == "v-scroll":
             self.v_scroll_bar_dragging = True
             self.mouse_dragging = True
             self.mouse_position = pos.y()
             self.v_scrollbar_position_previous = list(self.v_scrollbar_position)
-            return
-
-        self._last_event = event
-        self.events.pressed.emit(event)
+            return True
+        return False
 
     def mouseMoveEvent(self, event):
         self._last_event = event
@@ -1140,91 +1158,101 @@ class TimelineWidget(QWidget):
         item = self._resizing_item
         if not item:
             return
-        e = self._last_event
-        pps = self.pixels_per_second
-        min_len = 1.0 / self.fps_float
-        rect_y = self._resize_initial_rect.y()
-        rect_h = self._resize_initial_rect.height()
-
         if isinstance(item, Transition):
-            width = self._resize_initial["end"]
-            pos = self._resize_initial["position"]
-            if self._resize_edge == "left":
-                delta_sec = (e.pos().x() - self._resize_initial_rect.left()) / pps
-                if self.enable_snapping:
-                    delta_sec = self.snap.snap_edge(pos, delta_sec)
-                max_delta = width - min_len
-                if delta_sec > max_delta:
-                    delta_sec = max_delta
-                new_position = pos + delta_sec
-                new_end = width - delta_sec
-                if new_position < 0:
-                    new_position = 0
-                    new_end = (pos + width) - new_position
-                rect_left = self.track_name_width + new_position * pps
-            else:
-                delta_sec = (e.pos().x() - self._resize_initial_rect.right()) / pps
-                if self.enable_snapping:
-                    delta_sec = self.snap.snap_edge(pos + width, delta_sec)
-                min_delta = -(width - min_len)
-                if delta_sec < min_delta:
-                    delta_sec = min_delta
-                new_end = width + delta_sec
-                new_position = pos
-                rect_left = self._resize_initial_rect.left()
-            rect_width = new_end * pps
-            self._resize_new_start = 0.0
-            self._resize_new_end = new_end
-            self._resize_new_position = new_position
-            rect = QRectF(rect_left, rect_y, rect_width, rect_h)
+            rect, start, end, position = self._compute_transition_resize(item)
         else:
-            start = self._resize_initial["start"]
-            end = self._resize_initial["end"]
-            pos = self._resize_initial["position"]
-            duration = self._resize_initial["duration"]
-            if self._resize_edge == "left":
-                delta_sec = (e.pos().x() - self._resize_initial_rect.left()) / pps
-                if self.enable_snapping:
-                    delta_sec = self.snap.snap_edge(pos, delta_sec)
-                new_start = start + delta_sec
-                new_position = pos + delta_sec
-                new_end = end
-                max_start = end - min_len
-                if new_start < 0:
-                    new_start = 0.0
-                    new_position = pos - start
-                if new_start > max_start:
-                    new_start = max_start
-                    new_position = pos + (max_start - start)
-                if new_position < 0:
-                    diff = -new_position
-                    new_position = 0
-                    new_start += diff
-                rect_left = self.track_name_width + new_position * pps
-                rect_width = (new_end - new_start) * pps
-            else:
-                delta_sec = (e.pos().x() - self._resize_initial_rect.right()) / pps
-                if self.enable_snapping:
-                    delta_sec = self.snap.snap_edge(pos + (end - start), delta_sec)
-                new_end = end + delta_sec
-                new_start = start
-                new_position = pos
-                min_end = start + min_len
-                if new_end < min_end:
-                    new_end = min_end
-                if not self.enable_timing:
-                    max_end = start + duration
-                    if new_end > max_end:
-                        new_end = max_end
-                rect_left = self._resize_initial_rect.left()
-                rect_width = (new_end - new_start) * pps
-            self._resize_new_start = new_start
-            self._resize_new_end = new_end
-            self._resize_new_position = new_position
-            rect = QRectF(rect_left, rect_y, rect_width, rect_h)
+            rect, start, end, position = self._compute_clip_resize(item)
 
+        self._resize_new_start = start
+        self._resize_new_end = end
+        self._resize_new_position = position
         self.geometry.update_item_rect(item, rect)
         self.update()
+
+    def _compute_transition_resize(self, item):
+        event = self._last_event
+        pps = self.pixels_per_second
+        min_len = 1.0 / self.fps_float
+        rect = self._resize_initial_rect
+        width = self._resize_initial["end"]
+        pos = self._resize_initial["position"]
+
+        if self._resize_edge == "left":
+            delta_sec = (event.pos().x() - rect.left()) / pps
+            if self.enable_snapping:
+                delta_sec = self.snap.snap_edge(pos, delta_sec)
+            max_delta = width - min_len
+            if delta_sec > max_delta:
+                delta_sec = max_delta
+            new_position = pos + delta_sec
+            new_end = width - delta_sec
+            if new_position < 0:
+                new_position = 0
+                new_end = (pos + width) - new_position
+            rect_left = self.track_name_width + new_position * pps
+        else:
+            delta_sec = (event.pos().x() - rect.right()) / pps
+            if self.enable_snapping:
+                delta_sec = self.snap.snap_edge(pos + width, delta_sec)
+            min_delta = -(width - min_len)
+            if delta_sec < min_delta:
+                delta_sec = min_delta
+            new_end = width + delta_sec
+            new_position = pos
+            rect_left = rect.left()
+
+        rect_width = new_end * pps
+        geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
+        return geom_rect, 0.0, new_end, new_position
+
+    def _compute_clip_resize(self, item):
+        event = self._last_event
+        pps = self.pixels_per_second
+        min_len = 1.0 / self.fps_float
+        rect = self._resize_initial_rect
+        start = self._resize_initial["start"]
+        end = self._resize_initial["end"]
+        pos = self._resize_initial["position"]
+        duration = self._resize_initial["duration"]
+
+        if self._resize_edge == "left":
+            delta_sec = (event.pos().x() - rect.left()) / pps
+            if self.enable_snapping:
+                delta_sec = self.snap.snap_edge(pos, delta_sec)
+            new_start = start + delta_sec
+            new_position = pos + delta_sec
+            new_end = end
+            max_start = end - min_len
+            if new_start < 0:
+                new_start = 0.0
+                new_position = pos - start
+            if new_start > max_start:
+                new_start = max_start
+                new_position = pos + (max_start - start)
+            if new_position < 0:
+                diff = -new_position
+                new_position = 0
+                new_start += diff
+            rect_left = self.track_name_width + new_position * pps
+        else:
+            delta_sec = (event.pos().x() - rect.right()) / pps
+            if self.enable_snapping:
+                delta_sec = self.snap.snap_edge(pos + (end - start), delta_sec)
+            new_end = end + delta_sec
+            new_start = start
+            new_position = pos
+            min_end = start + min_len
+            if new_end < min_end:
+                new_end = min_end
+            if not self.enable_timing:
+                max_end = start + duration
+                if new_end > max_end:
+                    new_end = max_end
+            rect_left = rect.left()
+
+        rect_width = (new_end - new_start) * pps
+        geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
+        return geom_rect, new_start, new_end, new_position
 
     def _finishItemResize(self):
         item = self._resizing_item

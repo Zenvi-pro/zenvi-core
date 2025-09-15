@@ -104,16 +104,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         for c in selected:
             try:
                 cs, ce = clip_bounds_secs(c)
-            except Exception:
-                continue
+            except Exception as exc:
+                log.warning(
+                    "Failed to compute clip bounds for %s: %s",
+                    getattr(c, "id", c),
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                if cs <= playhead_sec <= ce:
+                    return 1.0
 
-            if cs <= playhead_sec <= ce:
-                return 1.0
-
-            d = (cs - playhead_sec) if playhead_sec < cs else (playhead_sec - ce)
-            d = max(d, 0.0)
-            if min_dist_sec is None or d < min_dist_sec:
-                min_dist_sec = d
+                d = (cs - playhead_sec) if playhead_sec < cs else (playhead_sec - ce)
+                d = max(d, 0.0)
+                if min_dist_sec is None or d < min_dist_sec:
+                    min_dist_sec = d
 
         if min_dist_sec is None:
             return 1.0
@@ -1686,12 +1691,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 rect.setWidth(width * fx)
                 rect.setHeight(height * fy)
                 break
-            else:
-                # When not resizing, the crop effect only masks pixels and
-                # does not alter the clip's bounding box. Ignore the crop
-                # dimensions so transform handles continue to track the
-                # original clip size.
-                continue
+            # When not resizing, the crop effect only masks pixels and
+            # does not alter the clip's bounding box. Ignore the crop
+            # dimensions so transform handles continue to track the
+            # original clip size.
 
         return rect, raw_properties
 
