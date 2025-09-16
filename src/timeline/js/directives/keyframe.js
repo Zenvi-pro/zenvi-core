@@ -12,12 +12,56 @@ App.directive("tlKeyframe", function () {
       var transactionId = null;
       var currentFrame = parseInt(attrs.point, 10);
 
+      function toNumber(value, fallback) {
+        var parsed = parseFloat(value);
+        return isNaN(parsed) ? fallback : parsed;
+      }
+
       function locateObject() {
         if (objType === "clip") {
           obj = findElement(scope.project.clips, "id", objId);
         } else {
           obj = findElement(scope.project.effects, "id", objId);
         }
+      }
+
+      function getBounds(object) {
+        if (!object) { return null; }
+        var start = toNumber(object.start, 0);
+        var end = toNumber(object.end, NaN);
+        if (isNaN(end)) {
+          var duration = toNumber(object.duration, NaN);
+          if (!isNaN(duration)) {
+            end = start + duration;
+          } else {
+            end = start;
+          }
+        }
+        start = snapToFPSGridTime(scope, start);
+        end = snapToFPSGridTime(scope, end);
+        if (end < start) {
+          var temp = start;
+          start = end;
+          end = temp;
+        }
+        return {start: start, end: end};
+      }
+
+      function clampSeconds(object, seconds) {
+        var bounds = getBounds(object);
+        if (!bounds) { return seconds; }
+        if (seconds < bounds.start) {
+          return bounds.start;
+        }
+        if (seconds > bounds.end) {
+          return bounds.end;
+        }
+        return seconds;
+      }
+
+      function secondsToPixels(object, seconds) {
+        var start = toNumber(object.start, 0);
+        return (seconds - start) * scope.pixelsPerSecond;
       }
 
       function pushKeyframeChange(copy, ignoreRefresh) {
@@ -57,7 +101,17 @@ App.directive("tlKeyframe", function () {
           if (!obj || typeof obj.start === "undefined") {return;}
 
           var left    = ui.position.left;
-          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);
+          var start   = toNumber(obj.start, 0);
+          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + start);
+          var clamped = clampSeconds(obj, secs);
+          if (clamped !== secs) {
+            secs = clamped;
+            left = secondsToPixels(obj, secs);
+            ui.position.left = left;
+            if (ui.helper) {
+              ui.helper.css("left", left + "px");
+            }
+          }
           var newFrame= Math.round(secs * fps) + 1;
 
           if (newFrame !== currentFrame) {
@@ -69,7 +123,8 @@ App.directive("tlKeyframe", function () {
           }
 
           // Preview frame while dragging
-          scope.previewFrame(obj.position + pixelToTime(scope, left));
+          var position = toNumber(obj.position, 0);
+          scope.previewFrame(position + pixelToTime(scope, left));
         },
         stop: function (e, ui) {
           scope.setDragging(false);
@@ -77,7 +132,15 @@ App.directive("tlKeyframe", function () {
           if (!obj || typeof obj.start === "undefined") {return;}
 
           var left    = ui.position.left;
-          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + obj.start);
+          var start   = toNumber(obj.start, 0);
+          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + start);
+          var clamped = clampSeconds(obj, secs);
+          if (clamped !== secs) {
+            secs = clamped;
+            left = secondsToPixels(obj, secs);
+            ui.position.left = left;
+            ui.helper && ui.helper.css("left", left + "px");
+          }
           var newFrame= Math.round(secs * fps) + 1;
 
           if (newFrame !== currentFrame) {
