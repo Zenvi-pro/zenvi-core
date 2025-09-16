@@ -670,6 +670,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 info.get_default_path("THUMBNAIL_PATH"),
                 info.get_default_path("BLENDER_PATH"),
                 info.get_default_path("TITLE_PATH"),
+                info.get_default_path("CLIPBOARD_PATH"),
                 ]:
             try:
                 if os.path.exists(temp_dir):
@@ -3551,7 +3552,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if not data_bytes:
             return None
 
-        dest_dir = os.path.join(info.USER_PATH, "clipboard")
+        dest_dir = info.CLIPBOARD_PATH
         os.makedirs(dest_dir, exist_ok=True)
 
         filename = "clipboard-{}-{}.{}".format(
@@ -3572,7 +3573,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def _write_clipboard_image(self, image):
         """Persist a clipboard image to disk and return the new path."""
-        dest_dir = os.path.join(info.USER_PATH, "clipboard")
+        dest_dir = info.CLIPBOARD_PATH
         os.makedirs(dest_dir, exist_ok=True)
 
         filename = "clipboard-{}-{}.png".format(

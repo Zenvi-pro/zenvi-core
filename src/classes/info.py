@@ -66,6 +66,7 @@ USER_TITLES_PATH = os.path.join(USER_PATH, "title_templates")
 USER_COLORS_PATH = os.path.join(USER_PATH, "colors")
 PROTOBUF_DATA_PATH = os.path.join(USER_PATH, "protobuf_data")
 YOLO_PATH = os.path.join(USER_PATH, "yolo")
+CLIPBOARD_PATH = os.path.join(USER_PATH, "clipboard")
 # User files
 BACKUP_FILE = os.path.join(BACKUP_PATH, "backup.osp")
 USER_DEFAULT_PROJECT = os.path.join(USER_PATH, "default.osp")
