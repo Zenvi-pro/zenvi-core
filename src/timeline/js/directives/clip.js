@@ -50,11 +50,90 @@ App.directive("tlClip", function ($timeout) {
       var timing_original_start = 0.0;
       var timing_original_end = 0.0;
 
+      function toNumber(value, fallback) {
+        var parsed = parseFloat(value);
+        return isNaN(parsed) ? fallback : parsed;
+      }
+
+      function getTimePoints() {
+        if (!scope.clip || !scope.clip.time) {
+          return [];
+        }
+        var points = scope.clip.time.Points;
+        return Array.isArray(points) ? points : [];
+      }
+
+      function hasTimeKeyframes() {
+        return getTimePoints().length >= 2;
+      }
+
+      function getReaderDurationSeconds() {
+        if (!scope.clip) {
+          return 0;
+        }
+        var reader = scope.clip.reader || {};
+        var duration = toNumber(reader.duration, NaN);
+        if (!isNaN(duration) && duration > 0) {
+          return duration;
+        }
+        var videoLength = toNumber(reader.video_length, NaN);
+        var fps = reader.fps || {};
+        var fpsNum = toNumber(fps.num, NaN);
+        var fpsDen = toNumber(fps.den, NaN);
+        if (!isNaN(videoLength) && !isNaN(fpsNum) && !isNaN(fpsDen) && fpsDen !== 0) {
+          var fpsValue = fpsNum / fpsDen;
+          if (fpsValue > 0) {
+            return videoLength / fpsValue;
+          }
+        }
+        var clipDuration = toNumber(scope.clip.duration, NaN);
+        if (!isNaN(clipDuration) && clipDuration > 0) {
+          return clipDuration;
+        }
+        var end = toNumber(scope.clip.end, 0);
+        var start = toNumber(scope.clip.start, 0);
+        return Math.max(end - start, 0);
+      }
+
+      function isResizeConstrained() {
+        return !(scope.enable_timing || hasTimeKeyframes());
+      }
+
+      function getMaxClipEndSeconds() {
+        if (!isResizeConstrained()) {
+          return null;
+        }
+        return getReaderDurationSeconds();
+      }
+
+      function getMaxResizeWidthPx() {
+        if (!isResizeConstrained()) {
+          return null;
+        }
+        var maxEnd = getReaderDurationSeconds();
+        var actualStart = toNumber(scope.clip.start, 0);
+        var clipStart = Math.max(0, Math.min(actualStart, maxEnd));
+        var available = Math.max(0, maxEnd - clipStart);
+        var currentDuration = Math.max(0, toNumber(scope.clip.end, 0) - actualStart);
+        if (available < currentDuration) {
+          available = currentDuration;
+        }
+        return available * scope.pixelsPerSecond;
+      }
+
+      function updateMaxResizeWidth() {
+        var maxWidth = getMaxResizeWidthPx();
+        if (element.data("ui-resizable")) {
+          element.resizable("option", "maxWidth", maxWidth);
+        }
+        return maxWidth;
+      }
+
       //handle resizability of clip
       element.resizable({
         handles: "e, w",
         minWidth: 1,
-        maxWidth: scope.enable_timing ? null : scope.clip.duration * scope.pixelsPerSecond,
+        maxWidth: getMaxResizeWidthPx(),
         start: function (e, ui) {
           // Set selections
           setSelections(scope, element, $(this).attr("id"));
@@ -137,6 +216,8 @@ App.directive("tlClip", function ($timeout) {
           var new_left = scope.clip.start;
           var new_right = scope.clip.end;
 
+          var maxClipEndSeconds = getMaxClipEndSeconds();
+
           if (dragLoc === "left") {
             // changing the start of the clip
             new_left -= delta_time;
@@ -154,9 +235,9 @@ App.directive("tlClip", function ($timeout) {
           else {
             // changing the end of the clips
             new_right -= delta_time;
-            if (!scope.enable_timing && new_right > scope.clip.duration) {
+            if (maxClipEndSeconds !== null && new_right > maxClipEndSeconds) {
               // prevent greater than duration
-              new_right = scope.clip.duration;
+              new_right = maxClipEndSeconds;
             } else if (new_right < new_left) {
               // Prevent resizing past left edge
               new_right = new_left;
@@ -178,7 +259,7 @@ App.directive("tlClip", function ($timeout) {
             if (scope.Qt) {
               timeline.RetimeClip(scope.clip.id, scope.clip.end, scope.clip.position);
             }
-            element.resizable("option", "maxWidth", null);
+            updateMaxResizeWidth();
           } else {
             //apply the new start, end and length to the clip's scope
             scope.$apply(function () {
@@ -196,7 +277,7 @@ App.directive("tlClip", function ($timeout) {
             if (scope.Qt) {
               timeline.update_clip_data(JSON.stringify(scope.clip), true, true, false, null);
             }
-            element.resizable("option", "maxWidth", scope.clip.duration * scope.pixelsPerSecond);
+            updateMaxResizeWidth();
           }
 
           //resize the audio canvas to match the new clip width
@@ -240,6 +321,11 @@ App.directive("tlClip", function ($timeout) {
           var new_left = parseFloat(scope.clip.start * scope.pixelsPerSecond);
           var new_right = parseFloat(scope.clip.end * scope.pixelsPerSecond);
 
+          var maxClipEndPx = getMaxClipEndSeconds();
+          if (maxClipEndPx !== null) {
+            maxClipEndPx *= scope.pixelsPerSecond;
+          }
+
           if (dragLoc === "left") {
             // Adjust left side of clip
             if (new_left - delta_x > 0.0) {
@@ -258,10 +344,9 @@ App.directive("tlClip", function ($timeout) {
           else {
             // Adjust right side of clip
             new_right -= delta_x;
-            let duration_pixels = scope.clip.duration * scope.pixelsPerSecond;
-            if (!scope.enable_timing && new_right > duration_pixels) {
+            if (maxClipEndPx !== null && new_right > maxClipEndPx) {
               // change back to actual duration (for the preview below)
-              new_right = duration_pixels;
+              new_right = maxClipEndPx;
             }
             ui.element.width(new_right - new_left);
           }
@@ -269,18 +354,30 @@ App.directive("tlClip", function ($timeout) {
           // Preview frame during resize
           if (dragLoc === "left") {
             // Preview the left side of the clip
-            scope.previewClipFrame(scope.clip.id, scope.enable_timing ? timing_original_start : new_left / scope.pixelsPerSecond);
+            scope.previewClipFrame(scope.clip.id, snapToFPSGridTime(scope, new_left / scope.pixelsPerSecond));
           }
           else {
             // Preview the right side of the clip
-            scope.previewClipFrame(scope.clip.id, scope.enable_timing ? timing_original_end : new_right / scope.pixelsPerSecond);
+            scope.previewClipFrame(scope.clip.id, snapToFPSGridTime(scope, new_right / scope.pixelsPerSecond));
           }
         }
       });
 
       // Adjust max resize width when toggling timing mode
-      scope.$watch("enable_timing", function (val) {
-        element.resizable("option", "maxWidth", val ? null : scope.clip.duration * scope.pixelsPerSecond);
+      scope.$watch("enable_timing", function () {
+        updateMaxResizeWidth();
+      });
+
+      scope.$watch(function () {
+        return scope.clip && scope.clip.start;
+      }, function () {
+        updateMaxResizeWidth();
+      });
+
+      scope.$watch(function () {
+        return getTimePoints().length;
+      }, function () {
+        updateMaxResizeWidth();
       });
 
       //handle hover over on the clip
