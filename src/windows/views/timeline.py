@@ -3017,7 +3017,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Adjust frame # to valid range
         frame_number = max(frame_number, 1)
-        frame_number = min(frame_number, int(clip.data['reader']['video_length']))
 
         # Load the clip into the Player (ignored if this has already happened)
         self.window.LoadFileSignal.emit(preview_path)
