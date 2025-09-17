@@ -2590,6 +2590,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     target_proj_frames = max(1, int(reader_len_src * (fps_float / src_fps)))
                     target_end_sec = float(clip.data["start"]) + (target_proj_frames / fps_float)
 
+                    # Tiny override: for single still images, reset to default image length (not 3600s)
+                    is_single_image = False
+                    if c_obj and getattr(c_obj.Reader().info, "has_single_image", False):
+                        is_single_image = True
+                    elif reader.get("has_single_image") or reader.get("media_type") == "image":
+                        is_single_image = True
+                    if is_single_image:
+                        # Snap to project frame grid (same style as addClip)
+                        default_img_len = float(get_app().get_settings().get("default-image-length") or 10.0)
+                        snapped_len = round(default_img_len * fps_float) / fps_float
+                        target_end_sec = float(clip.data["start"]) + max(1.0 / fps_float, snapped_len)
+
                     # Retime the clip to that end (rescales ALL X correctly)
                     retime_clip(clip, target_end_sec, clip.data.get("position"), direction=1)
 
