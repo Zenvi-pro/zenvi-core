@@ -34,33 +34,44 @@ App.directive("tlKeyframe", function () {
         var end = toNumber(object.end, NaN);
         if (isNaN(end)) {
           var duration = toNumber(object.duration, NaN);
-          if (!isNaN(duration)) {
-            end = start + duration;
-          } else {
-            end = start;
-          }
+          if (!isNaN(duration)) end = start + duration;
+          else end = start;
         }
         start = snapToFPSGridTime(scope, start);
-        end = snapToFPSGridTime(scope, end);
-        if (end < start) {
-          var temp = start;
-          start = end;
-          end = temp;
-        }
-        return {start: start, end: end};
+        end   = snapToFPSGridTime(scope, end);
+        if (end < start) { var t = start; start = end; end = t; }
+        return { start: start, end: end };
       }
 
-      function clampSeconds(object, seconds) {
-        var bounds = getBounds(object);
-        if (!bounds) { return seconds; }
-        if (seconds < bounds.start) return bounds.start;
-        if (seconds > bounds.end)   return bounds.end;
-        return seconds;
+      // Right edge must be exclusive: last valid time is end - (1/fps)
+      function exclusiveMaxSec(bounds) {
+        return bounds.end - (1 / fps);
+      }
+
+      // Clamp to [start, end-1/fps], snap to grid, clamp again (prevents landing past last frame)
+      function snapClampExclusive(secs, bounds) {
+        if (secs < bounds.start) secs = bounds.start;
+        var maxSec = exclusiveMaxSec(bounds);
+        if (secs > maxSec) secs = maxSec;
+        secs = snapToFPSGridTime(scope, secs);
+        if (secs > maxSec) secs = maxSec;  // guard post-snap
+        if (secs < bounds.start) secs = bounds.start;
+        return secs;
       }
 
       function secondsToPixels(object, seconds) {
         var start = toNumber(object.start, 0);
         return (seconds - start) * scope.pixelsPerSecond;
+      }
+
+      // Convert seconds -> frame index; end is inclusive at floor(end*fps)
+      function secondsToFrame(secs, bounds) {
+        var startFrame = Math.floor(bounds.start * fps) + 1;
+        var endFrame   = Math.floor(bounds.end   * fps);
+        var f = Math.floor(secs * fps) + 1; // aligned by snapClampExclusive
+        if (f < startFrame) f = startFrame;
+        if (f > endFrame)   f = endFrame;
+        return f;
       }
 
       function pushKeyframeChange(copy, ignoreRefresh) {
@@ -79,7 +90,7 @@ App.directive("tlKeyframe", function () {
       var draggingKeyframe = false;
 
       function enterDragMode() {
-        if (draggingKeyframe) { return; }
+        if (draggingKeyframe) return;
         draggingKeyframe = true;
         element.addClass("point-dragging");
         if (document && document.body) {
@@ -88,7 +99,7 @@ App.directive("tlKeyframe", function () {
       }
 
       function exitDragMode() {
-        if (!draggingKeyframe) { return; }
+        if (!draggingKeyframe) return;
         draggingKeyframe = false;
         element.removeClass("point-dragging");
         if (document && document.body) {
@@ -113,7 +124,7 @@ App.directive("tlKeyframe", function () {
         axis: "x",
         distance: 1,
         scroll: true,
-        // keep the original behavior that worked in WebKit
+        cursor: "ew-resize",
         start: function () {
           scope.setDragging(true);
           enterDragMode();
@@ -124,7 +135,6 @@ App.directive("tlKeyframe", function () {
           if (scope.Qt) {
             timeline.StartKeyframeDrag(objType, objId, transactionId);
           }
-          // Avoid text selection while dragging
           try { window.getSelection() && window.getSelection().removeAllRanges(); } catch (_) {}
           if (document && document.body) {
             document.body.style.userSelect = "none";
@@ -133,34 +143,30 @@ App.directive("tlKeyframe", function () {
         },
         drag: function (e, ui) {
           locateObject();
-          if (!obj || typeof obj.start === "undefined") { return; }
+          if (!obj || typeof obj.start === "undefined") return;
 
-          // Compute proposed position from ui.left (WebKit-friendly) and keep it clamped/snapped
-          var left    = ui.position.left;
-          var start   = toNumber(obj.start, 0);
-          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + start);
-          var clamped = clampSeconds(obj, secs);
+          var left   = ui.position.left;
+          var start  = toNumber(obj.start, 0);
+          var bounds = getBounds(obj);
 
-          if (clamped !== secs) {
-            secs = clamped;
-            left = secondsToPixels(obj, secs);
-            ui.position.left = left;
-            if (ui.helper) ui.helper.css("left", left + "px");
-          }
+          // propose secs from pixels, then snap&clamp with end-exclusive rule
+          var secs = pixelToTime(scope, left) + start;
+          secs = snapClampExclusive(secs, bounds);
 
-          // Calculate the candidate frame, but DO NOT mutate the model here
-          var newFrame = Math.round(secs * fps) + 1;
+          // keep helper aligned to snapped time
+          left = secondsToPixels(obj, secs);
+          ui.position.left = left;
+          if (ui.helper) ui.helper.css("left", left + "px");
+
+          // candidate frame (snapped, end-exclusive safe)
+          var newFrame = secondsToFrame(secs, bounds);
           pendingFrame = newFrame;
 
-          // Visual preview only (safe)
+          // visual preview only
           var position = toNumber(obj.position, 0);
-          // Use $evalAsync so Angular digest is coalesced and less likely to re-render mid-drag
           scope.$evalAsync(function () {
             scope.previewFrame(position + pixelToTime(scope, left));
           });
-
-          // Important: no scope.moveKeyframes(...) and no pushKeyframeChange(...) here
-          // Mutating here can re-render the timeline and destroy the draggable element.
         },
         stop: function (e, ui) {
           scope.setDragging(false);
@@ -171,27 +177,26 @@ App.directive("tlKeyframe", function () {
             return;
           }
 
-          // Recompute final sec/left from the last ui.position, then COMMIT once
-          var left    = ui.position.left;
-          var start   = toNumber(obj.start, 0);
-          var secs    = snapToFPSGridTime(scope, pixelToTime(scope, left) + start);
-          var clamped = clampSeconds(obj, secs);
-          if (clamped !== secs) {
-            secs = clamped;
-            left = secondsToPixels(obj, secs);
-            ui.position.left = left;
-            if (ui.helper) ui.helper.css("left", left + "px");
-            element.css("left", left + "px");
-          }
+          var left   = ui.position.left;
+          var start  = toNumber(obj.start, 0);
+          var bounds = getBounds(obj);
 
-          var newFrame = Math.round(secs * fps) + 1;
+          // final secs with snap + end-exclusive clamp
+          var secs = pixelToTime(scope, left) + start;
+          secs = snapClampExclusive(secs, bounds);
+
+          // enforce visual sync to snapped pos
+          left = secondsToPixels(obj, secs);
+          ui.position.left = left;
+          if (ui.helper) ui.helper.css("left", left + "px");
+          element.css("left", left + "px");
+
+          var newFrame = secondsToFrame(secs, bounds);
 
           if (newFrame !== currentFrame) {
-            // work on a copy and commit once
             var copy = angular.copy(obj);
             scope.moveKeyframes(copy, currentFrame, newFrame);
-            // final commit; allow refresh here
-            pushKeyframeChange(copy, false);
+            pushKeyframeChange(copy, false); // commit once
             currentFrame = newFrame;
           }
 

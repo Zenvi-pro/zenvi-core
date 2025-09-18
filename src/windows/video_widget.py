@@ -26,6 +26,7 @@
  """
 
 import json
+import math
 import time
 import uuid
 
@@ -52,18 +53,25 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def _compute_handles_opacity(self, fps_float):
         """
-        Opacity based on playhead vs. selected clip(s) in project seconds:
-          clip_start = position
-          clip_end   = position + (end - start)   [fallbacks to duration/reader duration]
+        Opacity based on playhead vs. selected clip(s).
         Intersects => 1.0
         Otherwise => 0.60 fading to 0.25 over 90 seconds.
-        Works for both clip transforms and effect (e.g., Crop) transforms by
-        including self.transforming_clip when the list is empty.
         """
-        fps = max(float(fps_float), 0.0001)
-        playhead_sec = float(get_app().window.preview_thread.current_frame) / fps
+        import math
 
-        # Build selected set: use list if present, else include single transforming_clip (effect case)
+        fps = max(float(fps_float), 0.0001)
+
+        # Playhead frame is 1-indexed in UI; snap to grid by rounding
+        try:
+            cur_f_raw = float(get_app().window.preview_thread.current_frame)
+        except Exception:
+            cur_f_raw = 1.0
+        # Ensure integer frame on the project grid
+        cur_f = int(round(cur_f_raw))  # already 1-indexed from preview thread
+        if cur_f < 1:
+            cur_f = 1
+
+        # Build selected set (clips or single transforming_clip for effects)
         selected = []
         if getattr(self, "transforming_clips", None):
             selected.extend(self.transforming_clips)
@@ -73,7 +81,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         if not selected:
             return 1.0
 
-        def clip_bounds_secs(c):
+        def clip_bounds_frames(c):
+            """
+            Return (start_frame, end_frame) inclusive, 1-indexed, snapped to project grid:
+              start_frame = round(position*fps) + 1
+              end_frame   = round((position + (end-start|duration))*fps)
+            """
             position = float(c.data.get("position", 0.0))
             start = float(c.data.get("start", 0.0))
 
@@ -93,38 +106,47 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 src_end = start + float(dur or 0.0)
 
             clip_len = max(src_end - start, 0.0)
-            clip_start = position
-            clip_end = position + clip_len
-            if clip_end < clip_start:
-                clip_start, clip_end = clip_end, clip_start
-            return clip_start, clip_end
+            cs_sec = position
+            ce_sec = position + clip_len
+            if ce_sec < cs_sec:
+                cs_sec, ce_sec = ce_sec, cs_sec
 
-        # Check all selected clips (union) for intersection or nearest distance
-        min_dist_sec = None
+            # Snap both edges to the project frame grid (round) using your conventions
+            sf = int(round(cs_sec * fps)) + 1
+            ef = int(round(ce_sec * fps))
+            if ef < sf:
+                ef = sf
+            return sf, ef
+
+        min_dist_frames = None
+
         for c in selected:
             try:
-                cs, ce = clip_bounds_secs(c)
+                sf, ef = clip_bounds_frames(c)
             except Exception as exc:
-                log.warning(
-                    "Failed to compute clip bounds for %s: %s",
-                    getattr(c, "id", c),
-                    exc,
-                    exc_info=True,
-                )
+                log.warning("Failed to compute frame bounds for %s: %s",
+                            getattr(c, "id", c), exc, exc_info=True)
+                continue
+
+            # Exact inclusive test on snapped frame bounds
+            if sf <= cur_f <= ef:
+                return 1.0
+
+            # Outside distance in frames to the nearest boundary
+            if cur_f < sf:
+                d = sf - cur_f
             else:
-                if cs <= playhead_sec <= ce:
-                    return 1.0
+                d = cur_f - ef
+            d = max(int(d), 0)
+            if min_dist_frames is None or d < min_dist_frames:
+                min_dist_frames = d
 
-                d = (cs - playhead_sec) if playhead_sec < cs else (playhead_sec - ce)
-                d = max(d, 0.0)
-                if min_dist_sec is None or d < min_dist_sec:
-                    min_dist_sec = d
-
-        if min_dist_sec is None:
+        if min_dist_frames is None:
             return 1.0
 
-        # Fade 0.60 -> 0.25 over 90s when not intersecting
-        BASE, FAR, WINDOW = 0.50, 0.15, 90.0
+        # Convert distance to seconds for the fade (0.60 -> 0.25 over 90s)
+        BASE, FAR, WINDOW = 0.60, 0.25, 90.0
+        min_dist_sec = float(min_dist_frames) / fps
         t = min(min_dist_sec / WINDOW, 1.0)
         return BASE - (BASE - FAR) * t
 
