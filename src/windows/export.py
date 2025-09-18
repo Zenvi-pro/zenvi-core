@@ -991,7 +991,7 @@ class Export(QDialog):
         # Start video cache thread (to start caching frames)
         self.cache_thread.Reader(self.timeline)
         self.cache_thread.setSpeed(1)
-        #self.cache_thread.StartThread()
+        self.cache_thread.StartThread()
 
         # Create FFmpegWriter
         try:
