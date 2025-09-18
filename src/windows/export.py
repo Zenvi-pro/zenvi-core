@@ -991,7 +991,7 @@ class Export(QDialog):
         # Start video cache thread (to start caching frames)
         self.cache_thread.Reader(self.timeline)
         self.cache_thread.setSpeed(1)
-        self.cache_thread.StartThread()
+        #self.cache_thread.StartThread()
 
         # Create FFmpegWriter
         try:
@@ -1108,7 +1108,8 @@ class Export(QDialog):
 
                 # Write the frame object to the video
                 w.WriteFrame(self.timeline.GetFrame(frame))
-                self.cache_thread.Seek(frame)
+                if self.cache_thread:
+                    self.cache_thread.Seek(frame)
 
                 # Check if we need to bail out
                 if not self.exporting:
@@ -1177,8 +1178,10 @@ class Export(QDialog):
         openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
 
         # Stop cache thread and restore project cache
-        self.cache_thread.StopThread(10000)
-        self.cache_thread.Reader(None)
+        if self.cache_thread:
+            self.cache_thread.StopThread(10000)
+            self.cache_thread.Reader(None)
+            self.cache_thread = None
         get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
         get_app().window.cache_object = self.old_cache_object
 
@@ -1290,9 +1293,10 @@ class Export(QDialog):
         openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
 
         # Stop cache thread and restore project cache
-        self.cache_thread.StopThread(10000)
-        self.cache_thread.Reader(None)
-        self.cache_thread = None
+        if self.cache_thread:
+            self.cache_thread.StopThread(10000)
+            self.cache_thread.Reader(None)
+            self.cache_thread = None
         get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
         get_app().window.cache_object = self.old_cache_object
 
