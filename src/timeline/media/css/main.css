@@ -34,9 +34,25 @@ body {
 }
 
 /* keyframe dragging */
-.point.ui-draggable-dragging {
+.point {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+.point.ui-draggable-dragging,
+.point.point-dragging {
   cursor: ew-resize !important;
   z-index: 9000 !important;
+}
+
+body.keyframe-dragging,
+body.keyframe-dragging #scrolling_tracks,
+body.keyframe-dragging #scrolling_tracks *,
+body.keyframe-dragging #scrolling_ruler,
+body.keyframe-dragging #scrolling_ruler *,
+body.keyframe-dragging #ruler,
+body.keyframe-dragging #ruler * {
+  cursor: ew-resize !important;
 }
 
 /* manually moving selected item */

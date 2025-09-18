@@ -124,6 +124,72 @@ def _reader_video_length(reader):
         return 0
 
 
+def _is_media_type_image(media_type):
+    if isinstance(media_type, str):
+        return media_type.lower() == "image"
+    return False
+
+
+def _dict_has_single_image_flag(data):
+    if not isinstance(data, dict):
+        return False
+    if data.get("has_single_image"):
+        return True
+    return _is_media_type_image(data.get("media_type"))
+
+
+def _clip_has_single_image(reader, clip_data, existing_clip):
+    if _dict_has_single_image_flag(reader):
+        return True
+    if _dict_has_single_image_flag(clip_data):
+        return True
+    if isinstance(clip_data, dict) and _dict_has_single_image_flag(clip_data.get("reader")):
+        return True
+    if existing_clip and getattr(existing_clip, "data", None):
+        existing_data = existing_clip.data
+        if _dict_has_single_image_flag(existing_data):
+            return True
+        if _dict_has_single_image_flag(existing_data.get("reader")):
+            return True
+    return False
+
+
+def _float_or_none(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_single_image_timing(clip_data):
+    start_sec = _float_or_none(clip_data.get("start"))
+    if start_sec is None:
+        start_sec = 0.0
+
+    end_sec = _float_or_none(clip_data.get("end"))
+    duration_sec = _float_or_none(clip_data.get("duration"))
+
+    if duration_sec is None and end_sec is not None:
+        duration_sec = end_sec - start_sec
+    if end_sec is None and duration_sec is not None:
+        end_sec = start_sec + duration_sec
+    if end_sec is None:
+        end_sec = start_sec
+    if duration_sec is None:
+        duration_sec = end_sec - start_sec
+
+    if start_sec < 0.0:
+        start_sec = 0.0
+    if end_sec < start_sec:
+        end_sec = start_sec
+
+    duration_sec = end_sec - start_sec
+
+    clip_data["start"] = start_sec
+    clip_data["end"] = end_sec
+    clip_data["duration"] = duration_sec
+
+
 def _max_duration_seconds(reader, video_len_src, src_fps_f):
     if reader.get("has_single_image"):
         return float(reader.get("duration", 0))
@@ -195,10 +261,15 @@ def clamp_timing_to_media(clip_data, existing_clip=None):
     """
 
     reader = _reader_from_clip(clip_data, existing_clip)
-    if not reader:
-        return clip_data
 
     _merge_timing_from_existing(clip_data, existing_clip)
+
+    if _clip_has_single_image(reader, clip_data, existing_clip):
+        _normalize_single_image_timing(clip_data)
+        return clip_data
+
+    if not reader:
+        return clip_data
 
     proj_fps_f = _project_fps_float()
     src_fps_f = _source_fps(reader, clip_data, existing_clip, proj_fps_f)

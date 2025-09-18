@@ -67,6 +67,25 @@ App.directive("tlClip", function ($timeout) {
         return getTimePoints().length >= 2;
       }
 
+      function isSingleImageClip() {
+        if (!scope.clip) {
+          return false;
+        }
+        if (scope.clip.has_single_image) {
+          return true;
+        }
+        var mediaType = (scope.clip.media_type || "").toString().toLowerCase();
+        if (mediaType === "image") {
+          return true;
+        }
+        var reader = scope.clip.reader || {};
+        if (reader.has_single_image) {
+          return true;
+        }
+        var readerMediaType = (reader.media_type || "").toString().toLowerCase();
+        return readerMediaType === "image";
+      }
+
       function getReaderDurationSeconds() {
         if (!scope.clip) {
           return 0;
@@ -96,7 +115,7 @@ App.directive("tlClip", function ($timeout) {
       }
 
       function isResizeConstrained() {
-        return !(scope.enable_timing || hasTimeKeyframes());
+        return !(scope.enable_timing || hasTimeKeyframes() || isSingleImageClip());
       }
 
       function getMaxClipEndSeconds() {
@@ -217,19 +236,35 @@ App.directive("tlClip", function ($timeout) {
           var new_right = scope.clip.end;
 
           var maxClipEndSeconds = getMaxClipEndSeconds();
+          var singleImageClip = isSingleImageClip();
+          var allowLeftOverflow = scope.enable_timing || singleImageClip;
 
           if (dragLoc === "left") {
             // changing the start of the clip
-            new_left -= delta_time;
-            if (new_left < 0) {
-              // prevent less than zero
-              new_left = 0.0;
-              new_position -= scope.clip.start;
-            } else if (new_left >= new_right) {
+            var targetStart = new_left - delta_time;
+            var overflow = 0;
+            if (targetStart < 0) {
+              overflow = -targetStart;
+              targetStart = 0.0;
+            }
+
+            if (targetStart >= new_right) {
               // prevent resizing past right edge
-              new_left = new_right;
+              targetStart = new_right;
             } else {
-              new_position -= delta_time;
+              var positionShift = delta_time;
+              if (overflow > 0 && !allowLeftOverflow) {
+                // When overflow isn't allowed, clamp at the media's true start
+                positionShift = scope.clip.start;
+              }
+              new_position -= positionShift;
+            }
+
+            new_left = targetStart;
+
+            if (overflow > 0 && allowLeftOverflow) {
+              // Extend duration when overflowing past the media's start
+              new_right += overflow;
             }
           }
           else {
@@ -266,9 +301,13 @@ App.directive("tlClip", function ($timeout) {
               if (scope.clip.end !== new_right) {
                 scope.clip.end = snapToFPSGridTime(scope, new_right);
               }
-              if (scope.clip.start !== new_left) {
-                scope.clip.start = snapToFPSGridTime(scope, new_left);
-                scope.clip.position = snapToFPSGridTime(scope, new_position);
+              var snappedStart = snapToFPSGridTime(scope, new_left);
+              var snappedPosition = snapToFPSGridTime(scope, new_position);
+              if (scope.clip.start !== snappedStart) {
+                scope.clip.start = snappedStart;
+              }
+              if (scope.clip.position !== snappedPosition) {
+                scope.clip.position = snappedPosition;
               }
               scope.resizeTimeline();
             });
@@ -295,6 +334,9 @@ App.directive("tlClip", function ($timeout) {
           let original_left_edge = scope.clip.position * scope.pixelsPerSecond;
           let original_width = (scope.clip.end - scope.clip.start) * scope.pixelsPerSecond;
           let original_right_edge = original_left_edge + original_width;
+
+          var singleImageClip = isSingleImageClip();
+          var allowLeftOverflow = scope.enable_timing || singleImageClip;
 
           if (resize_disabled) {
             // disabled, keep the item the same size
@@ -327,19 +369,31 @@ App.directive("tlClip", function ($timeout) {
           }
 
           if (dragLoc === "left") {
-            // Adjust left side of clip
-            if (new_left - delta_x > 0.0) {
-              new_left -= delta_x;
+            if (allowLeftOverflow) {
+              // Allow timing and single-image clips to extend beyond their media start
+              var new_width_px = original_width + delta_x;
+              if (new_width_px < 0) {
+                new_width_px = 0;
+              }
+              ui.element.css("left", original_left_edge - delta_x);
+              ui.element.width(new_width_px);
+              new_left = Math.max((scope.clip.start * scope.pixelsPerSecond) - delta_x, 0.0);
+              new_right = new_left + new_width_px;
             } else {
-              // Don't allow less than 0.0 start
-              let position_x = (scope.clip.position - scope.clip.start) * scope.pixelsPerSecond;
-              delta_x = original_left_edge - position_x;
-              new_left = 0.0;
-            }
+              // Adjust left side of clip
+              if (new_left - delta_x > 0.0) {
+                new_left -= delta_x;
+              } else {
+                // Don't allow less than 0.0 start
+                let position_x = (scope.clip.position - scope.clip.start) * scope.pixelsPerSecond;
+                delta_x = original_left_edge - position_x;
+                new_left = 0.0;
+              }
 
-            // Position and size clip
-            ui.element.css("left", original_left_edge - delta_x);
-            ui.element.width(new_right - new_left);
+              // Position and size clip
+              ui.element.css("left", original_left_edge - delta_x);
+              ui.element.width(new_right - new_left);
+            }
           }
           else {
             // Adjust right side of clip
@@ -376,6 +430,12 @@ App.directive("tlClip", function ($timeout) {
 
       scope.$watch(function () {
         return getTimePoints().length;
+      }, function () {
+        updateMaxResizeWidth();
+      });
+
+      scope.$watch(function () {
+        return isSingleImageClip();
       }, function () {
         updateMaxResizeWidth();
       });
