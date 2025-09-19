@@ -519,6 +519,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             first_props = first_props or default_props
 
                 elif getattr(eff_info, 'class_name', '') == 'Crop':
+                    effect_id = None
+                    if hasattr(self.transforming_effect_object, 'Id'):
+                        effect_id = self.transforming_effect_object.Id()
+
                     left = raw_eff.get('left', {}).get('value', 0.0)
                     top = raw_eff.get('top', {}).get('value', 0.0)
                     right = raw_eff.get('right', {}).get('value', 0.0)
@@ -527,32 +531,40 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     x_off = raw_eff.get('x', {}).get('value', 0.0)
                     y_off = raw_eff.get('y', {}).get('value', 0.0)
 
+                    base_w, base_h = self._clip_source_dimensions(
+                        clip, obj, frame, skip_effect_id=effect_id)
+
                     width = clip_rect.width()
                     height = clip_rect.height()
                     cw = max(1.0 - left - right, 0.0)
                     ch = max(1.0 - top - bottom, 0.0)
 
-                    crop_w = width * cw
-                    crop_h = height * ch
                     if resize:
-                        scale = max(width / max(crop_w, 0.0001), height / max(crop_h, 0.0001))
-                        crop_w *= scale
-                        crop_h *= scale
-                        x1_abs = clip_rect.center().x() - crop_w / 2.0
-                        y1_abs = clip_rect.center().y() - crop_h / 2.0
+                        crop_rect_local = self._crop_resize_rect(
+                            base_w, base_h, left, top, right, bottom, x_off, y_off)
+                        frame_w = max(crop_rect_local.width(), 0.0001)
+                        frame_h = max(crop_rect_local.height(), 0.0001)
+                        union_rect = self._clip_display_rect(
+                            frame_w, frame_h, clip, clip_props, viewport)
+                        crop_norm = (0.0, 0.0, 1.0, 1.0)
                     else:
+                        crop_w = width * cw
+                        crop_h = height * ch
                         x1_abs = clip_rect.x() + left * width
                         y1_abs = clip_rect.y() + top * height
+                        dim_w = max(width, 0.0001)
+                        dim_h = max(height, 0.0001)
+                        x1 = (x1_abs - clip_rect.x()) / dim_w
+                        y1 = (y1_abs - clip_rect.y()) / dim_h
+                        x2 = x1 + (crop_w / dim_w)
+                        y2 = y1 + (crop_h / dim_h)
+                        crop_norm = (x1, y1, x2, y2)
+                        union_rect = clip_rect
+                        frame_w = max(base_w, 0.0001)
+                        frame_h = max(base_h, 0.0001)
 
-                    x1 = (x1_abs - clip_rect.x()) / width
-                    y1 = (y1_abs - clip_rect.y()) / height
-                    x2 = x1 + (crop_w / width)
-                    y2 = y1 + (crop_h / height)
-                    crop_norm = (x1, y1, x2, y2)
-
-                    union_rect = clip_rect
                     first_props = clip_props
-                    crop_params = (left, top, right, bottom, resize, x_off, y_off)
+                    crop_params = (left, top, right, bottom, resize, x_off, y_off, frame_w, frame_h)
 
             # Draw handler(s)
             if union_rect and first_props:
@@ -584,13 +596,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 # Crop origin glyph (screen space; constant size; with opacity)
                 if is_crop:
-                    left, top, right, bottom, resize, crop_x, crop_y = crop_params
-                    cw = max(1.0 - left - right, 0.0001)
-                    ch = max(1.0 - top - bottom, 0.0001)
+                    left, top, right, bottom, resize, crop_x, crop_y, frame_w, frame_h = crop_params
 
-                    # Use the full clip rect dimensions (un-cropped)
-                    base_w = max(sw, 0.0001)
-                    base_h = max(sh, 0.0001)
+                    base_w = max(frame_w, 0.0001)
+                    base_h = max(frame_h, 0.0001)
 
                     # Map clip-space to screen-space
                     sx_factor = sw / base_w
@@ -1400,15 +1409,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     sx_factor = mapped.width() / base_w
                     sy_factor = mapped.height() / base_h
 
+                    width = (base_w / max(cw, 0.0001)) * sx_factor
+                    height = (base_h / max(ch, 0.0001)) * sy_factor
                     if resize:
-                        scale = 1.0 / max(min(cw, ch), 0.0001)
-                        width = base_w * scale * sx_factor
-                        height = base_h * scale * sy_factor
                         origin_w = base_w * sx_factor
                         origin_h = base_h * sy_factor
                     else:
-                        width = (base_w / cw) * sx_factor
-                        height = (base_h / ch) * sy_factor
                         origin_w = width
                         origin_h = height
                     if width <= 0.0001 or height <= 0.0001:
@@ -1626,29 +1632,86 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 get_app().updates.transaction_id = self.transaction_id
             self.updateClipProperty(clip.id, frame, property_key, value + delta, refresh=False)
 
-    def _clip_rect(self, clip, clip_object, viewport_rect, frame_number):
-        raw_properties = json.loads(clip_object.PropertiesJSON(frame_number))
+    def _crop_resize_rect(self, width, height, left, top, right, bottom, x_off, y_off):
+        width = float(max(width, 0.0))
+        height = float(max(height, 0.0))
+        dest_left = left * width
+        dest_top = top * height
+        dest_width = max(0.0, 1.0 - left - right) * width
+        dest_height = max(0.0, 1.0 - top - bottom) * height
+
+        src_left = dest_left + (x_off * width)
+        src_top = dest_top + (y_off * height)
+
+        if src_left < 0.0:
+            dest_left -= src_left
+            src_left = 0.0
+        if src_top < 0.0:
+            dest_top -= src_top
+            src_top = 0.0
+
+        src_right = src_left + dest_width
+        if src_right > width:
+            overflow = src_right - width
+            dest_width -= overflow
+            src_right = width
+
+        src_bottom = src_top + dest_height
+        if src_bottom > height:
+            overflow = src_bottom - height
+            dest_height -= overflow
+            src_bottom = height
+
+        dest_width = max(dest_width, 0.0)
+        dest_height = max(dest_height, 0.0)
+
+        return QRectF(dest_left, dest_top, dest_width, dest_height)
+
+    def _clip_source_dimensions(self, clip, clip_object, frame_number, skip_effect_id=None):
+        pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
+        width = float(clip.data['reader']['width'])
+        height = float(clip.data['reader']['height']) * pixel_adjust
+
+        for eff in clip_object.Effects():
+            if getattr(getattr(eff, 'info', None), 'class_name', '') != 'Crop':
+                continue
+            if skip_effect_id is not None and hasattr(eff, 'Id') and eff.Id() == skip_effect_id:
+                continue
+            eff_props = json.loads(eff.PropertiesJSON(frame_number))
+            if not eff_props.get('resize', {}).get('value', 0.0):
+                continue
+            left = eff_props.get('left', {}).get('value', 0.0)
+            top = eff_props.get('top', {}).get('value', 0.0)
+            right = eff_props.get('right', {}).get('value', 0.0)
+            bottom = eff_props.get('bottom', {}).get('value', 0.0)
+            x_off = eff_props.get('x', {}).get('value', 0.0)
+            y_off = eff_props.get('y', {}).get('value', 0.0)
+
+            crop_rect = self._crop_resize_rect(width, height, left, top, right, bottom, x_off, y_off)
+            width = max(crop_rect.width(), 0.0001)
+            height = max(crop_rect.height(), 0.0001)
+
+        return width, height
+
+    def _clip_display_rect(self, base_width, base_height, clip, raw_properties, viewport_rect):
         player_width = viewport_rect.width()
         player_height = viewport_rect.height()
 
-        source_width = clip.data['reader']['width']
-        source_height = clip.data['reader']['height']
-        pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
-        source_size = QSize(int(source_width), int(source_height * pixel_adjust))
+        source_size = QSizeF(base_width, base_height)
+        scale_mode = clip.data['scale']
+        parent_memo = raw_properties.get('parentObjectId', {}).get('memo', '')
+        if parent_memo:
+            scale_mode = openshot.SCALE_STRETCH
 
-        scale = clip.data['scale']
-        if raw_properties.get('parentObjectId').get('memo') != '' and len(raw_properties.get('parentObjectId').get('memo')) > 0:
-            scale = openshot.SCALE_STRETCH
-
-        if scale == openshot.SCALE_FIT:
+        if scale_mode == openshot.SCALE_FIT:
             source_size.scale(player_width, player_height, Qt.KeepAspectRatio)
-        elif scale == openshot.SCALE_STRETCH:
+        elif scale_mode == openshot.SCALE_STRETCH:
             source_size.scale(player_width, player_height, Qt.IgnoreAspectRatio)
-        elif scale == openshot.SCALE_CROP:
+        elif scale_mode == openshot.SCALE_CROP:
             source_size.scale(player_width, player_height, Qt.KeepAspectRatioByExpanding)
 
-        source_width = source_size.width()
-        source_height = source_size.height()
+        source_width = max(source_size.width(), 0.0001)
+        source_height = max(source_size.height(), 0.0001)
 
         # Get per-frame scale factors
         sx = max(float(raw_properties.get('scale_x').get('value')), 0.001)
@@ -1683,40 +1746,22 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             x += player_width - scaled_width
             y += player_height - scaled_height
 
-        location_x = raw_properties.get('location_x').get('value')
-        location_y = raw_properties.get('location_y').get('value')
+        location_x = float(raw_properties.get('location_x', {}).get('value', 0.0))
+        location_y = float(raw_properties.get('location_y', {}).get('value', 0.0))
         x += player_width * location_x
         y += player_height * location_y
 
-        rect = QRectF(x, y, source_width, source_height)
+        return QRectF(x, y, source_width, source_height)
 
-        # Apply crop effect (if any) for accurate bounds
-        for eff in clip_object.Effects():
-            if getattr(getattr(eff, 'info', None), 'class_name', '') != 'Crop':
-                continue
-            if self.transforming_effect_object and hasattr(eff, 'Id') \
-                    and eff.Id() == self.transforming_effect_object.Id():
-                continue
-            eff_props = json.loads(eff.PropertiesJSON(frame_number))
-            left = eff_props.get('left', {}).get('value', 0.0)
-            top = eff_props.get('top', {}).get('value', 0.0)
-            right = eff_props.get('right', {}).get('value', 0.0)
-            bottom = eff_props.get('bottom', {}).get('value', 0.0)
-            resize = eff_props.get('resize', {}).get('value', 0.0)
-            width = rect.width()
-            height = rect.height()
-            if resize:
-                fx = 1.0 / max(1.0 - left - right, 0.0001)
-                fy = 1.0 / max(1.0 - top - bottom, 0.0001)
-                rect.setX(rect.x() - left * fx * width)
-                rect.setY(rect.y() - top * fy * height)
-                rect.setWidth(width * fx)
-                rect.setHeight(height * fy)
-                break
-            # When not resizing, the crop effect only masks pixels and
-            # does not alter the clip's bounding box. Ignore the crop
-            # dimensions so transform handles continue to track the
-            # original clip size.
+    def _clip_rect(self, clip, clip_object, viewport_rect, frame_number):
+        raw_properties = json.loads(clip_object.PropertiesJSON(frame_number))
+
+        skip_id = None
+        if self.transforming_effect_object and hasattr(self.transforming_effect_object, 'Id'):
+            skip_id = self.transforming_effect_object.Id()
+
+        base_width, base_height = self._clip_source_dimensions(clip, clip_object, frame_number, skip_id)
+        rect = self._clip_display_rect(base_width, base_height, clip, raw_properties, viewport_rect)
 
         return rect, raw_properties
 
