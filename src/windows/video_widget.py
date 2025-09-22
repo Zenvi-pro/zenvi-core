@@ -1644,10 +1644,14 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         src_top = dest_top + (y_off * height)
 
         if src_left < 0.0:
+            overflow = -src_left
             dest_left -= src_left
+            dest_width -= overflow
             src_left = 0.0
         if src_top < 0.0:
+            overflow = -src_top
             dest_top -= src_top
+            dest_height -= overflow
             src_top = 0.0
 
         src_right = src_left + dest_width
