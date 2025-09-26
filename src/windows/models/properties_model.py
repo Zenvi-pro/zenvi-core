@@ -38,7 +38,7 @@ from PyQt5.QtGui import (
 from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
-from windows.clip_time import clamp_timing_to_media
+from windows.clip_time import clamp_timing_to_media, clip_time_bounds
 from classes.query import Clip, Transition, Effect
 from classes.logger import log
 from classes.app import get_app
@@ -723,11 +723,10 @@ class PropertiesModel(updates.UpdateInterface):
 
         # Constrain time keyframes to the reader's frame range
         if name == "time" and getattr(c, "data", None):
-            reader = c.data.get("reader") or {}
-            video_length = reader.get("video_length")
-            if video_length:
+            _, max_frames = clip_time_bounds(c.data, c)
+            if max_frames:
                 property[1]["min"] = 1
-                property[1]["max"] = float(video_length)
+                property[1]["max"] = float(max_frames)
 
         value = property[1]["value"]
         type = property[1]["type"]

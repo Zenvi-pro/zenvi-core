@@ -100,19 +100,16 @@ class RepeatDialog(QDialog):
 # Repeat logic
 
 
-def _normalize_points(points, relative_y=False):
-    """Normalize points so X starts at 1. Optionally shift Y similarly."""
+def _normalize_points(points):
+    """Normalize points so X starts at 1 while preserving Y values."""
     if not points:
         return []
     pts = sorted(points, key=lambda p: int(round(p.get("co", {}).get("X", 0))))
     x0 = int(round(pts[0]["co"]["X"]))
-    y0 = int(round(pts[0]["co"].get("Y", 0))) if relative_y else 0
     out = []
     for p in pts:
         x = int(round(p["co"].get("X", 0))) - x0 + 1
         y = p["co"].get("Y")
-        if relative_y and y is not None:
-            y = int(round(y)) - y0 + 1
         out.append({"co": {"X": x, "Y": y}, "interpolation": p.get("interpolation", openshot.LINEAR)})
     return out
 
@@ -127,7 +124,7 @@ def _repeat_curve(points, span_x, dir_sign, passes, delay_frames, ramp, pattern)
         scale = 1 / abs(speed)
         dur = max(1, int(round(span_x * scale)))
         pts_iter = points if dir_local > 0 else reversed(points)
-        for p in pts_iter:
+        for idx, p in enumerate(pts_iter):
             x = int(round(p["co"].get("X", 0))) - 1
             y = p["co"].get("Y")
             nx_off = min(int(round(x * scale)), dur - 1)
@@ -135,7 +132,10 @@ def _repeat_curve(points, span_x, dir_sign, passes, delay_frames, ramp, pattern)
                 nx = base + nx_off + 1
             else:
                 nx = base + (dur - nx_off)
-            new_points.append({"co": {"X": nx, "Y": y}, "interpolation": p.get("interpolation", openshot.LINEAR)})
+            interp = p.get("interpolation", openshot.LINEAR)
+            if pattern == "loop" and k > 0 and idx == 0:
+                interp = openshot.CONSTANT
+            new_points.append({"co": {"X": nx, "Y": y}, "interpolation": interp})
         base += dur
         if k < passes - 1 and delay_frames:
             last_y = new_points[-1]["co"].get("Y")
@@ -154,7 +154,7 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
     # Normalize existing time curve or build linear default
     orig_time = clip.data.get("time", {}).get("Points", [])
     if isinstance(orig_time, list) and len(orig_time) >= 2:
-        base_time = _normalize_points(orig_time, relative_y=True)
+        base_time = _normalize_points(orig_time)
     else:
         span_s = float(clip.data["end"]) - float(clip.data["start"])
         base_frames = max(1, int(round(span_s * fps_float)))

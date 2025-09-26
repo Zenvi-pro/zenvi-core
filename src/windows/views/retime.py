@@ -136,12 +136,58 @@ def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, pfps, direction):
 def _finalize_time_points(time_points, start_x, new_end_x):
     if not time_points:
         return
-    time_points.sort(key=lambda point: int(round(point.get("co", {}).get("X", 0))))
-    last = time_points[-1].get("co", {})
-    last["X"] = int(new_end_x)
-    first = time_points[0].get("co", {})
-    if first.get("X", 0) < start_x:
-        first["X"] = int(start_x)
+    time_points.sort(key=lambda point: float(point.get("co", {}).get("X", 0)))
+
+    domain_start = int(start_x)
+    domain_end = int(new_end_x)
+    count = len(time_points)
+
+    # Normalize all X values into the clip domain
+    normalized = []
+    for point in time_points:
+        co = point.setdefault("co", {})
+        raw_x = co.get("X", domain_start)
+        snapped_x = int(round(raw_x))
+        if snapped_x < domain_start:
+            snapped_x = domain_start
+        elif snapped_x > domain_end:
+            snapped_x = domain_end
+        normalized.append(snapped_x)
+
+    # Clamp endpoints to the domain bounds
+    normalized[0] = domain_start
+    normalized[-1] = domain_end
+
+    # Ensure the sequence is non-decreasing from start to end
+    for index in range(1, count):
+        prev = normalized[index - 1]
+        if normalized[index] <= prev:
+            normalized[index] = min(domain_end, prev + 1)
+
+    # Make sure there is enough room remaining for trailing points
+    for index in range(count - 2, -1, -1):
+        remaining = count - index - 1
+        max_allowed = domain_end - remaining
+        if normalized[index] > max_allowed:
+            normalized[index] = max_allowed
+        if normalized[index] < domain_start:
+            normalized[index] = domain_start
+        if index > 0 and normalized[index] <= normalized[index - 1]:
+            normalized[index] = min(max_allowed, normalized[index - 1] + 1)
+
+    normalized[0] = domain_start
+    normalized[-1] = domain_end
+
+    # Final forward pass to clean up any residual overlap
+    for index in range(1, count):
+        if normalized[index] <= normalized[index - 1]:
+            normalized[index] = min(domain_end, normalized[index - 1] + 1)
+
+    normalized[0] = domain_start
+    normalized[-1] = domain_end
+
+    for point, x_val in zip(time_points, normalized):
+        point["co"]["X"] = int(x_val)
 
 
 def retime_clip(clip, new_end, new_position=None, direction=1):

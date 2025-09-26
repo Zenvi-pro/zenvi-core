@@ -162,6 +162,70 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Re-enable UI updates
         self.window.IgnoreUpdates.emit(False, False)
 
+    def _collect_clip_ids_from_value(self, value, clip_ids):
+        """Recursively collect clip ids from an update payload without walking audio samples"""
+        if isinstance(value, dict):
+            clip_id = value.get("id")
+            if clip_id:
+                clip_ids.add(str(clip_id))
+            for key, sub_value in value.items():
+                if key == "audio_data":
+                    continue
+                self._collect_clip_ids_from_value(sub_value, clip_ids)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    self._collect_clip_ids_from_value(item, clip_ids)
+
+    def _payload_contains_waveform(self, value):
+        """Check if an update payload already contains waveform samples"""
+        if isinstance(value, dict):
+            audio_data = value.get("audio_data")
+            if isinstance(audio_data, list) and len(audio_data) > 0:
+                return True
+            ui_value = value.get("ui")
+            if ui_value and self._payload_contains_waveform(ui_value):
+                return True
+            for key, sub_value in value.items():
+                if key in ("audio_data", "ui"):
+                    continue
+                if self._payload_contains_waveform(sub_value):
+                    return True
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)) and self._payload_contains_waveform(item):
+                    return True
+        return False
+
+    def _should_refresh_waveforms(self, action):
+        """Determine if a project update requires redrawing clip waveforms."""
+        if not action:
+            return False
+        if action.type == "load":
+            return True
+        if not action.key or action.key[0] != "clips":
+            return False
+
+        if self._payload_contains_waveform(action.values):
+            return True
+
+        clip_ids = set()
+        for part in action.key:
+            if isinstance(part, dict) and part.get("id"):
+                clip_ids.add(str(part["id"]))
+
+        if not clip_ids:
+            self._collect_clip_ids_from_value(action.values, clip_ids)
+
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip:
+                continue
+            audio_data = clip.data.get("ui", {}).get("audio_data")
+            if isinstance(audio_data, list) and len(audio_data) > 0:
+                return True
+        return False
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
         try:
@@ -176,6 +240,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if action and len(action.key) >= 1 and action.key[0] not in ["clips", "effects", "duration", "layers", "markers"]:
             log.debug(f"Skipping unneeded webview update for '{action.key[0]}'")
             return
+
+        redraw_waveforms = self._should_refresh_waveforms(action)
 
         if ViewClass == TimelineWidget:
             # Propagate to timeline qwidget
@@ -203,6 +269,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Set the scale again (to project setting)
             initial_scale = float(get_app().project.get("scale") or 15.0)
             self.window.sliderZoomWidget.setZoomFactor(initial_scale)
+
+        if redraw_waveforms:
+            self.redraw_audio_timer.start()
 
     def delete_invalid_timeline_item(self, item):
         """Delete an invalid timeline item (clip or transitions) if the basic
@@ -916,6 +985,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         Time_Menu = StyledContextMenu(title=_("Time"), parent=self)
         Time_None = Time_Menu.addAction(_("Reset Time"))
         Time_None.triggered.connect(partial(self.Time_Triggered, MenuTime.NONE, clip_ids, '1X'))
+        Time_Menu.addSeparator()
+
+        Reverse_Action = Time_Menu.addAction(_("Reverse"))
+        Reverse_Action.triggered.connect(
+            partial(self.Time_Triggered, MenuTime.REVERSE, clip_ids, '1X')
+        )
+
         Time_Menu.addSeparator()
         for speed, speed_values in [
             (_("Fast"), ['2X', '4X', '8X', '16X']),
@@ -2404,7 +2480,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clips_with_waveforms.append(clip.id)
 
             # Update waveforms of all clips that have them
-            self.Show_Waveform_Triggered(clips_with_waveforms)
+            if clips_with_waveforms:
+                self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=tid)
         finally:
             # Reset transaction id only if we created it (not if it was passed in)
             if not transaction_id:
@@ -2458,6 +2535,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        transaction_id = self.get_uuid()
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -2548,59 +2626,47 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             else:
 
-                # Calculate speed factor
-                speed_label = speed.replace('X', '')
-                parts = speed_label.split('/')
-                if len(parts) == 2:
-                    speed_factor = float(parts[0]) / float(parts[1])
-                else:
-                    speed_factor = float(speed_label)
-
                 if action == MenuTime.NONE:
                     # RESET TIME
                     reset_repeat(clip)
-                    # Compute target end in PROJECT-FRAME domain to match clamp math
-                    c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
                     reader = clip.data.get("reader", {}) or {}
-                    reader_len_src = c_obj.Reader().info.video_length if c_obj else int(reader.get("video_length", 0))
-
-                    # Robust source FPS (prefer live reader)
-                    src_fps = 0.0
                     try:
-                        if c_obj and getattr(c_obj.Reader().info, "video_fps",
-                                             None) and c_obj.Reader().info.video_fps.den:
-                            src_fps = float(c_obj.Reader().info.video_fps.num) / float(
-                                c_obj.Reader().info.video_fps.den)
-                        elif c_obj and getattr(c_obj.Reader().info, "fps", None) and c_obj.Reader().info.fps.den:
-                            src_fps = float(c_obj.Reader().info.fps.num) / float(c_obj.Reader().info.fps.den)
+                        c_obj = self.window.timeline_sync.timeline.GetClip(clip_id)
                     except Exception:
-                        src_fps = 0.0
-                    if not src_fps:
-                        vf = reader.get("video_fps") or reader.get("fps") or {}
-                        num = vf.get("num") or vf.get("Num") or reader.get("video_fps_num") or reader.get("fps_num")
-                        den = vf.get("den") or vf.get("Den") or reader.get("video_fps_den") or reader.get("fps_den")
+                        c_obj = None
+
+                    start_sec = float(clip.data.get("start", 0.0))
+                    duration_sec = 0.0
+                    try:
+                        duration_sec = float(reader.get("duration", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        duration_sec = 0.0
+
+                    if duration_sec <= 0.0 and c_obj:
                         try:
-                            src_fps = float(num) / float(den) if (num and den) else 0.0
+                            duration_sec = float(getattr(c_obj.Reader().info, "duration", 0.0))
                         except Exception:
-                            src_fps = 0.0
-                    if not src_fps:
-                        src_fps = fps_float  # last resort
+                            duration_sec = 0.0
+                    if duration_sec <= 0.0:
+                        try:
+                            duration_sec = float(clip.data.get("duration", 0.0))
+                        except (TypeError, ValueError):
+                            duration_sec = 0.0
 
-                    # Convert reader frames -> project frames using the same floor(int) strategy as clamp
-                    target_proj_frames = max(1, int(reader_len_src * (fps_float / src_fps)))
-                    target_end_sec = float(clip.data["start"]) + (target_proj_frames / fps_float)
-
-                    # Tiny override: for single still images, reset to default image length (not 3600s)
                     is_single_image = False
                     if c_obj and getattr(c_obj.Reader().info, "has_single_image", False):
                         is_single_image = True
                     elif reader.get("has_single_image") or reader.get("media_type") == "image":
                         is_single_image = True
                     if is_single_image:
-                        # Snap to project frame grid (same style as addClip)
-                        default_img_len = float(get_app().get_settings().get("default-image-length") or 10.0)
-                        snapped_len = round(default_img_len * fps_float) / fps_float
-                        target_end_sec = float(clip.data["start"]) + max(1.0 / fps_float, snapped_len)
+                        duration_sec = float(get_app().get_settings().get("default-image-length") or 10.0)
+
+                    if duration_sec <= 0.0:
+                        duration_sec = 1.0 / fps_float
+
+                    target_frames = max(1, int(round(duration_sec * fps_float)))
+                    snapped_duration = target_frames / fps_float
+                    target_end_sec = start_sec + snapped_duration
 
                     # Retime the clip to that end (rescales ALL X correctly)
                     retime_clip(clip, target_end_sec, clip.data.get("position"), direction=1)
@@ -2608,7 +2674,31 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Clear the time curve (default identity point)
                     clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}]}
 
+                elif action == MenuTime.REVERSE:
+                    start_sec = float(clip.data.get("start", 0.0))
+                    try:
+                        duration_sec = float(clip.data.get("duration", 0.0))
+                    except (TypeError, ValueError):
+                        duration_sec = 0.0
+                    if duration_sec <= 0.0:
+                        try:
+                            duration_sec = float(clip.data.get("end", 0.0)) - start_sec
+                        except (TypeError, ValueError):
+                            duration_sec = 0.0
+                    if duration_sec <= 0.0:
+                        duration_sec = 1.0 / fps_float
+
+                    target_end_sec = start_sec + duration_sec
+                    retime_clip(clip, target_end_sec, clip.data.get("position"), direction=-1)
+
                 else:
+                    speed_label = speed.replace('X', '')
+                    parts = speed_label.split('/')
+                    if len(parts) == 2:
+                        speed_factor = float(parts[0]) / float(parts[1])
+                    else:
+                        speed_factor = float(speed_label)
+
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
                     new_duration = original_duration / speed_factor
                     new_end_time = float(clip.data["start"]) + new_duration
@@ -2617,17 +2707,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     retime_clip(clip, new_end_time, clip.data.get("position"), direction)
 
             # Save changes with history
-            tid = str(uuid.uuid4())
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+            self.update_clip_data(
+                clip.data,
+                only_basic_props=False,
+                ignore_reader=True,
+                transaction_id=transaction_id,
+            )
             get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Update waveforms of all clips that have them
-        self.Show_Waveform_Triggered(clips_with_waveforms)
+        if clips_with_waveforms:
+            self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=transaction_id)
 
     def Repeat_Triggered(self, pattern, direction, passes, clip_ids, delay_frames=0, ramp=0.0):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        transaction_id = self.get_uuid()
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip:
@@ -2635,10 +2731,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if clip.data.get("ui", {}).get("audio_data", []):
                 clips_with_waveforms.append(clip.id)
             apply_repeat(clip, pattern, direction, passes, delay_frames, ramp, fps_float)
-            tid = str(uuid.uuid4())
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+            self.update_clip_data(
+                clip.data,
+                only_basic_props=False,
+                ignore_reader=True,
+                transaction_id=transaction_id,
+            )
         if clips_with_waveforms:
-            self.Show_Waveform_Triggered(clips_with_waveforms)
+            self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=transaction_id)
 
     def Repeat_Custom(self, clip_ids):
         fps = get_app().project.get("fps")
@@ -2656,6 +2756,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not clip:
             return
 
+        audio_data = clip.data.get("ui", {}).get("audio_data")
+        has_waveform = audio_data not in (None, [])
+
         original_clip_data = json.loads(json.dumps(clip.data))
         if not retime_clip(clip, new_end, new_position, direction=1):
             return
@@ -2668,6 +2771,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             transaction_id=tid,
         )
         get_app().updates.apply_last_action_to_history(original_clip_data)
+
+        if has_waveform:
+            self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
 
     def show_all_clips(self, clip, stretch=False):
         """ Show all clips at the same time (arranged col by col, row by row)  """
@@ -3317,22 +3423,53 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not new_clip.get("reader"):
             return  # Skip this clip
 
-        # Handle optional start and end times for the clip
-        if 'start' in file.data:
-            new_clip["start"] = snap_to_grid(file.data['start'])
-        if 'end' in file.data:
-            new_clip["end"] = snap_to_grid(file.data['end'])
+        # Determine start, duration, and end using file metadata
+        media_type = (file.data or {}).get("media_type")
+        start_value = file.data.get("start", new_clip.get("start", 0.0))
+        try:
+            start_sec = float(start_value)
+        except (TypeError, ValueError):
+            start_sec = 0.0
+        start_sec = snap_to_grid(start_sec)
+        new_clip["start"] = start_sec
+
+        duration_value = file.data.get("duration")
+        if duration_value is None:
+            duration_value = new_clip["reader"].get("duration")
+        try:
+            duration_sec = float(duration_value or 0.0)
+        except (TypeError, ValueError):
+            duration_sec = 0.0
+
+        default_img_len = get_app().get_settings().get("default-image-length") or 10.0
+        if media_type == "image" or new_clip["reader"].get("has_single_image"):
+            duration_sec = float(default_img_len)
+
+        end_override = file.data.get("end")
+        if end_override is not None:
+            try:
+                end_sec = float(end_override)
+            except (TypeError, ValueError):
+                end_sec = start_sec
+            end_sec = snap_to_grid(end_sec)
+            duration_sec = max(0.0, end_sec - start_sec)
         else:
-            new_clip["end"] = snap_to_grid(new_clip["reader"]["duration"])
+            if duration_sec <= 0.0:
+                duration_sec = 1.0 / fps_float
+            duration_frames = max(1, int(round(duration_sec * fps_float)))
+            duration_sec = duration_frames / fps_float
+            end_sec = start_sec + duration_sec
+
+        if duration_sec <= 0.0:
+            duration_sec = 1.0 / fps_float
+            end_sec = start_sec + duration_sec
+
+        new_clip["duration"] = duration_sec
+        new_clip["end"] = end_sec
 
         # Use the passed position and track directly
         new_clip["position"] = position.x()
         new_clip["layer"] = track
-
-        # Adjust the clip duration and set default values for images
-        new_clip["duration"] = snap_to_grid(new_clip["reader"]["duration"])
-        if file.data["media_type"] == "image":
-            new_clip["end"] = snap_to_grid(get_app().get_settings().get("default-image-length"))
 
         # Add the clip to the timeline
         self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
