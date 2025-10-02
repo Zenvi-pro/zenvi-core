@@ -130,14 +130,16 @@ App.directive("tlClip", function ($timeout) {
           return null;
         }
         var maxEnd = getReaderDurationSeconds();
-        var actualStart = toNumber(scope.clip.start, 0);
-        var clipStart = Math.max(0, Math.min(actualStart, maxEnd));
-        var available = Math.max(0, maxEnd - clipStart);
-        var currentDuration = Math.max(0, toNumber(scope.clip.end, 0) - actualStart);
-        if (available < currentDuration) {
-          available = currentDuration;
+        if (!maxEnd || !isFinite(maxEnd)) {
+          return null;
         }
-        return available * scope.pixelsPerSecond;
+
+        var actualStart = Math.max(0, Math.min(toNumber(scope.clip.start, 0), maxEnd));
+        var actualEnd = Math.max(actualStart, Math.min(toNumber(scope.clip.end, maxEnd), maxEnd));
+        var currentDuration = Math.max(0, actualEnd - actualStart);
+
+        var maxWidthSeconds = Math.max(maxEnd, currentDuration);
+        return maxWidthSeconds * scope.pixelsPerSecond;
       }
 
       function updateMaxResizeWidth() {
@@ -194,7 +196,6 @@ App.directive("tlClip", function ($timeout) {
 
           // Hide keyframe points
           element.find(".point").fadeOut(100);
-          element.find(".audio-container").fadeOut(100);
 
         },
         stop: function (e, ui) {
@@ -202,7 +203,6 @@ App.directive("tlClip", function ($timeout) {
 
           // Show keyframe points
           element.find(".point").fadeIn(100);
-          element.find(".audio-container").fadeIn(100);
 
           // Calculate the pixel locations of the left and right side
           let original_left_edge = scope.clip.position * scope.pixelsPerSecond;
@@ -328,7 +328,6 @@ App.directive("tlClip", function ($timeout) {
         },
         resize: function (e, ui) {
           element.find(".point").fadeOut(100);
-          element.find(".audio-container").fadeOut(100);
 
           // Calculate the pixel locations of the left and right side
           let original_left_edge = scope.clip.position * scope.pixelsPerSecond;
@@ -413,6 +412,18 @@ App.directive("tlClip", function ($timeout) {
           else {
             // Preview the right side of the clip
             scope.previewClipFrame(scope.clip.id, snapToFPSGridTime(scope, new_right / scope.pixelsPerSecond));
+          }
+
+          if (scope.clip.ui && scope.clip.ui.audio_data) {
+            var previewStart = new_left / scope.pixelsPerSecond;
+            var previewEnd = new_right / scope.pixelsPerSecond;
+            drawAudio(scope, scope.clip.id, {
+              clip: scope.clip,
+              start: previewStart,
+              end: previewEnd,
+              forceScale: scope.enable_timing,
+              pixelsPerSecond: scope.pixelsPerSecond
+            });
           }
         }
       });

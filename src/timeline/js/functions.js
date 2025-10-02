@@ -72,22 +72,37 @@ function drawBar(ctx, startX, endX, maxHeight, avgHeight, transpColor, fillColor
 }
 
 // Draw audio waveform from audio samples
-function drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge) {
+function drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge, start_sample_offset) {
+  if (!Array.isArray(audio_data) || audio_data.length === 0) {
+    return;
+  }
+
+  if (typeof start_sample_offset !== "number" || !isFinite(start_sample_offset)) {
+    start_sample_offset = 0;
+  }
+
   var last_x = 0;
   var avg = 0;
   var avg_cnt = 0;
   var max = 0;
 
   // Loop through audio samples (calculate average and max amplitude)
-  for (var i = start_sample; i < end_sample; i++) {
+  for (var i = start_sample; i < end_sample && i < audio_data.length; i++) {
     var sample = Math.abs(audio_data[i]);
-    var x = Math.floor((i + 1 - start_sample) / sample_divisor);
+    if (!isFinite(sample)) {
+      sample = 0;
+    }
+    var samples_from_start = (i + 1 - start_sample) - start_sample_offset;
+    if (samples_from_start < 0) {
+      samples_from_start = 0;
+    }
+    var x = Math.floor(samples_from_start / sample_divisor);
     avg += sample;
     avg_cnt++;
     max = Math.max(max, sample);
 
-    if (x >= last_x + block_width || i === end_sample - 1) {
-      drawBar(ctx, last_x, x, max * scale, avg / avg_cnt * scale, color_transp, color, bottom_edge);
+    if (x >= last_x + block_width || i === end_sample - 1 || i === audio_data.length - 1) {
+      drawBar(ctx, last_x, x, max * scale, avg_cnt ? (avg / avg_cnt) * scale : 0, color_transp, color, bottom_edge);
 
       // Reset for the next bar
       last_x = x;
@@ -100,11 +115,25 @@ function drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor,
 
 
 // Draw the audio waveform for a clip
-function drawAudio(scope, clip_id) {
-  // Find clip in scope
-  var clip = findElement(scope.project.clips, "id", clip_id);
-  if (!clip.ui || !clip.ui.audio_data) {
+function drawAudio(scope, clip_id, options) {
+  options = options || {};
+
+  // Find clip in scope (allow override to avoid extra lookups during drag)
+  var clip = options.clip || findElement(scope.project.clips, "id", clip_id);
+  if (!clip || !clip.ui || !Array.isArray(clip.ui.audio_data) || clip.ui.audio_data.length === 0) {
     return;
+  }
+
+  var audio_data = clip.ui.audio_data;
+
+  function toValidNumber(value, fallback) {
+    if (typeof value === "string") {
+      value = parseFloat(value);
+    }
+    if (typeof value === "number" && isFinite(value)) {
+      return value;
+    }
+    return fallback;
   }
 
   // Find audio canvas
@@ -114,22 +143,161 @@ function drawAudio(scope, clip_id) {
     return;
   }
 
-  // Init canvas and init variables
-  var ctx = audio_canvas[0].getContext("2d");
-  var samples_per_second = 20;
-  var start_sample = Math.round(clip.start * samples_per_second);
-  var end_sample = Math.round(clip.end * samples_per_second);
-  var sample_divisor = samples_per_second / scope.pixelsPerSecond;
+  var canvas_element = audio_canvas[0];
+  var ctx = canvas_element.getContext("2d");
+
+  var samples_per_second = options.samplesPerSecond || 20;
+  var pixels_per_second = toValidNumber(options.pixelsPerSecond, NaN);
+  if (!isFinite(pixels_per_second) || pixels_per_second <= 0) {
+    pixels_per_second = toValidNumber(scope.pixelsPerSecond, 1) || 1;
+  }
+
+  var clip_start_prop = toValidNumber(clip.start, 0);
+  var clip_end_prop = toValidNumber(clip.end, clip_start_prop);
+  if (clip_end_prop < clip_start_prop) {
+    clip_end_prop = clip_start_prop;
+  }
+
+  var timeline_start = toValidNumber(options.start, clip_start_prop);
+  var timeline_end = toValidNumber(options.end, clip_end_prop);
+  if (timeline_end < timeline_start) {
+    timeline_end = timeline_start;
+  }
+
+  var total_samples = audio_data.length;
+  var media_duration = total_samples / samples_per_second;
+
+  var display_duration = timeline_end - timeline_start;
+  if (!isFinite(display_duration) || display_duration <= 0) {
+    display_duration = clip_end_prop - clip_start_prop;
+  }
+  if (!isFinite(display_duration) || display_duration <= 0) {
+    display_duration = media_duration;
+  }
+  if (!isFinite(display_duration) || display_duration <= 0) {
+    display_duration = 1 / samples_per_second;
+  }
+
+  var MAX_CANVAS_WIDTH = 32767;
+  var desired_width = Math.round(display_duration * pixels_per_second);
+  if (!isFinite(desired_width) || desired_width <= 0) {
+    desired_width = Math.round((total_samples / samples_per_second) * pixels_per_second);
+  }
+  if (!isFinite(desired_width) || desired_width <= 0) {
+    desired_width = 1;
+  }
+  desired_width = Math.min(MAX_CANVAS_WIDTH, Math.max(1, desired_width));
+
+  // Ensure the canvas element matches the desired width/height
+  audio_canvas.width(desired_width);
+  if (canvas_element.width !== desired_width) {
+    canvas_element.width = desired_width;
+  }
+
+  var canvas_height = Math.max(Math.round(audio_canvas.height()), 1);
+  if (canvas_element.height !== canvas_height) {
+    canvas_element.height = canvas_height;
+  }
+
+  ctx.clearRect(0, 0, canvas_element.width, canvas_element.height);
+
+  var scale_waveform = !!options.forceScale;
+  var source_start;
+  var source_end;
+
+  if (scale_waveform) {
+    source_start = clip_start_prop;
+    source_end = clip_end_prop;
+  } else {
+    source_start = timeline_start;
+    source_end = timeline_end;
+  }
+
+  if (!isFinite(source_start)) {
+    source_start = clip_start_prop;
+  }
+  if (!isFinite(source_end)) {
+    source_end = clip_end_prop;
+  }
+
+  if (scale_waveform) {
+    source_start = Math.max(0, source_start);
+    source_end = Math.max(source_start, source_end);
+  } else {
+    source_start = Math.max(0, source_start);
+    source_end = Math.max(source_start, source_end);
+  }
+
+  if (isFinite(media_duration) && media_duration > 0) {
+    if (source_start > media_duration) {
+      source_start = Math.max(0, media_duration - (1 / samples_per_second));
+    }
+    if (source_end > media_duration) {
+      source_end = media_duration;
+    }
+  }
+
+  var start_sample_float = source_start * samples_per_second;
+  var end_sample_float = source_end * samples_per_second;
+  if (!isFinite(start_sample_float) || start_sample_float < 0) {
+    start_sample_float = 0;
+  }
+  if (!isFinite(end_sample_float) || end_sample_float <= start_sample_float) {
+    var span_seconds = source_end - source_start;
+    if (!isFinite(span_seconds) || span_seconds <= 0) {
+      span_seconds = 1 / samples_per_second;
+    }
+    end_sample_float = start_sample_float + (span_seconds * samples_per_second);
+  }
+
+  var start_sample = Math.floor(start_sample_float);
+  var end_sample = Math.ceil(end_sample_float);
+
+  if (start_sample >= total_samples) {
+    start_sample = Math.max(total_samples - 1, 0);
+    start_sample_float = start_sample;
+  }
+  if (end_sample > total_samples) {
+    end_sample = total_samples;
+    end_sample_float = total_samples;
+  }
+  if (end_sample <= start_sample) {
+    end_sample = Math.min(total_samples, start_sample + 1);
+    end_sample_float = Math.max(start_sample_float + 1, end_sample);
+  }
+  if (end_sample <= start_sample) {
+    return;
+  }
+
+  var fractional_offset = start_sample_float - start_sample;
+  if (!isFinite(fractional_offset) || fractional_offset < 0) {
+    fractional_offset = 0;
+  }
+
+  var span_float = end_sample_float - start_sample_float;
+  if (!isFinite(span_float) || span_float <= 0) {
+    span_float = end_sample - start_sample;
+  }
+  if (!isFinite(span_float) || span_float <= 0) {
+    span_float = 1;
+  }
+
+  var canvas_width = Math.max(canvas_element.width, 1);
+  var sample_divisor = span_float / canvas_width;
+  if (!isFinite(sample_divisor) || sample_divisor <= 0) {
+    sample_divisor = 1;
+  }
+
   var block_width = 2;
   var color = "#2a82da"; // rgb(42,130,218)
   var color_transp = "rgba(42,130,218,0.5)";
   ctx.strokeStyle = color;
 
   // Scale waveform to smaller % of clip height
-  var bottom_edge = audio_canvas.height();
+  var bottom_edge = canvas_element.height;
   var scale = bottom_edge * 0.85;
 
-  drawWaveform(ctx, clip.ui.audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge);
+  drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge, fractional_offset);
 }
 
 function padNumber(value, pad_length) {
