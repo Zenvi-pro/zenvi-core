@@ -513,7 +513,14 @@ function moveBoundingBox(scope, previous_x, previous_y, x_offset, y_offset, left
   bounding_box.bottom += y_offset;
 
   // Find closest nearby object, if any (for snapping)
-  var results = scope.getNearbyPosition([bounding_box.left, bounding_box.right], 10.0, bounding_box.selected_ids);
+  // Only enable keyframe snapping when trimming clip edges (not during retime/stretch mode).
+  var includeKeyframes = item_type === "trimming" && !(scope && scope.enable_timing);
+  var results = scope.getNearbyPosition(
+    [bounding_box.left, bounding_box.right],
+    10.0,
+    bounding_box.selected_ids,
+    { includeKeyframes: includeKeyframes }
+  );
   var nearby_offset = results[0];
   var snapline_position = results[1];
 

@@ -1729,12 +1729,75 @@ $scope.updateLayerIndex = function () {
   };
 
   // Search through clips and transitions to find the closest element within a given threshold
-  $scope.getNearbyPosition = function (pixel_positions, threshold, ignore_ids={}) {
+  $scope.getNearbyPosition = function (pixel_positions, threshold, ignore_ids={}, options={}) {
     // init some vars
     var smallest_diff = 900.0;
     var smallest_abs_diff = 900.0;
     var snapping_position = 0.0;
     var diffs = [];
+    var keyframeTargets = [];
+
+    var includeKeyframeSnaps = !!(options && options.includeKeyframes);
+
+    function toNumber(value, fallback) {
+      var num = parseFloat(value);
+      return isNaN(num) ? fallback : num;
+    }
+
+    var frames_per_second = 0;
+    if ($scope.project && $scope.project.fps) {
+      var fps_num = toNumber($scope.project.fps.num, NaN);
+      var fps_den = toNumber($scope.project.fps.den, NaN);
+      if (isFinite(fps_num) && isFinite(fps_den) && fps_den !== 0) {
+        frames_per_second = fps_num / fps_den;
+      }
+    }
+
+    if (includeKeyframeSnaps && frames_per_second > 0) {
+      function collectKeyframes(object) {
+        if (!object) {
+          return;
+        }
+        var entries = $scope.getKeyframes(object);
+        for (var frame in entries) {
+          if (!Object.prototype.hasOwnProperty.call(entries, frame)) {
+            continue;
+          }
+          var frameNumber = parseFloat(frame);
+          if (!isFinite(frameNumber)) {
+            continue;
+          }
+          var keySeconds = (frameNumber - 1) / frames_per_second;
+          var startSec = toNumber(object.start, 0);
+          var positionSec = toNumber(object.position, 0);
+          var timelineSeconds = positionSec + (keySeconds - startSec);
+          if (!isFinite(timelineSeconds)) {
+            continue;
+          }
+          var pixelPosition = timelineSeconds * $scope.pixelsPerSecond;
+          if (!isFinite(pixelPosition)) {
+            continue;
+          }
+          keyframeTargets.push({ position: pixelPosition });
+        }
+      }
+
+      for (var clipIndex = 0; clipIndex < $scope.project.clips.length; clipIndex++) {
+        var clip = $scope.project.clips[clipIndex];
+        if (!clip || !(clip.selected || $scope.hasSelectedEffect(clip))) {
+          continue;
+        }
+        collectKeyframes(clip);
+      }
+
+      for (var transitionIndex = 0; transitionIndex < $scope.project.effects.length; transitionIndex++) {
+        var transition = $scope.project.effects[transitionIndex];
+        if (!transition || !transition.selected) {
+          continue;
+        }
+        collectKeyframes(transition);
+      }
+    }
 
     // Loop through each pixel position (supports multiple positions: i.e. left and right side of bounding box)
     for (var pos_index = 0; pos_index < pixel_positions.length; pos_index++) {
@@ -1816,6 +1879,17 @@ $scope.updateLayerIndex = function () {
       var end_of_track = $scope.project.duration * $scope.pixelsPerSecond;
       var end_of_track_diff = position - end_of_track;
       diffs.push({"diff": end_of_track_diff, "position": end_of_track});
+
+      if (includeKeyframeSnaps) {
+        // Add visible keyframe positions
+        for (var keyIndex = 0; keyIndex < keyframeTargets.length; keyIndex++) {
+          var keyTarget = keyframeTargets[keyIndex];
+          var keyDiff = position - keyTarget.position;
+          if (Math.abs(keyDiff) <= threshold) {
+            diffs.push({"diff": keyDiff, "position": keyTarget.position});
+          }
+        }
+      }
 
       // Loop through diffs (and find the smallest one)
       for (var diff_index = 0; diff_index < diffs.length; diff_index++) {
