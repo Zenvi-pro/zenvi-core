@@ -226,8 +226,18 @@ App.controller("TimelineCtrl", function ($scope) {
 
   $scope.getKeyframes = function (object) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
-    var clip_start_x = Math.round(object.start * frames_per_second) + 1;
-    var clip_end_x = Math.round(object.end * frames_per_second) + 1;
+
+    function toNumber(value, fallback) {
+      var num = parseFloat(value);
+      return isNaN(num) ? fallback : num;
+    }
+
+    var clip_start_sec = toNumber(object.start, 0);
+    var clip_end_sec = toNumber(object.end, clip_start_sec);
+    if (clip_end_sec < clip_start_sec) {
+      clip_end_sec = clip_start_sec;
+    }
+
     var object_type = object.hasOwnProperty("file_id") ? "clip" : "transition";
 
     var effect_selected = false;
@@ -239,7 +249,22 @@ App.controller("TimelineCtrl", function ($scope) {
       }).join(",");
     }
 
-    var cacheKey = object.selected + "|" + effect_key + "|" + $scope.keyframe_prop_filter;
+    var preview = null;
+    if (object && object.ui && object.ui.keyframe_preview && object.ui.keyframe_preview.active) {
+      preview = object.ui.keyframe_preview;
+    }
+
+    var previewSignature = "none";
+    if (preview) {
+      var previewMode = preview.mode || "";
+      var displayStart = toNumber(preview.displayStart, clip_start_sec);
+      var displayEnd = toNumber(preview.displayEnd, clip_end_sec);
+      var originalStart = toNumber(preview.originalStart, clip_start_sec);
+      var originalEnd = toNumber(preview.originalEnd, clip_end_sec);
+      previewSignature = [previewMode, displayStart.toFixed(4), displayEnd.toFixed(4), originalStart.toFixed(4), originalEnd.toFixed(4)].join("|");
+    }
+
+    var cacheKey = object.selected + "|" + effect_key + "|" + $scope.keyframe_prop_filter + "|" + previewSignature;
     var cached = keyframeCache.get(object);
 
     if (!object.selected && !effect_selected) {
@@ -251,6 +276,41 @@ App.controller("TimelineCtrl", function ($scope) {
     }
 
     var keyframes = {};
+    // Include every keyframe while previewing trims/retimes so the UI can dim out-of-range ones.
+    var includeAllKeyframes = !!preview;
+    var EPSILON = 0.000001;
+
+    var previewDisplayStart = preview ? toNumber(preview.displayStart, clip_start_sec) : clip_start_sec;
+    var previewDisplayEnd = preview ? toNumber(preview.displayEnd, clip_end_sec) : clip_end_sec;
+    if (previewDisplayEnd < previewDisplayStart) {
+      var tmp = previewDisplayStart;
+      previewDisplayStart = previewDisplayEnd;
+      previewDisplayEnd = tmp;
+    }
+
+    var previewProjectedStart = preview ? toNumber(preview.projectedStart, clip_start_sec) : clip_start_sec;
+    var previewProjectedEnd = preview ? toNumber(preview.projectedEnd, clip_end_sec) : clip_end_sec;
+    if (previewProjectedEnd < previewProjectedStart) {
+      previewProjectedEnd = previewProjectedStart;
+    }
+
+    function isInside(seconds, start, end) {
+      return seconds >= start - EPSILON && seconds <= end + EPSILON;
+    }
+
+    function isInsideClip(seconds) {
+      return isInside(seconds, clip_start_sec, clip_end_sec);
+    }
+
+    function isInsidePreview(seconds) {
+      if (!preview) {
+        return isInsideClip(seconds);
+      }
+      if (preview.mode === "retime") {
+        return isInside(seconds, previewProjectedStart, previewProjectedEnd);
+      }
+      return isInside(seconds, previewDisplayStart, previewDisplayEnd);
+    }
 
     function storeKeyframe(frame, data) {
       var existing = keyframes[frame];
@@ -269,12 +329,18 @@ App.controller("TimelineCtrl", function ($scope) {
         for (var point = 0; point < object[child].Points.length; point++) {
           var co = object[child].Points[point].co;
           var interpolation = $scope.lookupInterpolation(object[child].Points[point].interpolation);
-          if (co.X >= clip_start_x && co.X <= clip_end_x) {
+          var keyframeSeconds = (co.X - 1) / frames_per_second;
+          var withinClip = isInsideClip(keyframeSeconds);
+          if (includeAllKeyframes || withinClip) {
+            var insidePreview = isInsidePreview(keyframeSeconds);
+            var baseSelected = object_type === "transition" ? true : object.selected && !effect_selected;
             storeKeyframe(co.X, {
               interpolation: interpolation,
-              selected: object_type === "transition" ? true : object.selected && !effect_selected,
+              selected: baseSelected && insidePreview,
               type: object_type,
-              owner: object.id
+              owner: object.id,
+              insidePreview: insidePreview,
+              baseSelected: baseSelected
             });
             cacheKey += ";c" + co.X + ":" + interpolation;
           }
@@ -284,12 +350,18 @@ App.controller("TimelineCtrl", function ($scope) {
         for (var color_point = 0; color_point < object[child].red.Points.length; color_point++) {
           var color_co = object[child].red.Points[color_point].co;
           var color_interpolation = $scope.lookupInterpolation(object[child].red.Points[color_point].interpolation);
-          if (color_co.X >= clip_start_x && color_co.X <= clip_end_x) {
+          var colorSeconds = (color_co.X - 1) / frames_per_second;
+          var colorWithinClip = isInsideClip(colorSeconds);
+          if (includeAllKeyframes || colorWithinClip) {
+            var colorInsidePreview = isInsidePreview(colorSeconds);
+            var colorBaseSelected = object_type === "transition" ? true : object.selected && !effect_selected;
             storeKeyframe(color_co.X, {
               interpolation: color_interpolation,
-              selected: object_type === "transition" ? true : object.selected && !effect_selected,
+              selected: colorBaseSelected && colorInsidePreview,
               type: object_type,
-              owner: object.id
+              owner: object.id,
+              insidePreview: colorInsidePreview,
+              baseSelected: colorBaseSelected
             });
             cacheKey += ";cr" + color_co.X + ":" + color_interpolation;
           }
@@ -312,14 +384,20 @@ App.controller("TimelineCtrl", function ($scope) {
               var eco = eff[prop].Points[ep].co;
               var einterp = $scope.lookupInterpolation(eff[prop].Points[ep].interpolation);
               var eframe = eco.X;
-              if (eframe >= clip_start_x && eframe <= clip_end_x) {
+              var effectSeconds = (eframe - 1) / frames_per_second;
+              var effectWithinClip = isInsideClip(effectSeconds);
+              if (includeAllKeyframes || effectWithinClip) {
+                var effectInsidePreview = isInsidePreview(effectSeconds);
                 var icon = coloredIcon(einterp, eff_color);
+                var effectSelected = !!eff.selected;
                 storeKeyframe(eframe, {
                   interpolation: einterp,
                   icon: icon,
-                  selected: eff.selected,
+                  selected: effectSelected && effectInsidePreview,
                   type: "effect",
-                  owner: eff.id
+                  owner: eff.id,
+                  insidePreview: effectInsidePreview,
+                  baseSelected: effectSelected
                 });
                 cacheKey += ";e" + eff.id + ":" + eframe + ":" + einterp;
               }
@@ -330,14 +408,20 @@ App.controller("TimelineCtrl", function ($scope) {
               var ecc = eff[prop].red.Points[ecp].co;
               var ecinterp = $scope.lookupInterpolation(eff[prop].red.Points[ecp].interpolation);
               var ecframe = ecc.X;
-              if (ecframe >= clip_start_x && ecframe <= clip_end_x) {
+              var colorEffectSeconds = (ecframe - 1) / frames_per_second;
+              var colorEffectWithinClip = isInsideClip(colorEffectSeconds);
+              if (includeAllKeyframes || colorEffectWithinClip) {
+                var colorEffectInsidePreview = isInsidePreview(colorEffectSeconds);
                 var color_icon = coloredIcon(ecinterp, eff_color);
+                var colorEffectSelected = !!eff.selected;
                 storeKeyframe(ecframe, {
                   interpolation: ecinterp,
                   icon: color_icon,
-                  selected: eff.selected,
+                  selected: colorEffectSelected && colorEffectInsidePreview,
                   type: "effect",
-                  owner: eff.id
+                  owner: eff.id,
+                  insidePreview: colorEffectInsidePreview,
+                  baseSelected: colorEffectSelected
                 });
                 cacheKey += ";ec" + eff.id + ":" + ecframe + ":" + ecinterp;
               }
