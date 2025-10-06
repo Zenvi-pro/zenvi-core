@@ -2763,6 +2763,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not retime_clip(clip, new_end, new_position, direction=1):
             return
 
+        # Drop any existing waveform samples so the UI keeps its preview until fresh data arrives
+        ui_data = clip.data.get("ui")
+        if isinstance(ui_data, dict) and "audio_data" in ui_data:
+            ui_data.pop("audio_data", None)
+
         tid = str(uuid.uuid4())
         self.update_clip_data(
             clip.data,

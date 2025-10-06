@@ -49,10 +49,50 @@ App.directive("tlClip", function ($timeout) {
     link: function (scope, element, attrs) {
       var timing_original_start = 0.0;
       var timing_original_end = 0.0;
+      var timing_original_audio = null;
+      var timing_original_duration = 0.0;
 
       function toNumber(value, fallback) {
         var parsed = parseFloat(value);
         return isNaN(parsed) ? fallback : parsed;
+      }
+
+      function resampleWaveform(data, originalDuration, newDuration) {
+        if (!Array.isArray(data) || data.length === 0) {
+          return null;
+        }
+        if (!isFinite(originalDuration) || !isFinite(newDuration) || originalDuration <= 0 || newDuration <= 0) {
+          return null;
+        }
+        if (data.length === 1) {
+          return [data[0]];
+        }
+        var newLength = Math.max(1, Math.round(data.length * (newDuration / originalDuration)));
+        if (newLength === data.length) {
+          return data.slice();
+        }
+        var result = new Array(newLength);
+        var maxSourceIndex = data.length - 1;
+        for (var i = 0; i < newLength; i++) {
+          var t = newLength === 1 ? 0 : i / (newLength - 1);
+          var sourcePos = t * maxSourceIndex;
+          var idx0 = Math.floor(sourcePos);
+          var idx1 = Math.min(maxSourceIndex, idx0 + 1);
+          var frac = sourcePos - idx0;
+          var value0 = data[idx0];
+          var value1 = data[idx1];
+          if (!isFinite(value0)) { value0 = 0; }
+          if (!isFinite(value1)) { value1 = value0; }
+          result[i] = value0 + (value1 - value0) * frac;
+        }
+        return result;
+      }
+
+      function snapTime(value) {
+        if (typeof snapToFPSGridTime === "function") {
+          return snapToFPSGridTime(scope, value);
+        }
+        return value;
       }
 
       function getTimePoints() {
@@ -115,8 +155,8 @@ App.directive("tlClip", function ($timeout) {
         if (!preview) {
           return;
         }
-        var clipStart = toNumber(scope.clip && scope.clip.start, 0);
-        var clipEnd = toNumber(scope.clip && scope.clip.end, clipStart);
+        var clipStart = snapTime(toNumber(scope.clip && scope.clip.start, 0));
+        var clipEnd = snapTime(toNumber(scope.clip && scope.clip.end, clipStart));
         if (clipEnd < clipStart) {
           clipEnd = clipStart;
         }
@@ -253,9 +293,7 @@ App.directive("tlClip", function ($timeout) {
       function clearKeyframePreviewTransform() {
         cancelKeyframePreviewRender();
         element.find(".point").each(function () {
-          var original = this.getAttribute("data-original-left");
-          if (original !== null) {
-            this.style.left = original;
+          if (this.hasAttribute("data-original-left")) {
             this.removeAttribute("data-original-left");
           }
         });
@@ -267,10 +305,10 @@ App.directive("tlClip", function ($timeout) {
           return;
         }
 
-        var clipStart = toNumber(scope.clip.start, 0);
-        var clipEnd = toNumber(scope.clip.end, clipStart);
-        var originalStart = mode === "retime" ? toNumber(timing_original_start, clipStart) : clipStart;
-        var originalEnd = mode === "retime" ? toNumber(timing_original_end, clipEnd) : clipEnd;
+        var clipStart = snapTime(toNumber(scope.clip.start, 0));
+        var clipEnd = snapTime(toNumber(scope.clip.end, clipStart));
+        var originalStart = mode === "retime" ? snapTime(toNumber(timing_original_start, clipStart)) : clipStart;
+        var originalEnd = mode === "retime" ? snapTime(toNumber(timing_original_end, clipEnd)) : clipEnd;
 
         container.active = true;
         container.mode = mode;
@@ -285,7 +323,7 @@ App.directive("tlClip", function ($timeout) {
           container.projectedEnd = container.displayEnd;
         } else {
           container.projectedStart = container.originalStart;
-          container.projectedEnd = container.originalStart + container.displayDuration;
+          container.projectedEnd = container.originalEnd;
         }
         container.pixelsPerSecond = scope.pixelsPerSecond;
         scheduleKeyframePreviewDigest();
@@ -298,8 +336,8 @@ App.directive("tlClip", function ($timeout) {
           return;
         }
 
-        var startSec = toNumber(displayStart, container.displayStart);
-        var endSec = toNumber(displayEnd, startSec);
+        var startSec = snapTime(toNumber(displayStart, container.displayStart));
+        var endSec = snapTime(toNumber(displayEnd, startSec));
         if (endSec < startSec) {
           var temp = startSec;
           startSec = endSec;
@@ -315,8 +353,12 @@ App.directive("tlClip", function ($timeout) {
           container.projectedEnd = container.displayEnd;
         } else {
           var originStart = toNumber(container.originalStart, startSec);
+          var originEnd = toNumber(container.originalEnd, originStart);
+          if (originEnd < originStart) {
+            originEnd = originStart;
+          }
           container.projectedStart = originStart;
-          container.projectedEnd = originStart + container.displayDuration;
+          container.projectedEnd = originEnd;
         }
 
         container.pixelsPerSecond = scope.pixelsPerSecond;
@@ -478,6 +520,12 @@ App.directive("tlClip", function ($timeout) {
           if (scope.enable_timing) {
             timing_original_start = scope.clip.start;
             timing_original_end = scope.clip.end;
+            timing_original_duration = Math.max(timing_original_end - timing_original_start, 0);
+            var existingAudio = scope.clip && scope.clip.ui && Array.isArray(scope.clip.ui.audio_data) ? scope.clip.ui.audio_data : null;
+            timing_original_audio = existingAudio ? existingAudio.slice() : null;
+          } else {
+            timing_original_audio = null;
+            timing_original_duration = 0.0;
           }
 
           // Set bounding box
@@ -605,6 +653,20 @@ App.directive("tlClip", function ($timeout) {
             if (scope.Qt) {
               timeline.RetimeClip(scope.clip.id, scope.clip.end, scope.clip.position);
             }
+            if (timing_original_audio && timing_original_duration > 0) {
+              var newDuration = Math.max(scope.clip.end - scope.clip.start, 0);
+              var resampled = resampleWaveform(timing_original_audio, timing_original_duration, newDuration);
+              if (resampled) {
+                if (!scope.clip.ui) { scope.clip.ui = {}; }
+                scope.clip.ui.audio_data = resampled;
+                drawAudio(scope, scope.clip.id, {
+                  clip: scope.clip,
+                  pixelsPerSecond: scope.pixelsPerSecond
+                });
+              }
+            }
+            timing_original_audio = null;
+            timing_original_duration = 0.0;
             updateMaxResizeWidth();
           } else {
             //apply the new start, end and length to the clip's scope
@@ -632,8 +694,12 @@ App.directive("tlClip", function ($timeout) {
 
           //resize the audio canvas to match the new clip width
           if (scope.clip.ui && scope.clip.ui.audio_data) {
-            //redraw audio as the resize cleared the canvas
-            drawAudio(scope, scope.clip.id);
+            // Redraw audio as the resize cleared the canvas
+            drawAudio(scope, scope.clip.id, {
+              clip: scope.clip,
+              forceScale: false,
+              pixelsPerSecond: scope.pixelsPerSecond
+            });
           }
           dragLoc = null;
         },

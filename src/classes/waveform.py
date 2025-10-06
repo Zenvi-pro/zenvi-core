@@ -203,9 +203,6 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         if time_point_count > 1:
             # When time curves are present, generate waveform data from the clip instance itself
             _time_curve_retry_counts.pop(clip.id, None)
-            get_app().window.timeline.clipAudioDataReady.emit(
-                clip.id, {"ui": {"audio_data": None}}, tid
-            )
             clip_audio_data = []
             channel = channel_filter if channel_filter != -1 else -1
             try:
@@ -227,6 +224,18 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
                     clip.id, {"ui": {"audio_data": clip_audio_data}}, tid
                 )
                 continue
+
+            if _schedule_time_curve_retry(file_id, clip.id, tid):
+                log.debug(
+                    "Clip %s waveform generation empty; retry scheduled", clip.id
+                )
+                continue
+
+            log.warning(
+                "Clip %s waveform generation failed after retries; leaving waveform unchanged",
+                clip.id,
+            )
+            continue
 
         _time_curve_retry_counts.pop(clip.id, None)
 

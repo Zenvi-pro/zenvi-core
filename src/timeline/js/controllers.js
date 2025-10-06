@@ -267,7 +267,9 @@ App.controller("TimelineCtrl", function ($scope) {
     var cacheKey = object.selected + "|" + effect_key + "|" + $scope.keyframe_prop_filter + "|" + previewSignature;
     var cached = keyframeCache.get(object);
 
-    if (!object.selected && !effect_selected) {
+    var previewActive = !!(preview && preview.active);
+
+    if (object_type !== "transition" && !object.selected && !effect_selected && !previewActive) {
       if (cached && cached.key === cacheKey) {
         return cached.value;
       }
@@ -279,6 +281,10 @@ App.controller("TimelineCtrl", function ($scope) {
     // Include every keyframe while previewing trims/retimes so the UI can dim out-of-range ones.
     var includeAllKeyframes = !!preview;
     var EPSILON = 0.000001;
+    var frameTolerance = EPSILON;
+    if (frames_per_second && isFinite(frames_per_second) && frames_per_second > 0) {
+      frameTolerance = Math.max(frameTolerance, 0.5 / frames_per_second);
+    }
 
     var previewDisplayStart = preview ? toNumber(preview.displayStart, clip_start_sec) : clip_start_sec;
     var previewDisplayEnd = preview ? toNumber(preview.displayEnd, clip_end_sec) : clip_end_sec;
@@ -294,8 +300,26 @@ App.controller("TimelineCtrl", function ($scope) {
       previewProjectedEnd = previewProjectedStart;
     }
 
+    var displayDuration = Math.max(previewDisplayEnd - previewDisplayStart, 0);
+    var projectedDuration = Math.max(previewProjectedEnd - previewProjectedStart, 0);
+
+    function mapSecondsToDisplay(seconds) {
+      if (!preview || preview.mode !== "retime") {
+        return seconds;
+      }
+      if (!(projectedDuration > 0) || !(displayDuration > 0)) {
+        return previewDisplayStart;
+      }
+      var normalized = (seconds - previewProjectedStart) / projectedDuration;
+      if (!isFinite(normalized)) {
+        normalized = 0;
+      }
+      var mapped = previewDisplayStart + (normalized * displayDuration);
+      return mapped;
+    }
+
     function isInside(seconds, start, end) {
-      return seconds >= start - EPSILON && seconds <= end + EPSILON;
+      return seconds >= start - frameTolerance && seconds <= end + frameTolerance;
     }
 
     function isInsideClip(seconds) {
@@ -307,7 +331,8 @@ App.controller("TimelineCtrl", function ($scope) {
         return isInsideClip(seconds);
       }
       if (preview.mode === "retime") {
-        return isInside(seconds, previewProjectedStart, previewProjectedEnd);
+        var mappedSeconds = mapSecondsToDisplay(seconds);
+        return isInside(mappedSeconds, previewDisplayStart, previewDisplayEnd);
       }
       return isInside(seconds, previewDisplayStart, previewDisplayEnd);
     }
