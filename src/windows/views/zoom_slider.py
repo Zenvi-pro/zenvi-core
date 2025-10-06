@@ -28,7 +28,7 @@ import copy
 import math
 
 from PyQt5.QtCore import (
-    Qt, QCoreApplication, QRectF, QTimer
+    Qt, QCoreApplication, QRectF, QTimer, QSize
 )
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon
@@ -45,6 +45,14 @@ from classes.logger import log
 
 class ZoomSlider(QWidget, updates.UpdateInterface):
     """ A QWidget used to zoom and pan around a Timeline"""
+
+    def sizeHint(self):
+        """Preferred size for layouts that host the slider."""
+        return QSize(200, 20)
+
+    def minimumSizeHint(self):
+        """Allow the slider to shrink horizontally when space is limited."""
+        return QSize(0, 20)
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):

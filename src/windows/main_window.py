@@ -3106,7 +3106,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Setup Zoom Slider widget
         from windows.views.zoom_slider import ZoomSlider
         self.sliderZoomWidget = ZoomSlider(self)
-        self.sliderZoomWidget.setMinimumSize(200, 20)
+        self.sliderZoomWidget.setMinimumHeight(20)
         self.sliderZoomWidget.setZoomFactor(initial_scale)
 
         # add zoom widgets
