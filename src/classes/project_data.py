@@ -1156,37 +1156,18 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                         # Rescale keyframes to match new FPS
                         self.rescale_keyframes(fps_factor)
 
-                    # Update size & timing of audio-only and image files
+                    # Update size of audio-only files
                     for file in self._data.get("files", []):
-                        is_audio_only = file.get("has_audio") and not file.get("has_video")
-                        media_type = file.get("media_type")
-                        is_image = (isinstance(media_type, str) and media_type.lower() == "image") or file.get("has_single_image")
-
-                        if is_audio_only:
+                        # Check for audio-only files
+                        if file.get("has_audio") and not file.get("has_video"):
                             # Audio-only file should match the current project size and FPS
                             file["width"] = profile.info.width
                             file["height"] = profile.info.height
-                            fps_dict = file.get("fps")
-                            if isinstance(fps_dict, dict):
-                                fps_dict["num"] = profile.info.fps.num
-                                fps_dict["den"] = profile.info.fps.den
-                            display_ratio = file.get("display_ratio")
-                            if isinstance(display_ratio, dict):
-                                display_ratio["num"] = profile.info.display_ratio.num
-                                display_ratio["den"] = profile.info.display_ratio.den
+                            file["fps"]["num"] = profile.info.fps.num
+                            file["fps"]["den"] = profile.info.fps.den
+                            file["display_ratio"]["num"] = profile.info.display_ratio.num
+                            file["display_ratio"]["den"] = profile.info.display_ratio.den
 
-                        if fps_factor != 1.0 and (is_audio_only or is_image):
-                            video_length = file.get("video_length")
-                            try:
-                                video_length_float = float(video_length)
-                            except (TypeError, ValueError):
-                                video_length_float = None
-
-                            if video_length_float and video_length_float > 0:
-                                new_length = int(round(video_length_float * fps_factor))
-                                file["video_length"] = max(new_length, 1)
-
-                        if is_audio_only or is_image:
                             # Change all related clips
                             for clip in self._data.get("clips", []):
                                 if clip.get("reader", {}).get("id") == file.get("id"):
