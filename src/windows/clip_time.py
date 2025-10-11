@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def _reader_from_clip(clip_data, existing_clip):
+    """Return the reader dict from clip data or the existing clip."""
     reader = clip_data.get("reader")
     if reader or not existing_clip or not getattr(existing_clip, "data", None):
         return reader
@@ -41,6 +42,7 @@ def _reader_from_clip(clip_data, existing_clip):
 
 
 def _merge_timing_from_existing(clip_data, existing_clip):
+    """Copy start/end/duration from the existing clip when missing."""
     if not existing_clip or not getattr(existing_clip, "data", None):
         return
     for key in ("start", "end", "duration"):
@@ -49,6 +51,7 @@ def _merge_timing_from_existing(clip_data, existing_clip):
 
 
 def _project_fps_float():
+    """Return the project frame rate as a float."""
     proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
     num = float(proj_fps.get("num", 30))
     den = float(proj_fps.get("den", 1)) or 1.0
@@ -56,6 +59,7 @@ def _project_fps_float():
 
 
 def _clip_id_from_data(clip_data, existing_clip):
+    """Return the clip ID from the provided data or existing clip."""
     if isinstance(clip_data, dict):
         clip_id = clip_data.get("id")
         if clip_id:
@@ -66,6 +70,7 @@ def _clip_id_from_data(clip_data, existing_clip):
 
 
 def _timeline_clip_instance(clip_id):
+    """Look up a live timeline clip instance by its ID."""
     if not clip_id:
         return None
     try:
@@ -80,77 +85,120 @@ def _timeline_clip_instance(clip_id):
 
 
 def _clip_instance_from_data(clip_data, existing_clip):
+    """Return the live clip instance for the given data references."""
     clip_id = _clip_id_from_data(clip_data, existing_clip)
     return _timeline_clip_instance(clip_id)
 
 
-def _reader_src_fps(reader):
+def _parse_int_or_none(value):
+    """Convert value to a rounded int or None if conversion fails."""
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _reader_media_bounds(reader):
+    """Return duration seconds and frame length derived from reader data."""
     if not isinstance(reader, dict):
-        return 0.0
-    vf = reader.get("video_fps") or reader.get("fps") or {}
-    num = (
-        vf.get("num")
-        or vf.get("Num")
-        or reader.get("video_fps_num")
-        or reader.get("fps_num")
-    )
-    den = (
-        vf.get("den")
-        or vf.get("Den")
-        or reader.get("video_fps_den")
-        or reader.get("fps_den")
-    )
-    try:
-        return float(num) / float(den) if (num and den) else 0.0
-    except (TypeError, ValueError, ZeroDivisionError) as exc:
-        logger.debug("Invalid reader FPS %s/%s: %s", num, den, exc)
-        return 0.0
+        return None, None
+
+    duration_sec = _float_or_none(reader.get("duration"))
+    total_frames = _parse_int_or_none(reader.get("video_length"))
+
+    proj_fps_f = _project_fps_float()
+
+    if duration_sec is None and total_frames and proj_fps_f:
+        duration_sec = total_frames / proj_fps_f
+    if total_frames is None and duration_sec and proj_fps_f:
+        total_frames = int(round(duration_sec * proj_fps_f))
+
+    if duration_sec is not None and duration_sec < 0.0:
+        duration_sec = None
+
+    if total_frames is not None and total_frames <= 0:
+        total_frames = None
+
+    return duration_sec, total_frames
 
 
-def _clip_src_fps_from_libopenshot(clip_id):
-    clip = _timeline_clip_instance(clip_id)
-    if not clip:
-        return 0.0
+def _time_curve_length_frames(clip_data, existing_clip):
+    """Return the max frame value from the clip's time curve."""
+    clip_obj = _clip_instance_from_data(clip_data, existing_clip)
+    if clip_obj and getattr(clip_obj, "time", None):
+        try:
+            length = clip_obj.time.GetLength()
+        except Exception as exc:
+            logger.debug("Unable to query clip time length: %s", exc, exc_info=True)
+        else:
+            if length:
+                try:
+                    return max(1, int(round(float(length))))
+                except (TypeError, ValueError):
+                    pass
 
-    try:
-        info = clip.Reader().info
-    except Exception as exc:
-        logger.debug("Unable to query reader info for clip %s: %s", clip_id, exc, exc_info=True)
-        return 0.0
+    points = _time_points(clip_data)
+    if not isinstance(points, list):
+        return None
 
-    for attr in ("video_fps", "fps"):
-        fps_obj = getattr(info, attr, None)
-        if fps_obj and getattr(fps_obj, "den", 0):
-            return float(fps_obj.num) / float(fps_obj.den)
-    return 0.0
+    max_x = 0
+    for point in points:
+        co = point.get("co")
+        if not isinstance(co, dict):
+            continue
+        x_val = co.get("X")
+        if x_val is None:
+            continue
+        try:
+            max_x = max(max_x, int(round(float(x_val))))
+        except (TypeError, ValueError):
+            continue
 
-
-def _source_fps(reader, clip_data, existing_clip, proj_fps_f):
-    src_fps = _reader_src_fps(reader)
-    if src_fps > 0:
-        return src_fps
-    clip_id = clip_data.get("id")
-    if not clip_id and existing_clip and getattr(existing_clip, "data", None):
-        clip_id = existing_clip.data.get("id")
-    src_fps = _clip_src_fps_from_libopenshot(clip_id)
-    return src_fps if src_fps > 0 else proj_fps_f
+    return max_x or None
 
 
-def _reader_video_length(reader):
-    try:
-        return int(float(reader.get("video_length", 0)))
-    except (TypeError, ValueError) as exc:
-        logger.debug("Invalid reader video_length %s: %s", reader.get("video_length"), exc)
-        return 0
+def _clamp_basic_clip_timing(clip_data, max_duration_sec):
+    """Clamp start/end/duration for clips without time remapping."""
+    limit_sec = max_duration_sec if max_duration_sec is not None else None
+
+    start_sec = _float_or_none(clip_data.get("start"))
+    if start_sec is None:
+        start_sec = 0.0
+    if start_sec < 0.0:
+        start_sec = 0.0
+    if limit_sec is not None and start_sec > limit_sec:
+        start_sec = limit_sec
+
+    end_sec = _float_or_none(clip_data.get("end"))
+    duration_sec = _float_or_none(clip_data.get("duration"))
+
+    if end_sec is None:
+        if duration_sec is not None:
+            end_sec = start_sec + duration_sec
+        elif limit_sec is not None:
+            end_sec = limit_sec
+        else:
+            end_sec = start_sec
+
+    if limit_sec is not None and end_sec > limit_sec:
+        end_sec = limit_sec
+    if end_sec < start_sec:
+        start_sec = end_sec
+
+    clip_data["start"] = start_sec
+    clip_data["end"] = end_sec
+    clip_data["duration"] = max(0.0, end_sec - start_sec)
 
 
 def _is_media_type_image(media_type):
+    """Return True when the supplied media type represents an image."""
     if isinstance(media_type, str):
         return media_type.lower() == "image"
     return False
 
 
 def _dict_has_single_image_flag(data):
+    """Return True if dict metadata flags the clip as a single image."""
     if not isinstance(data, dict):
         return False
     if data.get("has_single_image"):
@@ -159,6 +207,7 @@ def _dict_has_single_image_flag(data):
 
 
 def _clip_has_single_image(reader, clip_data, existing_clip):
+    """Return True when any source indicates a single-image clip."""
     if _dict_has_single_image_flag(reader):
         return True
     if _dict_has_single_image_flag(clip_data):
@@ -175,6 +224,7 @@ def _clip_has_single_image(reader, clip_data, existing_clip):
 
 
 def _float_or_none(value):
+    """Convert value to float or None when conversion fails."""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -182,6 +232,7 @@ def _float_or_none(value):
 
 
 def _normalize_single_image_timing(clip_data):
+    """Ensure single-image timing fields remain consistent."""
     start_sec = _float_or_none(clip_data.get("start"))
     if start_sec is None:
         start_sec = 0.0
@@ -210,54 +261,17 @@ def _normalize_single_image_timing(clip_data):
     clip_data["duration"] = duration_sec
 
 
-def _max_duration_seconds(reader, clip_data, clip_obj, video_len_src, src_fps_f):
-    if clip_obj:
-        try:
-            max_duration = float(clip_obj.MaxDuration())
-            if max_duration > 0:
-                return max_duration
-        except Exception as exc:
-            logger.debug("Unable to query clip.MaxDuration(): %s", exc, exc_info=True)
-
-    duration_val = _float_or_none((reader or {}).get("duration"))
-    if duration_val is None:
-        duration_val = _float_or_none((clip_data or {}).get("duration"))
-
-    if duration_val and duration_val > 0:
-        return duration_val
-
-    if reader.get("has_single_image"):
-        return float(reader.get("duration", 0))
-
-    return (video_len_src / src_fps_f) if src_fps_f else 0.0
-
-
-def _max_project_frames(reader, clip_obj, max_duration_sec, video_len_src, src_fps_f, proj_fps_f):
-    if clip_obj:
-        try:
-            video_length = int(round(float(clip_obj.VideoLength())))
-            if video_length > 0:
-                return video_length
-        except Exception as exc:
-            logger.debug("Unable to query clip.VideoLength(): %s", exc, exc_info=True)
-
-    if reader.get("has_single_image"):
-        duration = max_duration_sec if max_duration_sec else float(reader.get("duration", 0))
-        return max(1, int(round(duration * proj_fps_f)))
-
-    if max_duration_sec and max_duration_sec > 0:
-        return max(1, int(round(max_duration_sec * proj_fps_f)))
-
-    scale = (proj_fps_f / src_fps_f) if src_fps_f else 1.0
-    return max(1, int(round(video_len_src * scale))) if video_len_src else 1
-
-
 def _time_points(clip_data):
+    """Return the list of time keyframe points from clip data."""
     time_data = clip_data.get("time")
     return time_data.get("Points") if isinstance(time_data, dict) else None
 
 
 def _clamp_time_points(points, max_y_project):
+    """Clamp keyframe coordinates to positive axes and given Y limit."""
+    if not isinstance(points, list) or not max_y_project:
+        return
+
     for point in points:
         co = point.get("co", {})
         if "X" in co and co["X"] is not None:
@@ -273,40 +287,19 @@ def _clamp_time_points(points, max_y_project):
 
 
 def _clamp_multi_time_start(clip_data, max_duration_sec):
-    start_sec = float(clip_data.get("start", 0.0))
+    """Clamp clip start for multi-point time curves to available range."""
+    start_sec = _float_or_none(clip_data.get("start"))
+    if start_sec is None:
+        start_sec = 0.0
     if start_sec < 0.0:
         start_sec = 0.0
-    if start_sec > max_duration_sec:
+    if max_duration_sec is not None and start_sec > max_duration_sec:
         start_sec = max_duration_sec
     clip_data["start"] = start_sec
 
 
-def _clamp_single_time_values(clip_data, max_duration_sec):
-    clip_data["duration"] = float(max_duration_sec)
-    start_sec = float(clip_data.get("start", 0.0))
-    end_sec = float(clip_data.get("end", start_sec))
-    if end_sec > max_duration_sec:
-        end_sec = max_duration_sec
-    if start_sec < 0.0:
-        start_sec = 0.0
-    if start_sec > end_sec:
-        start_sec = end_sec
-    clip_data["start"] = start_sec
-    clip_data["end"] = end_sec
-    clip_data["duration"] = float(end_sec - start_sec)
-
-
 def clamp_timing_to_media(clip_data, existing_clip=None):
-    """Clamp timing-related clip values to the bounds of its reader.
-
-    Clamping rules
-    --------------
-    • Time curve Y values are clamped in PROJECT-FRAME space.
-      max_y_project = reader.video_length (SOURCE frames) * (project_fps / reader_fps)
-    • For multi-point time curves, only clamp point coords (do not rescale or stretch the curve).
-      For zero/one time point, reset duration to the reader’s full duration (in seconds).
-    • Start/End trims are clamped to the available media duration (seconds).
-    """
+    """Keep clip timing values inside the available media or time-curve bounds."""
 
     reader = _reader_from_clip(clip_data, existing_clip)
 
@@ -316,41 +309,67 @@ def clamp_timing_to_media(clip_data, existing_clip=None):
         _normalize_single_image_timing(clip_data)
         return clip_data
 
-    if not reader:
-        return clip_data
-
-    max_duration_sec, max_y_project = clip_time_bounds(clip_data, existing_clip)
-
     points = _time_points(clip_data)
-    if isinstance(points, list) and len(points) > 1:
-        _clamp_time_points(points, max_y_project)
+    multi_point_time = isinstance(points, list) and len(points) > 1
+
+    reader_duration, reader_frames = _reader_media_bounds(reader)
+
+    if multi_point_time:
+        max_frames = _time_curve_length_frames(clip_data, existing_clip) or reader_frames
+        if reader_frames:
+            _clamp_time_points(points, reader_frames)
+
+        proj_fps_f = _project_fps_float()
+        max_duration_sec = None
+        if max_frames and proj_fps_f:
+            max_duration_sec = max_frames / proj_fps_f
+        elif reader_duration is not None:
+            max_duration_sec = reader_duration
+
         _clamp_multi_time_start(clip_data, max_duration_sec)
         return clip_data
 
-    _clamp_single_time_values(clip_data, max_duration_sec)
+    _clamp_basic_clip_timing(clip_data, reader_duration)
+    if reader_frames:
+        _clamp_time_points(points, reader_frames)
+
     return clip_data
 
 
 def clip_time_bounds(clip_data, existing_clip=None):
+    """Return max duration and frame count allowed for the clip."""
     reader = _reader_from_clip(clip_data, existing_clip) or {}
 
     if _clip_has_single_image(reader, clip_data, existing_clip):
         duration = _float_or_none((clip_data or {}).get("duration"))
-        if not duration:
+        if duration is None:
             duration = _float_or_none(reader.get("duration")) or 0.0
         proj_fps_f = _project_fps_float()
-        max_frames = max(1, int(round(duration * proj_fps_f))) if duration else 1
+        max_frames = max(1, int(round(duration * proj_fps_f))) if duration and proj_fps_f else 1
         return duration if duration else 0.0, max_frames
 
-    proj_fps_f = _project_fps_float()
-    src_fps_f = _source_fps(reader, clip_data, existing_clip, proj_fps_f)
-    video_len_src = _reader_video_length(reader)
-    clip_obj = _clip_instance_from_data(clip_data, existing_clip)
-    max_duration_sec = _max_duration_seconds(
-        reader, clip_data, clip_obj, video_len_src, src_fps_f
-    )
-    max_project_frames = _max_project_frames(
-        reader, clip_obj, max_duration_sec, video_len_src, src_fps_f, proj_fps_f
-    )
+    points = _time_points(clip_data)
+    multi_point_time = isinstance(points, list) and len(points) > 1
 
-    return max_duration_sec, max_project_frames
+    proj_fps_f = _project_fps_float()
+    reader_duration, reader_frames = _reader_media_bounds(reader)
+
+    if multi_point_time:
+        max_frames = _time_curve_length_frames(clip_data, existing_clip) or reader_frames or 1
+        if proj_fps_f:
+            max_duration = max_frames / proj_fps_f
+        elif reader_duration is not None:
+            max_duration = reader_duration
+        else:
+            max_duration = 0.0
+        return max_duration, max_frames
+
+    max_frames = reader_frames or 1
+    if reader_duration is not None:
+        max_duration = reader_duration
+    elif proj_fps_f and max_frames:
+        max_duration = max_frames / proj_fps_f
+    else:
+        max_duration = 0.0
+
+    return max_duration, max_frames
