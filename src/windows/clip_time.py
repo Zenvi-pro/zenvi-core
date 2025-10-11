@@ -28,6 +28,7 @@
 import logging
 
 from classes.app import get_app
+from classes.frame_utils import project_fps_fraction, video_length_to_project_frames
 
 
 logger = logging.getLogger(__name__)
@@ -52,10 +53,11 @@ def _merge_timing_from_existing(clip_data, existing_clip):
 
 def _project_fps_float():
     """Return the project frame rate as a float."""
-    proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-    num = float(proj_fps.get("num", 30))
-    den = float(proj_fps.get("den", 1)) or 1.0
-    return num / den
+    fps_fraction = project_fps_fraction()
+    try:
+        return float(fps_fraction)
+    except (TypeError, ValueError):
+        return 30.0
 
 
 def _clip_id_from_data(clip_data, existing_clip):
@@ -104,9 +106,11 @@ def _reader_media_bounds(reader):
         return None, None
 
     duration_sec = _float_or_none(reader.get("duration"))
-    total_frames = _parse_int_or_none(reader.get("video_length"))
 
-    proj_fps_f = _project_fps_float()
+    proj_fps_frac = project_fps_fraction()
+    proj_fps_f = float(proj_fps_frac) if proj_fps_frac else None
+
+    total_frames = video_length_to_project_frames(reader, project_fps=proj_fps_frac)
 
     if duration_sec is None and total_frames and proj_fps_f:
         duration_sec = total_frames / proj_fps_f

@@ -3141,6 +3141,28 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Adjust frame # to valid range
         frame_number = max(frame_number, 1)
 
+        # Map frame through time curve (if present)
+        mapped_frame = frame_number
+        timeline_sync = getattr(self.window, "timeline_sync", None)
+        timeline = getattr(timeline_sync, "timeline", None)
+        if timeline:
+            try:
+                clip_instance = timeline.GetClip(clip_id)
+            except Exception as exc:
+                clip_instance = None
+                log.debug("Unable to fetch clip %s for preview: %s", clip_id, exc, exc_info=True)
+            if clip_instance and getattr(clip_instance, "time", None):
+                try:
+                    if clip_instance.time.GetCount() > 1:
+                        mapped_value = clip_instance.time.GetValue(frame_number)
+                        mapped_frame = int(round(float(mapped_value)))
+                except (TypeError, ValueError):
+                    pass
+                except Exception as exc:
+                    log.debug("Failed to map time curve for clip %s: %s", clip_id, exc, exc_info=True)
+
+        frame_number = max(mapped_frame, 1)
+
         # Load the clip into the Player (ignored if this has already happened)
         self.window.LoadFileSignal.emit(preview_path)
         self.window.SpeedSignal.emit(0)

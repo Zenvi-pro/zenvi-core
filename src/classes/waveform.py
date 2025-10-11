@@ -30,6 +30,7 @@ from functools import partial
 from classes.app import get_app
 from classes.logger import log
 from classes.query import File, Clip
+from classes.frame_utils import project_fps_fraction, video_length_to_project_frames
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
 import openshot
@@ -255,7 +256,20 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
 
         # Loop through samples from the file, applying this clip's volume curve
         clip_audio_data = []
-        num_frames = clip_instance.info.video_length
+        info = clip_instance.info
+        proj_fraction = project_fps_fraction()
+        num_frames = video_length_to_project_frames(
+            None,
+            video_length=getattr(info, 'video_length', None),
+            fps=getattr(info, 'fps', None),
+            duration=getattr(info, 'duration', None),
+            project_fps=proj_fraction,
+        )
+        if num_frames:
+            num_frames = int(num_frames)
+        else:
+            fallback_frames = getattr(info, 'video_length', 0)
+            num_frames = int(fallback_frames) if fallback_frames else 0
 
         # Determine best guess # of samples (based on duration)
         # We don't want to use the len(file_audio_data) due to padding at EOF

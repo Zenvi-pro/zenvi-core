@@ -1163,8 +1163,6 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             # Audio-only file should match the current project size and FPS
                             file["width"] = profile.info.width
                             file["height"] = profile.info.height
-                            file["fps"]["num"] = profile.info.fps.num
-                            file["fps"]["den"] = profile.info.fps.den
                             file["display_ratio"]["num"] = profile.info.display_ratio.num
                             file["display_ratio"]["den"] = profile.info.display_ratio.den
 
