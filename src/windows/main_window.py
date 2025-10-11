@@ -3803,6 +3803,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.tutorial_manager = None
 
         # Load UI from designer
+        self.selected_items = []
         ui_util.load_ui(self, self.ui_path)
 
         # Init UI
