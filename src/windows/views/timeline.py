@@ -55,7 +55,7 @@ from .timeline_backend.enums import (
 )
 from .timeline_backend.qwidget import TimelineWidget
 from .menu import StyledContextMenu
-from windows.clip_time import clamp_timing_to_media
+from classes.clip_utils import clamp_timing_to_media
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 

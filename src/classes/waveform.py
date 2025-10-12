@@ -30,7 +30,7 @@ from functools import partial
 from classes.app import get_app
 from classes.logger import log
 from classes.query import File, Clip
-from classes.frame_utils import project_fps_fraction, video_length_to_project_frames
+from classes.clip_utils import project_fps_fraction, video_length_to_project_frames
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
 import openshot

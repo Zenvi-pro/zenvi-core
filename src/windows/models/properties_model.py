@@ -38,7 +38,7 @@ from PyQt5.QtGui import (
 from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
-from windows.clip_time import clamp_timing_to_media, clip_time_bounds
+from classes.clip_utils import clamp_timing_to_media, clip_time_bounds
 from classes.query import Clip, Transition, Effect
 from classes.logger import log
 from classes.app import get_app
