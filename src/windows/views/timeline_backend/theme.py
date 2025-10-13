@@ -35,6 +35,7 @@ class TrackTheme(BasicTheme):
     name_background: QColor = field(default_factory=QColor)
     name_width: int = 0
     gap: int = 0
+    margin_top: int = -1
     name_border_color: QColor = field(default_factory=QColor)
     name_border_width: int = 0
     name_border_top_color: QColor = field(default_factory=QColor)
@@ -79,6 +80,12 @@ class TimelineTheme:
     scrollbar_handle: QColor = field(default_factory=QColor)
     scrollbar_track: QColor = field(default_factory=QColor)
     scrollbar_width: int = 0
+    waveform_color: QColor = field(default_factory=lambda: QColor(42, 130, 218))
+    waveform_peak_color: QColor = field(default_factory=lambda: QColor(42, 130, 218, 128))
+    keyframe_fill: QColor = field(default_factory=lambda: QColor("#4d7bff"))
+    keyframe_border: QColor = field(default_factory=lambda: QColor("#ffffff"))
+    keyframe_inactive_opacity: float = 0.5
+    keyframe_size: int = 10
 
 
 DEFAULT_THEME = TimelineTheme()
@@ -850,6 +857,7 @@ def _theme_apply_track(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     )
     _theme_apply_int(theme.track, "name_width", qt_theme, ".track_name", "width")
     _theme_apply_int(theme.track, "gap", qt_theme, ".track", "margin-bottom")
+    _theme_apply_int(theme.track, "margin_top", qt_theme, ".track", "margin-top")
     for attr, prop in (
         ("name_border_color", "border-left"),
         ("name_border_top_color", ("border-top", "border")),
@@ -1460,6 +1468,7 @@ def apply_theme(widget, css: str = "") -> bool:
     old_name_w = widget.track_name_width
     old_ruler_h = widget.ruler_height
     old_gap = getattr(widget, 'track_gap', 0)
+    old_margin_top = getattr(widget, 'track_margin_top', 0)
 
     widget.theme = t
 
@@ -1469,6 +1478,12 @@ def apply_theme(widget, css: str = "") -> bool:
         widget.track_name_width = t.track.name_width
     if t.track.gap:
         widget.track_gap = t.track.gap
+    if t.track.margin_top >= 0:
+        widget.track_margin_top = t.track.margin_top
+    else:
+        current_gap = getattr(widget, 'track_gap', 0)
+        if current_gap:
+            widget.track_margin_top = current_gap
     if t.ruler.height:
         widget.ruler_height = t.ruler.height
     if t.scrollbar_width:
@@ -1479,4 +1494,5 @@ def apply_theme(widget, css: str = "") -> bool:
         or old_name_w != widget.track_name_width
         or old_ruler_h != widget.ruler_height
         or old_gap != widget.track_gap
+        or old_margin_top != getattr(widget, 'track_margin_top', 0)
     )

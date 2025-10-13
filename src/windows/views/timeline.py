@@ -54,6 +54,7 @@ from .timeline_backend.enums import (
     MenuTransform, MenuTime, MenuCopy, MenuSlice, MenuSplitAudio
 )
 from .timeline_backend.qwidget import TimelineWidget
+from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import clamp_timing_to_media
 from .retime import retime_clip
@@ -197,6 +198,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     return True
         return False
 
+    def _apply_effect_colors(self, value):
+        """Ensure effect dictionaries define a color attribute."""
+        if isinstance(value, dict):
+            effects = value.get("effects")
+            if isinstance(effects, list):
+                for effect in effects:
+                    if not isinstance(effect, dict):
+                        continue
+                    ui_data = effect.get("ui")
+                    if not isinstance(ui_data, dict):
+                        ui_data = {}
+                        effect["ui"] = ui_data
+                    ui_data.setdefault("icon_color", effect_color_hex(effect))
+                    self._apply_effect_colors(effect)
+            for key, sub_value in value.items():
+                if key in ("effects", "ui", "audio_data"):
+                    continue
+                if isinstance(sub_value, (dict, list)):
+                    self._apply_effect_colors(sub_value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    self._apply_effect_colors(item)
+
     def _should_refresh_waveforms(self, action):
         """Determine if a project update requires redrawing clip waveforms."""
         if not action:
@@ -309,6 +334,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Failed to parse json, do nothing
             log.warning('Failed to parse clip JSON data', exc_info=1)
             return
+
+        self._apply_effect_colors(clip_data)
 
         # Search for matching clip in project data (if any)
         existing_clip = Clip.get(id=clip_data.get("id"))
@@ -3202,6 +3229,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @pyqtSlot()
     def centerOnPlayhead(self):
         """ Center the timeline on the current playhead position """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.centerOnPlayhead(self)
+            return
         # Execute JavaScript to center the timeline
         self.run_js(JS_SCOPE_SELECTOR + '.centerOnPlayhead();')
 
@@ -3300,7 +3330,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def update_zoom(self, newScale):
         if ViewClass == TimelineWidget:
             TimelineWidget.setZoomFactor(self, newScale, emit=False)
-            return
         else:
             _ = get_app()._tr
 
@@ -3568,6 +3597,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # Add Effect
     def addEffect(self, effect_names, event_position):
+        if ViewClass == TimelineWidget:
+            self._add_effect_qwidget(effect_names, event_position)
+            return
 
         # Callback function, to actually add the effect object
         def callback(self, effect_names, callback_data):
@@ -3639,6 +3671,68 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Find position from javascript
         self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
             .format(event_position.x(), event_position.y()), partial(callback, self, effect_names))
+
+    def _add_effect_qwidget(self, effect_names, event_position):
+        if not effect_names:
+            return
+        try:
+            pos_seconds = float(event_position.x())
+        except AttributeError:
+            pos_seconds = float(event_position)
+        track_num = 0
+        try:
+            track_num = int(event_position.y())
+        except AttributeError:
+            try:
+                track_num = int(event_position)
+            except (TypeError, ValueError):
+                track_num = 0
+
+        for clip in Clip.filter(layer=track_num):
+            data = clip.data if isinstance(clip.data, dict) else {}
+            clip_position = float(data.get("position", 0.0) or 0.0)
+            clip_start = float(data.get("start", 0.0) or 0.0)
+            clip_end = float(data.get("end", clip_start) or clip_start)
+            duration = clip_end - clip_start
+            if duration <= 0.0:
+                continue
+            clip_finish = clip_position + duration
+            if pos_seconds == 0.0 or clip_position <= pos_seconds <= clip_finish:
+                self._apply_effect_to_clip(clip, effect_names[0])
+                break
+
+    def _apply_effect_to_clip(self, clip, effect_name):
+        if not effect_name:
+            return
+        log.info("Applying effect %s to clip ID %s", effect_name, clip.id)
+        if effect_name in effect_options:
+            effect_params = effect_options.get(effect_name)
+            from windows.process_effect import ProcessEffect
+            try:
+                win = ProcessEffect(clip.id, effect_name, effect_params)
+            except ModuleNotFoundError as e:
+                print("[ERROR]: " + str(e))
+                return
+            result = win.exec_()
+            if result != QDialog.Accepted:
+                log.info('Cancel processing')
+                return
+            effect = win.effect
+            if effect is None:
+                return
+        else:
+            effect = openshot.EffectInfo().CreateEffect(effect_name)
+            effect.Id(get_app().project.generate_id())
+
+        effect_json = json.loads(effect.Json())
+        if not isinstance(clip.data, dict):
+            clip.data = {}
+        effects = clip.data.get("effects")
+        if not isinstance(effects, list):
+            effects = list(effects) if effects else []
+            clip.data["effects"] = effects
+        effects.append(effect_json)
+        self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):

@@ -51,6 +51,8 @@ class Geometry:
     def mark_dirty(self):
         """Invalidate all cached geometry."""
         self.dirty = True
+        if hasattr(self.widget, "_keyframes_dirty"):
+            self.widget._keyframes_dirty = True
 
     def ensure(self):
         """Rebuild cached geometry if marked dirty."""
@@ -155,15 +157,18 @@ class Geometry:
         timeline_w = max(view_w, duration * w.pixels_per_second)
         self._update_vertical_factor(layers, view_h)
         spacing = self.widget.vertical_factor + getattr(w, "track_gap", 0)
+        top_margin = float(getattr(w, "track_margin_top", 0.0) or 0.0)
         content_h = len(self.track_list) * spacing - getattr(w, "track_gap", 0)
-        content_h = max(content_h, 0.0)
+        content_h = max(content_h, 0.0) + top_margin
         h_offset = self._update_horizontal_scrollbar(timeline_w, view_w)
         v_offset = self._update_vertical_scrollbar(content_h, view_h)
+        w.h_scroll_offset = h_offset
         return {
             "view_w": view_w,
             "view_h": view_h,
             "timeline_w": timeline_w,
             "spacing": spacing,
+            "top_margin": top_margin,
             "content_h": content_h,
             "h_offset": h_offset,
             "v_offset": v_offset,
@@ -175,6 +180,7 @@ class Geometry:
             layer_index = layers.get(track.data.get("number"), 0)
             y = (
                 w.ruler_height
+                + ctx.get("top_margin", 0.0)
                 + layer_index * ctx["spacing"]
                 - ctx["v_offset"]
             )
@@ -194,9 +200,9 @@ class Geometry:
 
         w.resize_handle_rect = QRectF(
             w.track_name_width - w._resize_handle_width / 2,
-            w.ruler_height,
+            w.ruler_height + ctx.get("top_margin", 0.0),
             w._resize_handle_width,
-            ctx["content_h"],
+            max(0.0, ctx["content_h"] - ctx.get("top_margin", 0.0)),
         )
 
     def _populate_clip_rects(self, layers, ctx, win):
@@ -210,6 +216,7 @@ class Geometry:
             layer_idx = layers.get(clip.data.get("layer", 0), 0)
             cy = (
                 w.ruler_height
+                + ctx.get("top_margin", 0.0)
                 + layer_idx * ctx["spacing"]
                 - ctx["v_offset"]
             )
@@ -239,6 +246,7 @@ class Geometry:
             layer_idx = layers.get(tr.data.get("layer", 0), 0)
             ty = (
                 w.ruler_height
+                + ctx.get("top_margin", 0.0)
                 + layer_idx * ctx["spacing"]
                 - ctx["v_offset"]
             )
@@ -259,6 +267,8 @@ class Geometry:
 
     def _populate_marker_rects(self, ctx):
         w = self.widget
+        top_margin = ctx.get("top_margin", 0.0)
+        height = max(0.0, ctx["content_h"] - top_margin)
         for marker in Marker.filter():
             mx = (
                 w.track_name_width
@@ -267,9 +277,9 @@ class Geometry:
             )
             rect = QRectF(
                 mx,
-                w.ruler_height - ctx["v_offset"],
+                w.ruler_height + top_margin - ctx["v_offset"],
                 0.5,
-                ctx["content_h"],
+                height,
             )
             self.marker_rects.append(rect)
 
@@ -344,6 +354,7 @@ class Geometry:
         )
         y = (
             self.widget.ruler_height
+            + getattr(self.widget, "track_margin_top", 0.0)
             + layers.get(item.data.get("layer", 0), 0) * spacing
             - v_offset
         )

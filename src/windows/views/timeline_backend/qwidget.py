@@ -23,28 +23,46 @@
 
  You should have received a copy of the GNU General Public License
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
- """
+"""
 
 import json
+import uuid
 
 from PyQt5.QtCore import (
-    Qt, QRectF, QTimer, QPointF,
-    QSignalTransition, pyqtSignal, QObject
+    Qt,
+    QRectF,
+    QTimer,
+    QPointF,
+    QSignalTransition,
+    pyqtSignal,
+    QObject,
 )
 from PyQt5.QtGui import (
-    QPainter, QCursor, QIcon
+    QPainter,
+    QCursor,
+    QIcon,
+    QColor,
 )
 from PyQt5.QtWidgets import QSizePolicy, QWidget
 
 from .geometry import Geometry
 from .paint import (
-    BackgroundPainter, ClipPainter, TransitionPainter,
-    MarkerPainter, PlayheadPainter, RulerPainter, TrackPainter,
-    SelectionPainter, ScrollbarPainter,
+    BackgroundPainter,
+    ClipPainter,
+    TransitionPainter,
+    MarkerPainter,
+    PlayheadPainter,
+    RulerPainter,
+    TrackPainter,
+    SelectionPainter,
+    ScrollbarPainter,
+    KeyframePainter,
 )
 from .snap import SnapHelper
 from .theme import DEFAULT_THEME, apply_theme as parse_theme
 from .state import TimelineStateMachine
+from .colors import effect_color_qcolor
+from classes.waveform import SAMPLES_PER_SECOND as WAVEFORM_SAMPLES_PER_SECOND
 
 from classes.app import get_app
 from classes.query import Clip, Transition, File
@@ -90,6 +108,7 @@ class TimelineWidget(QWidget):
         self.scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
         self.v_scrollbar_position = [0.0, 0.0, 0.0, 0.0]
         self.v_scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
+        self.h_scroll_offset = 0.0
         self.left_handle_rect = QRectF()
         self.left_handle_dragging = False
         self.right_handle_rect = QRectF()
@@ -110,6 +129,7 @@ class TimelineWidget(QWidget):
         self.vertical_factor = 1.0
         self.track_height = 48
         self.track_gap = 8
+        self.track_margin_top = self.track_gap
 
         # Geometry constants
         self.ruler_height = 40
@@ -127,6 +147,7 @@ class TimelineWidget(QWidget):
         self.drag_clip_offset = 0.0
         self.drag_clip_start = 0.0
         self.dragging_playhead = False
+        self.drag_bbox = QRectF()
 
         # Resize / timing helpers
         self.enable_timing = False
@@ -158,8 +179,23 @@ class TimelineWidget(QWidget):
         self.transition_painter = TransitionPainter(self)
         self.marker_painter = MarkerPainter(self)
         self.playhead_painter = PlayheadPainter(self)
+        self.keyframe_painter = KeyframePainter(self)
         self.selection_painter = SelectionPainter(self)
         self.scrollbar_painter = ScrollbarPainter(self)
+
+        # Keyframe helpers
+        self._keyframe_markers = []
+        self._keyframes_dirty = True
+        self._dragging_keyframe = None
+        self._press_keyframe = None
+        self._press_effect_icon = None
+        self._pending_clip_overrides = {}
+        self._drag_payload = None
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._snap_ignore_ids = set()
+        self._snap_keyframe_seconds = []
+        self._snap_active_targets = {}
 
         # Apply default theme
         self.apply_theme("")
@@ -211,6 +247,15 @@ class TimelineWidget(QWidget):
         self._press_hit = None
         self._buildStateMachine()
 
+        # Effect icon hit targets (populated by the clip painter)
+        self._effect_icon_rects = []
+
+        # Middle-mouse panning helpers
+        self._middle_panning = False
+        self._middle_pan_anchor = QPointF()
+        self._middle_pan_scroll_start = [0.0, 0.0, 0.0, 0.0]
+        self._middle_pan_vscroll_start = [0.0, 0.0, 0.0, 0.0]
+
     def _buildStateMachine(self):
         sm = TimelineStateMachine(self)
 
@@ -219,6 +264,7 @@ class TimelineWidget(QWidget):
         resize = sm.resize
         playhead = sm.playhead
         boxsel = sm.box
+        keydrag = sm.keyframe
 
         drag.entered.connect(self._startClipDrag)
         drag.exited.connect(self._finishClipDrag)
@@ -228,6 +274,8 @@ class TimelineWidget(QWidget):
         playhead.exited.connect(self._finishPlayhead)
         boxsel.entered.connect(self._startBoxSelect)
         boxsel.exited.connect(self._finishBoxSelect)
+        keydrag.entered.connect(self._startKeyframeDrag)
+        keydrag.exited.connect(self._finishKeyframeDrag)
 
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, drag,
@@ -244,6 +292,10 @@ class TimelineWidget(QWidget):
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, boxsel,
             lambda: self._press_hit == "background"
+        ))
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, keydrag,
+            lambda: self._press_hit == "keyframe"
         ))
 
         drag.entered.connect(lambda: self.events.moved.connect(self._dragMove))
@@ -262,8 +314,12 @@ class TimelineWidget(QWidget):
         boxsel.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._boxMove))
         boxsel.addTransition(self.events.released, idle)
 
+        keydrag.entered.connect(lambda: self.events.moved.connect(self._keyframeMove))
+        keydrag.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._keyframeMove))
+        keydrag.addTransition(self.events.released, idle)
+
         # repaint exactly once when any interactive state exits
-        for s in (drag, resize, playhead, boxsel):
+        for s in (drag, resize, playhead, boxsel, keydrag):
             s.exited.connect(self.update)
 
         sm.setInitialState(idle)
@@ -292,6 +348,8 @@ class TimelineWidget(QWidget):
     def setTimingMode(self, enable):
         """Enable or disable timing (retime) mode."""
         self.enable_timing = bool(enable)
+        if self.enable_timing:
+            self._snap_keyframe_seconds = []
 
     def _fix_cursor(self, cursor):
         self._fixed_cursor = cursor
@@ -303,6 +361,15 @@ class TimelineWidget(QWidget):
     def _snap_time(self, seconds):
         """Snap a time in seconds to the nearest frame boundary."""
         return round(seconds * self.fps_float) / self.fps_float
+
+    def _seconds_from_x(self, x_pos):
+        """Convert an x position in widget coordinates to timeline seconds."""
+        pps = float(self.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return 0.0
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
+        seconds = (x_pos - self.track_name_width + offset_px) / pps
+        return max(0.0, seconds)
 
     def run_js(self, code, callback=None, retries=0):
         """Placeholder due to webview compatibility"""
@@ -329,10 +396,12 @@ class TimelineWidget(QWidget):
             self.transition_painter,
             self.marker_painter,
             self.playhead_painter,
+            self.keyframe_painter,
             self.selection_painter,
             self.scrollbar_painter,
         ):
             p.update_theme()
+        self._keyframes_dirty = True
         self.update()
 
     def setup_js_data(self):
@@ -355,6 +424,9 @@ class TimelineWidget(QWidget):
         self.transition_painter.clear_cache()
         self.geometry.mark_dirty()
         self.geometry.ensure()
+        self._keyframes_dirty = True
+        self._pending_clip_overrides.clear()
+        self._snap_keyframe_seconds = []
 
         # Mirror some attributes for compatibility
         self.track_list = self.geometry.track_list
@@ -378,6 +450,7 @@ class TimelineWidget(QWidget):
             return
 
         self.geometry.ensure()
+        self._ensure_keyframe_markers()
 
         self.bg_painter.paint(painter, event.rect())
         self.track_painter.paint_background(painter)
@@ -385,81 +458,174 @@ class TimelineWidget(QWidget):
         self.transition_painter.paint(painter)
         self.marker_painter.paint(painter)
         self.selection_painter.paint(painter)
+        self.keyframe_painter.paint(painter)
         self.track_painter.paint_names(painter)
         self.ruler_painter.paint(painter)
         self.playhead_painter.paint(painter)
+        self.ruler_painter.paint_overlay(painter)
         self.scrollbar_painter.paint(painter)
 
         painter.end()
 
     def dragEnterEvent(self, event):
-        # Check if the drag event contains the data type you can handle
-        if event.mimeData().hasUrls():
+        self._drag_payload = None
+        mime = event.mimeData()
+
+        if mime.hasUrls():
             event.accept()
+            self.new_item = True
+            self.item_type = "os_drop"
+            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+            return
+
+        mime_html = mime.html()
+        if mime_html:
+            if mime_html in ("clip", "transition"):
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                self._drag_payload = {"type": mime_html, "ids": ids}
+                self.item_type = mime_html
+                self.new_item = True
+                event.accept()
+            elif mime_html == "effect":
+                event.accept()
+            else:
+                event.ignore()
         else:
             event.ignore()
 
-        # If a plain text drag accept
-        if not self.new_item and not event.mimeData().hasUrls() and event.mimeData().html():
-            # get type of dropped data
-            self.item_type = event.mimeData().html()
-
-            # Track that a new item is being 'added'
-            self.new_item = True
-
-            # TODO: Implement drag n drop
-            # Get the mime data (i.e. list of files, list of transitions, etc...)
-            # data = json.loads(event.mimeData().text())
-            # pos = event.posF()
-
-            # create the item
-            # if self.item_type == "clip":
-            #     self.addClip(data, pos)
-            # elif self.item_type == "transition":
-            #     self.addTransition(data, pos)
-
-            # accept all events, even if a new clip is not being added
-            event.accept()
-
-        # Accept a plain file URL (from the OS)
-        elif not self.new_item and event.mimeData().hasUrls():
-            # Track that a new item is being 'added'
-            self.new_item = True
-            self.item_type = "os_drop"
-
-            # accept event
-            event.accept()
-
-        # DEBUG
-        self.new_item = False
-
     def dragMoveEvent(self, event):
-        # Optional: Provide feedback to the user about the drag operation
         event.accept()
+        payload = self._ensure_drag_payload_from_event(event)
+
+        if payload and payload.get("type") in {"clip", "transition"}:
+            coords = self._event_seconds_track(event)
+            if coords is None:
+                self._reset_drag_preview(delete_items=True)
+                return
+            pos_seconds, track_num, _ = coords
+            if not self._ensure_drag_preview(pos_seconds, track_num):
+                return
+            self._update_drag_preview_position(pos_seconds, track_num)
+        else:
+            if payload and payload.get("type") == "effect":
+                return
+            if payload and payload.get("type") == "os_drop":
+                return
+            self._reset_drag_preview(delete_items=True)
 
     def dropEvent(self, event):
         event.accept()
+
+        if self._drag_preview_items:
+            self._finalize_drag_preview()
+            return
+
         file_ids = []
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
+        effect_names = []
+        mime = event.mimeData()
+        mime_html = mime.html()
+        if mime.hasUrls():
+            urls = mime.urls()
             self.win.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
             for uri in urls:
                 for f in File.filter(path=uri.toLocalFile()):
                     file_ids.append(f.id)
-        elif event.mimeData().html() == "clip":
-            ids = json.loads(event.mimeData().text())
+        elif mime_html == "clip":
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
             if not isinstance(ids, list):
                 ids = [ids]
             file_ids.extend(ids)
-        elif event.mimeData().html() == "transition":
-            ids = json.loads(event.mimeData().text())
+        elif mime_html == "transition":
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
             if not isinstance(ids, list):
                 ids = [ids]
             file_ids.extend(ids)
+        elif mime_html == "effect":
+            try:
+                names = json.loads(mime.text())
+            except Exception:
+                names = []
+            if not isinstance(names, list):
+                names = [names]
+            effect_names.extend(names)
 
-        if not file_ids:
+        if not file_ids and not effect_names:
+            self._reset_drag_preview()
             return
 
+        coords = self._event_seconds_track(event)
+        if coords is None:
+            coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
+        pos_seconds, track_num, _ = coords
+        pos = QPointF(pos_seconds, 0)
+
+        if effect_names:
+            self._apply_effect_drop(effect_names, pos_seconds, track_num)
+            self._reset_drag_preview()
+            return
+
+        for idx, fid in enumerate(file_ids):
+            ignore_refresh = idx < len(file_ids) - 1
+            if mime_html == "transition":
+                item = self.addTransition(
+                    fid,
+                    pos,
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if item:
+                    pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
+            else:
+                clip = self.addClip(
+                    fid,
+                    pos,
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if clip:
+                    pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
+        self._reset_drag_preview()
+
+    def dragLeaveEvent(self, event):
+        event.accept()
+        self._reset_drag_preview(delete_items=True)
+
+    def _ensure_drag_payload_from_event(self, event):
+        if self._drag_payload:
+            return self._drag_payload
+        mime = event.mimeData()
+        if mime.hasUrls():
+            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+            return self._drag_payload
+        mime_html = mime.html()
+        if mime_html in {"clip", "transition"}:
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
+            if not isinstance(ids, list):
+                ids = [ids]
+            self._drag_payload = {"type": mime_html, "ids": ids}
+            self.item_type = mime_html
+            self.new_item = True
+        elif mime_html == "effect":
+            self._drag_payload = {"type": "effect"}
+        return self._drag_payload
+
+    def _viewport_offsets(self):
         view_w = self.scrollbar_position[3] or 1.0
         timeline_w = self.scrollbar_position[2] or view_w
         left = self.scrollbar_position[0]
@@ -467,6 +633,7 @@ class TimelineWidget(QWidget):
         max_scroll = max(0.0, timeline_w - view_w)
         if h_offset > max_scroll:
             h_offset = max_scroll
+
         view_h = self.v_scrollbar_position[3] or 1.0
         content_h = self.v_scrollbar_position[2] or view_h
         top = self.v_scrollbar_position[0]
@@ -474,20 +641,248 @@ class TimelineWidget(QWidget):
         max_vscroll = max(0.0, content_h - view_h)
         if v_offset > max_vscroll:
             v_offset = max_vscroll
-        pos_seconds = max(0.0, (event.pos().x() - self.track_name_width + h_offset) / self.pixels_per_second)
-        track_idx = int((event.pos().y() - self.ruler_height + v_offset) / self.vertical_factor)
-        track_idx = min(max(track_idx, 0), len(self.track_list)-1)
+        return h_offset, v_offset
+
+    def _event_seconds_track(self, event):
+        pos = event.pos()
+        if pos.x() < self.track_name_width or pos.y() < self.ruler_height:
+            return None
+        if not self.track_list:
+            return None
+        pixels_per_second = float(self.pixels_per_second or 0.0)
+        if pixels_per_second <= 0.0:
+            return None
+        vertical_factor = float(self.vertical_factor or 0.0)
+        if vertical_factor <= 0.0:
+            return None
+        h_offset, v_offset = self._viewport_offsets()
+        pos_seconds = (pos.x() - self.track_name_width + h_offset) / pixels_per_second
+        pos_seconds = max(0.0, pos_seconds)
+        track_idx = int((pos.y() - self.ruler_height + v_offset) / vertical_factor)
+        if track_idx < 0 or track_idx >= len(self.track_list):
+            return None
         track_num = self.track_list[track_idx].data.get("number")
-        pos = QPointF(pos_seconds, 0)
-        for fid in file_ids:
-            if event.mimeData().html() == "transition":
-                item = self.addTransition(fid, pos, track_num, ignore_refresh=False, call_manual_move=False)
-                if item:
-                    pos.setX(pos.x() + (item["end"] - item["start"]))
+        return pos_seconds, track_num, track_idx
+
+    def _snap_new_item_start(self, seconds, duration):
+        seconds = max(0.0, seconds)
+        if not self.enable_snapping:
+            return seconds
+        self.geometry.ensure()
+        pixels_per_second = float(self.pixels_per_second or 0.0)
+        if pixels_per_second <= 0.0:
+            return seconds
+
+        h_offset, _ = self._viewport_offsets()
+        left_px = self.track_name_width + seconds * pixels_per_second - h_offset
+        width_px = max(0.0, duration) * pixels_per_second
+
+        ignore_ids = {
+            getattr(entry.get("model"), "id", None)
+            for entry in self._drag_preview_items
+        }
+
+        original_bbox = getattr(self, "drag_bbox", QRectF())
+        original_ignore = getattr(self, "_snap_ignore_ids", set())
+        preview_bbox = QRectF(left_px, original_bbox.y(), width_px, original_bbox.height())
+        if preview_bbox.height() <= 0.0:
+            preview_bbox.setHeight(self.vertical_factor or 1.0)
+        try:
+            self._snap_ignore_ids = {obj_id for obj_id in ignore_ids if obj_id is not None}
+            self.drag_bbox = preview_bbox
+            delta = self.snap.snap_dx(0.0)
+        finally:
+            self._snap_ignore_ids = original_ignore
+            self.drag_bbox = original_bbox
+
+        snapped = seconds + float(delta)
+        snapped = max(0.0, snapped)
+        return self._snap_time(snapped)
+
+    def _ensure_drag_preview(self, pos_seconds, track_num):
+        if self._drag_preview_items:
+            return True
+        payload = self._drag_payload or {}
+        ids = payload.get("ids")
+        if not ids:
+            return False
+        if not hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.item_ids.clear()
+        if track_num is None:
+            return False
+        preview_items = []
+        current_start = pos_seconds
+        for idx, source_id in enumerate(ids):
+            ignore_refresh = idx < len(ids) - 1
+            if payload.get("type") == "transition":
+                item = self.addTransition(
+                    source_id,
+                    QPointF(current_start, 0),
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if not item:
+                    continue
+                model = Transition.get(id=item.get("id"))
+                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
             else:
-                clip = self.addClip(fid, pos, track_num, ignore_refresh=False, call_manual_move=False)
-                if clip:
-                    pos.setX(pos.x() + (clip["end"] - clip["start"]))
+                item = self.addClip(
+                    source_id,
+                    QPointF(current_start, 0),
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if not item:
+                    continue
+                model = Clip.get(id=item.get("id"))
+                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+            if not model:
+                continue
+            offset = current_start - pos_seconds
+            preview_items.append({
+                "model": model,
+                "offset": offset,
+                "duration": duration,
+            })
+            self.item_ids.append(model.id)
+            current_start += duration
+
+        if not preview_items:
+            return False
+
+        self._drag_preview_items = preview_items
+        self._drag_preview_type = payload.get("type")
+        self.geometry.mark_dirty()
+        self.update()
+        return True
+
+    def _update_drag_preview_position(self, pos_seconds, track_num):
+        if not self._drag_preview_items:
+            return
+        min_offset = min(entry.get("offset", 0.0) for entry in self._drag_preview_items)
+        max_end = max(
+            entry.get("offset", 0.0) + entry.get("duration", 0.0)
+            for entry in self._drag_preview_items
+        )
+        group_duration = max(0.0, max_end - min_offset)
+        snapped_start = self._snap_new_item_start(pos_seconds, group_duration)
+        total = len(self._drag_preview_items)
+        for idx, entry in enumerate(self._drag_preview_items):
+            model = entry.get("model")
+            if not model:
+                continue
+            new_pos = max(0.0, snapped_start + entry.get("offset", 0.0))
+            model.data["position"] = new_pos
+            model.data["layer"] = track_num
+            rect = self.geometry.calc_item_rect(model)
+            self.geometry.update_item_rect(model, rect)
+        self.drag_bbox = self._compute_preview_bbox()
+        self._keyframes_dirty = True
+        self.update()
+
+    def _compute_preview_bbox(self):
+        if not self._drag_preview_items:
+            return QRectF()
+        rects = []
+        for entry in self._drag_preview_items:
+            model = entry.get("model")
+            if not model:
+                continue
+            rect = self.geometry.calc_item_rect(model)
+            if rect:
+                rects.append(QRectF(rect))
+        if not rects:
+            return QRectF()
+        bbox = QRectF(rects[0])
+        for rect in rects[1:]:
+            bbox = bbox.united(rect)
+        return bbox
+
+    def _reset_drag_preview(self, delete_items=False):
+        deleted_any = False
+        if delete_items and self._drag_preview_items:
+            for entry in self._drag_preview_items:
+                model = entry.get("model")
+                if isinstance(model, Clip) or isinstance(model, Transition):
+                    try:
+                        model.delete()
+                        deleted_any = True
+                    except Exception:
+                        pass
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._drag_payload = None
+        if hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.new_item = False
+        self.item_type = None
+        self.drag_bbox = QRectF()
+        if deleted_any:
+            self._update_project_duration()
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _finalize_drag_preview(self):
+        total = len(self._drag_preview_items)
+        if not total:
+            self._reset_drag_preview()
+            return
+        for idx, entry in enumerate(self._drag_preview_items):
+            model = entry.get("model")
+            if not model:
+                continue
+            ignore_refresh = idx < total - 1
+            if isinstance(model, Transition):
+                self.update_transition_data(
+                    model.data,
+                    only_basic_props=False,
+                    ignore_refresh=ignore_refresh,
+                )
+            else:
+                self.update_clip_data(
+                    model.data,
+                    only_basic_props=False,
+                    ignore_reader=True,
+                    ignore_refresh=ignore_refresh,
+                )
+        self._update_project_duration()
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._drag_payload = None
+        if hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.new_item = False
+        self.item_type = None
+        TimelineWidget.changed(self, None)
+        self.update()
+
+    def _apply_effect_drop(self, effect_names, pos_seconds, track_num):
+        if not effect_names:
+            return
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return
+        pos_seconds = max(0.0, float(pos_seconds))
+        try:
+            track_num = int(track_num)
+        except (TypeError, ValueError):
+            return
+        candidates = Clip.filter(layer=track_num)
+        for clip in candidates:
+            data = clip.data if isinstance(clip.data, dict) else {}
+            clip_position = float(data.get("position", 0.0) or 0.0)
+            clip_start = float(data.get("start", 0.0) or 0.0)
+            clip_end = float(data.get("end", clip_start) or clip_start)
+            duration = clip_end - clip_start
+            if duration <= 0.0:
+                continue
+            clip_finish = clip_position + duration
+            if pos_seconds == 0.0 or clip_position <= pos_seconds <= clip_finish:
+                timeline.addEffect(effect_names, QPointF(pos_seconds, track_num))
+                break
 
 
     def resizeEvent(self, event):
@@ -500,23 +895,42 @@ class TimelineWidget(QWidget):
 
     def delayed_resize_callback(self):
         """Callback for resize event timer (to delay the resize event, and prevent lots of similar resize events)"""
-        # Get max width of timeline
-        project_duration = get_app().project.get("duration")
-        normalized_scroll_width = self.scrollbar_position[1] - self.scrollbar_position[0]
-        scroll_width_seconds = normalized_scroll_width * project_duration
-        tick_pixels = 100
+        project = get_app().project
+        project_duration = float(project.get("duration") or 0.0)
+        tick_pixels = float(project.get("tick_pixels") or 100.0)
+
         if self.delayed_size:
             self.scrollbar_position[3] = self.delayed_size.width()
             self.v_scrollbar_position[3] = self.delayed_size.height()
-        if self.scrollbar_position[3] > 0.0:
-            # Calculate the new zoom factor, based on pixels per tick
-            zoom_factor = scroll_width_seconds / (self.scrollbar_position[3] / tick_pixels)
 
-            # Set scroll width (and send signal)
-            if zoom_factor > 0.0:
-                self.setZoomFactor(zoom_factor, emit=False)
-                self.scrollbar_position[2] = project_duration * tick_pixels / zoom_factor if zoom_factor else 0.0
-                get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+        view_w = float(self.scrollbar_position[3] or 0.0)
+
+        # Preserve the existing zoom factor and update the visible range instead of
+        # recomputing zoom from the viewport size. This keeps manual zoom choices
+        # intact when the dock is resized.
+        self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1.0)
+        timeline_w = project_duration * self.pixels_per_second
+        self.scrollbar_position[2] = timeline_w
+
+        if project_duration > 0.0 and view_w > 0.0:
+            visible_secs = self.zoom_factor * (view_w / tick_pixels)
+            width_norm = max(0.0, min(visible_secs / project_duration, 1.0))
+        else:
+            width_norm = 1.0 if timeline_w > 0.0 else 0.0
+
+        left_norm = self.scrollbar_position[0]
+        right_norm = left_norm + width_norm
+        if right_norm > 1.0:
+            right_norm = 1.0
+            left_norm = max(0.0, right_norm - width_norm)
+
+        self.scrollbar_position[0] = left_norm
+        self.scrollbar_position[1] = right_norm
+        self.h_scroll_offset = left_norm * (timeline_w or 0.0)
+
+        self.geometry.mark_dirty()
+        self.update()
+        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
     # Capture wheel event to alter zoom/scale of widget
     def wheelEvent(self, event):
@@ -551,19 +965,45 @@ class TimelineWidget(QWidget):
         # Update normalized scroll width to match new zoom
         project_duration = get_app().project.get("duration") or 0.0
         view_w = self.scrollbar_position[3]
-        if project_duration > 0.0 and view_w > 0.0:
-            tick_pixels = 100.0
+        tick_pixels = float(get_app().project.get("tick_pixels") or 100.0)
+        self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1.0)
+        timeline_w = project_duration * self.pixels_per_second
+        self.scrollbar_position[2] = timeline_w
+        if project_duration > 0.0 and view_w > 0.0 and timeline_w > 0.0:
             visible_secs = zoom_factor * (view_w / tick_pixels)
-            width_norm = visible_secs / project_duration
-            width_norm = max(0.0, min(width_norm, 1.0))
-            left = min(self.scrollbar_position[0], 1.0 - width_norm)
-            self.scrollbar_position[0] = max(0.0, left)
-            self.scrollbar_position[1] = self.scrollbar_position[0] + width_norm
+            width_norm = max(0.0, min(visible_secs / project_duration, 1.0))
+        else:
+            width_norm = 1.0 if timeline_w > 0.0 else 0.0
+
+        anchor_seconds = 0.0
+        if self.fps_float:
+            anchor_seconds = max(0.0, (self.current_frame - 1) / self.fps_float)
+        self._center_on_seconds(
+            anchor_seconds,
+            width_norm=width_norm,
+            timeline_w=timeline_w,
+            view_w=view_w,
+        )
+
+        slider_positions = list(self.scrollbar_position)
+        slider = getattr(self.win, "sliderZoomWidget", None)
+        if slider:
+            if abs(slider.zoom_factor - zoom_factor) > 1e-6:
+                slider.setZoomFactor(zoom_factor, emit=False)
+            slider.update_scrollbars(slider_positions)
 
         if emit:
+            # Persist zoom back to the project so dependent widgets (zoom slider, etc.)
+            # remain synchronized with QWidget-originated zoom gestures.
+            current_scale = float(get_app().project.get("scale") or 15.0)
+            if abs(zoom_factor - current_scale) > 1e-6:
+                get_app().updates.ignore_history = True
+                get_app().updates.update(["scale"], zoom_factor)
+                get_app().updates.ignore_history = False
+
             # Emit zoom and scrollbar signals
             get_app().window.TimelineZoom.emit(self.zoom_factor)
-            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+            get_app().window.TimelineScrolled.emit(slider_positions)
 
         # Schedule repaint
         self.update()
@@ -602,6 +1042,8 @@ class TimelineWidget(QWidget):
             return
 
         self.scrollbar_position = list(new_positions)
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = self.scrollbar_position[0] * timeline_w
 
         # Check for empty clip rectangles
         if not self.geometry.clip_rects:
@@ -623,19 +1065,102 @@ class TimelineWidget(QWidget):
             return
         self.scrollbar_position[0] = left
         self.scrollbar_position[1] = left + width_norm
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = left * timeline_w
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):
+        timeline_w = float(timeline_w or 0.0)
+        view_w = float(view_w or 0.0)
+        if timeline_w <= 0.0 or view_w <= 0.0:
+            self.scrollbar_position[0] = 0.0
+            self.scrollbar_position[1] = 1.0 if timeline_w > 0.0 else 0.0
+            self.h_scroll_offset = 0.0
+            return False
+
+        if width_norm is None:
+            width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
+        width_norm = max(0.0, min(width_norm, 1.0))
+
+        view_px = width_norm * timeline_w
+        if view_px <= 0.0:
+            view_px = min(view_w, timeline_w)
+            width_norm = view_px / timeline_w if timeline_w else 0.0
+
+        if timeline_w <= view_px + 1e-9:
+            left_px = 0.0
+            width_norm = 1.0
+        else:
+            anchor_px = max(0.0, min(seconds * self.pixels_per_second, timeline_w))
+            half = view_px / 2.0
+            left_px = anchor_px - half
+            max_left = max(0.0, timeline_w - view_px)
+            if left_px < 0.0:
+                left_px = 0.0
+            elif left_px > max_left:
+                left_px = max_left
+
+        left_norm = left_px / timeline_w if timeline_w else 0.0
+        right_norm = left_norm + width_norm
+        if right_norm > 1.0:
+            right_norm = 1.0
+            left_norm = max(0.0, right_norm - width_norm)
+
+        changed = (
+            abs(left_norm - self.scrollbar_position[0]) > 1e-6
+            or abs(right_norm - self.scrollbar_position[1]) > 1e-6
+        )
+
+        self.scrollbar_position[0] = left_norm
+        self.scrollbar_position[1] = right_norm
+        self.h_scroll_offset = left_norm * timeline_w
+        return changed
+
+    def centerOnPlayhead(self, emit=True):
+        anchor_seconds = 0.0
+        if self.fps_float:
+            anchor_seconds = max(0.0, (self.current_frame - 1) / self.fps_float)
+        width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
+        timeline_w = self.scrollbar_position[2] or 0.0
+        view_w = self.scrollbar_position[3] or 0.0
+        changed = self._center_on_seconds(
+            anchor_seconds,
+            width_norm=width_norm if width_norm > 0 else None,
+            timeline_w=timeline_w,
+            view_w=view_w,
+        )
+        if not changed:
+            return
+
+        slider_positions = list(self.scrollbar_position)
+        slider = getattr(self.win, "sliderZoomWidget", None)
+        if slider:
+            slider.update_scrollbars(slider_positions)
+        if emit:
+            get_app().window.TimelineScrolled.emit(slider_positions)
         self.geometry.mark_dirty()
         self.update()
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
         TimelineWidget.changed(self, None)
+        self._keyframes_dirty = True
         self.update()
 
     def _move_playhead(self, x_pos):
         fps = get_app().project.get("fps")
         fps_float = float(fps.get("num", 24)) / float(fps.get("den", 1) or 1)
-        seconds = max(0.0, (x_pos - self.track_name_width) / self.pixels_per_second)
-        frame = int(seconds * fps_float) + 1
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
+        pps = float(self.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return
+        seconds = max(0.0, (x_pos - self.track_name_width + offset_px) / pps)
+        if fps_float:
+            frame = int(round(seconds * fps_float)) + 1
+        else:
+            frame = 1
+        frame = max(1, frame)
         self.win.SeekSignal.emit(frame)
 
     def update_playhead_pos(self, currentFrame):
@@ -661,59 +1186,716 @@ class TimelineWidget(QWidget):
     def _hitTest(self, pos):
         return self.geometry.hit(pos)
 
+    def _effect_icon_at(self, pos):
+        for entry in reversed(self._effect_icon_rects):
+            rect = entry.get("rect")
+            if isinstance(rect, QRectF) and rect.contains(pos):
+                return entry
+        return None
+
+    def _trigger_effect_context_menu(self, icon_entry, modifiers=None):
+        """Handle context menu interaction on an effect badge."""
+        if not isinstance(icon_entry, dict):
+            return False
+        effect = icon_entry.get("effect")
+        effect_id = icon_entry.get("effect_id")
+        if effect_id is None and isinstance(effect, dict):
+            effect_id = effect.get("id")
+        if effect_id is None:
+            return False
+        effect_id_str = str(effect_id)
+        ctrl = False
+        if modifiers is None and self._last_event and hasattr(self._last_event, "modifiers"):
+            modifiers = self._last_event.modifiers()
+        if modifiers is not None:
+            ctrl = bool(modifiers & Qt.ControlModifier)
+        self._select_timeline_item(effect_id_str, "effect", not ctrl)
+        timeline = getattr(self.win, "timeline", None)
+        if timeline:
+            timeline.ShowEffectMenu(effect_id_str)
+        return True
+
+    def _selected_effect_ids(self):
+        selected = getattr(self.win, "selected_effects", [])
+        return {str(eff) for eff in selected if eff is not None}
+
+    def _select_timeline_item(self, item_id, item_type, clear_existing):
+        if item_id is None or not item_type:
+            return
+        item_id_str = str(item_id)
+        if not item_id_str:
+            return
+        timeline = getattr(self.win, "timeline", None)
+        if timeline:
+            timeline.addSelection(item_id_str, item_type, clear_existing)
+        self.win.addSelection(item_id_str, item_type, clear_existing)
+        # Selection changes affect cached clip renders and keyframe visibility.
+        self.clip_painter.clear_cache()
+        self._keyframes_dirty = True
+        self.update()
+
+    def _update_project_duration(self):
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return
+
+        furthest = 0.0
+
+        for clip in Clip.filter():
+            data = clip.data if isinstance(clip.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+
+        for tran in Transition.filter():
+            data = tran.data if isinstance(tran.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+
+        min_length = 300.0
+        padding = 10.0
+        desired = max(min_length, furthest + padding)
+        current = float(get_app().project.get("duration") or 0.0)
+        if desired > current + 1e-3:
+            timeline.resizeTimeline(desired)
+
     def _clip_menu_rect(self, rect):
         if not self.clip_painter.menu_pix:
             return QRectF()
         bw = self.clip_painter.clip_pen.widthF()
+        width, height = self.clip_painter.logical_size(self.clip_painter.menu_pix)
         return QRectF(
             rect.x() + bw + self.clip_painter.menu_margin,
             rect.y() + bw + self.clip_painter.menu_margin,
-            self.clip_painter.menu_pix.width(),
-            self.clip_painter.menu_pix.height(),
+            width,
+            height,
         )
 
     def _transition_menu_rect(self, rect):
         if not self.transition_painter.menu_pix:
             return QRectF()
         bw = self.transition_painter.pen.widthF()
+        width, height = self.transition_painter.logical_size(self.transition_painter.menu_pix)
         return QRectF(
             rect.x() + bw + self.transition_painter.menu_margin,
             rect.y() + bw + self.transition_painter.menu_margin,
-            self.transition_painter.menu_pix.width(),
-            self.transition_painter.menu_pix.height(),
+            width,
+            height,
         )
 
     def _track_menu_rect(self, name_rect):
         if not self.track_painter.menu_pix:
             return QRectF()
+        width, height = self.track_painter.logical_size(self.track_painter.menu_pix)
         return QRectF(
             name_rect.x() + self.track_painter.name_border_width + self.track_painter.menu_margin,
             name_rect.y() + self.track_painter.menu_margin,
-            self.track_painter.menu_pix.width(),
-            self.track_painter.menu_pix.height(),
+            width,
+            height,
         )
 
-    def _playhead_hit(self, pos):
-        """Return True if *pos* intersects the playhead line or icon."""
-        x = self.track_name_width + (
-            self.current_frame / self.fps_float
-        ) * self.pixels_per_second
-        ix = int(round(x))
-        line_rect = QRectF(
-            ix - max(3, self.playhead_painter.line_width / 2),
-            0,
-            max(6, self.playhead_painter.line_width),
-            self.height(),
+    def _lookup_interpolation(self, value):
+        try:
+            idx = int(value)
+        except (TypeError, ValueError):
+            idx = 2
+        if idx == 0:
+            return "bezier"
+        if idx == 1:
+            return "linear"
+        return "constant"
+
+    def clip_has_pending_override(self, clip):
+        if not isinstance(clip, Clip):
+            return False
+        return clip.id in self._pending_clip_overrides
+
+    def clip_waveform_window(self, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        start = float(data.get("start", 0.0) or 0.0)
+        end = float(data.get("end", start) or start)
+        if end < start:
+            end = start
+        overrides = None
+        if isinstance(clip, Clip):
+            overrides = self._pending_clip_overrides.get(clip.id)
+
+        pending_start = start
+        pending_end = end
+        initial_start = start
+        initial_end = end
+        scale_waveform = False
+        if overrides:
+            pending_start = float(overrides.get("start", pending_start) or pending_start)
+            pending_end = float(overrides.get("end", pending_end) or pending_end)
+            initial_start = float(overrides.get("initial_start", initial_start) or initial_start)
+            initial_end = float(overrides.get("initial_end", initial_end) or initial_end)
+            if pending_end < pending_start:
+                pending_end = pending_start
+            if initial_end < initial_start:
+                initial_end = initial_start
+            scale_waveform = bool(overrides.get("scale"))
+
+        samples_per_second = getattr(self, "_waveform_samples_per_second", None)
+        if not samples_per_second:
+            try:
+                samples_per_second = int(WAVEFORM_SAMPLES_PER_SECOND)
+            except Exception:
+                samples_per_second = 20
+            if samples_per_second <= 0:
+                samples_per_second = 20
+            self._waveform_samples_per_second = samples_per_second
+
+        ui_data = data.get("ui", {}) if isinstance(data, dict) else {}
+        audio_data = ui_data.get("audio_data") if isinstance(ui_data, dict) else None
+        sample_count = len(audio_data) if isinstance(audio_data, list) else 0
+        media_duration = 0.0
+        if sample_count:
+            media_duration = float(sample_count) / float(samples_per_second)
+
+        if media_duration <= 0.0:
+            media_duration = max(initial_end, pending_end, end, start, 0.0)
+
+        clip_span = max(initial_end - initial_start, 0.0)
+        tolerance = 1.0 / float(samples_per_second)
+        dataset_matches_clip = (
+            media_duration > 0.0
+            and clip_span > 0.0
+            and abs(media_duration - clip_span) <= max(tolerance, clip_span * 1e-3)
         )
-        if line_rect.contains(pos):
-            return True
+        origin = initial_start if dataset_matches_clip else 0.0
+
+        def _ratio(value, offset):
+            if media_duration <= 0.0:
+                return 0.0
+            relative = float(value) - float(offset)
+            if relative < 0.0:
+                relative = 0.0
+            if relative > media_duration:
+                relative = media_duration
+            return relative / media_duration
+
+        start_ratio = _ratio(pending_start, origin)
+        end_ratio = _ratio(pending_end, origin)
+        source_start_ratio = _ratio(initial_start, origin)
+        source_end_ratio = _ratio(initial_end, origin)
+
+        if end_ratio < start_ratio:
+            end_ratio = start_ratio
+        if source_end_ratio < source_start_ratio:
+            source_end_ratio = source_start_ratio
+
+        return {
+            "start_ratio": start_ratio,
+            "end_ratio": end_ratio,
+            "scale": scale_waveform,
+            "source_start_ratio": source_start_ratio,
+            "source_end_ratio": source_end_ratio,
+        }
+
+    def clip_waveform_cache_token(self, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        ui_data = data.get("ui", {}) if isinstance(data, dict) else {}
+        audio_data = ui_data.get("audio_data") if isinstance(ui_data, dict) else None
+        if isinstance(audio_data, list):
+            return len(audio_data)
+        return 0
+
+    def _normalize_color(self, value):
+        if isinstance(value, QColor):
+            col = QColor()
+            col.setRgba(value.rgba())
+            return col
+        if isinstance(value, str):
+            col = QColor(value)
+            if col.isValid():
+                return col
+        if isinstance(value, (tuple, list)):
+            try:
+                r, g, b = value[:3]
+                a = value[3] if len(value) > 3 else 255
+                col = QColor()
+                col.setRgb(int(r), int(g), int(b), int(a))
+                return col
+            except (TypeError, ValueError):
+                return QColor()
+        if isinstance(value, (int, float)):
+            try:
+                col = QColor()
+                col.setRgba(int(value))
+                return col
+            except (TypeError, ValueError):
+                return QColor()
+        return QColor()
+
+    def _effect_color(self, effect):
+        color = self._normalize_color(effect_color_qcolor(effect))
+        if not color.isValid():
+            color = self._normalize_color(self.keyframe_painter.fill)
+        return color
+
+    def _keyframe_rect(self, clip_rect, seconds):
+        size = max(2, self.keyframe_painter.size)
+        pixels = max(self.pixels_per_second, 0.0001)
+        x = clip_rect.left() + seconds * pixels
+        baseline = clip_rect.bottom() - 0.5
+        top = baseline - size / 2.0
+        return QRectF(x - size / 2.0, top, size, size)
+
+    def _collect_keyframes_from_data(
+        self,
+        data,
+        *,
+        clip_rect,
+        clip,
+        transition,
+        clip_start,
+        clip_end,
+        owner_id,
+        object_type,
+        selected,
+        color,
+        effect=None,
+        object_id=None,
+        override=None,
+    ):
+        if not isinstance(data, (dict, list)):
+            return []
+
+        fps = self.fps_float or 1.0
+        duration = max(0.0, clip_end - clip_start)
+        override = override or {}
+        initial_start = float(override.get("initial_start", clip_start) or clip_start)
+        initial_end = float(override.get("initial_end", clip_end) or clip_end)
+        initial_duration = max(0.0, initial_end - initial_start)
+        scale_override = bool(override.get("scale")) and initial_duration > 0 and duration > 0
+        show_outside = bool(override.get("show_outside"))
+        markers = {}
+
+        skip_keys = {"effects", "ui", "reader", "cache"}
+
+        def store(frame_value, interpolation_value, point_obj=None):
+            if frame_value is None:
+                return
+            try:
+                frame_float = float(frame_value)
+            except (TypeError, ValueError):
+                return
+            seconds_abs = frame_float - 1.0
+            seconds_abs /= fps
+            dimmed = False
+            if scale_override:
+                normalized = (seconds_abs - initial_start) / initial_duration
+                if normalized < 0.0:
+                    normalized = 0.0
+                if normalized > 1.0:
+                    normalized = 1.0
+                local_seconds = normalized * duration
+            else:
+                local_seconds = seconds_abs - clip_start
+                if not show_outside:
+                    if local_seconds < -1e-6 or local_seconds > duration + 1e-6:
+                        return
+                elif local_seconds < -1e-6 or local_seconds > duration + 1e-6:
+                    dimmed = True
+            frame_int = int(round(frame_float))
+            previous = markers.get(frame_int)
+            if previous and previous["selected"] and not selected:
+                return
+            color_value = None
+            if isinstance(point_obj, dict):
+                for key in ("color", "colour", "icon_color"):
+                    val = point_obj.get(key)
+                    if val:
+                        color_value = val
+                        break
+                if not color_value:
+                    ui_data = point_obj.get("ui") if isinstance(point_obj.get("ui"), dict) else None
+                    if ui_data:
+                        for key in ("color", "colour", "icon_color"):
+                            val = ui_data.get(key)
+                            if val:
+                                color_value = val
+                                break
+            entry = {
+                "frame": frame_int,
+                "seconds": local_seconds,
+                "display_seconds": max(0.0, min(local_seconds, duration)) if duration > 0 else 0.0,
+                "interpolation": self._lookup_interpolation(interpolation_value),
+                "selected": bool(selected),
+                "dimmed": dimmed,
+            }
+            if not color_value and previous:
+                color_value = previous.get("color")
+            if color_value:
+                entry["color"] = color_value
+            markers[frame_int] = entry
+
+        def walk(obj):
+            if isinstance(obj, dict):
+                points = obj.get("Points")
+                if isinstance(points, list) and len(points) > 1:
+                    for point in points:
+                        co = point.get("co", {}) if isinstance(point, dict) else {}
+                        store(co.get("X"), point.get("interpolation"), point)
+                red = obj.get("red")
+                if isinstance(red, dict):
+                    red_points = red.get("Points")
+                    if isinstance(red_points, list) and len(red_points) > 1:
+                        for point in red_points:
+                            co = point.get("co", {}) if isinstance(point, dict) else {}
+                            store(co.get("X"), point.get("interpolation"), point)
+                for key, value in obj.items():
+                    if key in skip_keys:
+                        continue
+                    if isinstance(value, (dict, list)):
+                        walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    if isinstance(item, (dict, list)):
+                        walk(item)
+
+        walk(data)
+
+        if not markers:
+            return []
+
+        object_id = object_id or (
+            str(getattr(clip, "id", ""))
+            if clip
+            else str(getattr(transition, "id", owner_id))
+        )
+        base_color = self._normalize_color(color)
+        if not base_color.isValid():
+            base_color = self._normalize_color(self.keyframe_painter.fill)
+
+        result = []
+        for frame, info in markers.items():
+            rect = self._keyframe_rect(clip_rect, info["seconds"])
+            if object_type == "clip":
+                color_obj = self._normalize_color(self.keyframe_painter.fill)
+            else:
+                color_obj = self._normalize_color(base_color)
+                info_color = info.get("color")
+                override = self._normalize_color(info_color)
+                if override.isValid():
+                    color_obj = override
+                if not color_obj.isValid():
+                    color_obj = self._normalize_color(self.keyframe_painter.fill)
+            marker = {
+                "type": object_type,
+                "owner_id": str(owner_id),
+                "clip": clip,
+                "transition": transition,
+                "effect": effect,
+                "frame": info["frame"],
+                "display_frame": info["frame"],
+                "seconds": info["seconds"],
+                "display_seconds": info.get("display_seconds", info["seconds"]),
+                "interpolation": info["interpolation"],
+                "selected": info["selected"],
+                "color": color_obj,
+                "clip_rect": clip_rect,
+                "clip_start": clip_start,
+                "clip_end": clip_end,
+                "rect": rect,
+                "object_id": str(object_id),
+                "object_type": "clip" if object_type in ("clip", "effect") else "transition",
+                "key": (object_type, str(owner_id), info["frame"]),
+                "dimmed": info.get("dimmed", False),
+            }
+            if object_type == "effect":
+                marker["effect_id"] = str(owner_id)
+            result.append(marker)
+        return result
+
+    def _build_clip_keyframes(self, rect, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        base_start = float(data.get("start", 0.0) or 0.0)
+        base_end = float(data.get("end", base_start) or base_start)
+        if base_end < base_start:
+            base_end = base_start
+        clip_start = base_start
+        clip_end = base_end
+        override_ctx = None
+        overrides = self._pending_clip_overrides.get(clip.id)
+        if overrides:
+            clip_start = overrides.get("start", clip_start)
+            clip_end = overrides.get("end", clip_end)
+            if clip_end < clip_start:
+                clip_end = clip_start
+            initial_start = overrides.get("initial_start", base_start)
+            initial_end = overrides.get("initial_end", base_end)
+            override_ctx = {
+                "initial_start": initial_start,
+                "initial_end": initial_end,
+                "scale": bool(overrides.get("scale")),
+                "show_outside": not bool(overrides.get("scale")),
+            }
+
+        clip_selected = clip.id in getattr(self.win, "selected_clips", [])
+        effects = data.get("effects", []) if isinstance(data, dict) else []
+        selected_effect_ids_global = self._selected_effect_ids()
+        effect_selected_ids = set()
+        for eff in effects:
+            if not isinstance(eff, dict):
+                continue
+            eff_id = eff.get("id")
+            eff_id_str = str(eff_id) if eff_id is not None else ""
+            if not eff_id_str:
+                continue
+            if eff.get("selected") or eff_id_str in selected_effect_ids_global:
+                effect_selected_ids.add(eff_id_str)
+        if not clip_selected and not effect_selected_ids:
+            return []
+
+        markers = []
+        base_selected = clip_selected and not bool(effect_selected_ids)
+        markers.extend(
+            self._collect_keyframes_from_data(
+                data,
+                clip_rect=rect,
+                clip=clip,
+                transition=None,
+                clip_start=clip_start,
+                clip_end=clip_end,
+                owner_id=str(clip.id),
+                object_type="clip",
+                selected=base_selected,
+                color=self.keyframe_painter.fill,
+                object_id=str(clip.id),
+                override=override_ctx,
+            )
+        )
+
+        for eff in effects:
+            if not isinstance(eff, dict):
+                continue
+            effect_id = eff.get("id")
+            if effect_id is None:
+                continue
+            effect_id_str = str(effect_id)
+            color = self._effect_color(eff)
+            eff_selected = effect_id_str in effect_selected_ids
+            markers.extend(
+                self._collect_keyframes_from_data(
+                    eff,
+                    clip_rect=rect,
+                    clip=clip,
+                    transition=None,
+                    clip_start=clip_start,
+                    clip_end=clip_end,
+                    owner_id=effect_id_str,
+                    object_type="effect",
+                    selected=eff_selected,
+                    color=color,
+                    effect=eff,
+                    object_id=str(clip.id),
+                    override=override_ctx,
+                )
+            )
+
+        return markers
+
+    def _build_transition_keyframes(self, rect, transition):
+        if transition.id not in getattr(self.win, "selected_transitions", []):
+            return []
+        data = transition.data if isinstance(transition.data, dict) else {}
+        clip_start = float(data.get("start", 0.0) or 0.0)
+        clip_end = float(data.get("end", clip_start) or clip_start)
+        if clip_end < clip_start:
+            clip_end = clip_start
+        return self._collect_keyframes_from_data(
+            data,
+            clip_rect=rect,
+            clip=None,
+            transition=transition,
+            clip_start=clip_start,
+            clip_end=clip_end,
+            owner_id=str(transition.id),
+            object_type="transition",
+            selected=True,
+            color=self.keyframe_painter.fill,
+            object_id=str(transition.id),
+        )
+
+    def _refresh_keyframe_markers(self):
+        markers = []
+        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
+            markers.extend(self._build_clip_keyframes(rect, clip))
+        for rect, tran in self.geometry.transition_rects + self.geometry.selected_transitions:
+            markers.extend(self._build_transition_keyframes(rect, tran))
+
+        drag = self._dragging_keyframe
+        if drag and drag.get("key") and markers:
+            pending_seconds = drag.get("pending_seconds")
+            pending_frame = drag.get("pending_frame")
+            for marker in markers:
+                if marker.get("key") == drag.get("key"):
+                    if pending_seconds is not None:
+                        marker["seconds"] = pending_seconds
+                        marker["display_seconds"] = pending_seconds
+                        marker["rect"] = self._keyframe_rect(marker["clip_rect"], pending_seconds)
+                        marker["dimmed"] = False
+                    if pending_frame is not None:
+                        marker["display_frame"] = pending_frame
+                    break
+
+        self._keyframe_markers = markers
+        self._keyframes_dirty = False
+
+    def _ensure_keyframe_markers(self):
+        if self._keyframes_dirty:
+            self._refresh_keyframe_markers()
+
+    def _update_snap_keyframe_targets(self, clip):
+        if not isinstance(clip, Clip) or self.enable_timing:
+            self._snap_keyframe_seconds = []
+            return
+
+        clip_id = getattr(clip, "id", None)
+        if clip_id is None:
+            self._snap_keyframe_seconds = []
+            return
+
+        overrides = self._pending_clip_overrides.get(clip.id)
+        position = None
+        if overrides:
+            position = overrides.get("position")
+        if position is None:
+            position = clip.data.get("position", 0.0)
+        try:
+            position = float(position)
+        except (TypeError, ValueError):
+            position = 0.0
+
+        self._ensure_keyframe_markers()
+        clip_id_str = str(clip_id)
+        seconds = []
+        active_edge = getattr(self, "_resize_edge", None)
+        frame_epsilon = 0.0
+        if self.fps_float:
+            frame_epsilon = 1.0 / float(self.fps_float)
+
+        for marker in getattr(self, "_keyframe_markers", []):
+            if marker.get("object_id") != clip_id_str:
+                continue
+            marker_seconds = marker.get("display_seconds", marker.get("seconds"))
+            if marker_seconds is None:
+                continue
+            try:
+                local_seconds = float(marker_seconds)
+            except (TypeError, ValueError):
+                continue
+            if active_edge == "left":
+                epsilon = frame_epsilon if frame_epsilon > 0.0 else 1e-6
+                if local_seconds <= epsilon + 1e-9:
+                    # Skip the keyframe that sits at the clip's first frame when
+                    # trimming from the left edge so we don't continually snap back
+                    # to the original in-point before the user has moved away from
+                    # it. Other keyframes (including ones very near the start) are
+                    # still considered.
+                    continue
+
+            seconds.append(position + local_seconds)
+
+        seconds.sort()
+        self._snap_keyframe_seconds = seconds
+
+    def _get_keyframe_at(self, pos):
+        self._ensure_keyframe_markers()
+        for marker in reversed(self._keyframe_markers):
+            rect = marker.get("rect")
+            if isinstance(rect, QRectF) and rect.contains(pos):
+                return marker
+        return None
+
+    def _clamp_keyframe_seconds(self, seconds, clip_start, clip_end):
+        max_sec = clip_end
+        if self.fps_float:
+            max_sec = max(clip_start, clip_end - (1.0 / self.fps_float))
+        if seconds < clip_start:
+            seconds = clip_start
+        if seconds > max_sec:
+            seconds = max_sec
+        return seconds
+
+    def _move_keyframes_in_object(self, obj, old_frame, new_frame):
+        if isinstance(obj, dict):
+            points = obj.get("Points")
+            if isinstance(points, list):
+                for point in points:
+                    if not isinstance(point, dict):
+                        continue
+                    co = point.get("co")
+                    if isinstance(co, dict):
+                        x_val = co.get("X")
+                        try:
+                            frame = int(round(float(x_val)))
+                        except (TypeError, ValueError):
+                            continue
+                        if frame == old_frame:
+                            co["X"] = new_frame
+            for channel in ("red", "green", "blue"):
+                chan = obj.get(channel)
+                if isinstance(chan, dict):
+                    self._move_keyframes_in_object(chan, old_frame, new_frame)
+            for key, value in obj.items():
+                if key in ("ui",):
+                    continue
+                if isinstance(value, (dict, list)):
+                    self._move_keyframes_in_object(value, old_frame, new_frame)
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    self._move_keyframes_in_object(item, old_frame, new_frame)
+
+    def _begin_keyframe_transaction(self):
+        if not self._dragging_keyframe or self._dragging_keyframe.get("transaction_started"):
+            return
+        tid = str(uuid.uuid4())
+        self._dragging_keyframe["transaction_started"] = True
+        self._dragging_keyframe["transaction_id"] = tid
+        timeline = getattr(self.win, "timeline", None)
+        if timeline:
+            timeline.StartKeyframeDrag(
+                self._dragging_keyframe.get("object_type", "clip"),
+                self._dragging_keyframe.get("object_id", ""),
+                tid,
+            )
+
+    def _playhead_hit(self, pos):
+        """Return True if *pos* intersects the playhead handle icon."""
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
+        frame_seconds = 0.0
+        if self.fps_float:
+            frame_seconds = max(
+                0.0, (max(1, self.current_frame) - 1) / self.fps_float
+            )
+        x = self.track_name_width + frame_seconds * self.pixels_per_second - offset_px
+        ix = int(round(x))
         if self.playhead_painter.icon_pix:
+            icon_w, icon_h = self.playhead_painter.logical_size(
+                self.playhead_painter.icon_pix
+            )
             icon_rect = QRectF(
                 ix + self.playhead_painter.icon_offset_x,
                 self.playhead_painter.icon_offset_y,
-                self.playhead_painter.icon_pix.width(),
-                self.playhead_painter.icon_pix.height(),
+                icon_w,
+                icon_h,
             )
+            timeline_left = self.track_name_width
+            if icon_rect.right() < timeline_left:
+                return False
             if icon_rect.contains(pos):
                 return True
         return False
@@ -727,25 +1909,42 @@ class TimelineWidget(QWidget):
 
         # Playhead icon
         if self.playhead_painter.icon_pix:
-            x = self.track_name_width + (
-                self.current_frame / self.fps_float
-            ) * self.pixels_per_second
+            offset_px = getattr(self, "h_scroll_offset", 0.0)
+            frame_seconds = 0.0
+            if self.fps_float:
+                frame_seconds = max(
+                    0.0, (max(1, self.current_frame) - 1) / self.fps_float
+                )
+            x = self.track_name_width + frame_seconds * self.pixels_per_second - offset_px
             ix = int(round(x))
+            icon_w, icon_h = self.playhead_painter.logical_size(
+                self.playhead_painter.icon_pix
+            )
             icon_rect = QRectF(
                 ix + self.playhead_painter.icon_offset_x,
                 self.playhead_painter.icon_offset_y,
-                self.playhead_painter.icon_pix.width(),
-                self.playhead_painter.icon_pix.height(),
+                icon_w,
+                icon_h,
             )
-            if icon_rect.contains(pos):
+            if icon_rect.right() >= self.track_name_width and icon_rect.contains(pos):
                 self.setCursor(self.cursors["hand"])
                 return
+
+        icon_entry = self._effect_icon_at(pos)
+        if icon_entry:
+            self.setCursor(Qt.PointingHandCursor)
+            return
 
         # Transition menu icons
         for rect, _ in self.geometry.selected_transitions + self.geometry.transition_rects:
             if self._transition_menu_rect(rect).contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
+
+        marker = self._get_keyframe_at(pos)
+        if marker:
+            self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
+            return
 
         # Clip menu icons
         for rect, _ in self.geometry.selected_rects + self.geometry.clip_rects:
@@ -778,11 +1977,22 @@ class TimelineWidget(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
             self._last_event = event
+            icon_entry = self._effect_icon_at(event.pos())
+            if icon_entry and self._trigger_effect_context_menu(
+                icon_entry, event.modifiers() if hasattr(event, "modifiers") else None
+            ):
+                event.accept()
+                return
             if self._showContextMenu(event.pos()):
                 event.accept()
             else:
                 event.ignore()
             return
+
+        if event.button() == Qt.MiddleButton:
+            if self._startMiddlePan(event.pos()):
+                event.accept()
+                return
 
         self.geometry.ensure()
         pos = event.pos()
@@ -792,6 +2002,10 @@ class TimelineWidget(QWidget):
         self._assign_press_target(pos)
 
         if self._start_scroll_drag_if_needed(pos):
+            return
+
+        if self._press_hit == "effect-icon":
+            event.accept()
             return
 
         self._last_event = event
@@ -826,6 +2040,18 @@ class TimelineWidget(QWidget):
         return False
 
     def _assign_press_target(self, pos):
+        marker = self._get_keyframe_at(pos)
+        if marker:
+            self._press_hit = "keyframe"
+            self._press_keyframe = marker
+            return
+        self._press_keyframe = None
+        icon_entry = self._effect_icon_at(pos)
+        if icon_entry:
+            self._press_hit = "effect-icon"
+            self._press_effect_icon = icon_entry
+            return
+        self._press_effect_icon = None
         edge = 5
         for rect, item in (
             self.geometry.selected_transitions + self.geometry.transition_rects +
@@ -900,22 +2126,101 @@ class TimelineWidget(QWidget):
             self.update()
             return
 
+        if self._middle_panning:
+            self._updateMiddlePan(event.pos())
+            return
+
         self._updateCursor(event.pos())
         self.events.moved.emit(event)
 
     def mouseReleaseEvent(self, event):
         self._last_event = event
+        if event.button() == Qt.MiddleButton and self._middle_panning:
+            self._finishMiddlePan()
+            return
         if self.scroll_bar_dragging or self.v_scroll_bar_dragging:
             self.scroll_bar_dragging = False
             self.v_scroll_bar_dragging = False
             self.mouse_dragging = False
             return
+        if self._press_hit == "effect-icon":
+            event.accept()
+            self._handle_effect_icon_click(self._press_effect_icon)
+            self._press_hit = None
+            self._press_effect_icon = None
+            return
         self.events.released.emit(event)
         self._press_hit = None
 
     def contextMenuEvent(self, event):
+        icon_entry = self._effect_icon_at(event.pos())
+        if icon_entry:
+            if self._trigger_effect_context_menu(
+                icon_entry, event.modifiers() if hasattr(event, "modifiers") else None
+            ):
+                event.accept()
+                return
         if not self._showContextMenu(event.pos()):
             event.ignore()
+
+    def _startMiddlePan(self, pos):
+        view_w = self.scrollbar_position[3]
+        timeline_w = self.scrollbar_position[2]
+        view_h = self.v_scrollbar_position[3]
+        content_h = self.v_scrollbar_position[2]
+        if not any((view_w, timeline_w, view_h, content_h)):
+            return False
+        self._middle_panning = True
+        self.mouse_dragging = True
+        self._middle_pan_anchor = QPointF(pos)
+        self._middle_pan_scroll_start = list(self.scrollbar_position)
+        self._middle_pan_vscroll_start = list(self.v_scrollbar_position)
+        self._fix_cursor(self.cursors.get("hand", self.cursor()))
+        return True
+
+    def _updateMiddlePan(self, pos):
+        if not self._middle_panning:
+            return
+        posf = QPointF(pos)
+        delta = posf - self._middle_pan_anchor
+        new_positions = list(self._middle_pan_scroll_start)
+        new_v_positions = list(self._middle_pan_vscroll_start)
+
+        view_w = new_positions[3] or self.width()
+        timeline_w = new_positions[2] or view_w
+        width_norm = new_positions[1] - new_positions[0]
+        if timeline_w > 0 and width_norm < 1.0:
+            left = new_positions[0] - (delta.x() / timeline_w)
+            left = max(0.0, min(left, 1.0 - width_norm))
+            new_positions[0] = left
+            new_positions[1] = left + width_norm
+
+        view_h = new_v_positions[3] or self.height()
+        content_h = new_v_positions[2] or view_h
+        height_norm = new_v_positions[1] - new_v_positions[0]
+        if content_h > 0 and height_norm < 1.0:
+            top = new_v_positions[0] - (delta.y() / content_h)
+            top = max(0.0, min(top, 1.0 - height_norm))
+            new_v_positions[0] = top
+            new_v_positions[1] = top + height_norm
+
+        changed = new_positions[:2] != self.scrollbar_position[:2]
+        v_changed = new_v_positions[:2] != self.v_scrollbar_position[:2]
+        if changed:
+            self.scrollbar_position = new_positions
+            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+        if v_changed:
+            self.v_scrollbar_position = new_v_positions
+        if changed or v_changed:
+            self.geometry.mark_dirty()
+            self.update()
+
+    def _finishMiddlePan(self):
+        if not self._middle_panning:
+            return
+        self._middle_panning = False
+        self.mouse_dragging = False
+        self._release_cursor()
 
     def _showContextMenu(self, pos):
         """Show appropriate context menu for the position. Returns True if handled."""
@@ -924,7 +2229,10 @@ class TimelineWidget(QWidget):
         # Playhead context menu
         if self._playhead_hit(pos) and hasattr(self.win, "timeline"):
             # Convert frame number to seconds for backend API
-            self.win.timeline.ShowPlayheadMenu(self.current_frame / self.fps_float)
+            seconds = 0.0
+            if self.fps_float:
+                seconds = max(0.0, (max(1, self.current_frame) - 1) / self.fps_float)
+            self.win.timeline.ShowPlayheadMenu(seconds)
             return True
 
         # Transition context menu (prioritized over clips)
@@ -932,6 +2240,8 @@ class TimelineWidget(QWidget):
             self.geometry.selected_transitions + self.geometry.transition_rects
         ):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
+                if tran.id not in getattr(self.win, "selected_transitions", []):
+                    self._select_timeline_item(tran.id, "transition", True)
                 self.win.timeline.ShowTransitionMenu(tran.id)
                 return True
 
@@ -940,6 +2250,8 @@ class TimelineWidget(QWidget):
             self.geometry.selected_rects + self.geometry.clip_rects
         ):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
+                if clip.id not in getattr(self.win, "selected_clips", []):
+                    self._select_timeline_item(clip.id, "clip", True)
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
 
@@ -951,10 +2263,240 @@ class TimelineWidget(QWidget):
 
         return False
 
+    def _startKeyframeDrag(self):
+        marker = self._press_keyframe
+        self._press_keyframe = None
+        if not marker:
+            return
+        self.mouse_dragging = True
+        self._dragging_keyframe = {
+            "marker": marker,
+            "key": marker.get("key"),
+            "current_frame": marker.get("frame"),
+            "pending_frame": marker.get("frame"),
+            "pending_seconds": marker.get("display_seconds"),
+            "transaction_started": False,
+            "object_type": marker.get("object_type", "clip"),
+            "object_id": marker.get("object_id", ""),
+            "clip": marker.get("clip"),
+            "transition": marker.get("transition"),
+            "effect_id": marker.get("effect_id"),
+            "clip_start": marker.get("clip_start", 0.0),
+            "clip_end": marker.get("clip_end", 0.0),
+            "moved": False,
+        }
+        self._fix_cursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
+        self._keyframes_dirty = True
+
+    def _keyframeMove(self, event):
+        drag = self._dragging_keyframe
+        if not drag:
+            return
+        marker = drag.get("marker", {})
+        clip_rect = marker.get("clip_rect", QRectF())
+        clip_start = drag.get("clip_start", 0.0)
+        clip_end = drag.get("clip_end", clip_start)
+        if clip_rect.isNull() or clip_end <= clip_start or self.pixels_per_second <= 0:
+            return
+
+        x = event.pos().x()
+        x = max(clip_rect.left(), min(x, clip_rect.right()))
+        local_px = x - clip_rect.left()
+        seconds = clip_start + local_px / self.pixels_per_second
+        seconds = self._clamp_keyframe_seconds(seconds, clip_start, clip_end)
+        seconds = self._snap_time(seconds)
+        relative_seconds = max(0.0, seconds - clip_start)
+        drag["pending_seconds"] = relative_seconds
+        if self.fps_float:
+            new_frame = int(round(seconds * self.fps_float)) + 1
+        else:
+            new_frame = drag.get("current_frame")
+        drag["pending_frame"] = new_frame
+        if new_frame != drag.get("current_frame"):
+            self._begin_keyframe_transaction()
+            if drag.get("transaction_started") and new_frame is not None:
+                self._apply_keyframe_delta(drag, ignore_refresh=True)
+        self._seek_to_marker_frame(marker, new_frame)
+        self._keyframes_dirty = True
+        self.update()
+
+    def _apply_keyframe_delta(self, drag, ignore_refresh=False, force=False):
+        marker = drag.get("marker")
+        if not marker:
+            return
+        new_frame = drag.get("pending_frame")
+        old_frame = drag.get("current_frame")
+        if new_frame is None or old_frame is None:
+            return
+        do_move = new_frame != old_frame
+        if not do_move and not force:
+            return
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return
+        transaction_id = drag.get("transaction_id")
+        if marker.get("type") == "transition":
+            transition = marker.get("transition")
+            if not transition:
+                return
+            data_copy = json.loads(json.dumps(transition.data))
+            if do_move:
+                self._move_keyframes_in_object(data_copy, old_frame, new_frame)
+                if isinstance(transition.data, (dict, list)):
+                    self._move_keyframes_in_object(transition.data, old_frame, new_frame)
+            timeline.update_transition_data(
+                data_copy,
+                only_basic_props=False,
+                ignore_refresh=ignore_refresh,
+                transaction_id=transaction_id,
+            )
+        else:
+            clip = marker.get("clip")
+            if not clip:
+                return
+            data_copy = json.loads(json.dumps(clip.data))
+            if marker.get("type") == "effect":
+                effect_id = marker.get("owner_id")
+                for eff in data_copy.get("effects", []):
+                    if str(eff.get("id")) == str(effect_id):
+                        if do_move:
+                            self._move_keyframes_in_object(eff, old_frame, new_frame)
+                        break
+                if do_move and isinstance(clip.data, dict):
+                    for eff in clip.data.get("effects", []):
+                        if str(eff.get("id")) == str(effect_id):
+                            self._move_keyframes_in_object(eff, old_frame, new_frame)
+                            break
+            else:
+                if do_move:
+                    self._move_keyframes_in_object(data_copy, old_frame, new_frame)
+                    if isinstance(clip.data, (dict, list)):
+                        self._move_keyframes_in_object(clip.data, old_frame, new_frame)
+            timeline.update_clip_data(
+                data_copy,
+                only_basic_props=False,
+                ignore_reader=True,
+                ignore_refresh=ignore_refresh,
+                transaction_id=transaction_id,
+            )
+
+        drag["current_frame"] = new_frame
+        marker["frame"] = new_frame
+        marker["display_frame"] = new_frame
+        if self.fps_float:
+            seconds_abs = (new_frame - 1.0) / self.fps_float
+            clip_start = drag.get("clip_start", 0.0)
+            marker["seconds"] = max(0.0, seconds_abs - clip_start)
+            marker["display_seconds"] = marker["seconds"]
+        if do_move or force:
+            drag["moved"] = True
+
+    def _handle_keyframe_click(self, marker):
+        if not marker:
+            return
+        marker_type = marker.get("type")
+        if marker_type == "effect":
+            effect_id = marker.get("owner_id")
+            if effect_id:
+                self._select_timeline_item(effect_id, "effect", True)
+        elif marker_type == "transition":
+            transition = marker.get("transition")
+            if transition:
+                self._select_timeline_item(transition.id, "transition", True)
+        else:
+            clip = marker.get("clip")
+            if clip:
+                self._select_timeline_item(clip.id, "clip", True)
+
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return
+
+        clip = marker.get("clip")
+        transition = marker.get("transition")
+        clip_start = marker.get("clip_start", 0.0)
+        frame = marker.get("frame", 1)
+        fps = self.fps_float or 1.0
+        base_position = 0.0
+        if clip:
+            base_position = float(clip.data.get("position", 0.0) or 0.0)
+        elif transition:
+            base_position = float(transition.data.get("position", 0.0) or 0.0)
+        absolute = round(base_position * fps) + frame - round(clip_start * fps)
+        absolute = max(1, int(absolute))
+        timeline.SeekToKeyframe(absolute)
+
+    def _seek_to_marker_frame(self, marker, frame):
+        if marker is None or frame is None:
+            return
+        fps = self.fps_float or 1.0
+        clip = marker.get("clip")
+        transition = marker.get("transition")
+        clip_start = marker.get("clip_start", 0.0)
+        base_position = 0.0
+        if clip:
+            data = clip.data if isinstance(clip.data, dict) else {}
+            base_position = float(data.get("position", 0.0) or 0.0)
+        elif transition:
+            data = transition.data if isinstance(transition.data, dict) else {}
+            base_position = float(data.get("position", 0.0) or 0.0)
+        absolute = round(base_position * fps) + frame - round(clip_start * fps)
+        absolute = max(1, int(absolute))
+        self.win.SeekSignal.emit(absolute)
+
+    def _finishKeyframeDrag(self):
+        drag = self._dragging_keyframe
+        if not drag:
+            return
+        started = drag.get("transaction_started")
+        changed = drag.get("pending_frame") != drag.get("current_frame")
+        moved = drag.get("moved")
+        marker = drag.get("marker")
+        timeline = getattr(self.win, "timeline", None)
+        if started:
+            if moved:
+                if changed:
+                    self._apply_keyframe_delta(drag)
+                else:
+                    self._apply_keyframe_delta(drag, force=True)
+            if timeline:
+                timeline.FinalizeKeyframeDrag(
+                    drag.get("object_type", "clip"),
+                    drag.get("object_id", ""),
+                )
+        else:
+            self._handle_keyframe_click(marker)
+
+        self._dragging_keyframe = None
+        self.mouse_dragging = False
+        self._keyframes_dirty = True
+        self._release_cursor()
+        self.update()
+
+    def _handle_effect_icon_click(self, entry):
+        if not isinstance(entry, dict):
+            return
+        effect = entry.get("effect")
+        if not isinstance(effect, dict):
+            return
+        effect_id = entry.get("effect_id")
+        if effect_id is None:
+            effect_id = effect.get("id")
+        if effect_id is None:
+            return
+        effect_id_str = str(effect_id)
+        modifiers = Qt.NoModifier
+        if self._last_event and hasattr(self._last_event, "modifiers"):
+            modifiers = self._last_event.modifiers()
+        ctrl = bool(modifiers & Qt.ControlModifier)
+        self._select_timeline_item(effect_id_str, "effect", not ctrl)
+
     # ---- Clip drag ----
     def _startClipDrag(self):
         """Begin a drag operation on one or many selected clips/transitions."""
         e = self._last_event
+
+        self.snap.reset()
 
         # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
@@ -1047,6 +2589,7 @@ class TimelineWidget(QWidget):
 
             # New values
             new_pos_sec = max(0.0, start_pos_sec + delta_sec)
+            new_pos_sec = self._snap_time(new_pos_sec)
             new_idx = start_idx + delta_idx
             new_idx = max(0, min(new_idx, len(self.track_list) - 1))
             new_layer_num = self._track_num_from_index[new_idx]
@@ -1059,6 +2602,7 @@ class TimelineWidget(QWidget):
             self.geometry.update_item_rect(itm, rect)
 
         # Immediate visual feedback
+        self._keyframes_dirty = True
         self.update()
 
     def _finishClipDrag(self):
@@ -1082,6 +2626,8 @@ class TimelineWidget(QWidget):
                     )
 
         self.dragging_items = []
+        self.snap.reset()
+        self._update_project_duration()
         # Recompute geometry (snap may have shifted) and repaint
         TimelineWidget.changed(self, None)
         self.update()
@@ -1108,7 +2654,16 @@ class TimelineWidget(QWidget):
         within ±1.5 seconds.  Snapping is strictly horizontal—layer movement is
         unaffected.
         """
-        return self.snap.snap_dx(delta_seconds)
+        original_ignore = getattr(self, "_snap_ignore_ids", set())
+        try:
+            ignore_ids = {
+                getattr(item, "id", None)
+                for item in getattr(self, "dragging_items", [])
+            }
+            self._snap_ignore_ids = {obj_id for obj_id in ignore_ids if obj_id is not None}
+            return self.snap.snap_dx(delta_seconds)
+        finally:
+            self._snap_ignore_ids = original_ignore
 
     # ---- Resize track names ----
     def _startResize(self):
@@ -1137,6 +2692,7 @@ class TimelineWidget(QWidget):
         item = self._resizing_item
         if not item:
             return
+        self.snap.reset()
         self._fix_cursor(self.cursors["resize_x"])
         rect = self.geometry.calc_item_rect(item)
         self._resize_initial_rect = rect
@@ -1146,13 +2702,31 @@ class TimelineWidget(QWidget):
             "position": float(item.data.get("position", 0.0)),
             "duration": float(item.data.get("duration", item.data.get("end", 0.0) - item.data.get("start", 0.0))),
         }
+        self._resize_snap_ignore_backup = set(getattr(self, "_snap_ignore_ids", set()))
+        item_id = getattr(item, "id", None)
+        if item_id is not None:
+            updated_ignore = set(self._resize_snap_ignore_backup)
+            updated_ignore.add(item_id)
+            self._snap_ignore_ids = updated_ignore
         if isinstance(item, Clip):
             self._timing_original_start = self._resize_initial["start"]
+            self._pending_clip_overrides[item.id] = {
+                "start": self._resize_initial["start"],
+                "end": self._resize_initial["end"],
+                "position": self._resize_initial["position"],
+                "initial_start": self._resize_initial["start"],
+                "initial_end": self._resize_initial["end"],
+                "scale": bool(self.enable_timing),
+            }
             sel_type = "clip"
         else:
             sel_type = "transition"
+            self._snap_keyframe_seconds = []
         # Ensure item is selected
         self.win.addSelection(item.id, sel_type, False)
+
+        if isinstance(item, Clip) and not self.enable_timing:
+            self._update_snap_keyframe_targets(item)
 
     def _itemResizeMove(self):
         item = self._resizing_item
@@ -1167,6 +2741,35 @@ class TimelineWidget(QWidget):
         self._resize_new_end = end
         self._resize_new_position = position
         self.geometry.update_item_rect(item, rect)
+        if isinstance(item, Clip):
+            override = self._pending_clip_overrides.setdefault(
+                item.id,
+                {
+                    "start": start,
+                    "end": end,
+                    "position": position,
+                    "initial_start": self._resize_initial.get("start", start),
+                    "initial_end": self._resize_initial.get("end", end),
+                },
+            )
+            override["start"] = start
+            override["end"] = end
+            override["position"] = position
+            override["scale"] = bool(self.enable_timing)
+            self._keyframes_dirty = True
+            if not self.enable_timing:
+                timeline = getattr(self.win, "timeline", None)
+                clip_id = getattr(item, "id", None)
+                if timeline and self.fps_float and clip_id:
+                    if self._resize_edge == "left":
+                        frame_seconds = self._snap_time(start)
+                    else:
+                        frame_seconds = self._snap_time(end)
+                    frame = int(round(frame_seconds * self.fps_float)) + 1
+                    timeline.PreviewClipFrame(str(clip_id), max(1, frame))
+                self._update_snap_keyframe_targets(item)
+            else:
+                self._snap_keyframe_seconds = []
         self.update()
 
     def _compute_transition_resize(self, item):
@@ -1176,6 +2779,7 @@ class TimelineWidget(QWidget):
         rect = self._resize_initial_rect
         width = self._resize_initial["end"]
         pos = self._resize_initial["position"]
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
 
         if self._resize_edge == "left":
             delta_sec = (event.pos().x() - rect.left()) / pps
@@ -1189,7 +2793,7 @@ class TimelineWidget(QWidget):
             if new_position < 0:
                 new_position = 0
                 new_end = (pos + width) - new_position
-            rect_left = self.track_name_width + new_position * pps
+            rect_left = self.track_name_width + new_position * pps - offset_px
         else:
             delta_sec = (event.pos().x() - rect.right()) / pps
             if self.enable_snapping:
@@ -1199,7 +2803,7 @@ class TimelineWidget(QWidget):
                 delta_sec = min_delta
             new_end = width + delta_sec
             new_position = pos
-            rect_left = rect.left()
+            rect_left = self.track_name_width + new_position * pps - offset_px
 
         rect_width = new_end * pps
         geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
@@ -1207,40 +2811,52 @@ class TimelineWidget(QWidget):
 
     def _compute_clip_resize(self, item):
         event = self._last_event
-        pps = self.pixels_per_second
-        min_len = 1.0 / self.fps_float
+        pps = float(self.pixels_per_second or 0.0)
         rect = self._resize_initial_rect
         start = self._resize_initial["start"]
         end = self._resize_initial["end"]
         pos = self._resize_initial["position"]
         duration = self._resize_initial["duration"]
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
+        fps = self.fps_float or 1.0
+        min_len = 1.0 / fps
+
+        if event is None or pps <= 0.0:
+            geom_rect = QRectF(rect)
+            return geom_rect, start, end, pos
+
+        cursor_sec = self._seconds_from_x(event.pos().x())
+        clip_span = max(end - start, min_len)
 
         if self._resize_edge == "left":
-            delta_sec = (event.pos().x() - rect.left()) / pps
+            delta_sec = cursor_sec - pos
             if self.enable_snapping:
                 delta_sec = self.snap.snap_edge(pos, delta_sec)
-            new_start = start + delta_sec
             new_position = pos + delta_sec
+            new_start = start + delta_sec
             new_end = end
+
             max_start = end - min_len
-            if new_start < 0:
+            if new_start < 0.0:
                 new_start = 0.0
                 new_position = pos - start
             if new_start > max_start:
                 new_start = max_start
                 new_position = pos + (max_start - start)
-            if new_position < 0:
+            if new_position < 0.0:
                 diff = -new_position
-                new_position = 0
+                new_position = 0.0
                 new_start += diff
-            rect_left = self.track_name_width + new_position * pps
+            rect_left = self.track_name_width + new_position * pps - offset_px
         else:
-            delta_sec = (event.pos().x() - rect.right()) / pps
+            timeline_right = pos + clip_span
+            delta_sec = cursor_sec - timeline_right
             if self.enable_snapping:
                 delta_sec = self.snap.snap_edge(pos + (end - start), delta_sec)
             new_end = end + delta_sec
             new_start = start
             new_position = pos
+
             min_end = start + min_len
             if new_end < min_end:
                 new_end = min_end
@@ -1248,7 +2864,7 @@ class TimelineWidget(QWidget):
                 max_end = start + duration
                 if new_end > max_end:
                     new_end = max_end
-            rect_left = rect.left()
+            rect_left = self.track_name_width + new_position * pps - offset_px
 
         rect_width = (new_end - new_start) * pps
         geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
@@ -1280,6 +2896,12 @@ class TimelineWidget(QWidget):
             self.update_transition_data(item.data, only_basic_props=True)
 
         self._resizing_item = None
+        self._snap_keyframe_seconds = []
+        self.snap.reset()
+        if hasattr(self, "_resize_snap_ignore_backup"):
+            self._snap_ignore_ids = self._resize_snap_ignore_backup
+            del self._resize_snap_ignore_backup
+        self._update_project_duration()
         TimelineWidget.changed(self, None)
         self._release_cursor()
         if self._last_event:

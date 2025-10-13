@@ -76,6 +76,18 @@ class BoxSelectState(QState):
         self.widget._finishBoxSelect()
 
 
+class KeyframeState(QState):
+    def __init__(self, widget):
+        super().__init__()
+        self.widget = widget
+
+    def onEntry(self, event):
+        self.widget._startKeyframeDrag()
+
+    def onExit(self, event):
+        self.widget._finishKeyframeDrag()
+
+
 class TimelineStateMachine(QStateMachine):
     def __init__(self, widget):
         super().__init__(widget)
@@ -84,8 +96,9 @@ class TimelineStateMachine(QStateMachine):
         self.resize = ResizeState(widget)
         self.playhead = PlayheadState(widget)
         self.box = BoxSelectState(widget)
+        self.keyframe = KeyframeState(widget)
 
         self.setInitialState(self.idle)
-        for s in (self.idle, self.drag, self.resize, self.playhead, self.box):
+        for s in (self.idle, self.drag, self.resize, self.playhead, self.box, self.keyframe):
             self.addState(s)
         self.start()
