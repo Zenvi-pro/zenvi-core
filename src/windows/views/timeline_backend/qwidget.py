@@ -1231,6 +1231,7 @@ class TimelineWidget(QWidget):
         self.win.addSelection(item_id_str, item_type, clear_existing)
         # Selection changes affect cached clip renders and keyframe visibility.
         self.clip_painter.clear_cache()
+        self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()
 
