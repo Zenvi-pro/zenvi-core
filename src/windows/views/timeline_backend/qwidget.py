@@ -190,6 +190,8 @@ class TimelineWidget(QWidget):
         self._press_keyframe = None
         self._press_effect_icon = None
         self._pending_clip_overrides = {}
+        self._pending_transition_overrides = {}
+        self._preserve_overrides_once = False
         self._drag_payload = None
         self._drag_preview_items = []
         self._drag_preview_type = None
@@ -423,9 +425,16 @@ class TimelineWidget(QWidget):
         self.clip_painter.clear_cache()
         self.transition_painter.clear_cache()
         self.geometry.mark_dirty()
+
+        preserve_overrides = getattr(self, "_preserve_overrides_once", False)
+        if preserve_overrides:
+            self._preserve_overrides_once = False
+        else:
+            self._pending_clip_overrides.clear()
+            self._pending_transition_overrides.clear()
+
         self.geometry.ensure()
         self._keyframes_dirty = True
-        self._pending_clip_overrides.clear()
         self._snap_keyframe_seconds = []
 
         # Mirror some attributes for compatibility
@@ -2545,6 +2554,21 @@ class TimelineWidget(QWidget):
             for itm in self.dragging_items
         }
 
+        # Seed pending overrides so geometry rebuilds use drag positions
+        for itm in self.dragging_items:
+            if isinstance(itm, Clip):
+                override = self._pending_clip_overrides.setdefault(itm.id, {})
+                override["position"] = float(itm.data.get("position", 0.0) or 0.0)
+                override.setdefault("start", float(itm.data.get("start", 0.0) or 0.0))
+                override.setdefault("end", float(itm.data.get("end", 0.0) or 0.0))
+                override["layer"] = itm.data.get("layer", 0)
+            elif isinstance(itm, Transition):
+                override = self._pending_transition_overrides.setdefault(itm.id, {})
+                override["position"] = float(itm.data.get("position", 0.0) or 0.0)
+                override["start"] = float(itm.data.get("start", 0.0) or 0.0)
+                override["end"] = float(itm.data.get("end", 0.0) or 0.0)
+                override["layer"] = itm.data.get("layer", 0)
+
         # Bounding box for snapping calculations
         self.drag_bbox = self._compute_selected_bounding()
 
@@ -2598,6 +2622,13 @@ class TimelineWidget(QWidget):
             itm.data["position"] = new_pos_sec
             itm.data["layer"] = new_layer_num
 
+            if isinstance(itm, Clip):
+                override = self._pending_clip_overrides.setdefault(itm.id, {})
+            else:
+                override = self._pending_transition_overrides.setdefault(itm.id, {})
+            override["position"] = new_pos_sec
+            override["layer"] = new_layer_num
+
             # Update cached rect
             rect = self.geometry.calc_item_rect(itm)
             self.geometry.update_item_rect(itm, rect)
@@ -2609,6 +2640,7 @@ class TimelineWidget(QWidget):
     def _finishClipDrag(self):
         """Persist all moved clips/transitions and refresh geometry."""
         if getattr(self, "dragging_items", None):
+            self._preserve_overrides_once = True
             total = len(self.dragging_items)
             for idx, itm in enumerate(self.dragging_items):
                 ignore_refresh = idx < total - 1

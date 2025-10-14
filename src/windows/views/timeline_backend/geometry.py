@@ -207,22 +207,48 @@ class Geometry:
 
     def _populate_clip_rects(self, layers, ctx, win):
         w = self.widget
+        overrides_map = getattr(w, "_pending_clip_overrides", {})
         for clip in Clip.filter():
+            clip_data = clip.data if isinstance(clip.data, dict) else {}
+            override = overrides_map.get(clip.id, {})
+
+            position = override.get("position", clip_data.get("position", 0.0))
+            start = override.get("start", clip_data.get("start", 0.0))
+            end = override.get("end", clip_data.get("end", start))
+            layer_val = override.get("layer", clip_data.get("layer", 0))
+
+            try:
+                position = float(position)
+            except (TypeError, ValueError):
+                position = 0.0
+            try:
+                start = float(start)
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(end)
+            except (TypeError, ValueError):
+                end = start
+            if end < start:
+                end = start
+            try:
+                layer_key = int(layer_val)
+            except (TypeError, ValueError):
+                layer_key = layer_val
+
             cx = (
                 w.track_name_width
-                + clip.data.get("position", 0.0) * w.pixels_per_second
+                + position * w.pixels_per_second
                 - ctx["h_offset"]
             )
-            layer_idx = layers.get(clip.data.get("layer", 0), 0)
+            layer_idx = layers.get(layer_key, 0)
             cy = (
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
                 + layer_idx * ctx["spacing"]
                 - ctx["v_offset"]
             )
-            cw = (
-                clip.data.get("end", 0.0) - clip.data.get("start", 0.0)
-            ) * w.pixels_per_second
+            cw = (end - start) * w.pixels_per_second
             if (
                 cx + cw <= w.track_name_width
                 or cy + w.vertical_factor <= w.ruler_height
@@ -237,22 +263,48 @@ class Geometry:
 
     def _populate_transition_rects(self, layers, ctx, win):
         w = self.widget
+        overrides_map = getattr(w, "_pending_transition_overrides", {})
         for tr in Transition.filter():
+            tr_data = tr.data if isinstance(tr.data, dict) else {}
+            override = overrides_map.get(tr.id, {})
+
+            position = override.get("position", tr_data.get("position", 0.0))
+            start = override.get("start", tr_data.get("start", 0.0))
+            end = override.get("end", tr_data.get("end", start))
+            layer_val = override.get("layer", tr_data.get("layer", 0))
+
+            try:
+                position = float(position)
+            except (TypeError, ValueError):
+                position = 0.0
+            try:
+                start = float(start)
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(end)
+            except (TypeError, ValueError):
+                end = start
+            if end < start:
+                end = start
+            try:
+                layer_key = int(layer_val)
+            except (TypeError, ValueError):
+                layer_key = layer_val
+
             tx = (
                 w.track_name_width
-                + tr.data.get("position", 0.0) * w.pixels_per_second
+                + position * w.pixels_per_second
                 - ctx["h_offset"]
             )
-            layer_idx = layers.get(tr.data.get("layer", 0), 0)
+            layer_idx = layers.get(layer_key, 0)
             ty = (
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
                 + layer_idx * ctx["spacing"]
                 - ctx["v_offset"]
             )
-            tw = (
-                tr.data.get("end", 0.0) - tr.data.get("start", 0.0)
-            ) * w.pixels_per_second
+            tw = (end - start) * w.pixels_per_second
             if (
                 tx + tw <= w.track_name_width
                 or ty + w.vertical_factor <= w.ruler_height
