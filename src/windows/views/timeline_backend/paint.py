@@ -377,7 +377,7 @@ class ClipPainter(BasePainter):
 
             fill = QColor(color)
             if selected and fill.isValid():
-                fill = fill.lighter(160)
+                fill = fill.lighter(120)
             opacity = 1.0 if selected else 0.7
 
             border = QColor(223, 223, 223) if selected else QColor(0, 0, 0, 200)
