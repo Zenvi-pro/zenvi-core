@@ -271,6 +271,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if ViewClass == TimelineWidget:
             # Propagate to timeline qwidget
             TimelineWidget.changed(self, action)
+            if action and action.type == "load":
+                initial_scale = float(get_app().project.get("scale") or 15.0)
+                slider = getattr(self.window, "sliderZoomWidget", None)
+                if slider:
+                    slider.setZoomFactor(initial_scale)
+                else:
+                    TimelineWidget.setZoomFactor(self, initial_scale, emit=False)
             return
 
         # Send a JSON version of the UpdateAction to the timeline webview method: applyJsonDiff()
