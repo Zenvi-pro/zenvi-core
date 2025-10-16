@@ -3678,16 +3678,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
     def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
+        app = get_app()
+
         if ignore and not self.ignore_updates:
             if show_wait:
                 # Wait for mass updates to finish
-                get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+                app.setOverrideCursor(QCursor(Qt.WaitCursor))
+                self._wait_cursor_requests += 1
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
-            get_app().processEvents()
+            app.processEvents()
         elif not ignore and self.ignore_updates:
-            if show_wait:
-                # Restore normal updates
-                get_app().restoreOverrideCursor()
+            if self._wait_cursor_requests:
+                # Ensure we unwind any wait cursors that we previously applied
+                while self._wait_cursor_requests and app.overrideCursor():
+                    app.restoreOverrideCursor()
+                    self._wait_cursor_requests -= 1
+                if self._wait_cursor_requests:
+                    # Cursor stack unexpectedly empty; reset our counter to keep it accurate
+                    self._wait_cursor_requests = 0
+            elif show_wait and app.overrideCursor():
+                # Fallback for callers expecting an unconditional restore
+                app.restoreOverrideCursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:
@@ -4011,6 +4022,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Connect 'ignore update' signal
         self.ignore_updates = False
+        self._wait_cursor_requests = 0
         self.IgnoreUpdates.connect(self.ignore_updates_callback)
 
         # Connect playhead moved signals
