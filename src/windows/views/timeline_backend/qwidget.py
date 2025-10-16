@@ -148,6 +148,7 @@ class TimelineWidget(QWidget):
         self.drag_clip_start = 0.0
         self.dragging_playhead = False
         self.drag_bbox = QRectF()
+        self._drag_transaction_id = None
 
         # Resize / timing helpers
         self.enable_timing = False
@@ -2835,6 +2836,9 @@ class TimelineWidget(QWidget):
 
         self._fix_cursor(self.cursors["hand"])
 
+        # Each drag operation is grouped under a single undo transaction
+        self._drag_transaction_id = str(uuid.uuid4())
+
         ctrl = bool(e.modifiers() & Qt.ControlModifier)
         already = (
             clicked_item.id in self.win.selected_clips or
@@ -2861,13 +2865,28 @@ class TimelineWidget(QWidget):
         self._track_num_from_index = { idx: t.data["number"] for idx, t in enumerate(self.track_list) }
 
         # Record each item’s starting position and layer index
-        self._drag_initial = {
-            itm.id: (
-                itm.data.get("position", 0.0),
-                self._track_index_from_num.get(itm.data.get("layer", 0), 0)
-            )
-            for itm in self.dragging_items
-        }
+        fps = float(self.fps_float or 0.0)
+        use_frames = fps > 0.0
+        self._drag_initial = {}
+        for itm in self.dragging_items:
+            data = itm.data if isinstance(itm.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            index = self._track_index_from_num.get(data.get("layer", 0), 0)
+
+            entry = {
+                "position": position,
+                "index": index,
+                "duration": duration,
+            }
+
+            if use_frames:
+                entry["position_frames"] = int(round(position * fps))
+                entry["duration_frames"] = int(round(duration * fps))
+
+            self._drag_initial[itm.id] = entry
 
         # Seed pending overrides so geometry rebuilds use drag positions
         for itm in self.dragging_items:
@@ -2902,8 +2921,12 @@ class TimelineWidget(QWidget):
         e = self._last_event
 
         # -------- Horizontal delta (seconds) --------
+        pps = float(self.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return
+
         new_bbox_x = e.pos().x() - self.drag_clip_offset
-        delta_sec = (new_bbox_x - self.drag_bbox.x()) / self.pixels_per_second
+        delta_sec = (new_bbox_x - self.drag_bbox.x()) / pps
 
         # Snap horizontally ±1.5 s (pure x-axis)
         if self.enable_snapping:
@@ -2916,19 +2939,100 @@ class TimelineWidget(QWidget):
         delta_idx = new_idx_under_cursor - self._drag_layer_idx_start
 
         # Clamp delta_idx so *all* items stay within valid index range
-        orig_indices = [info[1] for info in self._drag_initial.values()]
+        orig_indices = [info["index"] for info in self._drag_initial.values()]
         if orig_indices:
             if min(orig_indices) + delta_idx < 0:
                 delta_idx = -min(orig_indices)
             if max(orig_indices) + delta_idx >= len(self.track_list):
                 delta_idx = (len(self.track_list) - 1) - max(orig_indices)
 
+        # Clamp horizontal delta so all clips remain inside the timeline bounds
+        start_positions = [info["position"] for info in self._drag_initial.values()]
+        if start_positions:
+            min_delta_sec = -min(start_positions)
+            if delta_sec < min_delta_sec:
+                delta_sec = min_delta_sec
+
+        project_duration = 0.0
+        project = get_app().project if get_app() else None
+        if project:
+            try:
+                project_duration = float(project.get("duration") or 0.0)
+            except Exception:
+                project_duration = 0.0
+
+        end_positions = [
+            info["position"] + info.get("duration", 0.0)
+            for info in self._drag_initial.values()
+        ]
+        if project_duration > 0.0 and end_positions:
+            max_delta_sec = project_duration - max(end_positions)
+            if delta_sec > max_delta_sec:
+                delta_sec = max_delta_sec
+
+        fps = float(self.fps_float or 0.0)
+        frame_offset = None
+        if fps > 0.0:
+            frame_offset = int(round(delta_sec * fps))
+
+            start_frames = [
+                info.get("position_frames")
+                for info in self._drag_initial.values()
+                if info.get("position_frames") is not None
+            ]
+            if start_frames:
+                min_frame_offset = -min(start_frames)
+                if frame_offset < min_frame_offset:
+                    frame_offset = min_frame_offset
+
+            if project_duration > 0.0:
+                timeline_frames = int(round(project_duration * fps))
+            else:
+                timeline_frames = None
+
+            end_frames = []
+            for info in self._drag_initial.values():
+                start_frame = info.get("position_frames")
+                if start_frame is None:
+                    start_frame = int(round(info["position"] * fps))
+                duration_frames = info.get("duration_frames")
+                if duration_frames is None:
+                    duration_frames = int(round(info.get("duration", 0.0) * fps))
+                end_frames.append(start_frame + duration_frames)
+
+            if timeline_frames is not None and end_frames:
+                max_frame_offset = timeline_frames - max(end_frames)
+                if frame_offset > max_frame_offset:
+                    frame_offset = max_frame_offset
+
+            delta_sec = frame_offset / fps
+
+        # Reapply second-based bounds to account for frame rounding
+        if start_positions:
+            min_delta_sec = -min(start_positions)
+            if delta_sec < min_delta_sec:
+                delta_sec = min_delta_sec
+        if project_duration > 0.0 and end_positions:
+            max_delta_sec = project_duration - max(end_positions)
+            if delta_sec > max_delta_sec:
+                delta_sec = max_delta_sec
+
         # -------- Apply identical deltas ------------
         for itm in self.dragging_items:
-            start_pos_sec, start_idx = self._drag_initial[itm.id]
+            info = self._drag_initial[itm.id]
+            start_pos_sec = info["position"]
+            start_idx = info["index"]
 
             # New values
-            new_pos_sec = max(0.0, start_pos_sec + delta_sec)
+            if frame_offset is not None:
+                start_frame = info.get("position_frames")
+                if start_frame is None:
+                    start_frame = int(round(start_pos_sec * fps))
+                new_frame = max(0, start_frame + frame_offset)
+                new_pos_sec = new_frame / fps
+            else:
+                new_pos_sec = start_pos_sec + delta_sec
+            new_pos_sec = max(0.0, new_pos_sec)
             new_pos_sec = self._snap_time(new_pos_sec)
             new_idx = start_idx + delta_idx
             new_idx = max(0, min(new_idx, len(self.track_list) - 1))
@@ -2957,6 +3061,7 @@ class TimelineWidget(QWidget):
         if getattr(self, "dragging_items", None):
             self._preserve_overrides_once = True
             total = len(self.dragging_items)
+            transaction_id = self._drag_transaction_id
             for idx, itm in enumerate(self.dragging_items):
                 ignore_refresh = idx < total - 1
                 if isinstance(itm, Transition):
@@ -2964,6 +3069,7 @@ class TimelineWidget(QWidget):
                         itm.data,
                         only_basic_props=True,
                         ignore_refresh=ignore_refresh,
+                        transaction_id=transaction_id,
                     )
                 else:
                     self.update_clip_data(
@@ -2971,9 +3077,11 @@ class TimelineWidget(QWidget):
                         only_basic_props=True,
                         ignore_reader=True,
                         ignore_refresh=ignore_refresh,
+                        transaction_id=transaction_id,
                     )
 
         self.dragging_items = []
+        self._drag_transaction_id = None
         self.snap.reset()
         self._update_project_duration()
         # Recompute geometry (snap may have shifted) and repaint
