@@ -95,15 +95,11 @@ class ClipPainter(BasePainter):
         self.w._effect_icon_rects = []
         painter.save()
         painter.setClipRect(area)
-        for rect, clip in self.w.geometry.clip_rects:
+        for rect, clip, selected in self.w.geometry.iter_clips():
             if not rect.intersects(area):
                 continue
-            self._draw_clip(painter, rect, clip, self.clip_pen)
-
-        for rect, clip in self.w.geometry.selected_rects:
-            if not rect.intersects(area):
-                continue
-            self._draw_clip(painter, rect, clip, self.sel_pen)
+            pen = self.sel_pen if selected else self.clip_pen
+            self._draw_clip(painter, rect, clip, pen)
         painter.restore()
 
     def _thumb(self, clip):
@@ -573,17 +569,11 @@ class TransitionPainter(BasePainter):
         )
         painter.save()
         painter.setClipRect(area)
-        for rect, _ in self.w.geometry.transition_rects:
+        for rect, _tran, selected in self.w.geometry.iter_transitions():
             if not rect.intersects(area):
                 continue
-            pix = self._transition_pixmap(rect, self.pen)
-            if pix:
-                painter.drawPixmap(rect.topLeft(), pix)
-
-        for rect, _ in self.w.geometry.selected_transitions:
-            if not rect.intersects(area):
-                continue
-            pix = self._transition_pixmap(rect, self.sel_pen)
+            pen = self.sel_pen if selected else self.pen
+            pix = self._transition_pixmap(rect, pen)
             if pix:
                 painter.drawPixmap(rect.topLeft(), pix)
         painter.restore()
@@ -606,27 +596,46 @@ class TransitionPainter(BasePainter):
         img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
         img.fill(0)
         p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = QRectF(0, 0, w, h)
+        path = None
+        if radius:
+            path = QPainterPath()
+            path.addRoundedRect(rect, radius, radius)
 
         if not tiny:
             if self.col2.isValid() and self.col2 != self.col:
                 grad = QLinearGradient(QPointF(0, 0), QPointF(0, h))
                 grad.setColorAt(0, self.col)
                 grad.setColorAt(1, self.col2)
-                p.fillRect(QRectF(0, 0, w, h), QBrush(grad))
+                brush = QBrush(grad)
             else:
-                p.fillRect(QRectF(0, 0, w, h), self.col)
+                brush = QBrush(self.col)
+
+            if path is not None:
+                p.fillPath(path, brush)
+            else:
+                p.fillRect(rect, brush)
+
             if self.img and not small:
                 scaled = self.img.scaled(
                     w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
                 )
-                p.drawPixmap(0, 0, scaled)
+                if path is not None:
+                    p.save()
+                    p.setClipPath(path)
+                    p.drawPixmap(0, 0, scaled)
+                    p.restore()
+                else:
+                    p.drawPixmap(0, 0, scaled)
 
         if pen.color().isValid():
             p.setPen(pen)
-            if radius:
-                p.drawRoundedRect(QRectF(0, 0, w, h), radius, radius)
+            if path is not None:
+                p.drawPath(path)
             else:
-                p.drawRect(QRectF(0, 0, w, h))
+                p.drawRect(rect)
 
         if self.menu_pix and not small:
             p.drawPixmap(

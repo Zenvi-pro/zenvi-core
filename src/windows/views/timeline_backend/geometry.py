@@ -38,10 +38,8 @@ class Geometry:
         self.widget = widget
         self.dirty = True
         self.track_rects = []
-        self.clip_rects = []
-        self.selected_rects = []
-        self.transition_rects = []
-        self.selected_transitions = []
+        self.clip_entries = []
+        self.transition_entries = []
         self.marker_rects = []
         self.track_list = []
 
@@ -64,10 +62,8 @@ class Geometry:
     # ------------------------------------------------------------------
     def _reset_cache(self):
         self.track_rects.clear()
-        self.clip_rects.clear()
-        self.selected_rects.clear()
-        self.transition_rects.clear()
-        self.selected_transitions.clear()
+        self.clip_entries.clear()
+        self.transition_entries.clear()
         self.marker_rects.clear()
 
     def _build_layer_index(self):
@@ -208,6 +204,8 @@ class Geometry:
     def _populate_clip_rects(self, layers, ctx, win):
         w = self.widget
         overrides_map = getattr(w, "_pending_clip_overrides", {})
+        entries = []
+        selected_ids = set(getattr(win, "selected_clips", []) or [])
         for clip in Clip.filter():
             clip_data = clip.data if isinstance(clip.data, dict) else {}
             override = overrides_map.get(clip.id, {})
@@ -256,14 +254,31 @@ class Geometry:
             ):
                 continue
             rect = QRectF(cx, cy, cw, w.vertical_factor)
-            if clip.id in win.selected_clips:
-                self.selected_rects.append((rect, clip))
-            else:
-                self.clip_rects.append((rect, clip))
+            entries.append((position, rect, clip))
+
+        def _clip_sort_key(entry):
+            pos, rect, clip = entry
+            try:
+                pos_val = float(pos)
+            except (TypeError, ValueError):
+                pos_val = 0.0
+            # Secondary sort by rect.x() to keep deterministic ordering for
+            # items with identical positions (such as transitions spanning the
+            # same point).
+            return pos_val, rect.x(), getattr(clip, "id", "")
+
+        entries.sort(key=_clip_sort_key)
+        clip_entries = []
+        for _, rect, clip in entries:
+            is_selected = clip.id in selected_ids
+            clip_entries.append((rect, clip, is_selected))
+        self.clip_entries = clip_entries
 
     def _populate_transition_rects(self, layers, ctx, win):
         w = self.widget
         overrides_map = getattr(w, "_pending_transition_overrides", {})
+        entries = []
+        selected_ids = set(getattr(win, "selected_transitions", []) or [])
         for tr in Transition.filter():
             tr_data = tr.data if isinstance(tr.data, dict) else {}
             override = overrides_map.get(tr.id, {})
@@ -312,10 +327,22 @@ class Geometry:
             ):
                 continue
             rect = QRectF(tx, ty, tw, w.vertical_factor)
-            if tr.id in win.selected_transitions:
-                self.selected_transitions.append((rect, tr))
-            else:
-                self.transition_rects.append((rect, tr))
+            entries.append((position, rect, tr))
+
+        def _transition_sort_key(entry):
+            pos, rect, tran = entry
+            try:
+                pos_val = float(pos)
+            except (TypeError, ValueError):
+                pos_val = 0.0
+            return pos_val, rect.x(), getattr(tran, "id", "")
+
+        entries.sort(key=_transition_sort_key)
+        transition_entries = []
+        for _, rect, tran in entries:
+            is_selected = tran.id in selected_ids
+            transition_entries.append((rect, tran, is_selected))
+        self.transition_entries = transition_entries
 
     def _populate_marker_rects(self, ctx):
         w = self.widget
@@ -363,12 +390,7 @@ class Geometry:
             pos.x() >= self.widget.track_name_width
             and pos.y() >= self.widget.ruler_height
         ):
-            for rect, _ in (
-                self.selected_transitions
-                + self.transition_rects
-                + self.selected_rects
-                + self.clip_rects
-            ):
+            for rect, _obj, _sel, _type in self.iter_items(reverse=True):
                 if rect.contains(pos):
                     return "clip"
         if self.widget.scroll_bar_rect.contains(pos):
@@ -415,13 +437,42 @@ class Geometry:
 
     def update_item_rect(self, item, rect):
         """Replace cached rect for *item* if present."""
-        for lst in (
-                self.selected_rects,
-                self.clip_rects,
-                self.selected_transitions,
-                self.transition_rects,
-        ):
-            for i, (_rect, c) in enumerate(lst):
-                if c.id == item.id:
-                    lst[i] = (rect, item)
-                    return
+        for idx, (existing_rect, existing, selected) in enumerate(self.clip_entries):
+            if existing.id == item.id:
+                self.clip_entries[idx] = (rect, item, selected)
+                return
+        for idx, (existing_rect, existing, selected) in enumerate(self.transition_entries):
+            if existing.id == item.id:
+                self.transition_entries[idx] = (rect, item, selected)
+                return
+
+    # ------------------------------------------------------------------
+    # Iteration helpers
+    # ------------------------------------------------------------------
+    def iter_clips(self, reverse=False):
+        """Yield (rect, clip, selected) tuples for cached clips."""
+        yield from self._iter_entries(self.clip_entries, reverse)
+
+    def iter_transitions(self, reverse=False):
+        """Yield (rect, transition, selected) tuples for cached transitions."""
+        yield from self._iter_entries(self.transition_entries, reverse)
+
+    def iter_items(self, reverse=False):
+        """Yield (rect, obj, selected, type) for transitions then clips."""
+        for rect, tran, selected in self.iter_transitions(reverse=reverse):
+            yield rect, tran, selected, "transition"
+        for rect, clip, selected in self.iter_clips(reverse=reverse):
+            yield rect, clip, selected, "clip"
+
+    def _iter_entries(self, entries, reverse=False):
+        """Yield entries grouped by selection state while preserving stacking order."""
+        if reverse:
+            for selected_flag in (True, False):
+                for rect, obj, selected in reversed(entries):
+                    if selected == selected_flag:
+                        yield rect, obj, selected
+        else:
+            for selected_flag in (False, True):
+                for rect, obj, selected in entries:
+                    if selected == selected_flag:
+                        yield rect, obj, selected

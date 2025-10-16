@@ -103,21 +103,14 @@ class SnapHelper:
         left_edge = self.widget.track_name_width - h_offset
 
         ignore_ids = getattr(self.widget, "_snap_ignore_ids", set())
-        rect_sources = (
-            self.geometry.clip_rects
-            + self.geometry.transition_rects
-        )
-        for rect, obj in rect_sources:
+        for rect, obj, _selected in self.geometry.iter_clips():
             obj_id = getattr(obj, "id", None)
             if obj_id in ignore_ids:
                 continue
             targets.add(rect.left())
             targets.add(rect.right())
 
-        selected_sources = (
-            self.geometry.selected_rects + self.geometry.selected_transitions
-        )
-        for rect, obj in selected_sources:
+        for rect, obj, _selected in self.geometry.iter_transitions():
             obj_id = getattr(obj, "id", None)
             if obj_id in ignore_ids:
                 continue

@@ -1055,7 +1055,7 @@ class TimelineWidget(QWidget):
         self.h_scroll_offset = self.scrollbar_position[0] * timeline_w
 
         # Check for empty clip rectangles
-        if not self.geometry.clip_rects:
+        if not self.geometry.clip_entries:
             TimelineWidget.changed(self, None)
 
         # Recompute geometry for new scrollbar positions
@@ -1740,9 +1740,9 @@ class TimelineWidget(QWidget):
 
     def _refresh_keyframe_markers(self):
         markers = []
-        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
+        for rect, clip, _selected in self.geometry.iter_clips():
             markers.extend(self._build_clip_keyframes(rect, clip))
-        for rect, tran in self.geometry.transition_rects + self.geometry.selected_transitions:
+        for rect, tran, _selected in self.geometry.iter_transitions():
             markers.extend(self._build_transition_keyframes(rect, tran))
 
         drag = self._dragging_keyframe
@@ -1883,32 +1883,69 @@ class TimelineWidget(QWidget):
                 tid,
             )
 
-    def _playhead_hit(self, pos):
-        """Return True if *pos* intersects the playhead handle icon."""
+    def _playhead_icon_rect(self):
+        """Return QRectF describing the full rendered playhead icon."""
+        if not self.playhead_painter.icon_pix:
+            return QRectF()
         offset_px = getattr(self, "h_scroll_offset", 0.0)
         frame_seconds = 0.0
         if self.fps_float:
             frame_seconds = max(
                 0.0, (max(1, self.current_frame) - 1) / self.fps_float
             )
-        x = self.track_name_width + frame_seconds * self.pixels_per_second - offset_px
+        x = (
+            self.track_name_width
+            + frame_seconds * self.pixels_per_second
+            - offset_px
+        )
         ix = int(round(x))
-        if self.playhead_painter.icon_pix:
-            icon_w, icon_h = self.playhead_painter.logical_size(
-                self.playhead_painter.icon_pix
-            )
-            icon_rect = QRectF(
-                ix + self.playhead_painter.icon_offset_x,
-                self.playhead_painter.icon_offset_y,
-                icon_w,
-                icon_h,
-            )
-            timeline_left = self.track_name_width
-            if icon_rect.right() < timeline_left:
-                return False
-            if icon_rect.contains(pos):
-                return True
-        return False
+        icon_w, icon_h = self.playhead_painter.logical_size(
+            self.playhead_painter.icon_pix
+        )
+        return QRectF(
+            ix + self.playhead_painter.icon_offset_x,
+            self.playhead_painter.icon_offset_y,
+            icon_w,
+            icon_h,
+        )
+
+    def _playhead_handle_rect(self):
+        """Return QRectF describing the draggable portion of the playhead."""
+        icon_rect = self._playhead_icon_rect()
+        if icon_rect.isNull():
+            return QRectF()
+        timeline_width = (
+            float(self.width()) - float(self.track_name_width) - float(self.scroll_bar_thickness)
+        )
+        if timeline_width <= 0.0:
+            return QRectF()
+        max_handle_height = min(float(self.ruler_height), icon_rect.height())
+        if max_handle_height <= 0.0:
+            return QRectF()
+        handle_height = icon_rect.height() * 0.12
+        handle_height = max(12.0, handle_height)
+        handle_height = min(handle_height, max_handle_height)
+        handle_area = QRectF(
+            icon_rect.x(),
+            icon_rect.y(),
+            icon_rect.width(),
+            handle_height,
+        )
+        visible_band = QRectF(
+            self.track_name_width,
+            0.0,
+            timeline_width,
+            max_handle_height,
+        )
+        handle_area = handle_area.intersected(visible_band)
+        return handle_area if not handle_area.isNull() else QRectF()
+
+    def _playhead_hit(self, pos):
+        """Return True if *pos* intersects the draggable playhead handle."""
+        handle_rect = self._playhead_handle_rect()
+        if handle_rect.isNull():
+            return False
+        return handle_rect.contains(pos)
 
     def _updateCursor(self, pos):
         if self._fixed_cursor is not None:
@@ -1918,27 +1955,10 @@ class TimelineWidget(QWidget):
         self.geometry.ensure()
 
         # Playhead icon
-        if self.playhead_painter.icon_pix:
-            offset_px = getattr(self, "h_scroll_offset", 0.0)
-            frame_seconds = 0.0
-            if self.fps_float:
-                frame_seconds = max(
-                    0.0, (max(1, self.current_frame) - 1) / self.fps_float
-                )
-            x = self.track_name_width + frame_seconds * self.pixels_per_second - offset_px
-            ix = int(round(x))
-            icon_w, icon_h = self.playhead_painter.logical_size(
-                self.playhead_painter.icon_pix
-            )
-            icon_rect = QRectF(
-                ix + self.playhead_painter.icon_offset_x,
-                self.playhead_painter.icon_offset_y,
-                icon_w,
-                icon_h,
-            )
-            if icon_rect.right() >= self.track_name_width and icon_rect.contains(pos):
-                self.setCursor(self.cursors["hand"])
-                return
+        handle_rect = self._playhead_handle_rect()
+        if (self.playhead_painter.icon_pix and not handle_rect.isNull() and handle_rect.contains(pos)):
+            self.setCursor(self.cursors["hand"])
+            return
 
         icon_entry = self._effect_icon_at(pos)
         if icon_entry:
@@ -1946,7 +1966,7 @@ class TimelineWidget(QWidget):
             return
 
         # Transition menu icons
-        for rect, _ in self.geometry.selected_transitions + self.geometry.transition_rects:
+        for rect, _tran, _selected in self.geometry.iter_transitions(reverse=True):
             if self._transition_menu_rect(rect).contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
@@ -1957,17 +1977,14 @@ class TimelineWidget(QWidget):
             return
 
         # Clip menu icons
-        for rect, _ in self.geometry.selected_rects + self.geometry.clip_rects:
+        for rect, _clip, _selected in self.geometry.iter_clips(reverse=True):
             if self._clip_menu_rect(rect).contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
 
         # Clip/transition edges and drags (transitions prioritized)
         edge = 5
-        for rect, _ in (
-            self.geometry.selected_transitions + self.geometry.transition_rects +
-            self.geometry.selected_rects + self.geometry.clip_rects
-        ):
+        for rect, _item, _selected, _type in self.geometry.iter_items(reverse=True):
             if rect.contains(pos):
                 if abs(pos.x() - rect.left()) <= edge or abs(pos.x() - rect.right()) <= edge:
                     self.setCursor(self.cursors["resize_x"])
@@ -2036,14 +2053,14 @@ class TimelineWidget(QWidget):
         return False
 
     def _trigger_transition_menu_icon(self, pos):
-        for rect, tran in self.geometry.transition_rects + self.geometry.selected_transitions:
+        for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
             if self._transition_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowTransitionMenu(tran.id)
                 return True
         return False
 
     def _trigger_clip_menu_icon(self, pos):
-        for rect, clip in self.geometry.clip_rects + self.geometry.selected_rects:
+        for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
@@ -2063,10 +2080,7 @@ class TimelineWidget(QWidget):
             return
         self._press_effect_icon = None
         edge = 5
-        for rect, item in (
-            self.geometry.selected_transitions + self.geometry.transition_rects +
-            self.geometry.selected_rects + self.geometry.clip_rects
-        ):
+        for rect, item, _selected, _type in self.geometry.iter_items(reverse=True):
             if not rect.contains(pos):
                 continue
             if abs(pos.x() - rect.left()) <= edge:
@@ -2246,9 +2260,7 @@ class TimelineWidget(QWidget):
             return True
 
         # Transition context menu (prioritized over clips)
-        for rect, tran in (
-            self.geometry.selected_transitions + self.geometry.transition_rects
-        ):
+        for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
                 if tran.id not in getattr(self.win, "selected_transitions", []):
                     self._select_timeline_item(tran.id, "transition", True)
@@ -2256,9 +2268,7 @@ class TimelineWidget(QWidget):
                 return True
 
         # Clip context menu
-        for rect, clip in (
-            self.geometry.selected_rects + self.geometry.clip_rects
-        ):
+        for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
                 if clip.id not in getattr(self.win, "selected_clips", []):
                     self._select_timeline_item(clip.id, "clip", True)
@@ -2510,12 +2520,7 @@ class TimelineWidget(QWidget):
 
         # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
-        for rect, item in (
-            self.geometry.selected_transitions +
-            self.geometry.transition_rects +
-            self.geometry.selected_rects +
-            self.geometry.clip_rects
-        ):
+        for rect, item, _selected, _type in self.geometry.iter_items(reverse=True):
             if rect.contains(e.pos()):
                 clicked_item = item
                 break
@@ -2537,7 +2542,11 @@ class TimelineWidget(QWidget):
             TimelineWidget.changed(self, None)
 
         # All selected clips and transitions participate in the drag
-        self.dragging_items = [itm for _, itm in self.geometry.selected_rects] + [itm for _, itm in self.geometry.selected_transitions]
+        self.dragging_items = [
+            itm
+            for _rect, itm, selected, _type in self.geometry.iter_items()
+            if selected
+        ]
         if not self.dragging_items:
             self.dragging_items = [clicked_item]
 
@@ -2670,11 +2679,15 @@ class TimelineWidget(QWidget):
 
     def _compute_selected_bounding(self):
         """Return a QRectF encompassing all currently-selected clips and transitions."""
-        items = self.geometry.selected_rects + self.geometry.selected_transitions
-        if not items:
+        rects = [
+            rect
+            for rect, _item, selected, _type in self.geometry.iter_items()
+            if selected
+        ]
+        if not rects:
             return QRectF()
-        bbox = QRectF(items[0][0])
-        for rect, _ in items[1:]:
+        bbox = QRectF(rects[0])
+        for rect in rects[1:]:
             bbox = bbox.united(rect)
         return bbox
 
@@ -2976,12 +2989,7 @@ class TimelineWidget(QWidget):
         self.geometry.ensure()
 
         # Add any item whose rect intersects selection_rect
-        for rect, item in (
-            self.geometry.selected_transitions +
-            self.geometry.transition_rects +
-            self.geometry.selected_rects +
-            self.geometry.clip_rects
-        ):
+        for rect, item, _selected, _type in self.geometry.iter_items():
             if rect.intersects(self.selection_rect):
                 sel_type = "transition" if isinstance(item, Transition) else "clip"
                 # False = don’t emit SelectionChanged (we’ll handle it ourselves)
