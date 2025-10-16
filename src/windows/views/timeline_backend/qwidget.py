@@ -188,6 +188,7 @@ class TimelineWidget(QWidget):
         self._keyframes_dirty = True
         self._dragging_keyframe = None
         self._press_keyframe = None
+        self._press_keyframe_clear = True
         self._press_effect_icon = None
         self._pending_clip_overrides = {}
         self._pending_transition_overrides = {}
@@ -1477,6 +1478,7 @@ class TimelineWidget(QWidget):
         effect=None,
         object_id=None,
         override=None,
+        base_path=(),
     ):
         if not isinstance(data, (dict, list)):
             return []
@@ -1493,7 +1495,7 @@ class TimelineWidget(QWidget):
 
         skip_keys = {"effects", "ui", "reader", "cache"}
 
-        def store(frame_value, interpolation_value, point_obj=None):
+        def store(frame_value, interpolation_value, point_obj=None, point_path=None):
             if frame_value is None:
                 return
             try:
@@ -1548,33 +1550,54 @@ class TimelineWidget(QWidget):
                 color_value = previous.get("color")
             if color_value:
                 entry["color"] = color_value
+            if point_path is not None:
+                try:
+                    entry["path"] = tuple(point_path)
+                except TypeError:
+                    pass
             markers[frame_int] = entry
 
-        def walk(obj):
+        def walk(obj, path):
             if isinstance(obj, dict):
                 points = obj.get("Points")
                 if isinstance(points, list) and len(points) > 1:
-                    for point in points:
+                    base_path = path + (("dict", "Points"),)
+                    for index, point in enumerate(points):
                         co = point.get("co", {}) if isinstance(point, dict) else {}
-                        store(co.get("X"), point.get("interpolation"), point)
+                        store(
+                            co.get("X"),
+                            point.get("interpolation"),
+                            point,
+                            base_path + (("list", index),),
+                        )
                 red = obj.get("red")
                 if isinstance(red, dict):
                     red_points = red.get("Points")
                     if isinstance(red_points, list) and len(red_points) > 1:
-                        for point in red_points:
+                        base_path = path + (("dict", "red"), ("dict", "Points"))
+                        for index, point in enumerate(red_points):
                             co = point.get("co", {}) if isinstance(point, dict) else {}
-                            store(co.get("X"), point.get("interpolation"), point)
+                            store(
+                                co.get("X"),
+                                point.get("interpolation"),
+                                point,
+                                base_path + (("list", index),),
+                            )
                 for key, value in obj.items():
                     if key in skip_keys:
                         continue
                     if isinstance(value, (dict, list)):
-                        walk(value)
+                        walk(value, path + (("dict", key),))
             elif isinstance(obj, list):
-                for item in obj:
+                for index, item in enumerate(obj):
                     if isinstance(item, (dict, list)):
-                        walk(item)
+                        walk(item, path + (("list", index),))
 
-        walk(data)
+        try:
+            initial_path = tuple(base_path)
+        except TypeError:
+            initial_path = ()
+        walk(data, initial_path)
 
         if not markers:
             return []
@@ -1625,6 +1648,8 @@ class TimelineWidget(QWidget):
             }
             if object_type == "effect":
                 marker["effect_id"] = str(owner_id)
+            if "path" in info:
+                marker["data_path"] = info["path"]
             result.append(marker)
         return result
 
@@ -1687,7 +1712,7 @@ class TimelineWidget(QWidget):
             )
         )
 
-        for eff in effects:
+        for eff_index, eff in enumerate(effects):
             if not isinstance(eff, dict):
                 continue
             effect_id = eff.get("id")
@@ -1711,6 +1736,7 @@ class TimelineWidget(QWidget):
                     effect=eff,
                     object_id=str(clip.id),
                     override=override_ctx,
+                    base_path=(("dict", "effects"), ("list", eff_index)),
                 )
             )
 
@@ -1869,6 +1895,45 @@ class TimelineWidget(QWidget):
                 if isinstance(item, (dict, list)):
                     self._move_keyframes_in_object(item, old_frame, new_frame)
 
+    def _resolve_data_path(self, data, path):
+        current = data
+        if not path:
+            return current
+        for entry in path:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                return None
+            kind, key = entry
+            if kind == "dict":
+                if isinstance(current, dict):
+                    current = current.get(key)
+                else:
+                    return None
+            elif kind == "list":
+                if not isinstance(current, list):
+                    return None
+                try:
+                    index = int(key)
+                except (TypeError, ValueError):
+                    return None
+                if index < 0 or index >= len(current):
+                    return None
+                current = current[index]
+            else:
+                return None
+            if current is None:
+                return None
+        return current
+
+    def _set_keyframe_frame_at_path(self, data, path, new_frame):
+        target = self._resolve_data_path(data, path)
+        if not isinstance(target, dict):
+            return False
+        co = target.get("co")
+        if not isinstance(co, dict):
+            return False
+        co["X"] = new_frame
+        return True
+
     def _begin_keyframe_transaction(self):
         if not self._dragging_keyframe or self._dragging_keyframe.get("transaction_started"):
             return
@@ -2026,7 +2091,7 @@ class TimelineWidget(QWidget):
         if self._handle_menu_icon_clicks(pos):
             return
 
-        self._assign_press_target(pos)
+        self._assign_press_target(event)
 
         if self._start_scroll_drag_if_needed(pos):
             return
@@ -2066,13 +2131,19 @@ class TimelineWidget(QWidget):
                 return True
         return False
 
-    def _assign_press_target(self, pos):
+    def _assign_press_target(self, event):
+        pos = event.pos()
+        modifiers = event.modifiers() if hasattr(event, "modifiers") else Qt.NoModifier
+        ctrl = bool(modifiers & Qt.ControlModifier)
         marker = self._get_keyframe_at(pos)
         if marker:
             self._press_hit = "keyframe"
             self._press_keyframe = marker
+            self._press_keyframe_clear = not ctrl
+            self._select_marker_owner(marker, clear_existing=self._press_keyframe_clear)
             return
         self._press_keyframe = None
+        self._press_keyframe_clear = True
         icon_entry = self._effect_icon_at(pos)
         if icon_entry:
             self._press_hit = "effect-icon"
@@ -2304,6 +2375,8 @@ class TimelineWidget(QWidget):
             "clip_start": marker.get("clip_start", 0.0),
             "clip_end": marker.get("clip_end", 0.0),
             "moved": False,
+            "data_path": marker.get("data_path"),
+            "clear_existing": bool(getattr(self, "_press_keyframe_clear", True)),
         }
         self._fix_cursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
         self._keyframes_dirty = True
@@ -2355,12 +2428,18 @@ class TimelineWidget(QWidget):
         if not timeline:
             return
         transaction_id = drag.get("transaction_id")
+        data_path = drag.get("data_path")
         if marker.get("type") == "transition":
             transition = marker.get("transition")
             if not transition:
                 return
             data_copy = json.loads(json.dumps(transition.data))
-            if do_move:
+            moved_specific = False
+            if data_path:
+                moved_specific = self._set_keyframe_frame_at_path(data_copy, data_path, new_frame)
+                if (do_move or force) and isinstance(transition.data, (dict, list)) and moved_specific:
+                    self._set_keyframe_frame_at_path(transition.data, data_path, new_frame)
+            if (do_move or force) and not moved_specific:
                 self._move_keyframes_in_object(data_copy, old_frame, new_frame)
                 if isinstance(transition.data, (dict, list)):
                     self._move_keyframes_in_object(transition.data, old_frame, new_frame)
@@ -2375,20 +2454,24 @@ class TimelineWidget(QWidget):
             if not clip:
                 return
             data_copy = json.loads(json.dumps(clip.data))
-            if marker.get("type") == "effect":
-                effect_id = marker.get("owner_id")
-                for eff in data_copy.get("effects", []):
-                    if str(eff.get("id")) == str(effect_id):
-                        if do_move:
-                            self._move_keyframes_in_object(eff, old_frame, new_frame)
-                        break
-                if do_move and isinstance(clip.data, dict):
-                    for eff in clip.data.get("effects", []):
+            moved_specific = False
+            if data_path:
+                moved_specific = self._set_keyframe_frame_at_path(data_copy, data_path, new_frame)
+                if (do_move or force) and isinstance(clip.data, (dict, list)) and moved_specific:
+                    self._set_keyframe_frame_at_path(clip.data, data_path, new_frame)
+            if (do_move or force) and not moved_specific:
+                if marker.get("type") == "effect":
+                    effect_id = marker.get("owner_id")
+                    for eff in data_copy.get("effects", []):
                         if str(eff.get("id")) == str(effect_id):
                             self._move_keyframes_in_object(eff, old_frame, new_frame)
                             break
-            else:
-                if do_move:
+                    if isinstance(clip.data, dict):
+                        for eff in clip.data.get("effects", []):
+                            if str(eff.get("id")) == str(effect_id):
+                                self._move_keyframes_in_object(eff, old_frame, new_frame)
+                                break
+                else:
                     self._move_keyframes_in_object(data_copy, old_frame, new_frame)
                     if isinstance(clip.data, (dict, list)):
                         self._move_keyframes_in_object(clip.data, old_frame, new_frame)
@@ -2411,22 +2494,33 @@ class TimelineWidget(QWidget):
         if do_move or force:
             drag["moved"] = True
 
-    def _handle_keyframe_click(self, marker):
+    def _select_marker_owner(self, marker, *, seek=False, clear_existing=True):
         if not marker:
             return
+
         marker_type = marker.get("type")
+        target_id = None
+        target_type = None
+
         if marker_type == "effect":
-            effect_id = marker.get("owner_id")
-            if effect_id:
-                self._select_timeline_item(effect_id, "effect", True)
+            target_id = marker.get("owner_id") or marker.get("effect_id")
+            target_type = "effect"
         elif marker_type == "transition":
             transition = marker.get("transition")
             if transition:
-                self._select_timeline_item(transition.id, "transition", True)
+                target_id = getattr(transition, "id", None)
+                target_type = "transition"
         else:
             clip = marker.get("clip")
             if clip:
-                self._select_timeline_item(clip.id, "clip", True)
+                target_id = getattr(clip, "id", None)
+                target_type = "clip"
+
+        if target_id is not None and target_type:
+            self._select_timeline_item(target_id, target_type, clear_existing)
+
+        if not seek:
+            return
 
         timeline = getattr(self.win, "timeline", None)
         if not timeline:
@@ -2439,12 +2533,19 @@ class TimelineWidget(QWidget):
         fps = self.fps_float or 1.0
         base_position = 0.0
         if clip:
-            base_position = float(clip.data.get("position", 0.0) or 0.0)
+            data = clip.data if isinstance(clip.data, dict) else {}
+            base_position = float(data.get("position", 0.0) or 0.0)
         elif transition:
-            base_position = float(transition.data.get("position", 0.0) or 0.0)
+            data = transition.data if isinstance(transition.data, dict) else {}
+            base_position = float(data.get("position", 0.0) or 0.0)
         absolute = round(base_position * fps) + frame - round(clip_start * fps)
         absolute = max(1, int(absolute))
         timeline.SeekToKeyframe(absolute)
+
+    def _handle_keyframe_click(self, marker, clear_existing=True):
+        if not marker:
+            return
+        self._select_marker_owner(marker, seek=True, clear_existing=clear_existing)
 
     def _seek_to_marker_frame(self, marker, frame):
         if marker is None or frame is None:
@@ -2485,7 +2586,8 @@ class TimelineWidget(QWidget):
                     drag.get("object_id", ""),
                 )
         else:
-            self._handle_keyframe_click(marker)
+            clear_existing = drag.get("clear_existing", True)
+            self._handle_keyframe_click(marker, clear_existing=clear_existing)
 
         self._dragging_keyframe = None
         self.mouse_dragging = False
