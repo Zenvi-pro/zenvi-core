@@ -1521,8 +1521,36 @@ class TimelineWidget(QWidget):
                     dimmed = True
             frame_int = int(round(frame_float))
             previous = markers.get(frame_int)
-            if previous and previous["selected"] and not selected:
-                return
+            path_value = None
+            if point_path is not None:
+                try:
+                    path_value = tuple(point_path)
+                except TypeError:
+                    path_value = None
+
+            previous_paths = []
+            if previous:
+                stored_paths = previous.get("paths")
+                if isinstance(stored_paths, (list, tuple)):
+                    previous_paths.extend(stored_paths)
+                prev_single = previous.get("path")
+                if prev_single is not None and prev_single not in previous_paths:
+                    previous_paths.append(prev_single)
+                if path_value is not None and path_value not in previous_paths:
+                    previous_paths.append(path_value)
+                if previous_paths:
+                    previous["paths"] = tuple(previous_paths)
+                    if len(previous_paths) == 1:
+                        previous["path"] = previous_paths[0]
+                    else:
+                        previous["path"] = None
+                elif "paths" in previous:
+                    previous.pop("paths", None)
+                if previous["selected"] and not selected:
+                    return
+            entry_paths = list(previous_paths)
+            if not previous and path_value is not None:
+                entry_paths.append(path_value)
             color_value = None
             if isinstance(point_obj, dict):
                 for key in ("color", "colour", "icon_color"):
@@ -1550,11 +1578,10 @@ class TimelineWidget(QWidget):
                 color_value = previous.get("color")
             if color_value:
                 entry["color"] = color_value
-            if point_path is not None:
-                try:
-                    entry["path"] = tuple(point_path)
-                except TypeError:
-                    pass
+            if entry_paths:
+                entry["paths"] = tuple(entry_paths)
+                if len(entry_paths) == 1:
+                    entry["path"] = entry_paths[0]
             markers[frame_int] = entry
 
         def walk(obj, path):
@@ -1648,8 +1675,18 @@ class TimelineWidget(QWidget):
             }
             if object_type == "effect":
                 marker["effect_id"] = str(owner_id)
-            if "path" in info:
-                marker["data_path"] = info["path"]
+            paths = info.get("paths")
+            if paths:
+                try:
+                    marker["data_paths"] = tuple(paths)
+                except TypeError:
+                    pass
+                if len(paths) == 1:
+                    marker["data_path"] = paths[0]
+            else:
+                path_value = info.get("path")
+                if path_value:
+                    marker["data_path"] = path_value
             result.append(marker)
         return result
 
@@ -1894,6 +1931,152 @@ class TimelineWidget(QWidget):
             for item in obj:
                 if isinstance(item, (dict, list)):
                     self._move_keyframes_in_object(item, old_frame, new_frame)
+
+    def _keyframe_base_position(self, info):
+        clip = None
+        transition = None
+        if isinstance(info, dict):
+            clip = info.get("clip")
+            transition = info.get("transition")
+        else:
+            clip = getattr(info, "clip", None)
+            transition = getattr(info, "transition", None)
+
+        base_position = 0.0
+        if clip:
+            data = clip.data if isinstance(clip.data, dict) else {}
+            try:
+                base_position = float(data.get("position", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                base_position = 0.0
+        elif transition:
+            data = transition.data if isinstance(transition.data, dict) else {}
+            try:
+                base_position = float(data.get("position", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                base_position = 0.0
+        return base_position
+
+    def _marker_absolute_seconds(self, marker):
+        if not isinstance(marker, dict):
+            return None
+        seconds = marker.get("seconds")
+        if seconds is None:
+            seconds = marker.get("display_seconds")
+        try:
+            local = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        base_position = self._keyframe_base_position(marker)
+        return base_position + local
+
+    def _compute_keyframe_snap_targets(self, marker):
+        if marker is None:
+            return []
+        self._ensure_keyframe_markers()
+        targets = []
+        seen = set()
+
+        def add_target(seconds, tolerance=None):
+            try:
+                value = float(seconds)
+            except (TypeError, ValueError):
+                return
+            if value < 0.0:
+                value = 0.0
+            key = round(value, 6)
+            if key in seen:
+                return
+            seen.add(key)
+            if tolerance is not None:
+                try:
+                    tol = float(tolerance)
+                except (TypeError, ValueError):
+                    tol = None
+                if tol and tol > 0.0:
+                    targets.append({"seconds": value, "tolerance": tol})
+                    return
+            targets.append(value)
+
+        current_key = marker.get("key")
+        for other in getattr(self, "_keyframe_markers", []):
+            if other is marker:
+                continue
+            if current_key is not None and other.get("key") == current_key:
+                continue
+            absolute = self._marker_absolute_seconds(other)
+            if absolute is None:
+                continue
+            add_target(absolute)
+
+        snap_helper = getattr(self, "snap", None)
+        if snap_helper and hasattr(snap_helper, "keyframe_snap_seconds"):
+            for entry in snap_helper.keyframe_snap_seconds(include_playhead=False):
+                if isinstance(entry, dict):
+                    add_target(entry.get("seconds"), entry.get("tolerance"))
+                else:
+                    add_target(entry)
+
+        return targets
+
+    def _apply_keyframe_snapping(self, drag, local_seconds):
+        if not drag or not self.enable_snapping:
+            return local_seconds
+        targets = drag.get("snap_targets")
+        if not targets:
+            return local_seconds
+        pps = float(self.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return local_seconds
+        tolerance_px = 0.0
+        snap_helper = getattr(self, "snap", None)
+        if snap_helper and hasattr(snap_helper, "_snap_tolerance_px"):
+            try:
+                tolerance_px = float(snap_helper._snap_tolerance_px())
+            except (TypeError, ValueError):
+                tolerance_px = 0.0
+        if tolerance_px <= 0.0:
+            return local_seconds
+        tolerance_sec = tolerance_px / pps
+        try:
+            current = float(local_seconds)
+        except (TypeError, ValueError):
+            return local_seconds
+        base_position = self._keyframe_base_position(drag)
+        absolute = base_position + current
+        best = None
+        min_diff = None
+        for target in targets:
+            tolerance_override = None
+            if isinstance(target, dict):
+                value = target.get("seconds")
+                tolerance_override = target.get("tolerance")
+            else:
+                value = target
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+            local_tol = tolerance_sec
+            if tolerance_override is not None:
+                try:
+                    override = float(tolerance_override)
+                except (TypeError, ValueError):
+                    override = None
+                if override is not None and override > 0.0:
+                    local_tol = override
+            diff = abs(value - absolute)
+            if diff > local_tol + 1e-9:
+                continue
+            if min_diff is None or diff < min_diff:
+                min_diff = diff
+                best = value
+        if best is None:
+            return local_seconds
+        snapped = best - base_position
+        if snapped < 0.0:
+            snapped = 0.0
+        return snapped
 
     def _resolve_data_path(self, data, path):
         current = data
@@ -2376,8 +2559,12 @@ class TimelineWidget(QWidget):
             "clip_end": marker.get("clip_end", 0.0),
             "moved": False,
             "data_path": marker.get("data_path"),
+            "data_paths": tuple(marker.get("data_paths", ()) or ()),
             "clear_existing": bool(getattr(self, "_press_keyframe_clear", True)),
         }
+        if not self._dragging_keyframe["data_paths"] and marker.get("data_path"):
+            self._dragging_keyframe["data_paths"] = (marker.get("data_path"),)
+        self._dragging_keyframe["snap_targets"] = tuple(self._compute_keyframe_snap_targets(marker))
         self._fix_cursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
         self._keyframes_dirty = True
 
@@ -2396,6 +2583,10 @@ class TimelineWidget(QWidget):
         x = max(clip_rect.left(), min(x, clip_rect.right()))
         local_px = x - clip_rect.left()
         seconds = clip_start + local_px / self.pixels_per_second
+        seconds = self._clamp_keyframe_seconds(seconds, clip_start, clip_end)
+        relative_seconds = max(0.0, seconds - clip_start)
+        relative_seconds = self._apply_keyframe_snapping(drag, relative_seconds)
+        seconds = clip_start + relative_seconds
         seconds = self._clamp_keyframe_seconds(seconds, clip_start, clip_end)
         seconds = self._snap_time(seconds)
         relative_seconds = max(0.0, seconds - clip_start)
@@ -2428,17 +2619,23 @@ class TimelineWidget(QWidget):
         if not timeline:
             return
         transaction_id = drag.get("transaction_id")
-        data_path = drag.get("data_path")
+        data_paths = tuple(drag.get("data_paths") or ())
+        data_path = drag.get("data_path") if drag.get("data_path") else None
         if marker.get("type") == "transition":
             transition = marker.get("transition")
             if not transition:
                 return
             data_copy = json.loads(json.dumps(transition.data))
             moved_specific = False
-            if data_path:
-                moved_specific = self._set_keyframe_frame_at_path(data_copy, data_path, new_frame)
+            target_paths = data_paths if data_paths else (() if data_path is None else (data_path,))
+            if target_paths:
+                for path in target_paths:
+                    if path and self._set_keyframe_frame_at_path(data_copy, path, new_frame):
+                        moved_specific = True
                 if (do_move or force) and isinstance(transition.data, (dict, list)) and moved_specific:
-                    self._set_keyframe_frame_at_path(transition.data, data_path, new_frame)
+                    for path in target_paths:
+                        if path:
+                            self._set_keyframe_frame_at_path(transition.data, path, new_frame)
             if (do_move or force) and not moved_specific:
                 self._move_keyframes_in_object(data_copy, old_frame, new_frame)
                 if isinstance(transition.data, (dict, list)):
@@ -2455,10 +2652,15 @@ class TimelineWidget(QWidget):
                 return
             data_copy = json.loads(json.dumps(clip.data))
             moved_specific = False
-            if data_path:
-                moved_specific = self._set_keyframe_frame_at_path(data_copy, data_path, new_frame)
+            target_paths = data_paths if data_paths else (() if data_path is None else (data_path,))
+            if target_paths:
+                for path in target_paths:
+                    if path and self._set_keyframe_frame_at_path(data_copy, path, new_frame):
+                        moved_specific = True
                 if (do_move or force) and isinstance(clip.data, (dict, list)) and moved_specific:
-                    self._set_keyframe_frame_at_path(clip.data, data_path, new_frame)
+                    for path in target_paths:
+                        if path:
+                            self._set_keyframe_frame_at_path(clip.data, path, new_frame)
             if (do_move or force) and not moved_specific:
                 if marker.get("type") == "effect":
                     effect_id = marker.get("owner_id")
@@ -2585,6 +2787,8 @@ class TimelineWidget(QWidget):
                     drag.get("object_type", "clip"),
                     drag.get("object_id", ""),
                 )
+            if moved and hasattr(self.win, "show_property_timeout"):
+                QTimer.singleShot(0, self.win.show_property_timeout)
         else:
             clear_existing = drag.get("clear_existing", True)
             self._handle_keyframe_click(marker, clear_existing=clear_existing)

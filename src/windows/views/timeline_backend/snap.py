@@ -199,6 +199,72 @@ class SnapHelper:
                 valid.append((px_value, max(0.0, tol_value)))
         return valid
 
+    def keyframe_snap_seconds(self, include_playhead=True):
+        """Return generic snap targets converted to seconds for keyframe drags."""
+
+        px_targets = self._target_edges_px()
+        pps = float(self.widget.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return []
+
+        h_offset = self._h_offset()
+        track_left = float(getattr(self.widget, "track_name_width", 0.0) or 0.0)
+
+        fps = float(getattr(self.widget, "fps_float", 0.0) or 0.0)
+        playhead_px = None
+        if fps > 0.0:
+            frame = float(getattr(self.widget, "current_frame", 0) or 0.0)
+            playhead_px = track_left + (frame / fps) * pps - h_offset
+
+        targets = []
+        seen = set()
+        for entry in px_targets:
+            tolerance_px = None
+            if isinstance(entry, tuple):
+                if not entry:
+                    continue
+                px_value = entry[0]
+                if len(entry) > 1:
+                    tolerance_px = entry[1]
+            else:
+                px_value = entry
+
+            try:
+                px_value = float(px_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(px_value):
+                continue
+
+            if not include_playhead and playhead_px is not None and math.isfinite(playhead_px):
+                if abs(px_value - playhead_px) <= 0.5:
+                    continue
+
+            seconds = (px_value + h_offset - track_left) / pps
+            if not math.isfinite(seconds):
+                continue
+            if seconds < 0.0:
+                seconds = 0.0
+
+            key = round(seconds, 6)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            tolerance_sec = None
+            if tolerance_px is not None:
+                try:
+                    tolerance_px = float(tolerance_px)
+                    tolerance_sec = abs(tolerance_px) / pps
+                except (TypeError, ValueError):
+                    tolerance_sec = None
+            if tolerance_sec and tolerance_sec > 0.0:
+                targets.append({"seconds": seconds, "tolerance": tolerance_sec})
+            else:
+                targets.append(seconds)
+
+        return targets
+
     def _diff_to_target(self, label: str, current_px: float, snap_px: float, targets, active):
         """Return (diff, target, reused_active, tolerance_px) for a given cursor position."""
 
