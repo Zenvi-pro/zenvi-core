@@ -182,6 +182,15 @@ QComboBox {
             .point_constant {
               background-image: url(../themes/humanity/images/keyframe-constant.svg);
             }
+            .keyframe-toggle-off {
+              background-image: url(../themes/humanity/images/keyframe-panel-off.svg);
+            }
+            .keyframe-toggle-on {
+              background-image: url(../themes/humanity/images/keyframe-panel-on.svg);
+            }
+            .keyframe-panel-add {
+              background-image: url(../themes/humanity/images/keyframe-panel-add.svg);
+            }
         """)
 
         # Emit signal

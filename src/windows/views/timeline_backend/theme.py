@@ -69,6 +69,9 @@ class TimelineTheme:
     menu_icon: Optional[QPixmap] = None
     menu_size: int = 0
     menu_margin: int = 0
+    keyframe_toggle_off_icon: Optional[QPixmap] = None
+    keyframe_toggle_on_icon: Optional[QPixmap] = None
+    keyframe_panel_add_icon: Optional[QPixmap] = None
     playhead_icon: Optional[QPixmap] = None
     playhead_icon_width: int = 0
     playhead_icon_height: int = 0
@@ -950,6 +953,18 @@ def _theme_apply_menu(theme: TimelineTheme, qt_theme) -> None:
         theme.menu_margin = val
 
 
+def _theme_apply_keyframe_panel(theme: TimelineTheme, qt_theme) -> None:
+    off_img = _theme_pixmap(qt_theme, ".keyframe-toggle-off", "background-image")
+    if off_img:
+        theme.keyframe_toggle_off_icon = off_img
+    on_img = _theme_pixmap(qt_theme, ".keyframe-toggle-on", "background-image")
+    if on_img:
+        theme.keyframe_toggle_on_icon = on_img
+    add_img = _theme_pixmap(qt_theme, ".keyframe-panel-add", "background-image")
+    if add_img:
+        theme.keyframe_panel_add_icon = add_img
+
+
 def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     """Update *theme* from a Qt theme instance using BaseTheme helpers."""
 
@@ -965,6 +980,7 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     _theme_apply_ruler(theme, qt_theme, css_sheet)
     _theme_apply_playhead(theme, qt_theme)
     _theme_apply_menu(theme, qt_theme)
+    _theme_apply_keyframe_panel(theme, qt_theme)
 
     return theme
 
@@ -1396,6 +1412,18 @@ def _css_apply_menu(theme: TimelineTheme, css: str, source: str, log_miss: bool)
             theme.menu_margin = int(float(match.group(1)))
 
 
+def _css_apply_keyframe_panel(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
+    off_img = _parse_pixmap(css, ".keyframe-toggle-off", "background-image", source, log_miss=log_miss)
+    if off_img:
+        theme.keyframe_toggle_off_icon = off_img
+    on_img = _parse_pixmap(css, ".keyframe-toggle-on", "background-image", source, log_miss=log_miss)
+    if on_img:
+        theme.keyframe_toggle_on_icon = on_img
+    add_img = _parse_pixmap(css, ".keyframe-panel-add", "background-image", source, log_miss=log_miss)
+    if add_img:
+        theme.keyframe_panel_add_icon = add_img
+
+
 def _css_apply_scrollbars(theme: TimelineTheme, css: str, source: str) -> None:
     col = _parse_color(css, "::-webkit-scrollbar-thumb", "background-color", source, log_miss=False)
     if col:
@@ -1430,6 +1458,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     _css_apply_ruler(theme, css, source, log_miss)
     _css_apply_playhead(theme, css, source, log_miss)
     _css_apply_menu(theme, css, source, log_miss)
+    _css_apply_keyframe_panel(theme, css, source, log_miss)
     _css_apply_scrollbars(theme, css, source)
 
     return theme
