@@ -183,10 +183,10 @@ QComboBox {
               background-image: url(../themes/humanity/images/keyframe-constant.svg);
             }
             .track-keyframe-panel-disabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-disabled.svg);
+              background-image: url(../themes/humanity/images/track-keyframe-panel-show-disabled.svg);
             }
             .track-keyframe-panel-enabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-enabled.svg);
+              background-image: url(../themes/humanity/images/track-keyframe-panel-show-enabled.svg);
             }
             .track-add-above-disabled {
               background-image: url(../themes/humanity/images/track-add-above-disabled.svg);

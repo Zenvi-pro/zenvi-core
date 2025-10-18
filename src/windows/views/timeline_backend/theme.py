@@ -7,6 +7,7 @@ from typing import Callable, Optional, Sequence, Tuple, Union
 
 from PyQt5.QtGui import QColor, QPixmap
 from classes.logger import log
+from classes.info import PATH
 
 
 @dataclass
@@ -1571,6 +1572,60 @@ def apply_theme(widget, css: str = "") -> bool:
                 "Theme [default] .playhead-top background-image loaded '%s'",
                 default_path,
             )
+
+    def _load_fallback_icon(*parts):
+        path = os.path.normpath(os.path.join(PATH, *parts))
+        if not os.path.exists(path):
+            return None
+        pix = QPixmap(path)
+        if pix.isNull():
+            return None
+        log.info("Theme [default] fallback icon loaded '%s'", path)
+        return pix
+
+    def _ensure_icon(attr, parts):
+        pix = getattr(t, attr, None)
+        if pix and not pix.isNull():
+            return
+        fallback = _load_fallback_icon(*parts)
+        if fallback:
+            setattr(t, attr, fallback)
+
+    _fallback_map = {
+        "track_keyframe_panel_disabled_icon": ("themes", "humanity", "images", "track-keyframe-panel-show-disabled.svg"),
+        "track_keyframe_panel_enabled_icon": ("themes", "humanity", "images", "track-keyframe-panel-show-enabled.svg"),
+        "track_add_above_disabled_icon": ("themes", "humanity", "images", "track-add-above-disabled.svg"),
+        "track_add_above_enabled_icon": ("themes", "humanity", "images", "track-add-above-enabled.svg"),
+        "track_add_below_disabled_icon": ("themes", "humanity", "images", "track-add-below-disabled.svg"),
+        "track_add_below_enabled_icon": ("themes", "humanity", "images", "track-add-below-enabled.svg"),
+        "track_delete_disabled_icon": ("themes", "humanity", "images", "track-delete-disabled.svg"),
+        "track_delete_enabled_icon": ("themes", "humanity", "images", "track-delete-enabled.svg"),
+        "track_locked_disabled_icon": ("themes", "humanity", "images", "track-locked-disabled.svg"),
+        "track_locked_enabled_icon": ("themes", "humanity", "images", "track-locked-enabled.svg"),
+        "track_unlocked_disabled_icon": ("themes", "humanity", "images", "track-unlocked-disabled.svg"),
+        "track_unlocked_enabled_icon": ("themes", "humanity", "images", "track-unlocked-enabled.svg"),
+    }
+
+    for attr, parts in _fallback_map.items():
+        _ensure_icon(attr, parts)
+
+    if (not t.keyframe_toggle_off_icon or t.keyframe_toggle_off_icon.isNull()) and t.track_keyframe_panel_disabled_icon:
+        t.keyframe_toggle_off_icon = t.track_keyframe_panel_disabled_icon
+    if (not t.keyframe_toggle_on_icon or t.keyframe_toggle_on_icon.isNull()) and t.track_keyframe_panel_enabled_icon:
+        t.keyframe_toggle_on_icon = t.track_keyframe_panel_enabled_icon
+
+    if not t.keyframe_panel_add_icon or t.keyframe_panel_add_icon.isNull():
+        fallback = _load_fallback_icon("themes", "humanity", "images", "keyframe-panel-add.svg")
+        if fallback:
+            t.keyframe_panel_add_icon = fallback
+
+    if not t.menu_icon or t.menu_icon.isNull():
+        fallback = _load_fallback_icon("timeline", "media", "images", "menu.svg")
+        if fallback:
+            t.menu_icon = fallback
+            if not t.menu_size:
+                t.menu_size = fallback.width()
+
 
     old_track_h = widget.track_height
     old_name_w = widget.track_name_width
