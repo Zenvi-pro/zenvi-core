@@ -64,6 +64,10 @@ from .snap import SnapHelper
 from .theme import DEFAULT_THEME, apply_theme as parse_theme
 from .state import TimelineStateMachine
 from .colors import effect_color_qcolor
+
+
+TRACK_TOOLBAR_LEFT_OFFSET = 8.0
+TRACK_TOOLBAR_SPACING_REDUCTION = 2.0
 from classes.waveform import SAMPLES_PER_SECOND as WAVEFORM_SAMPLES_PER_SECOND
 
 from classes.app import get_app
@@ -177,6 +181,11 @@ class TimelineWidget(QWidget):
 
         # Cached Qt text flags
         self._clip_text_flags = Qt.AlignLeft | Qt.AlignTop
+
+        # Track toolbar interaction state
+        self._toolbar_hover_key = None
+        self._toolbar_pressed_key = None
+        self._toolbar_pressed_inside = False
 
         # Frames per second float value
         fps_info = get_app().project.get("fps")
@@ -1341,38 +1350,230 @@ class TimelineWidget(QWidget):
             height,
         )
 
-    def _track_toggle_rect(self, name_rect):
+    def _track_toolbar_buttons(self, track, name_rect):
         painter = self.track_painter
-        pix = painter.toggle_on_pix or painter.toggle_off_pix
-        if not pix or name_rect.isNull():
-            return QRectF()
-        pix_w, pix_h = painter.logical_size(pix)
+        order = getattr(painter, "toolbar_order", ())
+        icons = getattr(painter, "toolbar_pixmaps", {})
+        if not order or not icons or name_rect.isNull():
+            return []
+
         margin = float(getattr(painter, "toggle_margin", 0.0) or 0.0)
         border = float(getattr(painter, "name_border_width", 0.0) or 0.0)
         menu_margin = float(getattr(painter, "menu_margin", 0.0) or 0.0)
         menu_w = 0.0
         if painter.menu_pix:
             menu_w, _ = painter.logical_size(painter.menu_pix)
-        width = max(0.0, pix_w + margin * 2.0)
-        height = max(0.0, pix_h + margin * 2.0)
-        if width <= 0.0 or height <= 0.0:
-            return QRectF()
-        left = name_rect.x() + border + menu_margin * 2.0 + menu_w
-        if left + width > name_rect.right():
-            left = max(name_rect.x() + border, name_rect.right() - width)
+
+        track_num = self.normalize_track_number(track.data.get("number"))
+
         base_height = min(float(self.vertical_factor or 0.0) or 0.0, name_rect.height())
         if base_height <= 0.0:
-            base_height = min(name_rect.height(), height)
+            base_height = name_rect.height()
         anchor_bottom = name_rect.y() + base_height
-        top = anchor_bottom - height
-        min_top = name_rect.y() + margin
-        if top < min_top:
-            top = min_top
-        max_top = name_rect.bottom() - height
-        if top > max_top:
-            top = max_top
-        available_height = name_rect.bottom() - top
-        return QRectF(left, top, width, min(height, available_height))
+
+        buttons = []
+        start_x = name_rect.x() + border + menu_margin * 2.0 + menu_w - TRACK_TOOLBAR_LEFT_OFFSET
+        min_start = name_rect.x() + border
+        if start_x < min_start:
+            start_x = min_start
+        current_x = start_x
+        right_limit = name_rect.right()
+
+        for key in order:
+            pix_info = icons.get(key)
+            if not pix_info:
+                continue
+            if key == "lock-toggle":
+                variant = pix_info.get("locked") or pix_info.get("unlocked") or {}
+                base_pix = variant.get("enabled") or variant.get("disabled")
+            else:
+                base_pix = pix_info.get("enabled") or pix_info.get("disabled")
+            if not base_pix:
+                continue
+            pix_w, pix_h = painter.logical_size(base_pix)
+            margin_x = max(0.0, margin - TRACK_TOOLBAR_SPACING_REDUCTION)
+            width = max(0.0, pix_w + margin_x * 2.0)
+            height = max(0.0, pix_h + margin * 2.0)
+            if width <= 0.0 or height <= 0.0:
+                continue
+
+            top = anchor_bottom - height
+            min_top = name_rect.y() + margin
+            if top < min_top:
+                top = min_top
+            max_top = name_rect.bottom() - height
+            if top > max_top:
+                top = max_top
+            available_height = name_rect.bottom() - top
+            rect = QRectF(current_x, top, width, min(height, available_height))
+
+            if rect.right() > right_limit:
+                overflow = rect.right() - right_limit
+                rect.setWidth(max(0.0, rect.width() - overflow))
+                rect.moveLeft(right_limit - rect.width())
+
+            if rect.width() <= 0.0:
+                break
+
+            buttons.append({
+                "key": key,
+                "track_id": track.id,
+                "track_num": track_num,
+                "rect": rect,
+                "margin": margin,
+                "margin_x": margin_x,
+                "margin_y": margin,
+                "pixmaps": pix_info,
+            })
+            current_x = rect.right() + margin_x
+        return buttons
+
+    def _track_toggle_rect(self, track, name_rect):
+        buttons = self._track_toolbar_buttons(track, name_rect)
+        return buttons[0]["rect"] if buttons else QRectF()
+
+    def _get_toolbar_button(self, track_id, key):
+        self.geometry.ensure()
+        for _track_rect, track, name_rect in self.geometry.track_rects:
+            if track.id != track_id:
+                continue
+            for button in self._track_toolbar_buttons(track, name_rect):
+                if button["key"] == key:
+                    info = dict(button)
+                    info["track"] = track
+                    info["name_rect"] = name_rect
+                    return info
+        return None
+
+    def _track_toolbar_button_at(self, pos):
+        self.geometry.ensure()
+        for _track_rect, track, name_rect in self.geometry.track_rects:
+            for button in self._track_toolbar_buttons(track, name_rect):
+                if button["rect"].contains(pos):
+                    info = dict(button)
+                    info["track"] = track
+                    info["name_rect"] = name_rect
+                    return info
+        return None
+
+    def _toolbar_button_pixmap(self, track, button, hovered=False, pressed=False):
+        pixmaps = button.get("pixmaps") or {}
+        key = button.get("key")
+
+        if key == "lock-toggle":
+            locked = bool(getattr(track, "data", {}).get("lock"))
+            variant = pixmaps.get("locked" if locked else "unlocked") or {}
+            state = "enabled" if locked else "disabled"
+            if hovered or pressed:
+                state = "enabled"
+            pix = variant.get(state) or variant.get("enabled") or variant.get("disabled")
+            return pix
+
+        if key == "keyframe-panel":
+            track_num = button.get("track_num")
+            enabled = bool(self._track_panel_enabled.get(track_num, False))
+            state = "enabled" if enabled else "disabled"
+            if hovered or pressed:
+                state = "enabled"
+            pix = pixmaps.get(state) or pixmaps.get("enabled") or pixmaps.get("disabled")
+            return pix
+
+        state = "enabled" if (hovered or pressed) else "disabled"
+        pix = pixmaps.get(state) or pixmaps.get("enabled") or pixmaps.get("disabled")
+        return pix
+
+    def _find_track_by_id(self, track_id):
+        for track in self.track_list:
+            if getattr(track, "id", None) == track_id:
+                return track
+        return None
+
+    def _toggle_track_panel(self, track_num):
+        current = self._track_panel_enabled.get(track_num, False)
+        new_state = not current
+        self._track_panel_enabled[track_num] = new_state
+        if not new_state:
+            self._clear_panel_selection(track_num)
+        self._update_track_panel_properties()
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _select_track_for_action(self, track_id):
+        if not track_id or not hasattr(self.win, "selected_tracks"):
+            return
+        if getattr(self.win, "selected_tracks", None) != [track_id]:
+            self.win.selected_tracks = [track_id]
+
+    def _activate_track_toolbar_button(self, button):
+        key = button.get("key")
+        track_id = button.get("track_id")
+        track_num = button.get("track_num")
+        track = button.get("track") or self._find_track_by_id(track_id)
+
+        if key == "keyframe-panel":
+            if track_num is not None:
+                self._toggle_track_panel(track_num)
+            return
+
+        if not self.win:
+            return
+
+        if key == "insert-above":
+            action = getattr(self.win, "actionAddTrackAbove_trigger", None)
+            if action and track_id:
+                self._select_track_for_action(track_id)
+                action()
+            return
+
+        if key == "insert-below":
+            action = getattr(self.win, "actionAddTrackBelow_trigger", None)
+            if action and track_id:
+                self._select_track_for_action(track_id)
+                action()
+            return
+
+        if key == "delete-track":
+            action = getattr(self.win, "actionRemoveTrack_trigger", None)
+            if action and track_id:
+                self._select_track_for_action(track_id)
+                action()
+            return
+
+        if key == "lock-toggle" and track_id:
+            self._select_track_for_action(track_id)
+            locked = bool(getattr(track, "data", {}).get("lock")) if track else False
+            if locked:
+                action = getattr(self.win, "actionUnlockTrack_trigger", None)
+                if action:
+                    action()
+                if track:
+                    track.data["lock"] = False
+            else:
+                action = getattr(self.win, "actionLockTrack_trigger", None)
+                if action:
+                    action()
+                if track:
+                    track.data["lock"] = True
+            self.geometry.mark_dirty()
+            self.update()
+
+    def _update_toolbar_hover(self, pos):
+        button = self._track_toolbar_button_at(pos)
+        key = None
+        if button:
+            key = (button.get("track_id"), button.get("key"))
+        if key != self._toolbar_hover_key:
+            self._toolbar_hover_key = key
+            self.update()
+
+    def _update_toolbar_pressed_state(self, pos):
+        if not self._toolbar_pressed_key:
+            return
+        button = self._get_toolbar_button(*self._toolbar_pressed_key)
+        inside = bool(button and button.get("rect") and button["rect"].contains(pos))
+        if inside != self._toolbar_pressed_inside:
+            self._toolbar_pressed_inside = inside
+            self.update()
 
     def _track_display_label(self, track):
         if not track or not isinstance(track.data, dict):
@@ -1663,7 +1864,7 @@ class TimelineWidget(QWidget):
             if not properties:
                 continue
             context = self.get_track_panel_context(track_num)
-            toggle_rect = self._track_toggle_rect(name_rect)
+            toggle_rect = self._track_toggle_rect(track, name_rect)
             indent = 0.0
             if not toggle_rect.isNull():
                 indent = max(0.0, toggle_rect.x() - name_rect.x())
@@ -4455,6 +4656,11 @@ class TimelineWidget(QWidget):
             self.setCursor(Qt.PointingHandCursor)
             return
 
+        toolbar_button = self._track_toolbar_button_at(pos)
+        if toolbar_button:
+            self.setCursor(Qt.PointingHandCursor)
+            return
+
         # Transition menu icons
         for rect, _tran, _selected in self.geometry.iter_transitions(reverse=True):
             if self._transition_menu_rect(rect).contains(pos):
@@ -4484,10 +4690,6 @@ class TimelineWidget(QWidget):
 
         # Track menu icons
         for _track_rect, _track, name_rect in self.geometry.track_rects:
-            toggle_rect = self._track_toggle_rect(name_rect)
-            if toggle_rect.contains(pos):
-                self.setCursor(Qt.PointingHandCursor)
-                return
             mrect = self._track_menu_rect(name_rect)
             if mrect.contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
@@ -4517,6 +4719,18 @@ class TimelineWidget(QWidget):
 
         self.geometry.ensure()
         pos = event.pos()
+
+        if event.button() == Qt.LeftButton:
+            toolbar_button = self._track_toolbar_button_at(pos)
+            if toolbar_button:
+                self._last_event = event
+                self._toolbar_pressed_key = (toolbar_button.get("track_id"), toolbar_button.get("key"))
+                self._toolbar_pressed_inside = True
+                self._toolbar_hover_key = self._toolbar_pressed_key
+                self.update()
+                event.accept()
+                return
+
         if self._handle_menu_icon_clicks(pos):
             return
 
@@ -4536,29 +4750,20 @@ class TimelineWidget(QWidget):
         self._last_event = event
         self.events.pressed.emit(event)
 
+    def leaveEvent(self, event):
+        if self._toolbar_hover_key is not None or self._toolbar_pressed_inside:
+            self._toolbar_hover_key = None
+            if self._toolbar_pressed_key:
+                self._toolbar_pressed_inside = False
+            self.update()
+        super().leaveEvent(event)
+
     def _handle_menu_icon_clicks(self, pos):
         return (
-            self._trigger_track_panel_toggle(pos)
-            or self._trigger_track_menu_icon(pos)
+            self._trigger_track_menu_icon(pos)
             or self._trigger_transition_menu_icon(pos)
             or self._trigger_clip_menu_icon(pos)
         )
-
-    def _trigger_track_panel_toggle(self, pos):
-        for _track_rect, track, name_rect in self.geometry.track_rects:
-            toggle_rect = self._track_toggle_rect(name_rect)
-            if toggle_rect.contains(pos):
-                track_num = self.normalize_track_number(track.data.get("number"))
-                current = self._track_panel_enabled.get(track_num, False)
-                new_state = not current
-                self._track_panel_enabled[track_num] = new_state
-                if not new_state:
-                    self._clear_panel_selection(track_num)
-                self._update_track_panel_properties()
-                self.geometry.mark_dirty()
-                self.update()
-                return True
-        return False
 
     def _trigger_track_menu_icon(self, pos):
         for _track_rect, track, name_rect in self.geometry.track_rects:
@@ -4693,11 +4898,34 @@ class TimelineWidget(QWidget):
             self._updateMiddlePan(event.pos())
             return
 
-        self._updateCursor(event.pos())
+        pos = event.pos()
+        if self._toolbar_pressed_key:
+            self._update_toolbar_pressed_state(pos)
+        self._update_toolbar_hover(pos)
+
+        self._updateCursor(pos)
         self.events.moved.emit(event)
 
     def mouseReleaseEvent(self, event):
         self._last_event = event
+
+        if event.button() == Qt.LeftButton and self._toolbar_pressed_key:
+            button = self._get_toolbar_button(*self._toolbar_pressed_key)
+            inside = bool(
+                button
+                and button.get("rect")
+                and button["rect"].contains(event.pos())
+                and self._toolbar_pressed_inside
+            )
+            self._toolbar_pressed_key = None
+            self._toolbar_pressed_inside = False
+            if inside and button:
+                self._activate_track_toolbar_button(button)
+            self._update_toolbar_hover(event.pos())
+            self.update()
+            event.accept()
+            return
+
         if event.button() == Qt.MiddleButton and self._middle_panning:
             self._finishMiddlePan()
             return
@@ -5834,4 +6062,3 @@ class TimelineWidget(QWidget):
         # Recompute all clip/track geometry and repaint immediately
         TimelineWidget.changed(self, None)
         self.update()
-

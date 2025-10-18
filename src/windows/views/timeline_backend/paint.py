@@ -979,6 +979,81 @@ class TrackPainter(BasePainter):
             )
         self.toggle_margin = self.w.theme.menu_margin
 
+        self.toolbar_order = (
+            "keyframe-panel",
+            "insert-above",
+            "insert-below",
+            "lock-toggle",
+            "delete-track",
+        )
+
+        toolbar = {}
+
+        keyframe_disabled = _scaled_toggle(
+            getattr(self.w.theme, "track_keyframe_panel_disabled_icon", None)
+            or self.w.theme.keyframe_toggle_off_icon
+        )
+        keyframe_enabled = _scaled_toggle(
+            getattr(self.w.theme, "track_keyframe_panel_enabled_icon", None)
+            or self.w.theme.keyframe_toggle_on_icon
+        )
+        if keyframe_disabled or keyframe_enabled:
+            toolbar["keyframe-panel"] = {
+                "disabled": keyframe_disabled,
+                "enabled": keyframe_enabled or keyframe_disabled,
+            }
+            if not self.toggle_off_pix:
+                self.toggle_off_pix = keyframe_disabled
+            if not self.toggle_on_pix:
+                self.toggle_on_pix = keyframe_enabled or keyframe_disabled
+
+        insert_above_disabled = _scaled_toggle(getattr(self.w.theme, "track_add_above_disabled_icon", None))
+        insert_above_enabled = _scaled_toggle(getattr(self.w.theme, "track_add_above_enabled_icon", None))
+        if insert_above_disabled or insert_above_enabled:
+            toolbar["insert-above"] = {
+                "disabled": insert_above_disabled,
+                "enabled": insert_above_enabled or insert_above_disabled,
+            }
+
+        insert_below_disabled = _scaled_toggle(getattr(self.w.theme, "track_add_below_disabled_icon", None))
+        insert_below_enabled = _scaled_toggle(getattr(self.w.theme, "track_add_below_enabled_icon", None))
+        if insert_below_disabled or insert_below_enabled:
+            toolbar["insert-below"] = {
+                "disabled": insert_below_disabled,
+                "enabled": insert_below_enabled or insert_below_disabled,
+            }
+
+        delete_disabled = _scaled_toggle(getattr(self.w.theme, "track_delete_disabled_icon", None))
+        delete_enabled = _scaled_toggle(getattr(self.w.theme, "track_delete_enabled_icon", None))
+        if delete_disabled or delete_enabled:
+            toolbar["delete-track"] = {
+                "disabled": delete_disabled,
+                "enabled": delete_enabled or delete_disabled,
+            }
+
+        lock_locked_disabled = _scaled_toggle(getattr(self.w.theme, "track_locked_disabled_icon", None))
+        lock_locked_enabled = _scaled_toggle(getattr(self.w.theme, "track_locked_enabled_icon", None))
+        lock_unlocked_disabled = _scaled_toggle(getattr(self.w.theme, "track_unlocked_disabled_icon", None))
+        lock_unlocked_enabled = _scaled_toggle(getattr(self.w.theme, "track_unlocked_enabled_icon", None))
+        if (
+            lock_locked_disabled
+            or lock_locked_enabled
+            or lock_unlocked_disabled
+            or lock_unlocked_enabled
+        ):
+            toolbar["lock-toggle"] = {
+                "locked": {
+                    "disabled": lock_locked_disabled,
+                    "enabled": lock_locked_enabled or lock_locked_disabled,
+                },
+                "unlocked": {
+                    "disabled": lock_unlocked_disabled,
+                    "enabled": lock_unlocked_enabled or lock_unlocked_disabled,
+                },
+            }
+
+        self.toolbar_pixmaps = toolbar
+
     def paint_background(self, painter: QPainter):
         area = QRectF(
             self.w.track_name_width,
@@ -1079,27 +1154,37 @@ class TrackPainter(BasePainter):
                 )
                 menu_w, _ = self.logical_size(self.menu_pix)
 
-            toggle_rect = self.w._track_toggle_rect(name_rect)
-            toggle_h = toggle_rect.height() if not toggle_rect.isNull() else 0.0
+            buttons = self.w._track_toolbar_buttons(track, name_rect)
+            toolbar_height = 0.0
+            if buttons:
+                toolbar_height = max(btn["rect"].height() for btn in buttons)
             text_offset = self.name_border_width + self.menu_margin * 2 + menu_w
             painter.setPen(self.w.theme.track.font_color)
             painter.drawText(
-                name_rect.adjusted(text_offset, self.menu_margin, -4, -toggle_h),
+                name_rect.adjusted(text_offset, self.menu_margin, -4, -toolbar_height),
                 Qt.AlignLeft | Qt.AlignTop,
                 self.w._track_display_label(track)
             )
 
-            track_num = self.w.normalize_track_number(track.data.get("number"))
-            toggle_pix = (
-                self.toggle_on_pix
-                if self.w._track_panel_enabled.get(track_num, False)
-                else (self.toggle_off_pix or self.toggle_on_pix)
-            )
-            if toggle_pix and not toggle_rect.isNull():
-                margin = float(getattr(self, "toggle_margin", 0.0) or 0.0)
-                draw_x = toggle_rect.x() + margin
-                draw_y = toggle_rect.y() + margin
-                painter.drawPixmap(QPointF(draw_x, draw_y), toggle_pix)
+            hover_key = getattr(self.w, "_toolbar_hover_key", None)
+            pressed_key = getattr(self.w, "_toolbar_pressed_key", None)
+            pressed_inside = getattr(self.w, "_toolbar_pressed_inside", False)
+            for button in buttons:
+                button_key = (button.get("track_id"), button.get("key"))
+                pix = self.w._toolbar_button_pixmap(
+                    track,
+                    button,
+                    hovered=hover_key == button_key,
+                    pressed=pressed_key == button_key and pressed_inside,
+                )
+                if not pix:
+                    continue
+                default_margin = float(getattr(self, "toggle_margin", 0.0) or 0.0)
+                margin_x = button.get("margin_x", button.get("margin", default_margin))
+                margin_y = button.get("margin_y", button.get("margin", default_margin))
+                draw_x = button["rect"].x() + margin_x
+                draw_y = button["rect"].y() + margin_y
+                painter.drawPixmap(QPointF(draw_x, draw_y), pix)
         painter.restore()
 
 
@@ -1360,7 +1445,7 @@ class KeyframePanelPainter(BasePainter):
                     painter.setClipRect(timeline_area)
                     painter.fillRect(panel_fill, self.panel_brush)
                     painter.restore()
-            toggle_rect = self.w._track_toggle_rect(name_rect)
+            toggle_rect = self.w._track_toggle_rect(track, name_rect)
             indent = 0.0
             if not toggle_rect.isNull():
                 indent = max(0.0, toggle_rect.x() - label_panel.x())

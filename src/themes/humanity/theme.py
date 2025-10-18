@@ -182,11 +182,41 @@ QComboBox {
             .point_constant {
               background-image: url(../themes/humanity/images/keyframe-constant.svg);
             }
-            .keyframe-toggle-off {
-              background-image: url(../themes/humanity/images/keyframe-panel-off.svg);
+            .track-keyframe-panel-disabled {
+              background-image: url(../themes/humanity/images/track-keyframe-panel-disabled.svg);
             }
-            .keyframe-toggle-on {
-              background-image: url(../themes/humanity/images/keyframe-panel-on.svg);
+            .track-keyframe-panel-enabled {
+              background-image: url(../themes/humanity/images/track-keyframe-panel-enabled.svg);
+            }
+            .track-add-above-disabled {
+              background-image: url(../themes/humanity/images/track-add-above-disabled.svg);
+            }
+            .track-add-above-enabled {
+              background-image: url(../themes/humanity/images/track-add-above-enabled.svg);
+            }
+            .track-add-below-disabled {
+              background-image: url(../themes/humanity/images/track-add-below-disabled.svg);
+            }
+            .track-add-below-enabled {
+              background-image: url(../themes/humanity/images/track-add-below-enabled.svg);
+            }
+            .track-delete-disabled {
+              background-image: url(../themes/humanity/images/track-delete-disabled.svg);
+            }
+            .track-delete-enabled {
+              background-image: url(../themes/humanity/images/track-delete-enabled.svg);
+            }
+            .track-locked-disabled {
+              background-image: url(../themes/humanity/images/track-locked-disabled.svg);
+            }
+            .track-locked-enabled {
+              background-image: url(../themes/humanity/images/track-locked-enabled.svg);
+            }
+            .track-unlocked-disabled {
+              background-image: url(../themes/humanity/images/track-unlocked-disabled.svg);
+            }
+            .track-unlocked-enabled {
+              background-image: url(../themes/humanity/images/track-unlocked-enabled.svg);
             }
             .keyframe-panel-add {
               background-image: url(../themes/humanity/images/keyframe-panel-add.svg);

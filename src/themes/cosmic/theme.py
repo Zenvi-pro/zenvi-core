@@ -718,11 +718,41 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             .point_constant {
               background-image: url(../themes/cosmic/images/keyframe-constant.svg);
             }
-            .keyframe-toggle-off {
-              background-image: url(../themes/cosmic/images/keyframe-panel-off.svg);
+            .track-keyframe-panel-disabled {
+              background-image: url(../themes/cosmic/images/track-keyframe-panel-show-disabled.svg);
             }
-            .keyframe-toggle-on {
-              background-image: url(../themes/cosmic/images/keyframe-panel-on.svg);
+            .track-keyframe-panel-enabled {
+              background-image: url(../themes/cosmic/images/track-keyframe-panel-show-enabled.svg);
+            }
+            .track-add-above-disabled {
+              background-image: url(../themes/cosmic/images/track-add-above-disabled.svg);
+            }
+            .track-add-above-enabled {
+              background-image: url(../themes/cosmic/images/track-add-above-enabled.svg);
+            }
+            .track-add-below-disabled {
+              background-image: url(../themes/cosmic/images/track-add-below-disabled.svg);
+            }
+            .track-add-below-enabled {
+              background-image: url(../themes/cosmic/images/track-add-below-enabled.svg);
+            }
+            .track-delete-disabled {
+              background-image: url(../themes/cosmic/images/track-delete-disabled.svg);
+            }
+            .track-delete-enabled {
+              background-image: url(../themes/cosmic/images/track-delete-enabled.svg);
+            }
+            .track-locked-disabled {
+              background-image: url(../themes/cosmic/images/track-locked-disabled.svg);
+            }
+            .track-locked-enabled {
+              background-image: url(../themes/cosmic/images/track-locked-enabled.svg);
+            }
+            .track-unlocked-disabled {
+              background-image: url(../themes/cosmic/images/track-unlocked-disabled.svg);
+            }
+            .track-unlocked-enabled {
+              background-image: url(../themes/cosmic/images/track-unlocked-enabled.svg);
             }
             .keyframe-panel-add {
               background-image: url(../themes/cosmic/images/keyframe-panel-add.svg);

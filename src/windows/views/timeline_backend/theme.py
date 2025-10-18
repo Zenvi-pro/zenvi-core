@@ -71,6 +71,18 @@ class TimelineTheme:
     menu_margin: int = 0
     keyframe_toggle_off_icon: Optional[QPixmap] = None
     keyframe_toggle_on_icon: Optional[QPixmap] = None
+    track_keyframe_panel_disabled_icon: Optional[QPixmap] = None
+    track_keyframe_panel_enabled_icon: Optional[QPixmap] = None
+    track_add_above_disabled_icon: Optional[QPixmap] = None
+    track_add_above_enabled_icon: Optional[QPixmap] = None
+    track_add_below_disabled_icon: Optional[QPixmap] = None
+    track_add_below_enabled_icon: Optional[QPixmap] = None
+    track_delete_disabled_icon: Optional[QPixmap] = None
+    track_delete_enabled_icon: Optional[QPixmap] = None
+    track_locked_disabled_icon: Optional[QPixmap] = None
+    track_locked_enabled_icon: Optional[QPixmap] = None
+    track_unlocked_disabled_icon: Optional[QPixmap] = None
+    track_unlocked_enabled_icon: Optional[QPixmap] = None
     keyframe_panel_add_icon: Optional[QPixmap] = None
     keyframe_panel_property_bg: QColor = field(default_factory=QColor)
     playhead_icon: Optional[QPixmap] = None
@@ -955,11 +967,19 @@ def _theme_apply_menu(theme: TimelineTheme, qt_theme) -> None:
 
 
 def _theme_apply_keyframe_panel(theme: TimelineTheme, qt_theme) -> None:
-    off_img = _theme_pixmap(qt_theme, ".keyframe-toggle-off", "background-image")
+    off_img = (
+        _theme_pixmap(qt_theme, ".track-keyframe-panel-disabled", "background-image")
+        or _theme_pixmap(qt_theme, ".keyframe-toggle-off", "background-image")
+    )
     if off_img:
+        theme.track_keyframe_panel_disabled_icon = off_img
         theme.keyframe_toggle_off_icon = off_img
-    on_img = _theme_pixmap(qt_theme, ".keyframe-toggle-on", "background-image")
+    on_img = (
+        _theme_pixmap(qt_theme, ".track-keyframe-panel-enabled", "background-image")
+        or _theme_pixmap(qt_theme, ".keyframe-toggle-on", "background-image")
+    )
     if on_img:
+        theme.track_keyframe_panel_enabled_icon = on_img
         theme.keyframe_toggle_on_icon = on_img
     add_img = _theme_pixmap(qt_theme, ".keyframe-panel-add", "background-image")
     if add_img:
@@ -967,6 +987,27 @@ def _theme_apply_keyframe_panel(theme: TimelineTheme, qt_theme) -> None:
     panel_bg = _theme_get_color(qt_theme, "QMenuBar", ("background", "background-color"))
     if panel_bg:
         theme.keyframe_panel_property_bg = panel_bg
+
+
+def _theme_apply_track_toolbar(theme: TimelineTheme, qt_theme) -> None:
+    if not qt_theme:
+        return
+
+    def _set_icon(attr, selector):
+        pix = _theme_pixmap(qt_theme, selector, "background-image")
+        if pix:
+            setattr(theme, attr, pix)
+
+    _set_icon("track_add_above_disabled_icon", ".track-add-above-disabled")
+    _set_icon("track_add_above_enabled_icon", ".track-add-above-enabled")
+    _set_icon("track_add_below_disabled_icon", ".track-add-below-disabled")
+    _set_icon("track_add_below_enabled_icon", ".track-add-below-enabled")
+    _set_icon("track_delete_disabled_icon", ".track-delete-disabled")
+    _set_icon("track_delete_enabled_icon", ".track-delete-enabled")
+    _set_icon("track_locked_disabled_icon", ".track-locked-disabled")
+    _set_icon("track_locked_enabled_icon", ".track-locked-enabled")
+    _set_icon("track_unlocked_disabled_icon", ".track-unlocked-disabled")
+    _set_icon("track_unlocked_enabled_icon", ".track-unlocked-enabled")
 
 
 def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
@@ -985,6 +1026,7 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     _theme_apply_playhead(theme, qt_theme)
     _theme_apply_menu(theme, qt_theme)
     _theme_apply_keyframe_panel(theme, qt_theme)
+    _theme_apply_track_toolbar(theme, qt_theme)
 
     return theme
 
@@ -1417,15 +1459,47 @@ def _css_apply_menu(theme: TimelineTheme, css: str, source: str, log_miss: bool)
 
 
 def _css_apply_keyframe_panel(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
-    off_img = _parse_pixmap(css, ".keyframe-toggle-off", "background-image", source, log_miss=log_miss)
+    off_img = _parse_pixmap(
+        css,
+        ".track-keyframe-panel-disabled",
+        "background-image",
+        source,
+        log_miss=log_miss,
+    ) or _parse_pixmap(css, ".keyframe-toggle-off", "background-image", source, log_miss=log_miss)
     if off_img:
+        theme.track_keyframe_panel_disabled_icon = off_img
         theme.keyframe_toggle_off_icon = off_img
-    on_img = _parse_pixmap(css, ".keyframe-toggle-on", "background-image", source, log_miss=log_miss)
+    on_img = _parse_pixmap(
+        css,
+        ".track-keyframe-panel-enabled",
+        "background-image",
+        source,
+        log_miss=log_miss,
+    ) or _parse_pixmap(css, ".keyframe-toggle-on", "background-image", source, log_miss=log_miss)
     if on_img:
+        theme.track_keyframe_panel_enabled_icon = on_img
         theme.keyframe_toggle_on_icon = on_img
     add_img = _parse_pixmap(css, ".keyframe-panel-add", "background-image", source, log_miss=log_miss)
     if add_img:
         theme.keyframe_panel_add_icon = add_img
+
+
+def _css_apply_track_toolbar(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
+    def _set_icon(attr, selector):
+        pix = _parse_pixmap(css, selector, "background-image", source, log_miss=log_miss)
+        if pix:
+            setattr(theme, attr, pix)
+
+    _set_icon("track_add_above_disabled_icon", ".track-add-above-disabled")
+    _set_icon("track_add_above_enabled_icon", ".track-add-above-enabled")
+    _set_icon("track_add_below_disabled_icon", ".track-add-below-disabled")
+    _set_icon("track_add_below_enabled_icon", ".track-add-below-enabled")
+    _set_icon("track_delete_disabled_icon", ".track-delete-disabled")
+    _set_icon("track_delete_enabled_icon", ".track-delete-enabled")
+    _set_icon("track_locked_disabled_icon", ".track-locked-disabled")
+    _set_icon("track_locked_enabled_icon", ".track-locked-enabled")
+    _set_icon("track_unlocked_disabled_icon", ".track-unlocked-disabled")
+    _set_icon("track_unlocked_enabled_icon", ".track-unlocked-enabled")
 
 
 def _css_apply_scrollbars(theme: TimelineTheme, css: str, source: str) -> None:
@@ -1463,6 +1537,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     _css_apply_playhead(theme, css, source, log_miss)
     _css_apply_menu(theme, css, source, log_miss)
     _css_apply_keyframe_panel(theme, css, source, log_miss)
+    _css_apply_track_toolbar(theme, css, source, log_miss)
     _css_apply_scrollbars(theme, css, source)
 
     return theme
