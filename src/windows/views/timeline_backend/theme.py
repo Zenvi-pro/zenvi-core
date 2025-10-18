@@ -5,6 +5,7 @@ import os
 import re
 from typing import Callable, Optional, Sequence, Tuple, Union
 
+from PyQt5.QtCore import QFile, QByteArray
 from PyQt5.QtGui import QColor, QPixmap
 from classes.logger import log
 from classes.info import PATH
@@ -119,6 +120,41 @@ try:
         MAIN_CSS = _f.read()
 except OSError:
     MAIN_CSS = ""
+
+
+def _annotate_svg_metadata(pix: Optional[QPixmap], source: Optional[str]) -> Optional[QPixmap]:
+    """Attach SVG metadata (path + bytes) to *pix* when available."""
+    if not pix or pix.isNull() or not source or not source.lower().endswith(".svg"):
+        return pix
+    try:
+        pix.svg_path = source
+        data: Optional[bytes] = None
+        if source.startswith(":"):
+            file_obj = QFile(source)
+            if file_obj.open(QFile.ReadOnly):
+                try:
+                    data = bytes(file_obj.readAll())
+                finally:
+                    file_obj.close()
+        else:
+            with open(source, "rb") as fh:
+                data = fh.read()
+        if data:
+            pix.svg_bytes = data
+            try:
+                pix.svg_qbytearray = QByteArray(data)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return pix
+
+
+def _load_pixmap_with_meta(path: str) -> Optional[QPixmap]:
+    pix = QPixmap(path)
+    if pix.isNull():
+        return None
+    return _annotate_svg_metadata(pix, path)
 
 
 def _css_prop(
@@ -372,7 +408,7 @@ def _parse_pixmap(
         if path.startswith(":"):
             img = QPixmap(path)
             if not img.isNull():
-                return img
+                return _annotate_svg_metadata(img, path)
         if not os.path.isabs(path):
             base = os.path.dirname(_CSS_PATH)
             found = None
@@ -385,8 +421,8 @@ def _parse_pixmap(
                     break
             path = found or os.path.normpath(os.path.join(base, path))
         if os.path.exists(path):
-            img = QPixmap(path)
-            if not img.isNull():
+            img = _load_pixmap_with_meta(path)
+            if img:
                 if selector == ".playhead-top" and prop == "background-image":
                     log.info(
                         "Theme [%s] %s %s loaded '%s'",
@@ -456,7 +492,7 @@ def _theme_pixmap(
         if path.startswith(":"):
             img = QPixmap(path)
             if not img.isNull():
-                return img
+                return _annotate_svg_metadata(img, path)
         module_path = os.path.dirname(__import__(qt_theme.__module__).__file__)
         if not os.path.isabs(path):
             candidate = os.path.normpath(os.path.join(module_path, path))
@@ -464,8 +500,8 @@ def _theme_pixmap(
                 candidate = os.path.normpath(os.path.join(os.path.dirname(module_path), path))
             path = candidate
         if os.path.exists(path):
-            img = QPixmap(path)
-            if not img.isNull():
+            img = _load_pixmap_with_meta(path)
+            if img:
                 if selector == ".playhead-top" and prop == "background-image":
                     log.info(
                         "Theme [theme] %s %s loaded '%s'",
@@ -1577,8 +1613,8 @@ def apply_theme(widget, css: str = "") -> bool:
         path = os.path.normpath(os.path.join(PATH, *parts))
         if not os.path.exists(path):
             return None
-        pix = QPixmap(path)
-        if pix.isNull():
+        pix = _load_pixmap_with_meta(path)
+        if not pix:
             return None
         log.info("Theme [default] fallback icon loaded '%s'", path)
         return pix

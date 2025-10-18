@@ -14,8 +14,10 @@ from PyQt5.QtGui import (
     QLinearGradient,
     QRadialGradient,
 )
+from PyQt5.QtSvg import QSvgRenderer
 from PyQt5.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 import math
+import os
 from classes.app import get_app
 from classes.logger import log
 from classes.time_parts import secondsToTime
@@ -42,7 +44,76 @@ class BasePainter:
             h = pixmap.height()
         w = max(1, w)
         h = max(1, h)
-        return pixmap.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+        ratio = 1.0
+        try:
+            ratio = float(self.w.devicePixelRatioF())
+        except AttributeError:
+            try:
+                ratio = float(self.w.devicePixelRatio())
+            except AttributeError:
+                ratio = 1.0
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            ratio = 1.0
+
+        target_w = max(1, int(round(w * ratio)))
+        target_h = max(1, int(round(h * ratio)))
+
+        svg_renderer = None
+        svg_data = getattr(pixmap, "svg_qbytearray", None)
+        if svg_data:
+            renderer = QSvgRenderer(svg_data)
+            if renderer.isValid():
+                svg_renderer = renderer
+        else:
+            svg_path = getattr(pixmap, "svg_path", None)
+            if svg_path:
+                if svg_path.startswith(":") or os.path.exists(svg_path):
+                    renderer = QSvgRenderer(svg_path)
+                    if renderer.isValid():
+                        svg_renderer = renderer
+
+        if svg_renderer:
+            cache = getattr(pixmap, "_scaled_cache", None)
+            cache_key = (target_w, target_h, ratio)
+            if isinstance(cache, dict):
+                cached = cache.get(cache_key)
+                if cached and not cached.isNull():
+                    return cached
+
+            image = QImage(target_w, target_h, QImage.Format_ARGB32_Premultiplied)
+            image.fill(0)
+            painter = QPainter(image)
+            svg_renderer.render(painter, QRectF(0, 0, target_w, target_h))
+            painter.end()
+            scaled = QPixmap.fromImage(image)
+            scaled.setDevicePixelRatio(ratio)
+            if hasattr(pixmap, "svg_path"):
+                scaled.svg_path = pixmap.svg_path
+            if hasattr(pixmap, "svg_bytes"):
+                scaled.svg_bytes = pixmap.svg_bytes
+            if svg_data:
+                scaled.svg_qbytearray = svg_data
+            if cache is None:
+                cache = {}
+                try:
+                    pixmap._scaled_cache = cache
+                except Exception:
+                    cache = None
+            if cache is not None:
+                cache[cache_key] = scaled
+            return scaled
+
+        scaled = pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if ratio != 1.0:
+            scaled.setDevicePixelRatio(ratio)
+        if hasattr(pixmap, "svg_path") and not hasattr(scaled, "svg_path"):
+            scaled.svg_path = pixmap.svg_path
+        if hasattr(pixmap, "svg_bytes") and not hasattr(scaled, "svg_bytes"):
+            scaled.svg_bytes = pixmap.svg_bytes
+        if svg_data and not hasattr(scaled, "svg_qbytearray"):
+            scaled.svg_qbytearray = svg_data
+        return scaled
 
     def logical_size(self, pixmap):
         """Return (width, height) of *pixmap* in logical units."""
