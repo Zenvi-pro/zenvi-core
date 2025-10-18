@@ -28,6 +28,7 @@
 from PyQt5.QtCore import QPointF, QRectF
 
 from classes.app import get_app
+from classes.logger import log
 from classes.query import Clip, Track, Transition, Marker
 
 
@@ -42,6 +43,8 @@ class Geometry:
         self.transition_entries = []
         self.marker_rects = []
         self.track_list = []
+        self.panel_rects = {}
+        self._view_context = {}
 
     # ------------------------------------------------------------------
     # Cache management
@@ -65,6 +68,7 @@ class Geometry:
         self.clip_entries.clear()
         self.transition_entries.clear()
         self.marker_rects.clear()
+        self.panel_rects.clear()
 
     def _build_layer_index(self):
         self.track_list = list(reversed(sorted(Track.filter())))
@@ -152,14 +156,37 @@ class Geometry:
         view_h = w.height() - w.ruler_height - w.scroll_bar_thickness
         timeline_w = max(view_w, duration * w.pixels_per_second)
         self._update_vertical_factor(layers, view_h)
-        spacing = self.widget.vertical_factor + getattr(w, "track_gap", 0)
+        track_gap = float(getattr(w, "track_gap", 0.0) or 0.0)
         top_margin = float(getattr(w, "track_margin_top", 0.0) or 0.0)
-        content_h = len(self.track_list) * spacing - getattr(w, "track_gap", 0)
+        track_offsets = {}
+        track_heights = {}
+        cumulative = 0.0
+        base_height = float(self.widget.vertical_factor or 0.0)
+        for idx, track in enumerate(self.track_list):
+            if idx > 0:
+                cumulative += track_gap
+            track_num = w.normalize_track_number(track.data.get("number"))
+            extra = float(w.get_track_panel_height(track_num))
+            extra = max(0.0, extra)
+            track_offsets[track_num] = cumulative
+            track_height = base_height + extra
+            track_heights[track_num] = track_height
+            cumulative += track_height
+            if extra > 0.0:
+                log.info(
+                    "Geometry: track %s base=%.2f extra=%.2f total=%.2f",
+                    track_num,
+                    base_height,
+                    extra,
+                    track_height,
+                )
+        content_h = max(cumulative, 0.0)
+        spacing = base_height + track_gap
         content_h = max(content_h, 0.0) + top_margin
         h_offset = self._update_horizontal_scrollbar(timeline_w, view_w)
         v_offset = self._update_vertical_scrollbar(content_h, view_h)
         w.h_scroll_offset = h_offset
-        return {
+        ctx = {
             "view_w": view_w,
             "view_h": view_h,
             "timeline_w": timeline_w,
@@ -168,20 +195,29 @@ class Geometry:
             "content_h": content_h,
             "h_offset": h_offset,
             "v_offset": v_offset,
+            "track_offsets": track_offsets,
+            "track_heights": track_heights,
         }
+        self._view_context = ctx
+        return ctx
 
     def _populate_track_rects(self, layers, ctx):
         w = self.widget
+        offsets = ctx.get("track_offsets", {})
+        heights = ctx.get("track_heights", {})
+        self.panel_rects = {}
         for track in self.track_list:
+            track_num = w.normalize_track_number(track.data.get("number"))
             layer_index = layers.get(track.data.get("number"), 0)
             y = (
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
-                + layer_index * ctx["spacing"]
+                + offsets.get(track_num, layer_index * ctx["spacing"])
                 - ctx["v_offset"]
             )
+            track_height = heights.get(track_num, w.vertical_factor)
             if (
-                y + w.vertical_factor <= w.ruler_height
+                y + track_height <= w.ruler_height
                 or y >= w.ruler_height + ctx["view_h"]
             ):
                 continue
@@ -189,10 +225,22 @@ class Geometry:
                 w.track_name_width - ctx["h_offset"],
                 y,
                 ctx["timeline_w"],
-                w.vertical_factor,
+                track_height,
             )
-            name_rect = QRectF(0, y, w.track_name_width, w.vertical_factor)
+            name_rect = QRectF(0, y, w.track_name_width, track_height)
             self.track_rects.append((track_rect, track, name_rect))
+
+            panel_height = max(0.0, track_height - w.vertical_factor)
+            if panel_height > 0.0:
+                panel_rect = QRectF(
+                    track_rect.x(),
+                    y + w.vertical_factor,
+                    track_rect.width(),
+                    panel_height,
+                )
+                self.panel_rects[track_num] = panel_rect
+            else:
+                self.panel_rects.pop(track_num, None)
 
         w.resize_handle_rect = QRectF(
             w.track_name_width - w._resize_handle_width / 2,
@@ -240,10 +288,14 @@ class Geometry:
                 - ctx["h_offset"]
             )
             layer_idx = layers.get(layer_key, 0)
+            offset = ctx.get("track_offsets", {}).get(
+                w.normalize_track_number(layer_key),
+                layer_idx * ctx["spacing"],
+            )
             cy = (
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
-                + layer_idx * ctx["spacing"]
+                + offset
                 - ctx["v_offset"]
             )
             cw = (end - start) * w.pixels_per_second
@@ -313,10 +365,14 @@ class Geometry:
                 - ctx["h_offset"]
             )
             layer_idx = layers.get(layer_key, 0)
+            offset = ctx.get("track_offsets", {}).get(
+                w.normalize_track_number(layer_key),
+                layer_idx * ctx["spacing"],
+            )
             ty = (
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
-                + layer_idx * ctx["spacing"]
+                + offset
                 - ctx["v_offset"]
             )
             tw = (end - start) * w.pixels_per_second
@@ -393,6 +449,21 @@ class Geometry:
             for rect, _obj, _sel, _type in self.iter_items(reverse=True):
                 if rect.contains(pos):
                     return "clip"
+        for _track_rect, track, name_rect in self.track_rects:
+            track_num = self.widget.normalize_track_number(track.data.get("number"))
+            panel_rect = self.panel_rects.get(track_num)
+            if not panel_rect or panel_rect.height() <= 0.0:
+                continue
+            if panel_rect.contains(pos):
+                return "panel"
+            combined = QRectF(
+                name_rect.x(),
+                panel_rect.y(),
+                name_rect.width() + panel_rect.width(),
+                panel_rect.height(),
+            )
+            if combined.contains(pos):
+                return "panel"
         if self.widget.scroll_bar_rect.contains(pos):
             return "h-scroll"
         if getattr(self.widget, "v_scroll_bar_rect", QRectF()).contains(pos):
@@ -407,6 +478,7 @@ class Geometry:
         """Return QRectF for *item* (Clip or Transition)."""
         layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
         spacing = self.widget.vertical_factor + getattr(self.widget, "track_gap", 0)
+        offsets = getattr(self, "_view_context", {}).get("track_offsets", {})
         view_w = self.widget.scrollbar_position[3] or 1.0
         timeline_w = self.widget.scrollbar_position[2] or view_w
         left = self.widget.scrollbar_position[0]
@@ -426,10 +498,15 @@ class Geometry:
             + item.data.get("position", 0.0) * self.widget.pixels_per_second
             - h_offset
         )
+        layer_val = item.data.get("layer", 0)
+        offset = offsets.get(
+            self.widget.normalize_track_number(layer_val),
+            layers.get(layer_val, 0) * spacing,
+        )
         y = (
             self.widget.ruler_height
             + getattr(self.widget, "track_margin_top", 0.0)
-            + layers.get(item.data.get("layer", 0), 0) * spacing
+            + offset
             - v_offset
         )
         w = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.widget.pixels_per_second

@@ -72,6 +72,7 @@ class TimelineTheme:
     keyframe_toggle_off_icon: Optional[QPixmap] = None
     keyframe_toggle_on_icon: Optional[QPixmap] = None
     keyframe_panel_add_icon: Optional[QPixmap] = None
+    keyframe_panel_property_bg: QColor = field(default_factory=QColor)
     playhead_icon: Optional[QPixmap] = None
     playhead_icon_width: int = 0
     playhead_icon_height: int = 0
@@ -963,6 +964,9 @@ def _theme_apply_keyframe_panel(theme: TimelineTheme, qt_theme) -> None:
     add_img = _theme_pixmap(qt_theme, ".keyframe-panel-add", "background-image")
     if add_img:
         theme.keyframe_panel_add_icon = add_img
+    panel_bg = _theme_get_color(qt_theme, "QMenuBar", ("background", "background-color"))
+    if panel_bg:
+        theme.keyframe_panel_property_bg = panel_bg
 
 
 def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
