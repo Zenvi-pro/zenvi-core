@@ -26,7 +26,16 @@
  """
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QLinearGradient, QPainter, QPainterPath, QPen
+import math
+
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 
 from .base import BasePainter
 
@@ -156,6 +165,7 @@ class TrackPainter(BasePainter):
         )
         painter.save()
         painter.setClipRect(area)
+        banding_cfg = self._frame_banding_config()
         for track_rect, _track, _name_rect in self.w.geometry.track_rects:
             vis = track_rect.intersected(area)
             if vis.isNull():
@@ -169,12 +179,104 @@ class TrackPainter(BasePainter):
                 painter.fillRect(vis, QBrush(grad))
             else:
                 painter.fillRect(vis, bg)
+            if banding_cfg:
+                self._paint_frame_banding(painter, vis, banding_cfg)
             painter.setPen(self.border_pen)
             painter.drawLine(vis.topLeft(), vis.topRight())
             painter.drawLine(vis.bottomLeft(), vis.bottomRight())
             painter.drawLine(vis.topRight(), vis.bottomRight())
 
-        painter.fillRect(self.w.resize_handle_rect.intersected(area), self.w.theme.track.border_color)
+        painter.fillRect(
+            self.w.resize_handle_rect.intersected(area),
+            self.w.theme.track.border_color,
+        )
+        timeline_handle = getattr(self.w, "timeline_resize_handle_rect", QRectF())
+        if timeline_handle and not timeline_handle.isNull():
+            handle_rect = timeline_handle.intersected(area)
+            if not handle_rect.isNull():
+                painter.fillRect(handle_rect, self.w.theme.track.border_color)
+                inner = QRectF(handle_rect)
+                inner.adjust(1.0, 1.0, -1.0, -1.0)
+                if inner.width() > 0 and inner.height() > 0:
+                    accent = QColor(self.w.theme.track.name_background)
+                    accent.setAlpha(180)
+                    painter.fillRect(inner, accent)
+        painter.restore()
+
+    def _frame_banding_config(self):
+        pps = float(getattr(self.w, "pixels_per_second", 0.0) or 0.0)
+        fps = float(getattr(self.w, "fps_float", 0.0) or 0.0)
+        if pps <= 0.0 or fps <= 0.0:
+            return None
+        ruler = getattr(self.w, "ruler_painter", None)
+        if not ruler:
+            return None
+        try:
+            fpt = ruler._frames_per_tick(pps, fps)
+        except Exception:
+            return None
+        if fpt > 2.0:
+            return None
+        pixels_per_frame = pps / fps if fps else 0.0
+        if pixels_per_frame <= 0.0:
+            return None
+        base_color = QColor(self.w.theme.track.background)
+        if not base_color.isValid():
+            return None
+        if base_color.lightness() < 128:
+            band_color = base_color.lighter(125)
+        else:
+            band_color = base_color.darker(110)
+        band_color.setAlpha(min(220, max(120, band_color.alpha())))
+        return {
+            "pps": pps,
+            "fps": fps,
+            "fpt": fpt,
+            "pixels_per_frame": pixels_per_frame,
+            "offset_px": float(getattr(self.w, "h_scroll_offset", 0.0) or 0.0),
+            "color": band_color,
+        }
+
+    def _paint_frame_banding(self, painter: QPainter, rect: QRectF, cfg):
+        pixels_per_frame = cfg.get("pixels_per_frame", 0.0)
+        if pixels_per_frame <= 0.0:
+            return
+        pps = cfg.get("pps", 0.0)
+        fps = cfg.get("fps", 0.0)
+        if pps <= 0.0 or fps <= 0.0:
+            return
+        offset_px = cfg.get("offset_px", 0.0)
+        # Convert visible rect to absolute timeline pixel positions
+        left_px = offset_px + max(0.0, rect.left() - self.w.track_name_width)
+        right_px = offset_px + max(0.0, rect.right() - self.w.track_name_width)
+        if right_px <= left_px:
+            return
+        start_seconds = left_px / pps
+        end_seconds = right_px / pps
+        if end_seconds <= start_seconds:
+            return
+        start_frame = int(math.floor(start_seconds * fps))
+        end_frame = int(math.ceil(end_seconds * fps))
+        if end_frame <= start_frame:
+            return
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(cfg.get("color"))
+        # Ensure we do not draw excessive rectangles
+        max_frames = end_frame - start_frame
+        if max_frames > 2000:
+            max_frames = 2000
+            end_frame = start_frame + max_frames
+        for frame in range(start_frame, end_frame):
+            if (frame - start_frame) % 2 != 0:
+                continue
+            t = frame / fps
+            x = self.w.track_name_width + t * pps - offset_px
+            band_rect = QRectF(x, rect.top(), pixels_per_frame, rect.height())
+            band_rect = band_rect.intersected(rect)
+            if band_rect.width() <= 0.0:
+                continue
+            painter.drawRect(band_rect)
         painter.restore()
 
     def paint_names(self, painter: QPainter):

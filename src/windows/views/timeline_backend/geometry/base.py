@@ -141,7 +141,7 @@ class GeometryBase:
     def _calculate_view_context(self, layers):
         w = self.widget
         proj = get_app().project
-        duration = proj.get("duration")
+        duration = self.widget._current_project_duration()
         tick_px = proj.get("tick_pixels") or 100
         w.pixels_per_second = tick_px / float(w.zoom_factor or 1)
         view_w = w.width() - w.track_name_width - w.scroll_bar_thickness
@@ -176,6 +176,33 @@ class GeometryBase:
         spacing = base_height + track_gap
         content_h = max(content_h, 0.0) + top_margin
         h_offset = self._update_horizontal_scrollbar(timeline_w, view_w)
+        if getattr(w, "_project_resize_keep_right", False):
+            view_ratio = view_w / timeline_w if timeline_w else 1.0
+            view_ratio = min(1.0, max(0.0, view_ratio))
+            left = 0.0
+            if view_ratio < 1.0:
+                left = max(0.0, 1.0 - view_ratio)
+            right = min(1.0, left + view_ratio)
+            w.scrollbar_position[0] = left
+            w.scrollbar_position[1] = right
+            w.h_scroll_offset = left * timeline_w
+            if view_ratio < 1.0:
+                handle_w = max(20.0, view_ratio * view_w)
+                avail = view_w - handle_w
+                handle_x = w.track_name_width
+                max_scroll = max(0.0, timeline_w - view_w)
+                scroll_px = w.h_scroll_offset
+                if max_scroll > 0.0 and avail > 0.0:
+                    handle_x += (scroll_px / max_scroll) * avail
+                w.scroll_bar_rect = QRectF(
+                    handle_x,
+                    w.height() - w.scroll_bar_thickness,
+                    handle_w,
+                    w.scroll_bar_thickness,
+                )
+            else:
+                w.scroll_bar_rect = QRectF()
+            h_offset = w.h_scroll_offset
         v_offset = self._update_vertical_scrollbar(content_h, view_h)
         w.h_scroll_offset = h_offset
         ctx = {
@@ -243,6 +270,9 @@ class GeometryBase:
             return "h-scroll"
         if getattr(self.widget, "v_scroll_bar_rect", QRectF()).contains(pos):
             return "v-scroll"
+        timeline_handle = getattr(self.widget, "timeline_resize_handle_rect", QRectF())
+        if timeline_handle.contains(pos):
+            return "timeline-handle"
         if self.widget.resize_handle_rect.contains(pos):
             return "handle"
         if pos.y() <= self.widget.ruler_height:

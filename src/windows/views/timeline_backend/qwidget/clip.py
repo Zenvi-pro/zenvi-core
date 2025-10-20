@@ -445,12 +445,16 @@ class ClipInteractionMixin:
     def _startResize(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
             self._startItemResize()
+        elif self._press_hit == "timeline-handle":
+            self._startProjectResize()
         else:
             self._resize_start = self.track_name_width
 
     def _resizeMove(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
             self._itemResizeMove()
+        elif self._press_hit == "timeline-handle":
+            self._projectResizeMove()
         else:
             new_width = max(40, self._last_event.pos().x())
             if new_width != self.track_name_width:
@@ -460,8 +464,50 @@ class ClipInteractionMixin:
     def _finishResize(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
             self._finishItemResize()
+        elif self._press_hit == "timeline-handle":
+            self._finishProjectResize()
         else:
             pass
+
+    def _startProjectResize(self):
+        self._fix_cursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
+        self._project_resize_initial_duration = self._current_project_duration()
+        min_duration = self._furthest_timeline_edge()
+        if self.fps_float > 0:
+            min_duration = max(min_duration, 1.0 / self.fps_float)
+        self._project_resize_min_duration = max(0.0, min_duration)
+        self._project_resize_keep_right = self._is_view_right_aligned()
+        self._set_project_duration_override(self._project_resize_initial_duration)
+
+    def _projectResizeMove(self):
+        event = self._last_event
+        if not event:
+            return
+        new_duration = self._seconds_from_x(event.pos().x())
+        new_duration = max(self._project_resize_min_duration, new_duration)
+        snapped = self._snap_time(new_duration)
+        if snapped < self._project_resize_min_duration:
+            snapped = self._project_resize_min_duration
+        current_preview = getattr(self, "_project_duration_override", None)
+        if current_preview is None or abs(snapped - current_preview) > 1e-4:
+            self._set_project_duration_override(snapped)
+
+    def _finishProjectResize(self):
+        final_duration = getattr(self, "_project_duration_override", None)
+        if final_duration is None:
+            final_duration = self._project_resize_initial_duration
+        final_duration = max(self._project_resize_min_duration, float(final_duration or 0.0))
+        snapped = self._snap_time(final_duration)
+        if snapped < self._project_resize_min_duration:
+            snapped = self._project_resize_min_duration
+        self._set_project_duration_override(None)
+        self._project_resize_keep_right = False
+        self._release_cursor()
+        if abs(snapped - self._project_resize_initial_duration) <= 1e-3:
+            return
+        timeline = getattr(self.win, "timeline", None)
+        if timeline:
+            timeline.resizeTimeline(snapped)
 
     def _startItemResize(self):
         item = self._resizing_item

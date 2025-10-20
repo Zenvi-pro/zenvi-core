@@ -115,6 +115,7 @@ class TimelineWidgetBase(QWidget):
         self.scroll_bar_dragging = False
         self.v_scroll_bar_rect = QRectF()
         self.v_scroll_bar_dragging = False
+        self.timeline_resize_handle_rect = QRectF()
         self.clip_rects = []
         self.clip_rects_selected = []
         self.marker_rects = []
@@ -149,6 +150,11 @@ class TimelineWidgetBase(QWidget):
         self._resize_handle_width = 6
         self.resizing_track_names = False
         self.resize_handle_rect = QRectF()
+        self._project_handle_width = 10.0
+        self._project_duration_override = None
+        self._project_resize_initial_duration = 0.0
+        self._project_resize_min_duration = 0.0
+        self._project_resize_keep_right = False
 
         # Drag/selection helpers
         self.selection_rect = QRectF()
@@ -303,8 +309,9 @@ class TimelineWidgetBase(QWidget):
             lambda: self._press_hit == "clip"
         ))
         idle.addTransition(_ConditionalTransition(
-            self.events.pressed, resize,
-            lambda: self._press_hit in ("handle", "clip-edge")
+            self.events.pressed,
+            resize,
+            lambda: self._press_hit in ("handle", "timeline-handle", "clip-edge"),
         ))
         idle.addTransition(_ConditionalTransition(
             self.events.pressed, playhead,
@@ -353,10 +360,61 @@ class TimelineWidgetBase(QWidget):
         except TypeError:
             pass
 
+    def _current_project_duration(self):
+        override = getattr(self, "_project_duration_override", None)
+        if override is not None:
+            try:
+                return max(0.0, float(override))
+            except (TypeError, ValueError):
+                pass
+        project = get_app().project
+        return max(0.0, float(project.get("duration") or 0.0))
+
+    def _furthest_timeline_edge(self):
+        furthest = 0.0
+        for clip in Clip.filter():
+            data = clip.data if isinstance(clip.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+        for tran in Transition.filter():
+            data = tran.data if isinstance(tran.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+        return furthest
+
+    def _is_view_right_aligned(self):
+        timeline_w = self.scrollbar_position[2] or 0.0
+        view_w = self.scrollbar_position[3] or 0.0
+        if timeline_w <= view_w + 1e-6:
+            return True
+        right = self.scrollbar_position[1]
+        return right >= 1.0 - 1e-4
+
+    def _set_project_duration_override(self, duration):
+        if duration is None:
+            self._project_duration_override = None
+        else:
+            try:
+                self._project_duration_override = max(0.0, float(duration))
+            except (TypeError, ValueError):
+                self._project_duration_override = None
+        self.geometry.mark_dirty()
+        self.update()
+
     def _apply_external_zoom(self, zoom_factor):
         """Apply zoom requests from the ZoomSlider without feedback."""
         self.setZoomFactor(zoom_factor, emit=False)
-        project_duration = get_app().project.get("duration") or 0.0
+        project_duration = self._current_project_duration()
         tick_pixels = 100.0
         self.scrollbar_position[2] = (
             project_duration * tick_pixels / zoom_factor if zoom_factor else 0.0
@@ -910,7 +968,7 @@ class TimelineWidgetBase(QWidget):
     def delayed_resize_callback(self):
         """Callback for resize event timer (to delay the resize event, and prevent lots of similar resize events)"""
         project = get_app().project
-        project_duration = float(project.get("duration") or 0.0)
+        project_duration = self._current_project_duration()
         tick_pixels = float(project.get("tick_pixels") or 100.0)
 
         if self.delayed_size:
@@ -977,7 +1035,7 @@ class TimelineWidgetBase(QWidget):
         self.changed(None)
 
         # Update normalized scroll width to match new zoom
-        project_duration = get_app().project.get("duration") or 0.0
+        project_duration = self._current_project_duration()
         view_w = self.scrollbar_position[3]
         tick_pixels = float(get_app().project.get("tick_pixels") or 100.0)
         self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1.0)
@@ -1173,28 +1231,7 @@ class TimelineWidgetBase(QWidget):
         if not timeline:
             return
 
-        furthest = 0.0
-
-        for clip in Clip.filter():
-            data = clip.data if isinstance(clip.data, dict) else {}
-            position = float(data.get("position", 0.0) or 0.0)
-            start = float(data.get("start", 0.0) or 0.0)
-            end = float(data.get("end", start) or start)
-            duration = max(0.0, end - start)
-            finish = position + duration
-            if finish > furthest:
-                furthest = finish
-
-        for tran in Transition.filter():
-            data = tran.data if isinstance(tran.data, dict) else {}
-            position = float(data.get("position", 0.0) or 0.0)
-            start = float(data.get("start", 0.0) or 0.0)
-            end = float(data.get("end", start) or start)
-            duration = max(0.0, end - start)
-            finish = position + duration
-            if finish > furthest:
-                furthest = finish
-
+        furthest = self._furthest_timeline_edge()
         min_length = 300.0
         padding = 10.0
         desired = max(min_length, furthest + padding)
@@ -1359,6 +1396,11 @@ class TimelineWidgetBase(QWidget):
             if mrect.contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
+
+        timeline_handle = getattr(self, "timeline_resize_handle_rect", QRectF())
+        if timeline_handle.contains(pos):
+            self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
+            return
 
         self.unsetCursor()
 

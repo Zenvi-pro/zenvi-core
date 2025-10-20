@@ -87,3 +87,27 @@ class TrackGeometryMixin:
             w._resize_handle_width,
             max(0.0, ctx["content_h"] - ctx.get("top_margin", 0.0)),
         )
+        timeline_w = ctx.get("timeline_w", 0.0)
+        view_w = ctx.get("view_w", 0.0)
+        h_offset = ctx.get("h_offset", 0.0)
+        if timeline_w > 0.0 and view_w > 0.0:
+            handle_width = float(getattr(w, "_project_handle_width", 10.0) or 0.0)
+            handle_height = max(0.0, ctx.get("content_h", 0.0) - ctx.get("top_margin", 0.0))
+            right_aligned = h_offset + view_w >= timeline_w - 0.5
+            if handle_width > 0.0 and handle_height > 0.0 and right_aligned:
+                timeline_right = w.track_name_width + timeline_w - h_offset
+                visible_limit = w.track_name_width + view_w
+                handle_x = timeline_right - handle_width
+                handle_x = max(w.track_name_width, handle_x)
+                handle_x = min(handle_x, visible_limit - handle_width)
+                handle_x = max(w.track_name_width, handle_x)
+                w.timeline_resize_handle_rect = QRectF(
+                    handle_x,
+                    w.ruler_height + ctx.get("top_margin", 0.0),
+                    handle_width,
+                    handle_height,
+                )
+            else:
+                w.timeline_resize_handle_rect = QRectF()
+        else:
+            w.timeline_resize_handle_rect = QRectF()
