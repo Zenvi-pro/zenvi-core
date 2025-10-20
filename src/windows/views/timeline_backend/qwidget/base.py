@@ -1,0 +1,1752 @@
+"""
+ @file
+ @brief This file contains a custom QWidget-based timeline - to replace older, webview-based timelines
+ @author Jonathan Thomas <jonathan@openshot.org>
+
+ @section LICENSE
+
+ Copyright (c) 2008-2025 OpenShot Studios, LLC
+ (http://www.openshotstudios.com). This file is part of
+ OpenShot Video Editor (http://www.openshot.org), an open-source project
+ dedicated to delivering high quality video editing and animation solutions
+ to the world.
+
+ OpenShot Video Editor is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+
+ OpenShot Video Editor is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
+"""
+
+import json
+
+from PyQt5.QtCore import (
+    Qt,
+    QRectF,
+    QTimer,
+    QPointF,
+    QSignalTransition,
+    pyqtSignal,
+    QObject,
+)
+from PyQt5.QtGui import (
+    QPainter,
+    QCursor,
+    QIcon,
+    QColor,
+)
+from PyQt5.QtWidgets import QSizePolicy, QWidget
+
+from ..geometry import Geometry
+from ..paint import (
+    BackgroundPainter,
+    ClipPainter,
+    TransitionPainter,
+    MarkerPainter,
+    PlayheadPainter,
+    RulerPainter,
+    TrackPainter,
+    KeyframePanelPainter,
+    SelectionPainter,
+    ScrollbarPainter,
+    KeyframePainter,
+)
+from ..snap import SnapHelper
+from ..theme import DEFAULT_THEME, apply_theme as parse_theme
+from ..state import TimelineStateMachine
+from classes.app import get_app
+from classes.query import Clip, Transition, File
+from classes.logger import log
+
+
+class TimelineEvents(QObject):
+    pressed = pyqtSignal(object)
+    moved = pyqtSignal(object)
+    released = pyqtSignal(object)
+
+
+class _ConditionalTransition(QSignalTransition):
+    def __init__(self, signal, target_state, condition):
+        super().__init__(signal)
+        self.setTargetState(target_state)
+        self._cond = condition
+
+    def eventTest(self, event):
+        return super().eventTest(event) and self._cond()
+
+
+class TimelineWidgetBase(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        # Enable drag and drop
+        self.new_item = None
+        self.item_type = None
+        self.setAcceptDrops(True)
+
+        # Translate object
+        _ = get_app()._tr
+
+        # Init default values
+        self.leftHandle = None
+        self.rightHandle = None
+        self.centerHandle = None
+        self.mouse_pressed = False
+        self.mouse_dragging = False
+        self.mouse_position = None
+        self.zoom_factor = 15.0
+        self.scrollbar_position = [0.0, 0.0, 0.0, 0.0]
+        self.scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
+        self.v_scrollbar_position = [0.0, 0.0, 0.0, 0.0]
+        self.v_scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
+        self.h_scroll_offset = 0.0
+        self.left_handle_rect = QRectF()
+        self.left_handle_dragging = False
+        self.right_handle_rect = QRectF()
+        self.right_handle_dragging = False
+        self.scroll_bar_rect = QRectF()
+        self.scroll_bar_dragging = False
+        self.v_scroll_bar_rect = QRectF()
+        self.v_scroll_bar_dragging = False
+        self.clip_rects = []
+        self.clip_rects_selected = []
+        self.marker_rects = []
+        self.current_frame = 0
+        self.is_auto_center = True
+        self.min_distance = 0.02
+        self.track_rects = []
+        self.track_list = []
+        self.pixels_per_second = 1.0
+        self.vertical_factor = 1.0
+        self.track_height = 48
+        self.track_gap = 8
+        self.track_margin_top = self.track_gap
+        self._track_panel_enabled = {}
+        self._panel_properties = {}
+        self._panel_heights = {}
+        self._panel_refresh_signature = None
+        self._panel_selected_keyframes = {}
+        self._panel_box_track = None
+        self._panel_box_bounds = QRectF()
+        self._panel_press_info = None
+        self._dragging_panel_keyframes = None
+        self._panel_sparse_properties = set()
+        self.keyframe_panel_row_height = 24.0
+        self.keyframe_panel_row_spacing = 4.0
+        self.keyframe_panel_padding = 6.0
+
+        # Geometry constants
+        self.ruler_height = 40
+        self.track_name_width = 140
+        self.scroll_bar_thickness = 12
+        self._resize_handle_width = 6
+        self.resizing_track_names = False
+        self.resize_handle_rect = QRectF()
+
+        # Drag/selection helpers
+        self.selection_rect = QRectF()
+        self.box_selecting = False
+        self.box_start = QPointF()
+        self.dragging_item = None
+        self.drag_clip_offset = 0.0
+        self.drag_clip_start = 0.0
+        self.dragging_playhead = False
+        self.drag_bbox = QRectF()
+        self._drag_transaction_id = None
+
+        # Resize / timing helpers
+        self.enable_timing = False
+        self.enable_snapping = True
+        self._resizing_item = None
+        self._resize_edge = None
+        self._resize_initial_rect = QRectF()
+        self._resize_initial = {}
+        self._timing_original_start = 0.0
+        self._fixed_cursor = None
+
+        # Cached Qt text flags
+        self._clip_text_flags = Qt.AlignLeft | Qt.AlignTop
+
+        # Track toolbar interaction state
+        self._toolbar_hover_key = None
+        self._toolbar_pressed_key = None
+        self._toolbar_pressed_inside = False
+
+        # Frames per second float value
+        fps_info = get_app().project.get("fps")
+        self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
+
+        # Theme settings
+        self.theme = DEFAULT_THEME
+
+        # Helpers for geometry, snapping and painting
+        self.geometry = Geometry(self)
+        self.snap = SnapHelper(self, self.geometry)
+        self.bg_painter = BackgroundPainter(self)
+        self.ruler_painter = RulerPainter(self)
+        self.track_painter = TrackPainter(self)
+        self.clip_painter = ClipPainter(self)
+        self.transition_painter = TransitionPainter(self)
+        self.marker_painter = MarkerPainter(self)
+        self.playhead_painter = PlayheadPainter(self)
+        self.keyframe_painter = KeyframePainter(self)
+        self.keyframe_panel_painter = KeyframePanelPainter(self)
+        self.selection_painter = SelectionPainter(self)
+        self.scrollbar_painter = ScrollbarPainter(self)
+
+        # Keyframe helpers
+        self._keyframe_markers = []
+        self._keyframes_dirty = True
+        self._dragging_keyframe = None
+        self._press_keyframe = None
+        self._press_keyframe_clear = True
+        self._press_effect_icon = None
+        self._pending_clip_overrides = {}
+        self._pending_transition_overrides = {}
+        self._preserve_overrides_once = False
+        self._drag_payload = None
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._snap_ignore_ids = set()
+        self._snap_keyframe_seconds = []
+        self._snap_active_targets = {}
+
+        # Apply default theme
+        self.apply_theme("")
+
+        # Load icon (using display DPI)
+        self.cursors = {}
+        for cursor_name in ["move", "resize_x", "hand"]:
+            icon = QIcon(":/cursors/cursor_%s.png" % cursor_name)
+            self.cursors[cursor_name] = QCursor(icon.pixmap(24, 24))
+
+        # Init Qt widget's properties (background repainting, etc...)
+        super().setAttribute(Qt.WA_OpaquePaintEvent)
+        super().setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Add self as listener to project data updates (used to update the timeline)
+        get_app().updates.add_listener(self)
+
+        # Set mouse tracking
+        self.setMouseTracking(True)
+
+        # Get a reference to the window object
+        self.win = get_app().window
+        self.win.ThemeChangedSignal.connect(self.apply_theme)
+
+        # Connect zoom functionality
+        self.win.TimelineScrolled.connect(self.update_scrollbars)
+        self.win.TimelineScroll.connect(self.set_scroll_left)
+        self.win.TimelineZoom.connect(self._apply_external_zoom)
+
+        self.win.TimelineResize.connect(self.delayed_resize_callback)
+
+        # Connect Selection signals
+        self.win.SelectionChanged.connect(self.handle_selection)
+
+        # Show Property timer
+        # Timer to use a delay before sending MaxSizeChanged signals (so we don't spam libopenshot)
+        self.delayed_size = None
+        self.delayed_resize_timer = QTimer(self)
+        self.delayed_resize_timer.setInterval(100)
+        self.delayed_resize_timer.setSingleShot(True)
+        self.delayed_resize_timer.timeout.connect(self.delayed_resize_callback)
+
+        # Initial geometry setup
+        self.changed(None)
+
+        # State machine for mouse interactions
+        self.events = TimelineEvents()
+        self._last_event = None
+        self._press_hit = None
+        self._buildStateMachine()
+
+        # Effect icon hit targets (populated by the clip painter)
+        self._effect_icon_rects = []
+
+        # Middle-mouse panning helpers
+        self._middle_panning = False
+        self._middle_pan_anchor = QPointF()
+        self._middle_pan_scroll_start = [0.0, 0.0, 0.0, 0.0]
+        self._middle_pan_vscroll_start = [0.0, 0.0, 0.0, 0.0]
+
+    def _buildStateMachine(self):
+        sm = TimelineStateMachine(self)
+
+        idle = sm.idle
+        drag = sm.drag
+        resize = sm.resize
+        playhead = sm.playhead
+        boxsel = sm.box
+        keydrag = sm.keyframe
+
+        drag.entered.connect(self._startClipDrag)
+        drag.exited.connect(self._finishClipDrag)
+        resize.entered.connect(self._startResize)
+        resize.exited.connect(self._finishResize)
+        playhead.entered.connect(self._startPlayhead)
+        playhead.exited.connect(self._finishPlayhead)
+        boxsel.entered.connect(self._startBoxSelect)
+        boxsel.exited.connect(self._finishBoxSelect)
+        keydrag.entered.connect(self._startKeyframeDrag)
+        keydrag.exited.connect(self._finishKeyframeDrag)
+
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, drag,
+            lambda: self._press_hit == "clip"
+        ))
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, resize,
+            lambda: self._press_hit in ("handle", "clip-edge")
+        ))
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, playhead,
+            lambda: self._press_hit == "ruler"
+        ))
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, boxsel,
+            lambda: self._press_hit in ("background", "panel")
+        ))
+        idle.addTransition(_ConditionalTransition(
+            self.events.pressed, keydrag,
+            lambda: self._press_hit in ("keyframe", "panel-keyframe")
+        ))
+
+        drag.entered.connect(lambda: self.events.moved.connect(self._dragMove))
+        drag.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._dragMove))
+        drag.addTransition(self.events.released, idle)
+
+        resize.entered.connect(lambda: self.events.moved.connect(self._resizeMove))
+        resize.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._resizeMove))
+        resize.addTransition(self.events.released, idle)
+
+        playhead.entered.connect(lambda: self.events.moved.connect(self._playheadMove))
+        playhead.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._playheadMove))
+        playhead.addTransition(self.events.released, idle)
+
+        boxsel.entered.connect(lambda: self.events.moved.connect(self._boxMove))
+        boxsel.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._boxMove))
+        boxsel.addTransition(self.events.released, idle)
+
+        keydrag.entered.connect(lambda: self.events.moved.connect(self._keyframeMove))
+        keydrag.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._keyframeMove))
+        keydrag.addTransition(self.events.released, idle)
+
+        # repaint exactly once when any interactive state exits
+        for s in (drag, resize, playhead, boxsel, keydrag):
+            s.exited.connect(self.update)
+
+        sm.setInitialState(idle)
+        sm.start()
+        self._sm = sm
+
+    def _safe_disconnect(self, signal, slot):
+        try:
+            signal.disconnect(slot)
+        except TypeError:
+            pass
+
+    def _apply_external_zoom(self, zoom_factor):
+        """Apply zoom requests from the ZoomSlider without feedback."""
+        self.setZoomFactor(zoom_factor, emit=False)
+        project_duration = get_app().project.get("duration") or 0.0
+        tick_pixels = 100.0
+        self.scrollbar_position[2] = (
+            project_duration * tick_pixels / zoom_factor if zoom_factor else 0.0
+        )
+
+    def setSnappingMode(self, enable):
+        """Enable or disable snapping mode."""
+        self.enable_snapping = bool(enable)
+
+    def setTimingMode(self, enable):
+        """Enable or disable timing (retime) mode."""
+        self.enable_timing = bool(enable)
+        if self.enable_timing:
+            self._snap_keyframe_seconds = []
+
+    def _fix_cursor(self, cursor):
+        self._fixed_cursor = cursor
+        self.setCursor(cursor)
+
+    def _release_cursor(self):
+        self._fixed_cursor = None
+
+    def _snap_time(self, seconds):
+        """Snap a time in seconds to the nearest frame boundary."""
+        return round(seconds * self.fps_float) / self.fps_float
+
+    def _seconds_from_x(self, x_pos):
+        """Convert an x position in widget coordinates to timeline seconds."""
+        pps = float(self.pixels_per_second or 0.0)
+        if pps <= 0.0:
+            return 0.0
+        offset_px = getattr(self, "h_scroll_offset", 0.0)
+        seconds = (x_pos - self.track_name_width + offset_px) / pps
+        return max(0.0, seconds)
+
+    def run_js(self, code, callback=None, retries=0):
+        """Placeholder due to webview compatibility"""
+
+    def apply_theme(self, css=None):
+        """Apply CSS theme to this widget."""
+        if not isinstance(css, str):
+            # Signal from ThemeChangedSignal passes the theme instance.
+            # The theme has already been applied directly, so simply
+            # refresh painters.
+            self._theme_changed()
+            return
+
+        if parse_theme(self, css):
+            self.changed(None)
+        self._theme_changed()
+
+    def _theme_changed(self):
+        for p in (
+            self.bg_painter,
+            self.ruler_painter,
+            self.track_painter,
+            self.clip_painter,
+            self.transition_painter,
+            self.marker_painter,
+            self.playhead_painter,
+            self.keyframe_painter,
+            self.keyframe_panel_painter,
+            self.selection_painter,
+            self.scrollbar_painter,
+        ):
+            p.update_theme()
+        self._keyframes_dirty = True
+        self.update()
+
+    def setup_js_data(self):
+        """Placeholder due to webview compatibility"""
+
+    def get_html(self):
+        """Placeholder due to webview compatibility"""
+
+    # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
+    def changed(self, action):
+        # Ignore changes that don't affect this
+        if action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "profile"]:
+            return
+
+        fps_info = get_app().project.get("fps")
+        self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
+
+        # Invalidate caches and geometry
+        self.clip_painter.clear_cache()
+        self.transition_painter.clear_cache()
+        self.geometry.mark_dirty()
+
+        preserve_overrides = getattr(self, "_preserve_overrides_once", False)
+        if preserve_overrides:
+            self._preserve_overrides_once = False
+        else:
+            self._pending_clip_overrides.clear()
+            self._pending_transition_overrides.clear()
+
+        self._update_track_panel_properties()
+        self.geometry.ensure()
+        self._keyframes_dirty = True
+        self._snap_keyframe_seconds = []
+
+        # Mirror some attributes for compatibility
+        self.track_list = self.geometry.track_list
+
+        # Schedule repaint
+        self.update()
+
+    def paintEvent(self, event, *args):
+        """Custom paint routine for the timeline widget."""
+        event.accept()
+        painter = QPainter(self)
+        painter.setRenderHints(
+            QPainter.Antialiasing |
+            QPainter.SmoothPixmapTransform |
+            QPainter.TextAntialiasing,
+            True,
+        )
+
+        if not get_app().window.timeline:
+            painter.end()
+            return
+
+        signature = self._panel_current_signature()
+        if signature != self._panel_refresh_signature:
+            self._panel_refresh_signature = signature
+            if self._update_track_panel_properties():
+                self.geometry.mark_dirty()
+
+        self.geometry.ensure()
+        self._ensure_keyframe_markers()
+
+        self.bg_painter.paint(painter, event.rect())
+        self.track_painter.paint_background(painter)
+        self.keyframe_panel_painter.paint(painter, mode="underlay")
+        self.clip_painter.paint(painter)
+        self.transition_painter.paint(painter)
+        self.marker_painter.paint(painter)
+        self.keyframe_painter.paint(painter)
+        self.track_painter.paint_names(painter)
+        self.keyframe_panel_painter.paint(painter, mode="overlay")
+        self.selection_painter.paint(painter)
+        self.ruler_painter.paint(painter)
+        self.playhead_painter.paint(painter)
+        self.ruler_painter.paint_overlay(painter)
+        self.scrollbar_painter.paint(painter)
+
+        painter.end()
+
+    def dragEnterEvent(self, event):
+        self._drag_payload = None
+        mime = event.mimeData()
+
+        if mime.hasUrls():
+            event.accept()
+            self.new_item = True
+            self.item_type = "os_drop"
+            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+            return
+
+        mime_html = mime.html()
+        if mime_html:
+            if mime_html in ("clip", "transition"):
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                self._drag_payload = {"type": mime_html, "ids": ids}
+                self.item_type = mime_html
+                self.new_item = True
+                event.accept()
+            elif mime_html == "effect":
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        event.accept()
+        payload = self._ensure_drag_payload_from_event(event)
+
+        if payload and payload.get("type") in {"clip", "transition"}:
+            coords = self._event_seconds_track(event)
+            if coords is None:
+                self._reset_drag_preview(delete_items=True)
+                return
+            pos_seconds, track_num, _ = coords
+            if not self._ensure_drag_preview(pos_seconds, track_num):
+                return
+            self._update_drag_preview_position(pos_seconds, track_num)
+        else:
+            if payload and payload.get("type") == "effect":
+                return
+            if payload and payload.get("type") == "os_drop":
+                return
+            self._reset_drag_preview(delete_items=True)
+
+    def dropEvent(self, event):
+        event.accept()
+
+        if self._drag_preview_items:
+            self._finalize_drag_preview()
+            return
+
+        file_ids = []
+        effect_names = []
+        mime = event.mimeData()
+        mime_html = mime.html()
+        if mime.hasUrls():
+            urls = mime.urls()
+            self.win.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
+            for uri in urls:
+                for f in File.filter(path=uri.toLocalFile()):
+                    file_ids.append(f.id)
+        elif mime_html == "clip":
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
+            if not isinstance(ids, list):
+                ids = [ids]
+            file_ids.extend(ids)
+        elif mime_html == "transition":
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
+            if not isinstance(ids, list):
+                ids = [ids]
+            file_ids.extend(ids)
+        elif mime_html == "effect":
+            try:
+                names = json.loads(mime.text())
+            except Exception:
+                names = []
+            if not isinstance(names, list):
+                names = [names]
+            effect_names.extend(names)
+
+        if not file_ids and not effect_names:
+            self._reset_drag_preview()
+            return
+
+        coords = self._event_seconds_track(event)
+        if coords is None:
+            coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
+        pos_seconds, track_num, _ = coords
+        pos = QPointF(pos_seconds, 0)
+
+        if effect_names:
+            self._apply_effect_drop(effect_names, pos_seconds, track_num)
+            self._reset_drag_preview()
+            return
+
+        for idx, fid in enumerate(file_ids):
+            ignore_refresh = idx < len(file_ids) - 1
+            if mime_html == "transition":
+                item = self.addTransition(
+                    fid,
+                    pos,
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if item:
+                    pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
+            else:
+                clip = self.addClip(
+                    fid,
+                    pos,
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if clip:
+                    pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
+        self._reset_drag_preview()
+
+    def dragLeaveEvent(self, event):
+        event.accept()
+        self._reset_drag_preview(delete_items=True)
+
+    def _ensure_drag_payload_from_event(self, event):
+        if self._drag_payload:
+            return self._drag_payload
+        mime = event.mimeData()
+        if mime.hasUrls():
+            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+            return self._drag_payload
+        mime_html = mime.html()
+        if mime_html in {"clip", "transition"}:
+            try:
+                ids = json.loads(mime.text())
+            except Exception:
+                ids = []
+            if not isinstance(ids, list):
+                ids = [ids]
+            self._drag_payload = {"type": mime_html, "ids": ids}
+            self.item_type = mime_html
+            self.new_item = True
+        elif mime_html == "effect":
+            self._drag_payload = {"type": "effect"}
+        return self._drag_payload
+
+    def _viewport_offsets(self):
+        view_w = self.scrollbar_position[3] or 1.0
+        timeline_w = self.scrollbar_position[2] or view_w
+        left = self.scrollbar_position[0]
+        h_offset = left * timeline_w
+        max_scroll = max(0.0, timeline_w - view_w)
+        if h_offset > max_scroll:
+            h_offset = max_scroll
+
+        view_h = self.v_scrollbar_position[3] or 1.0
+        content_h = self.v_scrollbar_position[2] or view_h
+        top = self.v_scrollbar_position[0]
+        v_offset = top * content_h
+        max_vscroll = max(0.0, content_h - view_h)
+        if v_offset > max_vscroll:
+            v_offset = max_vscroll
+        return h_offset, v_offset
+
+    def _event_seconds_track(self, event):
+        pos = event.pos()
+        if pos.x() < self.track_name_width or pos.y() < self.ruler_height:
+            return None
+        if not self.track_list:
+            return None
+        pixels_per_second = float(self.pixels_per_second or 0.0)
+        if pixels_per_second <= 0.0:
+            return None
+        vertical_factor = float(self.vertical_factor or 0.0)
+        if vertical_factor <= 0.0:
+            return None
+        h_offset, v_offset = self._viewport_offsets()
+        pos_seconds = (pos.x() - self.track_name_width + h_offset) / pixels_per_second
+        pos_seconds = max(0.0, pos_seconds)
+        track_idx = int((pos.y() - self.ruler_height + v_offset) / vertical_factor)
+        if track_idx < 0 or track_idx >= len(self.track_list):
+            return None
+        track_num = self.track_list[track_idx].data.get("number")
+        return pos_seconds, track_num, track_idx
+
+    def _snap_new_item_start(self, seconds, duration):
+        seconds = max(0.0, seconds)
+        if not self.enable_snapping:
+            return seconds
+        self.geometry.ensure()
+        pixels_per_second = float(self.pixels_per_second or 0.0)
+        if pixels_per_second <= 0.0:
+            return seconds
+
+        h_offset, _ = self._viewport_offsets()
+        left_px = self.track_name_width + seconds * pixels_per_second - h_offset
+        width_px = max(0.0, duration) * pixels_per_second
+
+        ignore_ids = {
+            getattr(entry.get("model"), "id", None)
+            for entry in self._drag_preview_items
+        }
+
+        original_bbox = getattr(self, "drag_bbox", QRectF())
+        original_ignore = getattr(self, "_snap_ignore_ids", set())
+        preview_bbox = QRectF(left_px, original_bbox.y(), width_px, original_bbox.height())
+        if preview_bbox.height() <= 0.0:
+            preview_bbox.setHeight(self.vertical_factor or 1.0)
+        try:
+            self._snap_ignore_ids = {obj_id for obj_id in ignore_ids if obj_id is not None}
+            self.drag_bbox = preview_bbox
+            delta = self.snap.snap_dx(0.0)
+        finally:
+            self._snap_ignore_ids = original_ignore
+            self.drag_bbox = original_bbox
+
+        snapped = seconds + float(delta)
+        snapped = max(0.0, snapped)
+        return self._snap_time(snapped)
+
+    def _ensure_drag_preview(self, pos_seconds, track_num):
+        if self._drag_preview_items:
+            return True
+        payload = self._drag_payload or {}
+        ids = payload.get("ids")
+        if not ids:
+            return False
+        if not hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.item_ids.clear()
+        if track_num is None:
+            return False
+        preview_items = []
+        current_start = pos_seconds
+        for idx, source_id in enumerate(ids):
+            ignore_refresh = idx < len(ids) - 1
+            if payload.get("type") == "transition":
+                item = self.addTransition(
+                    source_id,
+                    QPointF(current_start, 0),
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if not item:
+                    continue
+                model = Transition.get(id=item.get("id"))
+                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+            else:
+                item = self.addClip(
+                    source_id,
+                    QPointF(current_start, 0),
+                    track_num,
+                    ignore_refresh=ignore_refresh,
+                    call_manual_move=False,
+                )
+                if not item:
+                    continue
+                model = Clip.get(id=item.get("id"))
+                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+            if not model:
+                continue
+            offset = current_start - pos_seconds
+            preview_items.append({
+                "model": model,
+                "offset": offset,
+                "duration": duration,
+            })
+            self.item_ids.append(model.id)
+            current_start += duration
+
+        if not preview_items:
+            return False
+
+        self._drag_preview_items = preview_items
+        self._drag_preview_type = payload.get("type")
+        self.geometry.mark_dirty()
+        self.update()
+        return True
+
+    def _update_drag_preview_position(self, pos_seconds, track_num):
+        if not self._drag_preview_items:
+            return
+        min_offset = min(entry.get("offset", 0.0) for entry in self._drag_preview_items)
+        max_end = max(
+            entry.get("offset", 0.0) + entry.get("duration", 0.0)
+            for entry in self._drag_preview_items
+        )
+        group_duration = max(0.0, max_end - min_offset)
+        snapped_start = self._snap_new_item_start(pos_seconds, group_duration)
+        total = len(self._drag_preview_items)
+        for idx, entry in enumerate(self._drag_preview_items):
+            model = entry.get("model")
+            if not model:
+                continue
+            new_pos = max(0.0, snapped_start + entry.get("offset", 0.0))
+            model.data["position"] = new_pos
+            model.data["layer"] = track_num
+            rect = self.geometry.calc_item_rect(model)
+            self.geometry.update_item_rect(model, rect)
+        self.drag_bbox = self._compute_preview_bbox()
+        self._keyframes_dirty = True
+        self.update()
+
+    def _compute_preview_bbox(self):
+        if not self._drag_preview_items:
+            return QRectF()
+        rects = []
+        for entry in self._drag_preview_items:
+            model = entry.get("model")
+            if not model:
+                continue
+            rect = self.geometry.calc_item_rect(model)
+            if rect:
+                rects.append(QRectF(rect))
+        if not rects:
+            return QRectF()
+        bbox = QRectF(rects[0])
+        for rect in rects[1:]:
+            bbox = bbox.united(rect)
+        return bbox
+
+    def _reset_drag_preview(self, delete_items=False):
+        deleted_any = False
+        if delete_items and self._drag_preview_items:
+            for entry in self._drag_preview_items:
+                model = entry.get("model")
+                if isinstance(model, Clip) or isinstance(model, Transition):
+                    try:
+                        model.delete()
+                        deleted_any = True
+                    except Exception:
+                        pass
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._drag_payload = None
+        if hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.new_item = False
+        self.item_type = None
+        self.drag_bbox = QRectF()
+        if deleted_any:
+            self._update_project_duration()
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _finalize_drag_preview(self):
+        total = len(self._drag_preview_items)
+        if not total:
+            self._reset_drag_preview()
+            return
+        for idx, entry in enumerate(self._drag_preview_items):
+            model = entry.get("model")
+            if not model:
+                continue
+            ignore_refresh = idx < total - 1
+            if isinstance(model, Transition):
+                self.update_transition_data(
+                    model.data,
+                    only_basic_props=False,
+                    ignore_refresh=ignore_refresh,
+                )
+            else:
+                self.update_clip_data(
+                    model.data,
+                    only_basic_props=False,
+                    ignore_reader=True,
+                    ignore_refresh=ignore_refresh,
+                )
+        self._update_project_duration()
+        self._drag_preview_items = []
+        self._drag_preview_type = None
+        self._drag_payload = None
+        if hasattr(self, "item_ids"):
+            self.item_ids = []
+        self.new_item = False
+        self.item_type = None
+        self.changed(None)
+        self.update()
+
+
+
+    def resizeEvent(self, event):
+        """Widget resize event"""
+        event.accept()
+        self.delayed_size = self.size()
+        self.geometry.mark_dirty()
+        self.update()
+        self.delayed_resize_timer.start()
+
+    def delayed_resize_callback(self):
+        """Callback for resize event timer (to delay the resize event, and prevent lots of similar resize events)"""
+        project = get_app().project
+        project_duration = float(project.get("duration") or 0.0)
+        tick_pixels = float(project.get("tick_pixels") or 100.0)
+
+        if self.delayed_size:
+            self.scrollbar_position[3] = self.delayed_size.width()
+            self.v_scrollbar_position[3] = self.delayed_size.height()
+
+        view_w = float(self.scrollbar_position[3] or 0.0)
+
+        # Preserve the existing zoom factor and update the visible range instead of
+        # recomputing zoom from the viewport size. This keeps manual zoom choices
+        # intact when the dock is resized.
+        self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1.0)
+        timeline_w = project_duration * self.pixels_per_second
+        self.scrollbar_position[2] = timeline_w
+
+        if project_duration > 0.0 and view_w > 0.0:
+            visible_secs = self.zoom_factor * (view_w / tick_pixels)
+            width_norm = max(0.0, min(visible_secs / project_duration, 1.0))
+        else:
+            width_norm = 1.0 if timeline_w > 0.0 else 0.0
+
+        left_norm = self.scrollbar_position[0]
+        right_norm = left_norm + width_norm
+        if right_norm > 1.0:
+            right_norm = 1.0
+            left_norm = max(0.0, right_norm - width_norm)
+
+        self.scrollbar_position[0] = left_norm
+        self.scrollbar_position[1] = right_norm
+        self.h_scroll_offset = left_norm * (timeline_w or 0.0)
+
+        self.geometry.mark_dirty()
+        self.update()
+        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+
+    # Capture wheel event to alter zoom/scale of widget
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            if event.angleDelta().y() > 0:
+                self.zoomIn()
+            else:
+                self.zoomOut()
+            event.accept()
+            return
+
+        # Vertical scrolling
+        if self.v_scrollbar_position[3] > 0 and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]:
+            delta = -event.angleDelta().y() / 120.0
+            view_ratio = self.v_scrollbar_position[1] - self.v_scrollbar_position[0]
+            new_top = self.v_scrollbar_position[0] + delta * view_ratio * 0.1
+            new_top = max(0.0, min(new_top, 1.0 - view_ratio))
+            self.v_scrollbar_position[0] = new_top
+            self.v_scrollbar_position[1] = new_top + view_ratio
+            self.geometry.mark_dirty()
+            self.update()
+            event.accept()
+        else:
+            event.ignore()
+
+    def setZoomFactor(self, zoom_factor, emit=True):
+        """Set the current zoom factor"""
+        # Force recalculation of clips
+        self.zoom_factor = zoom_factor
+        self.changed(None)
+
+        # Update normalized scroll width to match new zoom
+        project_duration = get_app().project.get("duration") or 0.0
+        view_w = self.scrollbar_position[3]
+        tick_pixels = float(get_app().project.get("tick_pixels") or 100.0)
+        self.pixels_per_second = tick_pixels / float(self.zoom_factor or 1.0)
+        timeline_w = project_duration * self.pixels_per_second
+        self.scrollbar_position[2] = timeline_w
+        if project_duration > 0.0 and view_w > 0.0 and timeline_w > 0.0:
+            visible_secs = zoom_factor * (view_w / tick_pixels)
+            width_norm = max(0.0, min(visible_secs / project_duration, 1.0))
+        else:
+            width_norm = 1.0 if timeline_w > 0.0 else 0.0
+
+        anchor_seconds = 0.0
+        if self.fps_float:
+            anchor_seconds = max(0.0, (self.current_frame - 1) / self.fps_float)
+        self._center_on_seconds(
+            anchor_seconds,
+            width_norm=width_norm,
+            timeline_w=timeline_w,
+            view_w=view_w,
+        )
+
+        slider_positions = list(self.scrollbar_position)
+        slider = getattr(self.win, "sliderZoomWidget", None)
+        if slider:
+            if abs(slider.zoom_factor - zoom_factor) > 1e-6:
+                slider.setZoomFactor(zoom_factor, emit=False)
+            slider.update_scrollbars(slider_positions)
+
+        if emit:
+            # Persist zoom back to the project so dependent widgets (zoom slider, etc.)
+            # remain synchronized with QWidget-originated zoom gestures.
+            current_scale = float(get_app().project.get("scale") or 15.0)
+            if abs(zoom_factor - current_scale) > 1e-6:
+                get_app().updates.ignore_history = True
+                get_app().updates.update(["scale"], zoom_factor)
+                get_app().updates.ignore_history = False
+
+            # Emit zoom and scrollbar signals
+            get_app().window.TimelineZoom.emit(self.zoom_factor)
+            get_app().window.TimelineScrolled.emit(slider_positions)
+
+        # Schedule repaint
+        self.update()
+
+    def zoomIn(self):
+        """Zoom into timeline"""
+        if self.zoom_factor >= 10.0:
+            new_factor = self.zoom_factor - 5.0
+        elif self.zoom_factor >= 4.0:
+            new_factor = self.zoom_factor - 2.0
+        else:
+            new_factor = self.zoom_factor * 0.8
+
+        # Emit zoom signal
+        self.setZoomFactor(new_factor)
+
+    def zoomOut(self):
+        """Zoom out of timeline"""
+        if self.zoom_factor >= 10.0:
+            new_factor = self.zoom_factor + 5.0
+        elif self.zoom_factor >= 4.0:
+            new_factor = self.zoom_factor + 2.0
+        else:
+            # Ensure zoom is reversable when using only keyboard zoom
+            new_factor = min(self.zoom_factor * 1.25, 4.0)
+
+        # Emit zoom signal
+        self.setZoomFactor(new_factor)
+
+    def update_scrollbars(self, new_positions):
+        """Consume the current scroll bar positions from the webview timeline"""
+        if self.mouse_dragging:
+            return
+
+        if list(new_positions) == self.scrollbar_position:
+            return
+
+        self.scrollbar_position = list(new_positions)
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = self.scrollbar_position[0] * timeline_w
+
+        # Check for empty clip rectangles
+        if not self.geometry.clip_entries:
+            self.changed(None)
+
+        # Recompute geometry for new scrollbar positions
+        self.geometry.mark_dirty()
+
+        # Disable auto center
+        self.is_auto_center = False
+
+        # Schedule repaint
+        self.update()
+
+    def set_scroll_left(self, new_left):
+        width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
+        left = max(0.0, min(new_left, 1.0 - width_norm))
+        if abs(left - self.scrollbar_position[0]) < 1e-9:
+            return
+        self.scrollbar_position[0] = left
+        self.scrollbar_position[1] = left + width_norm
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = left * timeline_w
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):
+        timeline_w = float(timeline_w or 0.0)
+        view_w = float(view_w or 0.0)
+        if timeline_w <= 0.0 or view_w <= 0.0:
+            self.scrollbar_position[0] = 0.0
+            self.scrollbar_position[1] = 1.0 if timeline_w > 0.0 else 0.0
+            self.h_scroll_offset = 0.0
+            return False
+
+        if width_norm is None:
+            width_norm = self.scrollbar_position[1] - self.scrollbar_position[0]
+        width_norm = max(0.0, min(width_norm, 1.0))
+
+        view_px = width_norm * timeline_w
+        if view_px <= 0.0:
+            view_px = min(view_w, timeline_w)
+            width_norm = view_px / timeline_w if timeline_w else 0.0
+
+        if timeline_w <= view_px + 1e-9:
+            left_px = 0.0
+            width_norm = 1.0
+        else:
+            anchor_px = max(0.0, min(seconds * self.pixels_per_second, timeline_w))
+            half = view_px / 2.0
+            left_px = anchor_px - half
+            max_left = max(0.0, timeline_w - view_px)
+            if left_px < 0.0:
+                left_px = 0.0
+            elif left_px > max_left:
+                left_px = max_left
+
+        left_norm = left_px / timeline_w if timeline_w else 0.0
+        right_norm = left_norm + width_norm
+        if right_norm > 1.0:
+            right_norm = 1.0
+            left_norm = max(0.0, right_norm - width_norm)
+
+        changed = (
+            abs(left_norm - self.scrollbar_position[0]) > 1e-6
+            or abs(right_norm - self.scrollbar_position[1]) > 1e-6
+        )
+
+        self.scrollbar_position[0] = left_norm
+        self.scrollbar_position[1] = right_norm
+        self.h_scroll_offset = left_norm * timeline_w
+        return changed
+
+
+    def handle_selection(self):
+        # Force recalculation of clips and repaint
+        self.changed(None)
+        self._keyframes_dirty = True
+        self.update()
+
+
+
+
+
+
+
+    # ----- State machine helper methods -----
+
+    def _hitTest(self, pos):
+        return self.geometry.hit(pos)
+
+
+
+
+    def _select_timeline_item(self, item_id, item_type, clear_existing):
+        if item_id is None or not item_type:
+            return
+        item_id_str = str(item_id)
+        if not item_id_str:
+            return
+        timeline = getattr(self.win, "timeline", None)
+        if timeline:
+            timeline.addSelection(item_id_str, item_type, clear_existing)
+        self.win.addSelection(item_id_str, item_type, clear_existing)
+        # Selection changes affect cached clip renders and keyframe visibility.
+        self.clip_painter.clear_cache()
+        self.geometry.mark_dirty()
+        self._keyframes_dirty = True
+        self.update()
+
+    def _update_project_duration(self):
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return
+
+        furthest = 0.0
+
+        for clip in Clip.filter():
+            data = clip.data if isinstance(clip.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+
+        for tran in Transition.filter():
+            data = tran.data if isinstance(tran.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            finish = position + duration
+            if finish > furthest:
+                furthest = finish
+
+        min_length = 300.0
+        padding = 10.0
+        desired = max(min_length, furthest + padding)
+        current = float(get_app().project.get("duration") or 0.0)
+        if desired > current + 1e-3:
+            timeline.resizeTimeline(desired)
+
+    def _clip_menu_rect(self, rect):
+        if not self.clip_painter.menu_pix:
+            return QRectF()
+        bw = self.clip_painter.clip_pen.widthF()
+        width, height = self.clip_painter.logical_size(self.clip_painter.menu_pix)
+        return QRectF(
+            rect.x() + bw + self.clip_painter.menu_margin,
+            rect.y() + bw + self.clip_painter.menu_margin,
+            width,
+            height,
+        )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def _updateCursor(self, pos):
+        if self._fixed_cursor is not None:
+            self.setCursor(self._fixed_cursor)
+            return
+
+        self.geometry.ensure()
+
+        # Playhead icon
+        handle_rect = self._playhead_handle_rect()
+        if (self.playhead_painter.icon_pix and not handle_rect.isNull() and handle_rect.contains(pos)):
+            self.setCursor(self.cursors["hand"])
+            return
+
+        icon_entry = self._effect_icon_at(pos)
+        if icon_entry:
+            self.setCursor(Qt.PointingHandCursor)
+            return
+
+        toolbar_button = self._track_toolbar_button_at(pos)
+        if toolbar_button:
+            self.setCursor(Qt.PointingHandCursor)
+            return
+
+        # Transition menu icons
+        for rect, _tran, _selected in self.geometry.iter_transitions(reverse=True):
+            if self._transition_menu_rect(rect).contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+
+        marker = self._get_keyframe_at(pos)
+        if marker:
+            self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
+            return
+
+        # Clip menu icons
+        for rect, _clip, _selected in self.geometry.iter_clips(reverse=True):
+            if self._clip_menu_rect(rect).contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+
+        # Clip/transition edges and drags (transitions prioritized)
+        edge = 5
+        for rect, _item, _selected, _type in self.geometry.iter_items(reverse=True):
+            if rect.contains(pos):
+                if abs(pos.x() - rect.left()) <= edge or abs(pos.x() - rect.right()) <= edge:
+                    self.setCursor(self.cursors["resize_x"])
+                else:
+                    self.setCursor(self.cursors["hand"])
+                return
+
+        # Track menu icons
+        for _track_rect, _track, name_rect in self.geometry.track_rects:
+            mrect = self._track_menu_rect(name_rect)
+            if mrect.contains(pos):
+                self.setCursor(Qt.PointingHandCursor)
+                return
+
+        self.unsetCursor()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._last_event = event
+            icon_entry = self._effect_icon_at(event.pos())
+            if icon_entry and self._trigger_effect_context_menu(
+                icon_entry, event.modifiers() if hasattr(event, "modifiers") else None
+            ):
+                event.accept()
+                return
+            if self._showContextMenu(event.pos()):
+                event.accept()
+            else:
+                event.ignore()
+            return
+
+        if event.button() == Qt.MiddleButton:
+            if self._startMiddlePan(event.pos()):
+                event.accept()
+                return
+
+        self.geometry.ensure()
+        pos = event.pos()
+
+        if event.button() == Qt.LeftButton:
+            toolbar_button = self._track_toolbar_button_at(pos)
+            if toolbar_button:
+                self._last_event = event
+                self._toolbar_pressed_key = (toolbar_button.get("track_id"), toolbar_button.get("key"))
+                self._toolbar_pressed_inside = True
+                self._toolbar_hover_key = self._toolbar_pressed_key
+                self.update()
+                event.accept()
+                return
+
+        if self._handle_menu_icon_clicks(pos):
+            return
+
+        self._assign_press_target(event)
+
+        if self._start_scroll_drag_if_needed(pos):
+            return
+
+        if self._press_hit == "panel-add":
+            event.accept()
+            return
+
+        if self._press_hit == "effect-icon":
+            event.accept()
+            return
+
+        self._last_event = event
+        self.events.pressed.emit(event)
+
+    def leaveEvent(self, event):
+        if self._toolbar_hover_key is not None or self._toolbar_pressed_inside:
+            self._toolbar_hover_key = None
+            if self._toolbar_pressed_key:
+                self._toolbar_pressed_inside = False
+            self.update()
+        super().leaveEvent(event)
+
+    def _handle_menu_icon_clicks(self, pos):
+        return (
+            self._trigger_track_menu_icon(pos)
+            or self._trigger_transition_menu_icon(pos)
+            or self._trigger_clip_menu_icon(pos)
+        )
+
+    def _trigger_track_menu_icon(self, pos):
+        for _track_rect, track, name_rect in self.geometry.track_rects:
+            if self._track_menu_rect(name_rect).contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTrackMenu(track.id)
+                return True
+        return False
+
+
+    def _trigger_clip_menu_icon(self, pos):
+        for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
+            if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowClipMenu(clip.id)
+                return True
+        return False
+
+    def _assign_press_target(self, event):
+        pos = event.pos()
+        modifiers = event.modifiers() if hasattr(event, "modifiers") else Qt.NoModifier
+        ctrl = bool(modifiers & Qt.ControlModifier)
+        marker = self._get_keyframe_at(pos)
+        if marker:
+            self._press_hit = "keyframe"
+            self._press_keyframe = marker
+            self._press_keyframe_clear = not ctrl
+            self._select_marker_owner(marker, clear_existing=self._press_keyframe_clear)
+            return
+        self._press_keyframe = None
+        self._press_keyframe_clear = True
+        add_button = self._panel_add_button_at(pos)
+        if add_button:
+            self._press_hit = "panel-add"
+            self._panel_press_info = add_button
+            return
+        panel_marker = self._panel_marker_at(pos)
+        if panel_marker and panel_marker.get("point"):
+            self._press_hit = "panel-keyframe"
+            panel_marker = dict(panel_marker)
+            panel_marker["modifiers"] = modifiers
+            self._panel_press_info = panel_marker
+            return
+        self._panel_press_info = None
+        panel_lane = self._panel_lane_at(pos)
+        if panel_lane:
+            self._press_hit = "panel"
+            self._panel_press_info = {"lane": panel_lane}
+            return
+        icon_entry = self._effect_icon_at(pos)
+        if icon_entry:
+            self._press_hit = "effect-icon"
+            self._press_effect_icon = icon_entry
+            return
+        self._press_effect_icon = None
+        edge = 5
+        for rect, item, _selected, _type in self.geometry.iter_items(reverse=True):
+            if not rect.contains(pos):
+                continue
+            if abs(pos.x() - rect.left()) <= edge:
+                self._press_hit = "clip-edge"
+                self._resizing_item = item
+                self._resize_edge = "left"
+                return
+            if abs(pos.x() - rect.right()) <= edge:
+                self._press_hit = "clip-edge"
+                self._resizing_item = item
+                self._resize_edge = "right"
+                return
+        self._resizing_item = None
+        self._resize_edge = None
+        self._press_hit = self._hitTest(pos)
+
+    def _start_scroll_drag_if_needed(self, pos):
+        if self._press_hit == "h-scroll":
+            self.scroll_bar_dragging = True
+            self.mouse_dragging = True
+            self.mouse_position = pos.x()
+            self.scrollbar_position_previous = list(self.scrollbar_position)
+            return True
+        if self._press_hit == "v-scroll":
+            self.v_scroll_bar_dragging = True
+            self.mouse_dragging = True
+            self.mouse_position = pos.y()
+            self.v_scrollbar_position_previous = list(self.v_scrollbar_position)
+            return True
+        return False
+
+    def mouseMoveEvent(self, event):
+        self._last_event = event
+
+        if self.scroll_bar_dragging:
+            view_w = self.scrollbar_position[3] or 1.0
+            width_norm = self.scrollbar_position_previous[1] - self.scrollbar_position_previous[0]
+            handle_w = width_norm * view_w
+            avail = view_w - handle_w
+            delta_px = self.mouse_position - event.pos().x()
+            delta = 0.0
+            if avail > 0:
+                delta = (delta_px / avail) * (1.0 - width_norm)
+            new_left = self.scrollbar_position_previous[0] - delta
+            new_left = max(0.0, min(new_left, 1.0 - width_norm))
+            self.scrollbar_position = [new_left, new_left + width_norm,
+                                       self.scrollbar_position[2], self.scrollbar_position[3]]
+            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+            self.geometry.mark_dirty()
+            self.update()
+            return
+
+        if self.v_scroll_bar_dragging:
+            view_h = self.v_scrollbar_position[3] or 1.0
+            height_norm = self.v_scrollbar_position_previous[1] - self.v_scrollbar_position_previous[0]
+            handle_h = height_norm * view_h
+            avail = view_h - handle_h
+            delta_py = self.mouse_position - event.pos().y()
+            delta = 0.0
+            if avail > 0:
+                delta = (delta_py / avail) * (1.0 - height_norm)
+            new_top = self.v_scrollbar_position_previous[0] - delta
+            new_top = max(0.0, min(new_top, 1.0 - height_norm))
+            self.v_scrollbar_position[0] = new_top
+            self.v_scrollbar_position[1] = new_top + height_norm
+            self.geometry.mark_dirty()
+            self.update()
+            return
+
+        if self._middle_panning:
+            self._updateMiddlePan(event.pos())
+            return
+
+        pos = event.pos()
+        if self._toolbar_pressed_key:
+            self._update_toolbar_pressed_state(pos)
+        self._update_toolbar_hover(pos)
+
+        self._updateCursor(pos)
+        self.events.moved.emit(event)
+
+    def mouseReleaseEvent(self, event):
+        self._last_event = event
+
+        if event.button() == Qt.LeftButton and self._toolbar_pressed_key:
+            button = self._get_toolbar_button(*self._toolbar_pressed_key)
+            inside = bool(
+                button
+                and button.get("rect")
+                and button["rect"].contains(event.pos())
+                and self._toolbar_pressed_inside
+            )
+            self._toolbar_pressed_key = None
+            self._toolbar_pressed_inside = False
+            if inside and button:
+                self._activate_track_toolbar_button(button)
+            self._update_toolbar_hover(event.pos())
+            self.update()
+            event.accept()
+            return
+
+        if event.button() == Qt.MiddleButton and self._middle_panning:
+            self._finishMiddlePan()
+            return
+        if self.scroll_bar_dragging or self.v_scroll_bar_dragging:
+            self.scroll_bar_dragging = False
+            self.v_scroll_bar_dragging = False
+            self.mouse_dragging = False
+            return
+        press_hit = self._press_hit
+        add_info_initial = self._panel_press_info if press_hit == "panel-add" else None
+        effect_info = self._press_effect_icon if press_hit == "effect-icon" else None
+
+        self.events.released.emit(event)
+
+        if press_hit == "panel-add":
+            info = self._panel_press_info or add_info_initial or {}
+            self._panel_press_info = None
+            self._press_hit = None
+            self._handle_panel_add_click(info)
+            event.accept()
+            return
+
+        if press_hit == "panel-keyframe":
+            info = self._panel_press_info or {}
+            self._panel_press_info = None
+            if info.get("dragged"):
+                self._press_hit = None
+                event.accept()
+                return
+            point = info.get("point") if isinstance(info, dict) else None
+            prop = info.get("property") if isinstance(info, dict) else None
+            track_num = info.get("track") if isinstance(info, dict) else None
+            frame_val = point.get("frame") if isinstance(point, dict) else None
+            prop_key = prop.get("key") if isinstance(prop, dict) else None
+            modifiers = event.modifiers() if hasattr(event, "modifiers") else Qt.NoModifier
+            additive = bool(modifiers & Qt.ControlModifier)
+            if frame_val is not None and prop_key and track_num is not None:
+                try:
+                    frame_int = int(frame_val)
+                except (TypeError, ValueError):
+                    frame_int = None
+                if frame_int is not None:
+                    if additive:
+                        self._panel_toggle_frames(track_num, prop_key, {frame_int})
+                    else:
+                        self._panel_set_selection_map(track_num, {prop_key: {frame_int}})
+            self._press_hit = None
+            event.accept()
+            return
+
+        if press_hit == "effect-icon":
+            self._press_hit = None
+            self._press_effect_icon = None
+            event.accept()
+            self._handle_effect_icon_click(effect_info)
+            return
+
+        self._press_hit = None
+
+    def contextMenuEvent(self, event):
+        icon_entry = self._effect_icon_at(event.pos())
+        if icon_entry:
+            if self._trigger_effect_context_menu(
+                icon_entry, event.modifiers() if hasattr(event, "modifiers") else None
+            ):
+                event.accept()
+                return
+        if not self._showContextMenu(event.pos()):
+            event.ignore()
+
+    def _startMiddlePan(self, pos):
+        view_w = self.scrollbar_position[3]
+        timeline_w = self.scrollbar_position[2]
+        view_h = self.v_scrollbar_position[3]
+        content_h = self.v_scrollbar_position[2]
+        if not any((view_w, timeline_w, view_h, content_h)):
+            return False
+        self._middle_panning = True
+        self.mouse_dragging = True
+        self._middle_pan_anchor = QPointF(pos)
+        self._middle_pan_scroll_start = list(self.scrollbar_position)
+        self._middle_pan_vscroll_start = list(self.v_scrollbar_position)
+        self._fix_cursor(self.cursors.get("hand", self.cursor()))
+        return True
+
+    def _updateMiddlePan(self, pos):
+        if not self._middle_panning:
+            return
+        posf = QPointF(pos)
+        delta = posf - self._middle_pan_anchor
+        new_positions = list(self._middle_pan_scroll_start)
+        new_v_positions = list(self._middle_pan_vscroll_start)
+
+        view_w = new_positions[3] or self.width()
+        timeline_w = new_positions[2] or view_w
+        width_norm = new_positions[1] - new_positions[0]
+        if timeline_w > 0 and width_norm < 1.0:
+            left = new_positions[0] - (delta.x() / timeline_w)
+            left = max(0.0, min(left, 1.0 - width_norm))
+            new_positions[0] = left
+            new_positions[1] = left + width_norm
+
+        view_h = new_v_positions[3] or self.height()
+        content_h = new_v_positions[2] or view_h
+        height_norm = new_v_positions[1] - new_v_positions[0]
+        if content_h > 0 and height_norm < 1.0:
+            top = new_v_positions[0] - (delta.y() / content_h)
+            top = max(0.0, min(top, 1.0 - height_norm))
+            new_v_positions[0] = top
+            new_v_positions[1] = top + height_norm
+
+        changed = new_positions[:2] != self.scrollbar_position[:2]
+        v_changed = new_v_positions[:2] != self.v_scrollbar_position[:2]
+        if changed:
+            self.scrollbar_position = new_positions
+            get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
+        if v_changed:
+            self.v_scrollbar_position = new_v_positions
+        if changed or v_changed:
+            self.geometry.mark_dirty()
+            self.update()
+
+    def _finishMiddlePan(self):
+        if not self._middle_panning:
+            return
+        self._middle_panning = False
+        self.mouse_dragging = False
+        self._release_cursor()
+
+    def _showContextMenu(self, pos):
+        """Show appropriate context menu for the position. Returns True if handled."""
+        self.geometry.ensure()
+
+        # Playhead context menu
+        if self._playhead_hit(pos) and hasattr(self.win, "timeline"):
+            # Convert frame number to seconds for backend API
+            seconds = 0.0
+            if self.fps_float:
+                seconds = max(0.0, (max(1, self.current_frame) - 1) / self.fps_float)
+            self.win.timeline.ShowPlayheadMenu(seconds)
+            return True
+
+        # Transition context menu (prioritized over clips)
+        for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
+            if rect.contains(pos) and hasattr(self.win, "timeline"):
+                if tran.id not in getattr(self.win, "selected_transitions", []):
+                    self._select_timeline_item(tran.id, "transition", True)
+                self.win.timeline.ShowTransitionMenu(tran.id)
+                return True
+
+        # Clip context menu
+        for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
+            if rect.contains(pos) and hasattr(self.win, "timeline"):
+                if clip.id not in getattr(self.win, "selected_clips", []):
+                    self._select_timeline_item(clip.id, "clip", True)
+                self.win.timeline.ShowClipMenu(clip.id)
+                return True
+
+        # Track context menu
+        for track_rect, track, name_rect in self.geometry.track_rects:
+            if (track_rect.contains(pos) or name_rect.contains(pos)) and hasattr(self.win, "timeline"):
+                self.win.timeline.ShowTrackMenu(track.id)
+                return True
+
+        return False

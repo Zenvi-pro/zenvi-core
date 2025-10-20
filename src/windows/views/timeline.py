@@ -253,6 +253,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
+        if action is None:
+            if ViewClass == TimelineWidget:
+                TimelineWidget.changed(self, None)
+            return
+
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
             action = action.copy()

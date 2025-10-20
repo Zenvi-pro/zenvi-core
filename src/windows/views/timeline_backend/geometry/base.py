@@ -29,11 +29,10 @@ from PyQt5.QtCore import QPointF, QRectF
 
 from classes.app import get_app
 from classes.logger import log
-from classes.query import Clip, Track, Transition, Marker
 
 
-class Geometry:
-    """Cache of timeline geometry and hit-testing helper."""
+class GeometryBase:
+    """Shared cache and hit-testing helpers for timeline geometry."""
 
     def __init__(self, widget):
         self.widget = widget
@@ -69,13 +68,6 @@ class Geometry:
         self.transition_entries.clear()
         self.marker_rects.clear()
         self.panel_rects.clear()
-
-    def _build_layer_index(self):
-        self.track_list = list(reversed(sorted(Track.filter())))
-        layers = {}
-        for idx, layer in enumerate(self.track_list):
-            layers[layer.data.get("number")] = idx
-        return layers
 
     def _update_vertical_factor(self, layers, view_h):
         if self.widget.track_height:
@@ -173,7 +165,7 @@ class Geometry:
             track_heights[track_num] = track_height
             cumulative += track_height
             if extra > 0.0:
-                log.info(
+                log.debug(
                     "Geometry: track %s base=%.2f extra=%.2f total=%.2f",
                     track_num,
                     base_height,
@@ -200,223 +192,6 @@ class Geometry:
         }
         self._view_context = ctx
         return ctx
-
-    def _populate_track_rects(self, layers, ctx):
-        w = self.widget
-        offsets = ctx.get("track_offsets", {})
-        heights = ctx.get("track_heights", {})
-        self.panel_rects = {}
-        for track in self.track_list:
-            track_num = w.normalize_track_number(track.data.get("number"))
-            layer_index = layers.get(track.data.get("number"), 0)
-            y = (
-                w.ruler_height
-                + ctx.get("top_margin", 0.0)
-                + offsets.get(track_num, layer_index * ctx["spacing"])
-                - ctx["v_offset"]
-            )
-            track_height = heights.get(track_num, w.vertical_factor)
-            if (
-                y + track_height <= w.ruler_height
-                or y >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
-            track_rect = QRectF(
-                w.track_name_width - ctx["h_offset"],
-                y,
-                ctx["timeline_w"],
-                track_height,
-            )
-            name_rect = QRectF(0, y, w.track_name_width, track_height)
-            self.track_rects.append((track_rect, track, name_rect))
-
-            panel_height = max(0.0, track_height - w.vertical_factor)
-            if panel_height > 0.0:
-                panel_rect = QRectF(
-                    track_rect.x(),
-                    y + w.vertical_factor,
-                    track_rect.width(),
-                    panel_height,
-                )
-                self.panel_rects[track_num] = panel_rect
-            else:
-                self.panel_rects.pop(track_num, None)
-
-        w.resize_handle_rect = QRectF(
-            w.track_name_width - w._resize_handle_width / 2,
-            w.ruler_height + ctx.get("top_margin", 0.0),
-            w._resize_handle_width,
-            max(0.0, ctx["content_h"] - ctx.get("top_margin", 0.0)),
-        )
-
-    def _populate_clip_rects(self, layers, ctx, win):
-        w = self.widget
-        overrides_map = getattr(w, "_pending_clip_overrides", {})
-        entries = []
-        selected_ids = set(getattr(win, "selected_clips", []) or [])
-        for clip in Clip.filter():
-            clip_data = clip.data if isinstance(clip.data, dict) else {}
-            override = overrides_map.get(clip.id, {})
-
-            position = override.get("position", clip_data.get("position", 0.0))
-            start = override.get("start", clip_data.get("start", 0.0))
-            end = override.get("end", clip_data.get("end", start))
-            layer_val = override.get("layer", clip_data.get("layer", 0))
-
-            try:
-                position = float(position)
-            except (TypeError, ValueError):
-                position = 0.0
-            try:
-                start = float(start)
-            except (TypeError, ValueError):
-                start = 0.0
-            try:
-                end = float(end)
-            except (TypeError, ValueError):
-                end = start
-            if end < start:
-                end = start
-            try:
-                layer_key = int(layer_val)
-            except (TypeError, ValueError):
-                layer_key = layer_val
-
-            cx = (
-                w.track_name_width
-                + position * w.pixels_per_second
-                - ctx["h_offset"]
-            )
-            layer_idx = layers.get(layer_key, 0)
-            offset = ctx.get("track_offsets", {}).get(
-                w.normalize_track_number(layer_key),
-                layer_idx * ctx["spacing"],
-            )
-            cy = (
-                w.ruler_height
-                + ctx.get("top_margin", 0.0)
-                + offset
-                - ctx["v_offset"]
-            )
-            cw = (end - start) * w.pixels_per_second
-            if (
-                cx + cw <= w.track_name_width
-                or cy + w.vertical_factor <= w.ruler_height
-                or cy >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
-            rect = QRectF(cx, cy, cw, w.vertical_factor)
-            entries.append((position, rect, clip))
-
-        def _clip_sort_key(entry):
-            pos, rect, clip = entry
-            try:
-                pos_val = float(pos)
-            except (TypeError, ValueError):
-                pos_val = 0.0
-            # Secondary sort by rect.x() to keep deterministic ordering for
-            # items with identical positions (such as transitions spanning the
-            # same point).
-            return pos_val, rect.x(), getattr(clip, "id", "")
-
-        entries.sort(key=_clip_sort_key)
-        clip_entries = []
-        for _, rect, clip in entries:
-            is_selected = clip.id in selected_ids
-            clip_entries.append((rect, clip, is_selected))
-        self.clip_entries = clip_entries
-
-    def _populate_transition_rects(self, layers, ctx, win):
-        w = self.widget
-        overrides_map = getattr(w, "_pending_transition_overrides", {})
-        entries = []
-        selected_ids = set(getattr(win, "selected_transitions", []) or [])
-        for tr in Transition.filter():
-            tr_data = tr.data if isinstance(tr.data, dict) else {}
-            override = overrides_map.get(tr.id, {})
-
-            position = override.get("position", tr_data.get("position", 0.0))
-            start = override.get("start", tr_data.get("start", 0.0))
-            end = override.get("end", tr_data.get("end", start))
-            layer_val = override.get("layer", tr_data.get("layer", 0))
-
-            try:
-                position = float(position)
-            except (TypeError, ValueError):
-                position = 0.0
-            try:
-                start = float(start)
-            except (TypeError, ValueError):
-                start = 0.0
-            try:
-                end = float(end)
-            except (TypeError, ValueError):
-                end = start
-            if end < start:
-                end = start
-            try:
-                layer_key = int(layer_val)
-            except (TypeError, ValueError):
-                layer_key = layer_val
-
-            tx = (
-                w.track_name_width
-                + position * w.pixels_per_second
-                - ctx["h_offset"]
-            )
-            layer_idx = layers.get(layer_key, 0)
-            offset = ctx.get("track_offsets", {}).get(
-                w.normalize_track_number(layer_key),
-                layer_idx * ctx["spacing"],
-            )
-            ty = (
-                w.ruler_height
-                + ctx.get("top_margin", 0.0)
-                + offset
-                - ctx["v_offset"]
-            )
-            tw = (end - start) * w.pixels_per_second
-            if (
-                tx + tw <= w.track_name_width
-                or ty + w.vertical_factor <= w.ruler_height
-                or ty >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
-            rect = QRectF(tx, ty, tw, w.vertical_factor)
-            entries.append((position, rect, tr))
-
-        def _transition_sort_key(entry):
-            pos, rect, tran = entry
-            try:
-                pos_val = float(pos)
-            except (TypeError, ValueError):
-                pos_val = 0.0
-            return pos_val, rect.x(), getattr(tran, "id", "")
-
-        entries.sort(key=_transition_sort_key)
-        transition_entries = []
-        for _, rect, tran in entries:
-            is_selected = tran.id in selected_ids
-            transition_entries.append((rect, tran, is_selected))
-        self.transition_entries = transition_entries
-
-    def _populate_marker_rects(self, ctx):
-        w = self.widget
-        top_margin = ctx.get("top_margin", 0.0)
-        height = max(0.0, ctx["content_h"] - top_margin)
-        for marker in Marker.filter():
-            mx = (
-                w.track_name_width
-                + marker.data.get("position", 0.0) * w.pixels_per_second
-                - ctx["h_offset"]
-            )
-            rect = QRectF(
-                mx,
-                w.ruler_height + top_margin - ctx["v_offset"],
-                0.5,
-                height,
-            )
-            self.marker_rects.append(rect)
 
     def _rebuild(self):
         win = get_app().window
