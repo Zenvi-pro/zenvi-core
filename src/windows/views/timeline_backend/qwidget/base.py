@@ -107,6 +107,7 @@ class TimelineWidgetBase(QWidget):
         self.v_scrollbar_position = [0.0, 0.0, 0.0, 0.0]
         self.v_scrollbar_position_previous = [0.0, 0.0, 0.0, 0.0]
         self.h_scroll_offset = 0.0
+        self._external_zoom_span = None
         self.left_handle_rect = QRectF()
         self.left_handle_dragging = False
         self.right_handle_rect = QRectF()
@@ -413,6 +414,20 @@ class TimelineWidgetBase(QWidget):
 
     def _apply_external_zoom(self, zoom_factor):
         """Apply zoom requests from the ZoomSlider without feedback."""
+        slider = getattr(self.win, "sliderZoomWidget", None)
+        if slider:
+            span = tuple(slider.scrollbar_position[:2])
+            if span[1] > span[0]:
+                left = max(0.0, min(span[0], 1.0))
+                right = max(left, min(span[1], 1.0))
+                self._external_zoom_span = (left, right)
+                if abs(left - self.scrollbar_position[0]) > 1e-6:
+                    self.is_auto_center = False
+            else:
+                self._external_zoom_span = None
+        else:
+            self._external_zoom_span = None
+
         self.setZoomFactor(zoom_factor, emit=False)
         project_duration = self._current_project_duration()
         tick_pixels = 100.0
@@ -1047,15 +1062,37 @@ class TimelineWidgetBase(QWidget):
         else:
             width_norm = 1.0 if timeline_w > 0.0 else 0.0
 
-        anchor_seconds = 0.0
-        if self.fps_float:
-            anchor_seconds = max(0.0, (self.current_frame - 1) / self.fps_float)
-        self._center_on_seconds(
-            anchor_seconds,
-            width_norm=width_norm,
-            timeline_w=timeline_w,
-            view_w=view_w,
-        )
+        span = self._external_zoom_span
+        self._external_zoom_span = None
+
+        if span and project_duration > 0.0:
+            width_norm = max(0.0, min(span[1] - span[0], 1.0))
+            center_norm = span[0] + (width_norm / 2.0)
+            center_norm = max(0.0, min(center_norm, 1.0))
+            center_seconds = center_norm * project_duration
+            self._center_on_seconds(
+                center_seconds,
+                width_norm=width_norm,
+                timeline_w=timeline_w,
+                view_w=view_w,
+            )
+        else:
+            if self.is_auto_center:
+                anchor_seconds = 0.0
+                if self.fps_float:
+                    anchor_seconds = max(0.0, (self.current_frame - 1) / self.fps_float)
+                self._center_on_seconds(
+                    anchor_seconds,
+                    width_norm=width_norm,
+                    timeline_w=timeline_w,
+                    view_w=view_w,
+                )
+            else:
+                left_norm = max(0.0, min(self.scrollbar_position[0], 1.0 - width_norm))
+                right_norm = left_norm + width_norm
+                self.scrollbar_position[0] = left_norm
+                self.scrollbar_position[1] = right_norm
+                self.h_scroll_offset = left_norm * timeline_w
 
         slider_positions = list(self.scrollbar_position)
         slider = getattr(self.win, "sliderZoomWidget", None)
@@ -1139,6 +1176,7 @@ class TimelineWidgetBase(QWidget):
         self.scrollbar_position[1] = left + width_norm
         timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
         self.h_scroll_offset = left * timeline_w
+        self.is_auto_center = False
         self.geometry.mark_dirty()
         self.update()
 
