@@ -3094,7 +3094,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Hook up caption editor signal
         self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
         self.caption_save_timer = QTimer(self)
-        self.caption_save_timer.setInterval(100)
+        self.caption_save_timer.setInterval(1000)
         self.caption_save_timer.setSingleShot(True)
         self.caption_save_timer.timeout.connect(self.caption_editor_save)
         self.CaptionTextLoaded.connect(self.caption_editor_load)
