@@ -1825,8 +1825,14 @@ class TimelineWidgetBase(QWidget):
 
         # Track context menu
         for track_rect, track, name_rect in self.geometry.track_rects:
-            if (track_rect.contains(pos) or name_rect.contains(pos)) and hasattr(self.win, "timeline"):
+            if name_rect.contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowTrackMenu(track.id)
+                return True
+            if track_rect.contains(pos) and hasattr(self.win, "timeline"):
+                seconds = 0.0
+                if hasattr(self.win.timeline, "_seconds_from_x"):
+                    seconds = max(0.0, float(self.win.timeline._seconds_from_x(pos.x())))
+                self.win.timeline.ShowTimelineMenu(seconds, track.data.get("number"))
                 return True
 
         return False

@@ -28,6 +28,7 @@
  """
 
 import json
+from copy import deepcopy
 import logging
 import os
 import time
@@ -197,6 +198,156 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if isinstance(item, (dict, list)) and self._payload_contains_waveform(item):
                     return True
         return False
+
+    def _assign_new_effect_ids(self, clip_data):
+        """Assign new unique IDs to each effect on the provided clip data."""
+        if not isinstance(clip_data, dict):
+            return
+
+        effects = clip_data.get("effects")
+        if not isinstance(effects, list):
+            return
+
+        for effect in effects:
+            if isinstance(effect, dict):
+                effect["id"] = get_app().project.generate_id()
+
+    def _handle_paste_callback(self, clip_ids, tran_ids, callback_data):
+        """Handle clipboard data insertion after resolving timeline coordinates."""
+        position = callback_data.get("position", 0.0)
+        layer_id = callback_data.get("track", 0)
+
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+
+        try:
+            copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
+            if not copied_object:
+                return
+
+            if isinstance(copied_object, Clip):
+                clip_ids = [cid for cid in clip_ids if cid != copied_object.id]
+            if isinstance(copied_object, Transition):
+                tran_ids = [tran_id for tran_id in tran_ids if tran_id != copied_object.id]
+
+            def adjust_positions_and_layers(objects, target_position, target_layer):
+                if not objects:
+                    return
+
+                left_most_position = min(obj.data.get("position", 0.0) for obj in objects)
+                top_most_layer = max(obj.data.get("layer", 0) for obj in objects)
+                position_diff = target_position - left_most_position
+                layer_diff = target_layer - top_most_layer if target_layer != -1 else 0
+
+                for obj in objects:
+                    obj.type = "insert"
+                    obj.data.pop("id", None)
+                    obj.id = None
+                    self._assign_new_effect_ids(obj.data)
+                    obj.data["position"] = obj.data.get("position", 0.0) + position_diff
+                    obj.data["layer"] = obj.data.get("layer", 0) + layer_diff
+                    obj.save()
+
+            def apply_clipboard_data(target_obj, clipboard_data, excluded_keys=None):
+                excluded_keys = excluded_keys or []
+                for key, value in clipboard_data.items():
+                    if key in excluded_keys:
+                        continue
+                    if key == "effects" and isinstance(value, list):
+                        existing_effects = target_obj.data.setdefault("effects", [])
+                        effect_map = {
+                            effect.get("class_name"): effect
+                            for effect in existing_effects
+                            if isinstance(effect, dict) and effect.get("class_name")
+                        }
+
+                        for effect in value:
+                            if not isinstance(effect, dict):
+                                continue
+                            effect_copy = deepcopy(effect)
+                            self._assign_new_effect_ids({"effects": [effect_copy]})
+                            effect_type = effect_copy.get("class_name")
+                            if effect_type in effect_map:
+                                effect_map[effect_type].update(effect_copy)
+                            else:
+                                existing_effects.append(effect_copy)
+                        target_obj.data["effects"] = existing_effects
+                    else:
+                        target_obj.data[key] = value
+                target_obj.save()
+
+            if len(clip_ids + tran_ids) == 0 and (
+                isinstance(copied_object, Clip) or isinstance(copied_object, Transition)
+            ):
+                copied_object = [copied_object]
+
+            if isinstance(copied_object, list):
+                adjust_positions_and_layers(copied_object, position, layer_id)
+
+            for clip_id in clip_ids:
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
+                if isinstance(copied_object, Clip):
+                    apply_clipboard_data(
+                        clip,
+                        copied_object.data,
+                        excluded_keys=["id", "position", "layer", "start", "end"],
+                    )
+                elif isinstance(copied_object, Effect):
+                    effect_copy = deepcopy(copied_object.data)
+                    self._assign_new_effect_ids({"effects": [effect_copy]})
+                    apply_clipboard_data(clip, {"effects": [effect_copy]}, excluded_keys=["id"])
+
+            for tran_id in tran_ids:
+                tran = Transition.get(id=tran_id)
+                if tran and isinstance(copied_object, Transition):
+                    apply_clipboard_data(
+                        tran,
+                        copied_object.data,
+                        excluded_keys=["id", "position", "layer", "start", "end"],
+                    )
+        finally:
+            get_app().updates.transaction_id = None
+
+    def _qwidget_paste_coordinates(self, local_pos, clip_ids, tran_ids):
+        """Resolve paste coordinates for the QWidget timeline backend."""
+        if ViewClass != TimelineWidget:
+            return 0.0, 0
+
+        seconds = 0.0
+        if hasattr(self, "_seconds_from_x"):
+            seconds = max(0.0, float(self._seconds_from_x(local_pos.x())))
+
+        track_number = None
+        if hasattr(self, "geometry"):
+            self.geometry.ensure()
+            for track_rect, track, _name_rect in getattr(self.geometry, "track_rects", []):
+                if track_rect.contains(local_pos):
+                    track_number = track.data.get("number")
+                    break
+
+        if track_number is None and clip_ids:
+            clip = Clip.get(id=clip_ids[0])
+            if clip:
+                track_number = clip.data.get("layer")
+
+        if track_number is None and tran_ids:
+            tran = Transition.get(id=tran_ids[0])
+            if tran:
+                track_number = tran.data.get("layer")
+
+        if track_number is None:
+            selected_tracks = getattr(self.window, "selected_tracks", [])
+            if selected_tracks:
+                track = Track.get(id=selected_tracks[0])
+                if track:
+                    track_number = track.data.get("number")
+
+        if track_number is None:
+            track_number = 0
+
+        return seconds, track_number
 
     def _apply_effect_colors(self, value):
         """Ensure effect dictionaries define a color attribute."""
@@ -1925,98 +2076,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             global_mouse_pos = QCursor.pos()
         local_mouse_pos = self.mapFromGlobal(global_mouse_pos)
 
-        # Callback function, to actually add the clip object
-        def callback(self, clip_ids, tran_ids, callback_data):
-            position = callback_data.get('position', 0.0)
-            layer_id = callback_data.get('track', 0)
+        if ViewClass == TimelineWidget:
+            seconds, track_number = self._qwidget_paste_coordinates(local_mouse_pos, clip_ids, tran_ids)
+            self._handle_paste_callback(clip_ids, tran_ids, {"position": seconds, "track": track_number})
+            return
 
-            # Start transaction
-            tid = self.get_uuid()
-            get_app().updates.transaction_id = tid
-
-            # Get clipboard
-            copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
-            if not copied_object:
-                get_app().updates.transaction_id = None
-                return
-
-            # Remove copied ids from targets
-            if isinstance(copied_object, Clip):
-                clip_ids = [id for id in clip_ids if id != copied_object.id]
-            if isinstance(copied_object, Transition):
-                tran_ids = [id for id in tran_ids if id != copied_object.id]
-
-            # Adjust positions and layers for lists of objects
-            def adjust_positions_and_layers(objects, position, layer_id):
-                left_most_position = min(obj.data['position'] for obj in objects)
-                top_most_layer = max(obj.data['layer'] for obj in objects)
-                position_diff = position - left_most_position
-                layer_diff = layer_id - top_most_layer if layer_id != -1 else 0
-
-                for obj in objects:
-                    obj.type = 'insert'
-                    obj.data.pop('id', None)
-                    obj.id = None
-                    if 'effects' in obj.data:
-                        obj.data['effects'] = [
-                            {k: (get_app().project.generate_id() if k == 'id' else v) for k, v in effect.items()}
-                            for effect in obj.data['effects']
-                        ]
-                    obj.data['position'] += position_diff
-                    obj.data['layer'] += layer_diff
-                    obj.save()
-
-            # Apply clipboard data to target object, merging effects
-            def apply_clipboard_data(target_obj, clipboard_data, excluded_keys=None):
-                excluded_keys = excluded_keys or []
-                for k, v in clipboard_data.items():
-                    if k in excluded_keys:
-                        continue
-                    if k == 'effects' and isinstance(v, list):
-                        existing_effects = target_obj.data.setdefault('effects', [])
-                        effect_map = {effect['class_name']: effect for effect in existing_effects}
-
-                        for effect in v:
-                            effect_type = effect.get('class_name')
-                            effect['id'] = get_app().project.generate_id()
-                            if effect_type in effect_map:
-                                effect_map[effect_type].update(effect)
-                            else:
-                                existing_effects.append(effect)
-
-                        target_obj.data['effects'] = existing_effects
-                    else:
-                        target_obj.data[k] = v
-                target_obj.save()
-
-            # If a single clip/transition is copied with no target, add to a list (for inserting)
-            if len(clip_ids + tran_ids) == 0 and \
-                (isinstance(copied_object, Clip) or isinstance(copied_object, Transition)):
-                copied_object = [copied_object]
-
-            # Handle list of objects (adjust positions and layers)
-            if isinstance(copied_object, list):
-                adjust_positions_and_layers(copied_object, position, layer_id)
-
-            # Handle individual objects (Clip, Transition, Effect)
-            for clip_id in clip_ids:
-                clip = Clip.get(id=clip_id)
-                if clip and isinstance(copied_object, Clip):
-                    apply_clipboard_data(clip, copied_object.data, excluded_keys=['id', 'position', 'layer', 'start', 'end'])
-                if clip and isinstance(copied_object, Effect):
-                    apply_clipboard_data(clip, {"effects": [copied_object.data]}, excluded_keys=['id'])
-
-            for tran_id in tran_ids:
-                tran = Transition.get(id=tran_id)
-                if tran and isinstance(copied_object, Transition):
-                    apply_clipboard_data(tran, copied_object.data, excluded_keys=['id', 'position', 'layer', 'start', 'end'])
-
-            # End transaction
-            get_app().updates.transaction_id = None
-
-        # Find position from javascript
-        self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
-            .format(local_mouse_pos.x(), local_mouse_pos.y()), partial(callback, self, clip_ids, tran_ids))
+        self.run_js(
+            JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});".format(
+                local_mouse_pos.x(), local_mouse_pos.y()
+            ),
+            partial(self._handle_paste_callback, clip_ids, tran_ids),
+        )
 
     def Nudge_Triggered(self, action, clip_ids, tran_ids):
         """Callback for nudging clips/transitions by a specified number of frames."""
@@ -2301,13 +2371,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if not right_clip:
                         continue
 
-                    # Create right side clip
+                    # Create right side clip. Work from deep copies so shared
+                    # references (such as effect dicts) are not retained between
+                    # the original and the new clip.
+                    right_clip_data = deepcopy(right_clip.data)
+                    right_clip_key = list(right_clip.key)
+
                     right_clip.id = None
                     right_clip.type = 'insert'
-                    right_clip.data.pop('id')
-                    right_clip.key.pop(1)
+                    right_clip.data = right_clip_data
+                    right_clip.data.pop('id', None)
+                    if len(right_clip_key) > 1:
+                        right_clip_key.pop(1)
+                    right_clip.key = right_clip_key
                     right_clip.data["position"] = playhead_position
                     right_clip.data["start"] = clip.data["end"]
+                    self._assign_new_effect_ids(right_clip.data)
                     right_clip.save()
 
                 # Save changes for the left or right slice
