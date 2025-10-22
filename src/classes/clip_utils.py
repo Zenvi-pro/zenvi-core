@@ -231,6 +231,19 @@ def _time_points(clip_data: Any) -> Optional[list]:
 
 def _time_curve_length_frames(clip_data: Any, existing_clip: Any) -> Optional[int]:
     """Return the max frame referenced by the time curve."""
+    points = _time_points(clip_data)
+    if points:
+        max_x = 0
+        for point in points:
+            co = point.get("co") if isinstance(point, Mapping) else None
+            if not isinstance(co, Mapping):
+                continue
+            x_val = _rounded_int(co.get("X"))
+            if x_val is not None:
+                max_x = max(max_x, x_val)
+        if max_x:
+            return max_x
+
     clip_obj = _timeline_clip(clip_data, existing_clip)
     if clip_obj and getattr(clip_obj, "time", None):
         try:
@@ -242,20 +255,7 @@ def _time_curve_length_frames(clip_data: Any, existing_clip: Any) -> Optional[in
             if frame_count:
                 return max(frame_count, 1)
 
-    points = _time_points(clip_data)
-    if not points:
-        return None
-
-    max_x = 0
-    for point in points:
-        co = point.get("co") if isinstance(point, Mapping) else None
-        if not isinstance(co, Mapping):
-            continue
-        x_val = _rounded_int(co.get("X"))
-        if x_val is not None:
-            max_x = max(max_x, x_val)
-
-    return max_x or None
+    return None
 
 
 def _clamp_time_points(points: Any, max_frames: Optional[int]) -> None:

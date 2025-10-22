@@ -2342,7 +2342,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 if action == MenuSlice.KEEP_LEFT:
                     # Keep the left side of the clip, adjust the "end" of the clip
-                    clip.data["end"] = start_of_clip + (playhead_position - original_position)
+                    new_end = start_of_clip + (playhead_position - original_position)
+                    clip.data["end"] = new_end
+                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
 
                     if ripple:
                         removed_duration = original_duration - (clip.data["end"] - start_of_clip)
@@ -2353,6 +2355,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     new_start = start_of_clip + (playhead_position - original_position)
                     clip.data["position"] = playhead_position  # Set new timeline position
                     clip.data["start"] = new_start
+                    clip.data["duration"] = max(0.0, end_of_clip - new_start)
 
                     if ripple:
                         removed_duration = original_duration - (end_of_clip - new_start)
@@ -2364,7 +2367,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 elif action == MenuSlice.KEEP_BOTH:
                     # Update clip data for the left clip
-                    clip.data["end"] = start_of_clip + (playhead_position - original_position)
+                    new_end = start_of_clip + (playhead_position - original_position)
+                    clip.data["end"] = new_end
+                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
 
                     # Split into two clips (left and right side)
                     right_clip = Clip.get(id=clip_id)
@@ -2386,6 +2391,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     right_clip.key = right_clip_key
                     right_clip.data["position"] = playhead_position
                     right_clip.data["start"] = clip.data["end"]
+                    right_start = float(right_clip.data["start"])
+                    right_end = float(right_clip.data.get("end", right_start))
+                    right_clip.data["duration"] = max(0.0, right_end - right_start)
                     self._assign_new_effect_ids(right_clip.data)
                     right_clip.save()
 
@@ -2795,18 +2803,19 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 elif action == MenuTime.REVERSE:
                     start_sec = float(clip.data.get("start", 0.0))
                     try:
-                        duration_sec = float(clip.data.get("duration", 0.0))
+                        target_end_sec = float(clip.data.get("end", start_sec))
                     except (TypeError, ValueError):
-                        duration_sec = 0.0
-                    if duration_sec <= 0.0:
+                        target_end_sec = start_sec
+
+                    if target_end_sec <= start_sec:
                         try:
-                            duration_sec = float(clip.data.get("end", 0.0)) - start_sec
+                            duration_sec = float(clip.data.get("duration", 0.0))
                         except (TypeError, ValueError):
                             duration_sec = 0.0
-                    if duration_sec <= 0.0:
-                        duration_sec = 1.0 / fps_float
+                        if duration_sec <= 0.0:
+                            duration_sec = 1.0 / fps_float
+                        target_end_sec = start_sec + duration_sec
 
-                    target_end_sec = start_sec + duration_sec
                     retime_clip(clip, target_end_sec, clip.data.get("position"), direction=-1)
 
                 else:
