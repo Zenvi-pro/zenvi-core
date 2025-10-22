@@ -47,6 +47,7 @@ from PyQt5.QtWidgets import QSizePolicy, QWidget
 from ..geometry import Geometry
 from ..paint import (
     BackgroundPainter,
+    PlaybackCachePainter,
     ClipPainter,
     TransitionPainter,
     MarkerPainter,
@@ -130,6 +131,7 @@ class TimelineWidgetBase(QWidget):
         self.track_height = 48
         self.track_gap = 8
         self.track_margin_top = self.track_gap
+        self._playback_cache_ranges = []
         self._track_panel_enabled = {}
         self._panel_properties = {}
         self._panel_heights = {}
@@ -199,6 +201,7 @@ class TimelineWidgetBase(QWidget):
         self.bg_painter = BackgroundPainter(self)
         self.ruler_painter = RulerPainter(self)
         self.track_painter = TrackPainter(self)
+        self.playback_cache_painter = PlaybackCachePainter(self)
         self.clip_painter = ClipPainter(self)
         self.transition_painter = TransitionPainter(self)
         self.marker_painter = MarkerPainter(self)
@@ -486,6 +489,7 @@ class TimelineWidgetBase(QWidget):
             self.bg_painter,
             self.ruler_painter,
             self.track_painter,
+            self.playback_cache_painter,
             self.clip_painter,
             self.transition_painter,
             self.marker_painter,
@@ -566,6 +570,7 @@ class TimelineWidgetBase(QWidget):
         self.keyframe_panel_painter.paint(painter, mode="underlay")
         self.clip_painter.paint(painter)
         self.transition_painter.paint(painter)
+        self.playback_cache_painter.paint(painter)
         self.marker_painter.paint(painter)
         self.keyframe_painter.paint(painter)
         self.track_painter.paint_names(painter)
@@ -577,6 +582,89 @@ class TimelineWidgetBase(QWidget):
         self.scrollbar_painter.paint(painter)
 
         painter.end()
+
+    def update_playback_cache(self, cache_dict):
+        """Update cached playback ranges used for rendering."""
+
+        if not isinstance(cache_dict, dict):
+            if self._playback_cache_ranges:
+                self._playback_cache_ranges = []
+                self.update()
+            return
+
+        ranges_data = cache_dict.get("ranges")
+        if not isinstance(ranges_data, list):
+            if self._playback_cache_ranges:
+                self._playback_cache_ranges = []
+                self.update()
+            return
+
+        def _to_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        fps_val = None
+        fps_raw = cache_dict.get("fps")
+        if isinstance(fps_raw, dict):
+            num = _to_float(fps_raw.get("num"))
+            den = _to_float(fps_raw.get("den"))
+            if num and den:
+                try:
+                    fps_val = num / den
+                except ZeroDivisionError:
+                    fps_val = None
+        else:
+            fps_val = _to_float(fps_raw)
+        if not fps_val or fps_val <= 0.0:
+            local_fps = _to_float(getattr(self, "fps_float", None))
+            fps_val = local_fps if local_fps and local_fps > 0.0 else None
+
+        new_ranges = []
+        for entry in ranges_data:
+            start_sec = end_sec = None
+            if isinstance(entry, dict):
+                start_sec = _to_float(entry.get("start_seconds"))
+                end_sec = _to_float(entry.get("end_seconds"))
+                if start_sec is None or end_sec is None:
+                    start_frames = _to_float(entry.get("start"))
+                    end_frames = _to_float(entry.get("end"))
+                    if (
+                        fps_val
+                        and start_frames is not None
+                        and end_frames is not None
+                    ):
+                        start_sec = start_frames / fps_val
+                        end_sec = end_frames / fps_val
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                start_sec = _to_float(entry[0])
+                end_sec = _to_float(entry[1])
+
+            if start_sec is None or end_sec is None:
+                continue
+            if end_sec <= start_sec:
+                continue
+            new_ranges.append((max(0.0, start_sec), max(0.0, end_sec)))
+
+        if not new_ranges and not self._playback_cache_ranges:
+            return
+
+        new_ranges.sort(key=lambda item: item[0])
+        old_ranges = self._playback_cache_ranges or []
+        changed = len(new_ranges) != len(old_ranges)
+        if not changed:
+            for (new_start, new_end), (old_start, old_end) in zip(new_ranges, old_ranges):
+                if (
+                    abs(new_start - old_start) > 1e-3
+                    or abs(new_end - old_end) > 1e-3
+                ):
+                    changed = True
+                    break
+
+        if changed:
+            self._playback_cache_ranges = new_ranges
+            self.update()
 
     def dragEnterEvent(self, event):
         self._drag_payload = None

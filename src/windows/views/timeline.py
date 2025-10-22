@@ -3942,7 +3942,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     return
                 # Cache has changed, re-render it
                 self.cache_renderer_version = cache_version
-                self.run_js(JS_SCOPE_SELECTOR + ".renderCache({});".format(cache_json))
+                if ViewClass == TimelineWidget:
+                    self.update_playback_cache(cache_dict)
+                else:
+                    self.run_js(JS_SCOPE_SELECTOR + ".renderCache({});".format(cache_json))
         except Exception as ex:
             # Log the exception and ignore
             log.warning("Exception processing timeline cache: %s", ex)

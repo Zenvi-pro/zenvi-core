@@ -26,6 +26,7 @@
  """
 
 from .background import BackgroundPainter
+from .cache import PlaybackCachePainter
 from .clip import ClipPainter
 from .keyframe import KeyframePainter
 from .keyframepanel import KeyframePanelPainter
@@ -39,6 +40,7 @@ from .transition import TransitionPainter
 
 __all__ = [
     "BackgroundPainter",
+    "PlaybackCachePainter",
     "ClipPainter",
     "KeyframePainter",
     "KeyframePanelPainter",

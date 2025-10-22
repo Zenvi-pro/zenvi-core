@@ -60,6 +60,8 @@ class TimelineTheme:
     selection: QColor = field(default_factory=lambda: QColor(255, 255, 255, 80))
     selection_border: QColor = field(default_factory=QColor)
     selection_border_width: float = 0.0
+    playback_cache_color: QColor = field(default_factory=lambda: QColor("#4B92AD"))
+    playback_cache_height: float = 5.0
 
     clip: BasicTheme = field(default_factory=BasicTheme)
     transition: BasicTheme = field(default_factory=BasicTheme)
