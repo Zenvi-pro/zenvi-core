@@ -444,8 +444,19 @@ class ClipPainter(BasePainter):
         if samples_per_pixel <= 0:
             return False
 
-        bottom = inner.bottom() - 1
-        scale = height * 0.85
+        clip_rect = painter.clipBoundingRect()
+        visible_left = 0
+        visible_right = width
+        if clip_rect.isValid():
+            left_offset = int(math.floor(clip_rect.left() - inner.left()))
+            right_offset = int(math.ceil(clip_rect.right() - inner.left()))
+            visible_left = min(width, max(0, left_offset))
+            visible_right = min(width, max(visible_left, right_offset))
+        if visible_right <= visible_left:
+            return False
+
+        center_y = inner.center().y()
+        amplitude_scale = (height * 0.5) * 0.95
         peak_color = self.w.theme.waveform_peak_color
         fill_color = self.w.theme.waveform_color
         if not peak_color.isValid():
@@ -456,46 +467,71 @@ class ClipPainter(BasePainter):
 
         painter.save()
         painter.setPen(Qt.NoPen)
+        painter.setClipRect(inner, Qt.IntersectClip)
 
-        block_width = 1.0
-        x = 0.0
-        while x < width:
-            block = min(block_width, width - x)
-            if block <= 0.0:
-                break
-            px_start = start_float + x * samples_per_pixel
-            px_end = min(end_float, start_float + (x + block) * samples_per_pixel)
+        peak_heights = []
+        avg_heights = []
+        x_positions = []
+
+        for column in range(visible_left, visible_right):
+            px_start = start_float + column * samples_per_pixel
+            px_end = min(end_float, px_start + samples_per_pixel)
             start_idx = max(0, int(math.floor(px_start)))
             end_idx = min(samples, int(math.ceil(px_end)))
+            values = []
+
             if end_idx <= start_idx:
-                end_idx = min(start_idx + 1, samples)
-            if end_idx <= start_idx:
-                x += block
+                idx = min(samples - 1, max(0, int(round(px_start)))) if samples else 0
+                if samples:
+                    sample = audio_data[idx]
+                    values.append(abs(sample) if isinstance(sample, (int, float)) else 0.0)
+            else:
+                step = max(1, int(math.ceil((end_idx - start_idx) / 20.0)))
+                idx = start_idx
+                while idx < end_idx:
+                    sample = audio_data[idx]
+                    values.append(abs(sample) if isinstance(sample, (int, float)) else 0.0)
+                    idx += step
+                last_idx = end_idx - 1
+                if values and (last_idx - start_idx) % step != 0:
+                    sample = audio_data[last_idx]
+                    values.append(abs(sample) if isinstance(sample, (int, float)) else 0.0)
+
+            if not values:
+                peak_heights.append(0.0)
+                avg_heights.append(0.0)
+                x_positions.append(inner.left() + column + 0.5)
                 continue
-            max_amp = 0.0
-            avg_amp = 0.0
-            count = 0
-            for idx in range(start_idx, end_idx):
-                sample = audio_data[idx]
-                val = abs(sample) if isinstance(sample, (int, float)) else 0.0
-                if val > max_amp:
-                    max_amp = val
-                avg_amp += val
-                count += 1
-            if not count:
-                x += block
-                continue
-            avg_amp /= count
-            max_height = max_amp * scale
-            avg_height = avg_amp * scale
-            left = inner.left() + x
-            peak_rect = QRectF(left, bottom - max_height, block, max_height)
-            fill_rect = QRectF(left, bottom - avg_height, block, avg_height)
-            if max_height > 0.0:
-                painter.fillRect(peak_rect, peak_color)
-            if avg_height > 0.0:
-                painter.fillRect(fill_rect, fill_color)
-            x += block
+
+            max_amp = max(values)
+            avg_amp = sum(values) / len(values)
+            peak_heights.append(max_amp * amplitude_scale)
+            avg_heights.append(avg_amp * amplitude_scale)
+            x_positions.append(inner.left() + column + 0.5)
+
+        if x_positions:
+            peak_path = QPainterPath()
+            peak_path.moveTo(x_positions[0], center_y)
+            for x_pos, height_px in zip(x_positions, peak_heights):
+                peak_path.lineTo(x_pos, center_y - height_px)
+            peak_path.lineTo(x_positions[-1], center_y)
+            for x_pos, height_px in zip(reversed(x_positions), reversed(peak_heights)):
+                peak_path.lineTo(x_pos, center_y + height_px)
+            peak_path.closeSubpath()
+
+            fill_path = QPainterPath()
+            fill_path.moveTo(x_positions[0], center_y)
+            for x_pos, height_px in zip(x_positions, avg_heights):
+                fill_path.lineTo(x_pos, center_y - height_px)
+            fill_path.lineTo(x_positions[-1], center_y)
+            for x_pos, height_px in zip(reversed(x_positions), reversed(avg_heights)):
+                fill_path.lineTo(x_pos, center_y + height_px)
+            fill_path.closeSubpath()
+
+            if any(height > 0.0 for height in peak_heights):
+                painter.fillPath(peak_path, peak_color)
+            if any(height > 0.0 for height in avg_heights):
+                painter.fillPath(fill_path, fill_color)
 
         painter.restore()
         return True
