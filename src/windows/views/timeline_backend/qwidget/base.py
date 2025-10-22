@@ -146,6 +146,19 @@ class TimelineWidgetBase(QWidget):
         self.keyframe_panel_row_spacing = 4.0
         self.keyframe_panel_padding = 6.0
 
+        # Wheel scrolling helpers
+        self._pending_vscroll_delta = 0.0
+        self._vscroll_timer = QTimer(self)
+        self._vscroll_timer.setSingleShot(True)
+        self._vscroll_timer.timeout.connect(self._flush_pending_vertical_scroll)
+
+        # Wheel zoom helpers
+        self._zoom_emit_timer = QTimer(self)
+        self._zoom_emit_timer.setSingleShot(True)
+        self._zoom_emit_timer.setInterval(50)
+        self._zoom_emit_timer.timeout.connect(self._emit_pending_zoom)
+        self._pending_zoom_emit = None
+
         # Geometry constants
         self.ruler_height = 40
         self.track_name_width = 140
@@ -1110,30 +1123,92 @@ class TimelineWidgetBase(QWidget):
     # Capture wheel event to alter zoom/scale of widget
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
-            if event.angleDelta().y() > 0:
-                self.zoomIn()
-            else:
-                self.zoomOut()
+            delta = event.pixelDelta().y() if not event.pixelDelta().isNull() else event.angleDelta().y()
+            if delta:
+                steps = delta / 120.0
+                if self._apply_zoom_steps(steps, emit=False):
+                    self._pending_zoom_emit = self.zoom_factor
+                    self._zoom_emit_timer.start()
             event.accept()
             return
 
         # Vertical scrolling
         if self.v_scrollbar_position[3] > 0 and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]:
             delta = -event.angleDelta().y() / 120.0
-            view_ratio = self.v_scrollbar_position[1] - self.v_scrollbar_position[0]
-            new_top = self.v_scrollbar_position[0] + delta * view_ratio * 0.1
-            new_top = max(0.0, min(new_top, 1.0 - view_ratio))
-            self.v_scrollbar_position[0] = new_top
-            self.v_scrollbar_position[1] = new_top + view_ratio
-            self.geometry.mark_dirty()
-            self.update()
+            if delta:
+                self._pending_vscroll_delta += delta
+                if not self._vscroll_timer.isActive():
+                    # Process accumulated wheel events once the event queue is flushed
+                    self._vscroll_timer.start(0)
             event.accept()
         else:
             event.ignore()
 
+    def _flush_pending_vertical_scroll(self):
+        """Apply any pending vertical scroll updates triggered by the wheel."""
+        delta = self._pending_vscroll_delta
+        self._pending_vscroll_delta = 0.0
+
+        if not delta:
+            return
+
+        if not (
+            self.v_scrollbar_position[3] > 0
+            and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]
+        ):
+            return
+
+        view_ratio = self.v_scrollbar_position[1] - self.v_scrollbar_position[0]
+        if not view_ratio:
+            return
+
+        new_top = self.v_scrollbar_position[0] + delta * view_ratio * 0.1
+        new_top = max(0.0, min(new_top, 1.0 - view_ratio))
+        self.v_scrollbar_position[0] = new_top
+        self.v_scrollbar_position[1] = new_top + view_ratio
+        self.geometry.mark_dirty()
+        self.update()
+
+    def _emit_pending_zoom(self):
+        """Emit a pending zoom factor change after gesture bursts settle."""
+        if self._pending_zoom_emit is None:
+            return
+
+        self._pending_zoom_emit = None
+        self._emit_zoom_signals(list(self.scrollbar_position))
+
+    def _emit_zoom_signals(self, slider_positions):
+        """Persist the current zoom factor and broadcast timeline signals."""
+        current_scale = float(get_app().project.get("scale") or 15.0)
+        if abs(self.zoom_factor - current_scale) > 1e-6:
+            get_app().updates.ignore_history = True
+            get_app().updates.update(["scale"], self.zoom_factor)
+            get_app().updates.ignore_history = False
+
+        get_app().window.TimelineZoom.emit(self.zoom_factor)
+        get_app().window.TimelineScrolled.emit(slider_positions)
+
+    def _clamp_zoom_factor(self, zoom_factor):
+        return max(0.05, min(zoom_factor, 200.0))
+
+    def _apply_zoom_steps(self, steps, emit):
+        """Apply a relative zoom change expressed as wheel steps."""
+        if not steps:
+            return False
+
+        base = 0.9
+        scale = pow(base, steps)
+        new_factor = self._clamp_zoom_factor(self.zoom_factor * scale)
+        if abs(new_factor - self.zoom_factor) <= 1e-6:
+            return False
+
+        self.setZoomFactor(new_factor, emit=emit)
+        return True
+
     def setZoomFactor(self, zoom_factor, emit=True):
         """Set the current zoom factor"""
         # Force recalculation of clips
+        zoom_factor = self._clamp_zoom_factor(zoom_factor)
         self.zoom_factor = zoom_factor
         self.changed(None)
 
@@ -1190,45 +1265,18 @@ class TimelineWidgetBase(QWidget):
             slider.update_scrollbars(slider_positions)
 
         if emit:
-            # Persist zoom back to the project so dependent widgets (zoom slider, etc.)
-            # remain synchronized with QWidget-originated zoom gestures.
-            current_scale = float(get_app().project.get("scale") or 15.0)
-            if abs(zoom_factor - current_scale) > 1e-6:
-                get_app().updates.ignore_history = True
-                get_app().updates.update(["scale"], zoom_factor)
-                get_app().updates.ignore_history = False
-
-            # Emit zoom and scrollbar signals
-            get_app().window.TimelineZoom.emit(self.zoom_factor)
-            get_app().window.TimelineScrolled.emit(slider_positions)
+            self._emit_zoom_signals(slider_positions)
 
         # Schedule repaint
         self.update()
 
     def zoomIn(self):
         """Zoom into timeline"""
-        if self.zoom_factor >= 10.0:
-            new_factor = self.zoom_factor - 5.0
-        elif self.zoom_factor >= 4.0:
-            new_factor = self.zoom_factor - 2.0
-        else:
-            new_factor = self.zoom_factor * 0.8
-
-        # Emit zoom signal
-        self.setZoomFactor(new_factor)
+        self._apply_zoom_steps(1.0, emit=True)
 
     def zoomOut(self):
         """Zoom out of timeline"""
-        if self.zoom_factor >= 10.0:
-            new_factor = self.zoom_factor + 5.0
-        elif self.zoom_factor >= 4.0:
-            new_factor = self.zoom_factor + 2.0
-        else:
-            # Ensure zoom is reversable when using only keyboard zoom
-            new_factor = min(self.zoom_factor * 1.25, 4.0)
-
-        # Emit zoom signal
-        self.setZoomFactor(new_factor)
+        self._apply_zoom_steps(-1.0, emit=True)
 
     def update_scrollbars(self, new_positions):
         """Consume the current scroll bar positions from the webview timeline"""
