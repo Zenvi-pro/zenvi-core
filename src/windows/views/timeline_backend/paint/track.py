@@ -255,10 +255,15 @@ class TrackPainter(BasePainter):
         end_seconds = right_px / pps
         if end_seconds <= start_seconds:
             return
-        start_frame = int(math.floor(start_seconds * fps))
-        end_frame = int(math.ceil(end_seconds * fps))
+
+        # Use a small epsilon when converting to frame numbers so that
+        # fractional floating point rounding errors don't cause the
+        # computed frame parity to jitter as we scroll horizontally.
+        eps = 1e-9
+        start_frame = int(math.floor(start_seconds * fps + eps))
+        end_frame = int(math.ceil(end_seconds * fps - eps))
         if end_frame <= start_frame:
-            return
+            end_frame = start_frame + 1
         painter.save()
         painter.setPen(Qt.NoPen)
         painter.setBrush(cfg.get("color"))
@@ -268,7 +273,7 @@ class TrackPainter(BasePainter):
             max_frames = 2000
             end_frame = start_frame + max_frames
         for frame in range(start_frame, end_frame):
-            if (frame - start_frame) % 2 != 0:
+            if frame % 2 != 0:
                 continue
             t = frame / fps
             x = self.w.track_name_width + t * pps - offset_px
