@@ -182,6 +182,7 @@ class TimelineWidgetBase(QWidget):
         self.dragging_playhead = False
         self.drag_bbox = QRectF()
         self._drag_transaction_id = None
+        self._drag_moved = False
 
         # Resize / timing helpers
         self.enable_timing = False

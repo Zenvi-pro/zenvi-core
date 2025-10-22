@@ -134,6 +134,7 @@ class ClipInteractionMixin:
         e = self._last_event
 
         self.snap.reset()
+        self._drag_moved = False
 
         # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
@@ -354,6 +355,15 @@ class ClipInteractionMixin:
             new_idx = max(0, min(new_idx, len(self.track_list) - 1))
             new_layer_num = self._track_num_from_index[new_idx]
 
+            if (
+                not getattr(self, "_drag_moved", False)
+                and (
+                    abs(new_pos_sec - start_pos_sec) > 1e-6
+                    or new_idx != start_idx
+                )
+            ):
+                self._drag_moved = True
+
             itm.data["position"] = new_pos_sec
             itm.data["layer"] = new_layer_num
 
@@ -377,11 +387,14 @@ class ClipInteractionMixin:
 
     def _finishClipDrag(self):
         """Persist all moved clips/transitions and refresh geometry."""
-        if getattr(self, "dragging_items", None):
+        items = getattr(self, "dragging_items", None) or []
+        moved = bool(getattr(self, "_drag_moved", False))
+
+        if items and moved:
             self._preserve_overrides_once = True
-            total = len(self.dragging_items)
+            total = len(items)
             transaction_id = self._drag_transaction_id
-            for idx, itm in enumerate(self.dragging_items):
+            for idx, itm in enumerate(items):
                 ignore_refresh = idx < total - 1
                 if isinstance(itm, Transition):
                     self.update_transition_data(
@@ -398,17 +411,26 @@ class ClipInteractionMixin:
                         ignore_refresh=ignore_refresh,
                         transaction_id=transaction_id,
                     )
+        elif items and not moved:
+            for itm in items:
+                if isinstance(itm, Transition):
+                    self._pending_transition_overrides.pop(itm.id, None)
+                else:
+                    self._pending_clip_overrides.pop(itm.id, None)
 
         self.dragging_items = []
         self._drag_transaction_id = None
         self.snap.reset()
-        self._update_project_duration()
-        # Recompute geometry (snap may have shifted) and repaint
-        self.changed(None)
+        if moved:
+            self._update_project_duration()
+            self.changed(None)
+        else:
+            self.geometry.mark_dirty()
         self.update()
         self._release_cursor()
         if self._last_event:
             self._updateCursor(self._last_event.pos())
+        self._drag_moved = False
 
     def _compute_selected_bounding(self):
         """Return a QRectF encompassing all currently-selected clips and transitions."""
