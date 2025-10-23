@@ -159,6 +159,9 @@ class TimelineWidgetBase(QWidget):
         self._zoom_emit_timer.timeout.connect(self._emit_pending_zoom)
         self._pending_zoom_emit = None
 
+        # Internal flag to defer repaint scheduling from changed()
+        self._suspend_changed_update = 0
+
         # Geometry constants
         self.ruler_height = 40
         self.track_name_width = 140
@@ -552,8 +555,9 @@ class TimelineWidgetBase(QWidget):
         # Mirror some attributes for compatibility
         self.track_list = self.geometry.track_list
 
-        # Schedule repaint
-        self.update()
+        # Schedule repaint unless updates are currently suspended
+        if self._suspend_changed_update <= 0:
+            self.update()
 
     def paintEvent(self, event, *args):
         """Custom paint routine for the timeline widget."""
@@ -1211,7 +1215,11 @@ class TimelineWidgetBase(QWidget):
         # Force recalculation of clips
         zoom_factor = self._clamp_zoom_factor(zoom_factor)
         self.zoom_factor = zoom_factor
-        self.changed(None)
+        self._suspend_changed_update += 1
+        try:
+            self.changed(None)
+        finally:
+            self._suspend_changed_update = max(0, self._suspend_changed_update - 1)
 
         # Update normalized scroll width to match new zoom
         project_duration = self._current_project_duration()

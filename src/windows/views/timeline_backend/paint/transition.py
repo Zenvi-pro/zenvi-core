@@ -43,10 +43,16 @@ class TransitionPainter(BasePainter):
     def update_theme(self):
         self.col = self.w.theme.transition.background
         self.col2 = self.w.theme.transition.background2
-        self.pen = QPen(QBrush(self.w.theme.transition.border_color), 1.5)
+        bw = getattr(self.w.theme.transition, "border_width", 1.5) or 0.0
+        bw = float(bw) if isinstance(bw, (int, float)) else 0.0
+        if bw <= 0.0:
+            bw = 1.5
+        self.border_width = bw
+        self.border_radius = float(self.w.theme.transition.border_radius or 0.0)
+        self.pen = QPen(QBrush(self.w.theme.transition.border_color), bw)
         self.pen.setCosmetic(True)
         self.img = self.w.theme.transition.background_image
-        self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), 1.5)
+        self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), bw)
         self.sel_pen.setCosmetic(True)
         self.menu_pix = None
         if self.w.theme.menu_icon:
@@ -60,6 +66,11 @@ class TransitionPainter(BasePainter):
         """Clear cached rendered transition pixmaps."""
         self.transition_cache.clear()
 
+    def _segment_overdraw(self, view_width):
+        blur = max(0.0, float(self.w.theme.clip.shadow_blur or 0.0))
+        base = max(48.0, view_width * 0.2)
+        return max(base, blur * 3.0)
+
     def paint(self, painter: QPainter):
         area = QRectF(
             self.w.track_name_width,
@@ -67,25 +78,58 @@ class TransitionPainter(BasePainter):
             self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
             self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
         )
+        overdraw = self._segment_overdraw(area.width())
+        expanded = QRectF(
+            area.left() - overdraw,
+            area.top(),
+            area.width() + (overdraw * 2.0),
+            area.height(),
+        )
+
         painter.save()
         painter.setClipRect(area)
         for rect, _tran, selected in self.w.geometry.iter_transitions():
-            if not rect.intersects(area):
+            if not rect.intersects(expanded):
                 continue
+            segment_left = max(rect.left(), expanded.left())
+            segment_right = min(rect.right(), expanded.right())
+            if segment_right <= segment_left:
+                continue
+            segment_rect = QRectF(
+                segment_left,
+                rect.top(),
+                segment_right - segment_left,
+                rect.height(),
+            )
             pen = self.sel_pen if selected else self.pen
-            pix = self._transition_pixmap(rect, pen)
+            result = self._transition_pixmap(rect, segment_rect)
+            if not result:
+                continue
+            pix, includes_start, includes_end = result
             if pix:
-                painter.drawPixmap(rect.topLeft(), pix)
+                painter.drawPixmap(segment_rect.topLeft(), pix)
+            self._stroke_visible_border(
+                painter,
+                segment_rect,
+                pen,
+                includes_start=includes_start,
+                includes_end=includes_end,
+            )
         painter.restore()
 
-    def _transition_pixmap(self, rect, pen):
-        """Return cached pixmap of a transition, rendering if needed."""
-        w = int(rect.width())
-        h = int(rect.height())
+    def _transition_pixmap(self, full_rect, segment_rect):
+        """Return cached pixmap for the visible portion of a transition."""
+        w = int(segment_rect.width())
+        h = int(segment_rect.height())
         if w <= 0 or h <= 0:
             return None
 
-        key = (w, h, pen.color().rgba())
+        offset_px = max(0.0, float(segment_rect.left() - full_rect.left()))
+        includes_start = offset_px <= 0.5
+        includes_end = (segment_rect.right() + 0.5) >= full_rect.right()
+
+        bg_cache_key = self.img.cacheKey() if self.img else None
+        key = (w, h, bg_cache_key, round(offset_px, 2), includes_start, includes_end)
         if key in self.transition_cache:
             return self.transition_cache[key]
 
@@ -130,14 +174,7 @@ class TransitionPainter(BasePainter):
                 else:
                     p.drawPixmap(0, 0, scaled)
 
-        if pen.color().isValid():
-            p.setPen(pen)
-            if path is not None:
-                p.drawPath(path)
-            else:
-                p.drawRect(rect)
-
-        if self.menu_pix and not small:
+        if self.menu_pix and not small and includes_start:
             p.drawPixmap(
                 QPointF(self.menu_margin, self.menu_margin),
                 self.menu_pix,
@@ -146,5 +183,48 @@ class TransitionPainter(BasePainter):
         p.end()
 
         pix = QPixmap.fromImage(img)
-        self.transition_cache[key] = pix
-        return pix
+        result = (pix, includes_start, includes_end)
+        self.transition_cache[key] = result
+        return result
+
+    def _stroke_visible_border(
+        self,
+        painter,
+        segment_rect,
+        pen,
+        *,
+        includes_start=True,
+        includes_end=True,
+    ):
+        if not isinstance(pen, QPen) or not pen.color().isValid():
+            return
+        if segment_rect.width() <= 0.0 or segment_rect.height() <= 0.0:
+            return
+
+        painter.save()
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+
+        rect = QRectF(segment_rect)
+        width_offset = max(pen.widthF(), 1.0) / 2.0
+        max_x = max(rect.width() / 2.0 - 0.1, 0.0)
+        max_y = max(rect.height() / 2.0 - 0.1, 0.0)
+        offset_x = min(width_offset, max_x)
+        offset_y = min(width_offset, max_y)
+        rect.adjust(offset_x, offset_y, -offset_x, -offset_y)
+
+        if rect.width() <= 0.0 or rect.height() <= 0.0:
+            painter.restore()
+            return
+
+        radius = 0.0
+        if includes_start and includes_end and rect.width() >= 16.0 and rect.height() > 0.0:
+            radius = self.border_radius
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if radius > 0.0:
+            painter.drawRoundedRect(rect, radius, radius)
+        else:
+            painter.drawRect(rect)
+
+        painter.restore()

@@ -53,7 +53,9 @@ from .base import BasePainter
 
 class ClipPainter(BasePainter):
     def update_theme(self):
-        bw = self.w.theme.clip.border_width
+        bw = float(self.w.theme.clip.border_width or 0.0)
+        self.border_width = bw
+        self.border_radius = float(self.w.theme.clip.border_radius or 0.0)
         self.clip_pen = QPen(QBrush(self.w.theme.clip.border_color), bw)
         self.clip_pen.setCosmetic(True)
         self.sel_pen = QPen(QBrush(self.w.theme.clip_selected), bw)
@@ -73,6 +75,13 @@ class ClipPainter(BasePainter):
         """Clear cached rendered clip pixmaps."""
         self.clip_cache.clear()
 
+    def _segment_overdraw(self, view_width):
+        """Return the horizontal overdraw (extra pixels) to render beyond the view."""
+
+        blur = max(0.0, float(self.w.theme.clip.shadow_blur or 0.0))
+        base = max(64.0, view_width * 0.25)
+        return max(base, blur * 3.0)
+
     def paint(self, painter: QPainter):
         area = QRectF(
             self.w.track_name_width,
@@ -80,14 +89,35 @@ class ClipPainter(BasePainter):
             self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
             self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
         )
+        overdraw = self._segment_overdraw(area.width())
+        expanded = QRectF(
+            area.left() - overdraw,
+            area.top(),
+            area.width() + (overdraw * 2.0),
+            area.height(),
+        )
+
         self.w._effect_icon_rects = []
         painter.save()
         painter.setClipRect(area)
         for rect, clip, selected in self.w.geometry.iter_clips():
-            if not rect.intersects(area):
+            if not rect.intersects(expanded):
                 continue
+
+            segment_left = max(rect.left(), expanded.left())
+            segment_right = min(rect.right(), expanded.right())
+            if segment_right <= segment_left:
+                continue
+
+            segment_rect = QRectF(
+                segment_left,
+                rect.top(),
+                segment_right - segment_left,
+                rect.height(),
+            )
+
             pen = self.sel_pen if selected else self.clip_pen
-            self._draw_clip(painter, rect, clip, pen)
+            self._draw_clip(painter, rect, segment_rect, clip, pen, selected)
         painter.restore()
 
     def _thumb(self, clip):
@@ -106,10 +136,11 @@ class ClipPainter(BasePainter):
         self.thumb_cache[clip.id] = pix
         return pix
 
-    def _clip_pixmap(self, rect, clip, pen):
-        """Return cached pixmap of a clip, rendering if needed."""
-        w = int(rect.width())
-        h = int(rect.height())
+    def _clip_pixmap(self, full_rect, segment_rect, clip):
+        """Return cached pixmap for the visible portion of a clip."""
+
+        w = int(segment_rect.width())
+        h = int(segment_rect.height())
         if w <= 0 or h <= 0:
             return None
 
@@ -124,15 +155,42 @@ class ClipPainter(BasePainter):
         if not math.isfinite(ratio) or ratio <= 0.0:
             ratio = 1.0
 
+        clip_width = max(float(full_rect.width()), 0.0)
+        offset_px = max(0.0, float(segment_rect.left() - full_rect.left()))
+        offset_seconds = 0.0
+        duration_seconds = 0.0
+        clip_duration_seconds = 0.0
+        if self.w.pixels_per_second > 0.0:
+            offset_seconds = offset_px / float(self.w.pixels_per_second)
+            duration_seconds = segment_rect.width() / float(self.w.pixels_per_second)
+            clip_duration_seconds = clip_width / float(self.w.pixels_per_second)
+
+        includes_start = offset_px <= 0.5
+        includes_end = (segment_rect.right() + 0.5) >= full_rect.right()
+
+        segment_info = {
+            "offset_px": offset_px,
+            "segment_width": float(segment_rect.width()),
+            "clip_width": clip_width,
+            "includes_start": includes_start,
+            "includes_end": includes_end,
+            "offset_seconds": offset_seconds,
+            "duration_seconds": duration_seconds,
+            "clip_duration": clip_duration_seconds,
+        }
+
         use_cache = not self.w.clip_has_pending_override(clip)
         waveform_token = self.w.clip_waveform_cache_token(clip) if use_cache else None
         key = (
             clip.id,
             w,
             h,
-            pen.color().rgba(),
             waveform_token,
             round(ratio, 4),
+            round(offset_seconds, 4),
+            round(duration_seconds, 4),
+            includes_start,
+            includes_end,
         ) if use_cache else None
         if use_cache and key in self.clip_cache:
             return self.clip_cache[key]
@@ -140,6 +198,8 @@ class ClipPainter(BasePainter):
         small = w < 20
         tiny = w < 2
         blur = self.w.theme.clip.shadow_blur if not small else 0
+        if not includes_start or not includes_end:
+            blur = 0
         radius = self.w.theme.clip.border_radius if not small else 0
         shadow_col = self.w.theme.clip.shadow_color if not small else QColor()
 
@@ -160,10 +220,9 @@ class ClipPainter(BasePainter):
         icon_entries = []
         if not tiny:
             self._fill_clip_background(painter, inner_rect)
-        self._draw_clip_border(painter, pen, inner_rect, radius)
-
-        if not tiny:
-            icon_entries = self._draw_clip_contents(painter, clip, inner_rect, pen)
+            icon_entries = self._draw_clip_contents(
+                painter, clip, inner_rect, segment_info
+            )
 
         painter.end()
 
@@ -226,17 +285,8 @@ class ClipPainter(BasePainter):
         elif bg.isValid():
             painter.fillRect(inner_rect, bg)
 
-    def _draw_clip_border(self, painter, pen, inner_rect, radius):
-        if not pen.color().isValid() or pen.widthF() <= 0:
-            return
-        painter.setPen(pen)
-        if radius:
-            painter.drawRoundedRect(inner_rect, radius, radius)
-        else:
-            painter.drawRect(inner_rect)
-
-    def _draw_clip_contents(self, painter, clip, inner_rect, pen):
-        bw = pen.widthF()
+    def _draw_clip_contents(self, painter, clip, inner_rect, segment):
+        bw = float(self.border_width or 0.0)
         inner = inner_rect.adjusted(bw, bw, -bw, -bw)
         painter.save()
         painter.setClipRect(inner)
@@ -245,20 +295,23 @@ class ClipPainter(BasePainter):
         right = inner.right() - self.menu_margin
         icon_entries = []
 
-        has_waveform = self._draw_waveform(painter, clip, inner)
+        has_waveform = self._draw_waveform(painter, clip, inner, segment)
 
-        if not has_waveform:
+        includes_start = segment.get("includes_start", True) if isinstance(segment, dict) else True
+
+        if includes_start and not has_waveform:
             self._draw_thumbnail(painter, clip, inner, inner.x(), inner.right())
 
-        menu_width = self._draw_menu_icon(painter, inner, left, 0)
         content_x = left
-        if menu_width:
-            content_x += menu_width + self.menu_margin
+        if includes_start:
+            menu_width = self._draw_menu_icon(painter, inner, left, 0)
+            if menu_width:
+                content_x += menu_width + self.menu_margin
 
-        content_x = self._draw_effect_icons(
-            painter, clip, inner, content_x, right, icon_entries
-        )
-        self._draw_clip_text(painter, clip, inner, content_x, right)
+            content_x = self._draw_effect_icons(
+                painter, clip, inner, content_x, right, icon_entries
+            )
+            self._draw_clip_text(painter, clip, inner, content_x, right)
 
         painter.restore()
         return icon_entries
@@ -411,7 +464,7 @@ class ClipPainter(BasePainter):
             title,
         )
 
-    def _draw_waveform(self, painter, clip, inner):
+    def _draw_waveform(self, painter, clip, inner, segment=None):
         data = clip.data if isinstance(clip.data, dict) else {}
         ui_data = data.get("ui", {}) if isinstance(data, dict) else {}
         audio_data = ui_data.get("audio_data") if isinstance(ui_data, dict) else None
@@ -433,12 +486,42 @@ class ClipPainter(BasePainter):
             start_ratio = display.get("start_ratio", 0.0)
             end_ratio = display.get("end_ratio", 1.0)
 
+        source_start_ratio = display.get("source_start_ratio", start_ratio)
+        source_end_ratio = display.get("source_end_ratio", end_ratio)
+
         start_float = max(0.0, min(float(samples), float(samples) * start_ratio))
         end_float = max(start_float, min(float(samples), float(samples) * end_ratio))
 
         span = end_float - start_float
         if span <= 0:
             return False
+
+        if segment and isinstance(segment, dict):
+            clip_duration = float(segment.get("clip_duration") or 0.0)
+            offset_seconds = float(segment.get("offset_seconds") or 0.0)
+            duration_seconds = float(segment.get("duration_seconds") or 0.0)
+            total_span = max(float(end_ratio - start_ratio), 0.0)
+            source_span = max(float(source_end_ratio - source_start_ratio), 0.0)
+            if clip_duration > 0.0 and total_span > 0.0:
+                start_frac = max(0.0, min(1.0, offset_seconds / clip_duration))
+                end_frac = max(start_frac, min(1.0, (offset_seconds + duration_seconds) / clip_duration))
+
+                adj_start_ratio = start_ratio + total_span * start_frac
+                adj_end_ratio = start_ratio + total_span * end_frac
+                start_ratio = max(0.0, min(1.0, adj_start_ratio))
+                end_ratio = max(start_ratio, min(1.0, adj_end_ratio))
+
+                if source_span > 0.0:
+                    adj_source_start = source_start_ratio + source_span * start_frac
+                    adj_source_end = source_start_ratio + source_span * end_frac
+                    source_start_ratio = max(0.0, min(1.0, adj_source_start))
+                    source_end_ratio = max(source_start_ratio, min(1.0, adj_source_end))
+
+                start_float = max(0.0, min(float(samples), float(samples) * start_ratio))
+                end_float = max(start_float, min(float(samples), float(samples) * end_ratio))
+                span = end_float - start_float
+                if span <= 0:
+                    return False
 
         samples_per_pixel = span / float(width)
         if samples_per_pixel <= 0:
@@ -537,13 +620,13 @@ class ClipPainter(BasePainter):
         return True
 
 
-    def _draw_clip(self, painter, rect, clip, pen):
-        result = self._clip_pixmap(rect, clip, pen)
+    def _draw_clip(self, painter, full_rect, segment_rect, clip, pen, selected):
+        result = self._clip_pixmap(full_rect, segment_rect, clip)
         if not result:
             return
         pix, shadow_spread, icons = result
         if pix:
-            offset = QPointF(rect.x() - shadow_spread, rect.y() - shadow_spread)
+            offset = QPointF(segment_rect.x() - shadow_spread, segment_rect.y() - shadow_spread)
             painter.drawPixmap(offset, pix)
             if icons:
                 for entry in icons:
@@ -561,3 +644,54 @@ class ClipPainter(BasePainter):
                             "effect_id": entry.get("effect_id"),
                         }
                     )
+        includes_start = (segment_rect.left() - full_rect.left()) <= 0.5
+        includes_end = (full_rect.right() - segment_rect.right()) <= 0.5
+
+        border_pen = self.sel_pen if selected else self.clip_pen
+        self._stroke_visible_border(
+            painter,
+            segment_rect,
+            border_pen,
+            includes_start=includes_start,
+            includes_end=includes_end,
+        )
+
+    def _stroke_visible_border(
+        self,
+        painter,
+        segment_rect,
+        pen,
+        *,
+        includes_start=True,
+        includes_end=True,
+    ):
+        if not isinstance(pen, QPen) or not pen.color().isValid():
+            return
+        if segment_rect.width() <= 0.0 or segment_rect.height() <= 0.0:
+            return
+
+        painter.save()
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(pen)
+
+        rect = QRectF(segment_rect)
+        width_offset = max(pen.widthF(), 1.0) / 2.0
+        max_x = max(rect.width() / 2.0 - 0.1, 0.0)
+        max_y = max(rect.height() / 2.0 - 0.1, 0.0)
+        offset_x = min(width_offset, max_x)
+        offset_y = min(width_offset, max_y)
+        rect.adjust(offset_x, offset_y, -offset_x, -offset_y)
+        if rect.width() <= 0.0 or rect.height() <= 0.0:
+            painter.restore()
+            return
+
+        radius = 0.0
+        if includes_start and includes_end and rect.width() >= 20.0 and rect.height() > 0.0:
+            radius = self.border_radius
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        if radius > 0.0:
+            painter.drawRoundedRect(rect, radius, radius)
+        else:
+            painter.drawRect(rect)
+        painter.restore()
