@@ -436,13 +436,14 @@ class TimelineWidgetBase(QWidget):
     def _apply_external_zoom(self, zoom_factor):
         """Apply zoom requests from the ZoomSlider without feedback."""
         slider = getattr(self.win, "sliderZoomWidget", None)
+        syncing_slider = bool(slider and getattr(slider, "_syncing_backend", False))
         if slider:
             span = tuple(slider.scrollbar_position[:2])
             if span[1] > span[0]:
                 left = max(0.0, min(span[0], 1.0))
                 right = max(left, min(span[1], 1.0))
                 self._external_zoom_span = (left, right)
-                if abs(left - self.scrollbar_position[0]) > 1e-6:
+                if syncing_slider:
                     self.is_auto_center = False
             else:
                 self._external_zoom_span = None
@@ -1162,6 +1163,7 @@ class TimelineWidgetBase(QWidget):
             delta = event.pixelDelta().y() if not event.pixelDelta().isNull() else event.angleDelta().y()
             if delta:
                 steps = delta / 120.0
+                self.is_auto_center = True
                 if self._apply_zoom_steps(steps, emit=False):
                     self._pending_zoom_emit = self.zoom_factor
                     self._zoom_emit_timer.start()
@@ -1350,6 +1352,9 @@ class TimelineWidgetBase(QWidget):
         timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
         self.h_scroll_offset = left * timeline_w
         self.is_auto_center = False
+        slider = getattr(self.win, "sliderZoomWidget", None)
+        if slider and getattr(slider, "_syncing_backend", False):
+            return
         self.update()
 
     def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):

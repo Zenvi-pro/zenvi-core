@@ -483,8 +483,12 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
 
             # Set scroll width (and send signal)
             if zoom_factor > 0.0:
-                get_app().window.TimelineScroll.emit(self.scrollbar_position[0])
-                self.setZoomFactor(zoom_factor)
+                self._syncing_backend = True
+                try:
+                    get_app().window.TimelineScroll.emit(self.scrollbar_position[0])
+                    self.setZoomFactor(zoom_factor)
+                finally:
+                    self._syncing_backend = False
 
     # Capture wheel event to alter zoom/scale of widget
     def wheelEvent(self, event):
@@ -612,6 +616,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.is_auto_center = True
         self.min_distance = 0.002
         self.ignore_updates = False
+        self._syncing_backend = False
 
         # Load icon (using display DPI)
         self.cursors = {}
