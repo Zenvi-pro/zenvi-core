@@ -41,11 +41,10 @@ class MarkerGeometryMixin:
             mx = (
                 w.track_name_width
                 + marker.data.get("position", 0.0) * w.pixels_per_second
-                - ctx["h_offset"]
             )
             rect = QRectF(
                 mx,
-                w.ruler_height + top_margin - ctx["v_offset"],
+                w.ruler_height + top_margin,
                 0.5,
                 height,
             )

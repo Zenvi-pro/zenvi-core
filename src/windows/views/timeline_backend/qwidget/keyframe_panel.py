@@ -214,9 +214,8 @@ class KeyframePanelMixin:
             seconds_val = float(seconds)
         except (TypeError, ValueError):
             seconds_val = 0.0
-        ctx = getattr(self.geometry, "_view_context", {}) or {}
-        h_offset = ctx.get("h_offset", 0.0)
-        origin = self.track_name_width - h_offset
+        state = self.geometry._current_view_state()
+        origin = self.track_name_width - state.get("h_offset", 0.0)
         return origin + seconds_val * float(self.pixels_per_second or 0.0)
 
     def _panel_x_to_seconds(self, x_value):
@@ -224,9 +223,8 @@ class KeyframePanelMixin:
             x_float = float(x_value)
         except (TypeError, ValueError):
             x_float = float(self.track_name_width or 0.0)
-        ctx = getattr(self.geometry, "_view_context", {}) or {}
-        h_offset = ctx.get("h_offset", 0.0)
-        origin = self.track_name_width - h_offset
+        state = self.geometry._current_view_state()
+        origin = self.track_name_width - state.get("h_offset", 0.0)
         pixels = float(self.pixels_per_second or 0.0)
         if pixels <= 0.0:
             return 0.0
@@ -235,11 +233,11 @@ class KeyframePanelMixin:
     def _panel_bounds_for_track(self, track_num):
         key = self.normalize_track_number(track_num)
         self.geometry.ensure()
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.iter_tracks():
             current = self.normalize_track_number(track.data.get("number"))
             if current != key:
                 continue
-            panel_rect = self.geometry.panel_rects.get(current)
+            panel_rect = self.geometry.panel_rect(current)
             if not panel_rect or panel_rect.height() <= 0.0:
                 return QRectF()
             return QRectF(
@@ -255,9 +253,9 @@ class KeyframePanelMixin:
         if row_height <= 0.0:
             return
         self.geometry.ensure()
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.iter_tracks():
             track_num = self.normalize_track_number(track.data.get("number"))
-            panel_rect = self.geometry.panel_rects.get(track_num)
+            panel_rect = self.geometry.panel_rect(track_num)
             if not panel_rect or panel_rect.height() <= 0.0:
                 continue
             properties = self.get_track_panel_properties(track_num)

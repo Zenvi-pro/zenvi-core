@@ -128,7 +128,7 @@ class TrackInteractionMixin:
 
     def _get_toolbar_button(self, track_id, key):
         self.geometry.ensure()
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.iter_tracks():
             if track.id != track_id:
                 continue
             for button in self._track_toolbar_buttons(track, name_rect):
@@ -141,7 +141,7 @@ class TrackInteractionMixin:
 
     def _track_toolbar_button_at(self, pos):
         self.geometry.ensure()
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.iter_tracks():
             for button in self._track_toolbar_buttons(track, name_rect):
                 if button["rect"].contains(pos):
                     info = dict(button)

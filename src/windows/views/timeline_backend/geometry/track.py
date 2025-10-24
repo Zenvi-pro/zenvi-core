@@ -45,6 +45,8 @@ class TrackGeometryMixin:
         offsets = ctx.get("track_offsets", {})
         heights = ctx.get("track_heights", {})
         self.panel_rects = {}
+        track_entries = []
+        track_offsets = []
         for track in self.track_list:
             track_num = w.normalize_track_number(track.data.get("number"))
             layer_index = layers.get(track.data.get("number"), 0)
@@ -52,22 +54,16 @@ class TrackGeometryMixin:
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
                 + offsets.get(track_num, layer_index * ctx["spacing"])
-                - ctx["v_offset"]
             )
             track_height = heights.get(track_num, w.vertical_factor)
-            if (
-                y + track_height <= w.ruler_height
-                or y >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
             track_rect = QRectF(
-                w.track_name_width - ctx["h_offset"],
+                w.track_name_width,
                 y,
                 ctx["timeline_w"],
                 track_height,
             )
             name_rect = QRectF(0, y, w.track_name_width, track_height)
-            self.track_rects.append((track_rect, track, name_rect))
+            track_entries.append((track_rect, track, name_rect))
 
             panel_height = max(0.0, track_height - w.vertical_factor)
             if panel_height > 0.0:
@@ -81,33 +77,15 @@ class TrackGeometryMixin:
             else:
                 self.panel_rects.pop(track_num, None)
 
+            track_offsets.append(y)
+
+        self.track_rects = track_entries
+        self._track_offsets = track_offsets
+
         w.resize_handle_rect = QRectF(
             w.track_name_width - w._resize_handle_width / 2,
             w.ruler_height + ctx.get("top_margin", 0.0),
             w._resize_handle_width,
             max(0.0, ctx["content_h"] - ctx.get("top_margin", 0.0)),
         )
-        timeline_w = ctx.get("timeline_w", 0.0)
-        view_w = ctx.get("view_w", 0.0)
-        h_offset = ctx.get("h_offset", 0.0)
-        if timeline_w > 0.0 and view_w > 0.0:
-            handle_width = float(getattr(w, "_project_handle_width", 10.0) or 0.0)
-            handle_height = max(0.0, ctx.get("content_h", 0.0) - ctx.get("top_margin", 0.0))
-            right_aligned = h_offset + view_w >= timeline_w - 0.5
-            if handle_width > 0.0 and handle_height > 0.0 and right_aligned:
-                timeline_right = w.track_name_width + timeline_w - h_offset
-                visible_limit = w.track_name_width + view_w
-                handle_x = timeline_right - handle_width
-                handle_x = max(w.track_name_width, handle_x)
-                handle_x = min(handle_x, visible_limit - handle_width)
-                handle_x = max(w.track_name_width, handle_x)
-                w.timeline_resize_handle_rect = QRectF(
-                    handle_x,
-                    w.ruler_height + ctx.get("top_margin", 0.0),
-                    handle_width,
-                    handle_height,
-                )
-            else:
-                w.timeline_resize_handle_rect = QRectF()
-        else:
-            w.timeline_resize_handle_rect = QRectF()
+        w.timeline_resize_handle_rect = QRectF()

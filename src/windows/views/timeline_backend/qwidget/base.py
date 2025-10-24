@@ -230,6 +230,7 @@ class TimelineWidgetBase(QWidget):
 
         # Keyframe helpers
         self._keyframe_markers = []
+        self._keyframe_marker_offsets = (None, None)
         self._keyframes_dirty = True
         self._dragging_keyframe = None
         self._press_keyframe = None
@@ -1008,7 +1009,7 @@ class TimelineWidgetBase(QWidget):
             model = entry.get("model")
             if not model:
                 continue
-            rect = self.geometry.calc_item_rect(model)
+            rect = self.geometry.calc_item_rect(model, viewport=True)
             if rect:
                 rects.append(QRectF(rect))
         if not rects:
@@ -1082,7 +1083,20 @@ class TimelineWidgetBase(QWidget):
         """Widget resize event"""
         event.accept()
         self.delayed_size = self.size()
-        self.geometry.mark_dirty()
+        view_w = max(
+            0.0,
+            self.width() - self.track_name_width - self.scroll_bar_thickness,
+        )
+        view_h = max(
+            0.0,
+            self.height() - self.ruler_height - self.scroll_bar_thickness,
+        )
+        timeline_w = self.scrollbar_position[2] or None
+        self.geometry.refresh_viewport(
+            view_w=view_w,
+            view_h=view_h,
+            timeline_w=timeline_w,
+        )
         self.update()
         self.delayed_resize_timer.start()
 
@@ -1093,10 +1107,23 @@ class TimelineWidgetBase(QWidget):
         tick_pixels = float(project.get("tick_pixels") or 100.0)
 
         if self.delayed_size:
-            self.scrollbar_position[3] = self.delayed_size.width()
-            self.v_scrollbar_position[3] = self.delayed_size.height()
-
-        view_w = float(self.scrollbar_position[3] or 0.0)
+            view_w = max(
+                0.0,
+                self.delayed_size.width()
+                - self.track_name_width
+                - self.scroll_bar_thickness,
+            )
+            view_h = max(
+                0.0,
+                self.delayed_size.height()
+                - self.ruler_height
+                - self.scroll_bar_thickness,
+            )
+            self.scrollbar_position[3] = view_w
+            self.v_scrollbar_position[3] = view_h
+        else:
+            view_w = float(self.scrollbar_position[3] or 0.0)
+            view_h = float(self.v_scrollbar_position[3] or 0.0)
 
         # Preserve the existing zoom factor and update the visible range instead of
         # recomputing zoom from the viewport size. This keeps manual zoom choices
@@ -1121,7 +1148,11 @@ class TimelineWidgetBase(QWidget):
         self.scrollbar_position[1] = right_norm
         self.h_scroll_offset = left_norm * (timeline_w or 0.0)
 
-        self.geometry.mark_dirty()
+        self.geometry.refresh_viewport(
+            view_w=view_w,
+            view_h=view_h,
+            timeline_w=timeline_w,
+        )
         self.update()
         get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
@@ -1303,9 +1334,6 @@ class TimelineWidgetBase(QWidget):
         if not self.geometry.clip_entries:
             self.changed(None)
 
-        # Recompute geometry for new scrollbar positions
-        self.geometry.mark_dirty()
-
         # Disable auto center
         self.is_auto_center = False
 
@@ -1322,7 +1350,6 @@ class TimelineWidgetBase(QWidget):
         timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
         self.h_scroll_offset = left * timeline_w
         self.is_auto_center = False
-        self.geometry.mark_dirty()
         self.update()
 
     def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):
@@ -1574,13 +1601,13 @@ class TimelineWidgetBase(QWidget):
                 return
 
         # Track menu icons
-        for _track_rect, _track, name_rect in self.geometry.track_rects:
+        for _track_rect, _track, name_rect in self.geometry.iter_tracks():
             mrect = self._track_menu_rect(name_rect)
             if mrect.contains(pos):
                 self.setCursor(Qt.PointingHandCursor)
                 return
 
-        timeline_handle = getattr(self, "timeline_resize_handle_rect", QRectF())
+        timeline_handle = self.geometry.timeline_handle_rect()
         if timeline_handle.contains(pos):
             self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
             return
@@ -1656,7 +1683,7 @@ class TimelineWidgetBase(QWidget):
         )
 
     def _trigger_track_menu_icon(self, pos):
-        for _track_rect, track, name_rect in self.geometry.track_rects:
+        for _track_rect, track, name_rect in self.geometry.iter_tracks():
             if self._track_menu_rect(name_rect).contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowTrackMenu(track.id)
                 return True
@@ -1756,8 +1783,9 @@ class TimelineWidgetBase(QWidget):
             new_left = max(0.0, min(new_left, 1.0 - width_norm))
             self.scrollbar_position = [new_left, new_left + width_norm,
                                        self.scrollbar_position[2], self.scrollbar_position[3]]
+            timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+            self.h_scroll_offset = new_left * timeline_w
             get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
-            self.geometry.mark_dirty()
             self.update()
             return
 
@@ -1774,7 +1802,6 @@ class TimelineWidgetBase(QWidget):
             new_top = max(0.0, min(new_top, 1.0 - height_norm))
             self.v_scrollbar_position[0] = new_top
             self.v_scrollbar_position[1] = new_top + height_norm
-            self.geometry.mark_dirty()
             self.update()
             return
 
@@ -1925,11 +1952,12 @@ class TimelineWidgetBase(QWidget):
         v_changed = new_v_positions[:2] != self.v_scrollbar_position[:2]
         if changed:
             self.scrollbar_position = new_positions
+            timeline_w = new_positions[2] or new_positions[3] or 0.0
+            self.h_scroll_offset = new_positions[0] * timeline_w
             get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
         if v_changed:
             self.v_scrollbar_position = new_v_positions
         if changed or v_changed:
-            self.geometry.mark_dirty()
             self.update()
 
     def _finishMiddlePan(self):
@@ -1969,7 +1997,7 @@ class TimelineWidgetBase(QWidget):
                 return True
 
         # Track context menu
-        for track_rect, track, name_rect in self.geometry.track_rects:
+        for track_rect, track, name_rect in self.geometry.iter_tracks():
             if name_rect.contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowTrackMenu(track.id)
                 return True

@@ -119,7 +119,7 @@ class SnapHelper:
             generic_targets.add(rect.left())
             generic_targets.add(rect.right())
 
-        for rect in getattr(self.geometry, "marker_rects", []):
+        for rect in self.geometry.iter_markers():
             generic_targets.add(rect.left())
 
         duration = self._project_duration()

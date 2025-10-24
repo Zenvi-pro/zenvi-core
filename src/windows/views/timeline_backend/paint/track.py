@@ -166,7 +166,7 @@ class TrackPainter(BasePainter):
         painter.save()
         painter.setClipRect(area)
         banding_cfg = self._frame_banding_config()
-        for track_rect, _track, _name_rect in self.w.geometry.track_rects:
+        for track_rect, _track, _name_rect in self.w.geometry.iter_tracks():
             vis = track_rect.intersected(area)
             if vis.isNull():
                 continue
@@ -190,7 +190,7 @@ class TrackPainter(BasePainter):
             self.w.resize_handle_rect.intersected(area),
             self.w.theme.track.border_color,
         )
-        timeline_handle = getattr(self.w, "timeline_resize_handle_rect", QRectF())
+        timeline_handle = self.w.geometry.timeline_handle_rect()
         if timeline_handle and not timeline_handle.isNull():
             handle_rect = timeline_handle.intersected(area)
             if not handle_rect.isNull():
@@ -293,7 +293,7 @@ class TrackPainter(BasePainter):
         )
         painter.save()
         painter.setClipRect(area)
-        for _track_rect, track, name_rect in self.w.geometry.track_rects:
+        for _track_rect, track, name_rect in self.w.geometry.iter_tracks():
             painter.setPen(Qt.NoPen)
             painter.setBrush(self.w.theme.track.name_background)
             if self.name_radius_tl or self.name_radius_bl:

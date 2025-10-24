@@ -45,7 +45,7 @@ class MarkerPainter(BasePainter):
         )
         painter.save()
         painter.setPen(self.pen)
-        for mr in self.w.geometry.marker_rects:
+        for mr in self.w.geometry.iter_markers():
             vis = mr.intersected(area)
             if vis.isNull():
                 continue

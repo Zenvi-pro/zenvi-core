@@ -25,10 +25,36 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+from bisect import bisect_left
+from dataclasses import dataclass
+
 from PyQt5.QtCore import QPointF, QRectF
 
 from classes.app import get_app
 from classes.logger import log
+
+
+@dataclass
+class _GeometryEntry:
+    rect: QRectF
+    obj: object
+    selected: bool
+
+    @property
+    def left(self):
+        return self.rect.left()
+
+    @property
+    def right(self):
+        return self.rect.right()
+
+    @property
+    def top(self):
+        return self.rect.top()
+
+    @property
+    def bottom(self):
+        return self.rect.bottom()
 
 
 class GeometryBase:
@@ -43,6 +69,11 @@ class GeometryBase:
         self.marker_rects = []
         self.track_list = []
         self.panel_rects = {}
+        self._clip_starts = []
+        self._clip_max_rights = []
+        self._transition_starts = []
+        self._transition_max_rights = []
+        self._track_offsets = []
         self._view_context = {}
 
     # ------------------------------------------------------------------
@@ -68,6 +99,49 @@ class GeometryBase:
         self.transition_entries.clear()
         self.marker_rects.clear()
         self.panel_rects.clear()
+        self._clip_starts.clear()
+        self._clip_max_rights.clear()
+        self._transition_starts.clear()
+        self._transition_max_rights.clear()
+        self._track_offsets.clear()
+
+    @staticmethod
+    def _entry_sort_key(entry):
+        obj = getattr(entry, "obj", None)
+        obj_id = getattr(obj, "id", "") if obj is not None else ""
+        return (round(entry.rect.left(), 6), round(entry.rect.top(), 6), obj_id)
+
+    def _resort_clip_entries(self):
+        if not self.clip_entries:
+            self._clip_starts = []
+            return
+        self.clip_entries.sort(key=self._entry_sort_key)
+        starts = []
+        max_rights = []
+        max_right = float("-inf")
+        for entry in self.clip_entries:
+            rect = entry.rect
+            starts.append(rect.left())
+            max_right = max(max_right, rect.right())
+            max_rights.append(max_right)
+        self._clip_starts = starts
+        self._clip_max_rights = max_rights
+
+    def _resort_transition_entries(self):
+        if not self.transition_entries:
+            self._transition_starts = []
+            return
+        self.transition_entries.sort(key=self._entry_sort_key)
+        starts = []
+        max_rights = []
+        max_right = float("-inf")
+        for entry in self.transition_entries:
+            rect = entry.rect
+            starts.append(rect.left())
+            max_right = max(max_right, rect.right())
+            max_rights.append(max_right)
+        self._transition_starts = starts
+        self._transition_max_rights = max_rights
 
     def _update_vertical_factor(self, layers, view_h):
         if self.widget.track_height:
@@ -202,9 +276,7 @@ class GeometryBase:
                 )
             else:
                 w.scroll_bar_rect = QRectF()
-            h_offset = w.h_scroll_offset
         v_offset = self._update_vertical_scrollbar(content_h, view_h)
-        w.h_scroll_offset = h_offset
         ctx = {
             "view_w": view_w,
             "view_h": view_h,
@@ -219,6 +291,86 @@ class GeometryBase:
         }
         self._view_context = ctx
         return ctx
+
+    def refresh_viewport(self, *, view_w=None, view_h=None, timeline_w=None):
+        """Update viewport-dependent values without rebuilding cached geometry."""
+
+        w = self.widget
+
+        if view_w is None:
+            view_w = w.width() - w.track_name_width - w.scroll_bar_thickness
+        if view_h is None:
+            view_h = w.height() - w.ruler_height - w.scroll_bar_thickness
+
+        view_w = max(0.0, float(view_w or 0.0))
+        view_h = max(0.0, float(view_h or 0.0))
+
+        ctx = self._view_context or {}
+        self._view_context = ctx
+
+        if timeline_w is None:
+            baseline = float(ctx.get("timeline_w", 0.0) or 0.0)
+            timeline_w = max(baseline, view_w)
+        else:
+            timeline_w = max(float(timeline_w or 0.0), view_w)
+
+        ctx["view_w"] = view_w
+        ctx["view_h"] = view_h
+        ctx["timeline_w"] = timeline_w
+
+        top_margin = float(ctx.get("top_margin", 0.0) or 0.0)
+        content_h = max(float(ctx.get("content_h", view_h + top_margin) or 0.0), view_h + top_margin)
+        ctx["content_h"] = content_h
+
+        h_offset = self._update_horizontal_scrollbar(timeline_w, view_w)
+        if getattr(w, "_project_resize_keep_right", False):
+            view_ratio = view_w / timeline_w if timeline_w else 1.0
+            view_ratio = min(1.0, max(0.0, view_ratio))
+            left = 0.0
+            if view_ratio < 1.0:
+                left = max(0.0, 1.0 - view_ratio)
+            right = min(1.0, left + view_ratio)
+            w.scrollbar_position[0] = left
+            w.scrollbar_position[1] = right
+            w.h_scroll_offset = left * timeline_w
+            if view_ratio < 1.0:
+                handle_w = max(20.0, view_ratio * view_w)
+                avail = view_w - handle_w
+                handle_x = w.track_name_width
+                max_scroll = max(0.0, timeline_w - view_w)
+                scroll_px = w.h_scroll_offset
+                if max_scroll > 0.0 and avail > 0.0:
+                    handle_x += (scroll_px / max_scroll) * avail
+                w.scroll_bar_rect = QRectF(
+                    handle_x,
+                    w.height() - w.scroll_bar_thickness,
+                    handle_w,
+                    w.scroll_bar_thickness,
+                )
+            else:
+                w.scroll_bar_rect = QRectF()
+
+        self._update_vertical_scrollbar(content_h, view_h)
+
+        if self.track_rects:
+            for rect, _track, _name_rect in self.track_rects:
+                if rect.width() != timeline_w:
+                    rect.setWidth(timeline_w)
+
+        if self.panel_rects:
+            for rect in self.panel_rects.values():
+                if rect.width() != timeline_w:
+                    rect.setWidth(timeline_w)
+
+        w.resize_handle_rect = QRectF(
+            w.track_name_width - w._resize_handle_width / 2,
+            w.ruler_height + top_margin,
+            w._resize_handle_width,
+            max(0.0, content_h - top_margin),
+        )
+        w.timeline_resize_handle_rect = QRectF()
+
+        self._current_view_state()
 
     def _rebuild(self):
         win = get_app().window
@@ -236,7 +388,57 @@ class GeometryBase:
         self._populate_transition_rects(layers, ctx, win)
         self._populate_marker_rects(ctx)
 
+        log.debug(
+            "Timeline geometry rebuild complete: %d tracks, %d clips, %d transitions",
+            len(self.track_rects),
+            len(self.clip_entries),
+            len(self.transition_entries),
+        )
         self.dirty = False
+
+    def _current_view_state(self):
+        """Return dictionary describing the current viewport offsets and sizes."""
+
+        w = self.widget
+        view_w = w.scrollbar_position[3] or (
+            w.width() - w.track_name_width - w.scroll_bar_thickness
+        )
+        timeline_w = max(
+            view_w,
+            w.scrollbar_position[2] or self._view_context.get("timeline_w", view_w),
+        )
+        left = max(0.0, min(w.scrollbar_position[0], 1.0))
+        h_offset = left * timeline_w
+        max_scroll = max(0.0, timeline_w - view_w)
+        if h_offset > max_scroll:
+            h_offset = max_scroll
+
+        view_h = w.v_scrollbar_position[3] or (
+            w.height() - w.ruler_height - w.scroll_bar_thickness
+        )
+        content_h = max(
+            view_h,
+            w.v_scrollbar_position[2],
+            self._view_context.get("content_h", view_h),
+        )
+        top = max(0.0, min(w.v_scrollbar_position[0], 1.0))
+        v_offset = top * content_h
+        max_vscroll = max(0.0, content_h - view_h)
+        if v_offset > max_vscroll:
+            v_offset = max_vscroll
+
+        w.h_scroll_offset = h_offset
+        if self._view_context is not None:
+            self._view_context["h_offset"] = h_offset
+            self._view_context["v_offset"] = v_offset
+        return {
+            "view_w": view_w,
+            "view_h": view_h,
+            "timeline_w": timeline_w,
+            "content_h": content_h,
+            "h_offset": h_offset,
+            "v_offset": v_offset,
+        }
 
     # ------------------------------------------------------------------
     # Hit testing
@@ -251,9 +453,9 @@ class GeometryBase:
             for rect, _obj, _sel, _type in self.iter_items(reverse=True):
                 if rect.contains(pos):
                     return "clip"
-        for _track_rect, track, name_rect in self.track_rects:
+        for _track_rect, track, name_rect in self.iter_tracks():
             track_num = self.widget.normalize_track_number(track.data.get("number"))
-            panel_rect = self.panel_rects.get(track_num)
+            panel_rect = self.panel_rect(track_num)
             if not panel_rect or panel_rect.height() <= 0.0:
                 continue
             if panel_rect.contains(pos):
@@ -270,7 +472,7 @@ class GeometryBase:
             return "h-scroll"
         if getattr(self.widget, "v_scroll_bar_rect", QRectF()).contains(pos):
             return "v-scroll"
-        timeline_handle = getattr(self.widget, "timeline_resize_handle_rect", QRectF())
+        timeline_handle = self.timeline_handle_rect()
         if timeline_handle.contains(pos):
             return "timeline-handle"
         if self.widget.resize_handle_rect.contains(pos):
@@ -279,30 +481,24 @@ class GeometryBase:
             return "ruler"
         return "background"
 
-    def calc_item_rect(self, item):
-        """Return QRectF for *item* (Clip or Transition)."""
+    def calc_item_rect(self, item, *, viewport=False):
+        """Return QRectF for *item* (Clip or Transition).
+
+        When *viewport* is ``True`` the coordinates are adjusted for the current
+        scroll offsets so the rectangle can be compared directly against widget
+        positions. Otherwise, geometry is returned in timeline space so the
+        cache can be updated without double counting scroll offsets.
+        """
+
         layers = {t.data.get("number"): idx for idx, t in enumerate(self.track_list)}
         spacing = self.widget.vertical_factor + getattr(self.widget, "track_gap", 0)
         offsets = getattr(self, "_view_context", {}).get("track_offsets", {})
-        view_w = self.widget.scrollbar_position[3] or 1.0
-        timeline_w = self.widget.scrollbar_position[2] or view_w
-        left = self.widget.scrollbar_position[0]
-        h_offset = left * timeline_w
-        max_scroll = max(0.0, timeline_w - view_w)
-        if h_offset > max_scroll:
-            h_offset = max_scroll
-        view_h = self.widget.v_scrollbar_position[3] or 1.0
-        content_h = self.widget.v_scrollbar_position[2] or view_h
-        top = self.widget.v_scrollbar_position[0]
-        v_offset = top * content_h
-        max_vscroll = max(0.0, content_h - view_h)
-        if v_offset > max_vscroll:
-            v_offset = max_vscroll
-        x = (
-            self.widget.track_name_width
-            + item.data.get("position", 0.0) * self.widget.pixels_per_second
-            - h_offset
-        )
+        position = float(item.data.get("position", 0.0) or 0.0)
+        start = float(item.data.get("start", 0.0) or 0.0)
+        end = float(item.data.get("end", start) or start)
+        if end < start:
+            end = start
+        x = self.widget.track_name_width + position * self.widget.pixels_per_second
         layer_val = item.data.get("layer", 0)
         offset = offsets.get(
             self.widget.normalize_track_number(layer_val),
@@ -312,49 +508,203 @@ class GeometryBase:
             self.widget.ruler_height
             + getattr(self.widget, "track_margin_top", 0.0)
             + offset
-            - v_offset
         )
-        w = (item.data.get("end", 0.0) - item.data.get("start", 0.0)) * self.widget.pixels_per_second
-        return QRectF(x, y, w, self.widget.vertical_factor)
+        width = (end - start) * self.widget.pixels_per_second
+        rect = QRectF(x, y, width, self.widget.vertical_factor)
+        if viewport:
+            state = self._current_view_state()
+            rect.translate(-state["h_offset"], -state["v_offset"])
+        return rect
 
     def update_item_rect(self, item, rect):
         """Replace cached rect for *item* if present."""
-        for idx, (existing_rect, existing, selected) in enumerate(self.clip_entries):
-            if existing.id == item.id:
-                self.clip_entries[idx] = (rect, item, selected)
+        for entry in self.clip_entries:
+            if entry.obj.id == item.id:
+                entry.rect = QRectF(rect)
+                self._resort_clip_entries()
                 return
-        for idx, (existing_rect, existing, selected) in enumerate(self.transition_entries):
-            if existing.id == item.id:
-                self.transition_entries[idx] = (rect, item, selected)
+        for entry in self.transition_entries:
+            if entry.obj.id == item.id:
+                entry.rect = QRectF(rect)
+                self._resort_transition_entries()
                 return
 
     # ------------------------------------------------------------------
     # Iteration helpers
     # ------------------------------------------------------------------
-    def iter_clips(self, reverse=False):
+    def iter_clips(self, reverse=False, *, viewport=True):
         """Yield (rect, clip, selected) tuples for cached clips."""
-        yield from self._iter_entries(self.clip_entries, reverse)
+        yield from self._iter_entries(
+            self.clip_entries,
+            self._clip_starts,
+            self._clip_max_rights,
+            reverse,
+            viewport=viewport,
+        )
 
-    def iter_transitions(self, reverse=False):
+    def iter_transitions(self, reverse=False, *, viewport=True):
         """Yield (rect, transition, selected) tuples for cached transitions."""
-        yield from self._iter_entries(self.transition_entries, reverse)
+        yield from self._iter_entries(
+            self.transition_entries,
+            self._transition_starts,
+            self._transition_max_rights,
+            reverse,
+            viewport=viewport,
+        )
 
-    def iter_items(self, reverse=False):
+    def iter_items(self, reverse=False, *, viewport=True):
         """Yield (rect, obj, selected, type) for transitions then clips."""
-        for rect, tran, selected in self.iter_transitions(reverse=reverse):
+        for rect, tran, selected in self.iter_transitions(
+            reverse=reverse, viewport=viewport
+        ):
             yield rect, tran, selected, "transition"
-        for rect, clip, selected in self.iter_clips(reverse=reverse):
+        for rect, clip, selected in self.iter_clips(
+            reverse=reverse, viewport=viewport
+        ):
             yield rect, clip, selected, "clip"
 
-    def _iter_entries(self, entries, reverse=False):
-        """Yield entries grouped by selection state while preserving stacking order."""
+    def iter_tracks(self):
+        """Yield track and name rectangles adjusted for the current viewport."""
+
+        state = self._current_view_state()
+        h_offset = state["h_offset"]
+        v_offset = state["v_offset"]
+
+        for rect, track, name_rect in self.track_rects:
+            adj_rect = QRectF(rect)
+            adj_rect.translate(-h_offset, -v_offset)
+            name_adj = QRectF(name_rect)
+            name_adj.translate(0.0, -v_offset)
+            yield adj_rect, track, name_adj
+
+    def iter_markers(self):
+        """Yield marker rectangles adjusted for the current viewport."""
+
+        if not self.marker_rects:
+            return
+        state = self._current_view_state()
+        h_offset = state["h_offset"]
+        v_offset = state["v_offset"]
+        for rect in self.marker_rects:
+            adj = QRectF(rect)
+            adj.translate(-h_offset, -v_offset)
+            yield adj
+
+    def panel_rect(self, track_num):
+        base_rect = self.panel_rects.get(track_num)
+        if not base_rect:
+            return None
+        state = self._current_view_state()
+        rect = QRectF(base_rect)
+        rect.translate(-state["h_offset"], -state["v_offset"])
+        return rect
+
+    def timeline_handle_rect(self):
+        ctx = self._view_context
+        state = self._current_view_state()
+        timeline_w = ctx.get("timeline_w", state["timeline_w"])
+        view_w = state["view_w"]
+        h_offset = state["h_offset"]
+        handle_width = float(getattr(self.widget, "_project_handle_width", 10.0) or 0.0)
+        handle_height = max(
+            0.0, ctx.get("content_h", state["content_h"]) - ctx.get("top_margin", 0.0)
+        )
+        if handle_width <= 0.0 or handle_height <= 0.0:
+            return QRectF()
+        if timeline_w <= 0.0 or view_w <= 0.0:
+            return QRectF()
+        right_aligned = h_offset + view_w >= timeline_w - 0.5
+        if not right_aligned:
+            return QRectF()
+        timeline_right = self.widget.track_name_width + timeline_w - h_offset
+        visible_limit = self.widget.track_name_width + view_w
+        handle_x = timeline_right - handle_width
+        handle_x = max(self.widget.track_name_width, handle_x)
+        handle_x = min(handle_x, visible_limit - handle_width)
+        handle_x = max(self.widget.track_name_width, handle_x)
+        return QRectF(
+            handle_x,
+            self.widget.ruler_height + ctx.get("top_margin", 0.0) - state["v_offset"],
+            handle_width,
+            handle_height,
+        )
+
+    def _iter_entries(
+        self,
+        entries,
+        starts,
+        max_rights,
+        reverse=False,
+        *,
+        viewport=True,
+    ):
+        """Yield visible entries grouped by selection state while preserving stacking order."""
+
+        if not entries:
+            return
+
+        state = self._current_view_state()
+        h_offset = state["h_offset"]
+        v_offset = state["v_offset"]
+        view_left = self.widget.track_name_width + h_offset
+        view_right = view_left + state["view_w"]
+        view_top = self.widget.ruler_height + v_offset
+        view_bottom = view_top + state["view_h"]
+
+        margin = max(64.0, state["view_w"] * 0.25)
+        search_left = view_left - margin
+        search_right = view_right + margin
+
+        def _visible_sequence():
+            if not entries:
+                return []
+
+            total = len(entries)
+            start_idx = bisect_left(starts, search_left)
+            forward = []
+            idx = start_idx
+            while idx < total:
+                entry = entries[idx]
+                rect = entry.rect
+                if rect.left() > search_right:
+                    break
+                if (
+                    rect.right() >= search_left
+                    and rect.bottom() >= view_top
+                    and rect.top() <= view_bottom
+                ):
+                    forward.append(idx)
+                idx += 1
+
+            backward = []
+            idx = start_idx - 1
+            while idx >= 0 and max_rights[idx] >= search_left:
+                entry = entries[idx]
+                rect = entry.rect
+                if (
+                    rect.right() >= search_left
+                    and rect.bottom() >= view_top
+                    and rect.top() <= view_bottom
+                ):
+                    backward.append(idx)
+                idx -= 1
+
+            indices = list(reversed(backward)) + forward
+            return [entries[i] for i in indices]
+
+        seq = _visible_sequence()
+
         if reverse:
-            for selected_flag in (True, False):
-                for rect, obj, selected in reversed(entries):
-                    if selected == selected_flag:
-                        yield rect, obj, selected
+            seq = list(reversed(seq))
+            order = (True, False)
         else:
-            for selected_flag in (False, True):
-                for rect, obj, selected in entries:
-                    if selected == selected_flag:
-                        yield rect, obj, selected
+            order = (False, True)
+
+        for selected_flag in order:
+            for entry in seq:
+                if entry.selected != selected_flag:
+                    continue
+                rect = QRectF(entry.rect)
+                if viewport:
+                    rect.translate(-h_offset, -v_offset)
+                yield rect, entry.obj, entry.selected

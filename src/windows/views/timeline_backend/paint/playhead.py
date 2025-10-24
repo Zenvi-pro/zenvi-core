@@ -81,8 +81,9 @@ class PlayheadPainter(BasePainter):
 
         self.w.geometry.ensure()
         bottom = self.w.height()
-        if self.w.geometry.track_rects:
-            bottom = self.w.geometry.track_rects[-1][0].bottom()
+        tracks = list(self.w.geometry.iter_tracks())
+        if tracks:
+            bottom = tracks[-1][0].bottom()
 
         timeline_left = self.w.track_name_width
         timeline_width = (

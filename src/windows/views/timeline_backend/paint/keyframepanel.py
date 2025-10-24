@@ -99,9 +99,9 @@ class KeyframePanelPainter(BasePainter):
             seconds_val = float(seconds)
         except (TypeError, ValueError):
             seconds_val = 0.0
-        view_ctx = getattr(self.w.geometry, "_view_context", {}) or {}
-        h_offset = view_ctx.get("h_offset", 0.0)
-        origin = self.w.track_name_width - h_offset
+        state = self.w.geometry._current_view_state()
+        offset_px = getattr(self.w, "h_scroll_offset", state.get("h_offset", 0.0))
+        origin = self.w.track_name_width - offset_px
         return origin + seconds_val * float(self.w.pixels_per_second or 0.0)
 
     def _value_to_y(self, value, lane_rect, min_val, max_val):
@@ -269,11 +269,11 @@ class KeyframePanelPainter(BasePainter):
         lane_padding = min(6.0, row_height * 0.25 if row_height else 6.0)
 
         visible_tracks = []
-        for _track_rect, track, name_rect in self.w.geometry.track_rects:
+        for _track_rect, track, name_rect in self.w.geometry.iter_tracks():
             track_num = self.w.normalize_track_number(track.data.get("number"))
             if not self.w.is_keyframe_panel_visible(track_num):
                 continue
-            panel_rect = self.w.geometry.panel_rects.get(track_num)
+            panel_rect = self.w.geometry.panel_rect(track_num)
             if not panel_rect or panel_rect.height() <= 0.0:
                 log.info(
                     "Keyframe panel paint skipped: track %s has no panel rect",

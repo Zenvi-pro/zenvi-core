@@ -29,6 +29,8 @@ from PyQt5.QtCore import QRectF
 
 from classes.query import Transition
 
+from .base import _GeometryEntry
+
 
 class TransitionGeometryMixin:
     """Populate cached transition rectangles."""
@@ -66,43 +68,34 @@ class TransitionGeometryMixin:
             except (TypeError, ValueError):
                 layer_key = layer_val
 
-            tx = (
-                w.track_name_width
-                + position * w.pixels_per_second
-                - ctx["h_offset"]
-            )
+            tx = w.track_name_width + position * w.pixels_per_second
             layer_idx = layers.get(layer_key, 0)
             offset = ctx.get("track_offsets", {}).get(
                 w.normalize_track_number(layer_key),
                 layer_idx * ctx["spacing"],
             )
-            ty = (
-                w.ruler_height
-                + ctx.get("top_margin", 0.0)
-                + offset
-                - ctx["v_offset"]
-            )
+            ty = w.ruler_height + ctx.get("top_margin", 0.0) + offset
             tw = (end - start) * w.pixels_per_second
-            if (
-                tx + tw <= w.track_name_width
-                or ty + w.vertical_factor <= w.ruler_height
-                or ty >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
             rect = QRectF(tx, ty, tw, w.vertical_factor)
-            entries.append((position, rect, tr))
+            entries.append((rect.left(), rect, tr))
 
         def _transition_sort_key(entry):
-            pos, rect, tran = entry
-            try:
-                pos_val = float(pos)
-            except (TypeError, ValueError):
-                pos_val = 0.0
-            return pos_val, rect.x(), getattr(tran, "id", "")
+            left, rect, tran = entry
+            return left, rect.x(), getattr(tran, "id", "")
 
         entries.sort(key=_transition_sort_key)
         transition_entries = []
-        for _, rect, tran in entries:
+        transition_starts = []
+        max_right = float("-inf")
+        max_rights = []
+        for left, rect, tran in entries:
             is_selected = tran.id in selected_ids
-            transition_entries.append((rect, tran, is_selected))
+            transition_entries.append(
+                _GeometryEntry(rect=rect, obj=tran, selected=is_selected)
+            )
+            transition_starts.append(left)
+            max_right = max(max_right, rect.right())
+            max_rights.append(max_right)
         self.transition_entries = transition_entries
+        self._transition_starts = transition_starts
+        self._transition_max_rights = max_rights

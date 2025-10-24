@@ -29,6 +29,8 @@ from PyQt5.QtCore import QRectF
 
 from classes.query import Clip
 
+from .base import _GeometryEntry
+
 
 class ClipGeometryMixin:
     """Populate cached clip rectangles."""
@@ -69,7 +71,6 @@ class ClipGeometryMixin:
             cx = (
                 w.track_name_width
                 + position * w.pixels_per_second
-                - ctx["h_offset"]
             )
             layer_idx = layers.get(layer_key, 0)
             offset = ctx.get("track_offsets", {}).get(
@@ -80,29 +81,26 @@ class ClipGeometryMixin:
                 w.ruler_height
                 + ctx.get("top_margin", 0.0)
                 + offset
-                - ctx["v_offset"]
             )
             cw = (end - start) * w.pixels_per_second
-            if (
-                cx + cw <= w.track_name_width
-                or cy + w.vertical_factor <= w.ruler_height
-                or cy >= w.ruler_height + ctx["view_h"]
-            ):
-                continue
             rect = QRectF(cx, cy, cw, w.vertical_factor)
-            entries.append((position, rect, clip))
+            entries.append((rect.left(), rect, clip))
 
         def _clip_sort_key(entry):
-            pos, rect, clip = entry
-            try:
-                pos_val = float(pos)
-            except (TypeError, ValueError):
-                pos_val = 0.0
-            return pos_val, rect.x(), getattr(clip, "id", "")
+            left, rect, clip = entry
+            return left, rect.x(), getattr(clip, "id", "")
 
         entries.sort(key=_clip_sort_key)
         clip_entries = []
-        for _, rect, clip in entries:
+        clip_starts = []
+        max_right = float("-inf")
+        max_rights = []
+        for left, rect, clip in entries:
             is_selected = clip.id in selected_ids
-            clip_entries.append((rect, clip, is_selected))
+            clip_entries.append(_GeometryEntry(rect=rect, obj=clip, selected=is_selected))
+            clip_starts.append(left)
+            max_right = max(max_right, rect.right())
+            max_rights.append(max_right)
         self.clip_entries = clip_entries
+        self._clip_starts = clip_starts
+        self._clip_max_rights = max_rights

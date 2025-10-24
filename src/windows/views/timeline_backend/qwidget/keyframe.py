@@ -82,12 +82,22 @@ class KeyframeMixin:
         return color
 
     def _keyframe_rect(self, clip_rect, seconds):
+        """Return the timeline-space rectangle for a keyframe icon."""
+
         size = max(2, self.keyframe_painter.size)
         pixels = max(self.pixels_per_second, 0.0001)
         x = clip_rect.left() + seconds * pixels
         baseline = clip_rect.bottom() - 0.5
         top = baseline - size / 2.0
         return QRectF(x - size / 2.0, top, size, size)
+
+    def _viewport_rect(self, rect, state):
+        if not isinstance(rect, QRectF):
+            rect = QRectF(rect)
+        result = QRectF(rect)
+        if state:
+            result.translate(-state.get("h_offset", 0.0), -state.get("v_offset", 0.0))
+        return result
 
     def _collect_keyframes_from_data(
         self,
@@ -106,9 +116,17 @@ class KeyframeMixin:
         object_id=None,
         override=None,
         base_path=(),
+        view_state=None,
     ):
         if not isinstance(data, (dict, list)):
             return []
+
+        if not isinstance(clip_rect, QRectF):
+            clip_rect = QRectF(clip_rect)
+
+        clip_rect_timeline = QRectF(clip_rect)
+        view_state = view_state or self.geometry._current_view_state()
+        clip_rect_view = self._viewport_rect(clip_rect_timeline, view_state)
 
         fps = self.fps_float or 1.0
         duration = max(0.0, clip_end - clip_start)
@@ -267,7 +285,8 @@ class KeyframeMixin:
 
         result = []
         for frame, info in markers.items():
-            rect = self._keyframe_rect(clip_rect, info["seconds"])
+            rect_timeline = self._keyframe_rect(clip_rect_timeline, info["seconds"])
+            rect_view = self._viewport_rect(rect_timeline, view_state)
             if object_type == "clip":
                 color_obj = self._normalize_color(self.keyframe_painter.fill)
             else:
@@ -291,10 +310,12 @@ class KeyframeMixin:
                 "interpolation": info["interpolation"],
                 "selected": info["selected"],
                 "color": color_obj,
-                "clip_rect": clip_rect,
+                "clip_rect": QRectF(clip_rect_view),
+                "clip_rect_timeline": QRectF(clip_rect_timeline),
                 "clip_start": clip_start,
                 "clip_end": clip_end,
-                "rect": rect,
+                "rect": QRectF(rect_view),
+                "rect_timeline": QRectF(rect_timeline),
                 "object_id": str(object_id),
                 "object_type": "clip" if object_type in ("clip", "effect") else "transition",
                 "key": (object_type, str(owner_id), info["frame"]),
@@ -317,7 +338,7 @@ class KeyframeMixin:
             result.append(marker)
         return result
 
-    def _build_clip_keyframes(self, rect, clip):
+    def _build_clip_keyframes(self, rect, clip, view_state):
         data = clip.data if isinstance(clip.data, dict) else {}
         base_start = float(data.get("start", 0.0) or 0.0)
         base_end = float(data.get("end", base_start) or base_start)
@@ -373,6 +394,7 @@ class KeyframeMixin:
                 color=self.keyframe_painter.fill,
                 object_id=str(clip.id),
                 override=override_ctx,
+                view_state=view_state,
             )
         )
 
@@ -401,12 +423,13 @@ class KeyframeMixin:
                     object_id=str(clip.id),
                     override=override_ctx,
                     base_path=(("dict", "effects"), ("list", eff_index)),
+                    view_state=view_state,
                 )
             )
 
         return markers
 
-    def _build_transition_keyframes(self, rect, transition):
+    def _build_transition_keyframes(self, rect, transition, view_state):
         if transition.id not in getattr(self.win, "selected_transitions", []):
             return []
         data = transition.data if isinstance(transition.data, dict) else {}
@@ -426,14 +449,18 @@ class KeyframeMixin:
             selected=True,
             color=self.keyframe_painter.fill,
             object_id=str(transition.id),
+            view_state=view_state,
         )
 
     def _refresh_keyframe_markers(self):
+        self.geometry.ensure()
+        state = self.geometry._current_view_state()
+
         markers = []
-        for rect, clip, _selected in self.geometry.iter_clips():
-            markers.extend(self._build_clip_keyframes(rect, clip))
-        for rect, tran, _selected in self.geometry.iter_transitions():
-            markers.extend(self._build_transition_keyframes(rect, tran))
+        for rect, clip, _selected in self.geometry.iter_clips(viewport=False):
+            markers.extend(self._build_clip_keyframes(rect, clip, state))
+        for rect, tran, _selected in self.geometry.iter_transitions(viewport=False):
+            markers.extend(self._build_transition_keyframes(rect, tran, state))
 
         drag = self._dragging_keyframe
         if drag and drag.get("key") and markers:
@@ -444,7 +471,22 @@ class KeyframeMixin:
                     if pending_seconds is not None:
                         marker["seconds"] = pending_seconds
                         marker["display_seconds"] = pending_seconds
-                        marker["rect"] = self._keyframe_rect(marker["clip_rect"], pending_seconds)
+                        clip_timeline = marker.get(
+                            "clip_rect_timeline", marker.get("clip_rect")
+                        )
+                        if isinstance(clip_timeline, QRectF) and not clip_timeline.isNull():
+                            rect_timeline = self._keyframe_rect(
+                                clip_timeline, pending_seconds
+                            )
+                            marker["rect_timeline"] = QRectF(rect_timeline)
+                            marker["rect"] = self._viewport_rect(rect_timeline, state)
+                            marker["clip_rect"] = self._viewport_rect(
+                                clip_timeline, state
+                            )
+                        else:
+                            marker["rect"] = self._keyframe_rect(
+                                marker.get("clip_rect", QRectF()), pending_seconds
+                            )
                         marker["dimmed"] = False
                     if pending_frame is not None:
                         marker["display_frame"] = pending_frame
@@ -452,10 +494,46 @@ class KeyframeMixin:
 
         self._keyframe_markers = markers
         self._keyframes_dirty = False
+        self._update_keyframe_marker_viewports(state)
 
     def _ensure_keyframe_markers(self):
         if self._keyframes_dirty:
             self._refresh_keyframe_markers()
+        else:
+            self._update_keyframe_marker_viewports()
+
+    def _update_keyframe_marker_viewports(self, state=None):
+        markers = getattr(self, "_keyframe_markers", [])
+        state = state or self.geometry._current_view_state()
+        offsets = (
+            state.get("h_offset", 0.0),
+            state.get("v_offset", 0.0),
+        )
+        if offsets == getattr(self, "_keyframe_marker_offsets", (None, None)):
+            return
+
+        for marker in markers or []:
+            clip_rect_tl = marker.get("clip_rect_timeline")
+            if isinstance(clip_rect_tl, QRectF) and not clip_rect_tl.isNull():
+                marker["clip_rect"] = self._viewport_rect(clip_rect_tl, state)
+            else:
+                clip_rect = marker.get("clip_rect")
+                if isinstance(clip_rect, QRectF) and not clip_rect.isNull():
+                    marker["clip_rect"] = self._viewport_rect(clip_rect, state)
+
+            rect_tl = marker.get("rect_timeline")
+            if isinstance(rect_tl, QRectF) and not rect_tl.isNull():
+                marker["rect"] = self._viewport_rect(rect_tl, state)
+            else:
+                clip_rect_tl = marker.get("clip_rect_timeline")
+                if isinstance(clip_rect_tl, QRectF) and not clip_rect_tl.isNull():
+                    rect_tl = self._keyframe_rect(
+                        clip_rect_tl, marker.get("seconds", 0.0)
+                    )
+                    marker["rect_timeline"] = QRectF(rect_tl)
+                    marker["rect"] = self._viewport_rect(rect_tl, state)
+
+        self._keyframe_marker_offsets = offsets
 
     def _update_snap_keyframe_targets(self, clip):
         if not isinstance(clip, Clip) or self.enable_timing:

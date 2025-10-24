@@ -537,7 +537,9 @@ class ClipInteractionMixin:
             return
         self.snap.reset()
         self._fix_cursor(self.cursors["resize_x"])
-        rect = self.geometry.calc_item_rect(item)
+        world_rect = self.geometry.calc_item_rect(item)
+        self._resize_initial_world_rect = QRectF(world_rect)
+        rect = self.geometry.calc_item_rect(item, viewport=True)
         self._resize_initial_rect = rect
         self._resize_initial = {
             "start": float(item.data.get("start", 0.0)),
@@ -620,9 +622,9 @@ class ClipInteractionMixin:
         pps = self.pixels_per_second
         min_len = 1.0 / self.fps_float
         rect = self._resize_initial_rect
+        world_rect = getattr(self, "_resize_initial_world_rect", rect)
         width = self._resize_initial["end"]
         pos = self._resize_initial["position"]
-        offset_px = getattr(self, "h_scroll_offset", 0.0)
 
         if self._resize_edge == "left":
             delta_sec = (event.pos().x() - rect.left()) / pps
@@ -636,7 +638,7 @@ class ClipInteractionMixin:
             if new_position < 0:
                 new_position = 0
                 new_end = (pos + width) - new_position
-            rect_left = self.track_name_width + new_position * pps - offset_px
+            rect_left = self.track_name_width + new_position * pps
         else:
             delta_sec = (event.pos().x() - rect.right()) / pps
             if self.enable_snapping:
@@ -646,26 +648,26 @@ class ClipInteractionMixin:
                 delta_sec = min_delta
             new_end = width + delta_sec
             new_position = pos
-            rect_left = self.track_name_width + new_position * pps - offset_px
+            rect_left = self.track_name_width + new_position * pps
 
         rect_width = new_end * pps
-        geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
+        geom_rect = QRectF(rect_left, world_rect.y(), rect_width, world_rect.height())
         return geom_rect, 0.0, new_end, new_position
 
     def _compute_clip_resize(self, item):
         event = self._last_event
         pps = float(self.pixels_per_second or 0.0)
         rect = self._resize_initial_rect
+        world_rect = getattr(self, "_resize_initial_world_rect", rect)
         start = self._resize_initial["start"]
         end = self._resize_initial["end"]
         pos = self._resize_initial["position"]
         duration = self._resize_initial["duration"]
-        offset_px = getattr(self, "h_scroll_offset", 0.0)
         fps = self.fps_float or 1.0
         min_len = 1.0 / fps
 
         if event is None or pps <= 0.0:
-            geom_rect = QRectF(rect)
+            geom_rect = QRectF(world_rect)
             return geom_rect, start, end, pos
 
         cursor_sec = self._seconds_from_x(event.pos().x())
@@ -690,7 +692,7 @@ class ClipInteractionMixin:
                 diff = -new_position
                 new_position = 0.0
                 new_start += diff
-            rect_left = self.track_name_width + new_position * pps - offset_px
+            rect_left = self.track_name_width + new_position * pps
         else:
             timeline_right = pos + clip_span
             delta_sec = cursor_sec - timeline_right
@@ -707,10 +709,10 @@ class ClipInteractionMixin:
                 max_end = start + duration
                 if new_end > max_end:
                     new_end = max_end
-            rect_left = self.track_name_width + new_position * pps - offset_px
+            rect_left = self.track_name_width + new_position * pps
 
         rect_width = (new_end - new_start) * pps
-        geom_rect = QRectF(rect_left, rect.y(), rect_width, rect.height())
+        geom_rect = QRectF(rect_left, world_rect.y(), rect_width, world_rect.height())
         return geom_rect, new_start, new_end, new_position
 
     def _finishItemResize(self):
@@ -749,6 +751,8 @@ class ClipInteractionMixin:
         self._release_cursor()
         if self._last_event:
             self._updateCursor(self._last_event.pos())
+        if hasattr(self, "_resize_initial_world_rect"):
+            del self._resize_initial_world_rect
 
     def _startBoxSelect(self):
         e = self._last_event

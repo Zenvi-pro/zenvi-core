@@ -136,6 +136,8 @@ class TransitionPainter(BasePainter):
         small = w < 20
         tiny = w < 2
         radius = self.w.theme.transition.border_radius if not small else 0
+        if radius:
+            radius = min(float(radius), min(float(w), float(h)) / 2.0)
 
         img = QImage(w, h, QImage.Format_ARGB32_Premultiplied)
         img.fill(0)
@@ -144,7 +146,38 @@ class TransitionPainter(BasePainter):
 
         rect = QRectF(0, 0, w, h)
         path = None
-        if radius:
+        if radius > 0.0 and (includes_start or includes_end):
+            left = rect.left()
+            right = rect.right()
+            top = rect.top()
+            bottom = rect.bottom()
+            path = QPainterPath()
+
+            if includes_start:
+                path.moveTo(left, top + radius)
+                path.quadTo(left, top, left + radius, top)
+            else:
+                path.moveTo(left, top)
+
+            if includes_end:
+                path.lineTo(right - radius, top)
+                path.quadTo(right, top, right, top + radius)
+                path.lineTo(right, bottom - radius)
+                path.quadTo(right, bottom, right - radius, bottom)
+            else:
+                path.lineTo(right, top)
+                path.lineTo(right, bottom)
+
+            if includes_start:
+                path.lineTo(left + radius, bottom)
+                path.quadTo(left, bottom, left, bottom - radius)
+                path.lineTo(left, top + radius)
+            else:
+                path.lineTo(left, bottom)
+                path.lineTo(left, top)
+
+            path.closeSubpath()
+        elif radius > 0.0:
             path = QPainterPath()
             path.addRoundedRect(rect, radius, radius)
 
@@ -218,11 +251,43 @@ class TransitionPainter(BasePainter):
             return
 
         radius = 0.0
-        if includes_start and includes_end and rect.width() >= 16.0 and rect.height() > 0.0:
-            radius = self.border_radius
+        if rect.width() > 0.0 and rect.height() > 0.0:
+            radius = min(self.border_radius, min(rect.width(), rect.height()) / 2.0)
 
         painter.setRenderHint(QPainter.Antialiasing, True)
-        if radius > 0.0:
+        if radius > 0.0 and (includes_start or includes_end):
+            left = rect.left()
+            right = rect.right()
+            top = rect.top()
+            bottom = rect.bottom()
+            path = QPainterPath()
+
+            if includes_start:
+                path.moveTo(left, top + radius)
+                path.quadTo(left, top, left + radius, top)
+            else:
+                path.moveTo(left, top)
+
+            if includes_end:
+                path.lineTo(right - radius, top)
+                path.quadTo(right, top, right, top + radius)
+                path.lineTo(right, bottom - radius)
+                path.quadTo(right, bottom, right - radius, bottom)
+            else:
+                path.lineTo(right, top)
+                path.lineTo(right, bottom)
+
+            if includes_start:
+                path.lineTo(left + radius, bottom)
+                path.quadTo(left, bottom, left, bottom - radius)
+                path.lineTo(left, top + radius)
+            else:
+                path.lineTo(left, bottom)
+                path.lineTo(left, top)
+
+            path.closeSubpath()
+            painter.drawPath(path)
+        elif radius > 0.0:
             painter.drawRoundedRect(rect, radius, radius)
         else:
             painter.drawRect(rect)
