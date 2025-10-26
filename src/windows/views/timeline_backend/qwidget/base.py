@@ -245,6 +245,7 @@ class TimelineWidgetBase(QWidget):
         self._snap_ignore_ids = set()
         self._snap_keyframe_seconds = []
         self._snap_active_targets = {}
+        self._press_marker = None
 
         # Apply default theme
         self.apply_theme("")
@@ -519,6 +520,7 @@ class TimelineWidgetBase(QWidget):
             self.scrollbar_painter,
         ):
             p.update_theme()
+        self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()
 
@@ -591,12 +593,12 @@ class TimelineWidgetBase(QWidget):
         self.clip_painter.paint(painter)
         self.transition_painter.paint(painter)
         self.playback_cache_painter.paint(painter)
-        self.marker_painter.paint(painter)
         self.keyframe_painter.paint(painter)
         self.track_painter.paint_names(painter)
         self.keyframe_panel_painter.paint(painter, mode="overlay")
         self.selection_painter.paint(painter)
         self.ruler_painter.paint(painter)
+        self.marker_painter.paint(painter)
         self.playhead_painter.paint(painter)
         self.ruler_painter.paint_overlay(painter)
         self.scrollbar_painter.paint(painter)
@@ -1466,6 +1468,62 @@ class TimelineWidgetBase(QWidget):
             height,
         )
 
+    def _marker_identifier(self, entry):
+        if not isinstance(entry, dict):
+            return None
+        marker_id = entry.get("id")
+        if marker_id:
+            return str(marker_id)
+        marker_obj = entry.get("marker")
+        if marker_obj is not None:
+            return str(getattr(marker_obj, "id", "")) or None
+        return None
+
+    def _marker_at(self, pos):
+        self.geometry.ensure()
+        if self._playhead_hit(pos):
+            return None
+        for entry in self.geometry.iter_markers():
+            if isinstance(entry, dict):
+                hit_rect = entry.get("hit_rect") or entry.get("icon_rect") or entry.get("line_rect")
+                if hit_rect and hit_rect.contains(pos):
+                    return entry
+            elif isinstance(entry, QRectF) and entry.contains(pos):
+                return {"line_rect": entry}
+        return None
+
+    def _marker_same(self, entry_a, entry_b):
+        if not entry_a or not entry_b:
+            return False
+        return self._marker_identifier(entry_a) == self._marker_identifier(entry_b)
+
+    def _select_marker(self, entry):
+        marker_id = self._marker_identifier(entry)
+        if not marker_id:
+            return
+        if hasattr(self.win, "selected_markers"):
+            self.win.selected_markers = [marker_id]
+
+    def _handle_marker_click(self, entry):
+        if not isinstance(entry, dict):
+            return
+        self._select_marker(entry)
+        seconds = entry.get("seconds")
+        marker_obj = entry.get("marker")
+        if seconds is None and marker_obj is not None:
+            seconds = marker_obj.data.get("position", 0.0)
+        try:
+            seconds = float(seconds)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline or not hasattr(timeline, "SeekToKeyframe"):
+            return
+        frame = 1
+        if self.fps_float:
+            frame = max(1, int(round(seconds * self.fps_float)) + 1)
+        timeline.SeekToKeyframe(frame)
+
 
 
 
@@ -1584,6 +1642,11 @@ class TimelineWidgetBase(QWidget):
                 self.setCursor(Qt.PointingHandCursor)
                 return
 
+        marker_entry = self._marker_at(pos)
+        if marker_entry and isinstance(marker_entry, dict):
+            self.setCursor(Qt.PointingHandCursor)
+            return
+
         marker = self._get_keyframe_at(pos)
         if marker:
             self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
@@ -1620,6 +1683,7 @@ class TimelineWidgetBase(QWidget):
         self.unsetCursor()
 
     def mousePressEvent(self, event):
+        self._press_marker = None
         if event.button() == Qt.RightButton:
             self._last_event = event
             icon_entry = self._effect_icon_at(event.pos())
@@ -1706,6 +1770,13 @@ class TimelineWidgetBase(QWidget):
         pos = event.pos()
         modifiers = event.modifiers() if hasattr(event, "modifiers") else Qt.NoModifier
         ctrl = bool(modifiers & Qt.ControlModifier)
+        marker_entry = self._marker_at(pos)
+        if marker_entry and isinstance(marker_entry, dict):
+            self._press_hit = "marker"
+            self._press_marker = marker_entry
+            self._select_marker(marker_entry)
+            return
+        self._press_marker = None
         marker = self._get_keyframe_at(pos)
         if marker:
             self._press_hit = "keyframe"
@@ -1899,6 +1970,19 @@ class TimelineWidgetBase(QWidget):
             self._handle_effect_icon_click(effect_info)
             return
 
+        if press_hit == "marker":
+            marker_entry = self._press_marker
+            self._press_marker = None
+            if event.button() == Qt.LeftButton and isinstance(marker_entry, dict):
+                current = self._marker_at(event.pos())
+                if self._marker_same(marker_entry, current):
+                    self._handle_marker_click(marker_entry)
+                    self._press_hit = None
+                    event.accept()
+                    return
+            self._press_hit = None
+            return
+
         self._press_hit = None
 
     def contextMenuEvent(self, event):
@@ -1984,6 +2068,14 @@ class TimelineWidgetBase(QWidget):
                 seconds = max(0.0, (max(1, self.current_frame) - 1) / self.fps_float)
             self.win.timeline.ShowPlayheadMenu(seconds)
             return True
+
+        marker_entry = self._marker_at(pos)
+        if marker_entry and isinstance(marker_entry, dict) and hasattr(self.win, "timeline"):
+            marker_id = self._marker_identifier(marker_entry)
+            if marker_id:
+                self._select_marker(marker_entry)
+                self.win.timeline.ShowMarkerMenu(marker_id)
+                return True
 
         # Transition context menu (prioritized over clips)
         for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):

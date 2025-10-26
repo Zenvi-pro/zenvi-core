@@ -586,6 +586,26 @@ class GeometryBase:
         h_offset = state["h_offset"]
         v_offset = state["v_offset"]
         for rect in self.marker_rects:
+            if isinstance(rect, dict):
+                entry = dict(rect)
+                base_rect = entry.get("line_rect") or entry.get("rect")
+                if base_rect:
+                    adj = QRectF(base_rect)
+                    adj.translate(-h_offset, -v_offset)
+                    entry["line_rect"] = adj
+                    entry["rect"] = adj
+                icon_rect = entry.get("icon_rect")
+                if icon_rect:
+                    adj_icon = QRectF(icon_rect)
+                    adj_icon.translate(-h_offset, -v_offset)
+                    entry["icon_rect"] = adj_icon
+                hit_rect = entry.get("hit_rect")
+                if hit_rect:
+                    adj_hit = QRectF(hit_rect)
+                    adj_hit.translate(-h_offset, -v_offset)
+                    entry["hit_rect"] = adj_hit
+                yield entry
+                continue
             adj = QRectF(rect)
             adj.translate(-h_offset, -v_offset)
             yield adj

@@ -94,6 +94,12 @@ class TimelineTheme:
     playhead_icon_height: int = 0
     playhead_icon_offset_x: int = 0
     playhead_icon_offset_y: int = 0
+    marker_icon: Optional[QPixmap] = None
+    marker_icon_width: int = 0
+    marker_icon_height: int = 0
+    marker_icon_offset_x: Optional[int] = None
+    marker_icon_offset_y: Optional[int] = None
+    marker_hit_padding: float = 4.0
     ruler_time_pad_left: int = 0
     ruler_time_pad_top: int = 0
     ruler_label_top: int = 0
@@ -425,7 +431,7 @@ def _parse_pixmap(
         if os.path.exists(path):
             img = _load_pixmap_with_meta(path)
             if img:
-                if selector == ".playhead-top" and prop == "background-image":
+                if selector in {".playhead-top", ".marker_icon"} and prop == "background-image":
                     log.info(
                         "Theme [%s] %s %s loaded '%s'",
                         source,
@@ -497,14 +503,38 @@ def _theme_pixmap(
                 return _annotate_svg_metadata(img, path)
         module_path = os.path.dirname(__import__(qt_theme.__module__).__file__)
         if not os.path.isabs(path):
-            candidate = os.path.normpath(os.path.join(module_path, path))
-            if not os.path.exists(candidate):
-                candidate = os.path.normpath(os.path.join(os.path.dirname(module_path), path))
-            path = candidate
+            module_parent = os.path.dirname(module_path)
+            trimmed = path.lstrip("./")
+            rel_path = path
+            while rel_path.startswith("../"):
+                rel_path = rel_path[3:]
+            candidates = []
+            bases = [module_path, module_parent, PATH, os.path.dirname(PATH)]
+            for base in bases:
+                if not base:
+                    continue
+                candidates.append(os.path.normpath(os.path.join(base, path)))
+                if trimmed and trimmed != path:
+                    candidates.append(os.path.normpath(os.path.join(base, trimmed)))
+                if rel_path and rel_path != path:
+                    candidates.append(os.path.normpath(os.path.join(base, rel_path)))
+            seen = set()
+            resolved = None
+            for candidate in candidates:
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                if os.path.exists(candidate):
+                    resolved = candidate
+                    break
+            if resolved:
+                path = resolved
+            else:
+                path = os.path.normpath(os.path.join(module_path, path))
         if os.path.exists(path):
             img = _load_pixmap_with_meta(path)
             if img:
-                if selector == ".playhead-top" and prop == "background-image":
+                if selector in {".playhead-top", ".marker_icon"} and prop == "background-image":
                     log.info(
                         "Theme [theme] %s %s loaded '%s'",
                         selector,
@@ -993,6 +1023,24 @@ def _theme_apply_playhead(theme: TimelineTheme, qt_theme) -> None:
         theme.playhead_icon_offset_y = val
 
 
+def _theme_apply_markers(theme: TimelineTheme, qt_theme) -> None:
+    img = _theme_pixmap(qt_theme, ".marker_icon", "background-image")
+    if img:
+        theme.marker_icon = img
+    val = _theme_get_int(qt_theme, ".marker_icon", "width")
+    if val is not None:
+        theme.marker_icon_width = val
+    val = _theme_get_int(qt_theme, ".marker_icon", "height")
+    if val is not None:
+        theme.marker_icon_height = val
+    val = _theme_get_int(qt_theme, ".marker_icon", "margin-left")
+    if val is not None:
+        theme.marker_icon_offset_x = val
+    val = _theme_get_int(qt_theme, ".marker_icon", "bottom")
+    if val is not None:
+        theme.marker_icon_offset_y = val
+
+
 def _theme_apply_menu(theme: TimelineTheme, qt_theme) -> None:
     img = _theme_pixmap(qt_theme, ".menu", "background-image")
     if img:
@@ -1063,6 +1111,7 @@ def _apply_theme_obj(theme: TimelineTheme, qt_theme) -> TimelineTheme:
     _theme_apply_track(theme, qt_theme, css_sheet)
     _theme_apply_ruler(theme, qt_theme, css_sheet)
     _theme_apply_playhead(theme, qt_theme)
+    _theme_apply_markers(theme, qt_theme)
     _theme_apply_menu(theme, qt_theme)
     _theme_apply_keyframe_panel(theme, qt_theme)
     _theme_apply_track_toolbar(theme, qt_theme)
@@ -1483,6 +1532,24 @@ def _css_apply_playhead(theme: TimelineTheme, css: str, source: str, log_miss: b
         theme.playhead_icon_offset_y = int(val)
 
 
+def _css_apply_markers(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
+    img = _parse_pixmap(css, ".marker_icon", "background-image", source, log_miss=log_miss)
+    if img:
+        theme.marker_icon = img
+    val = _parse_float(css, ".marker_icon", "width", source, log_miss=log_miss)
+    if val is not None:
+        theme.marker_icon_width = int(val)
+    val = _parse_float(css, ".marker_icon", "height", source, log_miss=log_miss)
+    if val is not None:
+        theme.marker_icon_height = int(val)
+    val = _parse_float(css, ".marker_icon", "margin-left", source, log_miss=log_miss)
+    if val is not None:
+        theme.marker_icon_offset_x = int(val)
+    val = _parse_float(css, ".marker_icon", "bottom", source, log_miss=log_miss)
+    if val is not None:
+        theme.marker_icon_offset_y = int(val)
+
+
 def _css_apply_menu(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
     img = _parse_pixmap(css, ".menu", "background-image", source, log_miss=log_miss)
     if img:
@@ -1574,6 +1641,7 @@ def _apply_css(theme: TimelineTheme, css: str, source: str = "css") -> TimelineT
     _css_apply_track(theme, css, source, log_miss)
     _css_apply_ruler(theme, css, source, log_miss)
     _css_apply_playhead(theme, css, source, log_miss)
+    _css_apply_markers(theme, css, source, log_miss)
     _css_apply_menu(theme, css, source, log_miss)
     _css_apply_keyframe_panel(theme, css, source, log_miss)
     _css_apply_track_toolbar(theme, css, source, log_miss)
@@ -1642,10 +1710,17 @@ def apply_theme(widget, css: str = "") -> bool:
         "track_locked_enabled_icon": ("themes", "humanity", "images", "track-locked-enabled.svg"),
         "track_unlocked_disabled_icon": ("themes", "humanity", "images", "track-unlocked-disabled.svg"),
         "track_unlocked_enabled_icon": ("themes", "humanity", "images", "track-unlocked-enabled.svg"),
+        "marker_icon": ("timeline", "media", "images", "markers", "marker.svg"),
     }
 
     for attr, parts in _fallback_map.items():
         _ensure_icon(attr, parts)
+
+    if t.marker_icon and not t.marker_icon.isNull():
+        if not t.marker_icon_width:
+            t.marker_icon_width = t.marker_icon.width()
+        if not t.marker_icon_height:
+            t.marker_icon_height = t.marker_icon.height()
 
     if (not t.keyframe_toggle_off_icon or t.keyframe_toggle_off_icon.isNull()) and t.track_keyframe_panel_disabled_icon:
         t.keyframe_toggle_off_icon = t.track_keyframe_panel_disabled_icon

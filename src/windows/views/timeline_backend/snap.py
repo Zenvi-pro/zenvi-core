@@ -119,8 +119,13 @@ class SnapHelper:
             generic_targets.add(rect.left())
             generic_targets.add(rect.right())
 
-        for rect in self.geometry.iter_markers():
-            generic_targets.add(rect.left())
+        for entry in self.geometry.iter_markers():
+            if isinstance(entry, dict):
+                rect = entry.get("line_rect") or entry.get("rect")
+            else:
+                rect = entry
+            if rect:
+                generic_targets.add(rect.left())
 
         duration = self._project_duration()
         if duration > 0.0:
