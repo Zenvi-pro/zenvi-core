@@ -98,7 +98,12 @@ class TimelineStateMachine(QStateMachine):
         self.box = BoxSelectState(widget)
         self.keyframe = KeyframeState(widget)
 
+        # States must be registered with the machine before they can be used as
+        # the initial state.  Failing to do so causes Qt to warn that the
+        # initial state is not a child of the machine, and on Windows it
+        # eventually leads to a crash when the state machine starts.
+        for state in (self.idle, self.drag, self.resize, self.playhead, self.box, self.keyframe):
+            self.addState(state)
+
         self.setInitialState(self.idle)
-        for s in (self.idle, self.drag, self.resize, self.playhead, self.box, self.keyframe):
-            self.addState(s)
         self.start()
