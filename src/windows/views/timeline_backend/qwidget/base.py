@@ -33,8 +33,10 @@ from PyQt5.QtCore import (
     QTimer,
     QPointF,
     QSignalTransition,
+    QByteArray,
     pyqtSignal,
     QObject,
+    QMetaMethod,
 )
 from PyQt5.QtGui import (
     QPainter,
@@ -73,14 +75,55 @@ class TimelineEvents(QObject):
     released = pyqtSignal(object)
 
 
+def _normalize_signal_bytes(signature):
+    sig_bytes = bytes(signature)
+    if sig_bytes[:1].isdigit():
+        sig_bytes = sig_bytes[1:]
+    return sig_bytes
+
+
+def _collect_signal_signatures(qobject_type):
+    """Return a mapping of signal name -> normalized signature bytes."""
+
+    meta = qobject_type.staticMetaObject
+    offset = meta.methodOffset()
+    signatures = {}
+    for i in range(offset, meta.methodCount()):
+        method = meta.method(i)
+        if method.methodType() == QMetaMethod.Signal:
+            signature = _normalize_signal_bytes(method.methodSignature())
+            name = signature.split(b"(", 1)[0].decode("latin-1")
+            signatures[name] = signature
+    return signatures
+
+
+_TIMELINE_EVENT_SIGNATURES = _collect_signal_signatures(TimelineEvents)
+
+
 class _ConditionalTransition(QSignalTransition):
-    def __init__(self, signal, target_state, condition):
-        super().__init__(signal)
+    def __init__(self, sender, signal_bytes, source_state, target_state, condition):
+        """Create a QSignalTransition that evaluates a condition before firing."""
+
+        super().__init__(source_state)
+
+        parent = source_state
+        if parent is None and target_state is not None:
+            parent = target_state.machine()
+        if parent is not None:
+            self.setParent(parent)
+
+        normalized = _normalize_signal_bytes(signal_bytes)
+        self._signal_signature = QByteArray(normalized)
+        self._sender = sender
+        self._signal_bytes = normalized
+        self._condition = condition
+
+        self.setSenderObject(sender)
+        self.setSignal(self._signal_signature)
         self.setTargetState(target_state)
-        self._cond = condition
 
     def eventTest(self, event):
-        return super().eventTest(event) and self._cond()
+        return super().eventTest(event) and self._condition()
 
 
 class TimelineWidgetBase(QWidget):
@@ -161,6 +204,9 @@ class TimelineWidgetBase(QWidget):
 
         # Internal flag to defer repaint scheduling from changed()
         self._suspend_changed_update = 0
+
+        # Strong references to dynamically created state transitions
+        self._transitions = []
 
         # Geometry constants
         self.ruler_height = 40
@@ -292,7 +338,7 @@ class TimelineWidgetBase(QWidget):
         self.changed(None)
 
         # State machine for mouse interactions
-        self.events = TimelineEvents()
+        self.events = TimelineEvents(self)
         self._last_event = None
         self._press_hit = None
         self._buildStateMachine()
@@ -327,47 +373,47 @@ class TimelineWidgetBase(QWidget):
         keydrag.entered.connect(self._startKeyframeDrag)
         keydrag.exited.connect(self._finishKeyframeDrag)
 
-        idle.addTransition(_ConditionalTransition(
-            self.events.pressed, drag,
-            lambda: self._press_hit == "clip"
-        ))
-        idle.addTransition(_ConditionalTransition(
-            self.events.pressed,
-            resize,
-            lambda: self._press_hit in ("handle", "timeline-handle", "clip-edge"),
-        ))
-        idle.addTransition(_ConditionalTransition(
-            self.events.pressed, playhead,
-            lambda: self._press_hit == "ruler"
-        ))
-        idle.addTransition(_ConditionalTransition(
-            self.events.pressed, boxsel,
-            lambda: self._press_hit in ("background", "panel")
-        ))
-        idle.addTransition(_ConditionalTransition(
-            self.events.pressed, keydrag,
-            lambda: self._press_hit in ("keyframe", "panel-keyframe")
-        ))
+        sender, pressed_signal = self._event_signal("pressed")
+
+        t = _ConditionalTransition(sender, pressed_signal, idle, drag, lambda: self._press_hit == "clip")
+        idle.addTransition(t)
+        self._transitions.append(t)
+
+        t = _ConditionalTransition(sender, pressed_signal, idle, resize, lambda: self._press_hit in ("handle", "timeline-handle", "clip-edge"))
+        idle.addTransition(t)
+        self._transitions.append(t)
+
+        t = _ConditionalTransition(sender, pressed_signal, idle, playhead, lambda: self._press_hit == "ruler")
+        idle.addTransition(t)
+        self._transitions.append(t)
+
+        t = _ConditionalTransition(sender, pressed_signal, idle, boxsel, lambda: self._press_hit in ("background", "panel"))
+        idle.addTransition(t)
+        self._transitions.append(t)
+
+        t = _ConditionalTransition(sender, pressed_signal, idle, keydrag, lambda: self._press_hit in ("keyframe", "panel-keyframe"))
+        idle.addTransition(t)
+        self._transitions.append(t)
 
         drag.entered.connect(lambda: self.events.moved.connect(self._dragMove))
         drag.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._dragMove))
-        drag.addTransition(self.events.released, idle)
+        self._add_simple_transition(drag, self.events, self._event_signal_bytes("released"), idle)
 
         resize.entered.connect(lambda: self.events.moved.connect(self._resizeMove))
         resize.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._resizeMove))
-        resize.addTransition(self.events.released, idle)
+        self._add_simple_transition(resize, self.events, self._event_signal_bytes("released"), idle)
 
         playhead.entered.connect(lambda: self.events.moved.connect(self._playheadMove))
         playhead.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._playheadMove))
-        playhead.addTransition(self.events.released, idle)
+        self._add_simple_transition(playhead, self.events, self._event_signal_bytes("released"), idle)
 
         boxsel.entered.connect(lambda: self.events.moved.connect(self._boxMove))
         boxsel.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._boxMove))
-        boxsel.addTransition(self.events.released, idle)
+        self._add_simple_transition(boxsel, self.events, self._event_signal_bytes("released"), idle)
 
         keydrag.entered.connect(lambda: self.events.moved.connect(self._keyframeMove))
         keydrag.exited.connect(lambda: self._safe_disconnect(self.events.moved, self._keyframeMove))
-        keydrag.addTransition(self.events.released, idle)
+        self._add_simple_transition(keydrag, self.events, self._event_signal_bytes("released"), idle)
 
         # repaint exactly once when any interactive state exits
         for s in (drag, resize, playhead, boxsel, keydrag):
@@ -376,6 +422,25 @@ class TimelineWidgetBase(QWidget):
         sm.setInitialState(idle)
         sm.start()
         self._sm = sm
+
+    def _event_signal(self, name):
+        return self.events, self._event_signal_bytes(name)
+
+    def _add_simple_transition(self, source_state, sender, sig_bytes, target_state):
+        t = QSignalTransition(source_state)
+        normalized = _normalize_signal_bytes(sig_bytes)
+        t.setSenderObject(sender)
+        t.setSignal(QByteArray(normalized))
+        t.setTargetState(target_state)
+        source_state.addTransition(t)
+        self._transitions.append(t)
+        return t
+
+    def _event_signal_bytes(self, name):
+        signature = _TIMELINE_EVENT_SIGNATURES.get(name)
+        if signature is None:
+            raise ValueError(f"Unknown TimelineEvents signal '{name}'")
+        return signature
 
     def _safe_disconnect(self, signal, slot):
         try:
