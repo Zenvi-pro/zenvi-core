@@ -1272,7 +1272,71 @@ class TimelineWidgetBase(QWidget):
         self.v_scrollbar_position[0] = new_top
         self.v_scrollbar_position[1] = new_top + view_ratio
         self.geometry.mark_dirty()
+        self._update_scrollbar_handles()
         self.update()
+
+    def _update_scrollbar_handles(self):
+        """Recompute scrollbar handle rectangles from the current positions."""
+
+        # Horizontal scrollbar handle
+        view_w = float(self.scrollbar_position[3] or 0.0)
+        if view_w <= 0.0:
+            view_w = max(0.0, self.width() - self.track_name_width - self.scroll_bar_thickness)
+        timeline_w = float(self.scrollbar_position[2] or 0.0)
+        if timeline_w <= 0.0:
+            timeline_w = max(view_w, 0.0)
+        width_norm = max(0.0, min(self.scrollbar_position[1] - self.scrollbar_position[0], 1.0))
+        if (
+            view_w > 0.0
+            and timeline_w > view_w
+            and width_norm > 0.0
+            and width_norm < 1.0
+        ):
+            handle_w = max(20.0, width_norm * view_w)
+            avail = max(0.0, view_w - handle_w)
+            handle_x = float(self.track_name_width)
+            max_scroll = max(0.0, timeline_w - view_w)
+            scroll_px = max(0.0, min(self.scrollbar_position[0] * timeline_w, max_scroll))
+            if max_scroll > 0.0 and avail > 0.0:
+                handle_x += (scroll_px / max_scroll) * avail
+            self.scroll_bar_rect = QRectF(
+                handle_x,
+                self.height() - self.scroll_bar_thickness,
+                handle_w,
+                self.scroll_bar_thickness,
+            )
+        else:
+            self.scroll_bar_rect = QRectF()
+
+        # Vertical scrollbar handle
+        view_h = float(self.v_scrollbar_position[3] or 0.0)
+        if view_h <= 0.0:
+            view_h = max(0.0, self.height() - self.ruler_height - self.scroll_bar_thickness)
+        content_h = float(self.v_scrollbar_position[2] or 0.0)
+        if content_h <= 0.0:
+            content_h = max(view_h, 0.0)
+        height_norm = max(0.0, min(self.v_scrollbar_position[1] - self.v_scrollbar_position[0], 1.0))
+        if (
+            view_h > 0.0
+            and content_h > view_h
+            and height_norm > 0.0
+            and height_norm < 1.0
+        ):
+            handle_h = max(20.0, height_norm * view_h)
+            avail = max(0.0, view_h - handle_h)
+            handle_y = float(self.ruler_height)
+            max_scroll = max(0.0, content_h - view_h)
+            scroll_py = max(0.0, min(self.v_scrollbar_position[0] * content_h, max_scroll))
+            if max_scroll > 0.0 and avail > 0.0:
+                handle_y += (scroll_py / max_scroll) * avail
+            self.v_scroll_bar_rect = QRectF(
+                self.width() - self.scroll_bar_thickness,
+                handle_y,
+                self.scroll_bar_thickness,
+                handle_h,
+            )
+        else:
+            self.v_scroll_bar_rect = QRectF()
 
     def _emit_pending_zoom(self):
         """Emit a pending zoom factor change after gesture bursts settle."""
@@ -1398,6 +1462,7 @@ class TimelineWidgetBase(QWidget):
         self.scrollbar_position = list(new_positions)
         timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
         self.h_scroll_offset = self.scrollbar_position[0] * timeline_w
+        self.geometry.refresh_viewport(timeline_w=timeline_w)
 
         # Check for empty clip rectangles
         if not self.geometry.clip_entries:
@@ -1419,9 +1484,7 @@ class TimelineWidgetBase(QWidget):
         timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
         self.h_scroll_offset = left * timeline_w
         self.is_auto_center = False
-        slider = getattr(self.win, "sliderZoomWidget", None)
-        if slider and getattr(slider, "_syncing_backend", False):
-            return
+        self.geometry.refresh_viewport(timeline_w=timeline_w)
         self.update()
 
     def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):
@@ -1926,6 +1989,7 @@ class TimelineWidgetBase(QWidget):
                                        self.scrollbar_position[2], self.scrollbar_position[3]]
             timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
             self.h_scroll_offset = new_left * timeline_w
+            self._update_scrollbar_handles()
             get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
             self.update()
             return
@@ -1943,6 +2007,7 @@ class TimelineWidgetBase(QWidget):
             new_top = max(0.0, min(new_top, 1.0 - height_norm))
             self.v_scrollbar_position[0] = new_top
             self.v_scrollbar_position[1] = new_top + height_norm
+            self._update_scrollbar_handles()
             self.update()
             return
 
@@ -2112,6 +2177,7 @@ class TimelineWidgetBase(QWidget):
         if v_changed:
             self.v_scrollbar_position = new_v_positions
         if changed or v_changed:
+            self._update_scrollbar_handles()
             self.update()
 
     def _finishMiddlePan(self):

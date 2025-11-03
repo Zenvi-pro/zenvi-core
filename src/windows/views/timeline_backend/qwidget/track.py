@@ -28,8 +28,8 @@
 from PyQt5.QtCore import QRectF
 from classes.app import get_app
 
-TRACK_TOOLBAR_LEFT_OFFSET = 8.0
 TRACK_TOOLBAR_SPACING_REDUCTION = 2.0
+TRACK_TOOLBAR_LEFT_SHIFT = 10.0
 
 
 class TrackInteractionMixin:
@@ -60,18 +60,8 @@ class TrackInteractionMixin:
 
         track_num = self.normalize_track_number(track.data.get("number"))
 
-        base_height = min(float(self.vertical_factor or 0.0) or 0.0, name_rect.height())
-        if base_height <= 0.0:
-            base_height = name_rect.height()
-        anchor_bottom = name_rect.y() + base_height
-
         buttons = []
-        start_x = name_rect.x() + border + menu_margin * 2.0 + menu_w - TRACK_TOOLBAR_LEFT_OFFSET
-        min_start = name_rect.x() + border
-        if start_x < min_start:
-            start_x = min_start
-        current_x = start_x
-        right_limit = name_rect.right()
+        specs = []
 
         for key in order:
             pix_info = icons.get(key)
@@ -91,35 +81,66 @@ class TrackInteractionMixin:
             if width <= 0.0 or height <= 0.0:
                 continue
 
-            top = anchor_bottom - height
-            min_top = name_rect.y() + margin
-            if top < min_top:
-                top = min_top
-            max_top = name_rect.bottom() - height
-            if top > max_top:
-                top = max_top
-            available_height = name_rect.bottom() - top
-            rect = QRectF(current_x, top, width, min(height, available_height))
-
-            if rect.right() > right_limit:
-                overflow = rect.right() - right_limit
-                rect.setWidth(max(0.0, rect.width() - overflow))
-                rect.moveLeft(right_limit - rect.width())
-
-            if rect.width() <= 0.0:
-                break
-
-            buttons.append({
+            specs.append({
                 "key": key,
                 "track_id": track.id,
                 "track_num": track_num,
-                "rect": rect,
+                "width": width,
+                "height": height,
                 "margin": margin,
                 "margin_x": margin_x,
                 "margin_y": margin,
                 "pixmaps": pix_info,
             })
-            current_x = rect.right() + margin_x
+
+        if not specs:
+            return []
+
+        left_limit = name_rect.x() + border + menu_margin * 2.0 + menu_w
+        min_left = name_rect.x() + border + menu_margin + menu_w
+        left_limit = max(min_left, left_limit - TRACK_TOOLBAR_LEFT_SHIFT)
+        right_limit = name_rect.right() - border - menu_margin
+        if right_limit <= left_limit:
+            return []
+
+        bottom_border = float(getattr(painter, "name_border_bottom_width", 0.0) or 0.0)
+        row_bottom = name_rect.bottom() - bottom_border - menu_margin
+        min_row_top = name_rect.y() + menu_margin
+
+        current_left = left_limit
+
+        for spec in specs:
+            width = spec["width"]
+            if width <= 0.0:
+                continue
+
+            next_right = current_left + width
+            if next_right > right_limit + 1e-6:
+                if current_left > right_limit:
+                    break
+                available = right_limit - current_left
+                if available <= 0.0:
+                    break
+                width = available
+                margin_x = min(spec.get("margin_x", margin), width / 2.0)
+                spec["margin_x"] = margin_x
+                next_right = current_left + width
+                spec["width"] = width
+
+            top = row_bottom - spec["height"]
+            if top < min_row_top:
+                top = min_row_top
+            available_height = name_rect.bottom() - top
+            rect = QRectF(
+                current_left,
+                top,
+                width,
+                min(spec["height"], available_height),
+            )
+            spec["rect"] = rect
+            buttons.append(spec)
+            current_left = rect.right()
+
         return buttons
 
     def _track_toggle_rect(self, track, name_rect):

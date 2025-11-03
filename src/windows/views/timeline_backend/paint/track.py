@@ -355,16 +355,23 @@ class TrackPainter(BasePainter):
                 menu_w, _ = self.logical_size(self.menu_pix)
 
             buttons = self.w._track_toolbar_buttons(track, name_rect)
-            toolbar_height = 0.0
-            if buttons:
-                toolbar_height = max(btn["rect"].height() for btn in buttons)
+            toolbar_height = max((btn["rect"].height() for btn in buttons), default=0.0)
             text_offset = self.name_border_width + self.menu_margin * 2 + menu_w
-            painter.setPen(self.w.theme.track.font_color)
-            painter.drawText(
-                name_rect.adjusted(text_offset, self.menu_margin, -4, -toolbar_height),
-                Qt.AlignLeft | Qt.AlignTop,
-                self.w._track_display_label(track)
+            right_padding = self.name_border_width + self.menu_margin
+            bottom_padding = self.menu_margin + toolbar_height
+            text_rect = name_rect.adjusted(
+                text_offset,
+                self.menu_margin,
+                -right_padding,
+                -bottom_padding,
             )
+            painter.setPen(self.w.theme.track.font_color)
+            if text_rect.width() > 0.0 and text_rect.height() > 0.0:
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignLeft | Qt.AlignTop,
+                    self.w._track_display_label(track)
+                )
 
             hover_key = getattr(self.w, "_toolbar_hover_key", None)
             pressed_key = getattr(self.w, "_toolbar_pressed_key", None)

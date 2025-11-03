@@ -124,7 +124,19 @@ class BasePainter:
         return scaled
 
     def logical_size(self, pixmap):
-        """Return (width, height) of *pixmap* in logical units."""
+        """Return ``(width, height)`` of *pixmap* in logical units."""
         if pixmap is None or pixmap.isNull():
             return 0.0, 0.0
-        return float(pixmap.width()), float(pixmap.height())
+
+        ratio = 1.0
+        try:
+            ratio = float(pixmap.devicePixelRatioF())
+        except AttributeError:
+            try:
+                ratio = float(pixmap.devicePixelRatio())
+            except AttributeError:
+                ratio = 1.0
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            ratio = 1.0
+
+        return float(pixmap.width()) / ratio, float(pixmap.height()) / ratio
