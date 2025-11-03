@@ -387,13 +387,6 @@ class GeometryBase:
         self._populate_clip_rects(layers, ctx, win)
         self._populate_transition_rects(layers, ctx, win)
         self._populate_marker_rects(ctx)
-
-        log.debug(
-            "Timeline geometry rebuild complete: %d tracks, %d clips, %d transitions",
-            len(self.track_rects),
-            len(self.clip_entries),
-            len(self.transition_entries),
-        )
         self.dirty = False
 
     def _current_view_state(self):

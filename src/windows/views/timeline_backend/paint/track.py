@@ -344,26 +344,32 @@ class TrackPainter(BasePainter):
                 painter.fillRect(left_rect, self.name_border_color)
 
             menu_w = 0.0
+            metrics = painter.fontMetrics()
+            text_height = float(metrics.height()) if metrics else 0.0
+            text_top = name_rect.y() + self.menu_margin
+            text_bottom_limit = name_rect.bottom() - self.menu_margin
+            if text_height > 0.0 and text_top + text_height > text_bottom_limit:
+                text_height = max(0.0, text_bottom_limit - text_top)
+
             if self.menu_pix:
-                painter.drawPixmap(
-                    QPointF(
-                        name_rect.x() + self.name_border_width + self.menu_margin,
-                        name_rect.y() + self.menu_margin,
-                    ),
-                    self.menu_pix,
-                )
-                menu_w, _ = self.logical_size(self.menu_pix)
+                menu_x = name_rect.x() + self.name_border_width + self.menu_margin
+                menu_w, menu_h = self.logical_size(self.menu_pix)
+                menu_y = text_top
+                if text_height > 0.0:
+                    menu_y += max(0.0, (text_height - menu_h) / 2.0)
+                painter.drawPixmap(QPointF(menu_x, menu_y), self.menu_pix)
 
             buttons = self.w._track_toolbar_buttons(track, name_rect)
-            toolbar_height = max((btn["rect"].height() for btn in buttons), default=0.0)
             text_offset = self.name_border_width + self.menu_margin * 2 + menu_w
             right_padding = self.name_border_width + self.menu_margin
-            bottom_padding = self.menu_margin + toolbar_height
-            text_rect = name_rect.adjusted(
-                text_offset,
-                self.menu_margin,
-                -right_padding,
-                -bottom_padding,
+            text_width = max(0.0, name_rect.width() - text_offset - right_padding)
+            text_rect_height = text_height if text_height > 0.0 else max(0.0, name_rect.height() - self.menu_margin * 2)
+            text_bottom = min(text_top + text_rect_height, text_bottom_limit)
+            text_rect = QRectF(
+                name_rect.x() + text_offset,
+                text_top,
+                text_width,
+                max(0.0, text_bottom - text_top),
             )
             painter.setPen(self.w.theme.track.font_color)
             if text_rect.width() > 0.0 and text_rect.height() > 0.0:

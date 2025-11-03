@@ -77,7 +77,8 @@ class TrackInteractionMixin:
             pix_w, pix_h = painter.logical_size(base_pix)
             margin_x = max(0.0, margin - TRACK_TOOLBAR_SPACING_REDUCTION)
             width = max(0.0, pix_w + margin_x * 2.0)
-            height = max(0.0, pix_h + margin * 2.0)
+            icon_height = max(0.0, pix_h)
+            height = max(0.0, icon_height + margin * 2.0)
             if width <= 0.0 or height <= 0.0:
                 continue
 
@@ -90,6 +91,7 @@ class TrackInteractionMixin:
                 "margin": margin,
                 "margin_x": margin_x,
                 "margin_y": margin,
+                "icon_height": icon_height,
                 "pixmaps": pix_info,
             })
 
@@ -104,8 +106,11 @@ class TrackInteractionMixin:
             return []
 
         bottom_border = float(getattr(painter, "name_border_bottom_width", 0.0) or 0.0)
-        row_bottom = name_rect.bottom() - bottom_border - menu_margin
+        font_metrics = self.fontMetrics()
+        text_height = float(font_metrics.height()) if font_metrics else 0.0
+        icons_base = name_rect.y() + menu_margin + text_height + menu_margin
         min_row_top = name_rect.y() + menu_margin
+        max_icon_area_bottom = name_rect.bottom() - bottom_border - menu_margin
 
         current_left = left_limit
 
@@ -127,15 +132,33 @@ class TrackInteractionMixin:
                 next_right = current_left + width
                 spec["width"] = width
 
-            top = row_bottom - spec["height"]
-            if top < min_row_top:
-                top = min_row_top
-            available_height = name_rect.bottom() - top
+            icon_height = spec.get("icon_height", spec["height"]) or 0.0
+            margin_y = spec.get("margin_y", margin)
+            # Keep icons strictly below the text row (+ menu margin)
+            desired_draw_y = max(icons_base, min_row_top)
+
+            if icon_height:
+                max_draw_y = max_icon_area_bottom - icon_height
+                desired_draw_y = min(desired_draw_y, max_draw_y)
+
+            top = desired_draw_y  # <-- do NOT subtract margin_y here
+            bottom_limit = max_icon_area_bottom  # no extra +margin_y; keep within icon area
+
+            height = spec["height"]
+            rect_bottom = top + height
+            if rect_bottom > bottom_limit:
+                rect_bottom = bottom_limit
+                top = rect_bottom - height
+
+            text_bottom = name_rect.y() + menu_margin + text_height
+            if top < text_bottom + menu_margin:
+                top = text_bottom + menu_margin
+
             rect = QRectF(
                 current_left,
                 top,
                 width,
-                min(spec["height"], available_height),
+                height,
             )
             spec["rect"] = rect
             buttons.append(spec)
