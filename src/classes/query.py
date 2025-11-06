@@ -24,7 +24,7 @@
  You should have received a copy of the GNU General Public License
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
-
+import copy
 import json
 import os
 
@@ -127,7 +127,7 @@ class QueryObject:
                 object = OBJECT_TYPE()
                 object.id = child["id"]
                 object.key = [OBJECT_TYPE.object_name, {"id": object.id}]
-                object.data = json.loads(json.dumps(child))  # copy of object
+                object.data = copy.copy(child)  # copy of object
                 object.type = "update"
                 matching_objects.append(object)
 
