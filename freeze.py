@@ -360,7 +360,6 @@ elif sys.platform == "linux":
         "libva-x11.so.2",
         "libva.so.2",
         "libvdpau.so.1",
-        "libselinux.so.1",
         "libsystemd.so.0",
         "libdbus-1.so.3",
         "libblkid.so.1",
@@ -380,6 +379,7 @@ elif sys.platform == "linux":
         "libqxcb.so",
         "libxcb-xinerama.so.0",
         "libpcre.so.3",
+        "libselinux.so.1",  # required for Arch/Manjaro
     }
 
     import subprocess
