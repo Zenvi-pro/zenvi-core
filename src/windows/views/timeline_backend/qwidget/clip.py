@@ -129,6 +129,76 @@ class ClipInteractionMixin:
             return len(audio_data)
         return 0
 
+    def _clip_data_dict(self, clip):
+        data = getattr(clip, "data", None)
+        return data if isinstance(data, dict) else {}
+
+    def _clip_reader_dict(self, clip):
+        reader = self._clip_data_dict(clip).get("reader")
+        return reader if isinstance(reader, dict) else {}
+
+    @staticmethod
+    def _media_type_is_image(value):
+        if not isinstance(value, str):
+            return False
+        return value.strip().lower() == "image"
+
+    def _clip_is_single_image(self, clip):
+        data = self._clip_data_dict(clip)
+        if data.get("has_single_image"):
+            return True
+        if self._media_type_is_image(data.get("media_type")):
+            return True
+        reader = self._clip_reader_dict(clip)
+        if reader.get("has_single_image"):
+            return True
+        if self._media_type_is_image(reader.get("media_type")):
+            return True
+        return False
+
+    @staticmethod
+    def _float_or_none(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _positive_float(self, value):
+        parsed = self._float_or_none(value)
+        if parsed is None or parsed <= 0.0:
+            return None
+        return parsed
+
+    def _clip_reader_duration_seconds(self, clip):
+        data = self._clip_data_dict(clip)
+        reader = self._clip_reader_dict(clip)
+
+        duration = self._positive_float(reader.get("duration"))
+        if duration is not None:
+            return duration
+
+        video_length = self._positive_float(reader.get("video_length"))
+        fps_meta = reader.get("fps") if isinstance(reader.get("fps"), dict) else {}
+        fps_num = self._positive_float(fps_meta.get("num"))
+        fps_den = self._positive_float(fps_meta.get("den"))
+        if video_length is not None and fps_num is not None and fps_den is not None and fps_den > 0.0:
+            fps_value = fps_num / fps_den
+            if fps_value > 0.0:
+                return video_length / fps_value
+
+        clip_duration = self._positive_float(data.get("duration"))
+        if clip_duration is not None:
+            return clip_duration
+
+        start = self._float_or_none(data.get("start"))
+        end = self._float_or_none(data.get("end"))
+        if start is None:
+            start = 0.0
+        if end is None:
+            end = start
+        span = end - start
+        return span if span > 0.0 else None
+
     def _startClipDrag(self):
         """Begin a drag operation on one or many selected clips/transitions."""
         e = self._last_event
@@ -547,6 +617,9 @@ class ClipInteractionMixin:
             "position": float(item.data.get("position", 0.0)),
             "duration": float(item.data.get("duration", item.data.get("end", 0.0) - item.data.get("start", 0.0))),
         }
+        self._resize_clip_max_duration = None
+        self._resize_clip_is_single_image = False
+        self._resize_allow_left_overflow = False
         self._resize_snap_ignore_backup = set(getattr(self, "_snap_ignore_ids", set()))
         item_id = getattr(item, "id", None)
         if item_id is not None:
@@ -554,6 +627,15 @@ class ClipInteractionMixin:
             updated_ignore.add(item_id)
             self._snap_ignore_ids = updated_ignore
         if isinstance(item, Clip):
+            max_duration = self._clip_reader_duration_seconds(item)
+            if max_duration is None:
+                max_duration = self._positive_float(self._resize_initial.get("duration"))
+            current_end = self._resize_initial["end"]
+            if max_duration is not None and current_end > max_duration:
+                max_duration = current_end
+            self._resize_clip_max_duration = max_duration
+            self._resize_clip_is_single_image = self._clip_is_single_image(item)
+            self._resize_allow_left_overflow = bool(self.enable_timing or self._resize_clip_is_single_image)
             self._timing_original_start = self._resize_initial["start"]
             self._pending_clip_overrides[item.id] = {
                 "start": self._resize_initial["start"],
@@ -665,6 +747,10 @@ class ClipInteractionMixin:
         duration = self._resize_initial["duration"]
         fps = self.fps_float or 1.0
         min_len = 1.0 / fps
+        max_duration = getattr(self, "_resize_clip_max_duration", None)
+        allow_left_overflow = bool(getattr(self, "_resize_allow_left_overflow", False))
+        single_image_resize = bool(getattr(self, "_resize_clip_is_single_image", False))
+        overflow_enabled = allow_left_overflow and single_image_resize and not self.enable_timing
 
         if event is None or pps <= 0.0:
             geom_rect = QRectF(world_rect)
@@ -677,14 +763,22 @@ class ClipInteractionMixin:
             delta_sec = cursor_sec - pos
             if self.enable_snapping:
                 delta_sec = self.snap.snap_edge(pos, delta_sec)
+            if overflow_enabled and max_duration is not None:
+                extra_capacity = max(0.0, max_duration - end)
+                min_delta = -start - extra_capacity
+                if delta_sec < min_delta:
+                    delta_sec = min_delta
             new_position = pos + delta_sec
             new_start = start + delta_sec
             new_end = end
 
             max_start = end - min_len
+            overflow = 0.0
             if new_start < 0.0:
+                overflow = -new_start
                 new_start = 0.0
-                new_position = pos - start
+                if not allow_left_overflow:
+                    new_position = pos - start
             if new_start > max_start:
                 new_start = max_start
                 new_position = pos + (max_start - start)
@@ -692,6 +786,11 @@ class ClipInteractionMixin:
                 diff = -new_position
                 new_position = 0.0
                 new_start += diff
+            if overflow > 0.0 and overflow_enabled:
+                target_end = new_end + overflow
+                if max_duration is not None and target_end > max_duration:
+                    target_end = max_duration
+                new_end = target_end
             rect_left = self.track_name_width + new_position * pps
         else:
             timeline_right = pos + clip_span
@@ -706,7 +805,9 @@ class ClipInteractionMixin:
             if new_end < min_end:
                 new_end = min_end
             if not self.enable_timing:
-                max_end = start + duration
+                max_end = max_duration
+                if max_end is None:
+                    max_end = start + duration
                 if new_end > max_end:
                     new_end = max_end
             rect_left = self.track_name_width + new_position * pps
@@ -753,6 +854,9 @@ class ClipInteractionMixin:
             self._updateCursor(self._last_event.pos())
         if hasattr(self, "_resize_initial_world_rect"):
             del self._resize_initial_world_rect
+        self._resize_clip_max_duration = None
+        self._resize_allow_left_overflow = False
+        self._resize_clip_is_single_image = False
 
     def _startBoxSelect(self):
         e = self._last_event
