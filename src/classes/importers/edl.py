@@ -37,6 +37,7 @@ from classes import info
 from classes.app import get_app
 from classes.logger import log
 from classes.image_types import get_media_type
+from classes.path_utils import absolute_path_from_export
 from classes.query import Clip, Track, File
 from classes.time_parts import timecodeToSeconds
 from windows.views.find_file import find_missing_file
@@ -45,6 +46,7 @@ from windows.views.find_file import find_missing_file
 title_regex = re.compile(r"TITLE:[ ]+(.*)")
 clips_regex = re.compile(r"(\d{3})[ ]+(.+?)[ ]+(.+?)[ ]+(.+?)[ ]+(.*)[ ]+(.*)[ ]+(.*)[ ]+(.*)")
 clip_name_regex = re.compile(r"[*][ ]+FROM CLIP NAME:[ ]+(.*)")
+source_regex = re.compile(r"[*][ ]+SOURCE FILE:[ ]+(.*)")
 opacity_regex = re.compile(r"[*][ ]+OPACITY LEVEL AT (.*) IS [+-]*(.*)%")
 audio_level_regex = re.compile(r"[*][ ]+AUDIO LEVEL AT (.*) IS [+]*(.*)[ ]+DB.*")
 fcm_regex = re.compile(r"FCM:[ ]+(.*)")
@@ -60,14 +62,22 @@ def create_clip(context, track):
     fps_den = app.project.get("fps").get("den", 1)
     fps_float = float(fps_num / fps_den)
 
+    clip_path_value = context.get("clip_path") or context.get("clip_title") or ""
+    clip_path_value = clip_path_value or ""
+
     # Get clip path (and prompt user if path not found)
-    clip_path, is_modified, is_skipped = find_missing_file(context.get("clip_path", ""))
+    clip_path, is_modified, is_skipped = find_missing_file(clip_path_value)
     if is_skipped:
         return
 
-    # Get video context
-    video_ctx = context.get("AX", {}).get("V", {})
-    audio_ctx = context.get("AX", {}).get("A", {})
+    # Get component contexts
+    video_ctx = context.get("video_ctx", {})
+    audio_ctx_list = context.get("audio_ctx", [])
+    audio_ctx = audio_ctx_list[0] if audio_ctx_list else {}
+
+    if not (video_ctx or audio_ctx):
+        # Nothing to import (likely filler)
+        return
 
     # Check for this path in our existing project data
     file = File.get(path=clip_path)
@@ -104,8 +114,14 @@ def create_clip(context, track):
     clip = Clip()
     clip.data = json.loads(clip_obj.Json())
     clip.data["file_id"] = file.id
-    clip.data["title"] = context.get("clip_path", "")
+    clip_title = context.get("clip_title") or os.path.basename(clip_path_value) or clip_path_value
+    clip.data["title"] = clip_title
     clip.data["layer"] = track.data.get("number", 1000000)
+    reel_name = (video_ctx or audio_ctx).get("reel") if (video_ctx or audio_ctx) else None
+    if not reel_name and audio_ctx_list:
+        reel_name = audio_ctx_list[0].get("reel")
+    if reel_name:
+        clip.data["reel"] = reel_name
     if video_ctx and not audio_ctx:
         # Only video
         clip.data["position"] = timecodeToSeconds(video_ctx.get("timeline_position", "00:00:00:00"), fps_num, fps_den)
@@ -190,8 +206,9 @@ def import_edl():
     file_path = QFileDialog.getOpenFileName(app.window, _("Import EDL..."), recommended_path,
                                             _("Edit Decision List (*.edl)"), _("Edit Decision List (*.edl)"))[0]
     if os.path.exists(file_path):
-        context = {}
+        context = {"audio_ctx": []}
         current_clip_index = ""
+        edl_folder = os.path.dirname(os.path.abspath(file_path))
 
         # Get # of tracks
         all_tracks = app.project.get("layers")
@@ -228,24 +245,36 @@ def import_edl():
 
                             # reset context
                             current_clip_index = edit_index
-                            context = {"title": context.get("title"), "fcm": context.get("fcm")}
-
-                        if tape not in context:
-                            context[tape] = {}
-                        if clip_type not in context[tape]:
-                            context[tape][clip_type] = {}
+                            context = {"title": context.get("title"), "fcm": context.get("fcm"), "audio_ctx": []}
 
                         # New clip detected
                         context["edit_index"] = edit_index                          # 001
-                        context[tape][clip_type]["edit_type"] = r[3]                # C
-                        context[tape][clip_type]["clip_start_time"] = r[4]          # 00:00:00:01
-                        context[tape][clip_type]["clip_end_time"] = r[5]            # 00:00:03:01
-                        context[tape][clip_type]["timeline_position"] = r[6]        # 00:00:30:01
-                        context[tape][clip_type]["timeline_position_end"] = r[7]    # 00:00:33:01
+
+                        component_ctx = {
+                            "reel": tape,
+                            "edit_type": r[3],
+                            "clip_start_time": r[4],
+                            "clip_end_time": r[5],
+                            "timeline_position": r[6],
+                            "timeline_position_end": r[7]
+                        }
+
+                        clip_type_key = clip_type.strip().upper()
+                        if clip_type_key.startswith("V"):
+                            context["video_ctx"] = component_ctx
+                        elif clip_type_key.startswith("A"):
+                            context.setdefault("audio_ctx", [])
+                            context["audio_ctx"].append(component_ctx)
 
                 # Detect clip name
                 for r in clip_name_regex.findall(line):
-                    context["clip_path"] = r   # FileName.mp4
+                    context["clip_title"] = r
+                    if "clip_path" not in context or not context.get("clip_path"):
+                        context["clip_path"] = absolute_path_from_export(r, edl_folder)
+
+                for r in source_regex.findall(line):
+                    resolved_path = absolute_path_from_export(r, edl_folder)
+                    context["clip_path"] = resolved_path
 
                 # Detect opacity
                 for r in opacity_regex.findall(line):

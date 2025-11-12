@@ -33,8 +33,35 @@ from PyQt5.QtWidgets import QFileDialog
 from classes import info
 from classes.app import get_app
 from classes.logger import log
-from classes.query import Clip, Track
+from classes.path_utils import relative_export_path, absolute_media_path
+from classes.query import Clip, Track, File
 from classes.time_parts import secondsToTimecode
+
+
+def _is_drop_frame(fps_num, fps_den):
+    """Return True if FPS corresponds to a common drop-frame rate."""
+    if fps_den == 0:
+        return False
+    fps = float(fps_num) / float(fps_den)
+    return any(abs(fps - rate) < 0.01 for rate in (29.97, 59.94))
+
+
+def _clip_media_path(clip):
+    file_id = clip.data.get("file_id")
+    if file_id:
+        file_obj = File.get(id=file_id)
+        if file_obj:
+            path = file_obj.absolute_path()
+            if path:
+                return path
+
+    reader_path = clip.data.get("reader", {}).get("path")
+    if reader_path:
+        resolved = absolute_media_path(reader_path)
+        if resolved:
+            return resolved
+        return reader_path
+    return ""
 
 
 def export_edl():
@@ -65,6 +92,8 @@ def export_edl():
     if not file_path.endswith(".edl"):
         file_path = "%s.edl" % file_path
 
+    export_root = os.path.dirname(os.path.abspath(file_path))
+
     # Get filename with no extension
     file_name_with_ext = os.path.basename(file_path)
     file_name = os.path.splitext(file_name_with_ext)[0]
@@ -80,7 +109,7 @@ def export_edl():
 
         # Track name
         track_name = track.get("label") or "TRACK %s" % track_count
-        clips_on_track = Clip.filter(layer=track.get("number"))
+        clips_on_track = sorted(Clip.filter(layer=track.get("number")), key=lambda c: c.data.get('position', 0.0))
         if not clips_on_track:
             continue
 
@@ -89,48 +118,61 @@ def export_edl():
         with open("%s-%s.edl" % (file_path.replace(".edl", ""), track_name), 'w', encoding="utf8") as f:
             # Add Header
             f.write("TITLE: %s - %s\n" % (file_name, track_name))
-            f.write("FCM: NON-DROP FRAME\n\n")
+            f.write("FCM: %s\n\n" % ("DROP FRAME" if _is_drop_frame(fps_num, fps_den) else "NON-DROP FRAME"))
 
             # Loop through each track
             export_position = 0.0
+            event_index = 1
 
             # Loop through clips on this track
-            for edit_index, clip in enumerate(clips_on_track, start=1):
-                # Do we need a blank clip?
-                if clip.data.get('position', 0.0) > export_position:
-                    # Blank clip (i.e. 00:00:00:00)
-                    clip_start_time = secondsToTimecode(0.0, fps_num, fps_den)
-                    clip_end_time = secondsToTimecode(clip.data.get('position') - export_position, fps_num, fps_den)
-                    timeline_start_time = secondsToTimecode(export_position, fps_num, fps_den)
-                    timeline_end_time = secondsToTimecode(clip.data.get('position'), fps_num, fps_den)
+            for clip in clips_on_track:
+                clip_position = clip.data.get('position', 0.0)
+                clip_start = clip.data.get('start', 0.0)
+                clip_end = clip.data.get('end', clip_start)
+                clip_duration = clip_end - clip_start
 
-                    # Write blank clip
+                # Do we need a blank clip?
+                if clip_position > export_position:
+                    clip_start_time = secondsToTimecode(0.0, fps_num, fps_den)
+                    clip_end_time = secondsToTimecode(clip_position - export_position, fps_num, fps_den)
+                    timeline_start_time = secondsToTimecode(export_position, fps_num, fps_den)
+                    timeline_end_time = secondsToTimecode(clip_position, fps_num, fps_den)
+
                     f.write(edl_string % (
-                            edit_index, "BL"[:9], "V"[:6], "C",
-                            clip_start_time, clip_end_time,
-                            timeline_start_time, timeline_end_time))
+                        event_index, "BL"[:9], "V"[:6], "C",
+                        clip_start_time, clip_end_time,
+                        timeline_start_time, timeline_end_time))
+                    event_index += 1
+                    export_position = clip_position
 
                 # Format clip start/end and timeline start/end values (i.e. 00:00:00:00)
-                clip_start_time = secondsToTimecode(clip.data.get('start'), fps_num, fps_den)
-                clip_end_time = secondsToTimecode(clip.data.get('end'), fps_num, fps_den)
-                timeline_start_time = secondsToTimecode(clip.data.get('position'), fps_num, fps_den)
-                timeline_end_time = secondsToTimecode(clip.data.get('position') + (clip.data.get('end') - clip.data.get('start')), fps_num, fps_den)
+                clip_start_time = secondsToTimecode(clip_start, fps_num, fps_den)
+                clip_end_time = secondsToTimecode(clip_end, fps_num, fps_den)
+                timeline_start_time = secondsToTimecode(clip_position, fps_num, fps_den)
+                timeline_end_time = secondsToTimecode(clip_position + clip_duration, fps_num, fps_den)
 
                 has_video = clip.data.get("reader", {}).get("has_video", False)
                 has_audio = clip.data.get("reader", {}).get("has_audio", False)
+                if not has_video and not has_audio:
+                    continue
+                reel_name = clip.data.get("reel") or "AX"
                 if has_video:
                     # Video Track
                     f.write(edl_string % (
-                            edit_index, "AX"[:9], "V"[:6], "C",
+                            event_index, reel_name[:9], "V"[:6], "C",
                             clip_start_time, clip_end_time,
                             timeline_start_time, timeline_end_time))
                 if has_audio:
                     # Audio Track
                     f.write(edl_string % (
-                            edit_index, "AX"[:9], "A"[:6], "C",
+                            event_index, reel_name[:9], "A"[:6], "C",
                             clip_start_time, clip_end_time,
                             timeline_start_time, timeline_end_time))
                 f.write("* FROM CLIP NAME: %s\n" % clip.data.get('title'))
+                media_path = _clip_media_path(clip)
+                relative_media = relative_export_path(media_path, export_root)
+                if relative_media:
+                    f.write("* SOURCE FILE: %s\n" % relative_media)
 
                 # Add opacity data (if any)
                 alpha_points = clip.data.get('alpha', {}).get('Points', [])
@@ -161,7 +203,8 @@ def export_edl():
                         f.write("* AUDIO LEVEL AT %s IS %0.2f DB  (REEL AX A1)\n" % (secondsToTimecode(volume_time, fps_num, fps_den), volume_value))
 
                 # Update export position
-                export_position = clip.data.get('position') + (clip.data.get('end') - clip.data.get('start'))
+                export_position = max(export_position, clip_position + clip_duration)
+                event_index += 1
                 f.write("\n")
 
             # Update counters

@@ -32,6 +32,7 @@ import openshot
 
 from classes import info
 from classes.app import get_app
+from classes.path_utils import absolute_media_path
 
 
 class QueryObject:
@@ -239,18 +240,11 @@ class File(QueryObject):
     def absolute_path(self):
         """ Get absolute file path of file """
 
-        file_path = self.data["path"]
-        if os.path.isabs(file_path):
-            return file_path
-
-        # Try to expand path relative to project folder
-        app = get_app()
-        if (app and hasattr(app, "project")
-           and hasattr(app.project, "current_filepath")):
-            project_folder = os.path.dirname(app.project.current_filepath)
-            file_path = os.path.abspath(os.path.join(project_folder, file_path))
-
-        return file_path
+        file_path = self.data.get("path")
+        resolved = absolute_media_path(file_path)
+        if resolved:
+            return resolved
+        return file_path or ""
 
     def relative_path(self):
         """ Get relative path (based on the current working directory) """

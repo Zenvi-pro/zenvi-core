@@ -28,6 +28,7 @@
 import json
 import os
 from operator import itemgetter
+from urllib.parse import unquote, urlparse
 from xml.dom import minidom
 
 import openshot
@@ -37,8 +38,51 @@ from classes import info
 from classes.app import get_app
 from classes.logger import log
 from classes.image_types import get_media_type
+from classes.path_utils import absolute_path_from_export, absolute_media_path
 from classes.query import Clip, Track, File
 from windows.views.find_file import find_missing_file
+
+
+def _pathurl_to_path(path_url, base_folder):
+    """Convert a Final Cut pathurl value into a filesystem path."""
+    if not path_url:
+        return ""
+    parsed = urlparse(path_url)
+    if parsed.scheme and parsed.scheme.lower() == "file":
+        netloc = parsed.netloc
+        path = parsed.path or ""
+        if netloc and netloc.lower() not in ("", "localhost"):
+            path = "/%s%s" % (netloc, path)
+        path = unquote(path)
+        if len(path) > 2 and path[0] == "/" and path[2:3] == ":":
+            # Windows drive letter encoded as /C:/
+            path = path[1:]
+        return os.path.normpath(path)
+
+    if path_url.startswith("@"):
+        return absolute_media_path(path_url)
+
+    normalized = unquote(path_url)
+    return absolute_path_from_export(normalized, base_folder)
+
+
+def _extract_path_from_file_node(file_node, file_lookup, base_folder):
+    """Extract pathurl information, supporting referenced file nodes."""
+    if not file_node:
+        return ""
+
+    path_nodes = file_node.getElementsByTagName("pathurl")
+    if path_nodes and path_nodes[0].childNodes:
+        return _pathurl_to_path(path_nodes[0].childNodes[0].nodeValue, base_folder)
+
+    # Follow references to shared file definitions
+    file_id = file_node.getAttribute("id")
+    referenced_node = file_lookup.get(file_id)
+    if referenced_node is not None and referenced_node is not file_node:
+        ref_paths = referenced_node.getElementsByTagName("pathurl")
+        if ref_paths and ref_paths[0].childNodes:
+            return _pathurl_to_path(ref_paths[0].childNodes[0].nodeValue, base_folder)
+    return ""
 
 
 def import_xml():
@@ -66,6 +110,14 @@ def import_xml():
 
     # Parse XML file
     xmldoc = minidom.parse(file_path)
+    xml_folder = os.path.dirname(os.path.abspath(file_path))
+
+    # Build lookup for shared <file> nodes
+    file_lookup = {}
+    for file_element in xmldoc.getElementsByTagName("file"):
+        file_id = file_element.getAttribute("id")
+        if file_id:
+            file_lookup[file_id] = file_element
 
     # Get video tracks
     video_tracks = []
@@ -101,14 +153,12 @@ def import_xml():
 
             # Loop through clips
             for clip_element in clips_on_track:
-                # Get clip path
-                xml_file_id = clip_element.getElementsByTagName("file")[0].getAttribute("id")
-                clip_path = ""
-                if clip_element.getElementsByTagName("pathurl"):
-                    clip_path = clip_element.getElementsByTagName("pathurl")[0].childNodes[0].nodeValue
-                else:
-                    # Skip clipitem if no clippath node found
-                    # This usually happens for linked audio clips (which OpenShot combines audio and thus ignores this)
+                # Get clip path (handles shared file nodes)
+                file_elements = clip_element.getElementsByTagName("file")
+                if not file_elements:
+                    continue
+                clip_path = _extract_path_from_file_node(file_elements[0], file_lookup, xml_folder)
+                if not clip_path:
                     continue
 
                 clip_path, is_modified, is_skipped = find_missing_file(clip_path)
@@ -179,7 +229,10 @@ def import_xml():
                         clip.data["volume"] = {"Points": []}
                         for keyframe_element in keyframes:
                             keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
-                            keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue) / 100.0
+                            keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue)
+                            if keyframe_value > 5.0:
+                                keyframe_value = keyframe_value / 100.0
+                            keyframe_value = max(0.0, min(1.0, keyframe_value))
                             clip.data["volume"]["Points"].append(
                                 {
                                     "co": {
