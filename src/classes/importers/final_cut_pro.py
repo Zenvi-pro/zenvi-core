@@ -84,6 +84,18 @@ def _extract_path_from_file_node(file_node, file_lookup, base_folder):
             return _pathurl_to_path(ref_paths[0].childNodes[0].nodeValue, base_folder)
     return ""
 
+def _clip_merge_key(path, start, end, position):
+    """Return a hashable key for matching audio/video clip pairs."""
+    if not path:
+        return None
+    normalized_path = os.path.normcase(os.path.abspath(path))
+    return (
+        normalized_path,
+        round(float(start or 0.0), 4),
+        round(float(end or 0.0), 4),
+        round(float(position or 0.0), 4)
+    )
+
 
 def import_xml():
     """Import final cut pro XML file"""
@@ -131,8 +143,11 @@ def import_xml():
 
     # Loop through tracks
     track_index = 0
-    for tracks in [audio_tracks, video_tracks]:
-        for track_element in tracks:
+    imported_clip_map = {}
+
+    for track_list, track_type in ((video_tracks, "video"), (audio_tracks, "audio")):
+        is_audio_track_list = (track_type == "audio")
+        for track_element in track_list:
             # Get clipitems on this track (if any)
             clips_on_track = track_element.getElementsByTagName("clipitem")
             if not clips_on_track:
@@ -143,13 +158,18 @@ def import_xml():
             all_tracks = app.project.get("layers")
             track_number = list(reversed(sorted(all_tracks, key=itemgetter('number'))))[0].get("number") + 1000000
 
-            # Create new track above existing layer(s)
-            track = Track()
+            # Prepare to create track lazily (only if clips remain after merging)
+            track = None
             is_locked = False
             if track_element.getElementsByTagName("locked")[0].childNodes[0].nodeValue == "TRUE":
                 is_locked = True
-            track.data = {"number": track_number, "y": 0, "label": "XML Import %s" % track_index, "lock": is_locked}
-            track.save()
+
+            def ensure_track():
+                nonlocal track
+                if track is None:
+                    track = Track()
+                    track.data = {"number": track_number, "y": 0, "label": "XML Import %s" % track_index, "lock": is_locked}
+                    track.save()
 
             # Loop through clips
             for clip_element in clips_on_track:
@@ -198,25 +218,30 @@ def import_xml():
 
                 # Create Clip object
                 clip = Clip()
+                clip_start_value = float(clip_element.getElementsByTagName("in")[0].childNodes[0].nodeValue) / fps_float
+                clip_end_value = float(clip_element.getElementsByTagName("out")[0].childNodes[0].nodeValue) / fps_float
+                clip_position_value = float(clip_element.getElementsByTagName("start")[0].childNodes[0].nodeValue) / fps_float
+
                 clip.data = json.loads(clip_obj.Json())
                 clip.data["file_id"] = file.id
                 clip.data["title"] = clip_element.getElementsByTagName("name")[0].childNodes[0].nodeValue
-                clip.data["layer"] = track.data.get("number", 1000000)
+                clip.data["layer"] = track_number
                 clip.data["image"] = thumb_path
-                clip.data["position"] = float(clip_element.getElementsByTagName("start")[0].childNodes[0].nodeValue) / fps_float
-                clip.data["start"] = float(clip_element.getElementsByTagName("in")[0].childNodes[0].nodeValue) / fps_float
-                clip.data["end"] = float(clip_element.getElementsByTagName("out")[0].childNodes[0].nodeValue) / fps_float
+                clip.data["position"] = clip_position_value
+                clip.data["start"] = clip_start_value
+                clip.data["end"] = clip_end_value
 
+                alpha_points = []
+                volume_points = []
                 # Loop through clip's effects
                 for effect_element in clip_element.getElementsByTagName("effect"):
                     effectid = effect_element.getElementsByTagName("effectid")[0].childNodes[0].nodeValue
                     keyframes = effect_element.getElementsByTagName("keyframe")
                     if effectid == "opacity":
-                        clip.data["alpha"] = {"Points": []}
                         for keyframe_element in keyframes:
                             keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
                             keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue) / 100.0
-                            clip.data["alpha"]["Points"].append(
+                            alpha_points.append(
                                 {
                                     "co": {
                                         "X": round(keyframe_time),
@@ -226,14 +251,13 @@ def import_xml():
                                 }
                             )
                     elif effectid == "audiolevels":
-                        clip.data["volume"] = {"Points": []}
                         for keyframe_element in keyframes:
                             keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
                             keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue)
                             if keyframe_value > 5.0:
                                 keyframe_value = keyframe_value / 100.0
                             keyframe_value = max(0.0, min(1.0, keyframe_value))
-                            clip.data["volume"]["Points"].append(
+                            volume_points.append(
                                 {
                                     "co": {
                                         "X": round(keyframe_time),
@@ -243,8 +267,26 @@ def import_xml():
                                 }
                             )
 
+                merge_key = _clip_merge_key(clip_path, clip_start_value, clip_end_value, clip_position_value)
+
+                if is_audio_track_list and merge_key in imported_clip_map:
+                    existing_clip = imported_clip_map[merge_key]
+                    if volume_points:
+                        existing_clip.data["volume"] = {"Points": volume_points}
+                    existing_clip.save()
+                    continue
+
+                ensure_track()
+
+                if alpha_points:
+                    clip.data["alpha"] = {"Points": alpha_points}
+                if volume_points:
+                    clip.data["volume"] = {"Points": volume_points}
                 # Save clip
                 clip.save()
+
+                if not is_audio_track_list and merge_key:
+                    imported_clip_map[merge_key] = clip
 
             # Update the preview and reselect current frame in properties
             app.window.refreshFrameSignal.emit()
