@@ -97,6 +97,33 @@ def _clip_merge_key(path, start, end, position):
     )
 
 
+def _xml_interp_to_point(value):
+    """Map Final Cut interpolation data to OpenShot constants."""
+    if value is None:
+        return openshot.LINEAR
+    try:
+        numeric = int(float(value))
+    except (ValueError, TypeError):
+        numeric = None
+
+    if numeric == 0:
+        return openshot.LINEAR
+    if numeric == 1:
+        return openshot.BEZIER
+    if numeric == 2:
+        return openshot.CONSTANT
+
+    text = str(value).strip().lower()
+    if text.startswith("lin"):
+        return openshot.LINEAR
+    if text.startswith("bez"):
+        return openshot.BEZIER
+    if text.startswith("const") or text.startswith("hold"):
+        return openshot.CONSTANT
+
+    return openshot.LINEAR
+
+
 def import_xml():
     """Import final cut pro XML file"""
     app = get_app()
@@ -241,13 +268,15 @@ def import_xml():
                         for keyframe_element in keyframes:
                             keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
                             keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue) / 100.0
+                            interp_nodes = keyframe_element.getElementsByTagName("interpolation")
+                            interp_value = interp_nodes[0].childNodes[0].nodeValue if interp_nodes and interp_nodes[0].childNodes else None
                             alpha_points.append(
                                 {
                                     "co": {
                                         "X": round(keyframe_time),
                                         "Y": keyframe_value
                                     },
-                                    "interpolation": 1  # linear
+                                    "interpolation": _xml_interp_to_point(interp_value)
                                 }
                             )
                     elif effectid == "audiolevels":
@@ -257,13 +286,15 @@ def import_xml():
                             if keyframe_value > 5.0:
                                 keyframe_value = keyframe_value / 100.0
                             keyframe_value = max(0.0, min(1.0, keyframe_value))
+                            interp_nodes = keyframe_element.getElementsByTagName("interpolation")
+                            interp_value = interp_nodes[0].childNodes[0].nodeValue if interp_nodes and interp_nodes[0].childNodes else None
                             volume_points.append(
                                 {
                                     "co": {
                                         "X": round(keyframe_time),
                                         "Y": keyframe_value
                                     },
-                                    "interpolation": 1  # linear
+                                    "interpolation": _xml_interp_to_point(interp_value)
                                 }
                             )
 

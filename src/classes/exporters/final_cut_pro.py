@@ -30,6 +30,7 @@ from operator import itemgetter
 from uuid import uuid1
 from xml.dom import minidom
 
+import openshot
 from PyQt5.QtWidgets import QFileDialog
 
 from classes import info
@@ -39,6 +40,11 @@ from classes.path_utils import absolute_media_path, relative_export_path, normal
 from classes.query import Clip, Track, File
 
 TICKS_PER_FRAME = 254016000000
+INTERPOLATION_EXPORT_MAP = {
+    openshot.LINEAR: "0",
+    openshot.BEZIER: "1",
+    openshot.CONSTANT: "2"
+}
 
 
 def _set_text(node, value):
@@ -115,12 +121,13 @@ def createEffect(xmldoc, name, node, points, scale):
             for point in points:
                 keyframeTime = point.get('co', {}).get('X', 1)
                 keyframeValue = point.get('co', {}).get('Y', 1) * scale
-                keyframes[keyframeTime] = keyframeValue
+                interpolation = point.get('interpolation', openshot.LINEAR)
+                keyframes[keyframeTime] = (keyframeValue, interpolation)
 
             # Loop through Points
             first_value = None
             for keyframeTime in sorted(keyframes.keys()):
-                keyframeValue = keyframes.get(keyframeTime)
+                keyframeValue, interpolation = keyframes.get(keyframeTime)
                 if first_value is None:
                     first_value = keyframeValue
 
@@ -133,6 +140,11 @@ def createEffect(xmldoc, name, node, points, scale):
                 valueNode = xmldoc.createElement("value")
                 valueNode.appendChild(xmldoc.createTextNode(str(keyframeValue)))
                 keyframeNode.appendChild(valueNode)
+                interpNode = xmldoc.createElement("interpolation")
+                interpNode.appendChild(
+                    xmldoc.createTextNode(INTERPOLATION_EXPORT_MAP.get(interpolation, "0"))
+                )
+                keyframeNode.appendChild(interpNode)
 
 
 def export_xml():
