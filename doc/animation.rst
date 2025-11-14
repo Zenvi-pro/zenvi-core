@@ -64,9 +64,9 @@ To adjust the **interpolation mode**, right click on the small graph icon next t
    ========================  ============
    Key-frame Interpolation    Description
    ========================  ============
-   Bézier                    Interpolated values use a quadratic curve, and ease-in and ease-out
-   Linear                    Interpolated values are calculated linear (each step value is equal)
-   Constant                  Interpolated values stay the same until the next key frame, and jump to the new value
+   Bézier                    Interpolated values use a quadratic curve, and ease-in and ease-out. Icon: :guilabel:`Circle`.
+   Linear                    Interpolated values are calculated linear (each step value is equal). Icon: :guilabel:`Diamond`.
+   Constant                  Interpolated values stay the same until the next key frame, and jump to the new value. Icon: :guilabel:`Square`.
    ========================  ============
 
 | For more info on creating key frames for location, rotation, scale, shear, and location, see :ref:`clip_transform_ref`.
