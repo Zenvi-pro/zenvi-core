@@ -27,6 +27,7 @@
 
 import uuid
 from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtWidgets import QApplication
 from classes.app import get_app
 from classes.query import Clip, Transition
 from classes.waveform import SAMPLES_PER_SECOND as WAVEFORM_SAMPLES_PER_SECOND
@@ -205,6 +206,8 @@ class ClipInteractionMixin:
 
         self.snap.reset()
         self._drag_moved = False
+        self._drag_press_pos = e.pos() if e else None
+        self._drag_threshold_met = False
 
         # Identify the item under the cursor (include clips and transitions)
         clicked_item = None
@@ -306,6 +309,14 @@ class ClipInteractionMixin:
         if not getattr(self, "dragging_items", None):
             return
         e = self._last_event
+
+        if not getattr(self, "_drag_threshold_met", True):
+            anchor = getattr(self, "_drag_press_pos", None)
+            if anchor is not None and e is not None:
+                delta = e.pos() - anchor
+                if delta.manhattanLength() < QApplication.startDragDistance():
+                    return
+            self._drag_threshold_met = True
 
         # -------- Horizontal delta (seconds) --------
         pps = float(self.pixels_per_second or 0.0)
@@ -501,6 +512,8 @@ class ClipInteractionMixin:
         if self._last_event:
             self._updateCursor(self._last_event.pos())
         self._drag_moved = False
+        self._drag_press_pos = None
+        self._drag_threshold_met = False
 
     def _compute_selected_bounding(self):
         """Return a QRectF encompassing all currently-selected clips and transitions."""
