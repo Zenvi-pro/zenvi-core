@@ -1042,6 +1042,48 @@ class KeyframePanelMixin:
                 self.win.SeekSignal.emit(frame_seek)
         self.update()
 
+    def _panel_seek_to_point(self, info, point):
+        if not isinstance(point, dict) or not hasattr(self, "win"):
+            return
+
+        context = info.get("context") if isinstance(info, dict) else None
+        if not isinstance(context, dict):
+            context = {}
+
+        fps = self._panel_float(context.get("fps"), None)
+        if fps is None or fps <= 0.0:
+            fps = self._panel_float(getattr(self, "fps_float", None), 0.0)
+        if fps <= 0.0:
+            return
+
+        seconds = self._panel_float(point.get("seconds"), None)
+        if seconds is None:
+            local_seconds = self._panel_float(point.get("local_seconds"), None)
+            if local_seconds is not None:
+                seconds = self._panel_float(context.get("position"), 0.0) + local_seconds
+
+        if seconds is None:
+            frame_val = self._panel_float(point.get("frame"), None)
+            if frame_val is not None:
+                clip_start = self._panel_float(context.get("clip_start"), 0.0)
+                position = self._panel_float(context.get("position"), 0.0)
+                seconds = ((frame_val - 1.0) / fps) - clip_start + position
+
+        if seconds is None or not math.isfinite(seconds):
+            return
+
+        frame_seek = int(round(seconds * fps)) + 1
+        if frame_seek < 1:
+            frame_seek = 1
+
+        timeline = getattr(self.win, "timeline", None)
+        if timeline and hasattr(timeline, "SeekToKeyframe"):
+            timeline.SeekToKeyframe(frame_seek)
+            return
+
+        if hasattr(self.win, "SeekSignal"):
+            self.win.SeekSignal.emit(frame_seek)
+
     def _finish_panel_keyframe_drag(self):
         drag = self._dragging_panel_keyframes
         if not drag:
@@ -1929,6 +1971,7 @@ class KeyframePanelMixin:
             return converted, min_val, max_val, metadata, normalized_paths
 
         result = []
+        available = []
         sparse_logged = getattr(self, "_panel_sparse_properties", None)
 
         for key, prop in props.items():
@@ -1943,6 +1986,9 @@ class KeyframePanelMixin:
                 except (TypeError, ValueError):
                     declared_points = None
             points, min_val, max_val, source_meta, normalized_paths = convert_points(key, prop)
+            if not points and not normalized_paths:
+                continue
+            name = prop.get("name") or str(key)
             if len(points) <= 1:
                 if sparse_logged is not None and (
                     metadata_keyframe or (declared_points is not None and declared_points > 0)
@@ -1965,6 +2011,19 @@ class KeyframePanelMixin:
                             metadata_keyframe,
                             point_count_value,
                         )
+                entry = {
+                    "key": key,
+                    "display_name": _(name),
+                    "points": points,
+                    "min_value": min_val,
+                    "max_value": max_val,
+                    "source_meta": source_meta,
+                    "owner_type": source_meta.get("owner") if isinstance(source_meta, dict) else None,
+                    "value": prop.get("value"),
+                    "value_type": prop.get("type"),
+                    "point_paths": normalized_paths,
+                }
+                available.append(entry)
                 continue
             if sparse_logged is not None and declared_points is not None and declared_points <= 1:
                 owner_hint = (
@@ -2002,7 +2061,6 @@ class KeyframePanelMixin:
                         "Keyframe panel refresh: treating property %s as keyframe despite flag False",
                         key,
                     )
-            name = prop.get("name") or str(key)
             selected_frames = track_selection.get(key, set())
             if selected_frames:
                 selected_frames = {int(frame) for frame in selected_frames}
@@ -2017,23 +2075,24 @@ class KeyframePanelMixin:
                     point["selected"] = frame_int in selected_frames
                 else:
                     point["selected"] = False
-            result.append(
-                {
-                    "key": key,
-                    "display_name": _(name),
-                    "points": points,
-                    "min_value": min_val,
-                    "max_value": max_val,
-                    "source_meta": source_meta,
-                    "owner_type": source_meta.get("owner") if isinstance(source_meta, dict) else None,
-                    "value": prop.get("value"),
-                    "value_type": prop.get("type"),
-                    "point_paths": normalized_paths,
-                }
-            )
+            entry = {
+                "key": key,
+                "display_name": _(name),
+                "points": points,
+                "min_value": min_val,
+                "max_value": max_val,
+                "source_meta": source_meta,
+                "owner_type": source_meta.get("owner") if isinstance(source_meta, dict) else None,
+                "value": prop.get("value"),
+                "value_type": prop.get("type"),
+                "point_paths": normalized_paths,
+            }
+            available.append(entry)
+            result.append(entry)
 
         result.sort(key=lambda item: item.get("display_name", "").lower())
-        return result, context
+        available.sort(key=lambda item: item.get("display_name", "").lower())
+        return result, context, available
 
     def _update_track_panel_properties(self):
         if not getattr(self, "win", None):
@@ -2044,6 +2103,7 @@ class KeyframePanelMixin:
         if not timeline:
             self._panel_properties = {}
             self._panel_heights = {}
+            self._panel_manual_properties = {}
             log.info("Keyframe panel refresh skipped: no timeline model")
             return False
         enabled_tracks = {
@@ -2057,6 +2117,7 @@ class KeyframePanelMixin:
                 log.info("Keyframe panel refresh cleared: no panels enabled")
             self._panel_properties = {}
             self._panel_heights = {}
+            self._panel_manual_properties = {}
             return had_data
         selection = list(getattr(self.win, "selected_items", []) or [])
         frame = int(getattr(self, "current_frame", 1) or 1)
@@ -2108,14 +2169,90 @@ class KeyframePanelMixin:
             existing = new_props.get(key)
             if existing and priority[existing.get("item_type")] <= priority[item_type]:
                 continue
-            properties, context = self._properties_for_item(
+            properties, context, available = self._properties_for_item(
                 timeline,
                 item_id,
                 item_type,
                 frame,
                 context=context,
             )
+            properties = list(properties or [])
+            available = list(available or [])
+            available_map = {
+                str(entry.get("key")): entry
+                for entry in available
+                if isinstance(entry, dict) and entry.get("key") is not None
+            }
+            current_item_id = str(item_id)
+            manual_entry = self._panel_manual_properties.get(key)
+            if (
+                not manual_entry
+                or manual_entry.get("item_id") != current_item_id
+                or manual_entry.get("item_type") != item_type
+            ):
+                manual_entry = {
+                    "item_id": current_item_id,
+                    "item_type": item_type,
+                    "properties": set(),
+                }
+            else:
+                manual_entry = {
+                    "item_id": manual_entry.get("item_id", current_item_id),
+                    "item_type": manual_entry.get("item_type"),
+                    "properties": set(manual_entry.get("properties") or []),
+                }
+            manual_entry["properties"] = {
+                prop_id for prop_id in manual_entry.get("properties", set()) if prop_id in available_map
+            }
+            existing_keys = {
+                str(prop.get("key"))
+                for prop in properties
+                if isinstance(prop, dict) and prop.get("key") is not None
+            }
+            manual_added = []
+            def _manual_sort_key(prop_id):
+                entry = available_map.get(prop_id)
+                if not isinstance(entry, dict):
+                    return prop_id.lower()
+                label = entry.get("display_name") or entry.get("key") or prop_id
+                return str(label).lower()
+
+            for prop_id in sorted(manual_entry["properties"], key=_manual_sort_key):
+                if prop_id in existing_keys:
+                    continue
+                candidate = available_map.get(prop_id)
+                if candidate:
+                    manual_added.append(candidate)
+                    existing_keys.add(prop_id)
+            if manual_added:
+                properties.extend(manual_added)
+            if properties:
+                properties.sort(key=lambda item: str(item.get("display_name", "")).lower())
+            self._panel_manual_properties[key] = manual_entry
+
             if not properties:
+                if available:
+                    placeholder_context = dict(context or {})
+                    placeholder_context["placeholder"] = "no-keyframes"
+                    placeholder_label = translate("No Keyframes")
+                    placeholder_prop = {
+                        "display_name": placeholder_label,
+                        "points": [],
+                        "placeholder": True,
+                    }
+                    info = {
+                        "item_id": str(item_id),
+                        "item_type": item_type,
+                        "properties": [placeholder_prop],
+                        "context": placeholder_context,
+                        "available_properties": available,
+                        "base_properties": {},
+                        "base_context": self._panel_capture_base_context(placeholder_context),
+                    }
+                    new_props[key] = info
+                    new_heights[key] = self._panel_height_for_properties(1)
+                    continue
+
                 cached = self._panel_properties.get(key)
                 cached_props = cached.get("properties") if isinstance(cached, dict) else None
                 if (
@@ -2128,6 +2265,8 @@ class KeyframePanelMixin:
                         cached["base_properties"] = self._panel_capture_base_properties(cached_props)
                     if "base_context" not in cached:
                         cached["base_context"] = self._panel_capture_base_context(cached.get("context"))
+                    if "available_properties" not in cached:
+                        cached["available_properties"] = available
                     log.info(
                         "Keyframe panel refresh: reusing cached properties for %s %s on track %s",
                         item_type,
@@ -2152,6 +2291,7 @@ class KeyframePanelMixin:
                 "item_type": item_type,
                 "properties": properties,
                 "context": context,
+                "available_properties": available,
                 "base_properties": self._panel_capture_base_properties(properties),
                 "base_context": self._panel_capture_base_context(context),
             }
@@ -2205,4 +2345,13 @@ class KeyframePanelMixin:
         self._panel_heights = new_heights
         self._panel_refresh_signature = self._panel_current_signature()
         self._refresh_panel_selection_state(new_props)
+        if hasattr(self, "_panel_manual_properties"):
+            filtered_manual = {}
+            for track_key, entry in self._panel_manual_properties.items():
+                info = new_props.get(track_key)
+                context = info.get("context") if isinstance(info, dict) else None
+                if not info or (isinstance(context, dict) and context.get("placeholder")):
+                    continue
+                filtered_manual[track_key] = entry
+            self._panel_manual_properties = filtered_manual
         return changed

@@ -26,6 +26,7 @@
 """
 
 import json
+from functools import partial
 
 from PyQt5.QtCore import (
     Qt,
@@ -64,6 +65,7 @@ from ..paint import (
 from ..snap import SnapHelper
 from ..theme import DEFAULT_THEME, apply_theme as parse_theme
 from ..state import TimelineStateMachine
+from windows.views.menu import StyledContextMenu
 from classes.app import get_app
 from classes.query import Clip, Transition, File
 from classes.logger import log
@@ -185,6 +187,7 @@ class TimelineWidgetBase(QWidget):
         self._panel_press_info = None
         self._dragging_panel_keyframes = None
         self._panel_sparse_properties = set()
+        self._panel_manual_properties = {}
         self.keyframe_panel_row_height = 24.0
         self.keyframe_panel_row_spacing = 4.0
         self.keyframe_panel_padding = 6.0
@@ -1814,6 +1817,9 @@ class TimelineWidgetBase(QWidget):
         self._press_marker = None
         if event.button() == Qt.RightButton:
             self._last_event = event
+            if self._panel_show_property_menu_at(event.pos()):
+                event.accept()
+                return
             icon_entry = self._effect_icon_at(event.pos())
             if icon_entry and self._trigger_effect_context_menu(
                 icon_entry, event.modifiers() if hasattr(event, "modifiers") else None
@@ -2089,6 +2095,8 @@ class TimelineWidgetBase(QWidget):
                         self._panel_toggle_frames(track_num, prop_key, {frame_int})
                     else:
                         self._panel_set_selection_map(track_num, {prop_key: {frame_int}})
+            if point:
+                self._panel_seek_to_point(info, point)
             self._press_hit = None
             event.accept()
             return
@@ -2116,6 +2124,9 @@ class TimelineWidgetBase(QWidget):
         self._press_hit = None
 
     def contextMenuEvent(self, event):
+        if self._panel_show_property_menu_at(event.pos()):
+            event.accept()
+            return
         icon_entry = self._effect_icon_at(event.pos())
         if icon_entry:
             if self._trigger_effect_context_menu(
@@ -2125,6 +2136,123 @@ class TimelineWidgetBase(QWidget):
                 return
         if not self._showContextMenu(event.pos()):
             event.ignore()
+
+    def _panel_show_property_menu_at(self, pos):
+        lane = self._panel_lane_at(pos)
+        if not lane:
+            return False
+        label_rect = lane.get("label_rect")
+        if not isinstance(label_rect, QRectF) or not label_rect.contains(pos):
+            return False
+        track_num = lane.get("track")
+        key = self.normalize_track_number(track_num) if track_num is not None else None
+        if key is None:
+            return False
+        info = self._panel_properties.get(key)
+        if not isinstance(info, dict):
+            return False
+        available = info.get("available_properties") or []
+        if not available:
+            return False
+
+        item_id = info.get("item_id", "")
+        item_type = info.get("item_type")
+        manual_entry = self._panel_manual_properties.get(key)
+        if (
+            not manual_entry
+            or manual_entry.get("item_id") != item_id
+            or manual_entry.get("item_type") != item_type
+        ):
+            manual_entry = {"item_id": item_id, "item_type": item_type, "properties": set()}
+        else:
+            manual_entry = {
+                "item_id": manual_entry.get("item_id", ""),
+                "item_type": manual_entry.get("item_type"),
+                "properties": set(manual_entry.get("properties") or []),
+            }
+        self._panel_manual_properties[key] = manual_entry
+
+        available_sorted = sorted(
+            (entry for entry in available if isinstance(entry, dict)),
+            key=lambda entry: str(entry.get("display_name", "")).lower(),
+        )
+        visible_keys = {
+            str(prop.get("key"))
+            for prop in info.get("properties", [])
+            if isinstance(prop, dict) and prop.get("key") is not None
+        }
+        title = get_app()._tr("Keyframe Properties")
+        menu = StyledContextMenu(title=title, parent=self)
+        handled = False
+        for entry in available_sorted:
+            key_name = entry.get("key")
+            if key_name is None:
+                continue
+            key_str = str(key_name)
+            label = entry.get("display_name") or key_str
+            action = menu.addAction(label)
+            if key_str in visible_keys:
+                action.setEnabled(False)
+                action.setCheckable(True)
+                action.setChecked(True)
+                continue
+            action.triggered.connect(partial(self._panel_add_visible_property, key, key_str))
+            handled = True
+
+        if not menu.actions():
+            placeholder = menu.addAction(get_app()._tr("No keyframe properties available"))
+            placeholder.setEnabled(False)
+
+        global_pos = self.mapToGlobal(pos)
+        menu.exec_(global_pos)
+        return handled or bool(menu.actions())
+
+    def _panel_add_visible_property(self, track_num, prop_key):
+        key = self.normalize_track_number(track_num) if track_num is not None else None
+        if key is None:
+            return False
+        info = self._panel_properties.get(key)
+        if not isinstance(info, dict):
+            return False
+        available = info.get("available_properties") or []
+        available_map = {
+            str(entry.get("key")): entry
+            for entry in available
+            if isinstance(entry, dict) and entry.get("key") is not None
+        }
+        prop_id = str(prop_key)
+        if prop_id not in available_map:
+            return False
+        visible_keys = {
+            str(prop.get("key"))
+            for prop in info.get("properties", [])
+            if isinstance(prop, dict) and prop.get("key") is not None
+        }
+        if prop_id in visible_keys:
+            return False
+
+        manual_entry = self._panel_manual_properties.get(key)
+        item_id = info.get("item_id", "")
+        item_type = info.get("item_type")
+        if (
+            not manual_entry
+            or manual_entry.get("item_id") != item_id
+            or manual_entry.get("item_type") != item_type
+        ):
+            manual_entry = {"item_id": item_id, "item_type": item_type, "properties": set()}
+        else:
+            manual_entry = {
+                "item_id": manual_entry.get("item_id", ""),
+                "item_type": manual_entry.get("item_type"),
+                "properties": set(manual_entry.get("properties") or []),
+            }
+
+        manual_entry["properties"].add(prop_id)
+        self._panel_manual_properties[key] = manual_entry
+        self._update_track_panel_properties()
+        self.geometry.mark_dirty()
+        self.update()
+        return True
 
     def _startMiddlePan(self, pos):
         view_w = self.scrollbar_position[3]

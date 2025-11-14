@@ -232,6 +232,8 @@ class TrackInteractionMixin:
         self._track_panel_enabled[track_num] = new_state
         if not new_state:
             self._clear_panel_selection(track_num)
+            if hasattr(self, "_panel_manual_properties"):
+                self._panel_manual_properties.pop(track_num, None)
         self._update_track_panel_properties()
         self.geometry.mark_dirty()
         self.update()
