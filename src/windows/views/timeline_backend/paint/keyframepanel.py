@@ -132,18 +132,41 @@ class KeyframePanelPainter(BasePainter):
             ratio = 1.0
         return bottom - ratio * height
 
-    def _draw_marker(self, painter, x, y):
+    def _normalize_interpolation(self, value):
+        if isinstance(value, str):
+            value_lower = value.lower()
+            if value_lower in {"bezier", "linear", "constant"}:
+                return value_lower
+        try:
+            idx = int(value)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx == 0:
+            return "bezier"
+        if idx == 1:
+            return "linear"
+        return "constant"
+
+    def _draw_marker(self, painter, x, y, interpolation=None):
         size = self.marker_size
         half = size / 2.0
-        path = QPainterPath()
-        path.moveTo(x, y - half)
-        path.lineTo(x + half, y)
-        path.lineTo(x, y + half)
-        path.lineTo(x - half, y)
-        path.closeSubpath()
-        painter.fillPath(path, self.marker_brush)
+        rect = QRectF(x - half, y - half, size, size)
+        painter.setBrush(self.marker_brush)
         painter.setPen(self.marker_pen)
-        painter.drawPath(path)
+        mode = self._normalize_interpolation(interpolation)
+        if mode == "linear":
+            painter.drawRect(rect)
+            return
+        if mode == "constant":
+            path = QPainterPath()
+            path.moveTo(x, y - half)
+            path.lineTo(x + half, y)
+            path.lineTo(x, y + half)
+            path.lineTo(x - half, y)
+            path.closeSubpath()
+            painter.drawPath(path)
+            return
+        painter.drawEllipse(rect)
 
     def _paint_property_row(
         self,
@@ -237,7 +260,7 @@ class KeyframePanelPainter(BasePainter):
             x = max(lane_clip.left(), min(lane_clip.right(), x))
             selected = bool(point.get("selected"))
             painter.setOpacity(1.0 if selected else inactive)
-            self._draw_marker(painter, x, baseline)
+            self._draw_marker(painter, x, baseline, point.get("interpolation"))
         painter.setOpacity(1.0)
         painter.restore()
 
