@@ -88,6 +88,10 @@ class Preferences(QDialog):
             if "setting" in item and "value" in item:
                 self.params[item["setting"]] = item
 
+        # Track widgets and dependencies between settings
+        self.setting_widgets = {}
+        self.dependency_map = {}
+
         # Connect signals
         self.txtSearch.textChanged.connect(self.txtSearch_changed)
         self.btnRestoreDefaults.clicked.connect(self.confirm_restore_defaults)
@@ -162,6 +166,10 @@ class Preferences(QDialog):
         self.category_names = {}
         self.category_tabs = {}
         self.visible_category_names = {}
+
+        # Reset widget/dependency trackers each time preferences are rebuilt
+        self.setting_widgets = {}
+        self.dependency_map = {}
 
         # Loop through settings and collect categories
         for item in self.settings_data:
@@ -438,6 +446,7 @@ class Preferences(QDialog):
 
                     # Add widget to layout
                     tabWidget.layout().addLayout(layout_hbox)
+                    self.register_setting_widget(param, widget, label)
                 elif (label and filterFound):
                     # Add widget to layout
                     tabWidget.layout().addWidget(label)
@@ -445,8 +454,41 @@ class Preferences(QDialog):
             # Add stretch to bottom of layout
             tabWidget.layout().addStretch()
 
+        self.apply_all_dependencies()
+
         # Delete all tabs and widgets
         self.DeleteAllTabs(onlyInVisible=True)
+
+    def register_setting_widget(self, param, widget, label=None):
+        """Store widget references and register dependency relationships."""
+        setting_name = param.get("setting")
+        if not setting_name or not widget:
+            return
+
+        self.setting_widgets[setting_name] = widget
+        widget.setObjectName(setting_name)
+
+        dependency = param.get("dependency")
+        if dependency:
+            self.dependency_map.setdefault(dependency, []).append((widget, label))
+
+    def apply_all_dependencies(self):
+        """Apply dependency state to all registered widgets."""
+        for setting_name in list(self.dependency_map.keys()):
+            self.apply_dependency_state(setting_name)
+
+    def apply_dependency_state(self, setting_name):
+        """Enable/disable dependent widgets based on controller state."""
+        controlled_widgets = self.dependency_map.get(setting_name, [])
+        if not controlled_widgets:
+            return
+
+        enabled = bool(self.s.get(setting_name))
+        for widget, label in controlled_widgets:
+            if widget:
+                widget.setEnabled(enabled)
+            if label:
+                label.setEnabled(enabled)
 
     def selectExecutable(self, widget, param):
         _ = get_app()._tr
@@ -513,6 +555,10 @@ class Preferences(QDialog):
 
         # Check for restart
         self.check_for_restart(param)
+
+        # Update any dependent widgets
+        if param.get("setting"):
+            self.apply_dependency_state(param["setting"])
 
     def spinner_value_changed(self, param, value):
         # Save setting

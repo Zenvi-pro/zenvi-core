@@ -432,11 +432,20 @@
     "setting": "automatic_transitions"
   },
   {
+    "value": false,
+    "title": "Enable Experimental Timeline",
+    "type": "bool",
+    "restart": true,
+    "category": "Experimental",
+    "setting": "qwidget-based-timeline"
+  },
+  {
     "value": "start",
     "title": "Thumbnail Style",
     "type": "dropdown",
     "restart": false,
     "category": "Experimental",
+    "dependency": "qwidget-based-timeline",
     "setting": "timeline-thumbnail-style",
     "translate_values": true,
     "values": [
