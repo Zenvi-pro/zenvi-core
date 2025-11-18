@@ -69,6 +69,7 @@ from windows.views.menu import StyledContextMenu
 from classes.app import get_app
 from classes.query import Clip, Transition, File
 from classes.logger import log
+from .thumbnails import TimelineThumbnailManager
 
 
 class TimelineEvents(QObject):
@@ -263,6 +264,11 @@ class TimelineWidgetBase(QWidget):
         # Theme settings
         self.theme = DEFAULT_THEME
 
+        # Thumbnail helpers
+        self.thumbnail_style = self._load_thumbnail_style()
+        self.thumbnail_generation = 0
+        self.thumbnail_manager = TimelineThumbnailManager(self)
+
         # Helpers for geometry, snapping and painting
         self.geometry = Geometry(self)
         self.snap = SnapHelper(self, self.geometry)
@@ -278,6 +284,9 @@ class TimelineWidgetBase(QWidget):
         self.keyframe_panel_painter = KeyframePanelPainter(self)
         self.selection_painter = SelectionPainter(self)
         self.scrollbar_painter = ScrollbarPainter(self)
+        self.thumbnail_manager.thumbnail_ready.connect(
+            self.clip_painter.handle_thumbnail_ready
+        )
 
         # Keyframe helpers
         self._keyframe_markers = []
@@ -356,6 +365,21 @@ class TimelineWidgetBase(QWidget):
         self._middle_pan_anchor = QPointF()
         self._middle_pan_scroll_start = [0.0, 0.0, 0.0, 0.0]
         self._middle_pan_vscroll_start = [0.0, 0.0, 0.0, 0.0]
+
+    def _load_thumbnail_style(self):
+        """Return the preferred thumbnail rendering style."""
+        style = str(get_app().get_settings().get("timeline-thumbnail-style") or "")
+        style = style.strip().lower()
+        valid = {"none", "start", "start-end", "entire"}
+        return style if style in valid else "entire"
+
+    def _reset_thumbnail_requests(self):
+        """Cancel pending thumbnail work after a major viewport change."""
+        self.thumbnail_generation += 1
+        if self.thumbnail_manager:
+            self.thumbnail_manager.clear_pending()
+        if hasattr(self, "clip_painter"):
+            self.clip_painter.expire_thumbnail_requests(self.thumbnail_generation)
 
     def _buildStateMachine(self):
         sm = TimelineStateMachine(self)
@@ -674,6 +698,12 @@ class TimelineWidgetBase(QWidget):
         self.scrollbar_painter.paint(painter)
 
         painter.end()
+
+    def closeEvent(self, event):
+        """Ensure background threads stop when the widget closes."""
+        if self.thumbnail_manager:
+            self.thumbnail_manager.shutdown()
+        super().closeEvent(event)
 
     def update_playback_cache(self, cache_dict):
         """Update cached playback ranges used for rendering."""
@@ -1170,6 +1200,7 @@ class TimelineWidgetBase(QWidget):
             view_h=view_h,
             timeline_w=timeline_w,
         )
+        self._reset_thumbnail_requests()
         self.update()
         self.delayed_resize_timer.start()
 
@@ -1226,6 +1257,7 @@ class TimelineWidgetBase(QWidget):
             view_h=view_h,
             timeline_w=timeline_w,
         )
+        self._reset_thumbnail_requests()
         self.update()
         get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
@@ -1446,6 +1478,7 @@ class TimelineWidgetBase(QWidget):
             self._emit_zoom_signals(slider_positions)
 
         # Schedule repaint
+        self._reset_thumbnail_requests()
         self.update()
 
     def zoomIn(self):
@@ -1477,6 +1510,7 @@ class TimelineWidgetBase(QWidget):
         self.is_auto_center = False
 
         # Schedule repaint
+        self._reset_thumbnail_requests()
         self.update()
 
     def set_scroll_left(self, new_left):
@@ -1490,6 +1524,7 @@ class TimelineWidgetBase(QWidget):
         self.h_scroll_offset = left * timeline_w
         self.is_auto_center = False
         self.geometry.refresh_viewport(timeline_w=timeline_w)
+        self._reset_thumbnail_requests()
         self.update()
 
     def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):

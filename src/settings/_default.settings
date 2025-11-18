@@ -432,6 +432,33 @@
     "setting": "automatic_transitions"
   },
   {
+    "value": "start",
+    "title": "Thumbnail Style",
+    "type": "dropdown",
+    "restart": false,
+    "category": "Experimental",
+    "setting": "timeline-thumbnail-style",
+    "translate_values": true,
+    "values": [
+      {
+        "value": "none",
+        "name": "None"
+      },
+      {
+        "value": "start",
+        "name": "Only Start"
+      },
+      {
+        "value": "start-end",
+        "name": "Start and End"
+      },
+      {
+        "value": "entire",
+        "name": "Entire Clip"
+      }
+    ]
+  },
+  {
     "max": 4,
     "title": "Hardware Decoder Mode",
     "category": "Performance",
