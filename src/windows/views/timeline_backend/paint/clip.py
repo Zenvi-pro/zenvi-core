@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
+from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -52,6 +52,13 @@ from .base import BasePainter
 
 
 class ClipPainter(BasePainter):
+    def __init__(self, widget):
+        super().__init__(widget)
+        self._thumbnail_repaint_timer = QTimer(self.w)
+        self._thumbnail_repaint_timer.setSingleShot(True)
+        self._thumbnail_repaint_timer.setInterval(250)
+        self._thumbnail_repaint_timer.timeout.connect(self._flush_thumbnail_repaint)
+
     MAX_THUMB_SLOTS = 150
 
     def update_theme(self):
@@ -140,11 +147,7 @@ class ClipPainter(BasePainter):
 
     def _clip_key(self, clip):
         clip_id = getattr(clip, "id", None)
-        data = clip.data if isinstance(clip.data, dict) else {}
-        start = self._to_float(data.get("start"), 0.0)
-        end = self._to_float(data.get("end"), start)
-        trim_token = f"{start:.4f}:{end:.4f}"
-        return f"{clip_id}:{trim_token}"
+        return str(clip_id) if clip_id is not None else ""
 
     def _clip_file_id(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
@@ -174,12 +177,13 @@ class ClipPainter(BasePainter):
                 return path
         return ""
 
-    def _frame_for_offset(self, clip_start, offset, fps):
+    def _frame_for_offset(self, offset, fps):
         fps = float(fps or 0.0)
         if fps <= 0.0:
             fps = 24.0
-        seconds = max(0.0, clip_start + max(0.0, offset))
-        frame = int(seconds * fps) + 1
+        seconds = max(0.0, float(offset or 0.0))
+        frame_float = seconds * fps
+        frame = int(math.floor(frame_float + 0.5)) + 1
         return max(1, frame)
 
     def _segment_timing(self, segment, clip_duration):
@@ -194,6 +198,45 @@ class ClipPainter(BasePainter):
             "includes_start": bool(includes_start),
             "includes_end": bool(includes_end),
         }
+
+    def _clip_media_duration(self, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        duration = self._to_float(reader.get("duration"))
+        if duration > 0.0:
+            return duration
+        video_length = self._to_float(reader.get("video_length"))
+        if video_length > 0.0:
+            fps_meta = reader.get("fps") if isinstance(reader.get("fps"), dict) else {}
+            fps_num = self._to_float(fps_meta.get("num"))
+            fps_den = self._to_float(fps_meta.get("den"))
+            if fps_num > 0.0 and fps_den > 0.0:
+                fps_value = fps_num / fps_den
+                if fps_value > 0.0:
+                    return video_length / fps_value
+        clip_duration = self._to_float(data.get("duration"))
+        if clip_duration > 0.0:
+            return clip_duration
+        start = self._to_float(data.get("start"))
+        end = self._to_float(data.get("end"), start)
+        span = end - start
+        return span if span > 0.0 else 0.0
+
+    def _clip_media_fps(self, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        fps_meta = reader.get("fps") if isinstance(reader.get("fps"), dict) else {}
+        fps_num = self._to_float(fps_meta.get("num"))
+        fps_den = self._to_float(fps_meta.get("den"), 1.0)
+        if fps_num > 0.0 and fps_den > 0.0:
+            return fps_num / fps_den
+        fps_value = self._to_float(data.get("fps"))
+        if fps_value > 0.0:
+            return fps_value
+        fps = self._to_float(reader.get("frame_rate"))
+        if fps > 0.0:
+            return fps
+        return float(getattr(self.w, "fps_float", 24.0) or 24.0)
 
     def _clip_pixmap(self, full_rect, segment_rect, clip):
         """Return cached pixmap for the visible portion of a clip."""
@@ -401,66 +444,74 @@ class ClipPainter(BasePainter):
         thumb_h = max(self._min_thumb_slot_width, min(thumb_h, inner.height()))
         top = inner.y() + (inner.height() - thumb_h) / 2.0
 
-        offset_px = max(0.0, float(segment.get("offset_px") or 0.0))
-        visible_left = offset_px
-        visible_right = offset_px + visible_width
+        clip_start = self._to_float(segment.get("offset_seconds", 0.0))
+        clip_duration = self._to_float(segment.get("clip_duration", 0.0))
+        clip_end = clip_start + clip_duration
+        if clip_duration <= 0.0 or clip_end <= clip_start:
+            return []
+
+        media_duration = self._clip_media_duration(clip)
+        if media_duration <= 0.0:
+            media_duration = clip_end
+        media_duration = max(media_duration, clip_end)
+
+        pixels_per_second = float(self.w.pixels_per_second or 0.0)
+        if pixels_per_second <= 0.0:
+            return []
+
+        interval_pixels = max(thumb_w, self._min_thumb_slot_width)
+        interval_seconds = interval_pixels / pixels_per_second
+        if interval_seconds <= 0.0:
+            interval_seconds = 0.01
 
         includes_start = timing.get("includes_start", True)
         includes_end = timing.get("includes_end", True)
+        offsets = []
+        seen = set()
 
-        positions = []
-        added = set()
-
-        def add_position(pos):
-            pos = max(0.0, min(pos, clip_width))
-            key = round(pos, 2)
-            if key in added:
+        def add_offset(value):
+            value = max(0.0, min(value, media_duration))
+            key = round(value, 4)
+            if key in seen:
                 return
-            added.add(key)
-            positions.append(pos)
+            seen.add(key)
+            offsets.append(value)
 
         if style == "start":
             if includes_start:
-                add_position(0.0)
+                add_offset(clip_start)
         elif style == "start-end":
             if includes_start:
-                add_position(0.0)
+                add_offset(clip_start)
             if includes_end:
-                add_position(max(clip_width - thumb_w, 0.0))
+                add_offset(clip_end)
         else:
-            step = max(thumb_w, self._min_thumb_slot_width)
-            if step <= 0.0:
-                step = self._min_thumb_slot_width
-            start_clip = max(0.0, visible_left - step)
-            pos = (math.floor(start_clip / step) * step) if step else start_clip
+            offset = 0.0
             count = 0
-            max_visible = visible_right + step
-            while pos < clip_width and count < self.MAX_THUMB_SLOTS:
-                if pos > max_visible:
-                    break
-                if pos + thumb_w >= visible_left - step:
-                    add_position(pos)
-                pos += step
+            while offset <= media_duration and count < self.MAX_THUMB_SLOTS:
+                if clip_start <= offset <= clip_end:
+                    add_offset(offset)
+                offset += interval_seconds
                 count += 1
-            if not positions and includes_start:
-                add_position(0.0)
-            elif positions and positions[-1] < max(clip_width - thumb_w, 0.0):
-                if count < self.MAX_THUMB_SLOTS:
-                    add_position(max(clip_width - thumb_w, 0.0))
+            if not offsets and includes_start:
+                add_offset(clip_start)
+            elif offsets and offsets[-1] < clip_end and count < self.MAX_THUMB_SLOTS:
+                add_offset(clip_end)
 
-        if not positions:
+        if not offsets:
             return []
 
         slots = []
         view_left = 0.0
-        view_right = visible_width
-        for clip_pos in positions:
-            local_x = clip_pos - offset_px
+        view_right = max(visible_width, clip_width)
+        for time_offset in offsets:
+            if time_offset < clip_start or time_offset > clip_end:
+                continue
+            local_x = (time_offset - clip_start) * pixels_per_second
             if local_x >= view_right or (local_x + thumb_w) <= view_left:
                 continue
             rect = QRectF(inner.x() + local_x, top, thumb_w, thumb_h)
-            clip_left = max(0.0, min(clip_pos, clip_width))
-            slots.append((clip_left, rect))
+            slots.append((time_offset, rect))
         return slots
 
     def _draw_thumbnails(self, painter, clip, inner, segment):
@@ -472,65 +523,65 @@ class ClipPainter(BasePainter):
         if not (clip_key and file_id):
             return False
 
-        clip_start, clip_duration = self._clip_time_bounds(clip)
+        _, clip_duration = self._clip_time_bounds(clip)
         timing = self._segment_timing(segment, clip_duration)
-        clip_width = max(float(segment.get("clip_width") or inner.width()), inner.width()) if isinstance(segment, dict) else inner.width()
         slots = self._build_thumbnail_slots(clip, inner, segment, style, timing)
         if not slots:
             return False
 
-        fps = getattr(self.w, "fps_float", 24.0) or 24.0
-        clip_duration_seconds = clip_duration if clip_duration > 0.0 else timing.get("duration", 0.0)
-        if clip_duration_seconds <= 0.0:
-            extra = self._to_float(segment.get("duration_seconds"), 0.0) if isinstance(segment, dict) else 0.0
-            clip_duration_seconds = extra if extra > 0.0 else 0.0
-        if clip_duration_seconds <= 0.0:
-            return False
+        # <<< THIS IS THE FIX >>>
+        base_offset_seconds = float(segment.get("offset_seconds", 0.0))
+        clip_fps = self._clip_media_fps(clip)
 
-        seen = set()
         pending = False
-        for clip_left, rect in slots:
-            if not isinstance(rect, QRectF):
-                continue
-            clip_left = max(0.0, min(float(clip_left), clip_width))
-            offset_seconds = 0.0
-            if clip_width > 0.0 and clip_duration_seconds > 0.0:
-                offset_seconds = (clip_left / clip_width) * clip_duration_seconds
-            frame = self._frame_for_offset(clip_start, offset_seconds, fps)
-            if frame <= 0:
-                continue
+        for time_offset, rect in slots:
+            # Correct absolute time in source media
+            absolute_time = base_offset_seconds + time_offset
+            frame = self._frame_for_offset(absolute_time, clip_fps)
             key = (clip_key, frame)
-            if key in seen:
-                continue
-            seen.add(key)
+
             pix = self._get_thumbnail_pixmap(clip_key, file_id, frame, rect)
             if pix:
                 self._paint_thumbnail_pixmap(painter, pix, rect)
             else:
                 pending = True
+
         return pending
 
     def _get_thumbnail_pixmap(self, clip_key, file_id, frame, rect):
         key = (clip_key, frame)
-        cached = self.thumb_cache.get(key)
-        if cached is not None:
-            return None if cached.isNull() else cached
+        generation = getattr(self.w, "thumbnail_generation", 0)
 
+        # 1. If we already have it cached → return it immediately
+        if key in self.thumb_cache:
+            cached = self.thumb_cache[key]
+            if not cached.isNull():
+                log.debug("thumb cache hit %s", key)
+                return cached
+            # Null pixmap means "we tried and failed" — don't request again this generation
+            if self._thumb_pending.get(key) == generation:
+                return None
+
+        # 2. If already requested this generation → don't request again
+        if self._thumb_pending.get(key) == generation:
+            return None
+
+        # 3. First time seeing this frame at this zoom level → request it
         path = self._existing_thumb_path(file_id, frame)
         if path:
             pix = QPixmap(path)
             if not pix.isNull():
                 self.thumb_cache[key] = pix
+                log.debug("Loaded existing thumbnail %s", key)
                 return pix
 
-        generation = getattr(self.w, "thumbnail_generation", 0)
-        if key not in self._thumb_pending or self._thumb_pending[key] != generation:
-            self._thumb_pending[key] = generation
-            if self.w.thumbnail_manager:
-                self.w.thumbnail_manager.request_thumbnail(
-                    clip_key, file_id, frame, generation
-                )
+        # Queue the request exactly once per generation
+        self._thumb_pending[key] = generation
         self._thumb_regions[key] = QRectF(rect)
+        if self.w.thumbnail_manager:
+            self.w.thumbnail_manager.request_thumbnail(clip_key, file_id, frame, generation)
+            log.debug("QUEUED thumbnail %s gen=%s", key, generation)
+
         return None
 
     def _paint_thumbnail_pixmap(self, painter, pixmap, rect):
@@ -559,6 +610,15 @@ class ClipPainter(BasePainter):
         painter.drawPixmap(target, scaled, source)
         if not had_hint:
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+
+    def _flush_thumbnail_repaint(self):
+        # Just repaint — we no longer rely on this timer for thumbnail updates
+        QTimer.singleShot(0, self.w.update)
+
+    def _schedule_thumbnail_repaint(self):
+        # Always ensure a repaint happens soon — even if it's the last thumbnail
+        if not self._thumbnail_repaint_timer.isActive():
+            self._thumbnail_repaint_timer.start()
 
     def _draw_menu_icon(self, painter, inner, x, used_width):
         if not self.menu_pix:
@@ -948,26 +1008,26 @@ class ClipPainter(BasePainter):
             self._thumb_regions.pop(key, None)
 
     def handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
-        """Handle a thumbnail becoming available on the background thread."""
         clip_key = str(clip_id or "")
         key = (clip_key, int(frame or 0))
-        pending_generation = self._thumb_pending.get(key)
-        if pending_generation is None or pending_generation != generation:
+
+        # Ignore if not from current generation
+        if self._thumb_pending.get(key) != generation:
             return
 
         self._thumb_pending.pop(key, None)
-        rect = self._thumb_regions.pop(key, None)
+        self._thumb_regions.pop(key, None)
+
         pix = QPixmap()
         if thumb_path and os.path.exists(thumb_path):
             pix = QPixmap(thumb_path)
+
+        # Store even empty pixmaps so we don't re-request failed ones
         self.thumb_cache[key] = pix
         self._invalidate_clip_cache_for_clip(clip_key)
 
-        if isinstance(rect, QRectF) and rect.isValid():
-            inflated = QRectF(rect).adjusted(-2.0, -2.0, 2.0, 2.0)
-            self.w.update(inflated.toRect())
-        else:
-            self.w.update()
+        # Safe repaint — this is what makes thumbnails appear immediately
+        QTimer.singleShot(0, self.w.update)
 
     def _invalidate_clip_cache_for_clip(self, clip_token):
         """Drop cached clip pixmaps when a thumbnail changes."""

@@ -268,6 +268,10 @@ class TimelineWidgetBase(QWidget):
         self.thumbnail_style = self._load_thumbnail_style()
         self.thumbnail_generation = 0
         self.thumbnail_manager = TimelineThumbnailManager(self)
+        self._viewport_thumbnail_reset_timer = QTimer(self)
+        self._viewport_thumbnail_reset_timer.setSingleShot(True)
+        self._viewport_thumbnail_reset_timer.setInterval(150)
+        self._viewport_thumbnail_reset_timer.timeout.connect(self._apply_viewport_thumbnail_reset)
 
         # Helpers for geometry, snapping and painting
         self.geometry = Geometry(self)
@@ -1200,7 +1204,7 @@ class TimelineWidgetBase(QWidget):
             view_h=view_h,
             timeline_w=timeline_w,
         )
-        self._reset_thumbnail_requests()
+        self._schedule_viewport_thumbnail_reset()
         self.update()
         self.delayed_resize_timer.start()
 
@@ -1257,7 +1261,7 @@ class TimelineWidgetBase(QWidget):
             view_h=view_h,
             timeline_w=timeline_w,
         )
-        self._reset_thumbnail_requests()
+        self._schedule_viewport_thumbnail_reset()
         self.update()
         get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
 
@@ -1467,6 +1471,8 @@ class TimelineWidgetBase(QWidget):
                 self.scrollbar_position[1] = right_norm
                 self.h_scroll_offset = left_norm * timeline_w
 
+        self.update()
+
         slider_positions = list(self.scrollbar_position)
         slider = getattr(self.win, "sliderZoomWidget", None)
         if slider:
@@ -1477,7 +1483,19 @@ class TimelineWidgetBase(QWidget):
         if emit:
             self._emit_zoom_signals(slider_positions)
 
-        # Schedule repaint
+        self._schedule_viewport_thumbnail_reset()
+        self.update()
+
+    def _schedule_viewport_thumbnail_reset(self):
+        timer = getattr(self, "_viewport_thumbnail_reset_timer", None)
+        if timer:
+            timer.stop()
+            timer.start()
+
+    def _apply_viewport_thumbnail_reset(self):
+        timer = getattr(self, "_viewport_thumbnail_reset_timer", None)
+        if timer:
+            timer.stop()
         self._reset_thumbnail_requests()
         self.update()
 
@@ -1510,7 +1528,7 @@ class TimelineWidgetBase(QWidget):
         self.is_auto_center = False
 
         # Schedule repaint
-        self._reset_thumbnail_requests()
+        self._schedule_viewport_thumbnail_reset()
         self.update()
 
     def set_scroll_left(self, new_left):
@@ -1524,7 +1542,7 @@ class TimelineWidgetBase(QWidget):
         self.h_scroll_offset = left * timeline_w
         self.is_auto_center = False
         self.geometry.refresh_viewport(timeline_w=timeline_w)
-        self._reset_thumbnail_requests()
+        self._schedule_viewport_thumbnail_reset()
         self.update()
 
     def _center_on_seconds(self, seconds, width_norm=None, timeline_w=None, view_w=None):
