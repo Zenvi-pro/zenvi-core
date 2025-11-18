@@ -197,6 +197,8 @@ class Transition(QueryObject):
     def title(self):
         """ Get the translated display title of this item """
         path = self.data.get("reader", {}).get("path")
+        if not path:
+            return None
         fileBaseName = os.path.splitext(os.path.basename(path))[0]
 
         # split the name into parts (looking for a number)
