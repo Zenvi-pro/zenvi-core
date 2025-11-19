@@ -31,6 +31,7 @@ from functools import partial
 from PyQt5.QtCore import (
     Qt,
     QRectF,
+    QSize,
     QTimer,
     QPointF,
     QSignalTransition,
@@ -531,6 +532,50 @@ class TimelineWidgetBase(QWidget):
                 self._project_duration_override = None
         self.geometry.mark_dirty()
         self.update()
+
+    def _content_height_hint(self):
+        """Estimate content height for size hint calculations."""
+        self.geometry.ensure()
+        ctx = getattr(self.geometry, "_view_context", {}) or {}
+        content = ctx.get("content_h")
+        if content is None:
+            tracks = getattr(self.geometry, "track_list", []) or []
+            count = len(tracks) or 1
+            base_height = float(self.track_height or self.vertical_factor or 0.0)
+            gap = float(self.track_gap or 0.0)
+            margin = float(self.track_margin_top or 0.0)
+            content = margin + count * base_height
+            if count > 1:
+                content += (count - 1) * gap
+        try:
+            return max(0.0, float(content))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _size_hint_height(self):
+        ruler = max(0.0, float(self.ruler_height or 0.0))
+        bar = max(0.0, float(self.scroll_bar_thickness or 0.0))
+        return int(round(self._content_height_hint() + ruler + bar))
+
+    def sizeHint(self):
+        self.geometry.ensure()
+        ctx = getattr(self.geometry, "_view_context", {}) or {}
+        timeline_w = max(
+            float(ctx.get("timeline_w") or 0.0),
+            float(ctx.get("view_w") or 0.0),
+        )
+        width = max(
+            float(self.width() or 0.0),
+            timeline_w + float(self.track_name_width or 0.0) + float(self.scroll_bar_thickness or 0.0),
+        )
+        return QSize(int(round(width)), self._size_hint_height())
+
+    def minimumSizeHint(self):
+        min_w = float(self.track_name_width or 0.0) + float(self.scroll_bar_thickness or 0.0)
+        base_h = float(self.ruler_height or 0.0) + float(self.scroll_bar_thickness or 0.0)
+        track_h = max(0.0, float(self.track_height or 0.0))
+        min_h = max(100.0, base_h + track_h)
+        return QSize(int(round(max(min_w, 1.0))), int(round(min_h)))
 
     def _apply_external_zoom(self, zoom_factor):
         """Apply zoom requests from the ZoomSlider without feedback."""
@@ -1189,6 +1234,7 @@ class TimelineWidgetBase(QWidget):
     def resizeEvent(self, event):
         """Widget resize event"""
         event.accept()
+        self.geometry.mark_dirty()
         self.delayed_size = self.size()
         view_w = max(
             0.0,
@@ -1198,12 +1244,14 @@ class TimelineWidgetBase(QWidget):
             0.0,
             self.height() - self.ruler_height - self.scroll_bar_thickness,
         )
+        self.geometry.ensure()
         timeline_w = self.scrollbar_position[2] or None
         self.geometry.refresh_viewport(
             view_w=view_w,
             view_h=view_h,
             timeline_w=timeline_w,
         )
+        self.updateGeometry()
         self._schedule_viewport_thumbnail_reset()
         self.update()
         self.delayed_resize_timer.start()
@@ -1261,6 +1309,9 @@ class TimelineWidgetBase(QWidget):
             view_h=view_h,
             timeline_w=timeline_w,
         )
+        self.geometry.mark_dirty()
+        self.geometry.ensure()
+        self.updateGeometry()
         self._schedule_viewport_thumbnail_reset()
         self.update()
         get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))

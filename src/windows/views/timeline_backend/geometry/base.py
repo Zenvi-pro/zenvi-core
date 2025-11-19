@@ -319,7 +319,7 @@ class GeometryBase:
         ctx["timeline_w"] = timeline_w
 
         top_margin = float(ctx.get("top_margin", 0.0) or 0.0)
-        content_h = max(float(ctx.get("content_h", view_h + top_margin) or 0.0), view_h + top_margin)
+        content_h = max(0.0, float(ctx.get("content_h", view_h + top_margin) or 0.0))
         ctx["content_h"] = content_h
 
         h_offset = self._update_horizontal_scrollbar(timeline_w, view_w)
