@@ -189,6 +189,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Stop threads
         self.StopSignal.emit()
 
+        # Stop timeline background workers (such as the thumbnail thread) before Qt
+        # begins destroying child widgets, to avoid QThread warnings on shutdown.
+        timeline_widget = getattr(self, "timeline", None)
+        if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
+            timeline_widget.thumbnail_manager.shutdown()
+
         # Stop thumbnail server thread (if any)
         if self.http_server_thread:
             self.http_server_thread.kill()
