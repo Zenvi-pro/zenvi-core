@@ -10,8 +10,6 @@
 						<end>641</end>
 						<in>1</in>
 						<out>301</out>
-						<pproTicksIn>8475667200</pproTicksIn>
-						<pproTicksOut>2551175827200</pproTicksOut>
 						<alphatype>none</alphatype>
 						<pixelaspectratio>square</pixelaspectratio>
 						<anamorphic>FALSE</anamorphic>
@@ -65,8 +63,7 @@
 								<effectcategory>motion</effectcategory>
 								<effecttype>motion</effecttype>
 								<mediatype>video</mediatype>
-								<pproBypass>false</pproBypass>
-								<parameter authoringApp="OpenShot">
+								<parameter>
 									<parameterid>opacity</parameterid>
 									<name>opacity</name>
 									<valuemin>0</valuemin>
@@ -81,16 +78,7 @@
 							<shottake></shottake>
 							<lognote></lognote>
 							<good></good>
-							<originalvideofilename></originalvideofilename>
-							<originalaudiofilename></originalaudiofilename>
 						</logginginfo>
-						<colorinfo>
-							<lut></lut>
-							<lut1></lut1>
-							<asc_sop></asc_sop>
-							<asc_sat></asc_sat>
-							<lut2></lut2>
-						</colorinfo>
 						<labels>
 							<label2>Violet</label2>
 						</labels>

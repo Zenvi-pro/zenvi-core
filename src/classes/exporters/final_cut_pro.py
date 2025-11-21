@@ -26,6 +26,8 @@
  """
 
 import os
+import shutil
+import subprocess
 from operator import itemgetter
 from uuid import uuid1
 from xml.dom import minidom
@@ -39,11 +41,10 @@ from classes.logger import log
 from classes.path_utils import absolute_media_path, relative_export_path, normalize_path
 from classes.query import Clip, Track, File
 
-TICKS_PER_FRAME = 254016000000
 INTERPOLATION_EXPORT_MAP = {
-    openshot.LINEAR: "0",
-    openshot.BEZIER: "1",
-    openshot.CONSTANT: "2"
+    openshot.LINEAR: "linear",
+    openshot.BEZIER: "bezier",
+    openshot.CONSTANT: "hold"
 }
 
 
@@ -71,6 +72,20 @@ def _format_timebase(fps_num, fps_den):
     fps_value = float(fps_num) / float(fps_den)
     text = ("{0:.3f}".format(fps_value)).rstrip('0').rstrip('.')
     return text or "0"
+
+
+def _format_ratio(num, den):
+    """Format a numeric ratio as a compact string."""
+    try:
+        num = float(num)
+        den = float(den)
+        if den == 0:
+            raise ZeroDivisionError()
+        value = num / den
+        text = ("{0:.6f}".format(value)).rstrip('0').rstrip('.')
+        return text or "1"
+    except Exception:
+        return "1"
 
 
 def _clip_file_info(clip):
@@ -108,6 +123,30 @@ def _apply_rate_settings(rate_nodes, timebase_value, ntsc_value):
             _set_text(ntsc_nodes[0], ntsc_value)
 
 
+def _validate_export(xml_path):
+    """Validate the exported XML against the bundled Final Cut Pro DTDs."""
+    xmllint_path = shutil.which("xmllint")
+    if not xmllint_path:
+        log.info("Skipping FCP XML validation; xmllint not available")
+        return
+
+    for dtd_file in ("fcp-xml-v4.dtd", "fcp-xml-v5.dtd"):
+        dtd_path = os.path.join(info.RESOURCES_PATH, dtd_file)
+        if not os.path.exists(dtd_path):
+            continue
+
+        result = subprocess.run(
+            [xmllint_path, "--noout", "--dtdvalid", dtd_path, xml_path],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            log.info("Validated Final Cut Pro XML against %s", dtd_file)
+        else:
+            error_text = (result.stderr or result.stdout or "").strip()
+            log.warning("Final Cut Pro XML did not validate against %s: %s", dtd_file, error_text)
+
+
 def createEffect(xmldoc, name, node, points, scale):
     """Create the XML filter with keyframes"""
     # Find correct effect
@@ -125,11 +164,8 @@ def createEffect(xmldoc, name, node, points, scale):
                 keyframes[keyframeTime] = (keyframeValue, interpolation)
 
             # Loop through Points
-            first_value = None
             for keyframeTime in sorted(keyframes.keys()):
                 keyframeValue, interpolation = keyframes.get(keyframeTime)
-                if first_value is None:
-                    first_value = keyframeValue
 
                 # Create keyframe element for each point
                 keyframeNode = xmldoc.createElement("keyframe")
@@ -141,9 +177,11 @@ def createEffect(xmldoc, name, node, points, scale):
                 valueNode.appendChild(xmldoc.createTextNode(str(keyframeValue)))
                 keyframeNode.appendChild(valueNode)
                 interpNode = xmldoc.createElement("interpolation")
-                interpNode.appendChild(
-                    xmldoc.createTextNode(INTERPOLATION_EXPORT_MAP.get(interpolation, "0"))
+                interpName = xmldoc.createElement("name")
+                interpName.appendChild(
+                    xmldoc.createTextNode(INTERPOLATION_EXPORT_MAP.get(interpolation, "linear"))
                 )
+                interpNode.appendChild(interpName)
                 keyframeNode.appendChild(interpNode)
 
 
@@ -155,9 +193,15 @@ def export_xml():
     # Get FPS info
     fps_num = get_app().project.get("fps").get("num", 24)
     fps_den = get_app().project.get("fps").get("den", 1)
-    fps_float = float(fps_num / fps_den)
     timebase_value = _format_timebase(fps_num, fps_den)
     ntsc_value = "TRUE" if _is_ntsc_rate(fps_num, fps_den) else "FALSE"
+    project_pixel_ratio = app.project.get("pixel_ratio") or {}
+    project_pixel_ratio_value = _format_ratio(project_pixel_ratio.get("num", 1), project_pixel_ratio.get("den", 1))
+    try:
+        project_pixel_ratio_float = float(project_pixel_ratio.get("num", 1)) / float(project_pixel_ratio.get("den", 1))
+    except Exception:
+        project_pixel_ratio_float = 1.0
+    project_anamorphic_value = "TRUE" if abs(project_pixel_ratio_float - 1.0) > 0.0005 else "FALSE"
 
     # Get path
     recommended_path = get_app().project.current_filepath or ""
@@ -199,6 +243,10 @@ def export_xml():
     _set_text(xmldoc.getElementsByTagName("duration")[0], duration_frames)
     _set_text(xmldoc.getElementsByTagName("width")[0], app.project.get("width"))
     _set_text(xmldoc.getElementsByTagName("height")[0], app.project.get("height"))
+    for par_node in xmldoc.getElementsByTagName("pixelaspectratio"):
+        _set_text(par_node, project_pixel_ratio_value)
+    for anamorphic_node in xmldoc.getElementsByTagName("anamorphic"):
+        _set_text(anamorphic_node, project_anamorphic_value)
     _set_text(xmldoc.getElementsByTagName("samplerate")[0], app.project.get("sample_rate"))
     sequence_node = xmldoc.getElementsByTagName("sequence")[0]
     if app.project.get("id"):
@@ -211,7 +259,7 @@ def export_xml():
     # Get parent nodes
     parentAudioNode = xmldoc.getElementsByTagName("audio")[0]
     parentVideoNode = xmldoc.getElementsByTagName("video")[0]
-    num_output_channels = parentAudioNode.getElementsByTagName("numOutputChannels")
+    num_output_channels = parentAudioNode.getElementsByTagName("channelcount")
     if num_output_channels:
         project_channels = app.project.get("channels")
         if project_channels is None:
@@ -277,6 +325,13 @@ def export_xml():
             clip_title = clip.data.get('title') or display_name or os.path.basename(abs_media_path or "") or "Clip"
             sample_rate = merged_data.get("sample_rate") or merged_data.get("audio_sample_rate") or app.project.get("sample_rate") or 48000
             channel_count = merged_data.get("channels") or merged_data.get("channel_count") or 2
+            merged_pixel_ratio = merged_data.get("pixel_ratio") or project_pixel_ratio
+            clip_pixel_ratio_value = _format_ratio(merged_pixel_ratio.get("num", 1), merged_pixel_ratio.get("den", 1))
+            try:
+                clip_pixel_ratio_float = float(merged_pixel_ratio.get("num", 1)) / float(merged_pixel_ratio.get("den", 1))
+            except Exception:
+                clip_pixel_ratio_float = 1.0
+            clip_anamorphic_value = "TRUE" if abs(clip_pixel_ratio_float - 1.0) > 0.0005 else "FALSE"
             try:
                 sample_rate = int(sample_rate)
             except (TypeError, ValueError):
@@ -306,8 +361,10 @@ def export_xml():
                 _set_text(clipNode.getElementsByTagName("in")[0], clip_in_frames)
                 _set_text(clipNode.getElementsByTagName("out")[0], clip_out_frames)
                 _set_text(clipNode.getElementsByTagName("duration")[0], clip_duration_frames)
-                _set_text(clipNode.getElementsByTagName("pproTicksIn")[0], clip_in_frames * TICKS_PER_FRAME)
-                _set_text(clipNode.getElementsByTagName("pproTicksOut")[0], clip_out_frames * TICKS_PER_FRAME)
+                for par_node in clipNode.getElementsByTagName("pixelaspectratio"):
+                    _set_text(par_node, clip_pixel_ratio_value)
+                for anamorphic_node in clipNode.getElementsByTagName("anamorphic"):
+                    _set_text(anamorphic_node, clip_anamorphic_value)
                 _apply_rate_settings(clipNode.getElementsByTagName("rate"), timebase_value, ntsc_value)
 
                 file_path_nodes = clip_file_node.getElementsByTagName("pathurl")
@@ -329,6 +386,10 @@ def export_xml():
                 height_nodes = clip_file_node.getElementsByTagName("height")
                 if height_nodes:
                     _set_text(height_nodes[0], merged_data.get("height") or app.project.get("height"))
+                for par_node in clip_file_node.getElementsByTagName("pixelaspectratio"):
+                    _set_text(par_node, clip_pixel_ratio_value)
+                for anamorphic_node in clip_file_node.getElementsByTagName("anamorphic"):
+                    _set_text(anamorphic_node, clip_anamorphic_value)
                 samplerate_nodes = clip_file_node.getElementsByTagName("samplerate")
                 if samplerate_nodes:
                     _set_text(samplerate_nodes[0], sample_rate)
@@ -344,12 +405,6 @@ def export_xml():
                 audioTrackNode.appendChild(clipAudioNode)
 
                 clipAudioNode.setAttribute('id', "%s-audio" % clip.data.get('id'))
-                if channel_count == 1:
-                    clipAudioNode.setAttribute('premiereChannelType', 'mono')
-                elif channel_count == 2:
-                    clipAudioNode.setAttribute('premiereChannelType', 'stereo')
-                else:
-                    clipAudioNode.setAttribute('premiereChannelType', 'multichannel')
 
                 audio_file_node = clipAudioNode.getElementsByTagName("file")[0]
                 if clip.data.get('file_id'):
@@ -364,8 +419,6 @@ def export_xml():
                 _set_text(clipAudioNode.getElementsByTagName("in")[0], clip_in_frames)
                 _set_text(clipAudioNode.getElementsByTagName("out")[0], clip_out_frames)
                 _set_text(clipAudioNode.getElementsByTagName("duration")[0], clip_duration_frames)
-                _set_text(clipAudioNode.getElementsByTagName("pproTicksIn")[0], clip_in_frames * TICKS_PER_FRAME)
-                _set_text(clipAudioNode.getElementsByTagName("pproTicksOut")[0], clip_out_frames * TICKS_PER_FRAME)
                 _apply_rate_settings(clipAudioNode.getElementsByTagName("rate"), timebase_value, ntsc_value)
 
                 audio_path_nodes = audio_file_node.getElementsByTagName("pathurl")
@@ -394,9 +447,9 @@ def export_xml():
                 createEffect(xmldoc, "Audio Levels", clipAudioNode, clip.data.get('volume', {}).get('Points', []), 1.0)
 
     try:
-        file = open(os.fsencode(file_path), "wb")  # wb needed for windows support
-        file.write(bytes(xmldoc.toxml(), 'UTF-8'))
-        file.close()
+        with open(os.fsencode(file_path), "wb") as file:
+            file.write(bytes(xmldoc.toxml(), 'UTF-8'))
+        _validate_export(file_path)
     except IOError as inst:
         log.error("Error writing XML export: {}".format(str(inst)))
     finally:

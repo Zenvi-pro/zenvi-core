@@ -29,7 +29,7 @@ import json
 import os
 from operator import itemgetter
 from urllib.parse import unquote, urlparse
-from xml.dom import minidom
+from xml.dom import minidom, Node
 
 import openshot
 from PyQt5.QtWidgets import QFileDialog
@@ -84,6 +84,37 @@ def _extract_path_from_file_node(file_node, file_lookup, base_folder):
             return _pathurl_to_path(ref_paths[0].childNodes[0].nodeValue, base_folder)
     return ""
 
+
+def _node_text_content(node):
+    """Return the concatenated text within a DOM node, descending into children."""
+    if not node:
+        return None
+    parts = []
+    for child in node.childNodes:
+        if child.nodeType in (Node.TEXT_NODE, Node.CDATA_SECTION_NODE):
+            if child.nodeValue:
+                parts.append(child.nodeValue)
+        elif child.nodeType == Node.ELEMENT_NODE:
+            nested = _node_text_content(child)
+            if nested:
+                parts.append(nested)
+    text = "".join(parts).strip()
+    return text or None
+
+
+def _float_value(node_list, default=0.0):
+    """Extract a float from the first node in a list, with a default fallback."""
+    if not node_list:
+        return default
+    text_value = _node_text_content(node_list[0])
+    if text_value is None:
+        return default
+    try:
+        return float(text_value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _clip_merge_key(path, start, end, position):
     """Return a hashable key for matching audio/video clip pairs."""
     if not path:
@@ -101,8 +132,10 @@ def _xml_interp_to_point(value):
     """Map Final Cut interpolation data to OpenShot constants."""
     if value is None:
         return openshot.LINEAR
+
+    text_value = str(value).strip()
     try:
-        numeric = int(float(value))
+        numeric = int(float(text_value))
     except (ValueError, TypeError):
         numeric = None
 
@@ -113,7 +146,7 @@ def _xml_interp_to_point(value):
     if numeric == 2:
         return openshot.CONSTANT
 
-    text = str(value).strip().lower()
+    text = text_value.lower()
     if text.startswith("lin"):
         return openshot.LINEAR
     if text.startswith("bez"):
@@ -187,9 +220,9 @@ def import_xml():
 
             # Prepare to create track lazily (only if clips remain after merging)
             track = None
-            is_locked = False
-            if track_element.getElementsByTagName("locked")[0].childNodes[0].nodeValue == "TRUE":
-                is_locked = True
+            locked_nodes = track_element.getElementsByTagName("locked")
+            locked_text = _node_text_content(locked_nodes[0]) if locked_nodes else ""
+            is_locked = (locked_text or "").strip().upper() == "TRUE"
 
             def ensure_track():
                 nonlocal track
@@ -245,13 +278,17 @@ def import_xml():
 
                 # Create Clip object
                 clip = Clip()
-                clip_start_value = float(clip_element.getElementsByTagName("in")[0].childNodes[0].nodeValue) / fps_float
-                clip_end_value = float(clip_element.getElementsByTagName("out")[0].childNodes[0].nodeValue) / fps_float
-                clip_position_value = float(clip_element.getElementsByTagName("start")[0].childNodes[0].nodeValue) / fps_float
+                clip_start_value = _float_value(clip_element.getElementsByTagName("in"), 0.0) / fps_float
+                clip_end_value = _float_value(clip_element.getElementsByTagName("out"), 0.0) / fps_float
+                clip_position_value = _float_value(clip_element.getElementsByTagName("start"), 0.0) / fps_float
 
                 clip.data = json.loads(clip_obj.Json())
                 clip.data["file_id"] = file.id
-                clip.data["title"] = clip_element.getElementsByTagName("name")[0].childNodes[0].nodeValue
+                clip_name_nodes = clip_element.getElementsByTagName("name")
+                clip_title = _node_text_content(clip_name_nodes[0]) if clip_name_nodes else None
+                if not clip_title:
+                    clip_title = os.path.basename(clip_path)
+                clip.data["title"] = clip_title
                 clip.data["layer"] = track_number
                 clip.data["image"] = thumb_path
                 clip.data["position"] = clip_position_value
@@ -262,14 +299,15 @@ def import_xml():
                 volume_points = []
                 # Loop through clip's effects
                 for effect_element in clip_element.getElementsByTagName("effect"):
-                    effectid = effect_element.getElementsByTagName("effectid")[0].childNodes[0].nodeValue
+                    effectid_nodes = effect_element.getElementsByTagName("effectid")
+                    effectid = _node_text_content(effectid_nodes[0]) if effectid_nodes else ""
                     keyframes = effect_element.getElementsByTagName("keyframe")
                     if effectid == "opacity":
                         for keyframe_element in keyframes:
-                            keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
-                            keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue) / 100.0
+                            keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
+                            keyframe_value = _float_value(keyframe_element.getElementsByTagName("value"), 0.0) / 100.0
                             interp_nodes = keyframe_element.getElementsByTagName("interpolation")
-                            interp_value = interp_nodes[0].childNodes[0].nodeValue if interp_nodes and interp_nodes[0].childNodes else None
+                            interp_value = _node_text_content(interp_nodes[0]) if interp_nodes else None
                             alpha_points.append(
                                 {
                                     "co": {
@@ -278,16 +316,16 @@ def import_xml():
                                     },
                                     "interpolation": _xml_interp_to_point(interp_value)
                                 }
-                            )
+                        )
                     elif effectid == "audiolevels":
                         for keyframe_element in keyframes:
-                            keyframe_time = float(keyframe_element.getElementsByTagName("when")[0].childNodes[0].nodeValue)
-                            keyframe_value = float(keyframe_element.getElementsByTagName("value")[0].childNodes[0].nodeValue)
+                            keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
+                            keyframe_value = _float_value(keyframe_element.getElementsByTagName("value"), 0.0)
                             if keyframe_value > 5.0:
                                 keyframe_value = keyframe_value / 100.0
                             keyframe_value = max(0.0, min(1.0, keyframe_value))
                             interp_nodes = keyframe_element.getElementsByTagName("interpolation")
-                            interp_value = interp_nodes[0].childNodes[0].nodeValue if interp_nodes and interp_nodes[0].childNodes else None
+                            interp_value = _node_text_content(interp_nodes[0]) if interp_nodes else None
                             volume_points.append(
                                 {
                                     "co": {
