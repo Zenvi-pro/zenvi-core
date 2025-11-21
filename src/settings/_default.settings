@@ -113,6 +113,13 @@
     "setting": "docks_frozen"
   },
   {
+    "value": 0,
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "timeline_height"
+  },
+  {
     "value": "thumbnail",
     "title": "",
     "type": "hidden",

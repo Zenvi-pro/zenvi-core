@@ -2804,6 +2804,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         s.set('window_state_v2', qt_types.bytes_to_str(self.saveState()))
         s.set('window_geometry_v2', qt_types.bytes_to_str(self.saveGeometry()))
         s.set('docks_frozen', self.docks_frozen)
+        dock = getattr(self, "dockTimeline", None)
+        if dock:
+            s.set('timeline_height', dock.height())
 
     # Get window settings from setting store
     def load_settings(self):
@@ -2818,6 +2821,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.actionFreeze_View_trigger()
         else:
             self.actionUn_Freeze_View_trigger()
+        timeline_height = s.get('timeline_height')
+        if timeline_height:
+            try:
+                height_value = int(timeline_height)
+            except (TypeError, ValueError):
+                height_value = None
+            if height_value and height_value > 0:
+                self.saved_timeline_height = height_value
 
         # Load Recent Projects
         self.load_recent_menu()
@@ -3208,6 +3219,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             if child.isFloating() and child.isEnabled():
                 child.raise_()
                 child.show()
+        if (self.saved_geometry or self.saved_state) and not self._restored_saved_window:
+            # Delay the restore until after the window is shown so layouts are settled.
+            QTimer.singleShot(0, self._restore_saved_window)
 
     def hideEvent(self, event):
         """ Have any child windows hide with main window """
@@ -3215,6 +3229,61 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         for child in self.getDocks():
             if child.isFloating() and child.isVisible():
                 child.hide()
+
+    def _restore_saved_window(self):
+        """Apply saved geometry/state after the first show event."""
+        if self._restored_saved_window:
+            return
+        self._restored_saved_window = True
+        if self.saved_geometry:
+            self.restoreGeometry(self.saved_geometry)
+        if self.saved_state:
+            QTimer.singleShot(0, self._restore_state_and_timeline)
+
+    def _restore_state_and_timeline(self):
+        """Restore saved dock state and then apply timeline height."""
+        if self.saved_state:
+            self.restoreState(self.saved_state)
+        self._apply_saved_timeline_height()
+
+    def _apply_saved_timeline_height(self):
+        """Temporarily enforce the saved timeline dock height so Qt layouts settle."""
+        if self._timeline_height_restored or not self.saved_timeline_height:
+            return
+
+        dock = getattr(self, "dockTimeline", None)
+        if not dock:
+            return
+
+        self._timeline_original_min_height = dock.minimumHeight()
+        self._timeline_original_max_height = dock.maximumHeight()
+        dock.setFixedHeight(self.saved_timeline_height)
+        self._timeline_constraints_overridden = True
+        self._timeline_height_restored = True
+        QTimer.singleShot(0, self._release_saved_timeline_constraints)
+
+    def _release_saved_timeline_constraints(self):
+        """Return the timeline dock's size constraints to their original values."""
+        if not self._timeline_constraints_overridden:
+            return
+
+        dock = getattr(self, "dockTimeline", None)
+        if not dock:
+            return
+
+        if self._timeline_original_min_height is not None:
+            dock.setMinimumHeight(self._timeline_original_min_height)
+        else:
+            dock.setMinimumHeight(0)
+
+        if self._timeline_original_max_height is not None:
+            dock.setMaximumHeight(self._timeline_original_max_height)
+        else:
+            dock.setMaximumHeight(16777215)
+
+        self._timeline_constraints_overridden = False
+        self._timeline_original_min_height = None
+        self._timeline_original_max_height = None
 
     def show_property_timeout(self):
         """Callback for show property timer"""
@@ -3924,6 +3993,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Load window state and geometry
         self.saved_state = None
         self.saved_geometry = None
+        self.saved_timeline_height = None
+        self._restored_saved_window = False
+        self._timeline_height_restored = False
+        self._timeline_constraints_overridden = False
+        self._timeline_original_min_height = None
+        self._timeline_original_max_height = None
         self.load_settings()
 
         # Setup Cache settings
@@ -4052,14 +4127,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         theme_name = s.get("theme")
         theme = get_app().theme_manager.apply_theme(theme_name)
         s.set("theme", theme.name)
-
-        # Apply saved window geometry/state from settings
-        if self.saved_geometry:
-            self.restoreGeometry(self.saved_geometry)
-            QTimer.singleShot(0, functools.partial(self.restoreGeometry, self.saved_geometry))
-        if self.saved_state:
-            self.restoreState(self.saved_state)
-            QTimer.singleShot(0, functools.partial(self.restoreState, self.saved_state))
 
         # Save settings
         s.save()
