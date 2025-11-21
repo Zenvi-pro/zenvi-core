@@ -44,7 +44,7 @@
 										<height>480</height>
 										<anamorphic>FALSE</anamorphic>
 										<pixelaspectratio>square</pixelaspectratio>
-										<fielddominance>lower</fielddominance>
+										<fielddominance>none</fielddominance>
 									</samplecharacteristics>
 								</video>
                                 <audio>
