@@ -37,6 +37,25 @@ from classes.path_utils import relative_export_path, absolute_media_path
 from classes.query import Clip, Track, File
 from classes.time_parts import secondsToTimecode
 
+def _interp_name(value):
+    """Map interpolation value to a stable name."""
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = None
+    # libopenshot: 0=bezier, 1=linear, 2=constant/hold
+    if numeric == 0:
+        return "bezier"
+    if numeric == 1:
+        return "linear"
+    if numeric == 2:
+        return "hold"
+    text = str(value).lower() if value is not None else ""
+    if text.startswith("bez"):
+        return "bezier"
+    if text.startswith("hold") or text.startswith("const"):
+        return "hold"
+    return "linear"
 
 def _is_drop_frame(fps_num, fps_den):
     """Return True if FPS corresponds to a common drop-frame rate."""
@@ -62,6 +81,53 @@ def _clip_media_path(clip):
             return resolved
         return reader_path
     return ""
+
+
+def _volume_to_db(linear_value):
+    """Convert linear (0-1) volume to dB, clamped to a reasonable floor."""
+    try:
+        v = float(linear_value)
+    except (TypeError, ValueError):
+        v = 0.0
+    v = max(0.0, v)
+    if v == 0.0:
+        return -96.0
+    import math
+    db = 20.0 * math.log10(v)
+    return max(db, -96.0)
+
+
+def _fmt_value(value):
+    """Format numeric with up to 2 decimals, stripping trailing zeros."""
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    s = f"{val:.2f}"
+    s = s.rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def _fmt_percent(value):
+    """Format percent by rounding to nearest int (no decimals)."""
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    return str(int(round(val)))
+
+
+def _db_to_volume(db_value):
+    """Convert dB back to linear 0-1."""
+    import math
+    try:
+        db = float(db_value)
+    except (TypeError, ValueError):
+        return 0.0
+    if db <= -96.0:
+        return 0.0
+    linear = 10 ** (db / 20.0)
+    return max(0.0, min(1.0, linear))
 
 
 def export_edl():
@@ -176,31 +242,67 @@ def export_edl():
 
                 # Add opacity data (if any)
                 alpha_points = clip.data.get('alpha', {}).get('Points', [])
-                if len(alpha_points) > 1:
+                if len(alpha_points) >= 1:
                     # Loop through Points (remove duplicates)
                     keyframes = {}
                     for point in alpha_points:
                         keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
                         keyframeValue = point.get('co', {}).get('Y', 0.0) * 100.0
-                        keyframes[keyframeTime] = keyframeValue
+                        interp_name = _interp_name(point.get("interpolation"))
+                        keyframes[keyframeTime] = (keyframeValue, interp_name)
                     # Write keyframe values to EDL
                     for opacity_time in sorted(keyframes.keys()):
-                        opacity_value = keyframes.get(opacity_time)
-                        f.write("* OPACITY LEVEL AT %s IS %0.2f%%  (REEL AX)\n" % (secondsToTimecode(opacity_time, fps_num, fps_den), opacity_value))
+                        opacity_value, interp_name = keyframes.get(opacity_time)
+                        tc = secondsToTimecode(opacity_time, fps_num, fps_den)
+                        f.write("* VIDEO LEVEL AT %s IS %s%% interp:%s\n" % (tc, _fmt_percent(opacity_value), interp_name))
 
                 # Add volume data (if any)
                 volume_points = clip.data.get('volume', {}).get('Points', [])
-                if len(volume_points) > 1:
+                if len(volume_points) >= 1:
                     # Loop through Points (remove duplicates)
                     keyframes = {}
                     for point in volume_points:
                         keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
-                        keyframeValue = (point.get('co', {}).get('Y', 0.0) * 99.0) - 99 # Scaling 0-1 to -99-0
-                        keyframes[keyframeTime] = keyframeValue
+                        keyframeValue = _volume_to_db(point.get('co', {}).get('Y', 0.0))
+                        interp_name = _interp_name(point.get("interpolation"))
+                        keyframes[keyframeTime] = (keyframeValue, interp_name)
                     # Write keyframe values to EDL
                     for volume_time in sorted(keyframes.keys()):
-                        volume_value = keyframes.get(volume_time)
-                        f.write("* AUDIO LEVEL AT %s IS %0.2f DB  (REEL AX A1)\n" % (secondsToTimecode(volume_time, fps_num, fps_den), volume_value))
+                        volume_value, interp_name = keyframes.get(volume_time)
+                        f.write("* AUDIO LEVEL AT %s IS %.2f dB interp:%s\n" % (secondsToTimecode(volume_time, fps_num, fps_den), volume_value, interp_name))
+
+                # Export transform keyframes (skip defaults)
+                transform_defs = [
+                    ("scale_x", "SCALE X", 100.0, 1.0, True),
+                    ("scale_y", "SCALE Y", 100.0, 1.0, True),
+                    ("location_x", "LOCATION X", 100.0, 0.0, True),
+                    ("location_y", "LOCATION Y", 100.0, 0.0, True),
+                    ("rotation", "ROTATION", 1.0, 0.0, False),
+                    ("shear_x", "SHEAR X", 100.0, 0.0, True),
+                    ("shear_y", "SHEAR Y", 100.0, 0.0, True),
+                ]
+
+                for key_name, label, multiplier, default_val, is_percent in transform_defs:
+                    points = clip.data.get(key_name, {}).get("Points", [])
+                    if not points:
+                        continue
+                    include_all = len(points) > 1
+                    keyframes = {}
+                    for point in points:
+                        keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
+                        raw_value = point.get('co', {}).get('Y', default_val)
+                        if not include_all and len(points) == 1 and abs(raw_value - default_val) < 1e-6:
+                            continue  # single default point: skip
+                        if not include_all and keyframes and abs(raw_value - default_val) < 1e-6:
+                            continue  # avoid duplicate defaults when not including all
+                        display_value = raw_value * multiplier if is_percent else raw_value
+                        interp_name = _interp_name(point.get("interpolation"))
+                        keyframes[keyframeTime] = (display_value, interp_name)
+                    for t in sorted(keyframes.keys()):
+                        val, interp_name = keyframes[t]
+                        unit = "%" if is_percent else "DEG"
+                        display_val = _fmt_percent(val) if is_percent else _fmt_value(val)
+                        f.write("* %s AT %s IS %s%s interp:%s\n" % (label, secondsToTimecode(t, fps_num, fps_den), display_val, unit, interp_name))
 
                 # Update export position
                 export_position = max(export_position, clip_position + clip_duration)
