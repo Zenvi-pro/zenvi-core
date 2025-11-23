@@ -3238,7 +3238,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if self.saved_geometry:
             self.restoreGeometry(self.saved_geometry)
         if self.saved_state:
-            QTimer.singleShot(0, self._restore_state_and_timeline)
+            self._restore_state_and_timeline()
 
     def _restore_state_and_timeline(self):
         """Restore saved dock state and then apply timeline height."""
@@ -3247,7 +3247,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self._apply_saved_timeline_height()
 
     def _apply_saved_timeline_height(self):
-        """Temporarily enforce the saved timeline dock height so Qt layouts settle."""
+        """Apply the saved timeline dock height without a visible two-pass resize."""
         if self._timeline_height_restored or not self.saved_timeline_height:
             return
 
@@ -3255,35 +3255,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if not dock:
             return
 
-        self._timeline_original_min_height = dock.minimumHeight()
-        self._timeline_original_max_height = dock.maximumHeight()
-        dock.setFixedHeight(self.saved_timeline_height)
-        self._timeline_constraints_overridden = True
+        # If height already matches, skip the resize to avoid an extra layout pass.
+        if dock.height() != self.saved_timeline_height:
+            self.resizeDocks([dock], [self.saved_timeline_height], Qt.Vertical)
         self._timeline_height_restored = True
-        QTimer.singleShot(0, self._release_saved_timeline_constraints)
-
-    def _release_saved_timeline_constraints(self):
-        """Return the timeline dock's size constraints to their original values."""
-        if not self._timeline_constraints_overridden:
-            return
-
-        dock = getattr(self, "dockTimeline", None)
-        if not dock:
-            return
-
-        if self._timeline_original_min_height is not None:
-            dock.setMinimumHeight(self._timeline_original_min_height)
-        else:
-            dock.setMinimumHeight(0)
-
-        if self._timeline_original_max_height is not None:
-            dock.setMaximumHeight(self._timeline_original_max_height)
-        else:
-            dock.setMaximumHeight(16777215)
-
-        self._timeline_constraints_overridden = False
-        self._timeline_original_min_height = None
-        self._timeline_original_max_height = None
 
     def show_property_timeout(self):
         """Callback for show property timer"""
@@ -3996,9 +3971,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.saved_timeline_height = None
         self._restored_saved_window = False
         self._timeline_height_restored = False
-        self._timeline_constraints_overridden = False
-        self._timeline_original_min_height = None
-        self._timeline_original_max_height = None
         self.load_settings()
 
         # Setup Cache settings
