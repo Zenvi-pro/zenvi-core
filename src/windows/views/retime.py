@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import copy
 import json
 import openshot
 from classes.app import get_app
@@ -102,34 +103,57 @@ def _scale_points(points, start_x, new_end_x, scale):
         co["X"] = nx
 
 
-def _flip_time_points(points):
-    if len(points) < 2:
+def _reverse_time_points(points):
+    """Mirror points horizontally (X) across their min/max span and swap handles."""
+    if not isinstance(points, list) or not points:
         return
-    y_start = int(round(points[0].get("co", {}).get("Y", 0)))
-    y_end = int(round(points[-1].get("co", {}).get("Y", 0)))
-    for point in points:
-        co = point.get("co", {})
-        y = co.get("Y")
-        if y is None:
-            continue
-        co["Y"] = int(round(y_start + y_end - y))
+
+    x_values = [p.get("co", {}).get("X") for p in points if isinstance(p.get("co"), dict) and "X" in p.get("co", {})]
+    if not x_values:
+        return
+
+    pivot = min(x_values) + max(x_values)
+
+    # Preserve original order to keep segment interpolation mapping intact.
+    orig_points = sorted(points, key=lambda p: p.get("co", {}).get("X", 0))
+
+    mirrored = []
+    for point in orig_points:
+        new_point = copy.deepcopy(point)
+        co = new_point.get("co")
+        if isinstance(co, dict) and "X" in co:
+            co["X"] = pivot - point["co"]["X"]
+            hl = new_point.pop("handle_left", None)
+            hr = new_point.pop("handle_right", None)
+            if hr is not None:
+                new_point["handle_left"] = hr
+            if hl is not None:
+                new_point["handle_right"] = hl
+        mirrored.append(new_point)
+
+    # Move per-segment interpolation with its segment. In libopenshot the interpolation
+    # lives on the destination point, so when reversing we shift each interpolation one
+    # point backward to follow the same segment in the new order.
+    for idx in range(len(mirrored) - 1):
+        mirrored[idx]["interpolation"] = orig_points[idx + 1].get("interpolation", openshot.LINEAR)
+    if mirrored:
+        mirrored[-1]["interpolation"] = orig_points[-1].get("interpolation", openshot.LINEAR)
+
+    mirrored.sort(key=lambda p: p.get("co", {}).get("X", 0))
+    points[:] = mirrored
 
 
-def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, pfps, direction):
+def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, pfps, _direction):
     time_data = clip.data.get("time")
     time_points = time_data.get("Points") if isinstance(time_data, dict) else None
     if not isinstance(time_points, list) or len(time_points) < 2:
         y0 = start_x
         y1 = int(round(old_end_s * pfps))
-        if direction == -1:
-            y0, y1 = y1, y0
         p0 = openshot.Point(start_x, y0, openshot.LINEAR)
         p1 = openshot.Point(new_end_x, y1, openshot.LINEAR)
         clip.data["time"] = {"Points": [json.loads(p0.Json()), json.loads(p1.Json())]}
         return clip.data["time"]["Points"]
 
-    if direction == -1:
-        _flip_time_points(time_points)
     return time_points
 
 
@@ -193,7 +217,7 @@ def _finalize_time_points(time_points, start_x, new_end_x):
 def retime_clip(clip, new_end, new_position=None, direction=1):
     """Retimes a clip and uniformly rescales ALL keyframes' X (including 'time').
        - X and Y are in PROJECT frames.
-       - Flip 'time'.Y for reverse.
+       - Mirror the time curve's X for reverse.
     """
 
     pfps = _project_fps_float()
@@ -212,6 +236,8 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
         pfps,
         direction,
     )
+    if direction == -1:
+        _reverse_time_points(time_points)
     _finalize_time_points(time_points, metrics["start_x"], metrics["new_end_x"])
 
     clip.data["duration"] = float(metrics["new_dur_s"])
