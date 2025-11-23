@@ -45,18 +45,27 @@ SAMPLES_PER_SECOND = 20
 TIME_CURVE_RETRY_DELAY = 0.05
 TIME_CURVE_MAX_RETRIES = 5
 
-_time_curve_retry_counts = {}
+_waveform_retry_counts = {}
 
 
-def _schedule_time_curve_retry(file_id, clip_id, tid):
-    """Retry waveform generation for clips whose time curve hasn't updated yet."""
+def _schedule_waveform_retry(file_id, clip_id, tid, reason=""):
+    """Retry waveform generation for clips whose time curve or clip instance isn't ready."""
 
-    attempts = _time_curve_retry_counts.get(clip_id, 0)
+    attempts = _waveform_retry_counts.get(clip_id, 0)
     if attempts >= TIME_CURVE_MAX_RETRIES:
-        _time_curve_retry_counts.pop(clip_id, None)
+        _waveform_retry_counts.pop(clip_id, None)
         return False
 
-    _time_curve_retry_counts[clip_id] = attempts + 1
+    _waveform_retry_counts[clip_id] = attempts + 1
+
+    if reason:
+        log.debug(
+            "Scheduling waveform retry %s/%s for clip %s (%s)",
+            attempts + 1,
+            TIME_CURVE_MAX_RETRIES,
+            clip_id,
+            reason,
+        )
 
     timer = threading.Timer(
         TIME_CURVE_RETRY_DELAY,
@@ -183,19 +192,21 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
 
         clip_instance = get_app().window.timeline_sync.timeline.GetClip(clip.id)
         if not clip_instance:
-            if has_time_curve and _schedule_time_curve_retry(file_id, clip.id, tid):
-                log.debug(
-                    "Clip %s not yet available for time-curve waveform retry", clip.id
+            reason = "clip not yet available in timeline"
+            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
+                log.info(
+                    "Waveform request deferred; clip %s not ready yet. Retrying soon.",
+                    clip.id,
                 )
             else:
                 log.info("Clip not found, bailing out of waveform volume adjustments")
-                _time_curve_retry_counts.pop(clip.id, None)
             continue
 
         time_point_count = clip_instance.time.GetCount()
 
         if has_time_curve and time_point_count <= 1:
-            if _schedule_time_curve_retry(file_id, clip.id, tid):
+            reason = "time curve not ready"
+            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
                 log.debug(
                     "Clip %s time curve not ready, scheduling waveform retry", clip.id
                 )
@@ -203,7 +214,7 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
 
         if time_point_count > 1:
             # When time curves are present, generate waveform data from the clip instance itself
-            _time_curve_retry_counts.pop(clip.id, None)
+            _waveform_retry_counts.pop(clip.id, None)
             clip_audio_data = []
             channel = channel_filter if channel_filter != -1 else -1
             try:
@@ -226,7 +237,8 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
                 )
                 continue
 
-            if _schedule_time_curve_retry(file_id, clip.id, tid):
+            reason = "time curve waveform empty"
+            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
                 log.debug(
                     "Clip %s waveform generation empty; retry scheduled", clip.id
                 )
@@ -238,7 +250,7 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             )
             continue
 
-        _time_curve_retry_counts.pop(clip.id, None)
+        _waveform_retry_counts.pop(clip.id, None)
 
         if channel_filter != -1:
             # Some kind of filtering is happening, so we need to re-generate waveform data for this clip

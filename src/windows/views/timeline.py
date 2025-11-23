@@ -1377,6 +1377,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def Show_Waveform_Triggered(self, clip_ids, transaction_id=None):
         """Show a waveform for all selected clips"""
 
+        log.info("Show waveform requested for clips: %s", clip_ids)
+
         # Group clip IDs under each File ID
         # Data format:  { "fileID": ["ClipID-1", "ClipID-2", etc...]}
         files = {}
@@ -1419,7 +1421,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def clipAudioDataReady_Triggered(self, clip_id, ui_data, tid):
         # When audio data has been calculated, add it to a clip
-        log.debug("clipAudioDataReady_Triggered received for clip: %s" % clip_id)
+        audio_samples = ui_data.get("ui", {}).get("audio_data") if isinstance(ui_data, dict) else []
+        sample_count = len(audio_samples) if isinstance(audio_samples, list) else 0
+        log.info(
+            "Waveform data ready for clip %s (samples: %s)", clip_id, sample_count
+        )
 
         # Transaction id to group all deletes together
         get_app().updates.transaction_id = tid
@@ -1429,6 +1435,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if clip:
             clip.data = ui_data
             clip.save()
+            if hasattr(self, "clip_painter"):
+                self.clip_painter.clear_cache()
+            QTimer.singleShot(0, self.update)
 
         # Clear transaction id
         get_app().updates.transaction_id = None
