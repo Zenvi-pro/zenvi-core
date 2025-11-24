@@ -50,33 +50,55 @@ Example EDL Output
 
    :caption: Example EDL format supported by OpenShot:
 
-    TITLE: Clips - TRACK 5
+    TITLE: Test - TRACK 5
     FCM: NON-DROP FRAME
 
-    001  BL       V     C        00:00:00:01 00:00:03:17 00:00:00:01 00:00:03:17
-    001  AX       V     C        00:00:00:01 00:00:10:01 00:00:03:17 00:00:13:17
-    * FROM CLIP NAME: Intro.png
+    001  BL       V     C        00:00:00:00 00:00:01:24 00:00:00:00 00:00:01:24
+    002  AX       V     C        00:00:01:24 00:00:10:00 00:00:01:24 00:00:10:00
+    * FROM CLIP NAME: 1F499.svg
+    * SOURCE FILE: ../apps/openshot-qt/src/emojis/color/svg/1F499.svg
+    * VIDEO LEVEL AT 00:00:00:00 IS 100% interp:bezier
+    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 dB interp:linear
+    * SCALE X AT 00:00:01:24 IS 100% interp:bezier
+    * SCALE X AT 00:00:09:29 IS 93% interp:bezier
+    * SCALE Y AT 00:00:01:24 IS 100% interp:bezier
+    * SCALE Y AT 00:00:09:29 IS 55% interp:bezier
+    * LOCATION X AT 00:00:01:24 IS 0% interp:bezier
+    * LOCATION X AT 00:00:09:29 IS -1% interp:bezier
+    * LOCATION Y AT 00:00:01:24 IS 0% interp:bezier
+    * LOCATION Y AT 00:00:09:29 IS -32% interp:bezier
+    * ROTATION AT 00:00:01:24 IS 0DEG interp:bezier
+    * ROTATION AT 00:00:09:29 IS 23.3DEG interp:bezier
+    * SHEAR X AT 00:00:01:24 IS 0% interp:bezier
+    * SHEAR X AT 00:00:09:29 IS -12% interp:bezier
+    * SHEAR Y AT 00:00:01:24 IS 0% interp:bezier
+    * SHEAR Y AT 00:00:09:29 IS -7% interp:bezier
 
-    002  BL       V     C        00:00:00:01 00:00:05:09 00:00:13:17 00:00:18:25
-    002  AX       V     C        00:00:00:01 00:00:10:01 00:00:18:25 00:00:28:25
-    * FROM CLIP NAME: FileName.mp4
-    * OPACITY LEVEL AT 00:00:00:01 IS 0.00%  (REEL AX)
-    * OPACITY LEVEL AT 00:00:01:01 IS 100.00%  (REEL AX)
-    * OPACITY LEVEL AT 00:00:09:01 IS 100.00%  (REEL AX)
-    * OPACITY LEVEL AT 00:00:10:01 IS 0.00%  (REEL AX)
+    TITLE: Test - TRACK 4
+    FCM: NON-DROP FRAME
 
-    003  BL       V     C        00:00:00:01 00:00:33:15 00:00:28:25 00:01:02:09
-    003  AX       V     C        00:00:14:25 00:00:34:29 00:01:02:09 00:01:22:13
-    003  AX       A     C        00:00:14:25 00:00:34:29 00:01:02:09 00:01:22:13
-    * FROM CLIP NAME: FileName2.mp4
+    001  AX       V     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
+    001  AX       A     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
+    * FROM CLIP NAME: sintel_trailer-720p.mp4
+    * SOURCE FILE: ../Downloads/openshot-testing/sintel_trailer-720p.mp4
+    * VIDEO LEVEL AT 00:00:00:00 IS 0% interp:bezier
+    * VIDEO LEVEL AT 00:00:01:00 IS 100% interp:bezier
+    * VIDEO LEVEL AT 00:00:08:29 IS 100% interp:bezier
+    * VIDEO LEVEL AT 00:00:09:29 IS 0% interp:bezier
+    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 dB interp:linear
 
-    004  BL       V     C        00:00:00:01 00:00:26:25 00:01:22:13 00:01:49:07
-    004  AX       A     C        00:00:00:01 00:02:20:01 00:01:49:07 00:04:09:07
-    * FROM CLIP NAME: Music.wav
-    * AUDIO LEVEL AT 00:00:00:01 IS -99.00 DB  (REEL AX A1)
-    * AUDIO LEVEL AT 00:00:03:01 IS 0.00 DB  (REEL AX A1)
-    * AUDIO LEVEL AT 00:02:17:01 IS 0.00 DB  (REEL AX A1)
-    * AUDIO LEVEL AT 00:02:20:01 IS -99.00 DB  (REEL AX A1)
+    TITLE: Test - TRACK 3
+    FCM: NON-DROP FRAME
+
+    001  AX       V     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
+    001  AX       A     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
+    * FROM CLIP NAME: Kai_Engel_-_04_-_Moonlight_Reprise.mp3
+    * SOURCE FILE: ../Downloads/openshot-testing/Kai_Engel_-_04_-_Moonlight_Reprise.mp3
+    * VIDEO LEVEL AT 00:00:00:00 IS 100% interp:bezier
+    * AUDIO LEVEL AT 00:00:00:00 IS -96.00 dB interp:linear
+    * AUDIO LEVEL AT 00:00:03:00 IS 0.00 dB interp:linear
+    * AUDIO LEVEL AT 00:00:06:29 IS 0.00 dB interp:linear
+    * AUDIO LEVEL AT 00:00:09:29 IS -96.00 dB interp:linear
 
 XML (Final Cut Pro format)
 --------------------------

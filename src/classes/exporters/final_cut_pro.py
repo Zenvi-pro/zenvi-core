@@ -98,7 +98,7 @@ def _displayformat(ntsc_value):
 def _timecode_string(ntsc_value):
     """Return a default timecode string respecting drop/non-drop separators."""
     separator = ";" if (ntsc_value or "").upper() == "TRUE" else ":"
-    return f"00{separator}00{separator}00{separator}01"
+    return f"00{separator}00{separator}00{separator}00"
 
 
 def _file_url(path_string):
