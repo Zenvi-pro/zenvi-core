@@ -222,6 +222,8 @@ def export_edl():
                 if not has_video and not has_audio:
                     continue
                 reel_name = clip.data.get("reel") or "AX"
+                reel_video_tag = f"{reel_name} V"
+                reel_audio_tag = f"{reel_name} A1"
                 if has_video:
                     # Video Track
                     f.write(edl_string % (
@@ -232,8 +234,8 @@ def export_edl():
                     # Audio Track
                     f.write(edl_string % (
                             event_index, reel_name[:9], "A"[:6], "C",
-                            clip_start_time, clip_end_time,
-                            timeline_start_time, timeline_end_time))
+                        clip_start_time, clip_end_time,
+                        timeline_start_time, timeline_end_time))
                 f.write("* FROM CLIP NAME: %s\n" % clip.data.get('title'))
                 media_path = _clip_media_path(clip)
                 relative_media = relative_export_path(media_path, export_root)
@@ -254,7 +256,7 @@ def export_edl():
                     for opacity_time in sorted(keyframes.keys()):
                         opacity_value, interp_name = keyframes.get(opacity_time)
                         tc = secondsToTimecode(opacity_time, fps_num, fps_den)
-                        f.write("* VIDEO LEVEL AT %s IS %s%% interp:%s\n" % (tc, _fmt_percent(opacity_value), interp_name))
+                        f.write("* VIDEO LEVEL AT %s IS %s%% %s (REEL %s)\n" % (tc, _fmt_percent(opacity_value), interp_name.upper(), reel_video_tag))
 
                 # Add volume data (if any)
                 volume_points = clip.data.get('volume', {}).get('Points', [])
@@ -269,7 +271,7 @@ def export_edl():
                     # Write keyframe values to EDL
                     for volume_time in sorted(keyframes.keys()):
                         volume_value, interp_name = keyframes.get(volume_time)
-                        f.write("* AUDIO LEVEL AT %s IS %.2f dB interp:%s\n" % (secondsToTimecode(volume_time, fps_num, fps_den), volume_value, interp_name))
+                        f.write("* AUDIO LEVEL AT %s IS %.2f DB %s (REEL %s)\n" % (secondsToTimecode(volume_time, fps_num, fps_den), volume_value, interp_name.upper(), reel_audio_tag))
 
                 # Export transform keyframes (skip defaults)
                 transform_defs = [
@@ -302,7 +304,11 @@ def export_edl():
                         val, interp_name = keyframes[t]
                         unit = "%" if is_percent else "DEG"
                         display_val = _fmt_percent(val) if is_percent else _fmt_value(val)
-                        f.write("* %s AT %s IS %s%s interp:%s\n" % (label, secondsToTimecode(t, fps_num, fps_den), display_val, unit, interp_name))
+                        if unit == "%":
+                            value_unit = "%s%%" % display_val
+                        else:
+                            value_unit = "%s %s" % (display_val, unit.strip())
+                        f.write("* %s AT %s IS %s %s (REEL %s)\n" % (label, secondsToTimecode(t, fps_num, fps_den), value_unit, interp_name.upper(), reel_video_tag))
 
                 # Update export position
                 export_position = max(export_position, clip_position + clip_duration)

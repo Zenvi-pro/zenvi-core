@@ -46,6 +46,11 @@ The following features are supported when importing and exporting an EDL file wi
 Example EDL Output
 ^^^^^^^^^^^^^^^^^^
 
+OpenShot follows the CMX 3600 layout for event lines and uses comment lines (`* ...`) to carry keyframes.
+CMX 3600 does not define units or interpolation in comments, so our exporter adds readable values and interpolation
+names, and our importer is very forgiving: it accepts units with or without spaces, mixed case,
+optional interpolation tokens, and ignores unknown trailing text/reel tags to maximize compatibility.
+
 .. code-block:: python
 
    :caption: Example EDL format supported by OpenShot:
@@ -55,50 +60,50 @@ Example EDL Output
 
     001  BL       V     C        00:00:00:00 00:00:01:24 00:00:00:00 00:00:01:24
     002  AX       V     C        00:00:01:24 00:00:10:00 00:00:01:24 00:00:10:00
-    * FROM CLIP NAME: 1F499.svg
-    * SOURCE FILE: ../apps/openshot-qt/src/emojis/color/svg/1F499.svg
-    * VIDEO LEVEL AT 00:00:00:00 IS 100% interp:bezier
-    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 dB interp:linear
-    * SCALE X AT 00:00:01:24 IS 100% interp:bezier
-    * SCALE X AT 00:00:09:29 IS 93% interp:bezier
-    * SCALE Y AT 00:00:01:24 IS 100% interp:bezier
-    * SCALE Y AT 00:00:09:29 IS 55% interp:bezier
-    * LOCATION X AT 00:00:01:24 IS 0% interp:bezier
-    * LOCATION X AT 00:00:09:29 IS -1% interp:bezier
-    * LOCATION Y AT 00:00:01:24 IS 0% interp:bezier
-    * LOCATION Y AT 00:00:09:29 IS -32% interp:bezier
-    * ROTATION AT 00:00:01:24 IS 0DEG interp:bezier
-    * ROTATION AT 00:00:09:29 IS 23.3DEG interp:bezier
-    * SHEAR X AT 00:00:01:24 IS 0% interp:bezier
-    * SHEAR X AT 00:00:09:29 IS -12% interp:bezier
-    * SHEAR Y AT 00:00:01:24 IS 0% interp:bezier
-    * SHEAR Y AT 00:00:09:29 IS -7% interp:bezier
+    * FROM CLIP NAME:Logo.mp4
+    * SOURCE FILE: ../Videos/Logo.mp4
+    * VIDEO LEVEL AT 00:00:00:00 IS 100% BEZIER (REEL AX V)
+    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 DB LINEAR (REEL AX A1)
+    * SCALE X AT 00:00:01:24 IS 100% BEZIER (REEL AX V)
+    * SCALE X AT 00:00:09:29 IS 93% BEZIER (REEL AX V)
+    * SCALE Y AT 00:00:01:24 IS 100% BEZIER (REEL AX V)
+    * SCALE Y AT 00:00:09:29 IS 55% BEZIER (REEL AX V)
+    * LOCATION X AT 00:00:01:24 IS 0% BEZIER (REEL AX V)
+    * LOCATION X AT 00:00:09:29 IS -1% BEZIER (REEL AX V)
+    * LOCATION Y AT 00:00:01:24 IS 0% BEZIER (REEL AX V)
+    * LOCATION Y AT 00:00:09:29 IS -32% BEZIER (REEL AX V)
+    * ROTATION AT 00:00:01:24 IS 0 DEG BEZIER (REEL AX V)
+    * ROTATION AT 00:00:09:29 IS 23.3 DEG BEZIER (REEL AX V)
+    * SHEAR X AT 00:00:01:24 IS 0% BEZIER (REEL AX V)
+    * SHEAR X AT 00:00:09:29 IS -12% BEZIER (REEL AX V)
+    * SHEAR Y AT 00:00:01:24 IS 0% BEZIER (REEL AX V)
+    * SHEAR Y AT 00:00:09:29 IS -7% BEZIER (REEL AX V)
 
     TITLE: Test - TRACK 4
     FCM: NON-DROP FRAME
 
     001  AX       V     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
     001  AX       A     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
-    * FROM CLIP NAME: sintel_trailer-720p.mp4
-    * SOURCE FILE: ../Downloads/openshot-testing/sintel_trailer-720p.mp4
-    * VIDEO LEVEL AT 00:00:00:00 IS 0% interp:bezier
-    * VIDEO LEVEL AT 00:00:01:00 IS 100% interp:bezier
-    * VIDEO LEVEL AT 00:00:08:29 IS 100% interp:bezier
-    * VIDEO LEVEL AT 00:00:09:29 IS 0% interp:bezier
-    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 dB interp:linear
+    * FROM CLIP NAME: Trailer.mp4
+    * SOURCE FILE: ../Videos/Trailer.mp4
+    * VIDEO LEVEL AT 00:00:00:00 IS 0% BEZIER (REEL AX V)
+    * VIDEO LEVEL AT 00:00:01:00 IS 100% BEZIER (REEL AX V)
+    * VIDEO LEVEL AT 00:00:08:29 IS 100% BEZIER (REEL AX V)
+    * VIDEO LEVEL AT 00:00:09:29 IS 0% BEZIER (REEL AX V)
+    * AUDIO LEVEL AT 00:00:00:00 IS 0.00 DB LINEAR (REEL AX A1)
 
     TITLE: Test - TRACK 3
     FCM: NON-DROP FRAME
 
     001  AX       V     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
     001  AX       A     C        00:00:00:00 00:00:09:29 00:00:00:00 00:00:09:29
-    * FROM CLIP NAME: Kai_Engel_-_04_-_Moonlight_Reprise.mp3
-    * SOURCE FILE: ../Downloads/openshot-testing/Kai_Engel_-_04_-_Moonlight_Reprise.mp3
-    * VIDEO LEVEL AT 00:00:00:00 IS 100% interp:bezier
-    * AUDIO LEVEL AT 00:00:00:00 IS -96.00 dB interp:linear
-    * AUDIO LEVEL AT 00:00:03:00 IS 0.00 dB interp:linear
-    * AUDIO LEVEL AT 00:00:06:29 IS 0.00 dB interp:linear
-    * AUDIO LEVEL AT 00:00:09:29 IS -96.00 dB interp:linear
+    * FROM CLIP NAME: Soundtrack.mp3
+    * SOURCE FILE: ../Audio/Soundtrack.mp3
+    * VIDEO LEVEL AT 00:00:00:00 IS 100% BEZIER (REEL AX V)
+    * AUDIO LEVEL AT 00:00:00:00 IS -96.00 DB LINEAR (REEL AX A1)
+    * AUDIO LEVEL AT 00:00:03:00 IS 0.00 DB LINEAR (REEL AX A1)
+    * AUDIO LEVEL AT 00:00:06:29 IS 0.00 DB LINEAR (REEL AX A1)
+    * AUDIO LEVEL AT 00:00:09:29 IS -96.00 DB LINEAR (REEL AX A1)
 
 XML (Final Cut Pro format)
 --------------------------

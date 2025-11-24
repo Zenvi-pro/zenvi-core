@@ -47,16 +47,17 @@ title_regex = re.compile(r"TITLE:[ ]+(.*)")
 clips_regex = re.compile(r"(\d{3})[ ]+(.+?)[ ]+(.+?)[ ]+(.+?)[ ]+(.*)[ ]+(.*)[ ]+(.*)[ ]+(.*)")
 clip_name_regex = re.compile(r"[*][ ]+FROM CLIP NAME:[ ]+(.*)")
 source_regex = re.compile(r"[*][ ]+SOURCE FILE:[ ]+(.*)")
+_PERMISSIVE = r"[ ]*;?[ ]*(?:interp[:=])?[ ]*([A-Za-z0-9]+)?(?:.*)?$"
 param_regexes = [
-    ("opacity", re.compile(r"\* (?:OPACITY|VIDEO) LEVEL AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("volume", re.compile(r"\* AUDIO LEVEL AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*dB.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("scale_x", re.compile(r"\* SCALE X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("scale_y", re.compile(r"\* SCALE Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("location_x", re.compile(r"\* LOCATION X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("location_y", re.compile(r"\* LOCATION Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("rotation", re.compile(r"\* ROTATION AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*DEG.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("shear_x", re.compile(r"\* SHEAR X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
-    ("shear_y", re.compile(r"\* SHEAR Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?.*?(?:interp[:=]\s*([A-Za-z0-9]+))?$", re.IGNORECASE)),
+    ("opacity", re.compile(r"\* (?:OPACITY|VIDEO) LEVEL AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("volume", re.compile(r"\* AUDIO LEVEL AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*d[bB]?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("scale_x", re.compile(r"\* SCALE X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("scale_y", re.compile(r"\* SCALE Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("location_x", re.compile(r"\* LOCATION X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("location_y", re.compile(r"\* LOCATION Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("rotation", re.compile(r"\* ROTATION AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*(?:deg)?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("shear_x", re.compile(r"\* SHEAR X AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
+    ("shear_y", re.compile(r"\* SHEAR Y AT\s+([0-9:;]+)\s+IS\s+([+-]?[0-9.]+)\s*%?\s*" + _PERMISSIVE, re.IGNORECASE)),
 ]
 fcm_regex = re.compile(r"FCM:[ ]+(.*)")
 
