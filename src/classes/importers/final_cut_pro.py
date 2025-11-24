@@ -115,6 +115,91 @@ def _float_value(node_list, default=0.0):
         return default
 
 
+def _center_pixels_to_normalized(x_px, y_px, frame_width, frame_height):
+    """Map FCP center pixel coordinates back to normalized OpenShot space."""
+    try:
+        w = float(frame_width)
+        h = float(frame_height)
+    except (TypeError, ValueError):
+        return x_px, y_px
+    if w <= 0 or h <= 0:
+        return x_px, y_px
+    return ((x_px - (w / 2.0)) / (w / 2.0)), ((y_px - (h / 2.0)) / (h / 2.0))
+
+
+def _scale_mode_size(src_w, src_h, frame_w, frame_h, scale_mode):
+    """Return base scaled dimensions after applying scale mode (before per-axis scale)."""
+    try:
+        sw = float(src_w)
+        sh = float(src_h)
+        fw = float(frame_w)
+        fh = float(frame_h)
+    except (TypeError, ValueError):
+        return src_w, src_h
+    if sw <= 0 or sh <= 0 or fw <= 0 or fh <= 0:
+        return src_w, src_h
+    if scale_mode == openshot.SCALE_STRETCH:
+        return fw, fh
+    if scale_mode == openshot.SCALE_CROP:
+        factor = max(fw / sw, fh / sh)
+        return sw * factor, sh * factor
+    if scale_mode == openshot.SCALE_FIT:
+        factor = min(fw / sw, fh / sh)
+        return sw * factor, sh * factor
+    return sw, sh
+
+
+def _gravity_offset(gravity, frame_w, frame_h, scaled_w, scaled_h):
+    """Top-left origin based on gravity inside the frame."""
+    try:
+        frame_w = float(frame_w)
+        frame_h = float(frame_h)
+        scaled_w = float(scaled_w)
+        scaled_h = float(scaled_h)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    x = 0.0
+    y = 0.0
+    if gravity == openshot.GRAVITY_TOP:
+        x = (frame_w - scaled_w) / 2.0
+    elif gravity == openshot.GRAVITY_TOP_RIGHT:
+        x = frame_w - scaled_w
+    elif gravity == openshot.GRAVITY_LEFT:
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_CENTER:
+        x = (frame_w - scaled_w) / 2.0
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_RIGHT:
+        x = frame_w - scaled_w
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
+        y = frame_h - scaled_h
+    elif gravity == openshot.GRAVITY_BOTTOM:
+        x = (frame_w - scaled_w) / 2.0
+        y = frame_h - scaled_h
+    elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
+        x = frame_w - scaled_w
+        y = frame_h - scaled_h
+    return x, y
+
+
+def _value_at_time(points, t, fallback=1.0, max_frames=None):
+    """Find last value at or before time t."""
+    if not points:
+        return fallback
+    sorted_points = sorted(points, key=lambda p: p.get("co", {}).get("X", 0))
+    last_val = fallback
+    for p in sorted_points:
+        pt_time = p.get("co", {}).get("X", 0)
+        if max_frames is not None:
+            pt_time = max(0, min(pt_time, max_frames))
+        if pt_time <= t:
+            last_val = p.get("co", {}).get("Y", fallback)
+        else:
+            break
+    return last_val
+
+
 def _clip_merge_key(path, start, end, position):
     """Return a hashable key for matching audio/video clip pairs."""
     if not path:
@@ -134,6 +219,14 @@ def _xml_interp_to_point(value):
         return openshot.LINEAR
 
     text_value = str(value).strip()
+    lower_value = text_value.lower()
+    if lower_value == "linear":
+        return openshot.LINEAR
+    if lower_value in ("bezier", "ease", "easein", "easeout"):
+        return openshot.BEZIER
+    if lower_value in ("hold", "constant"):
+        return openshot.CONSTANT
+
     try:
         numeric = int(float(text_value))
     except (ValueError, TypeError):
@@ -166,6 +259,8 @@ def import_xml():
     fps_num = app.project.get("fps").get("num", 24)
     fps_den = app.project.get("fps").get("den", 1)
     fps_float = float(fps_num / fps_den)
+    project_width = app.project.get("width") or 1920
+    project_height = app.project.get("height") or 1080
 
     # Get XML path
     recommended_path = app.project.current_filepath or ""
@@ -294,9 +389,15 @@ def import_xml():
                 clip.data["position"] = clip_position_value
                 clip.data["start"] = clip_start_value
                 clip.data["end"] = clip_end_value
+                clip.data.setdefault("scale", openshot.SCALE_FIT)
+                clip.data.setdefault("gravity", openshot.GRAVITY_CENTER)
 
                 alpha_points = []
                 volume_points = []
+                location_x_points = []
+                location_y_points = []
+                scale_points = []
+                rotation_points = []
                 # Loop through clip's effects
                 for effect_element in clip_element.getElementsByTagName("effect"):
                     effectid_nodes = effect_element.getElementsByTagName("effectid")
@@ -317,6 +418,95 @@ def import_xml():
                                     "interpolation": _xml_interp_to_point(interp_value)
                                 }
                         )
+                    elif effectid in ("basicmotion", "basic"):
+                        for parameter_element in effect_element.getElementsByTagName("parameter"):
+                            parameterid_nodes = parameter_element.getElementsByTagName("parameterid")
+                            parameterid = _node_text_content(parameterid_nodes[0]) if parameterid_nodes else ""
+
+                            if parameterid == "center":
+                                keyframes = parameter_element.getElementsByTagName("keyframe")
+                                for keyframe_element in keyframes:
+                                    keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
+                                    value_nodes = keyframe_element.getElementsByTagName("value")
+                                    value_node = value_nodes[0] if value_nodes else None
+                                    horiz_value = _float_value(value_node.getElementsByTagName("horiz"), 0.0) if value_node else 0.0
+                                    vert_value = _float_value(value_node.getElementsByTagName("vert"), 0.0) if value_node else 0.0
+                                    # Derive normalized location by removing gravity/scale offsets at this time
+                                    scale_mode = clip.data.get("scale", openshot.SCALE_FIT)
+                                    gravity = clip.data.get("gravity", openshot.GRAVITY_CENTER)
+                                    src_w = (file.data or {}).get("width") if isinstance(file.data, dict) else None
+                                    src_h = (file.data or {}).get("height") if isinstance(file.data, dict) else None
+                                    base_w, base_h = _scale_mode_size(src_w or 0, src_h or 0, project_width, project_height, scale_mode)
+                                    s_val = _value_at_time(scale_points, keyframe_time, 1.0)
+                                    scaled_w = base_w * s_val
+                                    scaled_h = base_h * s_val
+                                    origin_x, origin_y = _gravity_offset(gravity, project_width, project_height, scaled_w, scaled_h)
+                                    base_center_x = origin_x + (scaled_w / 2.0)
+                                    base_center_y = origin_y + (scaled_h / 2.0)
+                                    norm_x = (horiz_value - base_center_x) / project_width
+                                    norm_y = (vert_value - base_center_y) / project_height
+                                    interp_nodes = keyframe_element.getElementsByTagName("interpolation")
+                                    interp_value = _node_text_content(interp_nodes[0]) if interp_nodes else None
+                                    interp_point = _xml_interp_to_point(interp_value)
+                                    handles = {}
+                                    if interp_point == openshot.BEZIER:
+                                        handles = {
+                                            "handle_left": {"X": 0.5, "Y": 1.0},
+                                            "handle_right": {"X": 0.5, "Y": 0.0},
+                                            "handle_type": 0,
+                                        }
+                                    location_x_points.append(
+                                            {
+                                                "co": {
+                                                    "X": round(keyframe_time),
+                                                    "Y": norm_x
+                                                },
+                                                "interpolation": interp_point,
+                                                **handles
+                                            }
+                                    )
+                                    location_y_points.append(
+                                        {
+                                            "co": {
+                                                "X": round(keyframe_time),
+                                                "Y": norm_y
+                                            },
+                                            "interpolation": interp_point,
+                                            **handles
+                                        }
+                                    )
+                            elif parameterid in ("scale", "scale_x", "scale_y"):
+                                keyframes = parameter_element.getElementsByTagName("keyframe")
+                                for keyframe_element in keyframes:
+                                    keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
+                                    keyframe_value = _float_value(keyframe_element.getElementsByTagName("value"), 0.0) / 100.0
+                                    interp_nodes = keyframe_element.getElementsByTagName("interpolation")
+                                    interp_value = _node_text_content(interp_nodes[0]) if interp_nodes else None
+                                    scale_points.append(
+                                        {
+                                            "co": {
+                                                "X": round(keyframe_time),
+                                                "Y": keyframe_value
+                                            },
+                                            "interpolation": _xml_interp_to_point(interp_value)
+                                        }
+                                    )
+                            elif parameterid == "rotation":
+                                keyframes = parameter_element.getElementsByTagName("keyframe")
+                                for keyframe_element in keyframes:
+                                    keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
+                                    keyframe_value = _float_value(keyframe_element.getElementsByTagName("value"), 0.0)
+                                    interp_nodes = keyframe_element.getElementsByTagName("interpolation")
+                                    interp_value = _node_text_content(interp_nodes[0]) if interp_nodes else None
+                                    rotation_points.append(
+                                        {
+                                            "co": {
+                                                "X": round(keyframe_time),
+                                                "Y": keyframe_value
+                                            },
+                                            "interpolation": _xml_interp_to_point(interp_value)
+                                        }
+                                    )
                     elif effectid == "audiolevels":
                         for keyframe_element in keyframes:
                             keyframe_time = _float_value(keyframe_element.getElementsByTagName("when"), 0.0)
@@ -349,6 +539,23 @@ def import_xml():
 
                 if alpha_points:
                     clip.data["alpha"] = {"Points": alpha_points}
+                if location_x_points:
+                    clip.data["location_x"] = {"Points": location_x_points}
+                if location_y_points:
+                    clip.data["location_y"] = {"Points": location_y_points}
+                if scale_points:
+                    clip.data["scale_x"] = {"Points": scale_points}
+                    clip.data["scale_y"] = {
+                        "Points": [
+                            {
+                                "co": dict(point.get("co", {})),
+                                "interpolation": point.get("interpolation")
+                            }
+                            for point in scale_points
+                        ]
+                    }
+                if rotation_points:
+                    clip.data["rotation"] = {"Points": rotation_points}
                 if volume_points:
                     clip.data["volume"] = {"Points": volume_points}
                 # Save clip

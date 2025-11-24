@@ -71,6 +71,37 @@
 									<value>100</value>
 								</parameter>
 							</effect>
+							<effect>
+								<name>Basic Motion</name>
+								<effectid>basic</effectid>
+								<effectcategory>motion</effectcategory>
+								<effecttype>motion</effecttype>
+								<mediatype>video</mediatype>
+								<parameter>
+									<parameterid>center</parameterid>
+									<name>Center</name>
+									<valuemin>0</valuemin>
+									<valuemax>10000</valuemax>
+									<value>
+										<horiz>0</horiz>
+										<vert>0</vert>
+									</value>
+								</parameter>
+								<parameter>
+									<parameterid>scale</parameterid>
+									<name>Scale</name>
+									<valuemin>0</valuemin>
+									<valuemax>1000</valuemax>
+									<value>100</value>
+								</parameter>
+								<parameter>
+									<parameterid>rotation</parameterid>
+									<name>Rotation</name>
+									<valuemin>-360</valuemin>
+									<valuemax>360</valuemax>
+									<value>0</value>
+								</parameter>
+							</effect>
 						</filter>
 						<logginginfo>
 							<description></description>

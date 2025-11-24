@@ -211,44 +211,282 @@ def _append_link(link_parent, mediatype_value, track_index, clip_index, group_in
         link_node.appendChild(child)
 
 
-def createEffect(xmldoc, name, node, points, scale, max_frames=None):
-    """Create the XML filter with keyframes"""
-    # Find correct effect
-    for effectNode in node.getElementsByTagName('effect'):
+def _normalized_to_center_pixels(x_norm, y_norm, frame_width, frame_height):
+    """Map normalized OpenShot coords (-1..1, origin center) to pixel center values."""
+    try:
+        w = float(frame_width)
+        h = float(frame_height)
+    except (TypeError, ValueError):
+        return x_norm, y_norm
+    if w <= 0 or h <= 0:
+        return x_norm, y_norm
+    return (w / 2.0) + (x_norm * w / 2.0), (h / 2.0) + (y_norm * h / 2.0)
+
+
+def _export_interp_name(value):
+    """Return an interpolation name for export from int/str values."""
+    if isinstance(value, str):
+        val = value.strip().lower()
+        if val in ("linear", "0"):
+            return "linear"
+        if val in ("bezier", "ease", "easein", "easeout", "1"):
+            return "bezier"
+        if val in ("hold", "constant", "2"):
+            return "constant"
+    try:
+        return INTERPOLATION_EXPORT_MAP.get(int(value), "linear")
+    except Exception:
+        return "linear"
+
+
+def _scale_mode_size(src_w, src_h, frame_w, frame_h, scale_mode):
+    """Return base scaled dimensions after applying scale mode (before per-axis scale)."""
+    try:
+        sw = float(src_w)
+        sh = float(src_h)
+        fw = float(frame_w)
+        fh = float(frame_h)
+    except (TypeError, ValueError):
+        return src_w, src_h
+    if sw <= 0 or sh <= 0 or fw <= 0 or fh <= 0:
+        return src_w, src_h
+    if scale_mode == openshot.SCALE_STRETCH:
+        return fw, fh
+    if scale_mode == openshot.SCALE_CROP:
+        factor = max(fw / sw, fh / sh)
+        return sw * factor, sh * factor
+    if scale_mode == openshot.SCALE_FIT:
+        factor = min(fw / sw, fh / sh)
+        return sw * factor, sh * factor
+    # SCALE_NONE or unknown
+    return sw, sh
+
+
+def _gravity_offset(gravity, frame_w, frame_h, scaled_w, scaled_h):
+    """Top-left origin based on gravity inside the frame."""
+    try:
+        frame_w = float(frame_w)
+        frame_h = float(frame_h)
+        scaled_w = float(scaled_w)
+        scaled_h = float(scaled_h)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+    x = 0.0
+    y = 0.0
+    if gravity == openshot.GRAVITY_TOP:
+        x = (frame_w - scaled_w) / 2.0
+    elif gravity == openshot.GRAVITY_TOP_RIGHT:
+        x = frame_w - scaled_w
+    elif gravity == openshot.GRAVITY_LEFT:
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_CENTER:
+        x = (frame_w - scaled_w) / 2.0
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_RIGHT:
+        x = frame_w - scaled_w
+        y = (frame_h - scaled_h) / 2.0
+    elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
+        y = frame_h - scaled_h
+    elif gravity == openshot.GRAVITY_BOTTOM:
+        x = (frame_w - scaled_w) / 2.0
+        y = frame_h - scaled_h
+    elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
+        x = frame_w - scaled_w
+        y = frame_h - scaled_h
+    return x, y
+
+
+def _merge_uniform_scale(scale_x_points, scale_y_points):
+    """Combine X/Y scale into a single uniform curve (average when both exist)."""
+    merged = {}
+
+    def _add(points):
+        for point in points:
+            t = point.get("co", {}).get("X", 1)
+            v = point.get("co", {}).get("Y", 1.0)
+            interp = point.get("interpolation", openshot.LINEAR)
+            if t in merged:
+                merged[t]["val"] = (merged[t]["val"] + v) / 2.0
+                if merged[t].get("interp") is None:
+                    merged[t]["interp"] = interp
+            else:
+                merged[t] = {"val": v, "interp": interp}
+
+    _add(scale_x_points or [])
+    _add(scale_y_points or [])
+
+    merged_points = []
+    for t in sorted(merged.keys()):
+        merged_points.append(
+            {
+                "co": {"X": t, "Y": merged[t]["val"]},
+                "interpolation": merged[t].get("interp", openshot.LINEAR),
+            }
+        )
+    return merged_points
+
+
+def _find_effect_node(node, effect_name):
+    """Find the first effect node with a matching name."""
+    for effectNode in node.getElementsByTagName("effect"):
         effectName = effectNode.getElementsByTagName("name")[0].childNodes[0].nodeValue
-        if effectName == name:
-            parameterNode = effectNode.getElementsByTagName('parameter')[0]
+        if effectName == effect_name:
+            return effectNode
+    return None
 
-            # Loop through Points (remove duplicates)
-            keyframes = {}
-            for point in points:
-                keyframeTime = point.get('co', {}).get('X', 1)
-                keyframeValue = point.get('co', {}).get('Y', 1) * scale
-                interpolation = point.get('interpolation', openshot.LINEAR)
-                if max_frames is not None:
-                    keyframeTime = max(0, min(keyframeTime, max_frames))
-                keyframes[keyframeTime] = (keyframeValue, interpolation)
 
-            # Loop through Points
-            for keyframeTime in sorted(keyframes.keys()):
-                keyframeValue, interpolation = keyframes.get(keyframeTime)
+def _find_parameter_node(effect_node, parameter_id):
+    """Find the first parameter node with a matching id."""
+    for param in effect_node.getElementsByTagName("parameter"):
+        paramIdNode = param.getElementsByTagName("parameterid")
+        if paramIdNode and paramIdNode[0].childNodes and paramIdNode[0].childNodes[0].nodeValue == parameter_id:
+            return param
+    return None
 
-                # Create keyframe element for each point
-                keyframeNode = xmldoc.createElement("keyframe")
-                parameterNode.appendChild(keyframeNode)
-                whenNode = xmldoc.createElement("when")
-                whenNode.appendChild(xmldoc.createTextNode(str(keyframeTime)))
-                keyframeNode.appendChild(whenNode)
-                valueNode = xmldoc.createElement("value")
-                valueNode.appendChild(xmldoc.createTextNode(str(keyframeValue)))
-                keyframeNode.appendChild(valueNode)
-                interpNode = xmldoc.createElement("interpolation")
-                interpName = xmldoc.createElement("name")
-                interpName.appendChild(
-                    xmldoc.createTextNode(INTERPOLATION_EXPORT_MAP.get(interpolation, "linear"))
-                )
-                interpNode.appendChild(interpName)
-                keyframeNode.appendChild(interpNode)
+
+def createEffect(xmldoc, name, node, points, scale, max_frames=None, param_name=None):
+    """Create the XML filter with keyframes"""
+    effectNode = _find_effect_node(node, name)
+    if not effectNode:
+        return
+    if param_name:
+        parameterNode = _find_parameter_node(effectNode, param_name)
+    else:
+        parameterNode = effectNode.getElementsByTagName("parameter")[0]
+
+    if not parameterNode:
+        return
+
+    # Loop through Points (remove duplicates)
+    keyframes = {}
+    for point in points:
+        keyframeTime = point.get('co', {}).get('X', 1)
+        keyframeValue = point.get('co', {}).get('Y', 1) * scale
+        interpolation = point.get('interpolation', openshot.LINEAR)
+        if max_frames is not None:
+            keyframeTime = max(0, min(keyframeTime, max_frames))
+        keyframes[keyframeTime] = (keyframeValue, interpolation)
+
+    # Loop through Points
+    for keyframeTime in sorted(keyframes.keys()):
+        keyframeValue, interpolation = keyframes.get(keyframeTime)
+
+        # Create keyframe element for each point
+        keyframeNode = xmldoc.createElement("keyframe")
+        parameterNode.appendChild(keyframeNode)
+        whenNode = xmldoc.createElement("when")
+        whenNode.appendChild(xmldoc.createTextNode(str(int(round(keyframeTime)))))
+        keyframeNode.appendChild(whenNode)
+        valueNode = xmldoc.createElement("value")
+        valueNode.appendChild(xmldoc.createTextNode(str(keyframeValue)))
+        keyframeNode.appendChild(valueNode)
+        interpNode = xmldoc.createElement("interpolation")
+        interpName = xmldoc.createElement("name")
+        interpName.appendChild(xmldoc.createTextNode(_export_interp_name(interpolation)))
+        interpNode.appendChild(interpName)
+        keyframeNode.appendChild(interpNode)
+
+
+def createCenterEffect(
+    xmldoc,
+    node,
+    x_points,
+    y_points,
+    frame_width,
+    frame_height,
+    src_width,
+    src_height,
+    scale_mode,
+    gravity,
+    scale_x_points,
+    scale_y_points,
+    max_frames=None,
+):
+    """Create the Basic Motion center keyframes using project/frame units."""
+    effectNode = _find_effect_node(node, "Basic Motion")
+    if not effectNode:
+        return
+
+    parameterNode = _find_parameter_node(effectNode, "center")
+    if not parameterNode:
+        return
+
+    keyframes = {}
+
+    def _add_points(points, axis_key):
+        for point in points:
+            keyframeTime = point.get("co", {}).get("X", 1)
+            interpolation = point.get("interpolation", openshot.LINEAR)
+            if max_frames is not None:
+                keyframeTime = max(0, min(keyframeTime, max_frames))
+            entry = keyframes.setdefault(keyframeTime, {})
+            entry[axis_key] = point.get("co", {}).get("Y", 0.0)
+            entry["interp_%s" % axis_key] = interpolation
+
+    _add_points(x_points, "x")
+    _add_points(y_points, "y")
+
+    def _value_at_time(points, t, fallback=1.0):
+        if not points:
+            return fallback
+        sorted_points = sorted(points, key=lambda p: p.get("co", {}).get("X", 0))
+        last_val = sorted_points[0].get("co", {}).get("Y", fallback)
+        for p in sorted_points:
+            pt_time = p.get("co", {}).get("X", 0)
+            if max_frames is not None:
+                pt_time = max(0, min(pt_time, max_frames))
+            if pt_time <= t:
+                last_val = p.get("co", {}).get("Y", fallback)
+            else:
+                break
+        return last_val
+
+    last_x = 0.0
+    last_y = 0.0
+
+    for keyframeTime in sorted(keyframes.keys()):
+        entry = keyframes[keyframeTime]
+        x_val = entry.get("x", last_x)
+        y_val = entry.get("y", last_y)
+        last_x = x_val
+        last_y = y_val
+        if "interp_x" in entry:
+            interpolation = entry.get("interp_x")
+        elif "interp_y" in entry:
+            interpolation = entry.get("interp_y")
+        else:
+            interpolation = openshot.LINEAR
+
+        base_w, base_h = _scale_mode_size(src_width, src_height, frame_width, frame_height, scale_mode)
+        sx = _value_at_time(scale_x_points, keyframeTime, 1.0)
+        sy = _value_at_time(scale_y_points, keyframeTime, 1.0)
+        scaled_w = base_w * sx
+        scaled_h = base_h * sy
+        origin_x, origin_y = _gravity_offset(gravity, frame_width, frame_height, scaled_w, scaled_h)
+        center_x, center_y = origin_x + (scaled_w / 2.0), origin_y + (scaled_h / 2.0)
+        center_x += frame_width * x_val
+        center_y += frame_height * y_val
+
+        keyframeNode = xmldoc.createElement("keyframe")
+        parameterNode.appendChild(keyframeNode)
+        whenNode = xmldoc.createElement("when")
+        whenNode.appendChild(xmldoc.createTextNode(str(int(round(keyframeTime)))))
+        keyframeNode.appendChild(whenNode)
+
+        valueNode = xmldoc.createElement("value")
+        horizNode = xmldoc.createElement("horiz")
+        horizNode.appendChild(xmldoc.createTextNode(str(center_x)))
+        valueNode.appendChild(horizNode)
+        vertNode = xmldoc.createElement("vert")
+        vertNode.appendChild(xmldoc.createTextNode(str(center_y)))
+        valueNode.appendChild(vertNode)
+        keyframeNode.appendChild(valueNode)
+
+        interpNode = xmldoc.createElement("interpolation")
+        interpName = xmldoc.createElement("name")
+        interpName.appendChild(xmldoc.createTextNode(_export_interp_name(interpolation)))
+        interpNode.appendChild(interpName)
+        keyframeNode.appendChild(interpNode)
 
 
 def export_xml():
@@ -513,7 +751,59 @@ def export_xml():
                         for n in list(video_nodes):
                             media_nodes[0].removeChild(n)
 
-                createEffect(xmldoc, "Opacity", clipNode, clip.data.get('alpha', {}).get('Points', []), 100.0, clip_duration_frames)
+                if clip_reader.get("has_video"):
+                    frame_width = app.project.get("width") or merged_data.get("width")
+                    frame_height = app.project.get("height") or merged_data.get("height")
+                    src_width = merged_data.get("width") or frame_width
+                    src_height = merged_data.get("height") or frame_height
+                    scale_mode = clip.data.get("scale", openshot.SCALE_FIT)
+                    gravity = clip.data.get("gravity", openshot.GRAVITY_CENTER)
+                    createEffect(
+                        xmldoc,
+                        "Opacity",
+                        clipNode,
+                        clip.data.get("alpha", {}).get("Points", []),
+                        100.0,
+                        clip_duration_frames,
+                        "opacity",
+                    )
+                    createCenterEffect(
+                        xmldoc,
+                        clipNode,
+                        clip.data.get("location_x", {}).get("Points", []),
+                        clip.data.get("location_y", {}).get("Points", []),
+                        frame_width,
+                        frame_height,
+                        src_width,
+                        src_height,
+                        scale_mode,
+                        gravity,
+                        clip.data.get("scale_x", {}).get("Points", []),
+                        clip.data.get("scale_y", {}).get("Points", []),
+                        clip_duration_frames,
+                    )
+                    scale_points = _merge_uniform_scale(
+                        clip.data.get("scale_x", {}).get("Points", []),
+                        clip.data.get("scale_y", {}).get("Points", []),
+                    )
+                    createEffect(
+                        xmldoc,
+                        "Basic Motion",
+                        clipNode,
+                        scale_points,
+                        100.0,
+                        clip_duration_frames,
+                        "scale",
+                    )
+                    createEffect(
+                        xmldoc,
+                        "Basic Motion",
+                        clipNode,
+                        clip.data.get("rotation", {}).get("Points", []),
+                        1.0,
+                        clip_duration_frames,
+                        "rotation",
+                    )
                 logging_nodes = clipNode.getElementsByTagName("good")
                 if logging_nodes:
                     _set_text(logging_nodes[0], "FALSE")
