@@ -2172,13 +2172,17 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Remove all clips on this track first
         for clip in Clip.filter(layer=selected_track_number):
-            # Clear selected clips
+            # Clear selected clips (and immediately update properties/handles to avoid stale references)
             self.removeSelection(clip.id, "clip")
+            self.emit_selection_signal()
+            self.show_property_timeout()
             clip.delete()
 
         # Remove all transitions on this track first
         for trans in Transition.filter(layer=selected_track_number):
             self.removeSelection(trans.id, "transition")
+            self.emit_selection_signal()
+            self.show_property_timeout()
             trans.delete()
 
         # Remove track
