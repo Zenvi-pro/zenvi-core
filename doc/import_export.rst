@@ -111,6 +111,10 @@ The following features are supported when importing and exporting an XML file wi
 is supported in many video editors (not just Final Cut Pro). In fact, most commercial video editors have some
 support for importing and exporting this same XML format.
 
+OpenShot uses the legacy Final Cut Pro XML Interchange Format (**xmeml**) from Final Cut Pro 7. Our exporter writes
+`<!DOCTYPE xmeml>` projects that follow the Final Cut Pro XML DTD v1.0, and is compatible with the v4 and v5 schema
+versions of that interchange format (the DTDs shipped with Final Cut Pro 7).
+
 .. table::
    :widths: 25 80
 
