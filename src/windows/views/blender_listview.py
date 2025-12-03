@@ -230,7 +230,8 @@ class BlenderListView(QListView):
         color_value = self.params[param["name"]]
         currentColor = QColor("#FFFFFF")
         if len(color_value) >= 3:
-            currentColor.setRgbF(color_value[0], color_value[1], color_value[2], color_value[3])
+            alpha = color_value[3] if len(color_value) >= 4 else 1.0
+            currentColor.setRgbF(color_value[0], color_value[1], color_value[2], alpha)
         # Store our arguments for the callback to pick up again
         self._color_scratchpad = (widget, param)
         ColorPicker(currentColor, callback=self.color_selected, parent=self.win)
