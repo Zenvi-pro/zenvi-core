@@ -119,29 +119,36 @@ for ob in [text_object1, text_object2, text_object3]:
     ob.space_character = params["width"]
     ob.font = font
 
-# Change the title material settings (color, alpha, etc...)
-for mat in [
-        "Title1.Material",
-        "Title2.Material",
-        "Title3.Material",
-        ]:
-    ob = bpy.data.materials[mat]
-    ob.diffuse_color = params["diffuse_color"]
-    ob.specular_color = params["specular_color"]
-    ob.specular_intensity = params["specular_intensity"]
+# TITLE MATERIAL COLORS (Blender 5.0+ Node-Based)
+for mat_name in ["Title1.Material", "Title2.Material", "Title3.Material"]:
+    mat = bpy.data.materials[mat_name]
+
+    color_rgba = params["diffuse_color"]
+    if len(color_rgba) < 4:
+        color_rgba = [color_rgba[0], color_rgba[1], color_rgba[2], 1.0]
+
+    # Set Solid Viewport color (optional, for convenience)
+    mat.diffuse_color = color_rgba
+
+    # Node-based renderable shader color
+    nt = mat.node_tree
+    bsdf = nt.nodes.get("Principled BSDF")
+
+    if bsdf:
+        if "Base Color" in bsdf.inputs:
+            bsdf.inputs["Base Color"].default_value = color_rgba  # RGBA
+        if "Specular" in bsdf.inputs:
+            bsdf.inputs["Specular"].default_value = params["specular_intensity"]
+        # Emission color/strength to keep titles shadowless and match base color
+        if len(bsdf.inputs) > 27:
+            bsdf.inputs[27].default_value = color_rgba
+        if len(bsdf.inputs) > 28:
+            bsdf.inputs[28].default_value = 1.0
 
 # BACKGROUND - Change the material settings (color, alpha, etc...)
 bg_mat = bpy.data.materials["Background.Material"]
 bg_mat.specular_color = params["specular_color_bg"]
 bg_mat.specular_intensity = params["specular_intensity_bg"]
-
-# Shadeless Background
-# TODO: Unsupported in Blender 2.8 (not sure of workaround yet)
-# if params["shadeless"] == "Yes":
-# material_object4.use_shadeless = True
-# else:
-# material_object4.use_shadeless = False
-
 
 def update_keyframe(point, coord):
     point.co = coord
@@ -149,31 +156,94 @@ def update_keyframe(point, coord):
     point.handle_right.y = coord[1]
 
 
+def get_action_fcurves(action):
+    """Return a list-like collection of FCurves for this action across Blender versions."""
+    # Blender 4.x and earlier expose fcurves directly on the Action.
+    if hasattr(action, "fcurves"):
+        return action.fcurves
+
+    # Blender 5.x introduced layered actions. FCurves now live inside the first
+    # available channel bag of the strips on the action layers.
+    for layer in getattr(action, "layers", []):
+        for strip in getattr(layer, "strips", []):
+            for bag in getattr(strip, "channelbags", []):
+                curves = getattr(bag, "fcurves", None)
+                if curves is not None:
+                    return curves
+
+    raise AttributeError("No fcurves found on action (unsupported Blender version?)")
+
+
 def update_curves(action, point, frame, color):
+    fcurves = get_action_fcurves(action)
+
+    # Ensure we always map R/G/B correctly even if the fcurves order changes.
+    by_index = {fc.array_index: fc for fc in fcurves}
+
     for i in range(0, 3):
         coord = (frame, color[i])
-        update_keyframe(
-            action.fcurves[i].keyframe_points[point],
-            coord)
+        fc = by_index.get(i)
+        if fc:
+            update_keyframe(fc.keyframe_points[point], coord)
 
 
-# BACKGROUND COLORS (KEYFRAMES) ----------------------
-action = bpy.data.actions["Background.MaterialAc"]
+def ensure_rgba(color):
+    """Return color with an alpha channel."""
+    if len(color) >= 4:
+        return color
+    return [color[0], color[1], color[2], 1.0]
 
-# TILE 1
-update_curves(action, 0, 1.0, params["diffuse_color_t1"])
-update_curves(action, 1, 70.0, params["diffuse_color_t1"])
 
-# TILE 2
-update_curves(action, 2, 120.0, params["diffuse_color_t2"])
-update_curves(action, 3, 160.0, params["diffuse_color_t2"])
+def keyframe_color_socket(socket, keyframes):
+    """Keyframe a 4-float color socket at provided frame/value pairs."""
+    for frame, color in keyframes:
+        rgba = ensure_rgba(color)
+        socket.default_value = rgba
+        for idx in range(4):
+            socket.keyframe_insert("default_value", index=idx, frame=frame)
 
-# TILE 3
-update_curves(action, 4, 200.0, params["diffuse_color_t3"])
-update_curves(action, 5, 240.0, params["diffuse_color_t3"])
 
-# TILE 4
-update_curves(action, 6, 300.0, params["diffuse_color_t4"])
+def keyframe_value_socket(socket, value, frames):
+    """Keyframe a single-float socket at provided frames."""
+    socket.default_value = value
+    for frame in frames:
+        socket.keyframe_insert("default_value", frame=frame)
+
+
+# BACKGROUND COLORS (keyframes + node colors/emission)
+color_keyframes = [
+    (1.0, params["diffuse_color_t1"]),
+    (70.0, params["diffuse_color_t1"]),
+    (120.0, params["diffuse_color_t2"]),
+    (160.0, params["diffuse_color_t2"]),
+    (200.0, params["diffuse_color_t3"]),
+    (240.0, params["diffuse_color_t3"]),
+    (300.0, params["diffuse_color_t4"]),
+]
+
+# Update legacy/material fcurves (keeps UI solid-mode color in sync)
+action = bpy.data.actions.get("Background.MaterialAc")
+if action:
+    for idx, (frame, color) in enumerate(color_keyframes):
+        update_curves(action, idx, frame, color)
+
+# Update Principled BSDF base color + emission for rendering/shadowless look
+bg_mat.diffuse_color = ensure_rgba(params["diffuse_color_t1"])
+bg_nt = bg_mat.node_tree
+bg_bsdf = bg_nt.nodes.get("Principled BSDF") if bg_nt else None
+if bg_bsdf:
+    # Base Color
+    keyframe_color_socket(bg_bsdf.inputs["Base Color"], color_keyframes)
+
+    # Emission Color (input index 27) and Strength (index 28)
+    if len(bg_bsdf.inputs) > 27:
+        keyframe_color_socket(bg_bsdf.inputs[27], color_keyframes)
+    if len(bg_bsdf.inputs) > 28:
+        keyframe_value_socket(bg_bsdf.inputs[28], 1.0, [f for f, _ in color_keyframes])
+
+# Force Blender to refresh depsgraph/materials so updated keyframes/colors take effect
+bpy.context.view_layer.update()
+bpy.context.scene.frame_set(bpy.context.scene.frame_current)
 
 # Set the render options.  It is important that these are set
 # to the same values as the current OpenShot project.  These
@@ -200,3 +270,8 @@ render.frame_map_new = length_multiplier
 # Set render length/position
 bpy.context.scene.frame_start = params["start_frame"]
 bpy.context.scene.frame_end = new_length
+
+# Color management
+bpy.context.scene.view_settings.view_transform = "Filmic"
+bpy.context.scene.view_settings.exposure = 0.0
+bpy.context.scene.view_settings.gamma = 1.0
