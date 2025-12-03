@@ -119,7 +119,7 @@ for ob in [text_object1, text_object2, text_object3]:
     ob.space_character = params["width"]
     ob.font = font
 
-# TITLE MATERIAL COLORS (Blender 5.0+ Node-Based)
+# TITLE MATERIAL COLORS (node-based)
 for mat_name in ["Title1.Material", "Title2.Material", "Title3.Material"]:
     mat = bpy.data.materials[mat_name]
 
@@ -158,12 +158,12 @@ def update_keyframe(point, coord):
 
 def get_action_fcurves(action):
     """Return a list-like collection of FCurves for this action across Blender versions."""
-    # Blender 4.x and earlier expose fcurves directly on the Action.
+    # Older Blender releases expose fcurves directly on the Action.
     if hasattr(action, "fcurves"):
         return action.fcurves
 
-    # Blender 5.x introduced layered actions. FCurves now live inside the first
-    # available channel bag of the strips on the action layers.
+    # Newer releases introduced layered actions where FCurves live inside
+    # the first available channel bag of the strips on the action layers.
     for layer in getattr(action, "layers", []):
         for strip in getattr(layer, "strips", []):
             for bag in getattr(strip, "channelbags", []):

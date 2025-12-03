@@ -101,7 +101,7 @@ JT = {"name": "Jonathan Thomas",
 DESKTOP_ID = "org.openshot.OpenShot.desktop"
 
 # Blender minimum version required (a string value)
-BLENDER_MIN_VERSION = "4.1"
+BLENDER_MIN_VERSION = "5.0"
 
 # Data-model debugging enabler
 MODEL_TEST = False
@@ -241,4 +241,3 @@ def website_language():
         "zh_TW": "zh-hant/",
         "en_US": ""}.get(CURRENT_LANGUAGE,
                          "%s/" % CURRENT_LANGUAGE.split("_")[0].lower())
-
