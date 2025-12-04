@@ -575,6 +575,15 @@ Blender Path: {}
         with open(source_path, 'r') as f:
             script_body = f.read()
 
+        # Prepend shared helper library to every script (keeps templates lightweight)
+        base_path = os.path.join(info.PATH, "blender", "scripts", "base.py.in")
+        try:
+            with open(base_path, 'r') as f:
+                base_body = f.read()
+            script_body = base_body + "\n\n" + script_body
+        except IOError:
+            log.error("Could not load base Blender helper script at %s", base_path)
+
         # insert our modifications to script source
         script_body = script_body.replace("# INJECT_PARAMS_HERE", user_params)
 
