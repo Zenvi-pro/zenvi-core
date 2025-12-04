@@ -112,16 +112,52 @@ else:
 text_object.font = font
 
 # Change the material settings (color, alpha, etc...)
-material_object = bpy.data.materials["Text"]
-material_object.diffuse_color = params["diffuse_color"]
-material_object.specular_color = params["specular_color"]
-material_object.specular_intensity = params["specular_intensity"]
+static_color_keyframes = [(params["start_frame"], params["diffuse_color"])]
+mat = keyframe_principled(
+    "Text",
+    base_keyframes=static_color_keyframes,
+    emission_keyframes=static_color_keyframes,
+    emission_strength=(0.0, [f for f, _ in static_color_keyframes]),
+    viewport_color=params["diffuse_color"],
+    specular_value=params["specular_intensity"],
+    specular_color=params["specular_color"])
+if mat:
+    mat.specular_intensity = params["specular_intensity"]
 
-# Change blur amount (size_x and size_y)
-bpy.data.actions[0].fcurves[1].keyframe_points[0].co.y = params["blur_amount_x"]
-bpy.data.actions[0].fcurves[1].keyframe_points[3].co.y = params["blur_amount_x"]
-bpy.data.actions[0].fcurves[2].keyframe_points[0].co.y = params["blur_amount_y"]
-bpy.data.actions[0].fcurves[2].keyframe_points[3].co.y = params["blur_amount_y"]
+# Change blur amount (size_x and size_y) via actions (legacy) and compositor nodes
+actions = list(bpy.data.actions)
+if actions:
+    action = actions[0]
+    try:
+        fcurves = list(get_action_fcurves(action))
+    except AttributeError:
+        fcurves = []
+    by_index = {fc.array_index: fc for fc in fcurves}
+
+    def _set_kp(fc, point_index, value):
+        if fc and len(fc.keyframe_points) > point_index:
+            kp = fc.keyframe_points[point_index]
+            kp.co = (kp.co.x, value)
+            kp.handle_left.y = value
+            kp.handle_right.y = value
+
+    fc_x = by_index.get(1) if by_index else (fcurves[1] if len(fcurves) > 1 else None)
+    fc_y = by_index.get(2) if by_index else (fcurves[2] if len(fcurves) > 2 else None)
+
+    for fc, value in [(fc_x, params["blur_amount_x"]), (fc_y, params["blur_amount_y"])]:
+        _set_kp(fc, 0, value)
+        _set_kp(fc, 3, value)
+
+# Also drive compositor blur nodes directly (more robust on newer Blender)
+scene = bpy.context.scene
+node_tree = getattr(scene, "node_tree", None)
+if getattr(scene, "use_nodes", False) and node_tree:
+    for node in node_tree.nodes:
+        if node.type == 'BLUR':
+            node.size_x = params["blur_amount_x"]
+            node.size_y = params["blur_amount_y"]
+
+bpy.context.view_layer.update()
 
 # Set the render options.  It is important that these are set
 # to the same values as the current OpenShot project.  These
