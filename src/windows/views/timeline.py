@@ -1509,6 +1509,97 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Get # of tracks
             all_tracks = get_app().project.get("layers")
 
+            reader = clip.data.get("reader", {})
+            has_audio = reader.get("has_audio")
+            has_audio = True if has_audio is None else bool(has_audio)
+            channels_value = reader.get("channels")
+            try:
+                channel_count = int(channels_value) if channels_value is not None else None
+            except (TypeError, ValueError):
+                channel_count = None
+            has_video = reader.get("has_video")
+            has_video = True if has_video is None else bool(has_video)
+            original_layer = clip.data.get("layer")
+
+            if (not has_audio) or (channel_count is not None and channel_count <= 0):
+                log.info("Split audio skipped for clip %s (no audio)", clip_id)
+                continue
+
+            def get_track_below(layer_number):
+                """Return the track number directly below the provided layer (or the same layer if none found)."""
+                next_track_number = layer_number
+                found_track = False
+                for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
+                    if found_track:
+                        next_track_number = track.get("number")
+                        break
+                    if track.get("number") == layer_number:
+                        found_track = True
+                        continue
+                return next_track_number
+
+            # Get title of clip
+            clip_title = clip.data["title"]
+
+            # Audio-only clips reuse the source clip instead of deleting it
+            if not has_video:
+                if action == MenuSplitAudio.SINGLE:
+                    # Clear channel filter to all channels and keep the clip
+                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
+                    p_object = json.loads(p.Json())
+                    clip.data["channel_filter"] = {"Points": [p_object]}
+                    clip.save()
+
+                    # Generate waveform for existing clip
+                    log.info("Generate waveform for audio-only clip id: %s" % clip.id)
+                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                    continue
+
+                if action == MenuSplitAudio.MULTIPLE:
+                    channels = channel_count
+
+                    separate_clip_ids = []
+                    current_layer = original_layer
+                    for channel in range(0, channels):
+                        log.debug("Adding clip for channel %s" % channel)
+
+                        # Each clip is filtered to a different channel
+                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                        p_object = json.loads(p.Json())
+                        clip.data["channel_filter"] = {"Points": [p_object]}
+
+                        # Explicitly keep video disabled and scale none
+                        p = openshot.Point(1, 0.0, openshot.CONSTANT)
+                        p_object = json.loads(p.Json())
+                        clip.data["has_video"] = {"Points": [p_object]}
+                        clip.data["scale"] = openshot.SCALE_NONE
+
+                        # Keep first clip on the same layer, others below
+                        target_layer = current_layer if channel == 0 else get_track_below(current_layer)
+                        clip.data['layer'] = max(target_layer, 0)
+                        current_layer = clip.data['layer']
+
+                        # Adjust the clip title
+                        channel_label = _("(channel %s)") % (channel + 1)
+                        clip.data["title"] = clip_title + " " + channel_label
+
+                        # Save changes
+                        clip.save()
+                        separate_clip_ids.append(clip.id)
+
+                        # Prepare a new clip for the next channel
+                        if channel < channels - 1:
+                            clip.id = None
+                            clip.type = 'insert'
+                            clip.data.pop('id', None)
+                            if clip.key and len(clip.key) > 1:
+                                clip.key.pop(1)
+
+                    # Generate waveform for new clips
+                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                    continue
+
             # Clear audio override
             p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
             p_object = json.loads(p.Json())
@@ -1519,9 +1610,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.type = 'insert'
             clip.data.pop('id')
             clip.key.pop(1)
-
-            # Get title of clip
-            clip_title = clip.data["title"]
 
             if action == MenuSplitAudio.SINGLE:
                 # Clear channel filter on new clip
@@ -1537,19 +1625,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
                 clip.data["scale"] = openshot.SCALE_NONE
 
-                # Get track below selected track (if any)
-                next_track_number = clip.data['layer']
-                found_track = False
-                for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                    if found_track:
-                        next_track_number = track.get("number")
-                        break
-                    if track.get("number") == clip.data['layer']:
-                        found_track = True
-                        continue
-
-                # Adjust the layer, so this new audio clip doesn't overlap the parent
-                clip.data['layer'] = next_track_number  # Add to layer below clip
+                # Adjust the layer; place below the parent clip
+                target_layer = get_track_below(original_layer)
+                clip.data['layer'] = target_layer
 
                 # Adjust the clip title
                 channel_label = _("(all channels)")
@@ -1563,10 +1641,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             if action == MenuSplitAudio.MULTIPLE:
                 # Get # of channels on clip
-                channels = int(clip.data["reader"]["channels"])
+                channels = channel_count
 
                 # Loop through each channel
                 separate_clip_ids = []
+                current_layer = original_layer
                 for channel in range(0, channels):
                     log.debug("Adding clip for channel %s" % channel)
 
@@ -1583,19 +1662,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
                     clip.data["scale"] = openshot.SCALE_NONE
 
-                    # Get track below selected track (if any)
-                    next_track_number = clip.data['layer']
-                    found_track = False
-                    for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                        if found_track:
-                            next_track_number = track.get("number")
-                            break
-                        if track.get("number") == clip.data['layer']:
-                            found_track = True
-                            continue
-
                     # Adjust the layer, so this new audio clip doesn't overlap the parent
-                    clip.data['layer'] = max(next_track_number, 0)  # Add to layer below clip
+                    target_layer = get_track_below(current_layer)
+                    clip.data['layer'] = max(target_layer, 0)
+                    current_layer = clip.data['layer']
 
                     # Adjust the clip title
                     channel_label = _("(channel %s)") % (channel + 1)
@@ -1620,6 +1690,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip:
                 # Invalid clip, skip to next item
+                continue
+
+            reader = clip.data.get("reader", {})
+            has_video = reader.get("has_video")
+            has_video = True if has_video is None else bool(has_video)
+
+            if not has_video:
                 continue
 
             # Filter out audio on the original clip
