@@ -883,13 +883,17 @@ class Worker(QObject):
         if output_saved:
             # Try to infer frame number from the saved filename (Blender 5 logs)
             saved_path = output_saved.group(1)
-            frame_from_name = re.search(r"([0-9]{3,})[^0-9]*\.png$", saved_path)
-            if frame_from_name:
-                try:
-                    guessed_frame = int(frame_from_name.group(1))
-                    self.current_frame = guessed_frame
-                except ValueError:
-                    pass
+            base_name = os.path.splitext(os.path.basename(saved_path))[0]
+            if self.preview_frame > 0:
+                self.current_frame = self.preview_frame
+            else:
+                frame_from_name = re.search(r"([0-9]{1,5})$", base_name)
+                if frame_from_name:
+                    try:
+                        guessed_frame = int(frame_from_name.group(1))
+                        self.current_frame = guessed_frame
+                    except ValueError:
+                        pass
             self.frame_count += 1
             log.debug("Saved frame %d", self.current_frame)
             # Emit progress on save to update UI even if render lines were missed
