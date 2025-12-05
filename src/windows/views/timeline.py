@@ -2046,30 +2046,60 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             key=lambda c: c.data.get("position", 0.0)
         )
 
-        # Variable to track the end of the last clip/transition
-        last_end = found_start
+        # Build groups of overlapping clips/transitions so overlapping items move together
+        groups = []
+        current_group = []
+        current_group_start = None
+        current_group_end = None
 
-        # List to track modified clips for saving
-        modified_clips = []
+        for item in clips_and_transitions:
+            left_edge = item.data.get("position", 0.0)
+            right_edge = left_edge + (item.data.get("end", 0.0) - item.data.get("start", 0.0))
 
-        # Iterate through the sorted list and remove gaps
-        for clip in clips_and_transitions:
-            left_edge = clip.data.get("position", 0.0)
-            right_edge = left_edge + (clip.data.get("end", 0.0) - clip.data.get("start", 0.0))
-
-            # Check if there is a gap between the end of the last clip/transition and the start of the current one
-            if left_edge > last_end:
-                gap_size = left_edge - last_end
-                clip.data["position"] -= gap_size
-                modified_clips.append(clip)
-                log.info(f"Removing gap from {last_end} to {left_edge} on layer {layer_number}")
-                last_end = right_edge - gap_size
+            if current_group and left_edge <= current_group_end:
+                current_group.append(item)
+                current_group_end = max(current_group_end, right_edge)
             else:
-                last_end = max(last_end, right_edge)
+                if current_group:
+                    groups.append((current_group_start, current_group_end, current_group))
+                current_group = [item]
+                current_group_start = left_edge
+                current_group_end = right_edge
 
-        # Save only the modified clips
-        for clip in modified_clips:
-            clip.save()
+        if current_group:
+            groups.append((current_group_start, current_group_end, current_group))
+
+        # Track the end of the last processed group (after shifting) and cumulative offset
+        last_end = found_start
+        total_offset = 0.0
+        modified_items = []
+
+        for group_start, group_end, group_items in groups:
+            # Skip groups that end before the first detected gap
+            if group_end <= found_start:
+                last_end = max(last_end, group_end)
+                continue
+
+            # Calculate where this group would start after prior shifts
+            shifted_start = group_start - total_offset
+
+            # If there is still a gap, close it and increase the total offset
+            if shifted_start > last_end:
+                gap_size = shifted_start - last_end
+                total_offset += gap_size
+                shifted_start -= gap_size
+                log.info(f"Removing gap from {last_end} to {last_end + gap_size} on layer {layer_number}")
+
+            # Shift the entire overlapping group together
+            for item in group_items:
+                item.data["position"] -= total_offset
+                modified_items.append(item)
+
+            last_end = group_end - total_offset
+
+        # Save only the modified items
+        for item in modified_items:
+            item.save()
 
         # Clear transaction id
         get_app().updates.transaction_id = None
