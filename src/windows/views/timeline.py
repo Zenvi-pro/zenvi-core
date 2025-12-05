@@ -461,6 +461,40 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if redraw_waveforms:
             self.redraw_audio_timer.start()
 
+    def _extend_timeline_to_fit_items(self):
+        """Extend project duration to cover all clips/transitions."""
+        # Reuse QWidget timeline helper when available
+        update_duration = getattr(self, "_update_project_duration", None)
+        if callable(update_duration):
+            try:
+                update_duration()
+                return
+            except Exception:
+                log.warning("Failed to update project duration via widget helper", exc_info=1)
+
+        furthest = 0.0
+        for clip in Clip.filter():
+            data = clip.data if isinstance(clip.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            furthest = max(furthest, position + duration)
+        for tran in Transition.filter():
+            data = tran.data if isinstance(tran.data, dict) else {}
+            position = float(data.get("position", 0.0) or 0.0)
+            start = float(data.get("start", 0.0) or 0.0)
+            end = float(data.get("end", start) or start)
+            duration = max(0.0, end - start)
+            furthest = max(furthest, position + duration)
+
+        min_length = 300.0
+        padding = 10.0
+        desired = max(min_length, furthest + padding)
+        current = float(get_app().project.get("duration") or 0.0)
+        if desired > current + 1e-3:
+            self.resizeTimeline(desired)
+
     def delete_invalid_timeline_item(self, item):
         """Delete an invalid timeline item (clip or transitions) if the basic
            data does not make sense - i.e. negative duration"""
@@ -2903,6 +2937,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 ignore_reader=True,
                 transaction_id=transaction_id,
             )
+        self._extend_timeline_to_fit_items()
         if clips_with_waveforms:
             self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=transaction_id)
 
