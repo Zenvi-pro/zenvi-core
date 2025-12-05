@@ -27,7 +27,6 @@
 
 import json
 import os
-from operator import itemgetter
 from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node
 
@@ -290,11 +289,29 @@ def import_xml():
     video_tracks = []
     for video_element in xmldoc.getElementsByTagName("video"):
         for video_track in video_element.getElementsByTagName("track"):
-            video_tracks.append(video_track)
+            # Skip empty tracks up front so ordering math matches created tracks
+            if video_track.getElementsByTagName("clipitem"):
+                video_tracks.append(video_track)
     audio_tracks = []
     for audio_element in xmldoc.getElementsByTagName("audio"):
         for audio_track in audio_element.getElementsByTagName("track"):
-            audio_tracks.append(audio_track)
+            if audio_track.getElementsByTagName("clipitem"):
+                audio_tracks.append(audio_track)
+
+    # Pre-compute numbering so audio layers stay below video layers.
+    # Tracks are displayed in reversed sorted order, so higher numbers are higher on screen.
+    # We give all video tracks a higher range, then audio tracks a lower range.
+    stride = 1000000
+    all_tracks = app.project.get("layers")
+    max_existing = 0
+    try:
+        max_existing = max(t.get("number", 0) or 0 for t in all_tracks) if all_tracks else 0
+    except Exception:
+        max_existing = 0
+    audio_base = max_existing + stride
+    video_base = audio_base + (len(audio_tracks) * stride)
+    video_created = 0
+    audio_created = 0
 
     # Loop through tracks
     track_index = 0
@@ -308,10 +325,15 @@ def import_xml():
             if not clips_on_track:
                 continue
 
-            # Get # of tracks
             track_index += 1
-            all_tracks = app.project.get("layers")
-            track_number = list(reversed(sorted(all_tracks, key=itemgetter('number'))))[0].get("number") + 1000000
+
+            # Assign track numbers so video layers sit above audio layers after import.
+            if is_audio_track_list:
+                track_number = audio_base + (audio_created * stride)
+                audio_created += 1
+            else:
+                track_number = video_base + (video_created * stride)
+                video_created += 1
 
             # Prepare to create track lazily (only if clips remain after merging)
             track = None
