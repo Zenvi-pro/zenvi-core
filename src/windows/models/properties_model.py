@@ -808,8 +808,12 @@ class PropertiesModel(updates.UpdateInterface):
                 all_tracks = get_app().project.get("layers")
                 display_count = len(all_tracks)
                 display_label = None
+                try:
+                    value_int = int(float(value))
+                except (TypeError, ValueError):
+                    value_int = value
                 for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                    if track.get("number") == value:
+                    if track.get("number") == value_int:
                         display_label = track.get("label")
                         break
                     display_count -= 1
@@ -817,7 +821,11 @@ class PropertiesModel(updates.UpdateInterface):
                 col.setText(track_name)
 
             elif type == "int":
-                col.setText("%d" % value)
+                try:
+                    int_value = int(float(value))
+                    col.setText("%d" % int_value)
+                except (TypeError, ValueError):
+                    col.setText("" if value is None else str(value))
             else:
                 # Use numeric value
                 if value == "" or value is None:
@@ -969,107 +977,105 @@ class PropertiesModel(updates.UpdateInterface):
         # Ignore any events from this method
         self.ignore_update_signal = True
 
-        # Check for a selected clip
-        if self.selected and self.selected[0]:
-            c, item_type = self.selected[0]
+        try:
+            # Check for a selected clip
+            if self.selected and self.selected[0]:
+                c, item_type = self.selected[0]
 
-            # Skip blank clips
-            # TODO: Determine why c is occasional = None
-            if not c:
-                return
+                # Skip blank clips
+                # TODO: Determine why c is occasional = None
+                if not c:
+                    return
 
-            # Build list of raw properties for all selected items
-            all_raw_properties = []
-            for obj, _item_type in self.selected:
-                props = json.loads(obj.PropertiesJSON(self.frame_number))
-                all_raw_properties.append(props)
+                # Build list of raw properties for all selected items
+                all_raw_properties = []
+                for obj, _item_type in self.selected:
+                    props = json.loads(obj.PropertiesJSON(self.frame_number))
+                    all_raw_properties.append(props)
 
-            # Use first item's properties as baseline
-            raw_properties = all_raw_properties[0]
-            tracked_object_id = None
-            tracked_object_properties = {}
+                # Use first item's properties as baseline
+                raw_properties = all_raw_properties[0]
+                tracked_object_id = None
+                tracked_object_properties = {}
 
-            if len(all_raw_properties) == 1:
-                tracked_objects_raw_properties = raw_properties.pop('objects', None)
-                if tracked_objects_raw_properties:
-                    tracked_object_id = list(tracked_objects_raw_properties.keys())[0]
-                    tracked_object_properties = tracked_objects_raw_properties[tracked_object_id]
-                    raw_properties.update(tracked_object_properties)
+                if len(all_raw_properties) == 1:
+                    tracked_objects_raw_properties = raw_properties.pop('objects', None)
+                    if tracked_objects_raw_properties:
+                        tracked_object_id = list(tracked_objects_raw_properties.keys())[0]
+                        tracked_object_properties = tracked_objects_raw_properties[tracked_object_id]
+                        raw_properties.update(tracked_object_properties)
+                else:
+                    # Remove tracked object lists before comparing
+                    if 'objects' in raw_properties:
+                        raw_properties.pop('objects')
+                    for props in all_raw_properties[1:]:
+                        props.pop('objects', None)
+
+                    # Determine shared properties across all selected items
+                    shared = {}
+                    for key, prop in raw_properties.items():
+                        matches = True
+                        for other in all_raw_properties[1:]:
+                            if key not in other or other[key].get('type') != prop.get('type') or other[key].get('name') != prop.get('name'):
+                                matches = False
+                                break
+                        if matches:
+                            values = [other[key]['value'] for other in all_raw_properties]
+                            memos = [other[key]['memo'] for other in all_raw_properties]
+                            new_prop = prop.copy()
+                            if all(v == values[0] for v in values):
+                                new_prop['value'] = values[0]
+                            else:
+                                new_prop['value'] = ''
+                            if all(m == memos[0] for m in memos):
+                                new_prop['memo'] = memos[0]
+                            else:
+                                new_prop['memo'] = ''
+                            shared[key] = new_prop
+
+                    raw_properties = shared
+
+                # Sort all properties (by 'name')
+                all_properties = OrderedDict(sorted(raw_properties.items(), key=lambda x: x[1]['name']))
+
+                # Check if filter was changed (if so, wipe previous model data)
+                if self.previous_filter != filter:
+                    self.previous_filter = filter
+                    self.new_item = True  # filter changed, so we need to regenerate the entire model
+
+                # Build or update the model
+                if self.new_item:
+                    # Prepare for new properties
+                    self.items = {}
+                    self.model.clear()
+
+                    # Add Headers
+                    self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
+
+                    # Clear caption editor
+                    get_app().window.CaptionTextLoaded.emit("", None)
+
+                # Loop through properties, and build/update the model
+                for property in all_properties.items():
+                    if property[0] in tracked_object_properties:
+                        # Add/update tracked object property
+                        self.set_property(property, filter, c, item_type, object_id=tracked_object_id)
+                    else:
+                        # Add/update base property
+                        self.set_property(property, filter, c, item_type)
+
+                # After first render, future calls will update in place
+                self.new_item = False
+
             else:
-                # Remove tracked object lists before comparing
-                if 'objects' in raw_properties:
-                    raw_properties.pop('objects')
-                for props in all_raw_properties[1:]:
-                    props.pop('objects', None)
-
-                # Determine shared properties across all selected items
-                shared = {}
-                for key, prop in raw_properties.items():
-                    matches = True
-                    for other in all_raw_properties[1:]:
-                        if key not in other or other[key].get('type') != prop.get('type') or other[key].get('name') != prop.get('name'):
-                            matches = False
-                            break
-                    if matches:
-                        values = [other[key]['value'] for other in all_raw_properties]
-                        memos = [other[key]['memo'] for other in all_raw_properties]
-                        new_prop = prop.copy()
-                        if all(v == values[0] for v in values):
-                            new_prop['value'] = values[0]
-                        else:
-                            new_prop['value'] = ''
-                        if all(m == memos[0] for m in memos):
-                            new_prop['memo'] = memos[0]
-                        else:
-                            new_prop['memo'] = ''
-                        shared[key] = new_prop
-
-                raw_properties = shared
-
-            # Sort all properties (by 'name')
-            all_properties = OrderedDict(sorted(raw_properties.items(), key=lambda x: x[1]['name']))
-
-            # Check if filter was changed (if so, wipe previous model data)
-            if self.previous_filter != filter:
-                self.previous_filter = filter
-                self.new_item = True  # filter changed, so we need to regenerate the entire model
-
-            # Clear previous model data (if item is different)
-            if self.new_item:
-                # Prepare for new properties
-                self.items = {}
+                # Clear previous model data (if any)
                 self.model.clear()
 
                 # Add Headers
                 self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
-
-                # Clear caption editor
-                get_app().window.CaptionTextLoaded.emit("", None)
-
-            # Loop through properties, and build a model
-            for property in all_properties.items():
-                if property[0] in tracked_object_properties:
-                    # Add tracked object property
-                    self.set_property(property, filter, c, item_type, object_id=tracked_object_id)
-                else:
-                    # Add base property
-                    self.set_property(property, filter, c, item_type)
-
-            # Update the values on the next call to this method (instead of adding rows)
-            self.new_item = False
-
-        else:
-            # Clear previous properties hash
-            self.previous_hash = ""
-
-            # Clear previous model data (if any)
-            self.model.clear()
-
-            # Add Headers
-            self.model.setHorizontalHeaderLabels([_("Property"), _("Value")])
-
-        # Done updating model
-        self.ignore_update_signal = False
+        finally:
+            # Done updating model (even if we returned early)
+            self.ignore_update_signal = False
 
     def __init__(self, parent, *args):
 
@@ -1077,7 +1083,6 @@ class PropertiesModel(updates.UpdateInterface):
         self.selected = []
         self.current_item_id = None
         self.frame_number = 1
-        self.previous_hash = ""
         self.new_item = True
         self.items = {}
         self.ignore_update_signal = False
