@@ -1254,40 +1254,46 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Pause playback
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
+        # Temporarily disable playback caching to avoid cache thread races while swapping caches
+        lib_settings = openshot.Settings.Instance()
+        lib_settings.ENABLE_PLAYBACK_CACHING = False
+        try:
+            # Save current cache object and create a new CacheMemory object (ignore quality and scale prefs)
+            old_cache_object = self.cache_object
+            new_cache_object = openshot.CacheMemory(app.get_settings().get("cache-limit-mb") * 1024 * 1024)
+            self.timeline_sync.timeline.SetCache(new_cache_object)
 
-        # Save current cache object and create a new CacheMemory object (ignore quality and scale prefs)
-        old_cache_object = self.cache_object
-        new_cache_object = openshot.CacheMemory(app.get_settings().get("cache-limit-mb") * 1024 * 1024)
-        self.timeline_sync.timeline.SetCache(new_cache_object)
+            # Set MaxSize to full project resolution and clear preview cache so we get a full resolution frame
+            self.timeline_sync.timeline.SetMaxSize(app.project.get("width"), app.project.get("height"))
+            self.cache_object.Clear()
 
-        # Set MaxSize to full project resolution and clear preview cache so we get a full resolution frame
-        self.timeline_sync.timeline.SetMaxSize(app.project.get("width"), app.project.get("height"))
-        self.cache_object.Clear()
+            # Check if file exists, if it does, get the lastModified time
+            if os.path.exists(framePath):
+                framePathTime = QFileInfo(framePath).lastModified()
+            else:
+                framePathTime = QDateTime()
 
-        # Check if file exists, if it does, get the lastModified time
-        if os.path.exists(framePath):
-            framePathTime = QFileInfo(framePath).lastModified()
-        else:
-            framePathTime = QDateTime()
+            # Get and Save the frame
+            # (return is void, so we cannot check for success/fail here
+            # - must use file modification timestamp)
+            openshot.Timeline.GetFrame(
+                self.timeline_sync.timeline, self.preview_thread.current_frame).Save(framePath, 1.0)
 
-        # Get and Save the frame
-        # (return is void, so we cannot check for success/fail here
-        # - must use file modification timestamp)
-        openshot.Timeline.GetFrame(
-            self.timeline_sync.timeline, self.preview_thread.current_frame).Save(framePath, 1.0)
+            # Show message to user
+            if os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime):
+                self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
+            else:
+                self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
 
-        # Show message to user
-        if os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime):
-            self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
-        else:
-            self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
-
-        # Reset the MaxSize to match the preview and reset the preview cache
-        viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
-        self.timeline_sync.timeline.SetMaxSize(viewport_rect.width(), viewport_rect.height())
-        self.cache_object.Clear()
-        self.timeline_sync.timeline.SetCache(old_cache_object)
-        self.cache_object = old_cache_object
+            # Reset the MaxSize to match the preview and reset the preview cache
+            viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
+            self.timeline_sync.timeline.SetMaxSize(viewport_rect.width(), viewport_rect.height())
+            self.cache_object.Clear()
+            self.timeline_sync.timeline.SetCache(old_cache_object)
+            self.cache_object = old_cache_object
+        finally:
+            # Restore caching flag
+            lib_settings.ENABLE_PLAYBACK_CACHING = True
 
     def renumber_all_layers(self, insert_at=None, stride=1000000):
         """Renumber all of the project's layers to be equidistant (in
