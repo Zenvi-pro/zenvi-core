@@ -121,6 +121,7 @@ class UpdateAction:
         self.key = update_action_dict.get("key")
         self.values = update_action_dict.get("value")
         self.old_values = update_action_dict.get("old_values")
+        self.transaction = update_action_dict.get("transaction", self.transaction)
 
         # Always remove 'history' key (if found). This prevents nested "history"
         # attributes when a project dict is loaded.
