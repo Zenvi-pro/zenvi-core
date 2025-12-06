@@ -852,6 +852,7 @@ class ClipInteractionMixin:
             item.data["position"] = self._snap_time(position)
             item.data["start"] = 0.0
             item.data["end"] = self._snap_time(end)
+            item.data["duration"] = self._snap_time(end)
             self.update_transition_data(item.data, only_basic_props=True)
 
         self._resizing_item = None
