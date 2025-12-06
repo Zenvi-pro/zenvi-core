@@ -151,22 +151,37 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
     if passes < 2:
         return
 
+    # Convert trim (seconds) to frames
+    trim_start_frames = int(round(float(clip.data.get("start", 0.0)) * fps_float))
+    trim_end_frames = int(round(float(clip.data.get("end", 0.0)) * fps_float))
+    trim_span_frames = max(1, trim_end_frames - trim_start_frames)
+    target_start_y = trim_start_frames if trim_start_frames > 0 else 1
+    target_end_y = trim_start_frames + trim_span_frames
+    target_range = max(1, target_end_y - target_start_y)
+
     # Normalize existing time curve or build linear default
     orig_time = clip.data.get("time", {}).get("Points", [])
     if isinstance(orig_time, list) and len(orig_time) >= 2:
         base_time = _normalize_points(orig_time)
+        y_start = int(round(base_time[0]["co"].get("Y", 0)))
+        y_end = int(round(base_time[-1]["co"].get("Y", 0)))
+        y_range = max(1, y_end - y_start)
+        # Rescale Y values so they align with the trimmed region (in frames)
+        for p in base_time:
+            y_val = p["co"].get("Y", 0)
+            p["co"]["Y"] = target_start_y + ((y_val - y_start) * target_range / y_range)
     else:
-        span_s = float(clip.data["end"]) - float(clip.data["start"])
-        base_frames = max(1, int(round(span_s * fps_float)))
+        base_frames = trim_span_frames
         base_time = [
-            {"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR},
-            {"co": {"X": base_frames, "Y": base_frames}, "interpolation": openshot.LINEAR},
+            {"co": {"X": 1, "Y": target_start_y}, "interpolation": openshot.LINEAR},
+            {"co": {"X": base_frames, "Y": target_end_y}, "interpolation": openshot.LINEAR},
         ]
     time_span_x = int(round(base_time[-1]["co"]["X"]))
 
     # Store original data if not already
     if "repeat_cache" not in clip.data:
         cache = {
+            "start": clip.data.get("start", 0.0),
             "end": clip.data["end"],
             "duration": clip.data["duration"],
             "properties": {},
@@ -196,15 +211,18 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
             clip.data[prop] = {"Points": new_points}
             total_frames = max(total_frames, used)
 
-    # Update end/duration
-    clip.data["end"] = float(clip.data["start"]) + (total_frames / fps_float)
-    clip.data["duration"] = clip.data["end"] - clip.data["start"]
+    # Update trims to cover the repeated span starting at 0
+    new_duration = total_frames / fps_float
+    clip.data["start"] = 0.0
+    clip.data["end"] = new_duration
+    clip.data["duration"] = new_duration
 
 
 def reset_repeat(clip):
     cache = clip.data.pop("repeat_cache", None)
     if not cache:
         return
+    clip.data["start"] = cache.get("start", clip.data.get("start"))
     clip.data["end"] = cache.get("end", clip.data.get("end"))
     clip.data["duration"] = cache.get("duration", clip.data.get("duration"))
     for prop, data in cache.get("properties", {}).items():
