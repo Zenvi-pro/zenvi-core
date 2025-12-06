@@ -243,6 +243,7 @@ class TimelineWidgetBase(QWidget):
         # Resize / timing helpers
         self.enable_timing = False
         self.enable_snapping = True
+        self.enable_razor = False
         self._resizing_item = None
         self._resize_edge = None
         self._resize_initial_rect = QRectF()
@@ -604,6 +605,10 @@ class TimelineWidgetBase(QWidget):
     def setSnappingMode(self, enable):
         """Enable or disable snapping mode."""
         self.enable_snapping = bool(enable)
+
+    def setRazorMode(self, enable):
+        """Enable or disable razor tool mode."""
+        self.enable_razor = bool(enable)
 
     def setTimingMode(self, enable):
         """Enable or disable timing (retime) mode."""
@@ -1680,6 +1685,59 @@ class TimelineWidgetBase(QWidget):
         self._keyframes_dirty = True
         self.update()
 
+    def select_all_items(self):
+        """Select all clips and transitions currently laid out on the timeline."""
+        self.geometry.ensure()
+        self.win.clearSelections()
+        for _rect, item, _selected, item_type in self.geometry.iter_items(viewport=False):
+            item_id = getattr(item, "id", None)
+            if item_id is None:
+                continue
+            self._select_timeline_item(item_id, item_type, False)
+
+    def selectRipple(self, item_id, item_type):
+        """Select the item and everything to its right on the same layer."""
+        if not item_id or not item_type:
+            return
+        self.geometry.ensure()
+        target = None
+        target_layer = None
+        target_pos = None
+        for _rect, obj, _sel, typ in self.geometry.iter_items(viewport=False):
+            if typ == item_type and str(getattr(obj, "id", "")) == str(item_id):
+                data = getattr(obj, "data", {}) or {}
+                target = obj
+                target_layer = data.get("layer")
+                try:
+                    target_pos = float(data.get("position"))
+                except (TypeError, ValueError):
+                    target_pos = None
+                break
+        if target is None or target_layer is None or target_pos is None:
+            return
+        for _rect, obj, _sel, typ in self.geometry.iter_items(viewport=False):
+            if typ not in ("clip", "transition"):
+                continue
+            data = getattr(obj, "data", {}) or {}
+            if data.get("layer") != target_layer:
+                continue
+            try:
+                obj_pos = float(data.get("position"))
+            except (TypeError, ValueError):
+                continue
+            if obj_pos >= target_pos:
+                self._select_timeline_item(getattr(obj, "id", None), typ, False)
+
+    def clear_all_selections(self):
+        """Clear all timeline selections and keyframe highlights."""
+        self.win.clearSelections()
+        if hasattr(self, "_clear_panel_selection"):
+            self._clear_panel_selection(None)
+        self.clip_painter.clear_cache()
+        self.geometry.mark_dirty()
+        self._keyframes_dirty = True
+        self.update()
+
     def _update_project_duration(self):
         timeline = getattr(self.win, "timeline", None)
         if not timeline:
@@ -1960,6 +2018,11 @@ class TimelineWidgetBase(QWidget):
         if self._handle_menu_icon_clicks(pos):
             return
 
+        if self.enable_razor and event.button() == Qt.LeftButton:
+            if self._handle_razor_press(pos):
+                event.accept()
+                return
+
         self._assign_press_target(event)
 
         if self._start_scroll_drag_if_needed(pos):
@@ -2004,6 +2067,20 @@ class TimelineWidgetBase(QWidget):
             if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
+        return False
+
+    def _handle_razor_press(self, pos):
+        """Invoke razor slicing when the razor tool is enabled and an item is clicked."""
+        for rect, obj, _sel, typ in self.geometry.iter_items(reverse=True):
+            if not rect.contains(pos):
+                continue
+            seconds = self._seconds_from_x(pos.x())
+            clip_id = str(getattr(obj, "id", "")) if typ == "clip" else ""
+            tran_id = str(getattr(obj, "id", "")) if typ == "transition" else ""
+            razor_cb = getattr(self, "RazorSliceAtCursor", None)
+            if callable(razor_cb):
+                razor_cb(clip_id, tran_id, seconds)
+            return True
         return False
 
     def _assign_press_target(self, event):

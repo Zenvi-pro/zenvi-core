@@ -3499,7 +3499,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def SetRazorMode(self, enable_razor):
         """ Enable / Disable razor mode """
         # Init razor state (1 = razor, 0 = no razor)
-        self.run_js(JS_SCOPE_SELECTOR + ".setRazorMode(%s);" % int(enable_razor))
+        if ViewClass == TimelineWidget:
+            TimelineWidget.setRazorMode(self, enable_razor)
+        else:
+            self.run_js(JS_SCOPE_SELECTOR + ".setRazorMode(%s);" % int(enable_razor))
 
     @pyqtSlot(int)
     def SetTimingMode(self, enable_timing):
@@ -3529,7 +3532,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.window.actionProperties.trigger()
 
     def addRippleSelection(self, item_id, item_type):
-        if item_type == "clip":
+        if ViewClass == TimelineWidget:
+            TimelineWidget.selectRipple(self, item_id, item_type)
+        elif item_type == "clip":
             self.run_js(JS_SCOPE_SELECTOR + ".selectClipRipple('{}', false, null);".format(item_id))
         elif item_type == "transition":
             self.run_js(JS_SCOPE_SELECTOR + ".selectTransitionRipple('{}', false, null);".format(item_id))
@@ -4065,14 +4070,20 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def ClearAllSelections(self):
         """Clear all selections in JavaScript"""
 
-        # Call javascript command
-        self.run_js(JS_SCOPE_SELECTOR + ".clearAllSelections();")
+        # Call JS timeline or qwidget backend equivalent
+        if ViewClass == TimelineWidget:
+            TimelineWidget.clear_all_selections(self)
+        else:
+            self.run_js(JS_SCOPE_SELECTOR + ".clearAllSelections();")
 
     def SelectAll(self):
         """Select all clips and transitions in JavaScript"""
 
-        # Call javascript command
-        self.run_js(JS_SCOPE_SELECTOR + ".selectAll();")
+        # Call JS timeline or qwidget backend equivalent
+        if ViewClass == TimelineWidget:
+            TimelineWidget.select_all_items(self)
+        else:
+            self.run_js(JS_SCOPE_SELECTOR + ".selectAll();")
 
     def render_cache_json(self):
         """Render the cached frames to the timeline (called every X seconds), and only if changed"""
