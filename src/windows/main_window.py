@@ -2147,6 +2147,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             for t in transitions:
                 # Clear selected clips
                 self.removeSelection(tran_id, "transition")
+                self.emit_selection_signal()
+                self.show_property_timeout()
 
                 # Remove transition
                 t.delete()
