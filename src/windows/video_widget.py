@@ -1524,11 +1524,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         # Property missing? Create it!
         if property_key not in c.data:
             c.data[property_key] = {"Points": []}
-            log.warning(
-                "%s: Added missing '%s' to property data",
-                clip_id, property_key)
+            log.warning("%s: Added missing '%s' to property data", clip_id, property_key)
 
-        points = c.data.get(property_key).get("Points")
+        points = c.data.get(property_key, {}).get("Points", [])
         for point in points:
             co = point.get("co", {})
             log.info("looping points: co.X = %s" % co.get("X"))
@@ -1547,7 +1545,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             c.data[property_key]["Points"].append({
                 'co': {'X': frame_number, 'Y': float(new_value)},
                 'interpolation': openshot.BEZIER
-                })
+            })
 
         if clip_updated:
             # Reduce # of clip properties we are saving (performance boost)
@@ -1570,6 +1568,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             # No clip found
             return
 
+        # Clamp frame number to a sane range (effects share clip timing, so keep >= 1)
+        frame_number = max(1, int(round(frame_number)))
+
         try:
             if obj_id is not None:
                 props = c.data['objects'][obj_id]
@@ -1585,7 +1586,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         for point in points_list:
             co = point.get("co", {})
-            log.info("looping points: co.X = %s", co.get("X"))
+            log.info("looping points: co.X = %s" % co.get("X"))
 
             if co.get("X") == frame_number:
                 found_point = True
@@ -1605,7 +1606,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         if effect_updated:
             # Reduce # of clip properties we are saving (performance boost)
-            # TODO: This is too slow when dragging transform handlers
             if obj_id is not None:
                 c.data = {'objects': {obj_id: c.data.get('objects', {}).get(obj_id)}}
             else:
@@ -1618,10 +1618,39 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 get_app().window.refreshFrameSignal.emit()
 
     def _get_clip_frame_number(self, clip, fps_float):
-        start = round(float(clip.data["start"]) * fps_float) + 1
-        position = (float(clip.data["position"]) * fps_float) + 1
-        playhead = float(get_app().window.preview_thread.current_frame)
-        return round(playhead - position) + start
+        """Return clip-relative frame clamped between trimmed start/end."""
+        data = clip.data
+
+        # Seconds
+        start_sec = float(data.get("start", 0.0))
+        end_val = data.get("end", None)
+        end_sec = float(end_val) if end_val is not None else None
+
+        # Frames
+        start_frame = round(start_sec * fps_float) + 1
+        end_frame = None
+        if end_sec is not None and end_sec > start_sec:
+            end_frame = round(end_sec * fps_float)
+
+        # Timeline position (in frames, 1-based)
+        position = (float(data.get("position", 0.0)) * fps_float) + 1
+
+        # Current playhead frame
+        try:
+            playhead = float(get_app().window.preview_thread.current_frame)
+        except Exception:
+            playhead = 1.0
+
+        # Original clip-relative math
+        frame = round(playhead - position) + start_frame
+
+        # Clamp to [start_frame, end_frame] if end is valid, otherwise just clamp to start
+        if frame < start_frame:
+            return start_frame
+        if end_frame is not None and frame > end_frame:
+            return end_frame
+
+        return frame
 
     def _apply_delta_to_clips(self, property_key, delta, fps_float):
         for clip, obj in zip(self.transforming_clips[1:], self.transforming_clip_objects[1:]):

@@ -555,6 +555,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             existing_clip.data["position"] = clip_data["position"]
             existing_clip.data["start"] = clip_data["start"]
             existing_clip.data["end"] = clip_data["end"]
+            existing_clip.data["duration"] = clip_data.get("duration")
 
         # Delete invalid items (i.e. negative duration)
         if self.delete_invalid_timeline_item(existing_clip):

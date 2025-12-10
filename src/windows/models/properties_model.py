@@ -155,7 +155,7 @@ class PropertiesModel(updates.UpdateInterface):
 
                 # Calculate biggest and smallest possible frames
                 min_frame_number = round((clip.Start() * fps_float)) + 1
-                max_frame_number = round((clip.End() * fps_float)) + 1
+                max_frame_number = round((clip.End() * fps_float))
 
                 # Adjust frame number if out of range
                 if self.frame_number < min_frame_number:
