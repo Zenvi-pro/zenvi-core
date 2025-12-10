@@ -135,7 +135,12 @@ def _normalize_points_to_trim(points, trim_start_frames, trim_span_frames):
             # Convert absolute project frame to trimmed-relative frame (1-based)
             x_rel = x_abs - trim_start_frames
 
-        x_rel = min(max(1, x_rel), trim_span_frames)
+        x_rel = int(round(x_rel))
+
+        # Drop any keyframes that fall outside the trimmed clip range once shifted.
+        if x_rel < 1 or x_rel > trim_span_frames:
+            continue
+
         new_point = copy.deepcopy(p)
         new_point.setdefault("co", {})
         new_point["co"]["X"] = x_rel
@@ -180,10 +185,13 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
     if passes < 2:
         return
 
-    # Convert trim (seconds) to frames (zero-based repeat: always use 1..trim_span)
+    # Convert trim (seconds) to frames (zero-based repeat: always use 1..trim_span).
+    # Use duration to avoid off-by-one loss when end is rounded down/up differently.
     trim_start_frames = int(round(float(clip.data.get("start", 0.0)) * fps_float))
-    trim_end_frames = int(round(float(clip.data.get("end", 0.0)) * fps_float))
-    trim_span_frames = max(1, trim_end_frames - trim_start_frames)
+    trim_span_frames = max(
+        1,
+        int(round((float(clip.data.get("end", 0.0)) - float(clip.data.get("start", 0.0))) * fps_float)),
+    )
     target_start_y = 1
     target_end_y = target_start_y + trim_span_frames
     target_range = max(1, target_end_y - target_start_y)
@@ -260,16 +268,13 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
                 span = time_span_x
 
             # Deduplicate any points that collapsed onto the same frame (esp. at start)
-            seen_x = set()
-            deduped = []
+            latest_by_x = {}
             for p in norm:
                 x_val = int(round(p["co"].get("X", 1)))
-                if x_val in seen_x:
-                    continue
-                seen_x.add(x_val)
                 p["co"]["X"] = x_val
-                deduped.append(p)
-            norm = deduped
+                # Prefer the last occurrence (most recently edited) when duplicates collapse
+                latest_by_x[x_val] = p
+            norm = [latest_by_x[x] for x in sorted(latest_by_x.keys())]
 
             new_points, used = _repeat_curve(norm, span, dir_sign, passes, delay_frames, ramp, pattern)
             clip.data[prop] = {"Points": new_points}
