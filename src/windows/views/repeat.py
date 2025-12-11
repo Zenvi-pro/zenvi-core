@@ -192,7 +192,7 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
         1,
         int(round((float(clip.data.get("end", 0.0)) - float(clip.data.get("start", 0.0))) * fps_float)),
     )
-    target_start_y = 1
+    target_start_y = trim_start_frames + 1
     target_end_y = target_start_y + trim_span_frames
     target_range = max(1, target_end_y - target_start_y)
 
