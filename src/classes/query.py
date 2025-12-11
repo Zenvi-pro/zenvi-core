@@ -38,6 +38,10 @@ from classes.path_utils import absolute_media_path
 class QueryObject:
     """ This class allows one or more project data objects to be queried """
 
+    # Cache detached project objects per update version
+    _cache_version = None
+    _cache = {}
+
     def __init__(self):
         """ Constructor """
 
@@ -89,6 +93,26 @@ class QueryObject:
         # Needs to be overwritten in each derived class
         return None
 
+    @classmethod
+    def _get_cached_child(cls, OBJECT_TYPE, child):
+        """Return a cached, detached copy of child, clearing cache when project changes"""
+        updates = get_app().updates
+        current_version = getattr(updates, "data_version", 0)
+
+        if cls._cache_version != current_version:
+            cls._cache = {}
+            cls._cache_version = current_version
+
+        object_cache = cls._cache.setdefault(OBJECT_TYPE.object_name, {})
+        child_id = child.get("id")
+
+        # Cache deep copies by id; reuse within the same project version
+        cached = object_cache.get(child_id)
+        if cached is None:
+            cached = copy.deepcopy(child)
+            object_cache[child_id] = cached
+        return cached
+
     def filter(OBJECT_TYPE, **kwargs):
         """ Take any arguments given as filters, and find a list of matching objects """
 
@@ -128,7 +152,7 @@ class QueryObject:
                 object = OBJECT_TYPE()
                 object.id = child["id"]
                 object.key = [OBJECT_TYPE.object_name, {"id": object.id}]
-                object.data = copy.copy(child)  # copy of object
+                object.data = QueryObject._get_cached_child(OBJECT_TYPE, child)
                 object.type = "update"
                 matching_objects.append(object)
 

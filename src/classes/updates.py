@@ -149,6 +149,7 @@ class UpdateManager:
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
         self.transaction_id = None  # The current transaction id to be attached to any UpdateActions created
+        self.data_version = 0  # Incremented on every dispatch to invalidate caches
 
     def load_history(self, project):
         """Load history from project"""
@@ -358,6 +359,9 @@ class UpdateManager:
     # Carry out an action on all listeners
     def dispatch_action(self, action):
         """ Distribute changes to all listeners (by calling their changed() method) """
+
+        # Every dispatched action reflects a project mutation; bump the version
+        self.data_version += 1
 
         try:
             # Loop through all listeners
