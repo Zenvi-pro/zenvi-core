@@ -1285,7 +1285,7 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
 // Show marker context menu
   $scope.selectMarker = function (marker) {
     var frames_per_second = $scope.project.fps.num / $scope.project.fps.den;
-    var marker_position_frames = marker.position * frames_per_second;
+    var marker_position_frames = Math.round(marker.position * frames_per_second) + 1;
 
     if ($scope.Qt) {
       timeline.SeekToKeyframe(marker_position_frames);
