@@ -1263,9 +1263,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             new_cache_object = openshot.CacheMemory(app.get_settings().get("cache-limit-mb") * 1024 * 1024)
             self.timeline_sync.timeline.SetCache(new_cache_object)
 
-            # Set MaxSize to full project resolution and clear preview cache so we get a full resolution frame
+            # Set MaxSize to full project resolution and clear cache so we get a full resolution frame
             self.timeline_sync.timeline.SetMaxSize(app.project.get("width"), app.project.get("height"))
-            self.cache_object.Clear()
+            # Deep clear to drop any preview-sized frames cached by clips/readers
+            self.timeline_sync.timeline.ClearAllCache(True)
 
             # Check if file exists, if it does, get the lastModified time
             if os.path.exists(framePath):
@@ -1288,6 +1289,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             # Reset the MaxSize to match the preview and reset the preview cache
             viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
             self.timeline_sync.timeline.SetMaxSize(viewport_rect.width(), viewport_rect.height())
+            # Drop the full-res cache entries we created while saving the frame
+            self.timeline_sync.timeline.ClearAllCache(True)
             self.cache_object.Clear()
             self.timeline_sync.timeline.SetCache(old_cache_object)
             self.cache_object = old_cache_object
