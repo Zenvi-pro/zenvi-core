@@ -60,57 +60,138 @@ function getTrackContainerHeight() {
   return $("#track-container").height() - track_margin;
 }
 
-// Draw each bar of the audio waveform (a wave is made up from lots of vertical lines)
-function drawBar(ctx, startX, endX, maxHeight, avgHeight, transpColor, fillColor, bottom_edge) {
-  // Draw the slightly transparent max-bar
-  ctx.fillStyle = transpColor;
-  ctx.fillRect(startX, bottom_edge - maxHeight, endX - startX, maxHeight);
+// Calculate waveform column stats (peak and average) similar to the QWidget painter
+function buildWaveformColumns(audio_data, start_float, end_float, samples_per_pixel, width) {
+  var peaks = [];
+  var avgs = [];
+  var xs = [];
 
-  // Draw the fully visible average-bar
-  ctx.fillStyle = fillColor;
-  ctx.fillRect(startX, bottom_edge - avgHeight, endX - startX, avgHeight);
+  if (!Array.isArray(audio_data) || audio_data.length === 0) {
+    return {peaks: peaks, avgs: avgs, xs: xs};
+  }
+  if (!isFinite(samples_per_pixel) || samples_per_pixel <= 0 || !isFinite(start_float) || !isFinite(end_float)) {
+    return {peaks: peaks, avgs: avgs, xs: xs};
+  }
+
+  var samples = audio_data.length;
+
+  for (var column = 0; column < width; column++) {
+    var px_start = start_float + (column * samples_per_pixel);
+    var px_end = Math.min(end_float, px_start + samples_per_pixel);
+    var start_idx = Math.max(0, Math.floor(px_start));
+    var end_idx = Math.min(samples, Math.ceil(px_end));
+    var values = [];
+
+    if (end_idx <= start_idx) {
+      if (samples) {
+        var single_idx = Math.min(samples - 1, Math.max(0, Math.round(px_start)));
+        var single_sample = audio_data[single_idx];
+        var single_value = (typeof single_sample === "number" && isFinite(single_sample)) ? Math.abs(single_sample) : 0;
+        values.push(single_value);
+      }
+    } else {
+      var step = Math.max(1, Math.ceil((end_idx - start_idx) / 20));
+      for (var idx = start_idx; idx < end_idx; idx += step) {
+        var val = audio_data[idx];
+        values.push((typeof val === "number" && isFinite(val)) ? Math.abs(val) : 0);
+      }
+      var last_idx = end_idx - 1;
+      if (values.length && (last_idx - start_idx) % step !== 0) {
+        var tail = audio_data[last_idx];
+        values.push((typeof tail === "number" && isFinite(tail)) ? Math.abs(tail) : 0);
+      }
+    }
+
+    var max_val = 0;
+    var avg_val = 0;
+    for (var v = 0; v < values.length; v++) {
+      max_val = Math.max(max_val, values[v]);
+      avg_val += values[v];
+    }
+    if (values.length) {
+      avg_val /= values.length;
+    }
+
+    peaks.push(max_val);
+    avgs.push(avg_val);
+    xs.push(column + 0.5);
+  }
+
+  return {peaks: peaks, avgs: avgs, xs: xs};
 }
 
-// Draw audio waveform from audio samples
-function drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge, start_sample_offset) {
+// Draw audio waveform from audio samples using a filled path (matching the QWidget style)
+function drawWaveform(ctx, audio_data, options) {
+  if (!ctx || !options) {
+    return;
+  }
+  var start_float = options.start;
+  var end_float = options.end;
+  var samples_per_pixel = options.samplesPerPixel;
+  var width = options.width;
+  var height = options.height;
+  var peakColor = options.peakColor;
+  var fillColor = options.fillColor;
+
   if (!Array.isArray(audio_data) || audio_data.length === 0) {
     return;
   }
-
-  if (typeof start_sample_offset !== "number" || !isFinite(start_sample_offset)) {
-    start_sample_offset = 0;
+  if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) {
+    return;
+  }
+  if (!isFinite(start_float) || !isFinite(end_float) || end_float <= start_float) {
+    return;
+  }
+  if (!isFinite(samples_per_pixel) || samples_per_pixel <= 0) {
+    samples_per_pixel = (end_float - start_float) / Math.max(width, 1);
+  }
+  if (!isFinite(samples_per_pixel) || samples_per_pixel <= 0) {
+    return;
   }
 
-  var last_x = 0;
-  var avg = 0;
-  var avg_cnt = 0;
-  var max = 0;
+  var amplitude_scale = (height * 0.5) * 0.95;
+  var center_y = height / 2;
+  var columns = buildWaveformColumns(audio_data, start_float, end_float, samples_per_pixel, width);
+  var peaks = columns.peaks;
+  var avgs = columns.avgs;
+  var xs = columns.xs;
 
-  // Loop through audio samples (calculate average and max amplitude)
-  for (var i = start_sample; i < end_sample && i < audio_data.length; i++) {
-    var sample = Math.abs(audio_data[i]);
-    if (!isFinite(sample)) {
-      sample = 0;
-    }
-    var samples_from_start = (i + 1 - start_sample) - start_sample_offset;
-    if (samples_from_start < 0) {
-      samples_from_start = 0;
-    }
-    var x = Math.floor(samples_from_start / sample_divisor);
-    avg += sample;
-    avg_cnt++;
-    max = Math.max(max, sample);
-
-    if (x >= last_x + block_width || i === end_sample - 1 || i === audio_data.length - 1) {
-      drawBar(ctx, last_x, x, max * scale, avg_cnt ? (avg / avg_cnt) * scale : 0, color_transp, color, bottom_edge);
-
-      // Reset for the next bar
-      last_x = x;
-      avg = 0;
-      avg_cnt = 0;
-      max = 0;
-    }
+  if (!xs.length) {
+    return;
   }
+
+  var hasPeaks = peaks.some(function (h) { return h > 0; });
+  var hasAvgs = avgs.some(function (h) { return h > 0; });
+  if (!hasPeaks && !hasAvgs) {
+    return;
+  }
+
+  function fillPath(heights, color) {
+    if (!color) {
+      return;
+    }
+    ctx.beginPath();
+    ctx.moveTo(xs[0], center_y);
+    for (var i = 0; i < xs.length; i++) {
+      ctx.lineTo(xs[i], center_y - (heights[i] * amplitude_scale));
+    }
+    ctx.lineTo(xs[xs.length - 1], center_y);
+    for (var j = xs.length - 1; j >= 0; j--) {
+      ctx.lineTo(xs[j], center_y + (heights[j] * amplitude_scale));
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  ctx.save();
+  if (hasPeaks) {
+    fillPath(peaks, peakColor);
+  }
+  if (hasAvgs) {
+    fillPath(avgs, fillColor);
+  }
+  ctx.restore();
 }
 
 
@@ -269,11 +350,6 @@ function drawAudio(scope, clip_id, options) {
     return;
   }
 
-  var fractional_offset = start_sample_float - start_sample;
-  if (!isFinite(fractional_offset) || fractional_offset < 0) {
-    fractional_offset = 0;
-  }
-
   var span_float = end_sample_float - start_sample_float;
   if (!isFinite(span_float) || span_float <= 0) {
     span_float = end_sample - start_sample;
@@ -288,16 +364,18 @@ function drawAudio(scope, clip_id, options) {
     sample_divisor = 1;
   }
 
-  var block_width = 2;
-  var color = "#2a82da"; // rgb(42,130,218)
-  var color_transp = "rgba(42,130,218,0.5)";
-  ctx.strokeStyle = color;
+  var waveform_color = "#2a82da"; // rgb(42,130,218)
+  var waveform_peak_color = "rgba(42,130,218,0.5)";
 
-  // Scale waveform to smaller % of clip height
-  var bottom_edge = canvas_element.height;
-  var scale = bottom_edge * 0.85;
-
-  drawWaveform(ctx, audio_data, start_sample, end_sample, sample_divisor, block_width, scale, color, color_transp, bottom_edge, fractional_offset);
+  drawWaveform(ctx, audio_data, {
+    start: start_sample_float,
+    end: end_sample_float,
+    samplesPerPixel: sample_divisor,
+    width: canvas_element.width,
+    height: canvas_element.height,
+    peakColor: waveform_peak_color,
+    fillColor: waveform_color
+  });
 }
 
 function padNumber(value, pad_length) {
