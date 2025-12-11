@@ -920,7 +920,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps_float = float(fps["num"]) / float(fps["den"])
 
         # Get playhead position
-        playhead_position = float(self.window.preview_thread.current_frame) / fps_float
+        playhead_position = float(self.window.preview_thread.current_frame - 1) / fps_float
 
         # Get clipboard
         copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
@@ -2477,6 +2477,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         try:
             # Get the nearest starting frame position to the playhead (snap to frame boundaries)
             playhead_position = float(round((playhead_position * fps_num) / fps_den) * fps_den) / fps_num
+            if action == MenuSlice.KEEP_LEFT: playhead_position += fps_den / fps_num
 
             # Loop through each clip (using the list of ids)
             for clip_id in clip_ids:
@@ -2542,6 +2543,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     right_clip.key = right_clip_key
                     right_clip.data["position"] = playhead_position
                     right_clip.data["start"] = clip.data["end"]
+                    right_clip.data["end"] = end_of_clip
                     right_start = float(right_clip.data["start"])
                     right_end = float(right_clip.data.get("end", right_start))
                     right_clip.data["duration"] = max(0.0, right_end - right_start)
