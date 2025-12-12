@@ -654,8 +654,9 @@ App.controller("TimelineCtrl", function ($scope) {
   $scope.reDrawAllAudioData = function () {
     // Loop through all clips (and look for audio data)
     for (var clip_index = 0; clip_index < $scope.project.clips.length; clip_index++) {
-      if ("ui" in $scope.project.clips[clip_index] && "audio_data" in $scope.project.clips[clip_index].ui
-        && $scope.project.clips[clip_index].ui.audio_data.length > 1) {
+      var clip_ui = $scope.project.clips[clip_index].ui;
+      var audio_data = clip_ui ? clip_ui.audio_data : null;
+      if (Array.isArray(audio_data) && audio_data.length > 1) {
         // Redraw audio data
         drawAudio($scope, $scope.project.clips[clip_index].id);
       }
