@@ -181,6 +181,25 @@ class ClipPainter(BasePainter):
         clip_id = getattr(clip, "id", None)
         return str(clip_id) if clip_id is not None else ""
 
+    def _has_static_image(self, clip):
+        """Return True if the clip reports a static image so all frames are identical."""
+        if not clip:
+            return False
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        flags = (
+            data.get("has_static_image"),
+            reader.get("has_static_image"),
+            data.get("has_single_image"),
+            reader.get("has_single_image"),
+        )
+        for value in flags:
+            if isinstance(value, bool) and value:
+                return True
+            if isinstance(value, (int, float)) and value:
+                return True
+        return False
+
     def _clip_file_id(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
         file_id = data.get("file_id")
@@ -783,6 +802,9 @@ class ClipPainter(BasePainter):
         clip_width = float(inner.width())
         clip_left = inner.x()
 
+        static_image = self._has_static_image(clip)
+        static_frame = 1 if static_image else None
+
         for time_offset, rect in slots:
             slot_start_time = float(time_offset)
             slot_end_time = slot_start_time + slot_duration_seconds
@@ -795,6 +817,8 @@ class ClipPainter(BasePainter):
             # Correct absolute time in source media
             clip_time = trim_start + slot_center_time
             frame = self._frame_for_offset(clip_time, clip_fps)
+            if static_frame:
+                frame = static_frame
             is_edge = (slot_start_time <= segment_offset + edge_epsilon) or (
                 slot_end_time >= segment_end - edge_epsilon
             )
