@@ -623,6 +623,7 @@ class ClipPainter(BasePainter):
         if interval_seconds <= 0.0:
             interval_seconds = 0.01
         half_interval = interval_seconds * 0.5
+        slot_duration_seconds = interval_seconds
 
         includes_start = bool(timing.get("includes_start", True))
         includes_end = bool(timing.get("includes_end", True))
@@ -647,59 +648,60 @@ class ClipPainter(BasePainter):
 
         def add_center_world(center_world):
             """
-            Add a slot whose center is at `center_world` (timeline seconds),
+            Add a slot whose left edge begins at `center_world` (timeline seconds),
             if it overlaps the visible segment and lies within clip & media.
             """
 
             # Media time (0 at media start)
-            center_media_time = center_world - anchor_world
+            slot_start_media_time = center_world - anchor_world
 
             # Clip-local time (0 at clip's left edge)
-            center_clip_time = center_world - clip_pos
-
-            # Slot coverage in clip-local time
-            start_clip_time = center_clip_time - half_interval
-            end_clip_time = center_clip_time + half_interval
+            slot_start_clip_time = center_world - clip_pos
+            slot_end_clip_time = slot_start_clip_time + slot_duration_seconds
 
             # Require overlap with visible segment (lenient for boundary cases)
-            if end_clip_time < segment_start - epsilon or start_clip_time > segment_end + epsilon:
+            if (
+                slot_end_clip_time < segment_start - epsilon
+                or slot_start_clip_time > segment_end + epsilon
+            ):
                 return
 
             # Slot coverage in media time
-            start_media_time = center_media_time - half_interval
-            end_media_time = center_media_time + half_interval
+            slot_end_media_time = slot_start_media_time + slot_duration_seconds
 
             # Require overlap with media bounds [0, media_duration] (lenient)
-            if end_media_time < -epsilon or start_media_time > media_duration + epsilon:
+            if (
+                slot_end_media_time < -epsilon
+                or slot_start_media_time > media_duration + epsilon
+            ):
                 return
 
             # X coordinate within the visible segment (lenient for boundary cases)
-            local_x = (start_clip_time - segment_start) * pixels_per_second
+            local_x = (slot_start_clip_time - segment_start) * pixels_per_second
             if local_x > view_right + epsilon or (local_x + thumb_w) < view_left - epsilon:
                 return
 
             # Deduplicate by clip-local time to avoid overlapping slots
-            key = round(center_clip_time, 4)
+            key = round(slot_start_clip_time, 4)
             if key in seen:
                 return
             seen.add(key)
 
             rect = QRectF(inner.x() + local_x, top, thumb_w, thumb_h)
-            # We store clip-local time as the slot time_offset; _draw_thumbnails
-            # turns that into media time by adding trim_start.
-            slots.append((center_clip_time, rect))
+            # Store slot start time; _draw_thumbnails samples near the center.
+            slots.append((slot_start_clip_time, rect))
 
         # --- Style handling -----------------------------------------------
 
         if style == "start":
             if includes_start:
-                add_center_world(anchor_world)
+                add_center_world(segment_start_world)
         elif style == "start-end":
             if includes_start:
-                add_center_world(anchor_world)
+                add_center_world(segment_start_world)
             if includes_end:
-                # Fixed: world position of clip end (media trim_end)
-                clip_end_world = clip_pos + clip_duration
+                # Start slot so its right edge aligns with the clip end
+                clip_end_world = clip_pos + max(0.0, clip_duration - slot_duration_seconds)
                 add_center_world(clip_end_world)
         else:
             # Full-grid style ("entire", etc.)
@@ -749,6 +751,12 @@ class ClipPainter(BasePainter):
 
         clip_fps = self._clip_media_fps(clip)
         trim_start = self._clip_trim_start(clip)
+        slot_duration_seconds = float(interval_seconds or 0.0)
+        half_slot_duration = slot_duration_seconds * 0.5
+        segment_offset = float(timing.get("offset", 0.0) or 0.0)
+        segment_duration = float(timing.get("duration", 0.0) or 0.0)
+        segment_end = segment_offset + segment_duration
+        edge_epsilon = 1e-6
 
         pending = False
         generation = getattr(self.w, "thumbnail_generation", 0)
@@ -757,13 +765,20 @@ class ClipPainter(BasePainter):
         clip_left = inner.x()
 
         for time_offset, rect in slots:
-            local_time = float(time_offset)
+            slot_start_time = float(time_offset)
+            slot_end_time = slot_start_time + slot_duration_seconds
+            slot_center_time = slot_start_time + half_slot_duration
+            if slot_center_time < segment_offset:
+                slot_center_time = segment_offset
+            elif slot_center_time > segment_end:
+                slot_center_time = segment_end
+
             # Correct absolute time in source media
-            clip_time = trim_start + local_time
+            clip_time = trim_start + slot_center_time
             frame = self._frame_for_offset(clip_time, clip_fps)
-            is_edge = abs(local_time - timing.get("offset", 0.0)) < 1e-6 or abs(
-                local_time - (timing.get("offset", 0.0) + timing.get("duration", 0.0))
-            ) < 1e-6
+            is_edge = (slot_start_time <= segment_offset + edge_epsilon) or (
+                slot_end_time >= segment_end - edge_epsilon
+            )
             if rounding > 1 and not is_edge:
                 frame = max(1, int(round((frame - 1) / rounding) * rounding) + 1)
             key = (clip_key, frame)
