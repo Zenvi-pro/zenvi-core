@@ -528,6 +528,16 @@ class Preferences(QDialog):
         if "restart" in param and param["restart"]:
             self.requires_restart = True
 
+    def _apply_timeline_thumbnail_style(self):
+        """Push the current thumbnail preference to the QWidget timeline."""
+        timeline_widget = getattr(get_app().window, "timeline", None)
+        if not hasattr(timeline_widget, "set_thumbnail_style"):
+            return
+        try:
+            timeline_widget.set_thumbnail_style(self.s.get("timeline-thumbnail-style"))
+        except Exception:
+            log.warning("Failed to apply timeline thumbnail style live", exc_info=1)
+
     def bool_value_changed(self, widget, param, state):
         # Save setting
         if state == Qt.Checked:
@@ -650,6 +660,9 @@ class Preferences(QDialog):
             # Apply selected theme to UI
             if get_app().theme_manager:
                 get_app().theme_manager.apply_theme(value)
+
+        if param["setting"] == "timeline-thumbnail-style":
+            self._apply_timeline_thumbnail_style()
 
         # Check for restart
         self.check_for_restart(param)
@@ -775,6 +788,9 @@ class Preferences(QDialog):
             # Restore category settings
             self.requires_restart = self.s.restore(category_filter=category)
             self.settings_data = self.s.get_all_settings()
+
+            # Re-apply thumbnail style to the QWidget timeline if it changed
+            self._apply_timeline_thumbnail_style()
 
             # Repopulate preferences
             self.Populate()

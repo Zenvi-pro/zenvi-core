@@ -372,12 +372,27 @@ class TimelineWidgetBase(QWidget):
         self._middle_pan_scroll_start = [0.0, 0.0, 0.0, 0.0]
         self._middle_pan_vscroll_start = [0.0, 0.0, 0.0, 0.0]
 
-    def _load_thumbnail_style(self):
-        """Return the preferred thumbnail rendering style."""
-        style = str(get_app().get_settings().get("timeline-thumbnail-style") or "")
-        style = style.strip().lower()
+    def _normalize_thumbnail_style(self, style):
+        """Normalize and validate thumbnail style values."""
+        style = str(style or "").strip().lower()
         valid = {"none", "start", "start-end", "entire"}
         return style if style in valid else "entire"
+
+    def _load_thumbnail_style(self):
+        """Return the preferred thumbnail rendering style."""
+        style = get_app().get_settings().get("timeline-thumbnail-style")
+        return self._normalize_thumbnail_style(style)
+
+    def set_thumbnail_style(self, style):
+        """Update the thumbnail rendering style and refresh the timeline."""
+        normalized = self._normalize_thumbnail_style(style)
+        if normalized == getattr(self, "thumbnail_style", None):
+            return
+
+        self.thumbnail_style = normalized
+        self._reset_thumbnail_requests()
+        self.clip_painter.clear_cache()
+        self.update()
 
     def _reset_thumbnail_requests(self):
         """Cancel pending thumbnail work after a major viewport change."""
