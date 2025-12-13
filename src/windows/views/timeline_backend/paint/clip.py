@@ -42,6 +42,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 import math
 import os
+import time
 
 from classes.app import get_app
 from classes.logger import log
@@ -59,6 +60,9 @@ class ClipPainter(BasePainter):
         self._thumbnail_repaint_timer.setInterval(250)
         self._thumbnail_repaint_timer.timeout.connect(self._flush_thumbnail_repaint)
         self._thumb_repaint_pending = False
+        self._last_thumb_request_time = {}
+        self._slot_fallback_cache = {}
+        self._trim_request_cooldown = 0.12
 
     MAX_THUMB_SLOTS = 150
 
@@ -118,6 +122,8 @@ class ClipPainter(BasePainter):
         self._thumb_pending.clear()
         self._thumb_regions.clear()
         self._thumb_missing_logged.clear()
+        self._last_thumb_request_time.clear()
+        self._slot_fallback_cache.clear()
 
     def _segment_overdraw(self, view_width):
         """Return the horizontal overdraw (extra pixels) to render beyond the view."""
@@ -184,6 +190,14 @@ class ClipPainter(BasePainter):
         data = clip.data if isinstance(clip.data, dict) else {}
         start = self._to_float(data.get("start"), 0.0)
         end = self._to_float(data.get("end"), start)
+        if self.w.clip_has_pending_override(clip):
+            overrides = self.w._pending_clip_overrides.get(clip.id, {})
+            pending_start = overrides.get("start")
+            pending_end = overrides.get("end")
+            if pending_start is not None:
+                start = self._to_float(pending_start, start)
+            if pending_end is not None:
+                end = self._to_float(pending_end, end)
         if end < start:
             end = start
         return start, max(0.0, end - start)
@@ -757,6 +771,11 @@ class ClipPainter(BasePainter):
         segment_duration = float(timing.get("duration", 0.0) or 0.0)
         segment_end = segment_offset + segment_duration
         edge_epsilon = 1e-6
+        is_resizing_clip = (
+            getattr(self.w, "_resizing_item", None) is clip
+            and getattr(self.w, "_press_hit", "") == "clip-edge"
+        )
+        throttle_requests = is_resizing_clip and style in ("start", "start-end")
 
         pending = False
         generation = getattr(self.w, "thumbnail_generation", 0)
@@ -782,23 +801,41 @@ class ClipPainter(BasePainter):
             if rounding > 1 and not is_edge:
                 frame = max(1, int(round((frame - 1) / rounding) * rounding) + 1)
             key = (clip_key, frame)
+            slot_role = "edge-start" if is_edge and slot_start_time <= segment_offset + edge_epsilon else (
+                "edge-end" if is_edge and slot_end_time >= segment_end - edge_epsilon else "grid"
+            )
+            cached = self.thumb_cache.get(key)
+            if cached and not cached.isNull():
+                pix = cached
+            else:
+                allow_request = True
+                if throttle_requests:
+                    allow_request = self._can_request_thumbnail(clip_key, throttle_requests)
 
-            # Always queue/load for all slots in the clip (since clip is visible during paint)
-            pix = self._get_thumbnail_pixmap(clip_key, file_id, frame, rect, generation)
-            if pix is None:
-                # Fallback to cache if not immediately available
-                cached = self.thumb_cache.get(key)
-                if cached and not cached.isNull():
-                    pix = cached
+                # Always queue/load for all slots in the clip (since clip is visible during paint)
+                pix = self._get_thumbnail_pixmap(
+                    clip_key,
+                    file_id,
+                    frame,
+                    rect,
+                    generation,
+                    allow_request=allow_request,
+                )
+                if pix is None and slot_role != "grid":
+                    fallback = self._slot_fallback_cache.get((clip_key, slot_role))
+                    if fallback and not fallback.isNull():
+                        pix = fallback
 
             if pix:
                 self._paint_thumbnail_pixmap(painter, pix, rect, inner)
+                if slot_role != "grid":
+                    self._slot_fallback_cache[(clip_key, slot_role)] = pix
             else:
                 pending = True
 
         return pending
 
-    def _get_thumbnail_pixmap(self, clip_key, file_id, frame, rect, generation):
+    def _get_thumbnail_pixmap(self, clip_key, file_id, frame, rect, generation, *, allow_request=True):
         key = (clip_key, frame)
 
         # 1. If we already have it cached → return it immediately
@@ -814,13 +851,16 @@ class ClipPainter(BasePainter):
         if self._thumb_pending.get(key) == generation:
             return None
 
-        # 3. First time seeing this frame at this zoom level → request it
+        # 3. Load existing on-disk thumbnail if available
         path = self._existing_thumb_path(file_id, frame)
         if path:
             pix = QPixmap(path)
             if not pix.isNull():
                 self.thumb_cache[key] = pix
                 return pix
+
+        if not allow_request:
+            return None
 
         # Queue the request exactly once per generation (only for visible slots)
         self._thumb_pending[key] = generation
@@ -889,6 +929,18 @@ class ClipPainter(BasePainter):
             self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
         )
         return view.isValid() and view.intersects(rect)
+
+    def _can_request_thumbnail(self, clip_key, throttle_requests):
+        """Throttle requests while trimming to avoid flooding the manager."""
+        if not throttle_requests:
+            return True
+        now = time.monotonic()
+        cooldown = max(0.01, float(self._trim_request_cooldown or 0.0))
+        last = self._last_thumb_request_time.get(clip_key)
+        if last is not None and (now - last) < cooldown:
+            return False
+        self._last_thumb_request_time[clip_key] = now
+        return True
 
     def _flush_thumbnail_repaint(self):
         if not self._thumb_repaint_pending:
