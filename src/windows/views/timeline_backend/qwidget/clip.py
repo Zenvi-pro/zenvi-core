@@ -547,6 +547,37 @@ class ClipInteractionMixin:
         finally:
             self._snap_ignore_ids = original_ignore
 
+    def _snap_trim_delta(self, delta_seconds, edge=None):
+        """
+        Apply drag-style snapping to a trim delta so clip edges snap just like moves.
+
+        _startItemResize() already places the active item id in _snap_ignore_ids,
+        so we only need to provide a temporary drag bbox for snap_dx.
+        """
+        bbox = getattr(self, "_resize_initial_rect", None)
+        if not isinstance(bbox, QRectF) or bbox.isNull():
+            return delta_seconds
+
+        edge_label = edge or getattr(self, "_resize_edge", None)
+        if edge_label not in ("left", "right"):
+            return delta_seconds
+
+        # Limit bbox to the moving edge to avoid snapping against the static edge
+        if edge_label == "left":
+            edge_px = bbox.left()
+        else:
+            edge_px = bbox.right()
+        edge_bbox = QRectF(edge_px, bbox.y(), 0.0, bbox.height())
+        if edge_bbox.height() <= 0.0:
+            edge_bbox.setHeight(self.vertical_factor or 1.0)
+
+        original_bbox = getattr(self, "drag_bbox", None)
+        try:
+            self.drag_bbox = edge_bbox
+            return self.snap.snap_dx(delta_seconds)
+        finally:
+            self.drag_bbox = original_bbox
+
     def _startResize(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
             self._startItemResize()
@@ -775,7 +806,7 @@ class ClipInteractionMixin:
         if self._resize_edge == "left":
             delta_sec = cursor_sec - pos
             if self.enable_snapping:
-                delta_sec = self.snap.snap_edge(pos, delta_sec)
+                delta_sec = self._snap_trim_delta(delta_sec, edge="left")
             if overflow_enabled and max_duration is not None:
                 extra_capacity = max(0.0, max_duration - end)
                 min_delta = -start - extra_capacity
@@ -809,7 +840,7 @@ class ClipInteractionMixin:
             timeline_right = pos + clip_span
             delta_sec = cursor_sec - timeline_right
             if self.enable_snapping:
-                delta_sec = self.snap.snap_edge(pos + (end - start), delta_sec)
+                delta_sec = self._snap_trim_delta(delta_sec, edge="right")
             new_end = end + delta_sec
             new_start = start
             new_position = pos
@@ -859,8 +890,16 @@ class ClipInteractionMixin:
         self._snap_keyframe_seconds = []
         self.snap.reset()
         if hasattr(self, "_resize_snap_ignore_backup"):
-            self._snap_ignore_ids = self._resize_snap_ignore_backup
+            ignore_ids = set(self._resize_snap_ignore_backup)
             del self._resize_snap_ignore_backup
+        else:
+            ignore_ids = set(getattr(self, "_snap_ignore_ids", set()))
+
+        # Ensure the resized item is no longer ignored for future snaps
+        item_id = getattr(item, "id", None)
+        if item_id is not None and item_id in ignore_ids:
+            ignore_ids.discard(item_id)
+        self._snap_ignore_ids = ignore_ids
         self._update_project_duration()
         self.changed(None)
         self._release_cursor()
