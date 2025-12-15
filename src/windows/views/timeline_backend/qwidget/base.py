@@ -210,6 +210,9 @@ class TimelineWidgetBase(QWidget):
         # Internal flag to defer repaint scheduling from changed()
         self._suspend_changed_update = 0
 
+        # Guard against re-entrant paintEvent calls
+        self._in_paint_event = False
+
         # Strong references to dynamically created state transitions
         self._transitions = []
 
@@ -728,45 +731,54 @@ class TimelineWidgetBase(QWidget):
 
     def paintEvent(self, event, *args):
         """Custom paint routine for the timeline widget."""
-        event.accept()
-        painter = QPainter(self)
-        painter.setRenderHints(
-            QPainter.Antialiasing |
-            QPainter.SmoothPixmapTransform |
-            QPainter.TextAntialiasing,
-            True,
-        )
-
-        if not get_app().window.timeline:
-            painter.end()
+        if self._in_paint_event:
+            log.warning("TimelineWidgetBase paintEvent skipped due to re-entrancy")
+            event.accept()
+            self.update()
             return
 
-        signature = self._panel_current_signature()
-        if signature != self._panel_refresh_signature:
-            self._panel_refresh_signature = signature
-            if self._update_track_panel_properties():
-                self.geometry.mark_dirty()
+        self._in_paint_event = True
+        painter = QPainter(self)
+        try:
+            event.accept()
+            painter.setRenderHints(
+                QPainter.Antialiasing |
+                QPainter.SmoothPixmapTransform |
+                QPainter.TextAntialiasing,
+                True,
+            )
 
-        self.geometry.ensure()
-        self._ensure_keyframe_markers()
+            if not get_app().window.timeline:
+                return
 
-        self.bg_painter.paint(painter, event.rect())
-        self.track_painter.paint_background(painter)
-        self.keyframe_panel_painter.paint(painter, mode="underlay")
-        self.clip_painter.paint(painter)
-        self.transition_painter.paint(painter)
-        self.playback_cache_painter.paint(painter)
-        self.keyframe_painter.paint(painter)
-        self.track_painter.paint_names(painter)
-        self.keyframe_panel_painter.paint(painter, mode="overlay")
-        self.selection_painter.paint(painter)
-        self.ruler_painter.paint(painter)
-        self.marker_painter.paint(painter)
-        self.playhead_painter.paint(painter)
-        self.ruler_painter.paint_overlay(painter)
-        self.scrollbar_painter.paint(painter)
+            signature = self._panel_current_signature()
+            if signature != self._panel_refresh_signature:
+                self._panel_refresh_signature = signature
+                if self._update_track_panel_properties():
+                    self.geometry.mark_dirty()
 
-        painter.end()
+            self.geometry.ensure()
+            self._ensure_keyframe_markers()
+
+            self.bg_painter.paint(painter, event.rect())
+            self.track_painter.paint_background(painter)
+            self.keyframe_panel_painter.paint(painter, mode="underlay")
+            self.clip_painter.paint(painter)
+            self.transition_painter.paint(painter)
+            self.playback_cache_painter.paint(painter)
+            self.keyframe_painter.paint(painter)
+            self.track_painter.paint_names(painter)
+            self.keyframe_panel_painter.paint(painter, mode="overlay")
+            self.selection_painter.paint(painter)
+            self.ruler_painter.paint(painter)
+            self.marker_painter.paint(painter)
+            self.playhead_painter.paint(painter)
+            self.ruler_painter.paint_overlay(painter)
+            self.scrollbar_painter.paint(painter)
+        finally:
+            if painter.isActive():
+                painter.end()
+            self._in_paint_event = False
 
     def closeEvent(self, event):
         """Ensure background threads stop when the widget closes."""
