@@ -27,6 +27,7 @@
  """
 
 import os, sys
+import copy
 import logging
 import logging.handlers
 
@@ -61,11 +62,25 @@ class StreamFilter(logging.Filter):
         source = getattr(record, "source", "")
         return source != "stream"
 
+# Clamp log messages to a reasonable size to avoid giant lines
+MAX_LOG_MESSAGE_LENGTH = 2048
+
+
+class TruncatingFormatter(logging.Formatter):
+    """Formatter that trims overly long log messages."""
+    def format(self, record):
+        message = record.getMessage()
+        if len(message) > MAX_LOG_MESSAGE_LENGTH:
+            record = copy.copy(record)
+            record.msg = message[:MAX_LOG_MESSAGE_LENGTH] + "... [truncated]"
+            record.args = None
+        return super().format(record)
+
 
 # Set up log formatters
 template = '%(levelname)s %(module)s: %(message)s'
-console_formatter = logging.Formatter(template)
-file_formatter = logging.Formatter('%(asctime)s ' + template, datefmt='%H:%M:%S')
+console_formatter = TruncatingFormatter(template)
+file_formatter = TruncatingFormatter('%(asctime)s ' + template, datefmt='%H:%M:%S')
 
 # Configure root logger for minimal logging
 logging.basicConfig(level=logging.ERROR)
@@ -125,4 +140,3 @@ def set_level_file(level=logging.INFO):
 def set_level_console(level=logging.INFO):
     """Adjust the minimum log level for output to the terminal"""
     sh.setLevel(level)
-
