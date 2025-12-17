@@ -1,6 +1,5 @@
 """Utilities for parsing and applying timeline CSS themes."""
 
-from dataclasses import dataclass, field
 import os
 import re
 from typing import Callable, Optional, Sequence, Tuple, Union
@@ -11,107 +10,124 @@ from classes.logger import log
 from classes.info import PATH
 
 
-@dataclass
+def _apply_overrides(obj, overrides: dict, *, allow_unknown: bool = False) -> None:
+    """Apply keyword overrides to a theme object, optionally ignoring unknown keys."""
+    if not overrides:
+        return
+    allowed = set(obj.__dict__.keys())
+    for key, value in overrides.items():
+        if key not in allowed:
+            if allow_unknown:
+                continue
+            raise TypeError("Unexpected theme option '%s'" % key)
+        setattr(obj, key, value)
+
+
 class BasicTheme:
     """Common style options for timeline elements."""
 
-    background: QColor = field(default_factory=QColor)
-    background2: QColor = field(default_factory=QColor)
-    border_color: QColor = field(default_factory=QColor)
-    border_radius: int = 0
-    border_width: float = 0
-    font_color: QColor = field(default_factory=QColor)
-    font_size: int = 0
-    height: int = 0
-    background_image: Optional[QPixmap] = None
-    shadow_color: QColor = field(default_factory=QColor)
-    shadow_blur: int = 0
-    thumb_width: int = 0
-    thumb_height: int = 0
+    def __init__(self, **kwargs):
+        self.background: QColor = QColor()
+        self.background2: QColor = QColor()
+        self.border_color: QColor = QColor()
+        self.border_radius: int = 0
+        self.border_width: float = 0
+        self.font_color: QColor = QColor()
+        self.font_size: int = 0
+        self.height: int = 0
+        self.background_image: Optional[QPixmap] = None
+        self.shadow_color: QColor = QColor()
+        self.shadow_blur: int = 0
+        self.thumb_width: int = 0
+        self.thumb_height: int = 0
+        _apply_overrides(self, kwargs)
 
 
-@dataclass
 class TrackTheme(BasicTheme):
     """Theme for tracks."""
 
-    name_background: QColor = field(default_factory=QColor)
-    name_width: int = 0
-    gap: int = 0
-    margin_top: int = -1
-    name_border_color: QColor = field(default_factory=QColor)
-    name_border_width: int = 0
-    name_border_top_color: QColor = field(default_factory=QColor)
-    name_border_top_width: int = 0
-    name_border_bottom_color: QColor = field(default_factory=QColor)
-    name_border_bottom_width: int = 0
-    name_radius_tl: int = 0
-    name_radius_bl: int = 0
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.name_background: QColor = QColor()
+        self.name_width: int = 0
+        self.gap: int = 0
+        self.margin_top: int = -1
+        self.name_border_color: QColor = QColor()
+        self.name_border_width: int = 0
+        self.name_border_top_color: QColor = QColor()
+        self.name_border_top_width: int = 0
+        self.name_border_bottom_color: QColor = QColor()
+        self.name_border_bottom_width: int = 0
+        self.name_radius_tl: int = 0
+        self.name_radius_bl: int = 0
+        _apply_overrides(self, kwargs)
 
 
-@dataclass
 class TimelineTheme:
     """Container for all timeline related themes."""
 
-    background: QColor = field(default_factory=lambda: QColor("#000"))
-    background2: QColor = field(default_factory=QColor)
-    playhead_color: QColor = field(default_factory=lambda: QColor("#FFF"))
-    playhead_width: float = 0.0
-    clip_selected: QColor = field(default_factory=lambda: QColor("#FFF"))
-    selection: QColor = field(default_factory=lambda: QColor(255, 255, 255, 80))
-    selection_border: QColor = field(default_factory=QColor)
-    selection_border_width: float = 0.0
-    playback_cache_color: QColor = field(default_factory=lambda: QColor("#4B92AD"))
-    playback_cache_height: float = 5.0
+    def __init__(self, **kwargs):
+        self.background: QColor = QColor("#000")
+        self.background2: QColor = QColor()
+        self.playhead_color: QColor = QColor("#FFF")
+        self.playhead_width: float = 0.0
+        self.clip_selected: QColor = QColor("#FFF")
+        self.selection: QColor = QColor(255, 255, 255, 80)
+        self.selection_border: QColor = QColor()
+        self.selection_border_width: float = 0.0
+        self.playback_cache_color: QColor = QColor("#4B92AD")
+        self.playback_cache_height: float = 5.0
 
-    clip: BasicTheme = field(default_factory=BasicTheme)
-    transition: BasicTheme = field(default_factory=BasicTheme)
-    track: TrackTheme = field(default_factory=TrackTheme)
-    ruler: BasicTheme = field(default_factory=BasicTheme)
-    ruler_name_background: QColor = field(default_factory=QColor)
-    ruler_name_background2: QColor = field(default_factory=QColor)
-    ruler_time_font_size: int = 0
-    menu_icon: Optional[QPixmap] = None
-    menu_size: int = 0
-    menu_margin: int = 0
-    keyframe_toggle_off_icon: Optional[QPixmap] = None
-    keyframe_toggle_on_icon: Optional[QPixmap] = None
-    track_keyframe_panel_disabled_icon: Optional[QPixmap] = None
-    track_keyframe_panel_enabled_icon: Optional[QPixmap] = None
-    track_add_above_disabled_icon: Optional[QPixmap] = None
-    track_add_above_enabled_icon: Optional[QPixmap] = None
-    track_add_below_disabled_icon: Optional[QPixmap] = None
-    track_add_below_enabled_icon: Optional[QPixmap] = None
-    track_delete_disabled_icon: Optional[QPixmap] = None
-    track_delete_enabled_icon: Optional[QPixmap] = None
-    track_locked_disabled_icon: Optional[QPixmap] = None
-    track_locked_enabled_icon: Optional[QPixmap] = None
-    track_unlocked_disabled_icon: Optional[QPixmap] = None
-    track_unlocked_enabled_icon: Optional[QPixmap] = None
-    keyframe_panel_add_icon: Optional[QPixmap] = None
-    keyframe_panel_property_bg: QColor = field(default_factory=QColor)
-    playhead_icon: Optional[QPixmap] = None
-    playhead_icon_width: int = 0
-    playhead_icon_height: int = 0
-    playhead_icon_offset_x: int = 0
-    playhead_icon_offset_y: int = 0
-    marker_icon: Optional[QPixmap] = None
-    marker_icon_width: int = 0
-    marker_icon_height: int = 0
-    marker_icon_offset_x: Optional[int] = None
-    marker_icon_offset_y: Optional[int] = None
-    marker_hit_padding: float = 4.0
-    ruler_time_pad_left: int = 0
-    ruler_time_pad_top: int = 0
-    ruler_label_top: int = 0
-    scrollbar_handle: QColor = field(default_factory=QColor)
-    scrollbar_track: QColor = field(default_factory=QColor)
-    scrollbar_width: int = 0
-    waveform_color: QColor = field(default_factory=lambda: QColor(42, 130, 218))
-    waveform_peak_color: QColor = field(default_factory=lambda: QColor(42, 130, 218, 128))
-    keyframe_fill: QColor = field(default_factory=lambda: QColor("#4d7bff"))
-    keyframe_border: QColor = field(default_factory=lambda: QColor("#ffffff"))
-    keyframe_inactive_opacity: float = 0.5
-    keyframe_size: int = 10
+        self.clip: BasicTheme = BasicTheme()
+        self.transition: BasicTheme = BasicTheme()
+        self.track: TrackTheme = TrackTheme()
+        self.ruler: BasicTheme = BasicTheme()
+        self.ruler_name_background: QColor = QColor()
+        self.ruler_name_background2: QColor = QColor()
+        self.ruler_time_font_size: int = 0
+        self.menu_icon: Optional[QPixmap] = None
+        self.menu_size: int = 0
+        self.menu_margin: int = 0
+        self.keyframe_toggle_off_icon: Optional[QPixmap] = None
+        self.keyframe_toggle_on_icon: Optional[QPixmap] = None
+        self.track_keyframe_panel_disabled_icon: Optional[QPixmap] = None
+        self.track_keyframe_panel_enabled_icon: Optional[QPixmap] = None
+        self.track_add_above_disabled_icon: Optional[QPixmap] = None
+        self.track_add_above_enabled_icon: Optional[QPixmap] = None
+        self.track_add_below_disabled_icon: Optional[QPixmap] = None
+        self.track_add_below_enabled_icon: Optional[QPixmap] = None
+        self.track_delete_disabled_icon: Optional[QPixmap] = None
+        self.track_delete_enabled_icon: Optional[QPixmap] = None
+        self.track_locked_disabled_icon: Optional[QPixmap] = None
+        self.track_locked_enabled_icon: Optional[QPixmap] = None
+        self.track_unlocked_disabled_icon: Optional[QPixmap] = None
+        self.track_unlocked_enabled_icon: Optional[QPixmap] = None
+        self.keyframe_panel_add_icon: Optional[QPixmap] = None
+        self.keyframe_panel_property_bg: QColor = QColor()
+        self.playhead_icon: Optional[QPixmap] = None
+        self.playhead_icon_width: int = 0
+        self.playhead_icon_height: int = 0
+        self.playhead_icon_offset_x: int = 0
+        self.playhead_icon_offset_y: int = 0
+        self.marker_icon: Optional[QPixmap] = None
+        self.marker_icon_width: int = 0
+        self.marker_icon_height: int = 0
+        self.marker_icon_offset_x: Optional[int] = None
+        self.marker_icon_offset_y: Optional[int] = None
+        self.marker_hit_padding: float = 4.0
+        self.ruler_time_pad_left: int = 0
+        self.ruler_time_pad_top: int = 0
+        self.ruler_label_top: int = 0
+        self.scrollbar_handle: QColor = QColor()
+        self.scrollbar_track: QColor = QColor()
+        self.scrollbar_width: int = 0
+        self.waveform_color: QColor = QColor(42, 130, 218)
+        self.waveform_peak_color: QColor = QColor(42, 130, 218, 128)
+        self.keyframe_fill: QColor = QColor("#4d7bff")
+        self.keyframe_border: QColor = QColor("#ffffff")
+        self.keyframe_inactive_opacity: float = 0.5
+        self.keyframe_size: int = 10
+        _apply_overrides(self, kwargs)
 
 
 DEFAULT_THEME = TimelineTheme()

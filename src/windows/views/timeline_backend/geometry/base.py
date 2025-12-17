@@ -26,7 +26,6 @@
  """
 
 from bisect import bisect_left
-from dataclasses import dataclass
 
 from PyQt5.QtCore import QPointF, QRectF
 
@@ -34,11 +33,11 @@ from classes.app import get_app
 from classes.logger import log
 
 
-@dataclass
 class _GeometryEntry:
-    rect: QRectF
-    obj: object
-    selected: bool
+    def __init__(self, rect: QRectF, obj: object, selected: bool):
+        self.rect = rect
+        self.obj = obj
+        self.selected = selected
 
     @property
     def left(self):
