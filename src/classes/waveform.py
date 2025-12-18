@@ -36,9 +36,6 @@ from PyQt5.QtCore import Qt
 import openshot
 import uuid
 
-# Get settings
-s = get_app().get_settings()
-
 # resolution of audio waveform
 SAMPLES_PER_SECOND = 20
 
