@@ -24,8 +24,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from __future__ import annotations
-
 import logging
 from fractions import Fraction
 from typing import Any, Mapping, Optional
