@@ -26,7 +26,7 @@
 
 import logging
 from fractions import Fraction
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Tuple
 
 from classes.app import get_app
 
@@ -369,7 +369,7 @@ def _normalize_single_image(clip_data: Mapping[str, Any]) -> None:
     clip_data["duration"] = duration
 
 
-def _reader_bounds(reader: Any) -> tuple[Optional[float], Optional[int]]:
+def _reader_bounds(reader: Any) -> Tuple[Optional[float], Optional[int]]:
     """Return reader duration and total frames in project units."""
     metadata = _as_mapping(reader)
     duration = _to_float(metadata.get("duration"))
@@ -426,7 +426,7 @@ def clamp_timing_to_media(clip_data: Mapping[str, Any], existing_clip: Any = Non
     return clip_data
 
 
-def clip_time_bounds(clip_data: Any, existing_clip: Any = None) -> tuple[float, int]:
+def clip_time_bounds(clip_data: Any, existing_clip: Any = None) -> Tuple[float, int]:
     """Return the max duration (seconds) and frame count allowed for the clip."""
     reader = _clip_reader(clip_data, existing_clip) or {}
 
