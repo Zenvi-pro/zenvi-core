@@ -118,6 +118,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     ThumbnailUpdated = pyqtSignal(str, int)
     FileUpdated = pyqtSignal(str)
     CaptionTextUpdated = pyqtSignal(str, object)
+
+    # Thread-safe signal for scheduling exports from any thread. Using a Qt
+    # signal ensures the connected slot runs on the GUI thread and prevents
+    # widget creation on background threads (which can cause crashes).
+    exportRequested = pyqtSignal(int, int, str)
     CaptionTextLoaded = pyqtSignal(str, object)
     TimelineZoom = pyqtSignal(float)     # Signal to zoom into timeline from zoom slider
     TimelineScrolled = pyqtSignal(list)  # Scrollbar changed signal from timeline
@@ -253,6 +258,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         else:
             # No backup project found
             # Load a blank project (to propagate the default settings)
+            pass
+
+        # Scan for any leftover partial export files ("*.part") and move them to recovery for inspection.
+        try:
+            recovery_dir = info.RECOVERY_PATH
+            os.makedirs(recovery_dir, exist_ok=True)
+            home_dir = os.path.expanduser("~")
+            for root, dirs, files in os.walk(home_dir):
+                for f in files:
+                    if f.endswith('.part'):
+                        src = os.path.join(root, f)
+                        dst = os.path.join(recovery_dir, f)
+                        try:
+                            os.replace(src, dst)
+                            log.warning(f"Moved leftover partial export to recovery: {dst}")
+                        except Exception as exc:
+                            log.warning(f"Failed to move partial export {src} to recovery: {exc}")
+        except Exception as exc:
+            log.warning(f"Failed to scan for partial export files: {exc}")
             get_app().project.load("")
             self.actionUndo.setEnabled(False)
             self.actionRedo.setEnabled(False)
@@ -924,6 +948,70 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.info('Export Video add confirmed')
         else:
             log.info('Export Video add cancelled')
+
+    @pyqtSlot(int, int, str)
+    def start_export_with_params(self, width: int, height: int, output_path: str = ""):
+        """
+        Start an export with the given parameters on the Qt main thread.
+        This method is intended to be invoked via QMetaObject.invokeMethod(..., Qt.QueuedConnection)
+        from background threads (for example, the AI worker thread).
+        """
+        try:
+            from PyQt5.QtCore import QTimer, QThread
+            from PyQt5.QtWidgets import QApplication
+            from windows.export import Export
+
+            # Verify we're on the application's GUI thread
+            try:
+                gui_thread = QApplication.instance().thread()
+                if QThread.currentThread() != gui_thread:
+                    log.error("start_export_with_params invoked off of GUI thread — aborting to avoid cross-thread UI operations")
+                    return
+            except Exception:
+                # If we cannot verify, continue but log a warning
+                log.warning("Could not verify GUI thread; proceeding with caution")
+
+            # Avoid creating multiple export dialogs simultaneously
+            if getattr(self, '_active_export_dialog', None) is not None:
+                try:
+                    # If the existing dialog is visible, bring it to front and return
+                    if self._active_export_dialog.isVisible():
+                        log.info("Export already in progress; focusing existing export dialog")
+                        self._active_export_dialog.raise_()
+                        self._active_export_dialog.activateWindow()
+                        return
+                except Exception:
+                    # If the stored dialog is invalid or in a bad state, clear it and continue
+                    log.warning("Clearing stale _active_export_dialog reference")
+                    self._active_export_dialog = None
+
+            log.info(f"Starting export from main-thread: {width}x{height}, output={output_path}")
+
+            # Create Export dialog on GUI thread (safe)
+            export_dialog = Export(self)
+
+            # Apply requested parameters
+            try:
+                export_dialog.txtWidth.setValue(int(width))
+                export_dialog.txtHeight.setValue(int(height))
+            except Exception:
+                log.warning("Failed to set width/height on Export dialog")
+
+            if output_path:
+                try:
+                    export_dialog.txtExportFolder.setText(output_path)
+                except Exception:
+                    log.warning("Failed to set output path on Export dialog")
+
+            # Keep reference available and kick off the export asynchronously
+            self._active_export_dialog = export_dialog
+            export_dialog.show()
+            export_dialog.raise_()
+            QTimer.singleShot(0, export_dialog.accept)
+        except Exception as exc:
+            log.error(f"Failed to start export from AI tool: {exc}")
+            # Ensure we don't hold a dangling reference
+            self._active_export_dialog = None
 
     def actionExportEDL_trigger(self, checked=True):
         """Export EDL File"""
@@ -3856,6 +3944,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         s = app.get_settings()
         self.recent_menu = None
         self.restore_menu = None
+
+        # Connect thread-safe exportRequested signal to the GUI-slot that starts export
+        # This ensures any thread can request an export safely via `exportRequested.emit(...)`.
+        try:
+            self.exportRequested.connect(self.start_export_with_params)
+        except Exception:
+            log.warning("Failed to connect exportRequested signal to start_export_with_params")
 
         # Track metrics
         track_metric_session()  # start session

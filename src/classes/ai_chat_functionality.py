@@ -171,7 +171,7 @@ class ChatSession:
 class AIChat:
     """Main AI Chat manager - handles a single session"""
     
-    def __init__(self, model: str = "default", system_prompt: str = ""):
+    def __init__(self, model: str = "gemini-pro", system_prompt: str = ""):
         """
         Initialize the AI Chat manager
         
@@ -179,7 +179,7 @@ class AIChat:
             model: The AI model to use
             system_prompt: System prompt for the conversation
         """
-        self.model = model
+        self.model = model or "gemini-pro"
         self.system_prompt = system_prompt or self._get_default_system_prompt()
         self.current_session: Optional[ChatSession] = None
         self.ai_provider = None
@@ -220,36 +220,51 @@ class AIChat:
         if not self.current_session:
             self._init_session()
         
-        # Add user message to session
-        self.current_session.add_message(MessageRole.USER, user_input, context)
-        
-        # Generate response from AI provider
-        response = self._generate_response(user_input)
-        
-        # Add assistant message to session
-        self.current_session.add_message(MessageRole.ASSISTANT, response)
+        response = ""
+        if self.current_session:
+            self.current_session.model = self.model
+            
+            # Add user message to session
+            self.current_session.add_message(MessageRole.USER, user_input, context)
+            
+            # Generate response from AI provider
+            response = self._generate_response(user_input)
+            
+            # Add assistant message to session
+            self.current_session.add_message(MessageRole.ASSISTANT, response)
         
         return response
     
+    def _ensure_provider(self):
+        try:
+            from utility.ai.gemini_provider import GeminiChatProvider
+        except ImportError:
+            log.warning("Gemini provider dependencies not available")
+            return None
+
+        if isinstance(self.ai_provider, GeminiChatProvider) and self.ai_provider.model == self.model:
+            return self.ai_provider
+
+        model_name = (self.model or "").lower()
+        if model_name.startswith("gemini") or model_name.startswith("gemma"):
+            self.ai_provider = GeminiChatProvider(self.model)
+        else:
+            self.ai_provider = None
+
+        return self.ai_provider
+
     def _generate_response(self, user_input: str) -> str:
-        """
-        Generate a response from the AI provider
+        """Generate a response from the AI provider (Gemini/Gemma via LangChain)"""
+        provider = self._ensure_provider()
+        if provider:
+            try:
+                return provider.generate(self.current_session)
+            except Exception as exc:
+                log.error(f"AI provider error: {exc}")
+                return f"AI provider error: {exc}"
         
-        Args:
-            user_input: The user's message
-        
-        Returns:
-            The AI's response
-        """
-        # This is a placeholder. In a real implementation, you would:
-        # 1. Call an actual AI API (OpenAI, Anthropic, local LLM, etc.)
-        # 2. Pass the conversation history
-        # 3. Return the generated response
-        
-        # For now, return a placeholder response
-        log.debug(f"Generating response for: {user_input}")
-        
-        # Placeholder implementation - can be extended with real AI integration
+        # Fallback placeholder response
+        log.debug(f"Generating fallback response for: {user_input}")
         response = (
             f"I understand you're asking about video editing. "
             f"This is a placeholder response. "
@@ -257,7 +272,15 @@ class AIChat:
         )
         
         return response
-    
+
+    def set_model(self, model: str):
+        """Update selected model and reset provider if changed"""
+        if model and model != self.model:
+            self.model = model
+            self.ai_provider = None
+            if self.current_session:
+                self.current_session.model = model
+
     def attach_context_data(self, context_key: str, context_value: Any):
         """
         Attach context data to the current session

@@ -1,5 +1,5 @@
 import os
-from PyQt5.QtCore import Qt, QDateTime
+from PyQt5.QtCore import Qt, QDateTime, QThread, pyqtSignal, QObject
 from PyQt5.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QComboBox, QMessageBox
@@ -8,6 +8,28 @@ from PyQt5.QtGui import QFont, QColor, QTextCursor
 
 from classes.logger import log
 from classes.ai_chat_functionality import AIChat
+
+
+class _ChatWorker(QObject):
+    """Background worker to call AI chat without blocking UI."""
+
+    finished = pyqtSignal()
+    result = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, ai_chat: AIChat, user_text: str):
+        super().__init__()
+        self._ai_chat = ai_chat
+        self._user_text = user_text
+
+    def run(self):
+        try:
+            response = self._ai_chat.send_message(self._user_text)
+            self.result.emit(response)
+        except Exception as exc:  # surface all errors to UI thread
+            self.error.emit(str(exc))
+        finally:
+            self.finished.emit()
 
 
 class AIChatWindow(QDockWidget):
@@ -37,10 +59,13 @@ class AIChatWindow(QDockWidget):
         model_h = QHBoxLayout()
         model_h.addWidget(QLabel("Model:"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["default", "gpt-4", "claude-3", "local-llama"])
+        self.model_combo.currentTextChanged.connect(self._model_changed)
         model_h.addWidget(self.model_combo)
         model_h.addStretch()
         layout.addLayout(model_h)
+        
+        # Load available models
+        self._load_available_models_async()
         
         # Chat display
         self.chat_box = QTextEdit()
@@ -73,6 +98,7 @@ class AIChatWindow(QDockWidget):
         
         # Welcome message
         self._add_system_msg("Welcome to AI Assistant!")
+        self.ai_chat.set_model(self.model_combo.currentText())
         
         self.setMinimumWidth(400)
         self.setMinimumHeight(400)
@@ -92,6 +118,7 @@ class AIChatWindow(QDockWidget):
         if not text:
             return
         
+        self.ai_chat.set_model(self.model_combo.currentText())
         self._add_user_msg(text)
         self.msg_input.clear()
         
@@ -99,17 +126,66 @@ class AIChatWindow(QDockWidget):
         self.send_btn.setEnabled(False)
         self.send_btn.setText("Processing...")
         
+        # Kick work to background thread to avoid blocking UI / causing crashes
+        self._worker_thread = QThread(self)
+        self._worker = _ChatWorker(self.ai_chat, text)
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.result.connect(self._on_chat_result)
+        self._worker.error.connect(self._on_chat_error)
+        self._worker.finished.connect(self._on_chat_finished)
+        self._worker.finished.connect(self._worker_thread.quit)
+        self._worker_thread.finished.connect(self._worker_thread.deleteLater)
+        self._worker_thread.start()
+
+    def _on_chat_result(self, response: str):
+        self._add_assistant_msg(response)
+
+    def _on_chat_error(self, error_msg: str):
+        log.error(f"AI chat error: {error_msg}")
+        self._add_system_msg(f"Error: {error_msg}")
+
+    def _on_chat_finished(self):
+        self.is_processing = False
+        self.send_btn.setEnabled(True)
+        self.send_btn.setText("Send")
+        self.msg_input.setFocus()
+
+    def _model_changed(self, model_name: str):
+        self.ai_chat.set_model(model_name)
+    
+    def _load_available_models_async(self):
+        """Load available models asynchronously to avoid blocking UI."""
+        # Start with loading message
+        self.model_combo.addItem("Loading models...")
+        
+        # Load real models in background
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(500, self._load_available_models)
+    
+    def _load_available_models(self):
+        """Load available models from API."""
         try:
-            response = self.ai_chat.send_message(text)
-            self._add_assistant_msg(response)
+            from utility.ai.model_utils import list_available_models
+            models = list_available_models()
+            
+            # Clear loading message
+            self.model_combo.clear()
+            
+            if models:
+                self.model_combo.addItems(models)
+                self.model_combo.setCurrentIndex(0)
+                log.info(f"Loaded {len(models)} models from API")
+            else:
+                # No models available - user exceeded quota or API key issue
+                self.model_combo.addItem("No models available (check API quota)")
+                self.model_combo.setEnabled(False)
+                log.warning("No models found from API - check quota and API key")
         except Exception as e:
-            log.error(f"AI chat error: {str(e)}")
-            self._add_system_msg(f"Error: {str(e)}")
-        finally:
-            self.is_processing = False
-            self.send_btn.setEnabled(True)
-            self.send_btn.setText("Send")
-            self.msg_input.setFocus()
+            log.error(f"Failed to load models: {e}")
+            self.model_combo.clear()
+            self.model_combo.addItem("Error loading models")
+            self.model_combo.setEnabled(False)
     
     def clear_chat(self):
         reply = QMessageBox.question(self, "Clear", "Clear chat?", QMessageBox.Yes | QMessageBox.No)
