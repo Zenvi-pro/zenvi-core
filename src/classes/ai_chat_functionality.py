@@ -185,7 +185,7 @@ class ChatSession:
 class AIChat:
     """Main AI Chat manager - handles a single session"""
     
-    def __init__(self, model: str = "default", system_prompt: str = ""):
+    def __init__(self, model: str = "gemini-pro", system_prompt: str = ""):
         """
         Initialize the AI Chat manager
         
@@ -193,7 +193,7 @@ class AIChat:
             model: The AI model to use
             system_prompt: System prompt for the conversation
         """
-        self.model = model
+        self.model = model or "gemini-pro"
         self.system_prompt = system_prompt or self._get_default_system_prompt()
         self.current_session: Optional[ChatSession] = None
         self.ai_provider = None

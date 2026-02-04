@@ -152,3 +152,74 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
+
+# Zenvi Core Updates:
+## Custom Installation:
+1. Create a virtual environment & install required dependencies: 
+    ```sh
+    cd [zenvi-core folder]
+    python3 -m venv .venv
+    source ./.venv/bin/activate
+    pip3 install -r requirements.txt
+    ```
+1. Run the application:
+    ```sh
+    cd [libopenshot folder]
+    cmake -B build -S . [options]
+    cmake --build build
+        
+    cd [zenvi-core folder]
+    PYTHONPATH_LIBOPENSHOT=[libopenshot folder]/build/bindings/python \
+    bash run-zenvi-core.sh
+    ```
+
+## Basic Chat UI:
+## Overview
+
+The video editor includes an AI Assistant dock widget for chat interactions. The UI is integrated as a dockable panel similar to other editor panels.
+
+## How to Access
+
+1. Open the AI Assistant:
+   - Click on the View menu
+   - Select Docks
+   - Click on AI Assistant
+
+2. The chat panel will appear as a dockable widget that can be moved and resized like other panels.
+
+## Using the Chat
+
+- Type your message in the input field at the bottom
+- Press Enter to send the message
+- Press Shift+Enter to create a new line without sending
+- Click Clear to reset the chat conversation
+- Select a different model from the Model dropdown
+
+## Window Behavior
+
+The chat window state is saved with your application preferences:
+
+- If you close the application with the chat window open, the chat window will appear when you start the application again.
+- If you close the chat window (by clicking the X button on the dock) before closing the application, the chat window will not appear on the next startup.
+
+To toggle the chat visibility, use View > Docks > AI Assistant at any time.
+
+## Gemini + LangChain Setup
+
+1. Install the Gemini dependencies inside your virtual environment:
+    ```sh
+    pip install langchain langchain-google-genai python-dotenv
+    ```
+2. Put your API key in a .env file at the repo root (preferred):
+    ```sh
+    echo "GEMINI_API_KEY=your-key" > .env
+    ```
+3. Launch the app with your venv activated and open View > Docks > AI Assistant.
+4. The model dropdown will automatically populate with models available on your API key.
+   - **Free tier**: Limited quota and available models. Check https://ai.google.dev/gemini-api/docs/rate-limits for quota info.
+   - If you see "No models available", you've exceeded your API quota or the key is invalid.
+
+### Example: Export via Chat
+
+- Ask: "Export at 1920x1080" or "Export this video at 1080p".
+- The AI will use the export tool to automatically start a render with the requested dimensions.
