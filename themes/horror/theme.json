@@ -1,0 +1,70 @@
+{
+  "theme_id": "horror",
+  "name": "Horror",
+  "description": "Dark, desaturated aesthetic with high contrast and ominous atmosphere. Perfect for horror films, thrillers, and tense scenes.",
+  "version": "1.0.0",
+  "creator": "Zenvi Team",
+  "thumbnail": "themes/horror/preview.jpg",
+  
+  "color_grading": {
+    "brightness": 0.85,
+    "contrast": 1.40,
+    "saturation": 0.70,
+    "hue_shift": -5
+  },
+  
+  "effects": {
+    "grain": {
+      "intensity": 0.4,
+      "type": "video"
+    },
+    "vignette": {
+      "intensity": 0.6
+    }
+  },
+  
+  "sound": {
+    "bass_boost_db": 6,
+    "reverb": {
+      "room_size": 0.8,
+      "wetness": 0.3,
+      "dampening": 0.5
+    },
+    "pitch_shift": -2,
+    "eq": {
+      "low": 4,
+      "mid": -2,
+      "high": -3
+    },
+    "background_ambience": null
+  },
+  
+  "captions": {
+    "font": "Impact",
+    "font_size": 48,
+    "color": "#cc0000",
+    "outline_color": "#000000",
+    "outline_width": 3,
+    "background_alpha": 0.3,
+    "animation": "fade",
+    "glow": true,
+    "position": "bottom",
+    "alignment": "center"
+  },
+  
+  "scene_adaptations": {
+    "indoor": {
+      "grain": {"intensity": 0.5}
+    },
+    "night": {
+      "grain": {"intensity": 0.6},
+      "brightness": 0.75
+    },
+    "outdoor": {
+      "saturation": 0.75
+    }
+  },
+  
+  "tags": ["horror", "dark", "thriller", "scary", "tense"],
+  "best_for": ["horror films", "thriller scenes", "dark content", "suspenseful moments"]
+}

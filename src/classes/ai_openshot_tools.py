@@ -319,6 +319,138 @@ def import_files() -> str:
         return "Error: {}".format(e)
 
 
+# ---- Theme Application ----
+
+
+def list_themes() -> str:
+    """List all available themes that can be applied to clips. No arguments."""
+    try:
+        from classes.theme_engine import ThemeEngine
+        engine = ThemeEngine()
+        themes = engine.list_themes()
+        
+        if not themes:
+            return "No themes available."
+        
+        lines = []
+        for theme in themes:
+            theme_id = theme.get("theme_id", "")
+            name = theme.get("name", "")
+            desc = theme.get("description", "")
+            lines.append("  {} ({}): {}".format(theme_id, name, desc))
+        
+        return "Available themes ({}):\n{}".format(len(themes), "\n".join(lines))
+    except Exception as e:
+        log.error("list_themes: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def describe_theme(theme_id: str) -> str:
+    """Get detailed description of a theme. Argument: theme_id (e.g., 'horror', 'documentary', 'wes-anderson')."""
+    if not theme_id or not isinstance(theme_id, str):
+        return "Error: theme_id is required (string)."
+    
+    try:
+        from classes.theme_engine import ThemeEngine
+        engine = ThemeEngine()
+        info = engine.get_theme_info(theme_id)
+        
+        if not info:
+            return "Theme '{}' not found.".format(theme_id)
+        
+        lines = [
+            "Theme: {}".format(info.get("name", theme_id)),
+            "Description: {}".format(info.get("description", "")),
+            "Version: {}".format(info.get("version", "1.0.0")),
+            "Creator: {}".format(info.get("creator", "Unknown")),
+        ]
+        
+        if "tags" in info:
+            lines.append("Tags: {}".format(", ".join(info["tags"])))
+        
+        if "best_for" in info:
+            lines.append("Best for: {}".format(", ".join(info["best_for"])))
+        
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("describe_theme: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def apply_theme(
+    theme_id: str,
+    apply_to: str = "all",
+    include_color: bool = True,
+    include_sound: bool = True,
+    include_captions: bool = False
+) -> str:
+    """
+    Apply a cinematic theme to clips.
+    
+    Arguments:
+        theme_id: Theme to apply (e.g., 'horror', 'documentary', 'wes-anderson')
+        apply_to: 'all' for all clips, 'selected' for selected clips only (default: 'all')
+        include_color: Apply color grading (default: True)
+        include_sound: Apply sound effects (default: True)
+        include_captions: Add auto-captions (default: False)
+    """
+    if not theme_id or not isinstance(theme_id, str):
+        return "Error: theme_id is required (string)."
+    
+    try:
+        from classes.theme_engine import ThemeEngine
+        from classes.query import Clip
+        
+        engine = ThemeEngine()
+        
+        # Determine which clips to apply to
+        if apply_to == "selected":
+            clip_ids = engine.get_selected_clip_ids()
+            if not clip_ids:
+                return "No clips selected. Please select clips or use apply_to='all'."
+        else:
+            # Get all clips
+            clips = Clip.filter()
+            clip_ids = [c.id for c in clips]
+            if not clip_ids:
+                return "No clips found in project."
+        
+        # Apply theme
+        log.info("Applying theme {} to {} clips".format(theme_id, len(clip_ids)))
+        
+        result = engine.apply_theme(
+            theme_id=theme_id,
+            clip_ids=clip_ids,
+            apply_color=include_color,
+            apply_sound=include_sound,
+            apply_captions=include_captions
+        )
+        
+        if result.get("success"):
+            elapsed = result.get("elapsed_time", 0)
+            components = []
+            if include_color:
+                components.append("color grading")
+            if include_sound:
+                components.append("sound effects")
+            if include_captions:
+                components.append("captions")
+            
+            return "Theme '{}' applied to {} clips ({}) in {:.1f}s.".format(
+                theme_id,
+                len(clip_ids),
+                ", ".join(components),
+                elapsed
+            )
+        else:
+            error = result.get("error", "Unknown error")
+            return "Failed to apply theme '{}': {}".format(theme_id, error)
+            
+    except Exception as e:
+        log.error("apply_theme: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
 def get_openshot_tools_for_langchain():
     """
     Return a list of LangChain Tool objects for the OpenShot agent.
@@ -431,6 +563,41 @@ def get_openshot_tools_for_langchain():
         """Open the import files dialog."""
         return import_files()
 
+    @tool
+    def list_themes_tool() -> str:
+        """List all available themes that can be applied to clips."""
+        return list_themes()
+
+    @tool
+    def describe_theme_tool(theme_id: str) -> str:
+        """Get detailed description of a theme. Argument: theme_id (e.g., 'horror', 'documentary', 'wes-anderson')."""
+        return describe_theme(theme_id)
+
+    @tool
+    def apply_theme_tool(
+        theme_id: str,
+        apply_to: str = "all",
+        include_color: bool = True,
+        include_sound: bool = True,
+        include_captions: bool = False
+    ) -> str:
+        """
+        Apply a cinematic theme to clips. Use this when user asks to make clips look like a specific style.
+        
+        Arguments:
+            theme_id: Theme to apply (e.g., 'horror', 'documentary', 'wes-anderson')
+            apply_to: 'all' for all clips, 'selected' for selected clips only (default: 'all')
+            include_color: Apply color grading effects (default: True)
+            include_sound: Apply audio effects (default: True)
+            include_captions: Add auto-generated captions (default: False)
+        
+        Examples:
+            - User says "make this video horror themed" -> apply_theme_tool('horror', 'selected')
+            - User says "apply wes anderson style to all clips" -> apply_theme_tool('wes-anderson', 'all')
+            - User says "give my clips a documentary look with captions" -> apply_theme_tool('documentary', 'all', include_captions=True)
+        """
+        return apply_theme(theme_id, apply_to, include_color, include_sound, include_captions)
+
     return [
         get_project_info_tool,
         list_files_tool,
@@ -453,4 +620,7 @@ def get_openshot_tools_for_langchain():
         center_on_playhead_tool,
         export_video_tool,
         import_files_tool,
+        list_themes_tool,
+        describe_theme_tool,
+        apply_theme_tool,
     ]

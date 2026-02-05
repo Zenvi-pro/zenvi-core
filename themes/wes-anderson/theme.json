@@ -1,0 +1,89 @@
+{
+  "theme_id": "wes-anderson",
+  "name": "Wes Anderson",
+  "description": "Pastel color palette with symmetrical framing and vintage warmth. Perfect for whimsical, artistic, and indie film aesthetics.",
+  "version": "1.0.0",
+  "creator": "Zenvi Team",
+  "thumbnail": "themes/wes-anderson/preview.jpg",
+  
+  "color_grading": {
+    "brightness": 1.08,
+    "contrast": 0.95,
+    "saturation": 1.10,
+    "hue_shift": 5,
+    "temperature": 1.1,
+    "tint": 1.05
+  },
+  
+  "effects": {
+    "grain": {
+      "intensity": 0.15,
+      "type": "16mm"
+    },
+    "glow": {
+      "intensity": 0.2,
+      "color": "#ffe4b5"
+    }
+  },
+  
+  "sound": {
+    "bass_boost_db": -1,
+    "reverb": {
+      "room_size": 0.3,
+      "wetness": 0.15,
+      "dampening": 0.6
+    },
+    "pitch_shift": 0,
+    "eq": {
+      "low": -2,
+      "mid": 3,
+      "high": 2
+    },
+    "warmth": {
+      "enabled": true,
+      "amount": 0.4
+    },
+    "tape_saturation": {
+      "enabled": true,
+      "amount": 0.2
+    }
+  },
+  
+  "captions": {
+    "font": "Futura",
+    "font_size": 44,
+    "color": "#f4e4c1",
+    "outline_color": "#8b4513",
+    "outline_width": 2,
+    "background_alpha": 0,
+    "animation": "typewriter",
+    "glow": false,
+    "position": "bottom",
+    "alignment": "center",
+    "shadow": {
+      "enabled": true,
+      "color": "#000000",
+      "opacity": 0.3,
+      "offset_x": 2,
+      "offset_y": 2,
+      "blur": 3
+    }
+  },
+  
+  "scene_adaptations": {
+    "indoor": {
+      "saturation": 1.15,
+      "warmth": 1.15
+    },
+    "outdoor": {
+      "saturation": 1.20,
+      "brightness": 1.10
+    },
+    "symmetrical": {
+      "glow": {"intensity": 0.3}
+    }
+  },
+  
+  "tags": ["wes anderson", "pastel", "whimsical", "artistic", "indie", "vintage"],
+  "best_for": ["whimsical content", "artistic videos", "indie films", "colorful scenes", "retro aesthetics"]
+}

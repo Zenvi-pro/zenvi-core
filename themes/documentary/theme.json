@@ -1,0 +1,72 @@
+{
+  "theme_id": "documentary",
+  "name": "Documentary",
+  "description": "Natural, professional look with subtle grading and clarity. Perfect for interviews, documentaries, and professional content.",
+  "version": "1.0.0",
+  "creator": "Zenvi Team",
+  "thumbnail": "themes/documentary/preview.jpg",
+  
+  "color_grading": {
+    "brightness": 1.02,
+    "contrast": 1.08,
+    "saturation": 0.98,
+    "hue_shift": 0
+  },
+  
+  "effects": {
+    "sharpen": {
+      "amount": 0.3
+    }
+  },
+  
+  "sound": {
+    "bass_boost_db": 0,
+    "reverb": null,
+    "pitch_shift": 0,
+    "eq": {
+      "low": 0,
+      "mid": 2,
+      "high": 3
+    },
+    "noise_reduction": {
+      "enabled": true,
+      "strength": 0.4
+    },
+    "compression": {
+      "enabled": true,
+      "threshold": -18,
+      "ratio": 3.0,
+      "attack": 5,
+      "release": 50
+    },
+    "normalize": true
+  },
+  
+  "captions": {
+    "font": "Arial",
+    "font_size": 42,
+    "color": "#ffffff",
+    "outline_color": "#000000",
+    "outline_width": 2,
+    "background_alpha": 0.7,
+    "animation": "none",
+    "glow": false,
+    "position": "bottom",
+    "alignment": "center"
+  },
+  
+  "scene_adaptations": {
+    "indoor": {
+      "brightness": 1.05
+    },
+    "outdoor": {
+      "saturation": 1.02
+    },
+    "interview": {
+      "sharpen": {"amount": 0.4}
+    }
+  },
+  
+  "tags": ["documentary", "professional", "natural", "interview", "educational"],
+  "best_for": ["documentaries", "interviews", "educational content", "professional videos"]
+}
