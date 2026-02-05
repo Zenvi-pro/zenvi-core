@@ -451,6 +451,123 @@ def apply_theme(
         return "Error: {}".format(e)
 
 
+def adjust_color_grading(
+    brightness: float = 1.0,
+    contrast: float = 1.0,
+    saturation: float = 1.0,
+    hue_shift: float = 0.0,
+    apply_to: str = "selected"
+) -> str:
+    """
+    Adjust color grading on clips.
+    
+    Arguments:
+        brightness: Brightness multiplier (1.0 = normal, >1.0 = brighter, <1.0 = darker)
+        contrast: Contrast multiplier (1.0 = normal, >1.0 = more contrast)
+        saturation: Saturation multiplier (1.0 = normal, 0.0 = grayscale, >1.0 = more saturated)
+        hue_shift: Hue shift in degrees (-180 to 180)
+        apply_to: 'all' or 'selected' clips (default: 'selected')
+    """
+    try:
+        from classes.theme_applicator import apply_color_grading
+        from classes.query import Clip
+        from classes.theme_engine import ThemeEngine
+        
+        # Get clips
+        if apply_to == "selected":
+            engine = ThemeEngine()
+            clip_ids = engine.get_selected_clip_ids()
+            if not clip_ids:
+                return "No clips selected. Please select clips first."
+        else:
+            clips = Clip.filter()
+            clip_ids = [c.id for c in clips]
+            if not clip_ids:
+                return "No clips found in project."
+        
+        # Apply color grading
+        color_config = {
+            "brightness": brightness,
+            "contrast": contrast,
+            "saturation": saturation,
+            "hue_shift": hue_shift
+        }
+        
+        result = apply_color_grading(clip_ids, color_config)
+        return result
+        
+    except Exception as e:
+        log.error("adjust_color_grading: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def add_captions(apply_to: str = "selected") -> str:
+    """
+    Add auto-generated captions to clips using AI transcription.
+    
+    Argument:
+        apply_to: 'all' or 'selected' clips (default: 'selected')
+    """
+    try:
+        from classes.theme_applicator import add_captions_to_clips
+        from classes.query import Clip
+        from classes.theme_engine import ThemeEngine
+        
+        # Get clips
+        if apply_to == "selected":
+            engine = ThemeEngine()
+            clip_ids = engine.get_selected_clip_ids()
+            if not clip_ids:
+                return "No clips selected. Please select clips first."
+        else:
+            clips = Clip.filter()
+            clip_ids = [c.id for c in clips]
+            if not clip_ids:
+                return "No clips found in project."
+        
+        # Add captions
+        result = add_captions_to_clips(clip_ids)
+        return result
+        
+    except Exception as e:
+        log.error("add_captions: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def add_film_grain(intensity: float = 0.3, apply_to: str = "selected") -> str:
+    """
+    Add film grain effect to clips.
+    
+    Arguments:
+        intensity: Grain intensity (0.0 to 1.0, default: 0.3)
+        apply_to: 'all' or 'selected' clips (default: 'selected')
+    """
+    try:
+        from classes.theme_applicator import apply_film_grain
+        from classes.query import Clip
+        from classes.theme_engine import ThemeEngine
+        
+        # Get clips
+        if apply_to == "selected":
+            engine = ThemeEngine()
+            clip_ids = engine.get_selected_clip_ids()
+            if not clip_ids:
+                return "No clips selected. Please select clips first."
+        else:
+            clips = Clip.filter()
+            clip_ids = [c.id for c in clips]
+            if not clip_ids:
+                return "No clips found in project."
+        
+        # Apply film grain
+        result = apply_film_grain(clip_ids, intensity)
+        return result
+        
+    except Exception as e:
+        log.error("add_film_grain: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
 def get_openshot_tools_for_langchain():
     """
     Return a list of LangChain Tool objects for the OpenShot agent.
@@ -598,6 +715,65 @@ def get_openshot_tools_for_langchain():
         """
         return apply_theme(theme_id, apply_to, include_color, include_sound, include_captions)
 
+    @tool
+    def adjust_color_grading_tool(
+        brightness: float = 1.0,
+        contrast: float = 1.0,
+        saturation: float = 1.0,
+        hue_shift: float = 0.0,
+        apply_to: str = "selected"
+    ) -> str:
+        """
+        Adjust color grading on clips. Use when user asks to change brightness, contrast, saturation, or color.
+        
+        Arguments:
+            brightness: Brightness multiplier (1.0 = normal, 1.2 = 20% brighter, 0.8 = 20% darker)
+            contrast: Contrast multiplier (1.0 = normal, 1.3 = more contrast, 0.7 = less contrast)
+            saturation: Saturation multiplier (1.0 = normal, 0.0 = grayscale, 1.5 = very colorful)
+            hue_shift: Hue shift in degrees (-180 to 180, e.g. +30 = warmer, -30 = cooler)
+            apply_to: 'all' or 'selected' clips (default: 'selected')
+        
+        Examples:
+            - "make this brighter" -> adjust_color_grading_tool(brightness=1.2)
+            - "increase saturation" -> adjust_color_grading_tool(saturation=1.3)
+            - "make it warmer" -> adjust_color_grading_tool(hue_shift=20)
+            - "add more contrast" -> adjust_color_grading_tool(contrast=1.4)
+        """
+        return adjust_color_grading(brightness, contrast, saturation, hue_shift, apply_to)
+
+    @tool
+    def add_captions_tool(apply_to: str = "selected") -> str:
+        """
+        Add auto-generated captions to clips using AI transcription (Whisper API).
+        Use when user asks to add captions, subtitles, or transcribe audio.
+        
+        Argument:
+            apply_to: 'all' or 'selected' clips (default: 'selected')
+        
+        Examples:
+            - "add captions" -> add_captions_tool()
+            - "transcribe this video" -> add_captions_tool()
+            - "add subtitles to all clips" -> add_captions_tool('all')
+        """
+        return add_captions(apply_to)
+
+    @tool
+    def add_film_grain_tool(intensity: float = 0.3, apply_to: str = "selected") -> str:
+        """
+        Add film grain effect to clips for a vintage/cinematic look.
+        Use when user asks for film grain, vintage look, or retro effect.
+        
+        Arguments:
+            intensity: Grain intensity (0.0 to 1.0, default: 0.3, higher = more grain)
+            apply_to: 'all' or 'selected' clips (default: 'selected')
+        
+        Examples:
+            - "add film grain" -> add_film_grain_tool()
+            - "make it look vintage" -> add_film_grain_tool(0.4)
+            - "add a retro effect" -> add_film_grain_tool(0.5)
+        """
+        return add_film_grain(intensity, apply_to)
+
     return [
         get_project_info_tool,
         list_files_tool,
@@ -623,4 +799,7 @@ def get_openshot_tools_for_langchain():
         list_themes_tool,
         describe_theme_tool,
         apply_theme_tool,
+        adjust_color_grading_tool,
+        add_captions_tool,
+        add_film_grain_tool,
     ]

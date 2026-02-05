@@ -9,16 +9,22 @@ Copyright (c) 2024 Zenvi Core
 This file is part of Zenvi Core video editor.
 """
 
+import time
 from typing import Dict, Any, List, Optional
 from classes.logger import log
 from classes.theme_loader import ThemeLoader
-from classes.coordinator_agent import CoordinatorAgent
+from classes.theme_applicator import (
+    apply_color_grading,
+    apply_film_grain,
+    apply_sound_effects,
+    add_captions_to_clips
+)
 
 
 class ThemeEngine:
     """
     Main orchestrator for theme application.
-    Loads themes and coordinates multi-agent theme application.
+    Simple synchronous execution - no threading.
     """
     
     def __init__(self):
@@ -70,7 +76,7 @@ class ThemeEngine:
         apply_captions: bool = False
     ) -> Dict[str, Any]:
         """
-        Apply a theme to clips
+        Apply a theme to clips - runs synchronously on main thread
         
         Args:
             theme_id: Theme to apply
@@ -83,6 +89,8 @@ class ThemeEngine:
             Results dict with success status
         """
         try:
+            start_time = time.time()
+            
             # Load theme
             theme_data = self.load_theme(theme_id)
             
@@ -96,29 +104,49 @@ class ThemeEngine:
                     "error": "No clips found to apply theme to"
                 }
             
-            log.info(f"Applying theme '{theme_id}' to {len(clip_ids)} clips")
+            log.info("Applying theme '{}' to {} clips".format(theme_id, len(clip_ids)))
             
-            # Create coordinator
-            components = {
-                "color": apply_color,
-                "sound": apply_sound,
-                "captions": apply_captions
+            results = []
+            
+            # Apply color grading
+            if apply_color and "color_grading" in theme_data:
+                log.info("Applying color grading...")
+                result = apply_color_grading(clip_ids, theme_data["color_grading"])
+                results.append(result)
+                
+                # Apply film grain if specified
+                if "effects" in theme_data and "grain" in theme_data["effects"]:
+                    grain_intensity = theme_data["effects"]["grain"].get("intensity", 0.3)
+                    result = apply_film_grain(clip_ids, grain_intensity)
+                    results.append(result)
+            
+            # Apply sound effects
+            if apply_sound and "sound" in theme_data:
+                log.info("Applying sound effects...")
+                result = apply_sound_effects(clip_ids, theme_data["sound"])
+                results.append(result)
+            
+            # Add captions
+            if apply_captions:
+                log.info("Adding captions...")
+                caption_config = theme_data.get("captions", {})
+                result = add_captions_to_clips(clip_ids, caption_config)
+                results.append(result)
+            
+            elapsed = time.time() - start_time
+            
+            log.info("Theme '{}' applied successfully in {:.1f}s".format(theme_id, elapsed))
+            
+            return {
+                "success": True,
+                "theme_id": theme_id,
+                "clips_processed": len(clip_ids),
+                "elapsed_time": elapsed,
+                "results": results
             }
             
-            coordinator = CoordinatorAgent(theme_data, clip_ids, components)
-            
-            # Execute
-            result = coordinator.execute()
-            
-            if result.get("success"):
-                log.info(f"Theme '{theme_id}' applied successfully")
-            else:
-                log.error(f"Theme application failed: {result.get('error')}")
-            
-            return result
-            
         except Exception as e:
-            log.error(f"Error applying theme: {e}", exc_info=True)
+            log.error("Error applying theme: {}".format(e), exc_info=True)
             return {
                 "success": False,
                 "error": str(e)
@@ -131,7 +159,7 @@ class ThemeEngine:
             clips = Clip.filter()
             return [c.id for c in clips]
         except Exception as e:
-            log.error(f"Error getting clip IDs: {e}")
+            log.error("Error getting clip IDs: {}".format(e))
             return []
     
     def get_selected_clip_ids(self) -> List[str]:
@@ -148,5 +176,5 @@ class ThemeEngine:
             return []
             
         except Exception as e:
-            log.error(f"Error getting selected clips: {e}")
+            log.error("Error getting selected clips: {}".format(e))
             return []
