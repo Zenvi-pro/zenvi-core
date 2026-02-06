@@ -30,5 +30,8 @@ langchain-anthropic>=0.2
 langchain-community>=0.3
 langchain-ollama>=0.2
 
+# OpenAI API (for Whisper transcription in theme captions)
+openai>=1.0.0
+
 # Error reporting
 sentry-sdk
