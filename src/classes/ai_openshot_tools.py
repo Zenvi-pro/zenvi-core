@@ -720,6 +720,234 @@ def generate_video_and_add_to_timeline(
         return "Error: {}".format(e)
 
 
+# ---- Theme application: similar pattern to video generation ----
+
+
+class _ThemeApplicationThread(QThread if QThread else object):
+    """Subclass of QThread for applying themes. run() executes in worker thread."""
+    if pyqtSignal is not None:
+        finished_with_result = pyqtSignal(dict, str)  # results_dict, error_or_empty
+    
+    def __init__(self, theme_data, clip_ids, options):
+        if QThread is not None:
+            super().__init__()
+        self._theme_data = theme_data
+        self._clip_ids = clip_ids
+        self._options = options
+    
+    def run(self):
+        """Worker thread: compute effects, call APIs, return data only"""
+        from classes.theme_worker import ThemeWorker
+        
+        # Create worker (not QObject here, just use the processing logic)
+        try:
+            worker = ThemeWorker(self._theme_data, self._clip_ids, self._options)
+            worker.cancelled = False
+            
+            # Do the processing (this is the computation part)
+            results = {"effects": [], "captions": [], "audio_effects": []}
+            
+            for clip_id in self._clip_ids:
+                try:
+                    clip_result = worker._process_clip(clip_id)
+                    results["effects"].extend(clip_result.get("effects", []))
+                    results["captions"].extend(clip_result.get("captions", []))
+                    results["audio_effects"].extend(clip_result.get("audio_effects", []))
+                except Exception as e:
+                    log.error("Error processing clip {}: {}".format(clip_id, e))
+            
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit(results, "")
+        except Exception as e:
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit({}, str(e))
+
+
+def list_themes() -> str:
+    """List all available cinematic themes. No arguments."""
+    try:
+        from classes.theme_loader import ThemeLoader
+        loader = ThemeLoader()
+        themes = loader.list_available_themes()
+        if not themes:
+            return "No themes available."
+        lines = ["Available themes ({}):".format(len(themes))]
+        for theme_id, theme_name, description in themes:
+            lines.append("  {} - {}: {}".format(theme_id, theme_name, description[:60]))
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("list_themes: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def describe_theme(theme_name: str) -> str:
+    """Get detailed description of a theme. Argument: theme_name (e.g. 'horror', 'wes-anderson')."""
+    try:
+        from classes.theme_loader import ThemeLoader
+        loader = ThemeLoader()
+        theme_data = loader.load_theme(theme_name)
+        if not theme_data:
+            return "Theme '{}' not found.".format(theme_name)
+        
+        lines = [
+            "Theme: {}".format(theme_data.get("name", theme_name).title()),
+            "Description: {}".format(theme_data.get("description", "N/A")),
+            "",
+            "Color Grading:",
+            "  Brightness: {}".format(theme_data.get("color_grading", {}).get("brightness", "N/A")),
+            "  Contrast: {}".format(theme_data.get("color_grading", {}).get("contrast", "N/A")),
+            "  Saturation: {}".format(theme_data.get("color_grading", {}).get("saturation", "N/A")),
+            "",
+            "Effects: {}".format(", ".join(theme_data.get("effects", {}).keys()) or "None")
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("describe_theme: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def apply_theme(theme_name: str, clip_filter: str = "selected", include_captions: bool = False) -> str:
+    """Apply a cinematic theme to clips. Arguments: theme_name (e.g. 'horror'), clip_filter ('selected' or 'all'), include_captions (True to add auto-captions)."""
+    if QThread is None or QEventLoop is None:
+        return "Error: Theme application requires PyQt5."
+    
+    try:
+        from classes.theme_loader import ThemeLoader
+        from classes.query import Clip
+        
+        # Load theme
+        loader = ThemeLoader()
+        theme_data = loader.load_theme(theme_name)
+        if not theme_data:
+            return "Theme '{}' not found.".format(theme_name)
+        
+        # Get clips
+        if clip_filter == "all":
+            clips = Clip.filter()
+        else:
+            clips = Clip.filter(selected=True)
+        
+        if not clips:
+            return "No {} clips found.".format(clip_filter)
+        
+        clip_ids = [c.id for c in clips]
+        
+        app = _get_app()
+        result_holder = [None, None]  # [results, error]
+        loop_holder = [None]
+        
+        # Receiver on main thread
+        class _DoneReceiver(QObject if QObject is not object else object):
+            def on_done(self, results, error):
+                result_holder[0] = results
+                result_holder[1] = error
+                if loop_holder[0]:
+                    loop_holder[0].quit()
+        
+        receiver = _DoneReceiver()
+        thread = _ThemeApplicationThread(
+            theme_data, clip_ids,
+            {"apply_color": True, "apply_sound": True, "apply_captions": include_captions}
+        )
+        thread.finished_with_result.connect(receiver.on_done)
+        loop_holder[0] = QEventLoop(app)
+        
+        status_bar = getattr(app.window, "statusBar", None)
+        try:
+            if status_bar is not None:
+                status_bar.showMessage("Applying theme '{}'...".format(theme_name), 0)
+            thread.start()
+            loop_holder[0].exec_()
+        finally:
+            if status_bar is not None:
+                status_bar.clearMessage()
+        
+        thread.quit()
+        thread.wait(10000)
+        try:
+            thread.finished_with_result.disconnect(receiver.on_done)
+        except Exception:
+            pass
+        
+        results, error = result_holder[0], result_holder[1]
+        if error:
+            return "Error: {}".format(error)
+        if not results:
+            return "Error: No results from theme processing."
+        
+        # Apply results on main thread (Qt-safe)
+        try:
+            from classes.theme_engine import ThemeEngine
+            engine = ThemeEngine()
+            engine._apply_results_on_main_thread(results)
+            
+            effects_count = len(results.get("effects", []))
+            captions_count = len(results.get("captions", []))
+            msg = "Theme '{}' applied to {} clips ({} effects".format(theme_name, len(clip_ids), effects_count)
+            if captions_count > 0:
+                msg += ", {} captions".format(captions_count)
+            msg += ")."
+            return msg
+        except Exception as e:
+            log.error("Failed to apply results: %s", e, exc_info=True)
+            return "Error applying results: {}".format(e)
+        
+    except Exception as e:
+        log.error("apply_theme: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def adjust_color_grading(brightness: float = 1.0, contrast: float = 1.0, saturation: float = 1.0, hue_shift: float = 0.0, clip_filter: str = "selected") -> str:
+    """Adjust color grading on clips. Arguments: brightness (1.0=normal), contrast (1.0=normal), saturation (1.0=normal, 0.0=grayscale), hue_shift (-180 to 180), clip_filter ('selected' or 'all')."""
+    try:
+        from classes.theme_applicator import apply_color_grading
+        from classes.query import Clip
+        
+        if clip_filter == "all":
+            clips = Clip.filter()
+        else:
+            clips = Clip.filter(selected=True)
+        
+        if not clips:
+            return "No {} clips found.".format(clip_filter)
+        
+        clip_ids = [c.id for c in clips]
+        color_config = {
+            "brightness": float(brightness),
+            "contrast": float(contrast),
+            "saturation": float(saturation),
+            "hue_shift": float(hue_shift)
+        }
+        
+        result = apply_color_grading(clip_ids, color_config)
+        return result
+    except Exception as e:
+        log.error("adjust_color_grading: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
+def add_captions(clip_filter: str = "selected") -> str:
+    """Add auto-generated captions to clips using AI transcription. Argument: clip_filter ('selected' or 'all')."""
+    try:
+        from classes.theme_applicator import add_captions_to_clips
+        from classes.query import Clip
+        
+        if clip_filter == "all":
+            clips = Clip.filter()
+        else:
+            clips = Clip.filter(selected=True)
+        
+        if not clips:
+            return "No {} clips found.".format(clip_filter)
+        
+        clip_ids = [c.id for c in clips]
+        result = add_captions_to_clips(clip_ids)
+        return result
+    except Exception as e:
+        log.error("add_captions: %s", e, exc_info=True)
+        return "Error: {}".format(e)
+
+
 def get_openshot_tools_for_langchain():
     """
     Return a list of LangChain Tool objects for the OpenShot agent.
@@ -888,6 +1116,31 @@ def get_openshot_tools_for_langchain():
         """Slice (split) the clip(s) and transition(s) at the current playhead position on the timeline, keeping both sides. Use when the user wants to clip the existing clip at the playhead. No arguments. Fails if no clip is under the playhead."""
         return slice_clip_at_playhead()
 
+    @tool
+    def list_themes_tool() -> str:
+        """List all available cinematic themes that can be applied to clips."""
+        return list_themes()
+
+    @tool
+    def describe_theme_tool(theme_name: str) -> str:
+        """Get detailed description of a specific theme. Argument: theme_name (e.g. 'horror', 'wes-anderson', 'documentary')."""
+        return describe_theme(theme_name)
+
+    @tool
+    def apply_theme_tool(theme_name: str, clip_filter: str = "selected", include_captions: bool = False) -> str:
+        """Apply a cinematic theme to clips. Use when user asks for a specific style or look. Arguments: theme_name (e.g. 'horror', 'wes-anderson'), clip_filter ('selected' or 'all'), include_captions (True to add auto-captions). Examples: 'make this horror themed', 'apply wes anderson style', 'give it a documentary look with captions'."""
+        return apply_theme(theme_name, clip_filter, include_captions)
+
+    @tool
+    def adjust_color_grading_tool(brightness: float = 1.0, contrast: float = 1.0, saturation: float = 1.0, hue_shift: float = 0.0, clip_filter: str = "selected") -> str:
+        """Adjust color grading on clips. Arguments: brightness (1.0=normal, 1.2=brighter, 0.8=darker), contrast (1.0=normal), saturation (1.0=normal, 0.0=grayscale, 1.5=vibrant), hue_shift (-180 to 180, positive=warmer), clip_filter ('selected' or 'all'). Examples: 'make this brighter', 'increase saturation', 'make it warmer'."""
+        return adjust_color_grading(brightness, contrast, saturation, hue_shift, clip_filter)
+
+    @tool
+    def add_captions_tool(clip_filter: str = "selected") -> str:
+        """Add auto-generated captions to clips using AI transcription. Argument: clip_filter ('selected' or 'all'). Examples: 'add captions', 'transcribe this video'."""
+        return add_captions(clip_filter)
+
     return [
         get_project_info_tool,
         list_files_tool,
@@ -918,4 +1171,9 @@ def get_openshot_tools_for_langchain():
         add_clip_to_timeline_tool,
         generate_video_and_add_to_timeline_tool,
         slice_clip_at_playhead_tool,
+        list_themes_tool,
+        describe_theme_tool,
+        apply_theme_tool,
+        adjust_color_grading_tool,
+        add_captions_tool,
     ]
