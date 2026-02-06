@@ -23,40 +23,23 @@ def _debug_log(location, message, data, hypothesis_id):
 
 
 try:
-    from PyQt5.QtCore import QObject, QMetaObject, Qt, Q_ARG, pyqtSlot
+    from PyQt5.QtCore import QObject, QMetaObject, Qt, Q_ARG, pyqtSignal, pyqtSlot
 except ImportError:
     QObject = object
     QMetaObject = None
     Qt = None
     Q_ARG = None
+    pyqtSignal = None
     pyqtSlot = lambda x: x
 
 
-SYSTEM_PROMPT = """You are an AI assistant for Zenvi. You help users with video editing, effects, transitions, themes, and general editing tasks. You can query project state and perform editing actions using the provided tools. When you use a tool, confirm briefly what you did. Respond concisely and practically.
+SYSTEM_PROMPT = """You are an AI assistant for Zenvi. You help users with video editing, effects, transitions, and general editing tasks. You can query project state and perform editing actions using the provided tools. When you use a tool, confirm briefly what you did. Respond concisely and practically.
 
-THEME & STYLING CAPABILITIES:
+When the user asks to "clip" or "split" without clearly choosing, ask: "Do you want to (1) clip the existing clip on the timeline at the playhead (split it into two), or (2) create a new clip from a file (by choosing a file and frame range)?" If they choose (1) or say "clip the current clip", "at the playhead", or "the one on the timeline": use slice_clip_at_playhead_tool. If they choose (2) or "create a new video/clip": use list_files_tool then split_file_add_clip_tool with file_id and start_frame, end_frame.
 
-1. FULL THEMES (complete looks):
-Available themes: 'horror', 'documentary', 'wes-anderson'
-- "make this look like a horror movie" → apply_theme_tool('horror')
-- "apply wes anderson style" → apply_theme_tool('wes-anderson')
-- "give it a documentary feel with captions" → apply_theme_tool('documentary', include_captions=True)
+After using split_file_add_clip_tool, always ask: "Would you like this clip added to the timeline at the playhead?" If the user says yes, call add_clip_to_timeline_tool with no arguments. Never ask the user for a file ID or show file IDs in your reply; the app keeps context of the clip just created.
 
-2. COLOR GRADING (individual adjustments):
-- "make this brighter" → adjust_color_grading_tool(brightness=1.2)
-- "increase saturation" → adjust_color_grading_tool(saturation=1.4)
-- "make it warmer" / "add warmth" → adjust_color_grading_tool(hue_shift=20)
-- "add more contrast" → adjust_color_grading_tool(contrast=1.3)
-- "make it darker" → adjust_color_grading_tool(brightness=0.8)
-- "desaturate" / "make grayscale" → adjust_color_grading_tool(saturation=0.0)
-
-3. CAPTIONS:
-- "add captions" / "transcribe this" / "add subtitles" → add_captions_tool()
-
-4. FILM EFFECTS:
-- "add film grain" / "make it look vintage" → add_film_grain_tool()
-
-Always understand natural language requests and use the appropriate tool. You can combine multiple tools if needed."""
+When the user asks to generate a video, create a video, make a video and add it to the timeline, or similar, use generate_video_and_add_to_timeline_tool with the user's description as the prompt. If they specify a position (e.g. "at 30 seconds") or track, pass position_seconds and/or track; otherwise leave them empty for playhead and default track."""
 
 
 class MainThreadToolRunner(QObject if QObject is not object else object):
@@ -64,6 +47,9 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
     Lives on the Qt main thread. Holds Zenvi tools and runs them when run_tool is invoked.
     Used by the worker thread via BlockingQueuedConnection to run tools on the main thread.
     """
+    if pyqtSignal is not None:
+        tool_completed = pyqtSignal(str, str)  # tool_name, result
+
     def __init__(self):
         if QObject is not object:
             super().__init__()
@@ -85,14 +71,20 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
                 tool = self._tools.get(name)
                 if not tool:
                     self.last_tool_result = "Error: unknown tool {}".format(name)
+                    if pyqtSignal is not None and hasattr(self, "tool_completed"):
+                        self.tool_completed.emit(name, self.last_tool_result)
                     return self.last_tool_result
                 args = json.loads(args_json) if args_json else {}
                 result = tool.invoke(args)
                 self.last_tool_result = result if isinstance(result, str) else str(result)
+                if pyqtSignal is not None and hasattr(self, "tool_completed"):
+                    self.tool_completed.emit(name, self.last_tool_result)
                 return self.last_tool_result
             except Exception as e:
                 log.error("MainThreadToolRunner.run_tool %s: %s", name, e, exc_info=True)
                 self.last_tool_result = "Error: {}".format(e)
+                if pyqtSignal is not None and hasattr(self, "tool_completed"):
+                    self.tool_completed.emit(name, self.last_tool_result)
                 return self.last_tool_result
 
 
@@ -103,12 +95,16 @@ def _wrap_tool_for_main_thread(raw_tool, runner):
     desc = getattr(raw_tool, "description", "") or ""
     args_schema = getattr(raw_tool, "args_schema", None)
 
-    def invoke_from_main_thread(args=None):
-        if args is None:
-            args = {}
+    def invoke_from_main_thread(*args, **kwargs):
+        # LangChain may call with invoke(args_dict) or invoke(**kwargs); accept both.
+        if args and len(args) == 1 and isinstance(args[0], dict):
+            args_dict = dict(args[0])
+        else:
+            args_dict = {}
+        args_dict.update(kwargs)
         if QMetaObject is None or Qt is None or runner is None:
-            return raw_tool.invoke(args)
-        args_json = json.dumps(args) if args else "{}"
+            return raw_tool.invoke(args_dict)
+        args_json = json.dumps(args_dict) if args_dict else "{}"
         QMetaObject.invokeMethod(
             runner,
             "run_tool",

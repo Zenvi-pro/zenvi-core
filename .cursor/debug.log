@@ -1,19 +1,274 @@
-{"location": "ai_chat_ui.py:send_message", "message": "invoking worker run_request", "data": {"text_len": 17, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770149181.7550192}
-{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 17, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770149181.7557719}
-{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770149181.7569633}
-{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 17, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770149181.7571852}
-{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Export this video"}, "hypothesisId": "H4", "timestamp": 1770149181.7573009}
-{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770149181.7573655}
-{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770149181.7578278}
-{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770149181.7582612}
-{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770149181.7594137}
-{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770149181.914307}
-{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770149184.1478229}
-{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "export_video_tool"}, "hypothesisId": "H3", "timestamp": 1770149184.1480064}
-{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "export_video_tool"}, "hypothesisId": "H3", "timestamp": 1770149237.4379103}
-{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770149237.4380631}
-{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770149239.1031704}
-{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770149239.1040814}
-{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 86}, "hypothesisId": "H2", "timestamp": 1770149239.104314}
-{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 86}, "hypothesisId": "H2", "timestamp": 1770149239.1053238}
-{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770149239.1061022}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 44, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770256329.0636747}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770256329.065239}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 44, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770256329.0654113}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Generate a cat video and add it at 5 seconds"}, "hypothesisId": "H4", "timestamp": 1770256329.0654824}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770256329.0655146}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770256329.06556}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770256329.0655844}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770256329.0689025}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256329.3013964}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256330.6405127}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256330.640744}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:1@5", "duration": 4}, "hypothesisId": "F", "timestamp": 1770256330.7047784}
+{"location": "runware_client:sdk_error", "message": "SDK exception", "data": {"error": "object of type 'IAsyncTaskResponse' has no len()"}, "hypothesisId": "F", "timestamp": 1770256332.0015776}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256332.0114949}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256332.0118525}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256334.185603}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256334.1858406}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:1@5", "duration": 4}, "hypothesisId": "F", "timestamp": 1770256334.189734}
+{"location": "runware_client:sdk_error", "message": "SDK exception", "data": {"error": "object of type 'IAsyncTaskResponse' has no len()"}, "hypothesisId": "F", "timestamp": 1770256335.2195761}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256335.2210782}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 2}, "hypothesisId": "H5", "timestamp": 1770256335.2215865}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 2}, "hypothesisId": "H5", "timestamp": 1770256336.337969}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770256336.3409545}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 126}, "hypothesisId": "H2", "timestamp": 1770256336.3496}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 126}, "hypothesisId": "H2", "timestamp": 1770256336.349868}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770256336.3504455}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 58, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770256472.2780445}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770256472.279015}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 58, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770256472.279212}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you generate a cat video and then add it at 5 seconds?"}, "hypothesisId": "H4", "timestamp": 1770256472.279474}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770256472.2795265}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770256472.2796886}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770256472.2797308}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770256472.2804976}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256472.4953861}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256474.1895952}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256474.1898668}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:1@5", "duration": 4}, "hypothesisId": "F", "timestamp": 1770256474.3157754}
+{"location": "runware_client:sdk_error", "message": "SDK exception", "data": {"error": "RunwareAPIError: {'code': 'providerError', 'message': 'Vidu responded with an error. The provider returned the 400. Additional information below.', 'responseStatusCode': 400, 'responseContent': {'code': 400, 'reason': 'FieldInvalid', 'message': 'model unavailable', 'metadata': {'fields': 'model_version', 'trace_id': 'e07f8cfdc014beae22affb0dc98781fd'}}, 'documentation': 'https://runware.ai/docs/en/providers/introduction', 'taskUUID': '0bd1400f-17cd-4ec0-baf0-17df0798e5c8'}"}, "hypothesisId": "F", "timestamp": 1770256476.754401}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256476.7793043}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256476.779563}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256478.1465454}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770256478.1502979}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 136}, "hypothesisId": "H2", "timestamp": 1770256478.1505055}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 136}, "hypothesisId": "H2", "timestamp": 1770256478.1505826}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770256478.1518846}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 76, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770256725.3974538}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770256725.3993175}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 76, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770256725.3994472}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you please generate a cat video and then add it at 5 sec"}, "hypothesisId": "H4", "timestamp": 1770256725.4000235}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770256725.4008672}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770256725.4012196}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770256725.401259}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770256725.4034553}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256725.6157482}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256727.3371553}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256727.3374565}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:1@5", "duration": 4}, "hypothesisId": "F", "timestamp": 1770256727.4104125}
+{"location": "runware_client:sdk_error", "message": "SDK exception", "data": {"error": "RunwareAPIError: {'code': 'providerError', 'message': 'Vidu responded with an error. The provider returned the 400. Additional information below.', 'responseStatusCode': 400, 'responseContent': {'code': 400, 'reason': 'FieldInvalid', 'message': 'model unavailable', 'metadata': {'fields': 'model_version', 'trace_id': '7b28d12b6e41e84d455216d51073010e'}}, 'documentation': 'https://runware.ai/docs/en/providers/introduction', 'taskUUID': 'd0243329-3afc-4427-9ee8-250d2ab7bf59'}"}, "hypothesisId": "F", "timestamp": 1770256729.6871474}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256729.6899304}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256729.6912665}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256731.2840245}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770256731.2845829}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 139}, "hypothesisId": "H2", "timestamp": 1770256731.2846456}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 139}, "hypothesisId": "H2", "timestamp": 1770256731.2846942}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770256731.2855082}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 76, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770256808.5117679}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770256808.5136733}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 76, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770256808.515259}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you please generate a cat video and then add it at 5 sec"}, "hypothesisId": "H4", "timestamp": 1770256808.5156531}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770256808.5161176}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770256808.516191}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770256808.5162225}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 4}, "hypothesisId": "H5", "timestamp": 1770256808.5171504}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256808.6381733}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770256812.8304005}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256812.8307195}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:3@2", "duration": 4}, "hypothesisId": "F", "timestamp": 1770256812.8367677}
+{"location": "runware_client:sdk_error", "message": "SDK exception", "data": {"error": "RunwareAPIError: {'code': 'unsupportedModelResolution', 'message': 'Unsupported width/height combination for this model architecture.', 'parameter': ['width', 'height'], 'type': 'integer', 'allowedValues': ['1920x1080', '1080x1920', '1674x1238', '1238x1674', '1440x1440', '1280x720', '720x1280', '1104x816', '816x1104', '960x960', '960x528', '528x960', '816x608', '608x816', '720x720', '640x352', '352x640', '544x400', '400x544', '480x480'], 'documentation': 'https://runware.ai/docs/en/video-inference/api-reference#request-width-height', 'taskUUID': '86035dfb-dd86-4859-96be-7be3b1096966'}"}, "hypothesisId": "F", "timestamp": 1770256814.02844}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770256814.0319004}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256814.0320337}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770256815.5112097}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770256815.5121312}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 168}, "hypothesisId": "H2", "timestamp": 1770256815.5126812}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 168}, "hypothesisId": "H2", "timestamp": 1770256815.512806}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770256815.5132062}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 57, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770257058.4530737}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770257058.4549422}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 57, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770257058.4552605}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you generate a cat video and then add it at 5 seconds"}, "hypothesisId": "H4", "timestamp": 1770257058.4554183}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770257058.4554718}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770257058.4555287}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770257058.4555619}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770257058.4572387}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257058.88043}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257060.6702905}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770257060.671353}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:3@2", "duration": 4}, "hypothesisId": "F", "timestamp": 1770257060.7908678}
+{"location": "runware_client:sdk_success", "message": "SDK returned videoURL", "data": {"has_url": true}, "hypothesisId": "F", "timestamp": 1770257156.0197408}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770257157.6091437}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770257157.6103013}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770257159.4948416}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770257159.4972644}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 66}, "hypothesisId": "H2", "timestamp": 1770257159.4976475}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 66}, "hypothesisId": "H2", "timestamp": 1770257159.4978125}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770257159.4982848}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 44, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770257942.8693151}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770257942.8758879}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 44, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770257942.877476}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you clip this video from 5 to 10 seconds"}, "hypothesisId": "H4", "timestamp": 1770257942.87794}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770257942.8789332}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770257942.8796105}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770257942.8797653}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 4}, "hypothesisId": "H5", "timestamp": 1770257942.8865476}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257943.2014644}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257945.3162951}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770257945.317586}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 169}, "hypothesisId": "H2", "timestamp": 1770257945.3182762}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 169}, "hypothesisId": "H2", "timestamp": 1770257945.3184147}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770257945.318631}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 23, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770257971.6942298}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770257971.696488}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 23, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770257971.6967528}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "clip the existing video"}, "hypothesisId": "H4", "timestamp": 1770257971.6970403}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770257971.6971116}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770257971.6972532}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770257971.6973164}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 6}, "hypothesisId": "H5", "timestamp": 1770257971.7021072}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257972.154491}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770257973.4278047}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "slice_clip_at_playhead_tool"}, "hypothesisId": "H3", "timestamp": 1770257973.4288943}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "slice_clip_at_playhead_tool"}, "hypothesisId": "H3", "timestamp": 1770257974.207519}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770257974.2078419}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770257976.4504843}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770257976.4534876}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 65}, "hypothesisId": "H2", "timestamp": 1770257976.4540837}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 65}, "hypothesisId": "H2", "timestamp": 1770257976.4556434}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770257976.457807}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 26, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770258276.391323}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770258276.4071484}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 26, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770258276.419181}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you export this  video"}, "hypothesisId": "H4", "timestamp": 1770258276.4248762}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770258276.455671}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770258276.4607074}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770258276.4612188}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770258276.4806476}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770258280.7512515}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770258282.3629634}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "export_video_now_tool"}, "hypothesisId": "H3", "timestamp": 1770258282.365818}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "export_video_now_tool"}, "hypothesisId": "H3", "timestamp": 1770258390.6512332}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770258390.6532118}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770258391.8001022}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770258391.801261}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 57}, "hypothesisId": "H2", "timestamp": 1770258391.8015566}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 57}, "hypothesisId": "H2", "timestamp": 1770258391.801879}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770258391.8020809}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 49, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333163.5774188}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333163.578772}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 49, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333163.5791197}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you make a dog video and add it at 10 seconds"}, "hypothesisId": "H4", "timestamp": 1770333163.579305}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333163.5796735}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333163.5799344}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333163.5799892}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770333163.581397}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333163.8072987}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333165.5647662}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770333165.5653007}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:3@2", "duration": 4}, "hypothesisId": "F", "timestamp": 1770333165.702834}
+{"location": "runware_client:sdk_success", "message": "SDK returned videoURL", "data": {"has_url": true}, "hypothesisId": "F", "timestamp": 1770333190.9120474}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770333194.3875015}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333194.3920913}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333196.4017956}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333196.4034457}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 65}, "hypothesisId": "H2", "timestamp": 1770333196.4036214}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 65}, "hypothesisId": "H2", "timestamp": 1770333196.404099}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333196.4049008}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 45, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333340.5733826}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333340.5788414}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 45, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333340.5795705}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Clip the selected video from 11 to 13 seconds"}, "hypothesisId": "H4", "timestamp": 1770333340.579766}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333340.5798368}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333340.5804086}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333340.5812175}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770333340.5823505}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333340.9044454}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333342.1033003}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333342.1040094}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 169}, "hypothesisId": "H2", "timestamp": 1770333342.1043158}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 169}, "hypothesisId": "H2", "timestamp": 1770333342.1049154}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333342.1067388}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 22, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333362.647232}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333362.6494753}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 22, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333362.6497033}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "clip the existing clip"}, "hypothesisId": "H4", "timestamp": 1770333362.650005}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333362.650209}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333362.6506693}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333362.6508703}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 4}, "hypothesisId": "H5", "timestamp": 1770333362.6517272}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333362.7899024}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333364.6972535}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "slice_clip_at_playhead_tool"}, "hypothesisId": "H3", "timestamp": 1770333364.6991606}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "slice_clip_at_playhead_tool"}, "hypothesisId": "H3", "timestamp": 1770333364.862605}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333364.8645773}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333366.7592187}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333366.76128}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 93}, "hypothesisId": "H2", "timestamp": 1770333366.7618954}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 93}, "hypothesisId": "H2", "timestamp": 1770333366.7627125}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333366.7642941}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 21, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333397.3786383}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333397.3802435}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 21, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333397.3809226}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "What else can you do?"}, "hypothesisId": "H4", "timestamp": 1770333397.3810613}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333397.3811424}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333397.3812494}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333397.381301}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 6}, "hypothesisId": "H5", "timestamp": 1770333397.3818247}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333397.5728478}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333399.4362817}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333399.4371557}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 330}, "hypothesisId": "H2", "timestamp": 1770333399.4377918}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 330}, "hypothesisId": "H2", "timestamp": 1770333399.4384134}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333399.4390092}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 26, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333411.5717633}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333411.5741756}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 26, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333411.5743024}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you export this video?"}, "hypothesisId": "H4", "timestamp": 1770333411.5743809}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333411.5744274}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333411.5745213}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333411.574854}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 8}, "hypothesisId": "H5", "timestamp": 1770333411.5753143}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333411.6851273}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333413.3706553}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333413.3714588}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 106}, "hypothesisId": "H2", "timestamp": 1770333413.3716326}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 106}, "hypothesisId": "H2", "timestamp": 1770333413.3722537}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333413.3743715}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 21, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770333430.2473414}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770333430.2490747}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 21, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770333430.2513196}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "keep current settings"}, "hypothesisId": "H4", "timestamp": 1770333430.2525623}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770333430.2527514}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770333430.2572508}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770333430.2597454}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 10}, "hypothesisId": "H5", "timestamp": 1770333430.2604983}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333430.3715725}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770333431.3301923}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "export_video_now_tool"}, "hypothesisId": "H3", "timestamp": 1770333431.3305116}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "export_video_now_tool"}, "hypothesisId": "H3", "timestamp": 1770333471.6381054}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333471.6393015}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770333473.6481626}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770333473.6491976}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 70}, "hypothesisId": "H2", "timestamp": 1770333473.6499507}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 70}, "hypothesisId": "H2", "timestamp": 1770333473.6501176}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770333473.6502929}
+{"location": "ai_chat_ui.py:run_request", "message": "worker run_request entered", "data": {"text_len": 74, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H1", "timestamp": 1770340797.4739356}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "sub_thread calling send_message", "data": {}, "hypothesisId": "H2", "timestamp": 1770340797.4753234}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 74, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1770340797.4757426}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you generate a child playing volleyball and add it at ab"}, "hypothesisId": "H4", "timestamp": 1770340797.4759107}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1770340797.4759533}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1770340797.4760065}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1770340797.4761052}
+{"location": "ai_agent_runner.py:run_agent", "message": "run_agent entered", "data": {"model_id": "openai/gpt-4o-mini", "num_messages": 2}, "hypothesisId": "H5", "timestamp": 1770340797.477029}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770340797.6303031}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 0}, "hypothesisId": "H5", "timestamp": 1770340799.8510237}
+{"location": "ai_agent_runner.py:run_agent", "message": "before tool.invoke (blocks until main thread runs it)", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770340799.8515348}
+{"location": "runware_client:sdk_start", "message": "using Runware SDK", "data": {"model": "vidu:3@2", "duration": 4}, "hypothesisId": "F", "timestamp": 1770340799.98174}
+{"location": "runware_client:sdk_success", "message": "SDK returned videoURL", "data": {"has_url": true}, "hypothesisId": "F", "timestamp": 1770340814.764699}
+{"location": "ai_agent_runner.py:run_agent", "message": "after tool.invoke", "data": {"tool_name": "generate_video_and_add_to_timeline_tool"}, "hypothesisId": "H3", "timestamp": 1770340815.686322}
+{"location": "ai_agent_runner.py:run_agent", "message": "before llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770340815.686647}
+{"location": "ai_agent_runner.py:run_agent", "message": "after llm.invoke", "data": {"iteration": 1}, "hypothesisId": "H5", "timestamp": 1770340817.150363}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1770340817.1511753}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 98}, "hypothesisId": "H2", "timestamp": 1770340817.1513712}
+{"location": "ai_chat_ui.py:run_request:run()", "message": "send_message returned", "data": {"result_len": 98}, "hypothesisId": "H2", "timestamp": 1770340817.151462}
+{"location": "ai_chat_ui.py:run_request", "message": "after join", "data": {"timed_out": false, "has_result": true, "has_exception": false}, "hypothesisId": "H2", "timestamp": 1770340817.1518357}
