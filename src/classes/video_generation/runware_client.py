@@ -28,15 +28,19 @@ POLL_TIMEOUT_SECONDS = 300  # 5 minutes
 def runware_generate_video(
     api_key,
     prompt,
-    duration_seconds=4,
-    model="vidu:3@2",
-    width=640,
-    height=352,
+    duration_seconds=5,
+    model="klingai:kling@o1",
+    width=1280,
+    height=720,
+    input_video_url=None,
 ):
     """
     Generate video via Runware. Prefers the official SDK (WebSocket); falls back to REST.
     Call from worker thread only.
 
+    Args:
+        input_video_url (str): Optional URL of an input video for video-to-video generation.
+                               If provided, the model should support it (e.g. Kling).
     Returns:
         (video_url, None) on success, or (None, error_message) on failure.
     """
@@ -52,10 +56,10 @@ def runware_generate_video(
     # "Connection lost while waiting for video response" (sync holds one WebSocket wait for minutes).
     try:
         from runware import Runware, IVideoInference
-        from runware.types import IAsyncTaskResponse
+        from runware.types import IAsyncTaskResponse, IVideoInputs
         import asyncio
         # #region agent log
-        _debug_log("runware_client:sdk_start", "using Runware SDK", {"model": model, "duration": duration_int}, "F")
+        _debug_log("runware_client:sdk_start", "using Runware SDK", {"model": model, "duration": duration_int, "video_input": bool(input_video_url)}, "F")
         # #endregion
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -63,14 +67,26 @@ def runware_generate_video(
         try:
             rw = Runware(api_key=api_key, timeout=POLL_TIMEOUT_SECONDS)
             loop.run_until_complete(rw.connect())
-            req = IVideoInference(
+            
+            # Construct request
+            req_kwargs = dict(
                 positivePrompt=prompt,
                 model=model,
-                duration=duration_int,
-                width=int(width),
-                height=int(height),
                 deliveryMethod="async",
             )
+            # Kling O1 video-edit: duration is inferred from input video
+            if not input_video_url:
+                req_kwargs["duration"] = duration_int
+            if width is not None:
+                req_kwargs["width"] = int(width)
+            if height is not None:
+                req_kwargs["height"] = int(height)
+            req = IVideoInference(**req_kwargs)
+            
+            # Add input video for video-to-video generation (Kling O1 video-edit workflow)
+            if input_video_url:
+                req.inputs = IVideoInputs(video=input_video_url)
+
             result = loop.run_until_complete(rw.videoInference(requestVideo=req))
             # Async returns IAsyncTaskResponse immediately; then we poll for the video.
             task_uuid = None
@@ -116,13 +132,18 @@ def runware_generate_video(
             "taskUUID": task_uuid,
             "positivePrompt": prompt,
             "model": model,
-            "duration": duration_int,
-            "width": int(width),
-            "height": int(height),
             "deliveryMethod": "sync",
             "outputFormat": "MP4",
         },
     ]
+    if not input_video_url:
+        payload[1]["duration"] = duration_int
+    if width is not None:
+        payload[1]["width"] = int(width)
+    if height is not None:
+        payload[1]["height"] = int(height)
+    if input_video_url:
+        payload[1]["inputs"] = {"video": input_video_url}
     # #region agent log
     _debug_log("runware_client:rest_fallback", "REST sync submit", {"task_uuid": task_uuid}, "F")
     # #endregion

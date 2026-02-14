@@ -623,6 +623,47 @@ class _VideoGenerationThread(QThread if QThread else object):
                 self.finished_with_result.emit("", download_err or "Download failed.")
 
 
+class _ObjectReplacementThread(QThread if QThread else object):
+    """Subclass of QThread: run() is always executed in the worker thread."""
+    if pyqtSignal is not None:
+        finished_with_result = pyqtSignal(dict)  # result dict from replace_object_in_video
+
+    def __init__(self, video_path, object_desc, replacement_desc, start, end):
+        if QThread is not None:
+            super().__init__()
+        self._video_path = video_path
+        self._object_desc = object_desc
+        self._replacement_desc = replacement_desc
+        self._start = start
+        self._end = end
+
+    def run(self):
+        # QThread.run() is always executed in the worker thread.
+        try:
+            from classes.ai_object_replacer import replace_object_in_video
+            result = replace_object_in_video(
+                video_path=self._video_path,
+                object_description=self._object_desc,
+                replacement_description=self._replacement_desc,
+                start_sec=self._start,
+                end_sec=self._end,
+                keyframe_interval=0.5,
+            )
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit(result)
+        except Exception as e:
+            # Fallback error result
+            err_res = {
+                "success": False,
+                "error": str(e),
+                "output_path": None,
+                "frames_processed": 0,
+                "frames_with_object": 0
+            }
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit(err_res)
+
+
 def _output_path_for_generated_video():
     """Return an absolute path for saving a generated video. Call from main thread."""
     app = _get_app()
@@ -929,6 +970,96 @@ def get_openshot_tools_for_langchain():
         """Generate a short AI transition video between two clips and insert it between them. Arguments: clip_a_id (ID of the first clip), clip_b_id (ID of the second clip). Optional: prompt_hint (describe the desired transition style). Use list_clips_tool first to get clip IDs."""
         return generate_transition_clip(clip_a_id=clip_a_id, clip_b_id=clip_b_id, prompt_hint=prompt_hint)
 
+    @tool
+    def replace_object_in_video_tool(
+        file_id: str,
+        object_description: str,
+        replacement_description: str,
+        start_time: str = "0",
+        end_time: str = "-1",
+    ) -> str:
+        """Replace an object in a video file with something else using AI. The AI detects the object in video frames, creates a mask, and inpaints the replacement. Use when the user asks to replace, swap, or change an object in a video. Arguments: file_id (string, use list_files_tool to find it), object_description (what to find, e.g. 'the water bottle the man is holding'), replacement_description (what to replace it with, e.g. 'a Red Bull can'). Optional: start_time (seconds, default 0), end_time (seconds, default -1 for end of video)."""
+        try:
+            from classes.query import File
+            from classes.ai_object_replacer import replace_object_in_video
+            if not file_id or not isinstance(file_id, str):
+                return "Error: file_id is required. Use list_files_tool to find file IDs."
+            f = File.get(id=file_id.strip())
+            if not f:
+                return "Error: File not found for id={}. Use list_files_tool.".format(file_id)
+            video_path = f.absolute_path() if hasattr(f, 'absolute_path') else f.data.get('path', '')
+            if not video_path or not os.path.isfile(video_path):
+                return "Error: Video file not found at path: {}".format(video_path)
+
+            start_f = float(start_time) if start_time else 0.0
+            end_f = float(end_time) if end_time else -1.0
+
+            if QThread is None or QEventLoop is None:
+                return "Error: Object replacement requires PyQt5."
+
+            # Threaded execution to avoid freezing main thread
+            result_holder = [{}]
+            loop_holder = [None]
+
+            class _ObjReplDoneReceiver(QObject if QObject is not object else object):
+                if pyqtSignal is not None:
+                    pass
+                def on_done(self, result):
+                    result_holder[0] = result
+                    if loop_holder[0]:
+                        loop_holder[0].quit()
+
+            receiver = _ObjReplDoneReceiver()
+            thread = _ObjectReplacementThread(
+                video_path=video_path,
+                object_desc=object_description.strip(),
+                replacement_desc=replacement_description.strip(),
+                start=start_f,
+                end=end_f
+            )
+            thread.finished_with_result.connect(receiver.on_done)
+            
+            loop_holder[0] = QEventLoop(_get_app())
+            status_bar = getattr(_get_app().window, "statusBar", None)
+            
+            try:
+                if status_bar is not None:
+                    status_bar.showMessage("Replacing object via AI...", 0)
+                thread.start()
+                loop_holder[0].exec_()
+            finally:
+                if status_bar is not None:
+                    status_bar.clearMessage()
+            
+            thread.quit()
+            thread.wait(5000)
+            try:
+                thread.finished_with_result.disconnect(receiver.on_done)
+            except Exception:
+                pass
+
+            result = result_holder[0]
+
+            if result.get("success"):
+                # Import the new video into the project
+                output_path = result["output_path"]
+                app = _get_app()
+                app.window.files_model.add_files([output_path])
+                return (
+                    "Object replacement complete! "
+                    "Replaced '{}' with '{}' in {} frames. "
+                    "New video added to project: {}. "
+                    "Use add_clip_to_timeline_tool to add it to the timeline."
+                ).format(
+                    object_description, replacement_description,
+                    result.get("frames_with_object", 0), os.path.basename(output_path)
+                )
+            else:
+                return "Object replacement failed: {}".format(result.get("error", "Unknown error"))
+        except Exception as e:
+            log.error("replace_object_in_video_tool: %s", e, exc_info=True)
+            return "Error: {}".format(e)
+
     return [
         get_project_info_tool,
         list_files_tool,
@@ -960,4 +1091,5 @@ def get_openshot_tools_for_langchain():
         generate_video_and_add_to_timeline_tool,
         slice_clip_at_playhead_tool,
         generate_transition_clip_tool,
+        replace_object_in_video_tool,
     ]

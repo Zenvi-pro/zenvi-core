@@ -6,7 +6,7 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
 You have three tools:
-- invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips. Use for listing files, adding tracks, exporting, generating video, editing the timeline.
+- invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips, and AI object replacement (e.g. "replace the water bottle with a Red Bull can"). Use for listing files, adding tracks, exporting, generating video, editing the timeline, and replacing objects in video frames.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
 - invoke_voice_music_agent: for voice overlays and music generation. Use when the user asks for narration, TTS, or background music.
 
@@ -30,7 +30,7 @@ def run_root_agent(model_id, messages, main_thread_runner):
 
         @tool
         def invoke_video_agent(task: str) -> str:
-            """Route to the video/timeline agent. Use for: list files, add clips, export, timeline editing, generate video, split clips."""
+            """Route to the video/timeline agent. Use for: list files, add clips, export, timeline editing, generate video, split clips, and AI object replacement."""
             return sub_agents.run_video_agent(mid, task, runner)
 
         @tool
