@@ -1482,6 +1482,22 @@
     "restart": false
   },
   {
+    "value": "https://studio-api.prod.suno.com/api/v2/external/hackathons/",
+    "title": "Suno Hackathons Base URL",
+    "category": "AI",
+    "setting": "suno-hackathons-base-url",
+    "type": "text",
+    "restart": false
+  },
+  {
+    "value": "",
+    "title": "Suno TreeHacks Token",
+    "category": "AI",
+    "setting": "suno-treehacks-token",
+    "type": "text",
+    "restart": false
+  },
+  {
     "value": "vidu:3@2",
     "title": "Video Generation Model",
     "category": "AI",

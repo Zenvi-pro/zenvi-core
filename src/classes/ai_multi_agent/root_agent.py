@@ -5,10 +5,11 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
-You have three tools:
+You have four tools:
 - invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips. Use for listing files, adding tracks, exporting, generating video, editing the timeline.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
-- invoke_voice_music_agent: for voice overlays and music generation. Use when the user asks for narration, TTS, or background music.
+- invoke_voice_music_agent: for voice overlays (TTS) and tagging/storylines. Use when the user asks for narration, voiceover, TTS, tagging, or scripts.
+- invoke_music_agent: for background music generation via Suno and adding it to the timeline.
 
 Route each user message to one agent by calling the appropriate tool with the user's request as the "task" argument. If the request spans multiple domains, call one agent first and summarize; you can say you will handle the rest in a follow-up. Respond concisely with the agent's result."""
 
@@ -43,7 +44,12 @@ def run_root_agent(model_id, messages, main_thread_runner):
             """Route to the voice/music agent for narration and music."""
             return sub_agents.run_voice_music_agent(mid, task, runner)
 
-        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent]
+        @tool
+        def invoke_music_agent(task: str) -> str:
+            """Route to the music agent for Suno background music generation and timeline insertion."""
+            return sub_agents.run_music_agent(mid, task, runner)
+
+        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent]
 
     root_tools = make_invoke_with_model()
     # Root tools run in worker thread (no main-thread wrap)

@@ -1,5 +1,5 @@
 """
-Sub-agents: Video (timeline/editing), Manim (educational video), Voice/Music (stubs).
+Sub-agents: Video (timeline/editing), Manim (educational video), Voice/Music (stubs), Music (Suno).
 Each returns a string result for the root agent to aggregate.
 """
 
@@ -97,4 +97,41 @@ def run_voice_music_agent(model_id, task_or_messages, main_thread_runner):
         tools=tools,
         main_thread_runner=main_thread_runner,
         system_prompt=VOICE_MUSIC_SYSTEM_PROMPT,
+    )
+
+
+MUSIC_SYSTEM_PROMPT = (
+    "You are the Flowcut music agent. You generate and add background music that fits the user's video. "
+    "First, understand the project: call get_project_info_tool, list_clips_tool (and list_layers_tool if needed). "
+    "Then decide a Suno request: use topic+tags for simple mode, or prompt+tags for custom lyrics mode. "
+    "Prefer instrumental background music unless the user explicitly wants vocals or provides lyrics. "
+    "Decide where the music should start: if the user gives a timestamp, use it; otherwise use the playhead "
+    "(by leaving position_seconds empty). If placement fails, fall back to 0 seconds. "
+    "Finally, call generate_music_and_add_to_timeline_tool to generate/download/import the MP3 and place it on a new track. "
+    "If music generation fails, call test_suno_token_tool to diagnose the issue. "
+    "If Suno is not configured, instruct the user to set the Suno TreeHacks token in Preferences > AI (Suno TreeHacks Token)."
+)
+
+
+def run_music_agent(model_id, task_or_messages, main_thread_runner):
+    """
+    Run the Music agent (Suno) with OpenShot timeline tools + Suno music tool(s).
+    Returns the agent response string.
+    """
+    from classes.ai_agent_runner import run_agent_with_tools
+    from classes.ai_openshot_tools import get_openshot_tools_for_langchain
+    from classes.ai_suno_music_tools import get_suno_music_tools_for_langchain
+
+    if isinstance(task_or_messages, str):
+        messages = [{"role": "user", "content": task_or_messages}]
+    else:
+        messages = list(task_or_messages)
+
+    tools = list(get_openshot_tools_for_langchain()) + list(get_suno_music_tools_for_langchain())
+    return run_agent_with_tools(
+        model_id=model_id,
+        messages=messages,
+        tools=tools,
+        main_thread_runner=main_thread_runner,
+        system_prompt=MUSIC_SYSTEM_PROMPT,
     )

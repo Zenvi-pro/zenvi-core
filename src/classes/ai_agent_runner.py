@@ -260,6 +260,28 @@ def create_main_thread_runner():
     from classes.ai_openshot_tools import get_openshot_tools_for_langchain
     runner = MainThreadToolRunner()
     runner.register_tools(get_openshot_tools_for_langchain())
+    
+    # Register Voice/Music stub tools
+    try:
+        from classes.ai_voice_music_tools import get_voice_music_tools_for_langchain
+        runner.register_tools(get_voice_music_tools_for_langchain())
+    except ImportError as e:
+        log.debug("Voice/music tools not available: %s", e)
+    
+    # Register Suno music tools (so Music Agent can use them)
+    try:
+        from classes.ai_suno_music_tools import get_suno_music_tools_for_langchain
+        runner.register_tools(get_suno_music_tools_for_langchain())
+    except ImportError as e:
+        log.debug("Suno music tools not available: %s", e)
+    
+    # Register Manim tools (so Manim Agent can use them)
+    try:
+        from classes.ai_manim_tools import get_manim_tools_for_langchain
+        runner.register_tools(get_manim_tools_for_langchain())
+    except ImportError as e:
+        log.debug("Manim tools not available: %s", e)
+    
     return runner
 
 
