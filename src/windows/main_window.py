@@ -227,7 +227,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         """Recover the backup file (if any)"""
         log.info("recover_backup")
 
-        # Check for backup file (backup.zvn)
+        # Check for backup file (e.g. backup.flow)
         if os.path.exists(info.BACKUP_FILE):
             # Load recovery project
             log.info("Recovering backup file: %s" % info.BACKUP_FILE)
@@ -274,7 +274,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Reset Sentry component (it can be temporarily changed to libopenshot during
         # the call to libopenshot_crash_recovery above)
-        sentry.set_tag("component", "zenvi")
+        sentry.set_tag("component", "flowcut")
 
         # Write lock file (try a few times if failure)
         lock_value = str(uuid4())
@@ -540,7 +540,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         """Ensures recovery files adhere to the configured daily and historical limits."""
         recovery_files = sorted(
             ((f, os.path.getmtime(os.path.join(info.RECOVERY_PATH, f)))
-             for f in os.listdir(info.RECOVERY_PATH) if f.endswith(".zip") or f.endswith(".zvn") or f.endswith(".osp")),
+             for f in os.listdir(info.RECOVERY_PATH) if f.endswith(".zip") or f.endswith(info.ALL_PROJECT_EXTS) or f.endswith(info.LEGACY_PROJECT_EXTS)),
             key=lambda x: x[1],
             reverse=True
         )
@@ -715,12 +715,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 # User canceled prompt
                 return
 
-        # Prompt for open project file (accept both .zvn and .osp)
+        # Prompt for open project file (accept .flow + legacy extensions)
         file_path = QFileDialog.getOpenFileName(
             self,
             _("Open Project..."),
             recommended_folder,
-            _("Zenvi Project (*.zvn);;OpenShot Project (*.osp)"))[0]
+            _("Flowcut Project (*.flow);;Legacy Project (*.zvn *.osp)"))[0]
 
         if file_path:
             # Load project file
@@ -743,12 +743,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self,
                 _("Save Project..."),
                 recommended_path,
-                _("Zenvi Project (*.zvn)"))[0]
+                _("Flowcut Project (*.flow)"))[0]
 
         if file_path:
             s.setDefaultPath(s.actionType.SAVE, file_path)
-            # Append .zvn if needed (new save only; existing path kept as-is)
-            if not file_path.endswith(info.PROJECT_EXT) and not file_path.endswith(info.LEGACY_PROJECT_EXT):
+            # Append .flow if needed (new save only; existing path kept as-is)
+            if not file_path.endswith(info.ALL_PROJECT_EXTS):
                 file_path = "%s%s" % (file_path, info.PROJECT_EXT)
 
             # Save project
@@ -806,10 +806,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self,
             _("Save Project As..."),
             recommended_path,
-            _("Zenvi Project (*.zvn)"))[0]
+            _("Flowcut Project (*.flow)"))[0]
         if file_path:
             s.setDefaultPath(s.actionType.SAVE, file_path)
-            # Save As always uses .zvn
+            # Save As always uses the current project extension
             file_path = os.path.splitext(file_path)[0] + info.PROJECT_EXT
 
             # Save new project
@@ -1011,7 +1011,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         win.exec_()
 
     def actionHelpContents_trigger(self, checked=True):
-        url = "https://zenvi.org/docs/"
+        url = "https://flowcut.app/docs/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1020,7 +1020,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionReportBug_trigger(self, checked=True):
-        url = "https://zenvi.org/support/"
+        url = "https://flowcut.app/support/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1029,16 +1029,16 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionAskQuestion_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "https://flowcut.app/community/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
-            error_msg = f"Unable to open the Zenvi community url: {url}"
+            error_msg = f"Unable to open the community url: {url}"
             QMessageBox.information(self, "Error", error_msg)
             log.error(error_msg, exc_info=1)
 
     def actionDiscord_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "https://flowcut.app/community/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1047,7 +1047,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionTranslate_trigger(self, checked=True):
-        url = "https://zenvi.org/contribute/"
+        url = "https://flowcut.app/contribute/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1056,7 +1056,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionDonate_trigger(self, checked=True):
-        url = "https://zenvi.org/donate/"
+        url = "https://flowcut.app/donate/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1065,7 +1065,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionUpdate_trigger(self, checked=True):
-        url = "https://zenvi.org/download/"
+        url = "https://flowcut.app/download/"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -2951,7 +2951,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             base_no_ext = os.path.splitext(os.path.basename(current_filepath))[0]
             recovery_files = [
                 f for f in os.listdir(recovery_dir)
-                if (f.endswith(".osp") or f.endswith(".zvn") or f.endswith(".zip")) and "-" in f and f.split("-", 1)[1].startswith(base_no_ext)
+                if (f.endswith(".zip") or f.endswith(info.ALL_PROJECT_EXTS) or f.endswith(info.LEGACY_PROJECT_EXTS)) and "-" in f and f.split("-", 1)[1].startswith(base_no_ext)
             ]
 
         # Show just a placeholder menu, if we have no recovery files
@@ -2985,7 +2985,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
             try:
                 # Rename the original project file
-                recovered_filename = os.path.splitext(os.path.basename(current_filepath))[0] + f"-{int(time())}-backup.osp"
+                current_ext = os.path.splitext(os.path.basename(current_filepath))[1] or info.PROJECT_EXT
+                recovered_filename = os.path.splitext(os.path.basename(current_filepath))[0] + f"-{int(time())}-backup{current_ext}"
                 recovered_filepath = os.path.join(os.path.dirname(current_filepath), recovered_filename)
                 if os.path.exists(current_filepath):
                     shutil.move(current_filepath, recovered_filepath)
@@ -3011,7 +3012,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 log.error(f"Error recovering project from `{file_path}` to `{current_filepath}`: {ex}", exc_info=True)
 
     def remove_recent_project(self, file_path):
-        """Remove a project from the Recent menu if Zenvi can't find it"""
+        """Remove a project from the Recent menu if it can't be found"""
         s = get_app().get_settings()
         recent_projects = s.get("recent_projects")
         if file_path in recent_projects:
@@ -3469,7 +3470,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
 
-        if mime_data and not mime_data.hasFormat("application/x-zenvi-generic"):
+        if mime_data and not mime_data.hasFormat("application/x-flowcut-generic"):
             if self.import_files_from_clipboard(mime_data):
                 return
 
@@ -3871,7 +3872,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             msg.exec_()
 
             # Quit event loop, and stop initializing main window
-            log.info(f"Quiting Zenvi due to failed local HTTP thumbnail server: {ex}")
+            log.info(f"Quiting Flowcut due to failed local HTTP thumbnail server: {ex}")
             get_app().mode = "quit"
             return
 

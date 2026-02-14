@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Zenvi Core Launcher - Clears Snap/host env to avoid library conflicts
+# Flowcut Core Launcher - Clears Snap/host env to avoid library conflicts
 
 set -e
 
@@ -20,7 +20,7 @@ fi
 # libopenshot is typically built/linked against system Qt, and mixing that
 # with the Qt bundled in PyQt5 wheels frequently causes symbol errors.
 if compgen -G "$VENV_DIR/lib/python*/site-packages/PyQt5" >/dev/null || compgen -G "$VENV_DIR/lib/python*/site-packages/PyQtWebEngine*" >/dev/null; then
-  if [[ -n "${PYTHONPATH_LIBOPENSHOT:-}" && -z "${ZENVI_ALLOW_VENV_QT:-}" ]]; then
+  if [[ -n "${PYTHONPATH_LIBOPENSHOT:-}" && -z "${FLOWCUT_ALLOW_VENV_QT:-}" ]]; then
     echo "Detected PyQt5 / PyQtWebEngine installed inside .venv."
     echo "This commonly breaks when using local/system libopenshot (Qt ABI mismatch)."
     echo "Fix (recommended): use system PyQt5 and keep only non-Qt deps in the venv:"
@@ -28,7 +28,7 @@ if compgen -G "$VENV_DIR/lib/python*/site-packages/PyQt5" >/dev/null || compgen 
     echo "  .venv/bin/pip uninstall -y PyQt5 PyQtWebEngine PyQt5-Qt5 PyQt5-sip PyQtWebEngine-Qt5"
     echo "  .venv/bin/pip install -r requirements-noqt.txt"
     echo "Also ensure .venv can see system packages (include-system-site-packages = true)."
-    echo "Override (not recommended): set ZENVI_ALLOW_VENV_QT=1"
+    echo "Override (not recommended): set FLOWCUT_ALLOW_VENV_QT=1"
     exit 1
   fi
 fi

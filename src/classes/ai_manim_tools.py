@@ -153,7 +153,7 @@ def generate_manim_video_and_add_to_timeline(
                     code = code[6:].strip()
                 break
 
-    tmpdir = tempfile.mkdtemp(prefix="zenvi_manim_")
+    tmpdir = tempfile.mkdtemp(prefix="flowcut_manim_")
     script_path = os.path.join(tmpdir, "manim_scene.py")
     try:
         with open(script_path, "w", encoding="utf-8") as f:

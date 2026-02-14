@@ -26,14 +26,14 @@ def run_video_agent(model_id, task_or_messages, main_thread_runner):
         tools=tools,
         main_thread_runner=main_thread_runner,
         system_prompt=(
-            "You are the Zenvi video/timeline agent. You help with project state, clips, "
+            "You are the Flowcut video/timeline agent. You help with project state, clips, "
             "timeline, export, and video generation. Use the provided tools. Respond concisely."
         ),
     )
 
 
 MANIM_SYSTEM_PROMPT = (
-    "You are the Zenvi Manim agent. You create educational and mathematical "
+    "You are the Flowcut Manim agent. You create educational and mathematical "
     "animation videos using Manim (manim.community). Use generate_manim_video_tool "
     "with the user's description to generate code, render, and add to the timeline. "
     "Respond concisely."
@@ -69,7 +69,7 @@ def run_manim_agent(model_id, task_or_messages, main_thread_runner):
 
 
 VOICE_MUSIC_SYSTEM_PROMPT = (
-    "You are the Zenvi voice and music agent. You help with tagging videos (Azure API), "
+    "You are the Flowcut voice and music agent. You help with tagging videos (Azure API), "
     "generating storylines from tags, voice overlays (TTS), and background music. "
     "Use the provided tools. If a feature is not configured, say so and suggest using the video agent for other tasks."
 )

@@ -1,12 +1,12 @@
 /**
- * Zenvi Assistant chat – CEP/WebEngine front-end.
- * Communicates with Python via QWebChannel (window.zenviChatBridge).
+ * Flowcut Assistant chat – CEP/WebEngine front-end.
+ * Communicates with Python via QWebChannel (window.flowcutChatBridge).
  */
 
 (function () {
     'use strict';
 
-    const bridgeName = 'zenviChatBridge';
+    const bridgeName = 'flowcutChatBridge';
     const qwebchannelUrl = 'qwebchannel.js';
 
     function getBridge(cb) {

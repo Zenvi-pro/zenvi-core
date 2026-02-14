@@ -1,7 +1,7 @@
 """
  @file
  @brief Media analyzer for extracting frames and coordinating AI analysis
- @author Zenvi Development Team
+ @author Flowcut Development Team
 
  @section LICENSE
 
