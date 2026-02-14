@@ -50,7 +50,7 @@ def runware_generate_video(
     if len(prompt) < 2:
         return None, "Prompt must be at least 2 characters."
     api_key = api_key.strip()
-    duration_int = int(max(1, min(10, duration_seconds)))
+    duration_int = float(max(1, min(10, duration_seconds)))
 
     # Prefer Runware SDK (WebSocket). Use async delivery + getResponse polling to avoid
     # "Connection lost while waiting for video response" (sync holds one WebSocket wait for minutes).

@@ -93,6 +93,11 @@ def replace_object_in_video(
         if end_sec < 0 or end_sec > total_duration:
             end_sec = total_duration
 
+        if start_sec < 0.1 and end_sec >= total_duration - 0.1:
+            log.warning("replace_object_in_video: replacing ENTIRE video (start=%.2f end=%.2f total=%.2f). "
+                        "Consider specifying start_sec/end_sec to target only the relevant segment.",
+                        start_sec, end_sec, total_duration)
+
         # 1. Extract the segment to be edited
         # We re-encode to ensure keyframes are clean for the AI
         duration = end_sec - start_sec
@@ -108,6 +113,22 @@ def replace_object_in_video(
         ]
         log.info(f"Extracting segment: {' '.join(cmd_extract)}")
         subprocess.run(cmd_extract, check=True, capture_output=True)
+
+        # Ensure segment meets Runware minimum duration requirement (3s)
+        seg_duration = _get_video_duration(target_segment)
+        MIN_INPUT_DURATION = 3.0
+        if seg_duration > 0 and seg_duration < MIN_INPUT_DURATION:
+            padded = os.path.join(work_dir, "padded.mp4")
+            pad_time = MIN_INPUT_DURATION - seg_duration
+            cmd_pad = [
+                "ffmpeg", "-y", "-i", target_segment,
+                "-vf", f"tpad=stop_mode=clone:stop_duration={pad_time:.3f}",
+                "-c:v", "libx264", "-c:a", "aac",
+                padded
+            ]
+            log.info(f"Padding segment from {seg_duration:.2f}s to {MIN_INPUT_DURATION}s (Runware min 3s)")
+            subprocess.run(cmd_pad, check=True, capture_output=True)
+            os.replace(padded, target_segment)
 
         # Ensure segment meets Kling O1 minimum dimension requirement (720px)
         try:
@@ -159,6 +180,21 @@ def replace_object_in_video(
         except Exception as e:
             result["error"] = f"AI generation failed: {str(e)}"
             return result
+
+        # Trim the AI-generated video to match the original segment duration
+        # Runware may return a longer video (e.g. 5s for a 3s input, or padded input)
+        edited_duration = _get_video_duration(edited_segment)
+        if edited_duration > duration + 0.5:
+            trimmed = os.path.join(work_dir, "trimmed.mp4")
+            cmd_trim = [
+                "ffmpeg", "-y", "-i", edited_segment,
+                "-t", str(duration),
+                "-c:v", "libx264", "-c:a", "aac",
+                trimmed
+            ]
+            log.info(f"Trimming edited segment from {edited_duration:.2f}s to {duration:.2f}s to match original")
+            subprocess.run(cmd_trim, check=True, capture_output=True)
+            os.replace(trimmed, edited_segment)
 
         # 3. Splice back
         # Parts: [Head] + [Edited] + [Tail]
