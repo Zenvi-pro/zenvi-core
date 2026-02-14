@@ -66,7 +66,6 @@ from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
 from classes.title_bar import HiddenTitleBar
-from classes.version import get_current_Version
 from themes.manager import ThemeName
 from windows.models.effects_model import EffectsModel
 from windows.models.emoji_model import EmojisModel
@@ -108,8 +107,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     SeekNextFrame = pyqtSignal()
     PlayPauseToggleSignal = pyqtSignal()
     RecoverBackup = pyqtSignal()
-    FoundVersionSignal = pyqtSignal(str)
-    UpdateReadySignal = pyqtSignal(str)
     TransformSignal = pyqtSignal(list)
     KeyFrameTransformSignal = pyqtSignal(str, str)
     SelectRegionSignal = pyqtSignal(str)
@@ -3179,73 +3176,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             elif sel["type"] == "effect" and not Effect.get(id=sel["id"]):
                 self.removeSelection(sel["id"], "effect")
 
-    def foundCurrentVersion(self, version):
-        """Handle the callback for detecting the current version on openshot.org"""
-        _ = get_app()._tr
-
-        # Compare versions (alphabetical compare of version strings should work fine)
-        if info.VERSION < version:
-            # Update text for QAction
-            self.actionUpdate.setVisible(True)
-            self.actionUpdate.setText(_("Update Available"))
-            self.actionUpdate.setToolTip(_("Update Available: <b>%s</b>") % version)
-
-            # Add toolbar button for non-cosmic dusk themes
-            # Cosmic dusk has a hidden toolbar button which is made visible
-            # by the setVisible() call above this
-            if get_app().theme_manager:
-                from themes.manager import ThemeName
-                theme = get_app().theme_manager.get_current_theme()
-                if theme and theme.name != ThemeName.COSMIC.value:
-                    # Add spacer and 'New Version Available' toolbar button (default hidden)
-                    spacer = QWidget(self)
-                    spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                    self.toolBar.addWidget(spacer)
-
-                    # Add update available button (with icon and text)
-                    updateButton = QToolButton(self)
-                    updateButton.setDefaultAction(self.actionUpdate)
-                    updateButton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                    self.toolBar.addWidget(updateButton)
-            else:
-                log.warning("No ThemeManager loaded yet. Skip update available button.")
-
-        # Initialize sentry exception tracing (now that we know the current version)
-        from classes import sentry
-        sentry.init_tracing()
-
-    def updateDownloaded(self, version):
-        """Handle the callback when a new version has been downloaded and staged.
-        The update will be applied automatically on the next app launch."""
-        _ = get_app()._tr
-
-        if info.VERSION >= version:
-            return
-
-        # Update the toolbar button text to reflect that the update is ready
-        self.actionUpdate.setVisible(True)
-        self.actionUpdate.setText(_("Update Ready — Restart to Apply"))
-        self.actionUpdate.setToolTip(
-            _("Version <b>%s</b> has been downloaded and will be "
-              "installed automatically when you restart Zenvi.") % version
-        )
-
-        # Add toolbar button for non-cosmic dusk themes
-        if get_app().theme_manager:
-            from themes.manager import ThemeName
-            theme = get_app().theme_manager.get_current_theme()
-            if theme and theme.name != ThemeName.COSMIC.value:
-                spacer = QWidget(self)
-                spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                self.toolBar.addWidget(spacer)
-
-                updateButton = QToolButton(self)
-                updateButton.setDefaultAction(self.actionUpdate)
-                updateButton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                self.toolBar.addWidget(updateButton)
-        else:
-            log.warning("No ThemeManager loaded yet. Skip update-ready button.")
-
     def handleSeek(self, frame):
         """ Always update the property view when we seek to a new position """
         # Notify properties dialog
@@ -3926,10 +3856,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)
 
-        # Get current version of OpenShot via HTTP
-        self.FoundVersionSignal.connect(self.foundCurrentVersion)
-        self.UpdateReadySignal.connect(self.updateDownloaded)
-        get_current_Version()
 
         # Initialize and start the thumbnail HTTP server
         try:
