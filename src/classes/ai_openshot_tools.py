@@ -370,9 +370,9 @@ def set_export_setting(key: str, value: str) -> str:
             overrides["vformat"] = value.strip()
         else:
             overrides[key_lower] = value.strip()
-        get_app().updates.ignore_history = True
+        _get_app().updates.ignore_history = True
         app.updates.update(["export_overrides"], overrides)
-        get_app().updates.ignore_history = False
+        _get_app().updates.ignore_history = False
         return "Set %s = %s." % (key_lower, value)
     except Exception as e:
         log.error("set_export_setting: %s", e, exc_info=True)
@@ -769,32 +769,186 @@ def generate_video_and_add_to_timeline(
         return "Error: {}".format(e)
 
 
-def generate_transition_clip(clip_a_id: str, clip_b_id: str, prompt_hint: str = "") -> str:
-    """Generate a short transition video between two clips (e.g. same room, camera move) and insert it between them. Uses Runware/Vidu."""
-    from classes.query import Clip
+class _MorphTransitionThread(QThread if QThread else object):
+    """Worker thread for morph transition generation."""
+    if pyqtSignal is not None:
+        finished_with_result = pyqtSignal(str, str)  # (output_path, error)
+
+    def __init__(self, video_a_path, video_b_path, output_path, prompt, duration, api_key, model):
+        if QThread is not None:
+            super().__init__()
+        self._video_a = video_a_path
+        self._video_b = video_b_path
+        self._output = output_path
+        self._prompt = prompt
+        self._duration = duration
+        self._api_key = api_key
+        self._model = model
+
+    def run(self):
+        try:
+            from classes.ai_morph_transition import generate_morph_transition
+            success, error = generate_morph_transition(
+                video_a_path=self._video_a,
+                video_b_path=self._video_b,
+                output_path=self._output,
+                prompt=self._prompt,
+                duration_seconds=self._duration,
+                api_key=self._api_key,
+                model=self._model,
+            )
+            if success:
+                self.finished_with_result.emit(self._output, "")
+            else:
+                self.finished_with_result.emit("", error or "Morph transition failed.")
+        except Exception as e:
+            self.finished_with_result.emit("", str(e))
+
+
+def generate_transition_clip(clip_a_id: str, clip_b_id: str, duration_seconds: str = "5") -> str:
+    """Generate a morph transition video between two clips using Kling (start/end frame images) and insert it between them on the timeline."""
+    if QThread is None or QEventLoop is None:
+        return "Error: Morph transition requires PyQt5."
+
+    from classes.query import Clip, File
 
     app = _get_app()
+    settings = app.get_settings()
+    api_key = (settings.get("runware-api-key") or "").strip()
+    if not api_key:
+        return "Error: Runware API key not configured. Add it in Preferences."
+
     clip_a = Clip.get(id=clip_a_id) if clip_a_id else None
     clip_b = Clip.get(id=clip_b_id) if clip_b_id else None
     if not clip_a or not clip_b:
         return "Error: Could not find both clips. Use list_clips_tool to get clip IDs."
+
+    # Get file paths for both clips
+    file_a_id = clip_a.data.get("file_id", "")
+    file_b_id = clip_b.data.get("file_id", "")
+    file_a = File.get(id=file_a_id) if file_a_id else None
+    file_b = File.get(id=file_b_id) if file_b_id else None
+    if not file_a or not file_b:
+        return "Error: Could not find source files for the clips."
+    path_a = file_a.absolute_path() if hasattr(file_a, 'absolute_path') else file_a.data.get('path', '')
+    path_b = file_b.absolute_path() if hasattr(file_b, 'absolute_path') else file_b.data.get('path', '')
+    if not path_a or not os.path.isfile(path_a):
+        return "Error: Source video for clip A not found: {}".format(path_a)
+    if not path_b or not os.path.isfile(path_b):
+        return "Error: Source video for clip B not found: {}".format(path_b)
+
+    # Timeline positions
     pos_a = float(clip_a.data.get("position", 0))
     start_a = float(clip_a.data.get("start", 0))
     end_a = float(clip_a.data.get("end", 0))
     duration_a = end_a - start_a
     end_position_a = pos_a + duration_a
+
+    pos_b = float(clip_b.data.get("position", 0))
     layer = clip_a.data.get("layer")
     track = str(layer) if layer is not None else ""
-    hint = (prompt_hint or "").strip()
-    prompt = hint if hint else (
-        "Smooth transition, same scene, cinematic, 2 seconds, seamless blend between two shots"
+
+    # Duration
+    try:
+        morph_duration = float(duration_seconds)
+    except (TypeError, ValueError):
+        morph_duration = 5.0
+    morph_duration = max(3, min(10, morph_duration))
+
+    # Prompt — instruct the model to morph start frame into end frame
+    prompt = (
+        "Gradually evolve the opening scene into the closing scene through a fluid, "
+        "continuous motion. Preserve the appearance and identity of all people and key "
+        "objects while naturally transitioning the pose, setting, and lighting from "
+        "the first frame to the last. The movement should feel organic and cinematic, "
+        "with no abrupt cuts or unrelated imagery."
     )
-    return generate_video_and_add_to_timeline(
+
+    model = "klingai:kling@o1"
+    output_path = _output_path_for_generated_video()
+
+    # Run morph in worker thread
+    result_holder = [None, None]  # [path, error]
+    loop_holder = [None]
+
+    class _DoneReceiver(QObject if QObject is not object else object):
+        def on_done(self, path, error):
+            result_holder[0] = path
+            result_holder[1] = error
+            if loop_holder[0]:
+                loop_holder[0].quit()
+
+    receiver = _DoneReceiver()
+    thread = _MorphTransitionThread(
+        video_a_path=path_a,
+        video_b_path=path_b,
+        output_path=output_path,
         prompt=prompt,
-        duration_seconds=2,
-        position_seconds=str(end_position_a),
-        track=track,
+        duration=morph_duration,
+        api_key=api_key,
+        model=model,
     )
+    thread.finished_with_result.connect(receiver.on_done)
+    loop_holder[0] = QEventLoop(app)
+    status_bar = getattr(app.window, "statusBar", None)
+    try:
+        if status_bar is not None:
+            status_bar.showMessage("Generating morph transition...", 0)
+        thread.start()
+        loop_holder[0].exec_()
+    finally:
+        if status_bar is not None:
+            status_bar.clearMessage()
+    thread.quit()
+    thread.wait(10000)
+    try:
+        thread.finished_with_result.disconnect(receiver.on_done)
+    except Exception:
+        pass
+
+    path, error = result_holder[0], result_holder[1]
+    if error:
+        return "Error: {}".format(error)
+    if not path or not os.path.isfile(path):
+        return "Error: Morph transition video file not found."
+
+    # Add to project and timeline
+    try:
+        app.window.files_model.add_files([path])
+        f = File.get(path=path)
+        if not f:
+            f = File.get(path=os.path.normpath(path))
+        if not f:
+            for candidate in File.filter():
+                if getattr(candidate, "absolute_path", None) and candidate.absolute_path() == path:
+                    f = candidate
+                    break
+        if not f:
+            return "Error: Morph video generated but could not be added to project."
+
+        # Shift clip B (and all clips after it) right to make room for the morph
+        from classes.query import Clip as ClipQuery
+        all_clips = list(ClipQuery.filter())
+        for c in all_clips:
+            c_pos = float(c.data.get("position", 0))
+            c_layer = c.data.get("layer")
+            if c_pos >= end_position_a and c.id != clip_a_id:
+                c.data["position"] = c_pos + morph_duration
+                c.save()
+
+        # Insert the morph clip at the end of clip A
+        msg = add_clip_to_timeline(
+            file_id=f.id,
+            position_seconds=str(end_position_a),
+            track=track,
+        )
+        return (
+            "Morph transition created! A {:.0f}s AI morph video was generated using Kling "
+            "(last frame of clip A → first frame of clip B) and inserted between the clips. {}"
+        ).format(morph_duration, msg)
+    except Exception as e:
+        log.error("generate_transition_clip: %s", e, exc_info=True)
+        return "Error: {}".format(e)
 
 
 def get_openshot_tools_for_langchain():
@@ -966,9 +1120,9 @@ def get_openshot_tools_for_langchain():
         return slice_clip_at_playhead()
 
     @tool
-    def generate_transition_clip_tool(clip_a_id: str, clip_b_id: str, prompt_hint: str = "") -> str:
-        """Generate a short AI transition video between two clips and insert it between them. Arguments: clip_a_id (ID of the first clip), clip_b_id (ID of the second clip). Optional: prompt_hint (describe the desired transition style). Use list_clips_tool first to get clip IDs."""
-        return generate_transition_clip(clip_a_id=clip_a_id, clip_b_id=clip_b_id, prompt_hint=prompt_hint)
+    def generate_transition_clip_tool(clip_a_id: str, clip_b_id: str, duration_seconds: str = "5") -> str:
+        """Generate an AI morph transition video between two clips and insert it between them on the timeline. This automatically extracts the last frame of clip A and the first frame of clip B, then uses Kling AI to generate a smooth morph/transition video that seamlessly connects the two scenes. No description of the transition is needed — the AI figures out the motion from the two frames. The morph video is inserted between the clips and clip B is shifted right to make room. Use list_clips_tool first to get clip IDs. Arguments: clip_a_id (ID of the first clip), clip_b_id (ID of the second clip). Optional: duration_seconds (3-10, default 5). Use when the user asks for a morph transition, smooth transition, or AI transition between two clips."""
+        return generate_transition_clip(clip_a_id=clip_a_id, clip_b_id=clip_b_id, duration_seconds=duration_seconds)
 
     @tool
     def replace_object_in_video_tool(

@@ -177,6 +177,123 @@ def runware_generate_video(
     return None, "Video generation did not complete in time."
 
 
+def runware_generate_morph_video(
+    api_key,
+    prompt,
+    start_image_url,
+    end_image_url,
+    duration_seconds=5,
+    model="klingai:kling@o1",
+    width=1280,
+    height=720,
+):
+    """
+    Generate a morph/transition video using Kling with start and end frame images.
+    The model generates a video that smoothly transitions from start_image to end_image.
+    Call from worker thread only.
+
+    Args:
+        api_key: Runware API key
+        prompt: Text prompt describing the transition
+        start_image_url: Public URL of the first frame (start of transition)
+        end_image_url: Public URL of the last frame (end of transition)
+        duration_seconds: Duration of the generated video (float, 1-10)
+        model: Kling model identifier
+        width: Output width (None to let model decide)
+        height: Output height (None to let model decide)
+
+    Returns:
+        (video_url, None) on success, or (None, error_message) on failure.
+    """
+    if not api_key or not str(api_key).strip():
+        return None, "Runware API key not configured."
+    if not start_image_url or not end_image_url:
+        return None, "Both start and end image URLs are required for morph transition."
+    prompt = (prompt or "").strip()
+    if len(prompt) < 2:
+        return None, "Prompt must be at least 2 characters."
+    api_key = api_key.strip()
+    duration_val = int(max(1, min(10, duration_seconds)))
+
+    try:
+        from runware import Runware, IVideoInference
+        from runware.types import IAsyncTaskResponse, IVideoInputs, IInputFrame
+        import asyncio
+
+        log.info("Morph transition: model=%s duration=%d start=%s end=%s",
+                 model, duration_val, start_image_url[:60], end_image_url[:60])
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        rw = None
+        try:
+            rw = Runware(api_key=api_key, timeout=POLL_TIMEOUT_SECONDS)
+            loop.run_until_complete(rw.connect())
+
+            # Kling O1 only supports specific resolutions
+            SUPPORTED_DIMS = [(1920, 1080), (1080, 1920), (1440, 1440)]
+
+            def _pick_best_resolution(w, h):
+                """Pick the closest supported resolution based on aspect ratio."""
+                if w is None or h is None:
+                    return 1920, 1080  # default landscape
+                aspect = w / max(h, 1)
+                if aspect > 1.2:
+                    return 1920, 1080   # landscape
+                elif aspect < 0.8:
+                    return 1080, 1920   # portrait
+                else:
+                    return 1440, 1440   # square-ish
+
+            res_w, res_h = _pick_best_resolution(width, height)
+            log.info("Morph: using resolution %dx%d", res_w, res_h)
+
+            # Kling O1 requires frame images via inputs.frameImages (not top-level)
+            # Dimensions are inferred from the input images — width/height not supported
+            inputs_obj = IVideoInputs(
+                frameImages=[
+                    IInputFrame(image=start_image_url, frame="first"),
+                    IInputFrame(image=end_image_url, frame="last"),
+                ],
+            )
+
+            req_kwargs = dict(
+                positivePrompt=prompt,
+                model=model,
+                duration=duration_val,
+                deliveryMethod="async",
+                inputs=inputs_obj,
+            )
+
+            req = IVideoInference(**req_kwargs)
+            result = loop.run_until_complete(rw.videoInference(requestVideo=req))
+
+            task_uuid = None
+            if isinstance(result, IAsyncTaskResponse):
+                task_uuid = getattr(result, "taskUUID", None) or getattr(result, "task_uuid", None)
+            if not task_uuid:
+                return None, "Runware SDK did not return a task UUID for morph."
+
+            videos = loop.run_until_complete(rw.getResponse(task_uuid, numberResults=1))
+            if videos and len(videos) > 0 and getattr(videos[0], "videoURL", None):
+                url = videos[0].videoURL
+                log.info("Morph transition video generated: %s", url[:80] if url else None)
+                return url, None
+            return None, "Runware SDK returned no video URL for morph."
+        finally:
+            if rw is not None:
+                try:
+                    loop.run_until_complete(rw.disconnect())
+                except Exception:
+                    pass
+            loop.close()
+    except ImportError:
+        return None, "Runware SDK is required for morph transitions. Install with: pip install runware"
+    except Exception as e:
+        log.error("Morph transition failed: %s", e, exc_info=True)
+        return None, "Morph transition failed: {}.".format(str(e))
+
+
 def download_video_to_path(video_url, local_path):
     """
     Download video from URL to local path. Call from worker thread only.
