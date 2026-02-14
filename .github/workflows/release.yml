@@ -159,7 +159,7 @@ jobs:
           dpkg-deb --build "$DEB_DIR" "Zenvi-v${VER}-x86_64.deb"
 
       - name: Upload Linux artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: linux-packages
           path: |
@@ -210,7 +210,7 @@ jobs:
             "$DMG_NAME" || true
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: macos-package
           path: Zenvi-v*.dmg
@@ -262,7 +262,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-package
           path: Zenvi-v*.exe
