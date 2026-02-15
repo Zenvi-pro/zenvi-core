@@ -50,6 +50,7 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
     if pyqtSignal is not None:
         tool_completed = pyqtSignal(str, str)  # tool_name, result
         tool_started = pyqtSignal(str, str)    # tool_name, args_json
+        plan_updated = pyqtSignal(str)         # plan JSON string for plan graph UI
 
     def __init__(self):
         if QObject is not object:
@@ -85,6 +86,14 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
                     args = json.loads(args_json) if args_json else {}
                     result = tool.invoke(args)
                     self.last_tool_result = result if isinstance(result, str) else str(result)
+                    try:
+                        from plan_graph import get_plan_builder
+                        pb = get_plan_builder()
+                        pb.add_step(name, args_json or "{}", self.last_tool_result)
+                        if pyqtSignal is not None and hasattr(self, "plan_updated"):
+                            self.plan_updated.emit(pb.get_plan_json_string())
+                    except Exception:
+                        pass
                     if pyqtSignal is not None and hasattr(self, "tool_completed"):
                         self.tool_completed.emit(name, self.last_tool_result)
                     return self.last_tool_result

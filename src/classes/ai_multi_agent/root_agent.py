@@ -26,28 +26,45 @@ def run_root_agent(model_id, messages, main_thread_runner):
     def make_invoke_with_model():
         from langchain_core.tools import tool
         from classes.ai_multi_agent import sub_agents
+        from plan_graph import get_plan_builder
         mid = model_id
         runner = main_thread_runner
 
         @tool
         def invoke_video_agent(task: str) -> str:
             """Route to the video/timeline agent. Use for: list files, add clips, export, timeline editing, generate video, split clips."""
-            return sub_agents.run_video_agent(mid, task, runner)
+            try:
+                get_plan_builder().start_branch("video", task)
+                return sub_agents.run_video_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
 
         @tool
         def invoke_manim_agent(task: str) -> str:
             """Route to the Manim agent for educational/math animation videos."""
-            return sub_agents.run_manim_agent(mid, task, runner)
+            try:
+                get_plan_builder().start_branch("manim", task)
+                return sub_agents.run_manim_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
 
         @tool
         def invoke_voice_music_agent(task: str) -> str:
             """Route to the voice/music agent for narration and music."""
-            return sub_agents.run_voice_music_agent(mid, task, runner)
+            try:
+                get_plan_builder().start_branch("voice_music", task)
+                return sub_agents.run_voice_music_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
 
         @tool
         def invoke_music_agent(task: str) -> str:
             """Route to the music agent for Suno background music generation and timeline insertion."""
-            return sub_agents.run_music_agent(mid, task, runner)
+            try:
+                get_plan_builder().start_branch("music", task)
+                return sub_agents.run_music_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
 
         return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent]
 

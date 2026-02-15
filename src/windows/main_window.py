@@ -3908,6 +3908,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIMedia)
         self.dockAIMedia.setVisible(False)  # Hidden by default
 
+        # Plan Graph dock (edit plan hierarchy)
+        from plan_graph import PlanGraphDock
+        self.plan_graph_dock = PlanGraphDock(self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.plan_graph_dock)
+        self.plan_graph_dock.setVisible(False)
+
         # Add Docks submenu to View menu
         self.addViewDocksMenu()
 

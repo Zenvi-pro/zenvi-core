@@ -678,6 +678,15 @@ class AIChatWindow(QDockWidget):
             self._add_assistant_msg(text)
             self._set_processing_ui(False)
             self._push_context_usage(session_id)
+            # Update plan graph with final plan
+            try:
+                from classes.app import get_app
+                from plan_graph import get_plan_builder
+                mw = get_app().window
+                if mw and getattr(mw, "plan_graph_dock", None):
+                    mw.plan_graph_dock.set_plan_json(get_plan_builder().get_plan_json_string())
+            except Exception:
+                pass
         else:
             # Response for a background tab -- push via JS so user sees a badge
             self._run_js("onBackgroundResponse(%s, %s);" % (
@@ -718,6 +727,15 @@ class AIChatWindow(QDockWidget):
             chat = self._session_manager.get_session(sid) if sid else None
             if chat:
                 chat.clear_session()
+            try:
+                from plan_graph import get_plan_builder
+                from classes.app import get_app
+                get_plan_builder().clear()
+                mw = get_app().window
+                if mw and getattr(mw, "plan_graph_dock", None):
+                    mw.plan_graph_dock.set_plan_json("null")
+            except Exception:
+                pass
             if self._use_web_ui:
                 self._run_js("clearMessages();")
             else:
@@ -790,6 +808,15 @@ class AIChatWindow(QDockWidget):
             ]:
                 if hasattr(runner, attr):
                     getattr(runner, attr).connect(slot)
+            # Plan graph dock: live updates as tools run
+            try:
+                from classes.app import get_app
+                mw = get_app().window
+                if mw and getattr(mw, "plan_graph_dock", None):
+                    if hasattr(runner, "plan_updated"):
+                        runner.plan_updated.connect(mw.plan_graph_dock.set_plan_json)
+            except Exception:
+                pass
         except Exception:
             pass
 
