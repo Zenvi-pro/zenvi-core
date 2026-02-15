@@ -12,6 +12,8 @@ PROVIDER_LIST = [
     ("openai/gpt-4o", "OpenAI GPT-4o", "openai_provider", 128_000),
     ("anthropic/claude-3-5-sonnet", "Anthropic Claude 3.5 Sonnet", "anthropic_provider", 200_000),
     ("anthropic/claude-3-haiku", "Anthropic Claude 3 Haiku", "anthropic_provider", 200_000),
+    ("nvidia-edge/nemotron-mini-4b", "NVIDIA Nemotron-Mini 4B (Edge)", "nvidia_edge_provider", 32_000),
+    ("nvidia-edge/llava", "LLaVA 1.5-7B Vision (Edge)", "nvidia_edge_provider", 8_000),
     ("ollama/llama3.2", "Ollama Llama 3.2 (local)", "ollama_provider", 128_000),
     ("ollama/llama3.1", "Ollama Llama 3.1 (local)", "ollama_provider", 128_000),
 ]
@@ -25,6 +27,9 @@ def get_provider_module(provider_name):
     if provider_name == "anthropic_provider":
         from classes.ai_providers import anthropic_provider
         return anthropic_provider
+    if provider_name == "nvidia_edge_provider":
+        from classes.ai_providers import nvidia_edge_provider
+        return nvidia_edge_provider
     if provider_name == "ollama_provider":
         from classes.ai_providers import ollama_provider
         return ollama_provider
@@ -89,6 +94,7 @@ class ProviderType(Enum):
     GOOGLE = "google"
     AWS = "aws"
     HYBRID = "hybrid"
+    NVIDIA_EDGE = "nvidia-edge"
 
 
 class AnalysisResult:
