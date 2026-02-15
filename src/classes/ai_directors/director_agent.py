@@ -152,11 +152,21 @@ Provide analysis in this format:
 
 Task: Analyze the video project from your perspective as {self.name}.
 
-Instructions:
-1. Use the available analysis tools to examine the project
-2. Focus on your areas of expertise: {', '.join(self.personality.expertise_areas)}
-3. Provide specific, actionable feedback
-4. Structure your response as:
+IMPORTANT: You have analysis tools available. IMMEDIATELY use ALL of these tools to analyze the project:
+- get_project_metadata_tool: Get project metadata
+- analyze_timeline_structure_tool: Analyze timeline structure
+- analyze_pacing_tool: Analyze pacing
+- analyze_audio_levels_tool: Analyze audio
+- analyze_transitions_tool: Analyze transitions
+- analyze_clip_content_tool: Analyze clip content
+- analyze_music_sync_tool: Analyze music sync
+
+DO NOT ask the user to specify files. The tools analyze the entire project automatically.
+
+After gathering data from ALL tools:
+1. Focus on your areas of expertise: {', '.join(self.personality.expertise_areas)}
+2. Provide specific, actionable feedback
+3. Structure your response as:
    - Overall Assessment (1-2 sentences)
    - Strengths (2-3 bullet points)
    - Issues Found (list with severity: high/medium/low)
