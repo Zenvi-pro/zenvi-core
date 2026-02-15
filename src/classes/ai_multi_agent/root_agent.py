@@ -5,11 +5,12 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
-You have six tools:
+You have seven tools:
 - invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips, and AI object replacement (e.g. "replace the water bottle with a Red Bull can"). Use for listing files, adding tracks, exporting, generating video, editing the timeline, and replacing objects in video frames.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
 - invoke_voice_music_agent: for narration, text-to-speech (TTS), voice overlays, and tagging/storylines. Use when the user asks for narration, voice over, TTS, "add voice", "speak this text", explainer videos, or product demos that need narration.
 - invoke_music_agent: for background music generation via Suno and adding it to the timeline.
+- invoke_transitions_agent: for adding professional transitions and effects to videos. Use when the user asks to add transitions, fade effects, wipes, or any visual transitions between clips or on clips. This agent has access to 412+ OpenShot transitions including fades, wipes, circles, ripples, blurs, and many artistic effects.
 - invoke_directors: for video analysis, critique, and improvement planning. Use when the user asks to analyze, critique, improve, optimize, or get feedback on their video. Directors provide expert feedback from different perspectives (YouTube, GenZ, Cinematic, etc.) and create actionable improvement plans.
 - spawn_parallel_versions: for creating MULTIPLE content types in PARALLEL. Use ONLY when the user explicitly requests multiple different content types (e.g., "make me a vlog, x post, and youtube video" or "create a short form video and long form video"). Takes a list of content requests.
 
@@ -77,6 +78,15 @@ def run_root_agent(model_id, messages, main_thread_runner):
             try:
                 get_plan_builder().start_branch("music", task)
                 return sub_agents.run_music_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
+
+        @tool
+        def invoke_transitions_agent(task: str) -> str:
+            """Route to the transitions agent for adding professional transitions and effects to videos. Use when user asks to add transitions, fade effects, wipes, or any visual transitions. Has access to 412+ OpenShot transitions including fades, wipes, circles, ripples, blurs, and artistic effects."""
+            try:
+                get_plan_builder().start_branch("transitions", task)
+                return sub_agents.run_transitions_agent(mid, task, runner)
             finally:
                 get_plan_builder().end_branch()
 
@@ -164,7 +174,7 @@ def run_root_agent(model_id, messages, main_thread_runner):
                 log.error(f"spawn_parallel_versions failed: {e}", exc_info=True)
                 return f"Error starting parallel execution: {e}"
 
-        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, invoke_directors, spawn_parallel_versions]
+        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, invoke_transitions_agent, invoke_directors, spawn_parallel_versions]
 
     root_tools = make_invoke_with_model()
     # Root tools run in worker thread (no main-thread wrap)

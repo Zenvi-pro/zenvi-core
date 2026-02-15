@@ -1,5 +1,5 @@
 """
-Sub-agents: Video (timeline/editing), Manim (educational video), Voice/Music (stubs), Music (Suno).
+Sub-agents: Video (timeline/editing), Manim (educational video), Voice/Music (stubs), Music (Suno), Transitions.
 Each returns a string result for the root agent to aggregate.
 """
 
@@ -154,4 +154,50 @@ def run_music_agent(model_id, task_or_messages, main_thread_runner):
         tools=tools,
         main_thread_runner=main_thread_runner,
         system_prompt=MUSIC_SYSTEM_PROMPT,
+    )
+
+
+TRANSITIONS_SYSTEM_PROMPT = (
+    "You are the Flowcut transitions agent. You help users apply professional transitions and effects to their videos.\n\n"
+    "You have access to 412+ OpenShot transitions including:\n"
+    "- Common transitions: fade, circle in/out, wipe (left/right/top/bottom)\n"
+    "- Extra transitions: ripples, blurs, blinds, boards, crosses, and many more artistic effects\n\n"
+    "WORKFLOW:\n"
+    "1. First, use list_clips_tool to see what clips are available\n"
+    "2. Use search_transitions_tool to find appropriate transitions (e.g., search 'fade', 'wipe', 'circle')\n"
+    "3. Apply transitions using:\n"
+    "   - add_transition_between_clips_tool: For smooth transitions between two clips\n"
+    "   - add_transition_to_clip_tool: For fade in/out effects on a single clip\n\n"
+    "TIPS:\n"
+    "- For fade effects, use position='start' for fade in, position='end' for fade out\n"
+    "- Duration is typically 0.5-2.0 seconds (1.0 is standard)\n"
+    "- Always check clip IDs with list_clips_tool before applying transitions\n"
+    "- If user asks for specific style, use search_transitions_tool to find matching effects\n\n"
+    "Respond concisely and confirm what transitions were added."
+)
+
+
+def run_transitions_agent(model_id, task_or_messages, main_thread_runner):
+    """
+    Run the Transitions agent with transitions tools + clip listing tools.
+    Returns the agent response string.
+    """
+    from classes.ai_agent_runner import run_agent_with_tools
+    from classes.ai_transitions_tools import get_transitions_tools_for_langchain
+    from classes.ai_openshot_tools import get_openshot_tools_for_langchain
+
+    if isinstance(task_or_messages, str):
+        messages = [{"role": "user", "content": task_or_messages}]
+    else:
+        messages = list(task_or_messages)
+
+    # Combine transitions tools with basic OpenShot tools (for listing clips)
+    tools = list(get_transitions_tools_for_langchain()) + list(get_openshot_tools_for_langchain())
+
+    return run_agent_with_tools(
+        model_id=model_id,
+        messages=messages,
+        tools=tools,
+        main_thread_runner=main_thread_runner,
+        system_prompt=TRANSITIONS_SYSTEM_PROMPT,
     )
