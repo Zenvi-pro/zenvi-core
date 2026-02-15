@@ -1613,6 +1613,35 @@
     "max": 10
   },
   {
+    "value": "runware",
+    "title": "Video Generation Service",
+    "category": "AI",
+    "setting": "video-generation-service",
+    "type": "dropdown",
+    "translate_values": false,
+    "values": [
+      {"value": "runware", "name": "Runware (Vidu)"},
+      {"value": "remotion", "name": "Remotion"}
+    ],
+    "restart": false
+  },
+  {
+    "value": "",
+    "title": "Remotion API Key",
+    "category": "AI",
+    "setting": "remotion-api-key",
+    "type": "text",
+    "restart": false
+  },
+  {
+    "value": "http://localhost:4500/api/v1",
+    "title": "Remotion API Base URL",
+    "category": "AI",
+    "setting": "remotion-base-url",
+    "type": "text",
+    "restart": false
+  },
+  {
     "value": true,
     "title": "Enable Directors",
     "category": "Directors",

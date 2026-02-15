@@ -623,6 +623,80 @@ class _VideoGenerationThread(QThread if QThread else object):
                 self.finished_with_result.emit("", download_err or "Download failed.")
 
 
+class _RemotionGenerationThread(QThread if QThread else object):
+    """Subclass of QThread for Remotion video generation: run() is always executed in the worker thread."""
+    if pyqtSignal is not None:
+        finished_with_result = pyqtSignal(str, str)  # path_or_empty, error_or_empty
+        progress_update = pyqtSignal(int, str)  # progress (0-100), status message
+
+    def __init__(self, api_key, prompt, base_url, output_path, duration_seconds=None):
+        if QThread is not None:
+            super().__init__()
+        self._api_key = api_key
+        self._prompt = prompt
+        self._base_url = base_url
+        self._output_path = output_path
+        self._duration_seconds = duration_seconds
+
+    def run(self):
+        """Execute Remotion video generation in worker thread"""
+        from classes.video_generation.remotion_client import (
+            RemotionError,
+            render_from_repo,
+            download_video,
+        )
+
+        try:
+            # Progress callback
+            def on_progress(progress: int, status: str):
+                if pyqtSignal is not None and hasattr(self, "progress_update"):
+                    self.progress_update.emit(progress, status)
+                log.info(f"Remotion progress: {progress}% - {status}")
+
+            # For now, we'll use repo-based rendering with a default template
+            # In the future, this could be expanded to support Sonar data rendering
+            result = render_from_repo(
+                api_key=self._api_key,
+                repo_url="https://github.com/remotion-dev/template-still",  # Default template
+                template="default",
+                user_input=self._prompt,
+                codec="h264",
+                base_url=self._base_url,
+                timeout_seconds=300,
+                poll_callback=on_progress,
+            )
+
+            # Download the video
+            job_id = result.get('jobId')
+            if not job_id:
+                if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                    self.finished_with_result.emit("", "No job ID returned from Remotion")
+                return
+
+            success, error = download_video(
+                api_key=self._api_key,
+                job_id=job_id,
+                dest_path=self._output_path,
+                base_url=self._base_url,
+                timeout_seconds=300,
+            )
+
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                if success:
+                    self.finished_with_result.emit(self._output_path, "")
+                else:
+                    self.finished_with_result.emit("", error or "Download failed")
+
+        except RemotionError as e:
+            log.error(f"Remotion generation failed: {e}")
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit("", str(e))
+        except Exception as e:
+            log.error(f"Unexpected error in Remotion generation: {e}")
+            if pyqtSignal is not None and hasattr(self, "finished_with_result"):
+                self.finished_with_result.emit("", f"Unexpected error: {str(e)}")
+
+
 class _ObjectReplacementThread(QThread if QThread else object):
     """Subclass of QThread: run() is always executed in the worker thread."""
     if pyqtSignal is not None:
@@ -686,25 +760,25 @@ def generate_video_and_add_to_timeline(
     position_seconds="",
     track="",
 ) -> str:
-    """Generate a video from prompt via Runware (Vidu), then add it to the timeline. Runs API+download in worker thread."""
+    """Generate a video from prompt via configured service (Runware or Remotion), then add it to the timeline. Runs API+download in worker thread."""
     if QThread is None or QEventLoop is None:
         return "Error: Video generation requires PyQt5."
     app = _get_app()
     settings = app.get_settings()
-    api_key = (settings.get("runware-api-key") or "").strip()
-    if not api_key:
-        return "Video generation is not configured. Add your Runware API key in Preferences."
+
+    # Check which video generation service is selected
+    service = (settings.get("video-generation-service") or "runware").strip()
+
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
         return "Error: Prompt must be at least 2 characters."
+
     duration = duration_seconds
     if duration is None:
         duration = int(settings.get("video-generation-duration") or 4)
     duration = max(1, min(10, int(duration)))
-    model = (settings.get("video-generation-model") or "vidu:3@2").strip() or "vidu:3@2"
-    width, height = 640, 352  # Vidu Q2 Turbo allowed 16:9 (640x352)
-    output_path = _output_path_for_generated_video()
 
+    output_path = _output_path_for_generated_video()
     result_holder = [None, None]  # [path, error]
     loop_holder = [None]
 
@@ -720,16 +794,38 @@ def generate_video_and_add_to_timeline(
                 loop_holder[0].quit()
 
     receiver = _DoneReceiver()
-    # _VideoGenerationThread.run() runs in the worker thread; signal is delivered to main thread.
-    thread = _VideoGenerationThread(
-        api_key, prompt, duration, model, width, height, output_path
-    )
+
+    # Route to appropriate service
+    if service == "remotion":
+        # Remotion service
+        api_key = (settings.get("remotion-api-key") or "").strip()
+        if not api_key:
+            return "Remotion is not configured. Add your Remotion API key in Preferences > AI."
+        base_url = (settings.get("remotion-base-url") or "http://localhost:4500/api/v1").strip()
+
+        thread = _RemotionGenerationThread(
+            api_key, prompt, base_url, output_path, duration
+        )
+        status_message = "Generating video with Remotion..."
+    else:
+        # Runware service (default)
+        api_key = (settings.get("runware-api-key") or "").strip()
+        if not api_key:
+            return "Runware is not configured. Add your Runware API key in Preferences > AI, or switch to Remotion in Video Generation Service."
+        model = (settings.get("video-generation-model") or "vidu:3@2").strip() or "vidu:3@2"
+        width, height = 640, 352  # Vidu Q2 Turbo allowed 16:9 (640x352)
+
+        thread = _VideoGenerationThread(
+            api_key, prompt, duration, model, width, height, output_path
+        )
+        status_message = "Generating video with Runware..."
+
     thread.finished_with_result.connect(receiver.on_done)
     loop_holder[0] = QEventLoop(app)
     status_bar = getattr(app.window, "statusBar", None)
     try:
         if status_bar is not None:
-            status_bar.showMessage("Generating video...", 0)
+            status_bar.showMessage(status_message, 0)
         thread.start()
         loop_holder[0].exec_()
     finally:
