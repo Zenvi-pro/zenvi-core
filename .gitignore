@@ -17,3 +17,4 @@ protobuf_data/
 openshot_qt/
 /src/images/cache/objectdetection.png
 /src/images/cache/objectdetection@2x.png
+google-cloud-sdk/

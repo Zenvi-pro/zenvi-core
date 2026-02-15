@@ -49,6 +49,26 @@ def runware_generate_video(
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
         return None, "Prompt must be at least 2 characters."
+
+    # ── NVIDIA Edge (Cosmos) disabled — OOM issues on GX10 ────────
+    # try:
+    #     from classes.video_generation.edge_video_client import edge_generate_video, is_edge_available
+    #     if is_edge_available():
+    #         log.info("Using NVIDIA Edge (Cosmos) for video generation")
+    #         path, err = edge_generate_video(
+    #             prompt=prompt,
+    #             duration_seconds=float(duration_seconds),
+    #             width=width or 1024,
+    #             height=height or 576,
+    #             input_video_url=input_video_url,
+    #         )
+    #         if path and not err:
+    #             return path, None
+    #         log.warning("Edge video gen failed (%s), falling back to Runware", err)
+    # except Exception as e:
+    #     log.debug("Edge not available: %s, using Runware", e)
+
+    # ── Fall back to Runware cloud ──────────────────────────────────
     api_key = api_key.strip()
     duration_int = float(max(1, min(10, duration_seconds)))
 
@@ -212,6 +232,27 @@ def runware_generate_morph_video(
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
         return None, "Prompt must be at least 2 characters."
+
+    # ── NVIDIA Edge (Cosmos) disabled — OOM issues on GX10 ────────
+    # try:
+    #     from classes.video_generation.edge_video_client import edge_generate_morph_video, is_edge_available
+    #     if is_edge_available():
+    #         log.info("Using NVIDIA Edge (Cosmos) for morph transition")
+    #         path, err = edge_generate_morph_video(
+    #             start_image_url=start_image_url,
+    #             end_image_url=end_image_url,
+    #             prompt=prompt,
+    #             duration_seconds=float(duration_seconds),
+    #             width=width or 1024,
+    #             height=height or 576,
+    #         )
+    #         if path and not err:
+    #             return path, None
+    #         log.warning("Edge morph failed (%s), falling back to Runware", err)
+    # except Exception as e:
+    #     log.debug("Edge not available for morph: %s, using Runware", e)
+
+    # ── Fall back to Runware cloud ──────────────────────────────────
     api_key = api_key.strip()
     duration_val = int(max(1, min(10, duration_seconds)))
 
@@ -296,13 +337,25 @@ def runware_generate_morph_video(
 
 def download_video_to_path(video_url, local_path):
     """
-    Download video from URL to local path. Call from worker thread only.
+    Download video from URL to local path, or copy if it's already a local file.
+    Call from worker thread only.
 
     Returns:
         (True, None) on success, (False, error_message) on failure.
     """
     if not video_url or not local_path:
         return False, "Missing URL or path."
+
+    # Handle local file paths (from NVIDIA Edge / Cosmos)
+    import os
+    if os.path.isfile(video_url):
+        try:
+            import shutil
+            shutil.copy2(video_url, local_path)
+            return True, None
+        except OSError as e:
+            return False, f"Failed to copy local video: {e}"
+
     try:
         import requests
     except ImportError:

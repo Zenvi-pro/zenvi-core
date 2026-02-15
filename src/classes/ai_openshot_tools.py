@@ -1201,12 +1201,17 @@ def get_openshot_tools_for_langchain():
                 app.window.files_model.add_files([output_path])
                 return (
                     "Object replacement complete! "
-                    "Replaced '{}' with '{}' in {} frames. "
+                    "Scanned {} frames with Phi-3.5 Vision — found '{}' in {} frames. "
+                    "Replaced {} segment(s) with '{}'. "
                     "New video added to project: {}. "
                     "Use add_clip_to_timeline_tool to add it to the timeline."
                 ).format(
-                    object_description, replacement_description,
-                    result.get("frames_with_object", 0), os.path.basename(output_path)
+                    result.get("frames_scanned", 0),
+                    object_description,
+                    result.get("frames_with_object", 0),
+                    result.get("segments_replaced", 0),
+                    replacement_description,
+                    os.path.basename(output_path),
                 )
             else:
                 return "Object replacement failed: {}".format(result.get("error", "Unknown error"))

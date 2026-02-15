@@ -1410,9 +1410,17 @@
   },
   {
     "category": "AI",
+    "title": "NVIDIA Edge API URL",
+    "setting": "nvidia-edge-api-url",
+    "value": "http://10.19.183.5:8000/v1",
+    "type": "text",
+    "restart": false
+  },
+  {
+    "category": "AI",
     "title": "AI Default Model",
     "setting": "ai-default-model",
-    "value": "openai/gpt-4o-mini",
+    "value": "nvidia-edge/nemotron-mini-4b",
     "type": "text",
     "restart": false
   },
@@ -1424,12 +1432,13 @@
     "type": "bool"
   },
   {
-    "value": "openai",
+    "value": "nvidia-edge",
     "title": "Primary AI Provider",
     "category": "AI Features",
     "setting": "ai-provider",
     "type": "dropdown",
     "values": [
+      {"value": "nvidia-edge", "name": "NVIDIA Edge Vision (GX10)"},
       {"value": "openai", "name": "OpenAI GPT-4 Vision"},
       {"value": "google", "name": "Google Cloud Vision"},
       {"value": "aws", "name": "AWS Rekognition"},
