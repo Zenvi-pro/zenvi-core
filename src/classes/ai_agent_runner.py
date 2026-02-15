@@ -9,19 +9,6 @@ import time
 from classes.logger import log
 
 
-def _debug_log(location, message, data, hypothesis_id):
-    # #region agent log
-    try:
-        import os
-        _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-        os.makedirs(os.path.dirname(_path), exist_ok=True)
-        with open(_path, "a") as f:
-            f.write(json.dumps({"location": location, "message": message, "data": data, "hypothesisId": hypothesis_id, "timestamp": time.time()}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
-
 try:
     from PyQt5.QtCore import QObject, QMetaObject, Qt, Q_ARG, pyqtSignal, pyqtSlot
 except ImportError:
@@ -248,13 +235,7 @@ def run_agent_with_tools(
         llm_with_tools = llm.bind_tools(wrapped_tools)
         critical_error = None  # Track critical errors to return directly
         for iteration in range(max_iterations):
-            # #region agent log
-            _debug_log("ai_agent_runner.py:run_agent", "before llm.invoke", {"iteration": iteration}, "H5")
-            # #endregion
             response = llm_with_tools.invoke(lc_messages)
-            # #region agent log
-            _debug_log("ai_agent_runner.py:run_agent", "after llm.invoke", {"iteration": iteration}, "H5")
-            # #endregion
             lc_messages.append(response)
             tool_calls = getattr(response, "tool_calls", None) or getattr(response, "additional_kwargs", {}).get("tool_calls", [])
             if not tool_calls:
@@ -269,51 +250,30 @@ def run_agent_with_tools(
                 if not tool:
                     result = "Error: unknown tool {}".format(name)
                 else:
-                    # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "before tool.invoke (blocks until main thread runs it)", {"tool_name": name, "args_preview": str(args)[:100]}, "H3")
-                    # #endregion
                     try:
                         result = tool.invoke(args)
                     except Exception as e:
                         log.error("Tool %s failed: %s", name, e)
                         result = "Error: {}".format(e)
-                    # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "after tool.invoke", {"tool_name": name, "result_preview": str(result)[:200], "result_len": len(str(result)), "is_error": "Error" in str(result)}, "H3")
-                    # #endregion
                     
                     # Detect critical errors (installation/setup issues) and return them directly
                     result_str = str(result)
                     if result_str.startswith("Error:") and any(keyword in result_str for keyword in ["not installed", "Install", "install", "pip install", "npm install"]):
                         critical_error = result_str
-                        # #region agent log
-                        _debug_log("ai_agent_runner.py:run_agent", "critical error detected", {"error_preview": result_str[:200]}, "H5")
-                        # #endregion
                 
                 lc_messages.append(ToolMessage(content=str(result), tool_call_id=tid))
         
         # If we detected a critical error, return it directly without LLM rephrasing
         if critical_error:
-            # #region agent log
-            _debug_log("ai_agent_runner.py:run_agent", "returning critical error directly", {"error_preview": critical_error[:200]}, "H5")
-            # #endregion
             return critical_error
         # Final response text: last AIMessage content
         for m in reversed(lc_messages):
             if isinstance(m, AIMessage):
                 content = getattr(m, "content", None)
                 if content and isinstance(content, str):
-                    # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "returning final response", {"response_preview": content[:200], "response_len": len(content)}, "H4")
-                    # #endregion
                     return content
                 if content:
-                    # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "returning final response (non-string)", {"response_preview": str(content)[:200]}, "H4")
-                    # #endregion
                     return str(content)
-        # #region agent log
-        _debug_log("ai_agent_runner.py:run_agent", "returning default Done", {}, "H4")
-        # #endregion
         return "Done."
     except Exception as e:
         log.error("Agent execution failed: %s", e, exc_info=True)
@@ -369,7 +329,21 @@ def create_main_thread_runner():
         runner.register_tools(get_manim_tools_for_langchain())
     except ImportError as e:
         log.debug("Manim tools not available: %s", e)
-    
+
+    # Register TTS tools (so Voice/Music Agent can use them)
+    try:
+        from classes.ai_tts_tools import get_tts_tools_for_langchain
+        runner.register_tools(get_tts_tools_for_langchain())
+    except ImportError as e:
+        log.debug("TTS tools not available: %s", e)
+
+    # Register Director analysis tools (read-only for directors to analyze projects)
+    try:
+        from classes.ai_directors.director_tools import get_director_analysis_tools_for_langchain
+        runner.register_tools(get_director_analysis_tools_for_langchain())
+    except ImportError as e:
+        log.debug("Director analysis tools not available: %s", e)
+
     return runner
 
 

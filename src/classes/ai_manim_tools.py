@@ -50,17 +50,6 @@ def render_manim_scene(script_path: str, scene_name: str, quality: str = "l", ou
     if output_dir:
         env["MEDIA_DIR"] = output_dir
     
-    # #region agent log
-    import json
-    import time
-    try:
-        _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-        with open(_path, "a") as f:
-            f.write(json.dumps({"location": "ai_manim_tools.py:render_manim_scene", "message": "about to run manim", "data": {"cmd": cmd, "scene": scene_name, "script": script_path}, "hypothesisId": "H7", "timestamp": time.time()}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-    
     try:
         result = subprocess.run(
             cmd,
@@ -72,26 +61,8 @@ def render_manim_scene(script_path: str, scene_name: str, quality: str = "l", ou
             cwd=os.path.dirname(os.path.abspath(script_path)) or ".",
             env=env,
         )
-        
-        # #region agent log
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:render_manim_scene", "message": "manim subprocess completed", "data": {"returncode": result.returncode, "stdout_len": len(result.stdout) if result.stdout else 0, "stderr_len": len(result.stderr) if result.stderr else 0}, "hypothesisId": "H7", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
         if result.returncode != 0:
-            error_msg = result.stderr or result.stdout or "manim failed"
-            # #region agent log
-            try:
-                _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-                with open(_path, "a") as f:
-                    f.write(json.dumps({"location": "ai_manim_tools.py:render_manim_scene", "message": "manim returned error", "data": {"returncode": result.returncode, "error_preview": error_msg[:200]}, "hypothesisId": "H7", "timestamp": time.time()}) + "\n")
-            except Exception:
-                pass
-            # #endregion
-            return None, error_msg
+            return None, (result.stderr or result.stdout or "manim failed")
         
         # Manim CE writes to media/videos/script_name/quality/SceneName.mp4
         base = os.path.dirname(os.path.abspath(script_path))
@@ -101,35 +72,10 @@ def render_manim_scene(script_path: str, scene_name: str, quality: str = "l", ou
         else:
             search_dir = os.path.join(base, "media", "videos", script_name)
         
-        # #region agent log
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:render_manim_scene", "message": "searching for video", "data": {"search_dir": search_dir, "scene_name": scene_name}, "hypothesisId": "H8", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        
-        found_video = None
         for root, _, files in os.walk(search_dir):
             for f in files:
                 if f.endswith(".mp4") and scene_name in f:
-                    found_video = os.path.join(root, f)
-                    break
-            if found_video:
-                break
-        
-        # #region agent log
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:render_manim_scene", "message": "video search result", "data": {"found": found_video is not None, "path": found_video}, "hypothesisId": "H8", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        
-        if found_video:
-            return found_video, None
+                    return os.path.join(root, f), None
         return None, "Rendered video not found for scene %s" % scene_name
     except subprocess.TimeoutExpired:
         return None, "Manim render timed out"
@@ -337,56 +283,23 @@ def generate_manim_video_and_add_to_timeline(
     from classes.ai_llm_registry import get_default_model_id
     import shutil
 
-    # #region agent log
-    import json
-    import time
-    try:
-        _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-        with open(_path, "a") as f:
-            f.write(json.dumps({"location": "ai_manim_tools.py:generate_manim_video_and_add_to_timeline", "message": "function entry", "data": {"prompt_preview": prompt[:50] if prompt else None}, "hypothesisId": "H1", "timestamp": time.time()}) + "\n")
-    except Exception:
-        pass
-    # #endregion
-
     # Check if manim is installed - try importing first (works in venv), then check PATH
     manim_available = False
-    manim_path = None
     
     # Try importing manim (best method for venv)
     try:
         import manim as _manim_test
         manim_available = True
-        manim_path = "importable (venv)"
     except ImportError:
         # Fall back to shutil.which for system install
-        manim_path = shutil.which("manim")
-        manim_available = manim_path is not None
-    
-    # #region agent log
-    try:
-        _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-        import sys
-        with open(_path, "a") as f:
-            f.write(json.dumps({"location": "ai_manim_tools.py:generate_manim_video_and_add_to_timeline", "message": "manim check", "data": {"manim_installed": manim_available, "manim_path": str(manim_path), "sys_executable": sys.executable, "in_venv": hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix)}, "hypothesisId": "H6", "timestamp": time.time()}) + "\n")
-    except Exception:
-        pass
-    # #endregion
+        manim_available = shutil.which("manim") is not None
     
     if not manim_available:
-        error_msg = (
+        return (
             "Error: Manim is not installed. Please install it first:\n"
             "pip install manim\n\n"
             "For more info: https://docs.manim.community/"
         )
-        # #region agent log
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:generate_manim_video_and_add_to_timeline", "message": "returning early error", "data": {"error_msg": error_msg, "error_len": len(error_msg)}, "hypothesisId": "H1", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        return error_msg
 
     app = get_app()
     mid = model_id or get_default_model_id()
@@ -518,28 +431,9 @@ def get_manim_tools_for_langchain():
         Returns:
             Success message with number of clips added to timeline.
         """
-        # #region agent log
-        import json
-        import time
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:generate_manim_video_tool", "message": "tool called", "data": {"prompt_preview": prompt[:50] if prompt else None}, "hypothesisId": "H2", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        result = generate_manim_video_and_add_to_timeline(
+        return generate_manim_video_and_add_to_timeline(
             prompt=prompt,
             add_as_single_clip=add_as_single_clip,
         )
-        # #region agent log
-        try:
-            _path = "/home/vboxuser/Projects/Flowcut/.cursor/debug.log"
-            with open(_path, "a") as f:
-                f.write(json.dumps({"location": "ai_manim_tools.py:generate_manim_video_tool", "message": "tool returning", "data": {"result_preview": result[:100] if isinstance(result, str) else str(result)[:100], "result_len": len(result) if isinstance(result, str) else len(str(result)), "is_error": "Error" in str(result)}, "hypothesisId": "H2", "timestamp": time.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-        return result
 
     return [get_manim_scenes_tool, generate_manim_video_tool]

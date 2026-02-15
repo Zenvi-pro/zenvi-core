@@ -5,17 +5,25 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
-You have five tools:
+You have six tools:
 - invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips. Use for listing files, adding tracks, exporting, generating video, editing the timeline.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
-- invoke_voice_music_agent: for voice overlays (TTS) and tagging/storylines. Use when the user asks for narration, voiceover, TTS, tagging, or scripts.
+- invoke_voice_music_agent: for narration, text-to-speech (TTS), voice overlays, and tagging/storylines. Use when the user asks for narration, voice over, TTS, "add voice", "speak this text", explainer videos, or product demos that need narration.
 - invoke_music_agent: for background music generation via Suno and adding it to the timeline.
+- invoke_directors: for video analysis, critique, and improvement planning. Use when the user asks to analyze, critique, improve, optimize, or get feedback on their video. Directors provide expert feedback from different perspectives (YouTube, GenZ, Cinematic, etc.) and create actionable improvement plans.
 - spawn_parallel_versions: for creating MULTIPLE content types in PARALLEL. Use ONLY when the user explicitly requests multiple different content types (e.g., "make me a vlog, x post, and youtube video" or "create a short form video and long form video"). Takes a list of content requests.
 
 IMPORTANT: Use spawn_parallel_versions ONLY for explicit multi-content requests. For single content requests, use the appropriate invoke_* tool. When using spawn_parallel_versions, pass a list where each item has:
 - title: Short name for the version (e.g., "YouTube Video", "X Post", "Vlog")
 - content_type: One of "video", "manim", "voice_music", or "music"
 - instructions: Specific task instructions for that version
+
+Use invoke_directors when the user wants to:
+- Analyze or critique their video
+- Get feedback or suggestions for improvement
+- Optimize for a specific platform (YouTube, TikTok, etc.)
+- Understand what's working or not working
+- Get expert perspectives on their editing
 
 Respond concisely with the result."""
 
@@ -54,6 +62,28 @@ def run_root_agent(model_id, messages, main_thread_runner):
         def invoke_music_agent(task: str) -> str:
             """Route to the music agent for Suno background music generation and timeline insertion."""
             return sub_agents.run_music_agent(mid, task, runner)
+
+        @tool
+        def invoke_directors(task: str, director_ids: list) -> str:
+            """
+            Route to directors for video analysis, critique, and improvement planning.
+
+            Use when user wants to:
+            - Analyze or critique their video
+            - Get feedback or improvement suggestions
+            - Optimize for a platform (YouTube, TikTok, etc.)
+            - Understand what's working or not working
+
+            Args:
+                task: User's request or question
+                director_ids: List of director IDs to use (e.g., ["youtube_director", "genz_director", "cinematic_director"])
+                             Available directors: youtube_director, genz_director, cinematic_director
+
+            Returns:
+                Analysis results and improvement plan
+            """
+            from classes.ai_directors.director_orchestrator import run_directors
+            return run_directors(mid, task, director_ids, runner)
 
         @tool
         def spawn_parallel_versions(content_requests: list) -> str:
@@ -117,7 +147,7 @@ def run_root_agent(model_id, messages, main_thread_runner):
                 log.error(f"spawn_parallel_versions failed: {e}", exc_info=True)
                 return f"Error starting parallel execution: {e}"
 
-        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, spawn_parallel_versions]
+        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, invoke_directors, spawn_parallel_versions]
 
     root_tools = make_invoke_with_model()
     # Root tools run in worker thread (no main-thread wrap)

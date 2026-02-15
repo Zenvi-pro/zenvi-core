@@ -77,28 +77,39 @@ def run_manim_agent(model_id, task_or_messages, main_thread_runner):
 
 
 VOICE_MUSIC_SYSTEM_PROMPT = (
-    "You are the Flowcut voice and music agent. You help with tagging videos (Azure API), "
-    "generating storylines from tags, voice overlays (TTS), and background music. "
-    "Use the provided tools. If a feature is not configured, say so and suggest using the video agent for other tasks."
+    "You are the Flowcut voice and music agent. You help with narration, text-to-speech (TTS), "
+    "voice overlays, video tagging, and background music.\n\n"
+    "IMPORTANT: When the user requests TTS, narration, or voice over, call generate_tts_and_add_to_timeline_tool immediately. "
+    "First check if OpenAI is configured with test_openai_tts_api_key_tool. If not configured, instruct the user to add their "
+    "OpenAI API key in Preferences > AI (OpenAI API Key).\n\n"
+    "The TTS tool will generate natural speech, handle long scripts automatically (splits into chunks), "
+    "and add the audio to a new track on the timeline.\n\n"
+    "Available voices: alloy (neutral), echo (male), fable (expressive), onyx (deep male), nova (female), shimmer (soft female). "
+    "Use tts-1 model for speed, tts-1-hd for quality."
 )
 
 
 def run_voice_music_agent(model_id, task_or_messages, main_thread_runner):
     """
-    Run the Voice/Music agent with stub tools (tagging, storyline, voice, music).
+    Run the Voice/Music agent with voice/music + TTS tools.
     Returns the agent response string.
     """
     try:
         from classes.ai_agent_runner import run_agent_with_tools
         from classes.ai_voice_music_tools import get_voice_music_tools_for_langchain
+        from classes.ai_tts_tools import get_tts_tools_for_langchain
     except ImportError as e:
-        log.debug("Voice/music tools not available: %s", e)
+        log.debug("Voice/music or TTS tools not available: %s", e)
         return "Voice and music agent is not available. Use the video agent for timeline and export."
+
     if isinstance(task_or_messages, str):
         messages = [{"role": "user", "content": task_or_messages}]
     else:
         messages = list(task_or_messages)
-    tools = get_voice_music_tools_for_langchain()
+
+    # Combine stub tools + TTS tools
+    tools = list(get_voice_music_tools_for_langchain()) + list(get_tts_tools_for_langchain())
+
     return run_agent_with_tools(
         model_id=model_id,
         messages=messages,
