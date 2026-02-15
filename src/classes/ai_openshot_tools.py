@@ -653,12 +653,13 @@ class _RemotionGenerationThread(QThread if QThread else object):
                     self.progress_update.emit(progress, status)
                 log.info(f"Remotion progress: {progress}% - {status}")
 
-            # For now, we'll use repo-based rendering with a default template
+            # For now, we'll use repo-based rendering with a generic template
             # In the future, this could be expanded to support Sonar data rendering
+            # Using "product-launch" template as it's versatile for general video content
             result = render_from_repo(
                 api_key=self._api_key,
-                repo_url="https://github.com/remotion-dev/template-still",  # Default template
-                template="default",
+                repo_url="https://github.com/remotion-dev/template-still",
+                template="product-launch",  # Use product-launch template (available on local server)
                 user_input=self._prompt,
                 codec="h264",
                 base_url=self._base_url,

@@ -31,44 +31,85 @@ Before using Remotion in Flowcut, ensure you have:
 
 ## Setup Instructions
 
-### Step 1: Start Remotion API Server
+### Quick Setup for Local Development
 
-If you have a Remotion API server in the project root:
+If you have the Remotion server in `../remotion` (already configured):
 
 ```bash
-# Navigate to the remotion directory (if it exists in project root)
-cd /path/to/remotion-api-server
+# The server should already be running. If not:
+cd ../remotion
+npm start
 
-# Install dependencies (first time only)
-npm install
+# In a new terminal, configure Flowcut:
+cd core
+python3 setup_local_remotion.py
+```
 
-# Start the server
+**Then in Flowcut Preferences:**
+- **Video Generation Service**: `Remotion`
+- **Remotion API Key**: `dev-key-change-me`
+- **Remotion API Base URL**: `http://127.0.0.1:4500/api/v1`
+
+### Step 1: Start Remotion API Server
+
+The Remotion server should already be running. To verify:
+
+```bash
+curl http://127.0.0.1:4500/api/v1/health
+# Should return: {"status":"healthy",...}
+```
+
+If not running, start it:
+
+```bash
+cd ../remotion
+npm install  # First time only
 npm start
 ```
 
-The server should start on `http://localhost:4500` by default.
+The server runs on `http://127.0.0.1:4500` by default with API key `dev-key-change-me`.
 
 ### Step 2: Configure Flowcut
 
-1. **Open Flowcut Preferences**
+1. **Quick Setup Script** (Recommended)
+   ```bash
+   python3 setup_local_remotion.py
+   ```
+   Follow the instructions displayed.
+
+2. **Manual Setup**
    - Launch Flowcut
    - Go to `Edit > Preferences` (or `Preferences` menu on macOS)
-
-2. **Navigate to AI Settings**
    - Click on the `AI` category in the left sidebar
-
-3. **Configure Remotion Settings**
    - **Video Generation Service**: Select `Remotion` from the dropdown
-   - **Remotion API Key**: Enter your Remotion API key
-   - **Remotion API Base URL**: Enter the server URL (default: `http://localhost:4500/api/v1`)
+   - **Remotion API Key**: Enter `dev-key-change-me` (local dev key)
+   - **Remotion API Base URL**: Enter `http://127.0.0.1:4500/api/v1`
+   - Click `OK` to save
 
-4. **Set Video Duration** (Optional)
-   - **Video Generation Duration**: Set default duration (1-10 seconds)
+### Step 3: Test It!
 
-5. **Save Settings**
-   - Click `OK` to save and close preferences
+```bash
+# Test from command line
+python3 test_local_remotion.py
+
+# Or test in Flowcut:
+# 1. Open AI Chat
+# 2. Type: "Generate a video showing a modern office"
+# 3. Watch it render and add to timeline!
+```
 
 ---
+
+## Available Templates
+
+The local Remotion server includes these templates:
+
+- **product-launch** (default) - Versatile template for general content
+- **globe-travel** - Travel and location-based videos
+- **code-showcase** - Technical/coding content
+- **desktop-app-demo** - Software demonstrations
+
+The integration automatically uses `product-launch` as it works well for most prompts.
 
 ## Using Remotion in Flowcut
 
