@@ -345,12 +345,25 @@ class AIChat:
         # #region agent log
         _debug_log("ai_chat_functionality.py:_generate_response", "before run_agent (inner thread)", {"runner_ok": main_thread_runner is not None}, "H5")
         # #endregion
+        try:
+            from plan_graph import get_plan_builder
+            get_plan_builder().start_plan(user_input)
+        except Exception:
+            pass
         result_holder = [None]
         def run():
             result_holder[0] = run_agent(resolved_model_id, messages, main_thread_runner)
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         thread.join()
+        try:
+            from plan_graph import get_plan_builder
+            pb = get_plan_builder()
+            pb.end_plan()
+            from plan_graph import save_plan
+            save_plan(pb)
+        except Exception:
+            pass
         # #region agent log
         _debug_log("ai_chat_functionality.py:_generate_response", "after run_agent join", {"has_result": result_holder[0] is not None}, "H5")
         # #endregion

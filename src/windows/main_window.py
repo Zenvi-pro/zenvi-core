@@ -3968,6 +3968,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         except Exception as e:
             log.error(f"Failed to initialize Plan Review: {e}", exc_info=True)
 
+        # Plan Graph dock (edit plan hierarchy)
+        from plan_graph import PlanGraphDock
+        self.plan_graph_dock = PlanGraphDock(self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.plan_graph_dock)
+        self.plan_graph_dock.setVisible(False)
+
         # Add Docks submenu to View menu
         self.addViewDocksMenu()
 
