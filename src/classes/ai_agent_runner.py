@@ -363,6 +363,13 @@ def create_main_thread_runner():
     except ImportError as e:
         log.debug("Director analysis tools not available: %s", e)
 
+    # Register Product Launch tools (GitHub + Manim for product launch videos)
+    try:
+        from classes.ai_product_launch_tools import get_product_launch_tools_for_langchain
+        runner.register_tools(get_product_launch_tools_for_langchain())
+    except ImportError as e:
+        log.debug("Product launch tools not available: %s", e)
+
     return runner
 
 

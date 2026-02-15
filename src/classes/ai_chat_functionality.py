@@ -270,9 +270,25 @@ class AIChat:
         # #region agent log
         _debug_log("ai_chat_functionality.py:_generate_response", "entry", {"user_input_preview": user_input[:60] if user_input else ""}, "H4")
         # #endregion
+
+        # Check for product launch video requests FIRST (before media keywords)
+        product_launch_keywords = ['product launch', 'launch video', 'promotional video',
+                                   'showcase video', 'github video', 'repo video',
+                                   'github.com/', 'create.*video.*github', 'video.*for.*repo']
+        user_lower = user_input.lower()
+        is_product_launch = any(keyword in user_lower for keyword in product_launch_keywords)
+
+        # Check for GitHub URLs explicitly
+        if not is_product_launch and ('github.com' in user_lower or 'github/' in user_lower):
+            is_product_launch = 'video' in user_lower or 'launch' in user_lower or 'promotional' in user_lower
+
+        # If it's a product launch request, skip media manager and go straight to root agent
+        if is_product_launch:
+            _debug_log("ai_chat_functionality.py:_generate_response", "product launch detected, routing to root agent", {}, "H4")
+            # Skip media manager, fall through to LangChain agent below
+
         # Check if this is a media management command (from nilay branch)
-        media_keywords = ['analyze', 'search', 'find', 'collection', 'tag', 'face', 'statistics']
-        if any(keyword in user_input.lower() for keyword in media_keywords):
+        elif any(keyword in user_lower for keyword in ['analyze', 'search', 'find', 'collection', 'tag', 'face', 'statistics']):
             # #region agent log
             _debug_log("ai_chat_functionality.py:_generate_response", "taking media path", {}, "H4")
             # #endregion
