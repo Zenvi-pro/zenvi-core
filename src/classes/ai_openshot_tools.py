@@ -1196,7 +1196,7 @@ def get_openshot_tools_for_langchain():
         position_seconds: str = "",
         track: str = "",
     ) -> str:
-        """Generate a video from a text prompt using AI (Runware/Vidu) and add it to the timeline. Use when the user asks to generate, create, or make a video and add it to the timeline. Argument: prompt (required, describe the video). Optional: duration_seconds (default from settings, e.g. 4); position_seconds (empty for playhead); track (empty for selected or first track)."""
+        """Generate a video from a text prompt using AI video generation (supports Runware/Vidu or Remotion, configured in user settings) and add it to the timeline. Use when the user asks to generate, create, or make a video with any service including Remotion. The video generation service is selected in Preferences > AI settings. Argument: prompt (required, describe the video). Optional: duration_seconds (default from settings, e.g. 4); position_seconds (empty for playhead); track (empty for selected or first track)."""
         duration = None
         if duration_seconds and str(duration_seconds).strip():
             try:

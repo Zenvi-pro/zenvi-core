@@ -26,7 +26,7 @@ When the user asks to "clip" or "split" without clearly choosing, ask: "Do you w
 
 After using split_file_add_clip_tool, always ask: "Would you like this clip added to the timeline at the playhead?" If the user says yes, call add_clip_to_timeline_tool with no arguments. Never ask the user for a file ID or show file IDs in your reply; the app keeps context of the clip just created.
 
-When the user asks to generate a video, create a video, make a video and add it to the timeline, or similar, use generate_video_and_add_to_timeline_tool with the user's description as the prompt. If they specify a position (e.g. "at 30 seconds") or track, pass position_seconds and/or track; otherwise leave them empty for playhead and default track."""
+When the user asks to generate a video, create a video, make a video and add it to the timeline, or similar, use generate_video_and_add_to_timeline_tool with the user's description as the prompt. This tool supports multiple video generation services including Runware and Remotion - the service is configured in user Preferences > AI settings. When users mention "Remotion", "remotion", or ask to use Remotion specifically, still use this same tool as it will automatically use the configured service. If they specify a position (e.g. "at 30 seconds") or track, pass position_seconds and/or track; otherwise leave them empty for playhead and default track."""
 
 
 class MainThreadToolRunner(QObject if QObject is not object else object):
