@@ -3182,6 +3182,44 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Notify properties dialog
         self.propertyTableView.select_frame(frame)
 
+    def on_plan_approved(self, plan_id):
+        """Handle director plan approval."""
+        log.info(f"Plan approved: {plan_id}")
+        try:
+            # Execute the plan
+            if hasattr(self, 'dockPlanReview') and self.dockPlanReview.current_plan:
+                from classes.ai_plan_executor import execute_plan
+                from classes.ai_agent_runner import get_main_thread_runner
+                from classes import settings
+
+                plan = self.dockPlanReview.current_plan
+                model_id = settings.get_settings().get("ai-default-model")
+                main_thread_runner = get_main_thread_runner()
+
+                # Get auto mode from settings
+                auto_mode = settings.get_settings().get("directors-auto-mode", False)
+
+                # Execute plan
+                result = execute_plan(plan, model_id, main_thread_runner, auto_mode)
+
+                # Show result in chat
+                if hasattr(self, 'dockAIChat'):
+                    success_msg = f"Plan executed: {result['steps_executed']}/{result['steps_total']} steps completed"
+                    if result['steps_failed'] > 0:
+                        success_msg += f" ({result['steps_failed']} failed)"
+                    self.dockAIChat.display_assistant_message(success_msg)
+
+                log.info(f"Plan execution result: {result}")
+        except Exception as e:
+            log.error(f"Plan execution failed: {e}", exc_info=True)
+
+    def on_plan_rejected(self, plan_id):
+        """Handle director plan rejection."""
+        log.info(f"Plan rejected: {plan_id}")
+        # Just hide the plan review - user rejected it
+        if hasattr(self, 'dockPlanReview'):
+            self.dockPlanReview.hide()
+
     def moveEvent(self, event):
         """ Move tutorial dialogs also (if any)"""
         QMainWindow.moveEvent(self, event)
@@ -3907,6 +3945,28 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.dockAIMedia = AIMediaPanel(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIMedia)
         self.dockAIMedia.setVisible(False)  # Hidden by default
+
+        # Setup Director Panel (must be before addViewDocksMenu)
+        try:
+            from windows.director_panel_ui import get_director_panel_dock
+            self.dockDirectorPanel = get_director_panel_dock(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.dockDirectorPanel)
+            self.dockDirectorPanel.setVisible(False)  # Hidden by default
+        except Exception as e:
+            log.error(f"Failed to initialize Director Panel: {e}", exc_info=True)
+
+        # Setup Plan Review Panel (must be before addViewDocksMenu)
+        try:
+            from windows.director_plan_review_ui import get_plan_review_dock
+            self.dockPlanReview = get_plan_review_dock(self)
+            self.addDockWidget(Qt.BottomDockWidgetArea, self.dockPlanReview)
+            self.dockPlanReview.setVisible(False)  # Hidden by default
+
+            # Connect plan approval to execution
+            self.dockPlanReview.plan_approved.connect(self.on_plan_approved)
+            self.dockPlanReview.plan_rejected.connect(self.on_plan_rejected)
+        except Exception as e:
+            log.error(f"Failed to initialize Plan Review: {e}", exc_info=True)
 
         # Add Docks submenu to View menu
         self.addViewDocksMenu()

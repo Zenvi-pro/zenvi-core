@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Directors</title>
+    <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <div class="panel-header">
+            <h2>Select Directors</h2>
+            <button class="btn-marketplace" onclick="openMarketplace()">
+                🛒 Marketplace
+            </button>
+        </div>
+
+        <!-- Search/Filter -->
+        <div class="search-box">
+            <input
+                type="text"
+                id="search-input"
+                placeholder="Search directors..."
+                oninput="filterDirectors()"
+            />
+        </div>
+
+        <!-- Directors Grid -->
+        <div id="directors-grid" class="directors-grid">
+            <div class="loading">Loading directors...</div>
+        </div>
+
+        <!-- Selected Count -->
+        <div class="footer">
+            <span id="selected-count" class="selected-count">0 selected</span>
+            <button id="btn-apply" class="btn-apply" onclick="applySelection()" disabled>
+                Apply Selection
+            </button>
+        </div>
+    </div>
+
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script src="panel.js"></script>
+</body>
+</html>
