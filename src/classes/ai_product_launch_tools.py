@@ -276,6 +276,11 @@ def get_product_launch_tools_for_langchain():
     """Return LangChain Tool objects for the Product Launch agent."""
     from langchain_core.tools import tool
 
+    # Module-level cache to avoid passing large JSON through the LLM
+    # The LLM mangles control characters in JSON strings (e.g. README newlines),
+    # causing json.loads to fail with "Invalid control character"
+    _repo_data_cache = {}
+
     @tool
     def fetch_github_repo_data(repo_url: str) -> str:
         """
@@ -319,10 +324,30 @@ def get_product_launch_tools_for_langchain():
 
             log.info(f"Successfully fetched data for {owner}/{repo} ({result['stars']} stars)")
 
-            # Return JSON with explicit instruction for the agent
-            result_json = json.dumps(result)
+            # Cache the parsed data so the video generation tool can use it directly
+            # instead of relying on the LLM to faithfully pass the JSON string
+            cache_key = f"{owner}/{repo}"
+            _repo_data_cache[cache_key] = result
+            _repo_data_cache["_latest"] = result
+            log.info(f"Cached repo data under key '{cache_key}' and '_latest'")
 
-            print(f"[FETCH TOOL] Returning {len(result_json)} chars of JSON data")
+            # Return a small JSON summary for the agent (avoid passing huge blobs through the LLM)
+            summary = {
+                "success": True,
+                "owner": result["owner"],
+                "repo": result["repo"],
+                "name": result["name"],
+                "description": result["description"],
+                "stars": result["stars"],
+                "forks": result["forks"],
+                "language": result["language"],
+                "topics": result["topics"],
+                "cache_key": cache_key,
+                "instruction": "Now call generate_product_launch_video_remotion with this JSON"
+            }
+            result_json = json.dumps(summary)
+
+            print(f"[FETCH TOOL] Returning summary ({len(result_json)} chars), full data cached under '{cache_key}'")
             print(f"[FETCH TOOL] Agent should now call generate_product_launch_video_remotion with this JSON")
 
             return result_json
@@ -357,8 +382,32 @@ def get_product_launch_tools_for_langchain():
         try:
             from classes.remotion_client import render_product_launch_video, check_remotion_service
 
-            # Parse input
-            data = json.loads(repo_data_json)
+            # Try to parse the JSON input, using strict=False to tolerate
+            # control characters that the LLM may have unescaped
+            data = None
+            try:
+                data = json.loads(repo_data_json, strict=False)
+            except (json.JSONDecodeError, TypeError) as parse_err:
+                log.warning(f"JSON parse failed ({parse_err}), falling back to cached data")
+
+            # Look up full data from cache (preferred - avoids LLM mangling issues)
+            cache_key = None
+            if data and "cache_key" in data:
+                cache_key = data["cache_key"]
+            elif data and "owner" in data and "repo" in data:
+                cache_key = f"{data['owner']}/{data['repo']}"
+
+            cached = _repo_data_cache.get(cache_key) if cache_key else None
+            if not cached:
+                cached = _repo_data_cache.get("_latest")
+                if cached:
+                    log.info("Using '_latest' cached repo data")
+
+            if cached:
+                log.info(f"Using cached repo data (key={cache_key or '_latest'})")
+                data = cached
+            elif not data:
+                return "Error: Could not parse repo data JSON and no cached data available. Please call fetch_github_repo_data first."
 
             if "error" in data:
                 return f"Error: Cannot generate video - GitHub data fetch failed: {data['error']}"
@@ -370,9 +419,9 @@ def get_product_launch_tools_for_langchain():
                        "  cd /home/lol/project/core/remotion-service\n"
                        "  npm run serve")
 
-            # Extract data
+            # Extract data - use full_data from cache, or fall back to direct fields
             full_data = data.get("full_data", {})
-            repo_info = full_data.get("repo_info", {})
+            repo_info = full_data.get("repo_info", {}) if full_data else {}
 
             # Extract features from README
             features = []
@@ -447,8 +496,6 @@ def get_product_launch_tools_for_langchain():
             else:
                 return f"Video generated at {output_path} but couldn't auto-add to timeline. Please add manually."
 
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid JSON - {str(e)[:200]}"
         except Exception as e:
             log.error(f"Remotion video generation failed: {e}", exc_info=True)
             return f"Error: {str(e)[:200]}"
@@ -468,8 +515,32 @@ def get_product_launch_tools_for_langchain():
             Success message with details, or error message.
         """
         try:
-            # Parse input
-            data = json.loads(repo_data_json)
+            # Try to parse the JSON input, using strict=False to tolerate
+            # control characters that the LLM may have unescaped
+            data = None
+            try:
+                data = json.loads(repo_data_json, strict=False)
+            except (json.JSONDecodeError, TypeError) as parse_err:
+                log.warning(f"JSON parse failed ({parse_err}), falling back to cached data")
+
+            # Look up full data from cache (preferred - avoids LLM mangling issues)
+            cache_key = None
+            if data and "cache_key" in data:
+                cache_key = data["cache_key"]
+            elif data and "owner" in data and "repo" in data:
+                cache_key = f"{data['owner']}/{data['repo']}"
+
+            cached = _repo_data_cache.get(cache_key) if cache_key else None
+            if not cached:
+                cached = _repo_data_cache.get("_latest")
+                if cached:
+                    log.info("Using '_latest' cached repo data (manim fallback)")
+
+            if cached:
+                log.info(f"Using cached repo data for manim (key={cache_key or '_latest'})")
+                data = cached
+            elif not data:
+                return "Error: Could not parse repo data JSON and no cached data available. Please call fetch_github_repo_data first."
 
             if "error" in data:
                 return f"Error: Cannot generate video - GitHub data fetch failed: {data['error']}"
