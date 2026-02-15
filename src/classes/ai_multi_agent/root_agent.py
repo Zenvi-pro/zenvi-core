@@ -5,13 +5,19 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
-You have four tools:
+You have five tools:
 - invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips. Use for listing files, adding tracks, exporting, generating video, editing the timeline.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
 - invoke_voice_music_agent: for voice overlays (TTS) and tagging/storylines. Use when the user asks for narration, voiceover, TTS, tagging, or scripts.
 - invoke_music_agent: for background music generation via Suno and adding it to the timeline.
+- spawn_parallel_versions: for creating MULTIPLE content types in PARALLEL. Use ONLY when the user explicitly requests multiple different content types (e.g., "make me a vlog, x post, and youtube video" or "create a short form video and long form video"). Takes a list of content requests.
 
-Route each user message to one agent by calling the appropriate tool with the user's request as the "task" argument. If the request spans multiple domains, call one agent first and summarize; you can say you will handle the rest in a follow-up. Respond concisely with the agent's result."""
+IMPORTANT: Use spawn_parallel_versions ONLY for explicit multi-content requests. For single content requests, use the appropriate invoke_* tool. When using spawn_parallel_versions, pass a list where each item has:
+- title: Short name for the version (e.g., "YouTube Video", "X Post", "Vlog")
+- content_type: One of "video", "manim", "voice_music", or "music"
+- instructions: Specific task instructions for that version
+
+Respond concisely with the result."""
 
 
 def run_root_agent(model_id, messages, main_thread_runner):
@@ -49,7 +55,69 @@ def run_root_agent(model_id, messages, main_thread_runner):
             """Route to the music agent for Suno background music generation and timeline insertion."""
             return sub_agents.run_music_agent(mid, task, runner)
 
-        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent]
+        @tool
+        def spawn_parallel_versions(content_requests: list) -> str:
+            """
+            Spawn multiple parallel versions for different content types.
+
+            Use ONLY when user explicitly requests multiple content types.
+
+            Args:
+                content_requests: List of dicts, each with:
+                    - title: str - Display name (e.g., "YouTube Video")
+                    - content_type: str - One of "video", "manim", "voice_music", "music"
+                    - instructions: str - Task instructions for this version
+
+            Returns:
+                Status message with version IDs and links to switch
+            """
+            from classes.app import get_app
+            from classes.version_manager import get_version_manager
+            from classes.version_executor import get_version_executor
+            import copy
+
+            try:
+                app = get_app()
+                version_manager = get_version_manager()
+                version_executor = get_version_executor()
+
+                # Get current project state as base snapshot
+                base_snapshot = copy.deepcopy(app.project._data)
+
+                # Create versions for each content request
+                versions = []
+                for req in content_requests:
+                    title = req.get("title", "Untitled")
+                    content_type = req.get("content_type", "video")
+                    instructions = req.get("instructions", "")
+
+                    # Create version
+                    version = version_manager.create_version(
+                        title=title,
+                        content_type=content_type,
+                        instructions=instructions,
+                        base_snapshot=base_snapshot
+                    )
+                    versions.append(version)
+
+                    # Submit for execution in background
+                    version_executor.execute_version(version, mid, runner)
+
+                # Return status message
+                version_list = "\n".join([f"- {v.title} (ID: {v.version_id})" for v in versions])
+                return (
+                    f"Started parallel execution of {len(versions)} versions:\n{version_list}\n\n"
+                    "Each version is now generating in the background. "
+                    "You'll see progress cards in the chat. "
+                    "Click 'Switch to this version' on any card when complete to view the results."
+                )
+
+            except Exception as e:
+                from classes.logger import log
+                log.error(f"spawn_parallel_versions failed: {e}", exc_info=True)
+                return f"Error starting parallel execution: {e}"
+
+        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, spawn_parallel_versions]
 
     root_tools = make_invoke_with_model()
     # Root tools run in worker thread (no main-thread wrap)

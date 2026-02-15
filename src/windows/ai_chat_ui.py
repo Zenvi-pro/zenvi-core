@@ -342,6 +342,22 @@ class ChatBridge(QObject):
         if self.window:
             self.window._push_context_usage(session_id)
 
+    # -- Version management slots -------------------------------------------
+
+    @pyqtSlot(str, result=bool)
+    def switchToVersion(self, version_id: str):
+        """Switch to a different version's project state."""
+        if self.window:
+            return self.window._handle_switch_to_version(version_id)
+        return False
+
+    @pyqtSlot(result=str)
+    def listVersions(self):
+        """Return JSON list of all versions."""
+        if self.window:
+            return self.window._handle_list_versions()
+        return "[]"
+
 
 class AIChatWindow(QDockWidget):
     """Flowcut Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
@@ -367,6 +383,18 @@ class AIChatWindow(QDockWidget):
         self._worker_pool = ChatWorkerPool(self._session_manager, parent=self)
         self._worker_pool.response_ready.connect(self._on_response_ready)
         self._worker_pool.error_occurred.connect(self._on_error)
+
+        # Version manager & executor for parallel execution
+        from classes.version_manager import get_version_manager
+        from classes.version_executor import get_version_executor
+        self._version_manager = get_version_manager()
+        self._version_executor = get_version_executor()
+
+        # Connect version signals to UI updates
+        self._version_manager.version_created.connect(self._on_version_created)
+        self._version_manager.version_updated.connect(self._on_version_updated)
+        self._version_executor.version_progress.connect(self._on_version_progress)
+        self._version_executor.activity_step_added.connect(self._on_version_activity_step)
 
         if self._use_web_ui:
             self._init_web_ui()
@@ -706,6 +734,54 @@ class AIChatWindow(QDockWidget):
         """Mark the current activity step as done in the chat UI."""
         self._run_js("completeLastActivityStep();")
 
+    @pyqtSlot(str)
+    def _on_version_created(self, version_id: str):
+        """Handle version creation - add version card to UI."""
+        if not self._use_web_ui:
+            return
+
+        version = self._version_manager.get_version(version_id)
+        if version:
+            version_json = json.dumps(version.to_dict())
+            self._run_js("addVersionCard(%s);" % version_json)
+
+    @pyqtSlot(str, dict)
+    def _on_version_updated(self, version_id: str, version_dict: dict):
+        """Handle version update - update version card in UI."""
+        if not self._use_web_ui:
+            return
+
+        status = version_dict.get('status', 'pending')
+        progress = version_dict.get('progress', 0.0)
+        self._run_js("updateVersionProgress(%s, %s, %s);" % (
+            json.dumps(version_id),
+            json.dumps(progress),
+            json.dumps(status)
+        ))
+
+    @pyqtSlot(str, float)
+    def _on_version_progress(self, version_id: str, progress: float):
+        """Handle version progress update."""
+        if not self._use_web_ui:
+            return
+
+        self._run_js("updateVersionProgress(%s, %s, null);" % (
+            json.dumps(version_id),
+            json.dumps(progress)
+        ))
+
+    @pyqtSlot(str, str, str)
+    def _on_version_activity_step(self, version_id: str, label: str, detail: str):
+        """Handle version activity step added."""
+        if not self._use_web_ui:
+            return
+
+        self._run_js("addVersionActivityStep(%s, %s, %s);" % (
+            json.dumps(version_id),
+            json.dumps(label),
+            json.dumps(detail)
+        ))
+
     def clear_chat(self):
         reply = QMessageBox.question(
             self, "Clear", "Clear chat?",
@@ -861,6 +937,37 @@ class AIChatWindow(QDockWidget):
         if new_session_id:
             self._handle_switch_session(new_session_id)
         self._push_tab_list()
+
+    def _handle_switch_to_version(self, version_id: str):
+        """Switch to a different version's project state."""
+        from classes.version_manager import get_version_manager
+        from classes.logger import log
+
+        version_manager = get_version_manager()
+        success = version_manager.switch_to_version(version_id)
+
+        if success:
+            version = version_manager.get_version(version_id)
+            if version:
+                log.info(f"Switched to version: {version.title} ({version_id})")
+                # Optionally show a notification
+                if self._use_web_ui:
+                    msg = f"Switched to version: {version.title}"
+                    self._run_js("appendMessage('system', %s, false);" % json.dumps(msg))
+                return True
+        else:
+            log.warning(f"Failed to switch to version: {version_id}")
+            return False
+
+    def _handle_list_versions(self):
+        """Return JSON list of all versions."""
+        from classes.version_manager import get_version_manager
+        import json
+
+        version_manager = get_version_manager()
+        versions = version_manager.list_versions()
+        versions_data = [v.to_dict() for v in versions]
+        return json.dumps(versions_data)
 
     def _push_tab_list(self):
         """Push the current session list to the JS tab bar."""

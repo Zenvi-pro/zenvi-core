@@ -626,6 +626,144 @@
     };
 
     // ==================================================================
+    // Version Cards for Parallel Execution
+    // ==================================================================
+    var versionCards = {}; // version_id -> card element
+
+    window.addVersionCard = function (versionData) {
+        removePlaceholder();
+        var data;
+        try {
+            data = typeof versionData === 'string' ? JSON.parse(versionData) : versionData;
+        } catch (e) {
+            console.error('Failed to parse version data:', e);
+            return;
+        }
+
+        var versionId = data.version_id;
+        var title = data.title || 'Untitled';
+        var status = data.status || 'pending';
+        var progress = data.progress || 0;
+
+        // Create version card
+        var card = document.createElement('div');
+        card.className = 'chat-version-card chat-message-enter';
+        card.setAttribute('data-version-id', versionId);
+
+        var statusBadge = getStatusBadge(status);
+        var progressBarHtml = status === 'running' || status === 'pending'
+            ? '<div class="version-progress-bar"><div class="version-progress-fill" style="width: ' + (progress * 100) + '%"></div></div>'
+            : '';
+
+        card.innerHTML =
+            '<div class="version-header">' +
+                '<span class="version-title">' + escapeHtml(title) + '</span>' +
+                statusBadge +
+            '</div>' +
+            progressBarHtml +
+            '<div class="version-activity-log" data-version-id="' + versionId + '"></div>' +
+            '<button class="version-switch-btn" data-version-id="' + versionId + '" ' +
+                (status === 'completed' ? '' : 'disabled') + '>' +
+                'Switch to this version' +
+            '</button>';
+
+        messagesEl.appendChild(card);
+        versionCards[versionId] = card;
+
+        // Add click handler for switch button
+        var switchBtn = card.querySelector('.version-switch-btn');
+        if (switchBtn) {
+            switchBtn.addEventListener('click', function () {
+                var vid = this.getAttribute('data-version-id');
+                getBridge(function (bridge) {
+                    if (bridge && bridge.switchToVersion) {
+                        bridge.switchToVersion(vid);
+                    }
+                });
+            });
+        }
+
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.updateVersionProgress = function (versionId, progress, status) {
+        var card = versionCards[versionId];
+        if (!card) return;
+
+        // Update progress bar
+        var progressFill = card.querySelector('.version-progress-fill');
+        if (progressFill) {
+            progressFill.style.width = (progress * 100) + '%';
+        }
+
+        // Update status badge if provided
+        if (status) {
+            var oldBadge = card.querySelector('.version-status-badge');
+            if (oldBadge) {
+                var newBadge = getStatusBadge(status);
+                oldBadge.outerHTML = newBadge;
+            }
+
+            // Enable/disable switch button based on status
+            var switchBtn = card.querySelector('.version-switch-btn');
+            if (switchBtn) {
+                switchBtn.disabled = status !== 'completed';
+            }
+
+            // Remove progress bar if completed or failed
+            if (status === 'completed' || status === 'failed') {
+                var progressBar = card.querySelector('.version-progress-bar');
+                if (progressBar) progressBar.remove();
+            }
+        }
+    };
+
+    window.addVersionActivityStep = function (versionId, label, detail) {
+        var card = versionCards[versionId];
+        if (!card) return;
+
+        var activityLog = card.querySelector('.version-activity-log[data-version-id="' + versionId + '"]');
+        if (!activityLog) return;
+
+        var step = document.createElement('div');
+        step.className = 'version-activity-step running';
+        step.innerHTML =
+            '<span class="activity-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
+            '<span class="activity-label">' + escapeHtml(label) + '</span>' +
+            (detail ? '<span class="activity-detail">' + escapeHtml(detail) + '</span>' : '');
+
+        activityLog.appendChild(step);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.completeVersionActivityStep = function (versionId) {
+        var card = versionCards[versionId];
+        if (!card) return;
+
+        var activityLog = card.querySelector('.version-activity-log[data-version-id="' + versionId + '"]');
+        if (!activityLog) return;
+
+        var steps = activityLog.querySelectorAll('.version-activity-step.running');
+        if (steps.length > 0) {
+            var lastStep = steps[steps.length - 1];
+            lastStep.classList.remove('running');
+            lastStep.classList.add('done');
+            var icon = lastStep.querySelector('.activity-icon');
+            if (icon) icon.innerHTML = ACTIVITY_CHECK_SVG;
+        }
+    };
+
+    function getStatusBadge(status) {
+        var badges = {
+            'pending': '<span class="version-status-badge status-pending">Pending</span>',
+            'running': '<span class="version-status-badge status-running">Running</span>',
+            'completed': '<span class="version-status-badge status-completed">✓ Completed</span>',
+            'failed': '<span class="version-status-badge status-failed">✗ Failed</span>'
+        };
+        return badges[status] || badges['pending'];
+    }
+
+    // ==================================================================
     // Context progress ring + popover
     // ==================================================================
     var contextRingWrap = document.getElementById('chat-context-ring-wrap');

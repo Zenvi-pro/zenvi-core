@@ -46,6 +46,8 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
     """
     Lives on the Qt main thread. Holds Flowcut tools and runs them when run_tool is invoked.
     Used by the worker thread via BlockingQueuedConnection to run tools on the main thread.
+
+    Supports version context for isolated state execution in parallel tasks.
     """
     if pyqtSignal is not None:
         tool_completed = pyqtSignal(str, str)  # tool_name, result
@@ -56,6 +58,9 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
             super().__init__()
         self._tools = {}
         self.last_tool_result = None
+        # Version context: version_id -> project_snapshot dict
+        self._version_contexts = {}
+        self._current_version_id = None
 
     def register_tools(self, tools_list):
         """Register a list of LangChain tools by name."""
@@ -64,15 +69,58 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
             self._tools[name] = t
         log.debug("Registered %d tools on main thread runner", len(self._tools))
 
+    def set_version_context(self, version_id, project_snapshot):
+        """
+        Set version context for isolated state execution.
+
+        Args:
+            version_id: ID of the version
+            project_snapshot: Deep copy of project state for this version
+        """
+        import copy
+        self._version_contexts[version_id] = copy.deepcopy(project_snapshot)
+        self._current_version_id = version_id
+        log.debug(f"Set version context: {version_id}")
+
+    def clear_version_context(self):
+        """Clear the current version context."""
+        self._current_version_id = None
+
+    def get_version_state(self, version_id):
+        """
+        Get the current project state for a version.
+
+        Args:
+            version_id: ID of the version
+
+        Returns:
+            Deep copy of version's project state, or None if not found
+        """
+        import copy
+        state = self._version_contexts.get(version_id)
+        return copy.deepcopy(state) if state else None
+
     if QMetaObject is not None:
         @pyqtSlot(str, str, result=str)
         def run_tool(self, name, args_json):
             """Run a tool by name with JSON-serialized args. Called from worker via BlockingQueuedConnection."""
             if pyqtSignal is not None and hasattr(self, "tool_started"):
                 self.tool_started.emit(name, args_json or "{}")
+
+            import copy
+            from classes.app import get_app
+            app = get_app()
+
+            # Version context: temporarily swap project state if in version context
+            original_state = None
+            if self._current_version_id and self._current_version_id in self._version_contexts:
+                # Save original global state
+                original_state = copy.deepcopy(app.project._data)
+                # Load version's isolated state
+                app.project._data = copy.deepcopy(self._version_contexts[self._current_version_id])
+                log.debug(f"Swapped to version context: {self._current_version_id}")
+
             try:
-                from classes.app import get_app
-                app = get_app()
                 if hasattr(app, "updates") and hasattr(app.updates, "set_agent_context"):
                     app.updates.set_agent_context(True)
                 try:
@@ -91,11 +139,25 @@ class MainThreadToolRunner(QObject if QObject is not object else object):
                 finally:
                     if hasattr(app, "updates") and hasattr(app.updates, "set_agent_context"):
                         app.updates.set_agent_context(False)
+
+                    # Version context: save modified state back and restore global state
+                    if original_state is not None:
+                        # Save modified version state
+                        self._version_contexts[self._current_version_id] = copy.deepcopy(app.project._data)
+                        # Restore original global state
+                        app.project._data = original_state
+                        log.debug(f"Restored original state from version context: {self._current_version_id}")
             except Exception as e:
                 log.error("MainThreadToolRunner.run_tool %s: %s", name, e, exc_info=True)
                 self.last_tool_result = "Error: {}".format(e)
                 if pyqtSignal is not None and hasattr(self, "tool_completed"):
                     self.tool_completed.emit(name, self.last_tool_result)
+
+                # Restore original state on error
+                if original_state is not None:
+                    app.project._data = original_state
+                    log.debug(f"Restored original state after error in version context: {self._current_version_id}")
+
                 return self.last_tool_result
 
 
@@ -184,6 +246,7 @@ def run_agent_with_tools(
 
     try:
         llm_with_tools = llm.bind_tools(wrapped_tools)
+        critical_error = None  # Track critical errors to return directly
         for iteration in range(max_iterations):
             # #region agent log
             _debug_log("ai_agent_runner.py:run_agent", "before llm.invoke", {"iteration": iteration}, "H5")
@@ -207,7 +270,7 @@ def run_agent_with_tools(
                     result = "Error: unknown tool {}".format(name)
                 else:
                     # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "before tool.invoke (blocks until main thread runs it)", {"tool_name": name}, "H3")
+                    _debug_log("ai_agent_runner.py:run_agent", "before tool.invoke (blocks until main thread runs it)", {"tool_name": name, "args_preview": str(args)[:100]}, "H3")
                     # #endregion
                     try:
                         result = tool.invoke(args)
@@ -215,17 +278,42 @@ def run_agent_with_tools(
                         log.error("Tool %s failed: %s", name, e)
                         result = "Error: {}".format(e)
                     # #region agent log
-                    _debug_log("ai_agent_runner.py:run_agent", "after tool.invoke", {"tool_name": name}, "H3")
+                    _debug_log("ai_agent_runner.py:run_agent", "after tool.invoke", {"tool_name": name, "result_preview": str(result)[:200], "result_len": len(str(result)), "is_error": "Error" in str(result)}, "H3")
                     # #endregion
+                    
+                    # Detect critical errors (installation/setup issues) and return them directly
+                    result_str = str(result)
+                    if result_str.startswith("Error:") and any(keyword in result_str for keyword in ["not installed", "Install", "install", "pip install", "npm install"]):
+                        critical_error = result_str
+                        # #region agent log
+                        _debug_log("ai_agent_runner.py:run_agent", "critical error detected", {"error_preview": result_str[:200]}, "H5")
+                        # #endregion
+                
                 lc_messages.append(ToolMessage(content=str(result), tool_call_id=tid))
+        
+        # If we detected a critical error, return it directly without LLM rephrasing
+        if critical_error:
+            # #region agent log
+            _debug_log("ai_agent_runner.py:run_agent", "returning critical error directly", {"error_preview": critical_error[:200]}, "H5")
+            # #endregion
+            return critical_error
         # Final response text: last AIMessage content
         for m in reversed(lc_messages):
             if isinstance(m, AIMessage):
                 content = getattr(m, "content", None)
                 if content and isinstance(content, str):
+                    # #region agent log
+                    _debug_log("ai_agent_runner.py:run_agent", "returning final response", {"response_preview": content[:200], "response_len": len(content)}, "H4")
+                    # #endregion
                     return content
                 if content:
+                    # #region agent log
+                    _debug_log("ai_agent_runner.py:run_agent", "returning final response (non-string)", {"response_preview": str(content)[:200]}, "H4")
+                    # #endregion
                     return str(content)
+        # #region agent log
+        _debug_log("ai_agent_runner.py:run_agent", "returning default Done", {}, "H4")
+        # #endregion
         return "Done."
     except Exception as e:
         log.error("Agent execution failed: %s", e, exc_info=True)
