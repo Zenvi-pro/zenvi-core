@@ -15,6 +15,10 @@ openshot_qt.egg-info
 
 protobuf_data/
 openshot_qt/
+
+# Remotion service
+remotion-service/node_modules/
+remotion-service/output/
 /src/images/cache/objectdetection.png
 /src/images/cache/objectdetection@2x.png
 google-cloud-sdk/
