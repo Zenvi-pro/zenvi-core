@@ -102,12 +102,13 @@ class DirectorPanelBridge(QObject):
             from classes.app import get_app
             from classes.ai_directors.director_orchestrator import DirectorOrchestrator
             from classes.ai_directors.director_loader import get_director_loader
-            from classes.ai_multi_agent.root_agent import MainThreadToolRunner
+            from classes.ai_agent_runner import create_main_thread_runner, get_main_thread_runner, set_main_thread_runner
+            from classes import settings
 
             app = get_app()
 
             # Get current model ID from settings or use default
-            model_id = "anthropic/claude-sonnet-4"  # Default model
+            model_id = settings.get_settings().get("ai-default-model") or "anthropic/claude-sonnet-4"
 
             # Load directors
             loader = get_director_loader()
@@ -125,8 +126,12 @@ class DirectorPanelBridge(QObject):
 
             log.info(f"Running {len(directors)} directors in parallel...")
 
-            # Create main thread runner for tool execution
-            runner = MainThreadToolRunner()
+            # Prefer the app's existing main-thread runner (shared tools + context).
+            # If absent, create one (must be called on main thread) and cache it.
+            runner = get_main_thread_runner()
+            if runner is None:
+                runner = create_main_thread_runner()
+                set_main_thread_runner(runner)
 
             # Run orchestrator in background thread
             import threading
@@ -141,12 +146,12 @@ class DirectorPanelBridge(QObject):
                     )
 
                     # Display plan in UI (must be done in main thread)
-                    from PyQt5.QtCore import QMetaObject, Qt
+                    from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
                     QMetaObject.invokeMethod(
                         self,
                         "_show_plan_in_ui",
                         Qt.QueuedConnection,
-                        plan
+                        Q_ARG(object, plan)
                     )
 
                     log.info(f"Director analysis complete! Generated plan with {len(plan.steps)} steps")

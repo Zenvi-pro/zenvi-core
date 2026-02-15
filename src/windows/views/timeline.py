@@ -4141,7 +4141,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get final cache object from timeline
         try:
             if self.window.timeline_sync and self.window.timeline_sync.timeline:
-                cache_object = self.window.timeline_sync.timeline.GetCache()
+                # Avoid blocking UI if timeline is currently being mutated (ApplyJsonDiff, SetJson, etc.)
+                lock = getattr(self.window.timeline_sync, "timeline_lock", None)
+                acquired = False
+                if lock is not None:
+                    acquired = lock.acquire(False)
+                    if not acquired:
+                        return
+                try:
+                    cache_object = self.window.timeline_sync.timeline.GetCache()
+                finally:
+                    if lock is not None and acquired:
+                        lock.release()
                 if not cache_object:
                     return
                 # Get the JSON from the cache object (i.e. which frames are cached)
