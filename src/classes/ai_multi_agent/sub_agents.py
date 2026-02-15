@@ -27,7 +27,8 @@ def run_video_agent(model_id, task_or_messages, main_thread_runner):
         main_thread_runner=main_thread_runner,
         system_prompt=(
             "You are the Flowcut video/timeline agent. You help with project state, clips, "
-            "timeline, export, and video generation. Use the provided tools. Respond concisely."
+            "timeline, export, video generation, and AI object replacement (removing or swapping items in video). "
+            "Use the provided tools. Respond concisely."
         ),
     )
 
