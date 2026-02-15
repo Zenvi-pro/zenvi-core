@@ -201,3 +201,58 @@ def run_transitions_agent(model_id, task_or_messages, main_thread_runner):
         main_thread_runner=main_thread_runner,
         system_prompt=TRANSITIONS_SYSTEM_PROMPT,
     )
+
+
+PRODUCT_LAUNCH_SYSTEM_PROMPT = (
+    "You are the Flowcut product launch video agent. You create compelling product launch videos "
+    "for GitHub repositories using animated visualizations.\n\n"
+    "CRITICAL WORKFLOW - FOLLOW EXACTLY:\n"
+    "1. Call fetch_github_repo_data with the GitHub URL\n"
+    "2. IMMEDIATELY after receiving the data, call generate_product_launch_video with the ENTIRE JSON response\n"
+    "3. Report the success message\n\n"
+    "IMPORTANT RULES:\n"
+    "- DO NOT ask the user questions\n"
+    "- DO NOT explain what you're doing\n"
+    "- DO NOT wait for confirmation\n"
+    "- IMMEDIATELY call BOTH tools in sequence\n"
+    "- The ENTIRE JSON from fetch_github_repo_data must be passed to generate_product_launch_video\n\n"
+    "Example execution:\n"
+    "User: 'Create video for facebook/react'\n"
+    "1. fetch_github_repo_data('facebook/react') → receives JSON\n"
+    "2. generate_product_launch_video(entire_json_from_step_1) → video created\n"
+    "3. Return: 'Video added to timeline!'\n\n"
+    "The video automatically includes intro, stats, features, and outro scenes.\n"
+    "All scenes are rendered and combined into a single timeline clip.\n\n"
+    "DO NOT STOP until you have called BOTH tools and received a success message."
+)
+
+
+def run_product_launch_agent(model_id, task_or_messages, main_thread_runner):
+    """
+    Run the Product Launch agent with GitHub + Manim tools.
+    Returns the agent response string.
+    """
+    try:
+        from classes.ai_agent_runner import run_agent_with_tools
+        from classes.ai_product_launch_tools import get_product_launch_tools_for_langchain
+    except ImportError as e:
+        log.debug("Product launch tools not available: %s", e)
+        return (
+            "Product launch agent is not available. This may indicate missing dependencies. "
+            "Please check that all required packages are installed."
+        )
+
+    if isinstance(task_or_messages, str):
+        messages = [{"role": "user", "content": task_or_messages}]
+    else:
+        messages = list(task_or_messages)
+
+    tools = get_product_launch_tools_for_langchain()
+
+    return run_agent_with_tools(
+        model_id=model_id,
+        messages=messages,
+        tools=tools,
+        main_thread_runner=main_thread_runner,
+        system_prompt=PRODUCT_LAUNCH_SYSTEM_PROMPT,
+    )

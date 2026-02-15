@@ -5,14 +5,20 @@ Runs in the worker thread; sub-agent tool execution is dispatched to the main th
 
 ROOT_SYSTEM_PROMPT = """You are the Flowcut root assistant. You route user requests to the right specialist agent.
 
-You have seven tools:
+You have eight tools:
 - invoke_video_agent: for project state, timeline, clips, export, video generation, splitting, adding clips, and AI object replacement (e.g. "replace the water bottle with a Red Bull can"). Use for listing files, adding tracks, exporting, generating video, editing the timeline, and replacing objects in video frames.
 - invoke_manim_agent: for creating educational or mathematical animation videos (Manim). Use when the user asks for educational content, math animations, or Manim.
 - invoke_voice_music_agent: for narration, text-to-speech (TTS), voice overlays, and tagging/storylines. Use when the user asks for narration, voice over, TTS, "add voice", "speak this text", explainer videos, or product demos that need narration.
 - invoke_music_agent: for background music generation via Suno and adding it to the timeline.
 - invoke_transitions_agent: for adding professional transitions and effects to videos. Use when the user asks to add transitions, fade effects, wipes, or any visual transitions between clips or on clips. This agent has access to 412+ OpenShot transitions including fades, wipes, circles, ripples, blurs, and many artistic effects.
 - invoke_directors: for video analysis, critique, and improvement planning. Use when the user asks to analyze, critique, improve, optimize, or get feedback on their video. Directors provide expert feedback from different perspectives (YouTube, GenZ, Cinematic, etc.) and create actionable improvement plans.
+- invoke_product_launch_agent: for creating ANIMATED PRODUCT LAUNCH VIDEOS from GitHub repositories. Use when the user mentions: "product launch", "launch video", "promotional video", "showcase video", "repo video", "GitHub video", or provides a GitHub URL (github.com/...). Creates beautiful animated videos with repository stats, features, and call-to-action using programmatic animations.
 - spawn_parallel_versions: for creating MULTIPLE content types in PARALLEL. Use ONLY when the user explicitly requests multiple different content types (e.g., "make me a vlog, x post, and youtube video" or "create a short form video and long form video"). Takes a list of content requests.
+
+IMPORTANT ROUTING RULES:
+- If user mentions "product launch", "launch video", or provides a GitHub URL → use invoke_product_launch_agent
+- If user mentions "GitHub" or "repository" with "video" → use invoke_product_launch_agent
+- If user asks for promotional/showcase content for a GitHub project → use invoke_product_launch_agent
 
 IMPORTANT: Use spawn_parallel_versions ONLY for explicit multi-content requests. For single content requests, use the appropriate invoke_* tool. When using spawn_parallel_versions, pass a list where each item has:
 - title: Short name for the version (e.g., "YouTube Video", "X Post", "Vlog")
@@ -113,6 +119,33 @@ def run_root_agent(model_id, messages, main_thread_runner):
             return run_directors(mid, task, director_ids, runner)
 
         @tool
+        def invoke_product_launch_agent(task: str) -> str:
+            """
+            Route to the product launch video agent for creating animated promotional videos from GitHub repositories.
+
+            Use this when user requests:
+            - Product launch video
+            - Launch video for a GitHub project/repo
+            - Promotional video for a repository
+            - Showcase video for GitHub project
+            - Animated video from GitHub URL
+            - Repo video, GitHub video
+
+            This agent:
+            - Fetches GitHub repository data (stars, forks, description, README)
+            - Generates animated scenes with Manim (intro, stats, features, outro)
+            - Automatically adds the combined video to the timeline
+
+            Args:
+                task: User's request (must include GitHub URL or repo name)
+            """
+            try:
+                get_plan_builder().start_branch("product_launch", task)
+                return sub_agents.run_product_launch_agent(mid, task, runner)
+            finally:
+                get_plan_builder().end_branch()
+
+        @tool
         def spawn_parallel_versions(content_requests: list) -> str:
             """
             Spawn multiple parallel versions for different content types.
@@ -174,7 +207,7 @@ def run_root_agent(model_id, messages, main_thread_runner):
                 log.error(f"spawn_parallel_versions failed: {e}", exc_info=True)
                 return f"Error starting parallel execution: {e}"
 
-        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, invoke_transitions_agent, invoke_directors, spawn_parallel_versions]
+        return [invoke_video_agent, invoke_manim_agent, invoke_voice_music_agent, invoke_music_agent, invoke_transitions_agent, invoke_directors, invoke_product_launch_agent, spawn_parallel_versions]
 
     root_tools = make_invoke_with_model()
     # Root tools run in worker thread (no main-thread wrap)
