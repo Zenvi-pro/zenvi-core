@@ -171,7 +171,13 @@ class _ManimGenerationThread(QThread if QThread else object):
                 "4. Use only manim community edition API (NOT manim 3b1b)\n"
                 "5. Make animations educational and visually clear\n"
                 "6. Keep the script self-contained (no external files)\n"
-                "7. Return ONLY the Python code, no markdown, no explanation, no comments outside the code\n\n"
+                "7. NO LaTeX dependency: DO NOT use Tex, MathTex, SingleStringMathTex, TexTemplate, or any LaTeX-based mobject.\n"
+                "   - Do not use LaTeX commands (e.g. \\\\frac, \\\\Delta) in Tex/MathTex.\n"
+                "   - If you need equations, render them using Text() or MarkupText() as plain ASCII/Unicode strings,\n"
+                "     or use DecimalNumber()/Integer()/Variable() and arrange with VGroup.\n"
+                "   - Prefer simple typography like: Text('a = (v_f - v_i) / t') instead of MathTex.\n"
+                "8. Avoid external fonts/assets; use default fonts and built-in Manim primitives only.\n"
+                "9. Return ONLY the Python code, no markdown, no explanation, no comments outside the code\n\n"
                 "Example structure:\n"
                 "```python\n"
                 "from manim import *\n\n"
@@ -195,6 +201,44 @@ class _ManimGenerationThread(QThread if QThread else object):
                         if code.startswith("python"):
                             code = code[6:].strip()
                         break
+
+            def _contains_latex_objects(code_str: str) -> bool:
+                # Guard against LaTeX-based Manim objects which require a system LaTeX install.
+                banned_tokens = [
+                    "MathTex",
+                    "SingleStringMathTex",
+                    "TexTemplate",
+                    "Tex(",   # common constructor usage
+                    "Tex)",   # edge cases / formatting
+                ]
+                return any(tok in code_str for tok in banned_tokens)
+
+            # If the model violated the no-LaTeX requirement, try once more with a stricter instruction.
+            if _contains_latex_objects(code):
+                if pyqtSignal and hasattr(self, "progress_update"):
+                    self.progress_update.emit("Regenerating Manim code (removing LaTeX/Tex/MathTex)...")
+                strict = system + (
+                    "\n\nCRITICAL FIX:\n"
+                    "- Your previous output used LaTeX objects (Tex/MathTex). Rewrite the entire script without them.\n"
+                    "- Use ONLY Text/MarkupText/DecimalNumber/Integer/Variable for math.\n"
+                    "- If you cannot avoid Tex/MathTex, output a simpler animation that does not need equations.\n"
+                )
+                response2 = llm.invoke([SystemMessage(content=strict), HumanMessage(content=self._prompt)])
+                code2 = getattr(response2, "content", None) or str(response2)
+                if "```" in code2:
+                    parts = code2.split("```")
+                    for p in parts:
+                        if "class " in p and "Scene" in p:
+                            code2 = p.strip()
+                            if code2.startswith("python"):
+                                code2 = code2[6:].strip()
+                            break
+                code = code2
+                if _contains_latex_objects(code):
+                    raise Exception(
+                        "Generated Manim code still uses LaTeX-based objects (Tex/MathTex). "
+                        "Please rephrase your request to avoid LaTeX, or install a LaTeX distribution."
+                    )
 
             log.info(f"Generated Manim code ({len(code)} chars)")
 

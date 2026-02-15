@@ -174,14 +174,24 @@ def _wrap_tool_for_main_thread(raw_tool, runner):
         if QMetaObject is None or Qt is None or runner is None:
             return raw_tool.invoke(args_dict)
         args_json = json.dumps(args_dict) if args_dict else "{}"
-        QMetaObject.invokeMethod(
-            runner,
-            "run_tool",
-            Qt.BlockingQueuedConnection,
-            Q_ARG(str, name),
-            Q_ARG(str, args_json),
-        )
-        return getattr(runner, "last_tool_result", "Error: no result")
+        try:
+            QMetaObject.invokeMethod(
+                runner,
+                "run_tool",
+                Qt.BlockingQueuedConnection,
+                Q_ARG(str, name),
+                Q_ARG(str, args_json),
+            )
+            return getattr(runner, "last_tool_result", "Error: no result")
+        except Exception as e:
+            # Provide a clearer, actionable error than the Qt overload trace.
+            try:
+                runner_type = type(runner).__name__
+            except Exception:
+                runner_type = "<unknown>"
+            msg = f"Error: tool dispatch failed ({runner_type}). {e}"
+            log.error(msg, exc_info=True)
+            return msg
 
     return StructuredTool.from_function(
         func=invoke_from_main_thread,

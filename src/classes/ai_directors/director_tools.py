@@ -276,6 +276,125 @@ def get_project_metadata() -> str:
         return f"Error: {e}"
 
 
+def analyze_clip_visual_content(clip_id: str = None) -> str:
+    """
+    Analyze visual content of clips using AI vision models.
+
+    Args:
+        clip_id: Optional clip ID to analyze specific clip. If not provided,
+                analyzes all clips on timeline.
+
+    Returns:
+        Formatted analysis of visual content including:
+        - Composition quality (framing, lighting, colors)
+        - Scene content (objects, activities, settings)
+        - Visual quality issues (blur, exposure, stability)
+        - Aesthetic assessment (mood, style, visual appeal)
+    """
+    try:
+        import asyncio
+        from classes.vision_analysis_service import get_vision_service
+        from classes.query import Clip
+
+        service = get_vision_service()
+
+        if not service.is_available():
+            return "Vision analysis not available (disabled or not configured). Enable 'Vision Analysis for Directors' in AI Features settings."
+
+        # Get clips to analyze
+        clips = []
+        if clip_id:
+            clip = Clip.get(id=clip_id)
+            if clip:
+                clips = [clip]
+        else:
+            clips = Clip.filter()  # All clips
+
+        if not clips:
+            return "No clips found to analyze"
+
+        lines = [f"Visual Content Analysis:"]
+        lines.append(f"  Total clips: {len(clips)}")
+
+        # Analyze each clip's visual content
+        analyzed_count = 0
+        for clip in clips:
+            try:
+                # Get or create vision analysis
+                analysis = asyncio.run(service.analyze_clip_visual_content(clip.id))
+
+                if analysis and analysis.get("analyzed"):
+                    analyzed_count += 1
+
+                    # Format results
+                    lines.append(f"\n  Clip {clip.id}:")
+
+                    # Description
+                    description = analysis.get('description', 'N/A')
+                    if description and len(description) > 100:
+                        description = description[:97] + "..."
+                    lines.append(f"    Description: {description}")
+
+                    # Vision analysis scores
+                    vision_analysis = analysis.get('vision_analysis', {})
+                    if vision_analysis:
+                        composition = vision_analysis.get('composition', {})
+                        if composition:
+                            framing = composition.get('framing_score', 0)
+                            lighting = composition.get('lighting_score', 0)
+                            if framing > 0 or lighting > 0:
+                                lines.append(f"    Composition Score: {framing:.2f}")
+                                lines.append(f"    Lighting Score: {lighting:.2f}")
+
+                        visual_quality = vision_analysis.get('visual_quality', {})
+                        if visual_quality:
+                            issues = []
+                            if visual_quality.get('blur_detected'):
+                                issues.append("blur detected")
+                            if visual_quality.get('exposure_issues'):
+                                issues.append("exposure issues")
+                            if issues:
+                                lines.append(f"    Quality Issues: {', '.join(issues)}")
+                            else:
+                                lines.append(f"    Quality: {visual_quality.get('resolution_appearance', 'good')}")
+
+                    # Tags
+                    tags = analysis.get('tags', {})
+                    if tags:
+                        objects = tags.get('objects', [])
+                        if objects:
+                            lines.append(f"    Objects: {', '.join(objects[:5])}")
+
+                        scenes = tags.get('scenes', [])
+                        if scenes:
+                            lines.append(f"    Scene Types: {', '.join(scenes)}")
+
+                        activities = tags.get('activities', [])
+                        if activities:
+                            lines.append(f"    Activities: {', '.join(activities[:3])}")
+
+                        mood = tags.get('mood', [])
+                        if mood:
+                            lines.append(f"    Mood: {', '.join(mood[:3])}")
+
+                    # Confidence
+                    confidence = analysis.get('confidence', 0)
+                    if confidence > 0:
+                        lines.append(f"    Confidence: {confidence:.2f}")
+
+            except Exception as e:
+                log.warning(f"Failed to analyze clip {clip.id}: {e}")
+                lines.append(f"\n  Clip {clip.id}: Analysis failed - {e}")
+
+        lines.append(f"\n  Clips with vision analysis: {analyzed_count}/{len(clips)}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.error(f"analyze_clip_visual_content: {e}", exc_info=True)
+        return f"Error: {e}"
+
+
 # ---- LangChain Tool Registration ----
 
 
@@ -322,6 +441,11 @@ def get_director_analysis_tools_for_langchain():
         """Get project metadata: duration, resolution, fps, format."""
         return get_project_metadata()
 
+    @tool
+    def analyze_clip_visual_content_tool(clip_id: str = None) -> str:
+        """Analyze visual content using AI vision: composition quality, objects, scenes, mood, visual quality issues. Requires vision analysis to be enabled in settings."""
+        return analyze_clip_visual_content(clip_id)
+
     return [
         analyze_timeline_structure_tool,
         analyze_pacing_tool,
@@ -330,4 +454,5 @@ def get_director_analysis_tools_for_langchain():
         analyze_clip_content_tool,
         analyze_music_sync_tool,
         get_project_metadata_tool,
+        analyze_clip_visual_content_tool,
     ]

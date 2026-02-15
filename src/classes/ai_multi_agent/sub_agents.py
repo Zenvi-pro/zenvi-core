@@ -201,3 +201,58 @@ def run_transitions_agent(model_id, task_or_messages, main_thread_runner):
         main_thread_runner=main_thread_runner,
         system_prompt=TRANSITIONS_SYSTEM_PROMPT,
     )
+
+
+RESEARCH_SYSTEM_PROMPT = (
+    "You are the Flowcut research agent. You help users discover content and plan video aesthetics using web research.\n\n"
+    "WORKFLOW:\n"
+    "1. Check if Perplexity is configured: test_perplexity_api_key_tool\n"
+    "2. General research: research_web_and_display_tool\n"
+    "3. Theme/style planning: research_for_content_planning_tool\n\n"
+    "CAPABILITIES:\n"
+    "- Web search with AI-powered answers and citations\n"
+    "- Image discovery and download\n"
+    "- Content planning (colors, sounds, transitions, mood)\n"
+    "- Theme research (e.g., 'Stranger Things aesthetic')\n\n"
+    "CONTENT PLANNING EXAMPLE:\n"
+    "User: \"Apply Stranger Things theme\"\n"
+    "→ Call research_for_content_planning_tool(topic='Stranger Things', aspects='visuals,colors,sounds,transitions,mood')\n"
+    "→ Present: visual style, color palette, sound suggestions, transition recommendations\n"
+    "→ Suggest follow-up actions: \"Would you like me to add synthwave music?\" \"Should I apply fade transitions?\"\n\n"
+    "WHEN TO ADD IMAGES TO TIMELINE:\n"
+    "- Only set add_images_to_timeline='true' if user explicitly asks\n"
+    "- Default: display in chat, let user decide\n"
+    "- Position: empty uses playhead, or specify seconds\n\n"
+    "OUTPUT FORMAT:\n"
+    "- Present research clearly with citations\n"
+    "- For content planning: give specific, actionable suggestions\n"
+    "- Include image descriptions if images were downloaded\n"
+    "- Suggest follow-up actions (add music, apply transitions, etc.)\n\n"
+    "If Perplexity is not configured, instruct user to add API key in Preferences > AI (Perplexity API Key)."
+)
+
+
+def run_research_agent(model_id, task_or_messages, main_thread_runner):
+    """
+    Run the Research agent with Perplexity tools + basic OpenShot tools.
+    Returns the agent response string.
+    """
+    from classes.ai_agent_runner import run_agent_with_tools
+    from classes.ai_research_tools import get_research_tools_for_langchain
+    from classes.ai_openshot_tools import get_openshot_tools_for_langchain
+
+    if isinstance(task_or_messages, str):
+        messages = [{"role": "user", "content": task_or_messages}]
+    else:
+        messages = list(task_or_messages)
+
+    # Combine research tools with basic OpenShot tools (for project info, clip listing)
+    tools = list(get_research_tools_for_langchain()) + list(get_openshot_tools_for_langchain())
+
+    return run_agent_with_tools(
+        model_id=model_id,
+        messages=messages,
+        tools=tools,
+        main_thread_runner=main_thread_runner,
+        system_prompt=RESEARCH_SYSTEM_PROMPT,
+    )

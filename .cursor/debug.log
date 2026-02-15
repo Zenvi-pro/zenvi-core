@@ -99,3 +99,19 @@
 {"location": "ai_agent_runner.py:run_agent", "message": "returning final response", "data": {"response_preview": "The video explaining Newton's First Law of Motion, complete with examples and animations, has been successfully created.", "response_len": 120}, "hypothesisId": "H4", "timestamp": 1771113292.840591}
 {"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1771113292.843112}
 {"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 120}, "hypothesisId": "H2", "timestamp": 1771113292.8439035}
+{"location": "ChatWorkerPool._run", "message": "entered", "data": {"session_id": "f2afe522", "text_len": 59}, "hypothesisId": "H1", "timestamp": 1771130141.037571}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 59, "model_id": "openai/gpt-4o-mini"}, "hypothesisId": "H2", "timestamp": 1771130141.038674}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Can you pop up the director tab at the present if possible?"}, "hypothesisId": "H4", "timestamp": 1771130141.0389705}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1771130141.0391066}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1771130141.0391874}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1771130141.0396206}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1771130142.1845298}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 177}, "hypothesisId": "H2", "timestamp": 1771130142.1846967}
+{"location": "ChatWorkerPool._run", "message": "entered", "data": {"session_id": "4917cfaa", "text_len": 85}, "hypothesisId": "H1", "timestamp": 1771146741.4404852}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message entered", "data": {"user_input_len": 85, "model_id": "openai/gpt-4o"}, "hypothesisId": "H2", "timestamp": 1771146741.4424863}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "entry", "data": {"user_input_preview": "Hey can you make me a manim code explaining the acceleration"}, "hypothesisId": "H4", "timestamp": 1771146741.4428647}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "taking LangChain path", "data": {}, "hypothesisId": "H5", "timestamp": 1771146741.443309}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before get_main_thread_runner", "data": {"thread_note": "current thread is worker sub_thread"}, "hypothesisId": "H3", "timestamp": 1771146741.443534}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "before run_agent (inner thread)", "data": {"runner_ok": true}, "hypothesisId": "H5", "timestamp": 1771146741.4436734}
+{"location": "ai_chat_functionality.py:_generate_response", "message": "after run_agent join", "data": {"has_result": true}, "hypothesisId": "H5", "timestamp": 1771146786.3991556}
+{"location": "ai_chat_functionality.py:send_message", "message": "send_message returning", "data": {"response_len": 200}, "hypothesisId": "H2", "timestamp": 1771146786.3997095}

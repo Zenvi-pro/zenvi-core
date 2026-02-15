@@ -37,6 +37,37 @@ class DirectorPanelBridge(QObject):
         super().__init__()
         self.directors = []
 
+    @pyqtSlot(str)
+    def deleteDirector(self, director_id: str):
+        """Delete a director (called from JavaScript)."""
+        try:
+            from classes.ai_directors.director_loader import get_director_loader
+            import os
+
+            loader = get_director_loader()
+
+            # Check both user and built-in directories
+            user_dir = os.path.expanduser("~/.config/flowcut/directors")
+            user_path = os.path.join(user_dir, f"{director_id}.director")
+
+            from classes import info
+            builtin_dir = os.path.join(info.PATH, "directors", "built_in")
+            builtin_path = os.path.join(builtin_dir, f"{director_id}.director")
+
+            # Only delete from user directory (don't delete built-in directors)
+            if os.path.exists(user_path):
+                os.remove(user_path)
+                log.info(f"Deleted user director: {director_id}")
+                # Reload directors after deletion
+                self.loadDirectors()
+            elif os.path.exists(builtin_path):
+                log.warning(f"Cannot delete built-in director: {director_id}")
+            else:
+                log.warning(f"Director not found: {director_id}")
+
+        except Exception as e:
+            log.error(f"Failed to delete director {director_id}: {e}", exc_info=True)
+
     @pyqtSlot()
     def loadDirectors(self):
         """Load available directors (called from JavaScript on init)."""

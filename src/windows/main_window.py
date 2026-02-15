@@ -3974,6 +3974,15 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.plan_graph_dock)
         self.plan_graph_dock.setVisible(False)
 
+        # Thinking dock (director communication window)
+        try:
+            from windows.thinking_dock import ThinkingDockWidget
+            self.thinking_dock = ThinkingDockWidget(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.thinking_dock)
+            self.thinking_dock.setVisible(False)  # Hidden by default, shown when directors run
+        except Exception as e:
+            log.error(f"Failed to initialize Thinking Dock: {e}", exc_info=True)
+
         # Add Docks submenu to View menu
         self.addViewDocksMenu()
 
