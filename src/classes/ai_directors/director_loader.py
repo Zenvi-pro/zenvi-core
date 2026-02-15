@@ -125,9 +125,10 @@ class DirectorLoader:
         List all available directors (built-in + user).
 
         Returns:
-            List of Director instances
+            List of Director instances (deduplicated by ID)
         """
         directors = []
+        seen_ids = set()
 
         # Load built-in directors
         if os.path.exists(self.builtin_dir):
@@ -135,17 +136,19 @@ class DirectorLoader:
                 if filename.endswith('.director'):
                     filepath = os.path.join(self.builtin_dir, filename)
                     director = self.load_director_from_file(filepath)
-                    if director:
+                    if director and director.id not in seen_ids:
                         directors.append(director)
+                        seen_ids.add(director.id)
 
-        # Load user directors
+        # Load user directors (user directors override built-in if same ID)
         if os.path.exists(self.user_dir):
             for filename in os.listdir(self.user_dir):
                 if filename.endswith('.director'):
                     filepath = os.path.join(self.user_dir, filename)
                     director = self.load_director_from_file(filepath)
-                    if director:
+                    if director and director.id not in seen_ids:
                         directors.append(director)
+                        seen_ids.add(director.id)
 
         return directors
 

@@ -72,17 +72,110 @@ class DirectorPanelBridge(QObject):
     @pyqtSlot(str)
     def selectDirectors(self, director_ids_json: str):
         """
-        Called from JavaScript when user selects directors.
+        Called from JavaScript when user clicks Analyze button.
+        Immediately triggers director analysis.
 
         Args:
             director_ids_json: JSON array of director IDs
         """
         try:
             director_ids = json.loads(director_ids_json)
-            log.info(f"Directors selected: {director_ids}")
+            log.info(f"Starting analysis with directors: {director_ids}")
+
+            # Emit signal for any listeners
             self.directors_selected.emit(director_ids_json)
+
+            # Trigger director analysis immediately
+            self._trigger_director_analysis(director_ids)
+
         except Exception as e:
-            log.error(f"Failed to parse selected directors: {e}", exc_info=True)
+            log.error(f"Failed to start director analysis: {e}", exc_info=True)
+
+    def _trigger_director_analysis(self, director_ids):
+        """
+        Trigger director orchestrator to analyze the project.
+
+        Args:
+            director_ids: List of director IDs to use
+        """
+        try:
+            from classes.app import get_app
+            from classes.ai_directors.director_orchestrator import DirectorOrchestrator
+            from classes.ai_directors.director_loader import get_director_loader
+            from classes.ai_multi_agent.root_agent import MainThreadToolRunner
+
+            app = get_app()
+
+            # Get current model ID from settings or use default
+            model_id = "anthropic/claude-sonnet-4"  # Default model
+
+            # Load directors
+            loader = get_director_loader()
+            directors = []
+            for director_id in director_ids:
+                director = loader.load_director(director_id)
+                if director:
+                    directors.append(director)
+                else:
+                    log.warning(f"Failed to load director: {director_id}")
+
+            if not directors:
+                log.error("No directors loaded for analysis")
+                return
+
+            log.info(f"Running {len(directors)} directors in parallel...")
+
+            # Create main thread runner for tool execution
+            runner = MainThreadToolRunner()
+
+            # Run orchestrator in background thread
+            import threading
+            def run_analysis():
+                try:
+                    orchestrator = DirectorOrchestrator(directors)
+                    plan = orchestrator.run_directors(
+                        model_id=model_id,
+                        task="Analyze the current video project and suggest improvements",
+                        main_thread_runner=runner,
+                        project_data={}
+                    )
+
+                    # Display plan in UI (must be done in main thread)
+                    from PyQt5.QtCore import QMetaObject, Qt
+                    QMetaObject.invokeMethod(
+                        self,
+                        "_show_plan_in_ui",
+                        Qt.QueuedConnection,
+                        plan
+                    )
+
+                    log.info(f"Director analysis complete! Generated plan with {len(plan.steps)} steps")
+
+                except Exception as e:
+                    log.error(f"Director analysis failed: {e}", exc_info=True)
+
+            analysis_thread = threading.Thread(target=run_analysis, daemon=True)
+            analysis_thread.start()
+
+        except Exception as e:
+            log.error(f"Failed to trigger director analysis: {e}", exc_info=True)
+
+    @pyqtSlot(object)
+    def _show_plan_in_ui(self, plan):
+        """Show the director plan in the Plan Review UI (called from main thread)."""
+        try:
+            from classes.app import get_app
+            app = get_app()
+
+            if hasattr(app, 'window') and hasattr(app.window, 'dockPlanReview'):
+                app.window.dockPlanReview.show_plan(plan)
+                app.window.dockPlanReview.setVisible(True)
+                log.info("Director plan displayed in Plan Review panel")
+            else:
+                log.warning("Plan Review UI not available")
+
+        except Exception as e:
+            log.error(f"Failed to display plan in UI: {e}", exc_info=True)
 
     @pyqtSlot()
     def openMarketplace(self):

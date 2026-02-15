@@ -82,33 +82,36 @@ class DirectorCloud {
         ctx.save();
 
         // Draw cloud body (multiple overlapping circles)
-        const numCircles = 5;
+        const numCircles = 6;
         const gradient = ctx.createRadialGradient(
             this.x, this.y, 0,
-            this.x, this.y, this.size
+            this.x, this.y, this.size * 1.2
         );
 
-        // Selected/hovered states
+        // Selected/hovered states with better opacity
         if (this.isSelected) {
             gradient.addColorStop(0, this.color + 'FF');
-            gradient.addColorStop(0.5, this.color + 'AA');
+            gradient.addColorStop(0.4, this.color + 'DD');
+            gradient.addColorStop(0.7, this.color + '88');
             gradient.addColorStop(1, this.color + '00');
         } else if (this.isHovered) {
-            gradient.addColorStop(0, this.color + 'DD');
-            gradient.addColorStop(0.5, this.color + '88');
+            gradient.addColorStop(0, this.color + 'EE');
+            gradient.addColorStop(0.4, this.color + 'BB');
+            gradient.addColorStop(0.7, this.color + '66');
             gradient.addColorStop(1, this.color + '00');
         } else {
-            gradient.addColorStop(0, this.color + 'BB');
-            gradient.addColorStop(0.5, this.color + '66');
+            gradient.addColorStop(0, this.color + 'CC');
+            gradient.addColorStop(0.4, this.color + '99');
+            gradient.addColorStop(0.7, this.color + '44');
             gradient.addColorStop(1, this.color + '00');
         }
 
-        // Draw cloud circles
+        // Draw cloud circles with better distribution
         for (let i = 0; i < numCircles; i++) {
             const angle = (i / numCircles) * Math.PI * 2;
-            const offsetX = Math.cos(angle) * (this.size * 0.3);
-            const offsetY = Math.sin(angle) * (this.size * 0.25);
-            const radius = this.size * (0.5 + Math.random() * 0.2);
+            const offsetX = Math.cos(angle) * (this.size * 0.35);
+            const offsetY = Math.sin(angle) * (this.size * 0.28);
+            const radius = this.size * (0.45 + Math.sin(i) * 0.1);
 
             ctx.beginPath();
             ctx.arc(this.x + offsetX, this.y + offsetY, radius, 0, Math.PI * 2);
@@ -116,42 +119,62 @@ class DirectorCloud {
             ctx.fill();
         }
 
-        // Draw center glow
-        const glowGradient = ctx.createRadialGradient(
-            this.x, this.y, 0,
-            this.x, this.y, this.size * 0.6
-        );
-        glowGradient.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
-        glowGradient.addColorStop(0.5, 'rgba(255, 255, 255, 0.2)');
-        glowGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
+        // Draw semi-transparent background for text readability
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
         ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size * 0.6, 0, Math.PI * 2);
-        ctx.fillStyle = glowGradient;
+        ctx.ellipse(this.x, this.y, this.size * 0.7, this.size * 0.4, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        // Draw director name
+        // Draw director name with better contrast
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto';
+        ctx.font = 'bold 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+
+        // Strong text shadow for readability
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
+        ctx.shadowBlur = 8;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 2;
+
+        // Draw text twice for extra boldness
+        ctx.fillText(this.director.name, this.x, this.y);
         ctx.shadowBlur = 4;
         ctx.fillText(this.director.name, this.x, this.y);
+
         ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
 
         // Draw selection indicator
         if (this.isSelected) {
+            // Outer glow ring
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size + 12, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Inner bright ring
             ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.arc(this.x, this.y, this.size + 10, 0, Math.PI * 2);
+            ctx.arc(this.x, this.y, this.size + 8, 0, Math.PI * 2);
             ctx.stroke();
 
-            // Checkmark
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 24px Arial';
-            ctx.fillText('✓', this.x, this.y - this.size - 20);
+            // Checkmark with background
+            const checkY = this.y - this.size - 25;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.beginPath();
+            ctx.arc(this.x, checkY, 18, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = '#00ff00';
+            ctx.font = 'bold 28px Arial';
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+            ctx.shadowBlur = 6;
+            ctx.fillText('✓', this.x, checkY);
+            ctx.shadowBlur = 0;
         }
 
         ctx.restore();
@@ -316,11 +339,19 @@ function updateSelectionUI() {
     const count = selectedDirectors.size;
     document.getElementById('selected-count').textContent =
         count === 0 ? 'None selected' :
-        count === 1 ? '1 selected' :
-        `${count} selected`;
+        count === 1 ? '1 director' :
+        `${count} directors`;
 
-    // Enable/disable apply button
-    document.getElementById('btn-apply').disabled = count === 0;
+    // Enable/disable analyze button
+    const analyzeBtn = document.getElementById('btn-analyze');
+    analyzeBtn.disabled = count === 0;
+
+    // Update button text
+    if (count > 0) {
+        analyzeBtn.textContent = `🎬 Analyze with ${count} Director${count > 1 ? 's' : ''}`;
+    } else {
+        analyzeBtn.textContent = '🎬 Analyze';
+    }
 }
 
 function showTooltip(director, x, y) {
@@ -414,16 +445,33 @@ function filterDirectors() {
     createDirectorClouds();
 }
 
-// Apply selection
-function applySelection() {
+// Start analysis with selected directors
+function startAnalysis() {
     if (!bridge || selectedDirectors.size === 0) {
         return;
     }
 
     const selected = Array.from(selectedDirectors);
-    console.log("Applying selection:", selected);
+    console.log("Starting analysis with directors:", selected);
 
+    // Update button to show analyzing state
+    const analyzeBtn = document.getElementById('btn-analyze');
+    analyzeBtn.disabled = true;
+    analyzeBtn.textContent = '⏳ Analyzing...';
+
+    // Trigger director analysis via bridge
     bridge.selectDirectors(JSON.stringify(selected));
+
+    // Visual feedback: pulse selected clouds
+    for (let cloud of directorClouds) {
+        if (cloud.isSelected) {
+            // Add animation feedback
+            cloud.hoverSize = cloud.baseSize * 1.3;
+            setTimeout(() => {
+                cloud.hoverSize = cloud.baseSize * 1.2;
+            }, 300);
+        }
+    }
 }
 
 // Open marketplace
