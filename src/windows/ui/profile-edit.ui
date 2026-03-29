@@ -38,7 +38,7 @@
         </sizepolicy>
        </property>
        <property name="text">
-        <string>*/.openshot_qt/profiles/*</string>
+        <string>*/.zenvi/profiles/*</string>
        </property>
        <property name="textFormat">
         <enum>Qt::PlainText</enum>

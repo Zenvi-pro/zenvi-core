@@ -105,7 +105,7 @@ def init_tracing():
         "https://21496af56ab24e94af8ff9771fbc1600@o772439.ingest.sentry.io/5795985",
         sample_rate=sample_rate,
         traces_sample_rate=traces_sample_rate,
-        release=f"openshot@{info.VERSION}",
+        release=f"zenvi@{info.VERSION}",
         environment=environment,
         debug=False,
         before_send=before_send

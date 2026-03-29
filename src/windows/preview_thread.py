@@ -91,7 +91,7 @@ class PreviewParent(QObject, UpdateInterface):
         _ = get_app()._tr
 
         # Only JUCE audio errors bubble up here now
-        QMessageBox.warning(self.parent, _("Audio Error"), _("Please fix the following error and restart OpenShot\n%s") % error)
+        QMessageBox.warning(self.parent, _("Audio Error"), _("Please fix the following error and restart Zenvi\n%s") % error)
 
     def Stop(self):
         """Disconnect preview parent from update manager and stop worker thread"""

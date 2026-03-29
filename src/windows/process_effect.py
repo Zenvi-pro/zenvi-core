@@ -72,7 +72,7 @@ class ProcessEffect(QDialog):
     def __init__(self, clip_id, effect_class, effect_params):
 
         if not openshot.Clip().COMPILED_WITH_CV:
-            raise ModuleNotFoundError("Openshot not compiled with OpenCV")
+            raise ModuleNotFoundError("Zenvi not compiled with OpenCV")
 
         # Create dialog class
         QDialog.__init__(self)

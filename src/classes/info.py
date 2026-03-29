@@ -50,7 +50,7 @@ COLORS_PATH = os.path.join(PATH, "colors")
 
 # User paths
 HOME_PATH = os.path.join(os.path.expanduser("~"))
-USER_PATH = os.path.join(HOME_PATH, ".openshot_qt")
+USER_PATH = os.path.join(HOME_PATH, ".zenvi")
 BACKUP_PATH = os.path.join(USER_PATH)
 RECOVERY_PATH = os.path.join(USER_PATH, "recovery")
 THUMBNAIL_PATH = os.path.join(USER_PATH, "thumbnail")
@@ -212,6 +212,16 @@ SETUP = {
 def setup_userdirs():
     """Create user paths if they do not exist (this is where
     temp files are stored... such as cached thumbnails)"""
+    # Migrate from legacy .openshot_qt directory if .zenvi doesn't exist yet
+    legacy_user_path = os.path.join(HOME_PATH, ".openshot_qt")
+    if os.path.exists(legacy_user_path) and not os.path.exists(USER_PATH):
+        try:
+            import shutil
+            shutil.copytree(legacy_user_path, USER_PATH)
+            print("Migrated user data from .openshot_qt to .zenvi")
+        except OSError:
+            pass
+
     for folder in _path_defaults.values():
         if not os.path.exists(os.fsencode(folder)):
             os.makedirs(folder, exist_ok=True)

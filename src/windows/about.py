@@ -124,9 +124,9 @@ class About(QDialog):
         else:
             log.warn("No changelog files found, disabling button")
 
-        description_text = _("OpenShot Video Editor is an Award-Winning, Free, and<br> Open-Source Video Editor for Linux, Mac, Chrome OS, and Windows.")
+        description_text = _("Zenvi is an Award-Winning, Free, and<br> Open-Source Video Editor for Linux, Mac, Chrome OS, and Windows.")
         copyright_text = _('Copyright &copy; %(begin_year)s-%(current_year)s') % {
-            'begin_year': '2008',
+            'begin_year': '2024',
             'current_year': str(datetime.datetime.today().year)
             }
         about_html = '''
@@ -137,8 +137,8 @@ class About(QDialog):
         company_html = '''
             <div style="font-weight:400;" align="right">
               %s<br>
-              <a href="http://www.openshotstudios.com?r=about-us"
-                 style="text-decoration:none; color: #91C3FF;">OpenShot Studios, LLC</a>
+              <a href="https://zenvi.pro?r=about-us"
+                 style="text-decoration:none; color: #91C3FF;">Zenvi</a>
             </div>
             ''' % (copyright_text)
 
@@ -454,10 +454,10 @@ class Changelog(QDialog):
         }
 
         # Update github link button
-        github_text = _("OpenShot on GitHub")
+        github_text = _("Zenvi on GitHub")
         github_html = '''
             <p align="center">
-                <a href="https://github.com/OpenShot/">%s</a>
+                <a href="https://github.com/Zenvi-pro/">%s</a>
             </p>
             ''' % (github_text)
         self.lblGitHubLink.setText(github_html)

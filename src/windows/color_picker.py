@@ -185,7 +185,7 @@ class PickingDialog(QDialog):
 
         # Get first pushbutton (color picker)
         color_picker_button = self.color_picker.findChildren(QPushButton)[0]
-        self.setWindowTitle(f"OpenShot: {color_picker_button.text().replace('&', '')}")
+        self.setWindowTitle(f"Zenvi: {color_picker_button.text().replace('&', '')}")
 
     def paintEvent(self, event):
         painter = QPainter(self)

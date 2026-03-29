@@ -746,7 +746,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self,
             _("Open Project..."),
             recommended_folder,
-            _("Zenvi Project (*.zvn);;OpenShot Project (*.osp)"))[0]
+            _("Zenvi Project (*.zvn);;Legacy Project (*.osp)"))[0]
 
         if file_path:
             # Load project file

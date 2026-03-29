@@ -175,7 +175,7 @@ class TutorialDialog(QWidget):
             # create spinner
             checkbox_metrics = QCheckBox()
             checkbox_metrics.setObjectName("checkboxMetrics")
-            checkbox_metrics.setText(_("Yes, I would like to improve OpenShot!"))
+            checkbox_metrics.setText(_("Yes, I would like to improve Zenvi!"))
             if s.get("send_metrics"):
                 checkbox_metrics.setCheckState(Qt.Checked)
             else:
@@ -450,7 +450,7 @@ class TutorialManager(QObject):
              "x": 0,
              "y": 0,
              "object_id": "dockVideo",
-             "text": _("<b>Welcome!</b> OpenShot Video Editor is an award-winning, open-source video editing application! This tutorial will walk you through the basics.<br><br>Would you like to automatically send errors and metrics to help improve OpenShot?"),
+             "text": _("<b>Welcome!</b> Zenvi is an award-winning, open-source video editing application! This tutorial will walk you through the basics.<br><br>Would you like to automatically send errors and metrics to help improve Zenvi?"),
              "arrow": False
              },
             {"id": "1",
