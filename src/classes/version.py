@@ -35,7 +35,15 @@ def get_current_Version():
 
 
 def _fetch_latest_version():
-    """HTTP call to GitHub Releases — emits FoundVersionSignal on success."""
+    """HTTP call to GitHub Releases — emits FoundVersionSignal on success.
+
+    Silently skips when ZENVI_GITHUB_REPO is not set so that development
+    builds and self-hosted installs don't crash on startup.
+    """
+    if not getattr(info, "GITHUB_REPO", ""):
+        log.debug("version: ZENVI_GITHUB_REPO not set — skipping update check")
+        return
+
     url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
 
     try:

@@ -139,6 +139,12 @@ WEB_BACKEND = 'auto'
 # Backend API URL
 BACKEND_URL = os.getenv("ZENVI_BACKEND_URL", "https://api.zenvi.pro")
 
+# GitHub repository slug used by the auto-update checker (version.py).
+# Format: "owner/repo" — e.g. "zenvi-team/zenvi-core".
+# Leave blank (default) to disable the version check in development / self-builds.
+# Set ZENVI_GITHUB_REPO in your environment or .env to enable it in production.
+GITHUB_REPO = os.getenv("ZENVI_GITHUB_REPO", "")
+
 # Sentry.io error & transaction reporting rate (0.0 TO 1.0)
 # 0.0 = no error reporting to Sentry
 # 0.5 = 1/2 of errors reported to Sentry

@@ -154,6 +154,36 @@ You should have received a copy of the GNU General Public License
 along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 
 # Zenvi Core Updates:
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in the values for your setup:
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `ZENVI_BACKEND_URL` | `http://localhost:8500` | Yes | URL of the running zenvi-backend server |
+| `REMOTION_PRODUCT_LAUNCH_URL` | `http://localhost:3100` | No | Remotion product-launch rendering service |
+| `ZENVI_WEBSITE` | `https://zenvi.pro` | No | Used for OAuth login redirect |
+| `SUPABASE_URL` | — | No | Supabase project URL (login / tier enforcement) |
+| `SUPABASE_ANON_KEY` | — | No | Supabase public anon key |
+| `ZENVI_GITHUB_REPO` | *(blank)* | No | GitHub slug for auto-update check — see below |
+
+### Auto-update checker (`ZENVI_GITHUB_REPO`)
+
+On startup, Zenvi spawns a background thread that queries the GitHub Releases API
+to check whether a newer version is available. This feature is **opt-in** and
+disabled by default so that development builds and self-hosted installs are
+unaffected.
+
+To enable it, set `ZENVI_GITHUB_REPO` to the `owner/repo` slug of your release
+repository (e.g. `zenvi-team/zenvi-core`). When the variable is blank or unset,
+the thread exits silently — no network call is made and no error is raised.
+
+```env
+# .env.production
+ZENVI_GITHUB_REPO=zenvi-team/zenvi-core
+```
+
 ## Custom Installation:
 1. Create a virtual environment & install required dependencies: 
     ```sh
