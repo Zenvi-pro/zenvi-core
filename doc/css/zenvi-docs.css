@@ -267,14 +267,15 @@ a:focus {
   color: #d1d5db;
 }
 
-.zenvi-search-shortcut kbd {
+.rst-content .zenvi-search-shortcut kbd {
   font-family: inherit;
   font-size: 0.75rem;
   border-radius: 6px;
-  border: 1px solid #1e293b;
-  background: #0f172a;
+  border: 1px solid #94a3b8 !important;
+  background: #e5e7eb !important;
   padding: 0.12rem 0.38rem;
-  color: #f8fafc;
+  color: #111827 !important;
+  box-shadow: none !important;
 }
 
 .search-results .search li {

@@ -41,4 +41,3 @@ Next pages
 
 * :doc:`guides/editor-workflows`
 * :doc:`reference/ui-components`
-* :doc:`search`

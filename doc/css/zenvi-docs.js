@@ -52,10 +52,20 @@
     });
   }
 
+  function normalizeThemeHeadingRoles() {
+    var captions = document.querySelectorAll("p.caption[role='heading']");
+    captions.forEach(function (caption) {
+      // RTD theme outputs role=heading without aria-level in some blocks.
+      // Convert to plain paragraph semantics to avoid invalid ARIA state.
+      caption.removeAttribute("role");
+    });
+  }
+
   function run() {
     boostSearchUX();
     decorateTables();
     tagAdmonitions();
+    normalizeThemeHeadingRoles();
   }
 
   if (document.readyState === "loading") {

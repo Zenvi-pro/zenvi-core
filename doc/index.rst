@@ -24,16 +24,22 @@ Zenvi Documentation
    :caption: Start here
 
    start-here
+   quickstart
+   editing-basics
    guides/getting-started
 
 .. toctree::
    :maxdepth: 2
    :caption: Guides
 
+   guides/assistant
    guides/editor-workflows
+   guides/export
+   guides/troubleshooting
 
 .. toctree::
    :maxdepth: 1
    :caption: Reference
 
    reference/ui-components
+   style-guide
