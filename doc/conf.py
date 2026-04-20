@@ -134,7 +134,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 # show_authors = False
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = 'sphinx'
+pygments_style = "friendly"
 
 # A list of ignored prefixes for module index sorting.
 # modindex_common_prefix = []
@@ -151,21 +151,27 @@ todo_include_todos = False
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'sphinx_rtd_theme'
+html_theme = "sphinx_rtd_theme"
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
 #
-# html_theme_options = {}
+html_theme_options = {
+    "navigation_depth": 3,
+    "collapse_navigation": False,
+    "sticky_navigation": True,
+    "includehidden": True,
+    "titles_only": False,
+    "style_external_links": True,
+    "style_nav_header_background": "#0e1726",
+}
 
 # Add any paths that contain custom themes here, relative to this directory.
-html_theme_path = ["_themes", ]
-
 # The name for this set of Sphinx documents.
 # "<project> v<release> documentation" by default.
 #
-# html_title = 'OpenShot Video Editor v2.1.0'
+html_title = f"{project} Documentation"
 
 # A shorter title for the navigation bar.  Default is the same as html_title.
 #
@@ -174,7 +180,7 @@ html_theme_path = ["_themes", ]
 # The name of an image file (relative to this directory) to place at the top
 # of the sidebar.
 #
-html_logo = "../xdg/openshot-arrow.png"
+html_logo = "../xdg/zenvi-doc.svg"
 
 # The name of an image file (relative to this directory) to use as a favicon of
 # the docs.  This file should be a Windows icon file (.ico) being 16x16 or 32x32
@@ -185,7 +191,12 @@ html_favicon = "../xdg/zenvi.ico"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ['css']
+html_static_path = ["css"]
+html_css_files = ["zenvi-docs.css"]
+html_js_files = ["zenvi-docs.js"]
+
+# Sidebar configuration for consistent navigation and search placement
+html_sidebars = {"**": ["globaltoc.html", "relations.html", "searchbox.html"]}
 
 # Add any extra paths that contain custom files (such as robots.txt or
 # .htaccess) here, relative to this directory. These files are copied
@@ -241,7 +252,7 @@ html_show_sphinx = False
 # contain a <link> tag referring to it.  The value of this option must be the
 # base URL from which the finished HTML is served.
 #
-# html_use_opensearch = ''
+html_use_opensearch = "https://zenvi.pro/docs"
 
 # This is the file name suffix for HTML files (e.g. ".xhtml").
 # html_file_suffix = None

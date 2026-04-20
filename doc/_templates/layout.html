@@ -1,0 +1,24 @@
+{% extends "!layout.html" %}
+
+{%- block extrahead %}
+  {{ super() }}
+  <meta name="theme-color" content="#0e1726" />
+{%- endblock %}
+
+{%- block body %}
+  <a class="zenvi-skip-link" href="#zenvi-doc-content">Skip to content</a>
+  {{ super() }}
+{%- endblock %}
+
+{%- block content %}
+  <main id="zenvi-doc-content" role="main">
+    {{ super() }}
+  </main>
+{%- endblock %}
+
+{%- block footer %}
+  <div class="rst-footer-buttons" role="contentinfo">
+    <p>Zenvi docs are continuously updated to match the current app behavior.</p>
+  </div>
+  {{ super() }}
+{%- endblock %}
