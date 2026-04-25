@@ -3280,6 +3280,25 @@ TOOL_HANDLERS = {
 }
 
 
+# Tools that only READ project / timeline data and don't mutate Qt widgets.
+# Safe to invoke from worker threads, which lets the agent run several of them
+# concurrently without serializing through the Qt main-thread dispatcher.
+READ_ONLY_TOOLS = frozenset({
+    "list_files_tool",
+    "list_clips_tool",
+    "list_layers_tool",
+    "list_markers_tool",
+    "get_timeline_state_tool",
+    "get_project_info_tool",
+    "get_file_info_tool",
+    "get_export_settings_tool",
+    "list_transitions_tool",
+    "search_transitions_tool",
+    "get_clips_with_full_metadata_tool",
+    "get_project_metadata_tool",
+})
+
+
 def execute_tool(tool_name: str, tool_args: dict) -> str:
     """Execute a tool by name with the given arguments. Returns the result string."""
     handler = TOOL_HANDLERS.get(tool_name)
@@ -3305,6 +3324,8 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             return _invoke()
         app = _get_app()
         if QThread.currentThread() is app.thread():
+            return _invoke()
+        if tool_name in READ_ONLY_TOOLS:
             return _invoke()
         return _run_on_main_thread(_invoke)
     except Exception as e:

@@ -214,10 +214,9 @@ class ZenviBackendClient:
         """
         Send a chat message via WebSocket with tool delegation support.
 
-        on_tool_call(tool_name, tool_args, call_id) -> str: Execute tool locally, return result.
-        on_response(response_text, session_id): Called with the final response.
-        on_error(error_message): Called on error.
-        on_token(text): Called for each streamed token chunk as the LLM generates it.
+        Each incoming ``tool_call`` is dispatched to its own worker thread so
+        the agent can fan out N concurrent tool calls and we ack them as soon
+        as each one finishes.  The recv loop never blocks on tool execution.
         """
         try:
             import websocket
@@ -230,154 +229,152 @@ class ZenviBackendClient:
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
+        ws = None
         try:
             ws = websocket.create_connection(ws_url, timeout=600)
             with self._ws_lock:
                 self._active_wss.add(ws)
 
-            # Send user message
-            ws.send(json.dumps({
+            send_lock = threading.Lock()
+
+            def _ws_send(payload: dict) -> bool:
+                try:
+                    with send_lock:
+                        ws.send(json.dumps(payload))
+                    return True
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("WS send failed: %s", exc)
+                    return False
+
+            _ws_send({
                 "type": "user_message",
                 "data": {
                     "message": message,
                     "model_id": model_id,
                     "session_id": session_id,
                 },
-            }))
+            })
 
-            # Listen for responses
-            final_response = None
-            while True:
-                raw = ws.recv()
-                msg = json.loads(raw)
-                msg_type = msg.get("type", "")
-                data = msg.get("data", {})
+            # Track outstanding tool worker threads so we can drain them
+            # before returning when the server signals 'done'.
+            tool_workers: List[threading.Thread] = []
+            tool_workers_lock = threading.Lock()
+            last_tool_result_holder: List[Optional[str]] = [None]
 
-                if msg_type == "tool_call":
-                    # Backend wants us to execute a tool locally.
-                    # Tool execution (e.g. video generation) can block for
-                    # minutes.  Run the handler in its own thread and keep
-                    # the WS alive by:
-                    #  1. A recv-loop thread that answers server pings/pongs
-                    #  2. Client-side pings every 30 s
-                    if on_tool_call:
-                        _tool_result_holder = [None]
-                        _tool_error_holder = [None]
+            def _spawn_tool_worker(call_data: Dict[str, Any]) -> None:
+                if not on_tool_call:
+                    # No handler — synthesize an immediate empty result so the
+                    # backend doesn't hang.
+                    _ws_send({
+                        "type": "tool_result",
+                        "data": {
+                            "call_id": call_data.get("call_id", ""),
+                            "result": "Error: no tool handler",
+                        },
+                    })
+                    return
 
-                        def _run_tool():
+                def _runner():
+                    try:
+                        result = on_tool_call(
+                            call_data.get("tool_name", ""),
+                            call_data.get("tool_args", {}),
+                            call_data.get("call_id", ""),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        log.error("Tool execution error: %s", exc)
+                        result = f"Tool execution error: {exc}"
+                    text = str(result) if result is not None else ""
+                    if text and not text.startswith("Error"):
+                        last_tool_result_holder[0] = text
+                    _ws_send({
+                        "type": "tool_result",
+                        "data": {
+                            "call_id": call_data.get("call_id", ""),
+                            "result": text,
+                        },
+                    })
+
+                t = threading.Thread(target=_runner, daemon=True, name="zenvi-tool-worker")
+                with tool_workers_lock:
+                    tool_workers.append(t)
+                t.start()
+
+            # Periodic client-side pings so very long tool runs don't get an
+            # idle reset from intermediaries.  Sends through the lock so they
+            # never interleave with tool_result frames.
+            stop_pings = threading.Event()
+
+            def _ping_loop():
+                while not stop_pings.wait(30):
+                    try:
+                        with send_lock:
+                            ws.ping()
+                    except Exception:
+                        return
+
+            ping_thread = threading.Thread(target=_ping_loop, daemon=True, name="zenvi-ws-ping")
+            ping_thread.start()
+
+            final_response: Optional[str] = None
+            saw_done = False
+            try:
+                while True:
+                    try:
+                        raw = ws.recv()
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("WS recv failed: %s", exc)
+                        break
+                    if not raw:
+                        # Empty frame == server closed cleanly.
+                        break
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    msg_type = msg.get("type", "")
+                    data = msg.get("data", {}) or {}
+
+                    if msg_type == "tool_call":
+                        _spawn_tool_worker(data)
+                    elif msg_type == "token":
+                        if on_token:
                             try:
-                                _tool_result_holder[0] = on_tool_call(
-                                    data.get("tool_name", ""),
-                                    data.get("tool_args", {}),
-                                    data.get("call_id", ""),
-                                )
-                            except Exception as _te:
-                                log.error("Tool execution error: %s", _te)
-                                _tool_error_holder[0] = str(_te)
+                                on_token(data.get("text", ""))
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_token handler error: %s", exc)
+                    elif msg_type == "assistant_response":
+                        final_response = data.get("response", "")
+                        if on_response:
+                            on_response(final_response, data.get("session_id", ""))
+                    elif msg_type == "error":
+                        if on_error:
+                            on_error(data.get("message", "Unknown error"))
+                        break
+                    elif msg_type == "done":
+                        saw_done = True
+                        break
+                    elif msg_type in ("keepalive", "pong"):
+                        pass
+            finally:
+                stop_pings.set()
+                # Drain in-flight tool workers so any tool_result frames they
+                # emit get sent before we close the WS.
+                with tool_workers_lock:
+                    pending = list(tool_workers)
+                for t in pending:
+                    t.join(timeout=120)
 
-                        # Background recv thread: keep processing incoming
-                        # frames so the server's pings get answered.
-                        _stop_recv = threading.Event()
+            try:
+                ws.close()
+            except Exception:
+                pass
 
-                        def _recv_keepalive():
-                            try:
-                                old_timeout = ws.gettimeout()
-                                # Use a short poll interval so the thread can
-                                # react to _stop_recv quickly.  Must be smaller
-                                # than the join(timeout=) below to guarantee the
-                                # thread exits before the main thread proceeds.
-                                ws.settimeout(0.5)
-                                while not _stop_recv.is_set():
-                                    try:
-                                        # recv_frame() processes control frames
-                                        # (ping→pong) as a side-effect
-                                        _frame = ws.recv_frame()
-                                    except websocket.WebSocketTimeoutException:
-                                        pass  # no data — loop around
-                                    except Exception:
-                                        break
-                                ws.settimeout(old_timeout)
-                            except Exception:
-                                pass
-
-                        _recv_thread = threading.Thread(
-                            target=_recv_keepalive, daemon=True)
-                        _recv_thread.start()
-
-                        _tool_thread = threading.Thread(
-                            target=_run_tool, daemon=True)
-                        _tool_thread.start()
-
-                        # Wait for tool, sending client-side pings periodically
-                        while _tool_thread.is_alive():
-                            _tool_thread.join(timeout=30)
-                            if _tool_thread.is_alive():
-                                try:
-                                    ws.ping()
-                                except Exception:
-                                    pass
-
-                        # Stop the recv keepalive thread and wait for it to exit
-                        # fully before sending the tool_result.  The join timeout
-                        # must exceed the recv_frame poll timeout (0.5 s) so we
-                        # are guaranteed the thread has stopped reading frames —
-                        # otherwise it can consume the backend's assistant_response
-                        # frame and the main loop never sees it.
-                        _stop_recv.set()
-                        _recv_thread.join(timeout=3)
-
-                        result = _tool_result_holder[0]
-                        if _tool_error_holder[0]:
-                            result = f"Tool execution error: {_tool_error_holder[0]}"
-
-                        # Send result back to backend.  If the WS broke
-                        # during the (potentially minutes-long) tool
-                        # execution, the send will fail.  In that case,
-                        # return the tool result directly so the caller
-                        # can still use it.
-                        try:
-                            ws.send(json.dumps({
-                                "type": "tool_result",
-                                "data": {
-                                    "call_id": data.get("call_id", ""),
-                                    "result": str(result),
-                                },
-                            }))
-                        except Exception as _ws_err:
-                            log.warning("WS send tool_result failed: %s", _ws_err)
-                            # Tool already executed; return its result
-                            # instead of raising and losing it.
-                            if result and not str(result).startswith("Error"):
-                                if on_error:
-                                    on_error(f"WebSocket closed after tool completed: {_ws_err}")
-                                return str(result)
-                            raise  # re-raise if the tool itself failed
-
-                elif msg_type == "token":
-                    if on_token:
-                        try:
-                            on_token(data.get("text", ""))
-                        except Exception as _te:
-                            log.debug("on_token handler error: %s", _te)
-
-                elif msg_type == "assistant_response":
-                    final_response = data.get("response", "")
-                    if on_response:
-                        on_response(final_response, data.get("session_id", ""))
-
-                elif msg_type == "error":
-                    if on_error:
-                        on_error(data.get("message", "Unknown error"))
-                    break
-
-                elif msg_type == "done":
-                    break
-
-                elif msg_type == "keepalive":
-                    pass
-
-            ws.close()
-            return final_response
+            if saw_done or final_response is not None:
+                return final_response
+            # WS dropped without a proper 'done'.  If a tool already produced
+            # a usable result, surface that to the caller.
+            return final_response or last_tool_result_holder[0]
 
         except Exception as e:
             log.error("WebSocket chat failed: %s", e)
@@ -387,7 +384,7 @@ class ZenviBackendClient:
         finally:
             try:
                 with self._ws_lock:
-                    if "ws" in locals():
+                    if ws is not None:
                         self._active_wss.discard(ws)
             except Exception:
                 pass
