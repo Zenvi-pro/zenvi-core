@@ -367,7 +367,10 @@ class OpenShotApp(QApplication):
     def show_errors(self):
         count = len(self.errors)
         if count > 0:
-            self.log.warning("Displaying %d startup messages", count)
+            _log = getattr(self, "log", None)
+            if _log is None:
+                from classes.logger import log as _log
+            _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
             error.show()

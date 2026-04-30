@@ -175,3 +175,135 @@ along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
     PYTHONPATH_LIBOPENSHOT=[libopenshot folder]/build/bindings/python \
     bash run-zenvi-core.sh
     ```
+
+## MSYS2 (Windows): libopenshot + Zenvi Core
+
+Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. Qt **WebEngine** is **not** available in the MinGW64 pacman repos; install **qtwebkit** below for the HTML timeline (or run with `-b qwidget`).
+
+1. Install [MSYS2](https://www.msys2.org/) and start `C:/msys64/msys2_shell.cmd` (or **MinGW x64** from the Start Menu).
+
+2. Persist PATH (optional):
+
+    ```sh
+    echo 'PATH=$PATH:/c/msys64/mingw64/bin:/c/msys64/mingw64/lib' >> ~/.bashrc
+    source ~/.bashrc
+    ```
+
+3. Sync and install build dependencies:
+
+    ```sh
+    pacman -Syu
+
+    pacman -S --needed --disable-download-timeout \
+      base-devel git \
+      mingw-w64-x86_64-toolchain \
+      mingw64/mingw-w64-x86_64-ffmpeg \
+      mingw64/mingw-w64-x86_64-swig \
+      mingw64/mingw-w64-x86_64-cmake \
+      mingw64/mingw-w64-x86_64-doxygen \
+      mingw64/mingw-w64-x86_64-zeromq \
+      mingw64/mingw-w64-x86_64-python-pyqt5 \
+      mingw64/mingw-w64-x86_64-python-pip \
+      mingw64/mingw-w64-x86_64-python-pyzmq \
+      mingw64/mingw-w64-x86_64-rust
+
+    pip3 install httplib2 tinys3 github3.py==0.9.6 requests --break-system-packages
+    ```
+
+4. Install the [Windows SDK](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/) and set:
+
+    ```sh
+    export DXSDK_DIR="C:\Program Files (x86)\Windows Kits\10"
+    ```
+
+5. Install the [ASIO SDK](https://www.steinberg.net/asiosdk), extract to e.g. `C:\Program Files`, then:
+
+    ```sh
+    export ASIO_SDK_DIR="C:\Program Files\ASIOSDK\common"
+    ```
+
+6. **unittest-cpp** (install to MSYS `/usr`):
+
+    ```sh
+    git clone https://github.com/unittest-cpp/unittest-cpp.git
+    cd unittest-cpp/builds
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../
+    make
+    make install
+    export UNITTEST_DIR=C:\msys64\usr
+    cd ~
+    ```
+
+7. **libopenshot-audio** (install to `/usr` so libraries land in `C:/msys64/usr/bin`):
+
+    ```sh
+    git clone https://github.com/OpenShot/libopenshot-audio.git
+    cd libopenshot-audio && mkdir build && cd build
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_PREFIX:PATH=/usr ../
+    make && make install
+    export LIBOPENSHOT_AUDIO_DIR=C:\msys64\usr
+    cd ~
+    ```
+
+8. Extra Qt / ZMQ for libopenshot:
+
+    ```sh
+    pacman -S mingw64/mingw-w64-x86_64-qt5-svg
+    pacman -S mingw64/mingw-w64-x86_64-cppzmq
+    ```
+
+9. **libopenshot** (install public libs to MinGW `/mingw64`):
+
+    ```sh
+    git clone https://github.com/OpenShot/libopenshot.git
+    cd libopenshot && mkdir build && cd build
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make \
+      -DCMAKE_INSTALL_PREFIX:PATH=/mingw64 \
+      -DDISABLE_TESTS=1 \
+      -DCMAKE_CXX_FLAGS="-include cstdint" ../
+    make
+    make install
+    cd ~
+    ```
+
+10. **Packaging / lief** (prefer pacman; pip cannot reliably build `lief` on MinGW):
+
+    ```sh
+    pacman -S --needed mingw64/mingw-w64-x86_64-python-cx-freeze mingw64/mingw-w64-x86_64-python-lief
+    ```
+
+11. **Clone Zenvi Core** and finish Python / Qt timeline deps:
+
+    ```sh
+    git clone https://github.com/Zenvi-pro/zenvi-core.git
+    cd zenvi-core
+
+    # HTML timeline: PyQt5 WebKit bindings are in python-pyqt5; Qt DLLs come from qtwebkit.
+    # (There is no qt5-webengine / PyQt5 QtWebEngine in MSYS2 MinGW64.)
+    pacman -S --needed mingw64/mingw-w64-x86_64-qtwebkit
+
+    # Optional: inspect missing DLLs for native modules
+    # pacman -S --needed mingw64/mingw-w64-x86_64-ntldd
+
+    python -m venv --system-site-packages .venv
+    source .venv/bin/activate
+    pip install -r requirements-noqt.txt
+    # pip install -r requirements-manim.txt   # if needed
+    ```
+
+12. **Run Zenvi** against your **build tree** bindings (not only install):
+
+    ```sh
+    cd ~/zenvi-core
+    PYTHONPATH_LIBOPENSHOT=~/libopenshot/build/bindings/python bash run-zenvi-core.sh
+    ```
+
+    `run-zenvi-core.sh` sets `PATH` and Windows DLL search paths so `libopenshot.dll` finds **`libopenshot-audio.dll`** under `C:/msys64/usr/bin` and MinGW/Qt FFmpeg DLLs under `/mingw64/bin`.
+
+    If the timeline backend fails to load, force WebKit or the Qt-only timeline:
+
+    ```sh
+    bash run-zenvi-core.sh -b webkit
+    # or
+    bash run-zenvi-core.sh -b qwidget
+    ```
