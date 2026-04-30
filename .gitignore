@@ -26,3 +26,7 @@ remotion-service/output/
 /src/images/cache/objectdetection.png
 /src/images/cache/objectdetection@2x.png
 google-cloud-sdk/
+
+# Windows system drives
+%SystemDrive%/
+~/

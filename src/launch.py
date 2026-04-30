@@ -45,6 +45,47 @@ import os
 import argparse
 import json
 import logging
+from pathlib import Path
+
+
+def _prepend_dll_search_path_for_libopenshot():
+    """Windows/MinGW: Python 3.8+ limits DLL dirs; add paths for _openshot.pyd dependencies."""
+    if sys.platform != "win32":
+        return
+    add = getattr(os, "add_dll_directory", None)
+    if not add:
+        return
+    raw = os.environ.get("PYTHONPATH_LIBOPENSHOT", "")
+    for part in raw.split(os.pathsep):
+        bind = os.path.abspath(os.path.expanduser(part.strip()))
+        if not os.path.isdir(bind):
+            continue
+        for d in (
+            bind,
+            os.path.normpath(os.path.join(bind, os.pardir, os.pardir, "src")),
+        ):
+            if os.path.isdir(d):
+                try:
+                    add(d)
+                except OSError:
+                    pass
+    base_bin = os.path.join(sys.base_prefix, "bin")
+    if os.path.isdir(base_bin):
+        try:
+            add(base_bin)
+        except OSError:
+            pass
+    # libopenshot-audio is often installed with prefix /usr -> DLLs live in MSYS usr/bin;
+    # Win32 LoadLibrary does not reliably honor POSIX /usr/bin in PATH for MinGW python.exe.
+    try:
+        msys_usr_bin = Path(sys.base_prefix).resolve().parent / "usr" / "bin"
+        if msys_usr_bin.is_dir():
+            add(str(msys_usr_bin))
+    except OSError:
+        pass
+
+
+_prepend_dll_search_path_for_libopenshot()
 
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:
@@ -230,7 +271,11 @@ def main():
     try:
         app = OpenShotApp(argv)
     except Exception:
-        app.show_errors()
+        # OpenShotApp.__init__ can fail after QApplication.__init__; the module-level app may stay None.
+        inst = QApplication.instance()
+        if inst is not None and hasattr(inst, "show_errors"):
+            inst.show_errors()
+        sys.exit(1)
 
     # Setup Qt application details
     app.setApplicationName('zenvi')

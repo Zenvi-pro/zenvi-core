@@ -12,7 +12,7 @@ PYTHON_BIN="$VENV_DIR/bin/python3"
 if [[ ! -x "$PYTHON_BIN" ]]; then
   echo "Missing venv interpreter: $PYTHON_BIN"
   echo "Create it and install deps (example):"
-  echo "  python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements.txt"
+  echo "  python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements-noqt.txt"
   exit 1
 fi
 
@@ -56,6 +56,32 @@ if [[ -n "$HOST_PYTHONPATH_LIBOPENSHOT" && -d "$HOST_PYTHONPATH_LIBOPENSHOT" ]];
   fi
 fi
 
+# Windows/MinGW: the loader resolves dependent DLLs via PATH (not LD_LIBRARY_PATH). The venv
+# interpreter's base_prefix (e.g. /mingw64) must be on PATH so Qt/ffmpeg/GCC/QtWebEngine DLLs load.
+LAUNCH_PATH="$VENV_DIR/bin"
+if [[ -n "$LIBOPENSHOT_LIB_DIR" ]]; then
+  LAUNCH_PATH="$LAUNCH_PATH:$LIBOPENSHOT_LIB_DIR"
+fi
+if [[ -n "$HOST_PYTHONPATH_LIBOPENSHOT" && -d "$HOST_PYTHONPATH_LIBOPENSHOT" ]]; then
+  _bind="$(cd "$HOST_PYTHONPATH_LIBOPENSHOT" && pwd)"
+  LAUNCH_PATH="$LAUNCH_PATH:$_bind"
+fi
+if [[ -x "$PYTHON_BIN" ]]; then
+  PY_BASE_BIN="$("$PYTHON_BIN" -c "import os, sys; print(os.path.join(sys.base_prefix, 'bin'))" 2>/dev/null || true)"
+  if [[ -n "$PY_BASE_BIN" && -d "$PY_BASE_BIN" ]]; then
+    LAUNCH_PATH="$LAUNCH_PATH:$PY_BASE_BIN"
+  fi
+  # libopenshot-audio installs to CMAKE_INSTALL_PREFIX=/usr; DLL must be on PATH as a Windows path.
+  PY_MSYS_USBIN="$("$PYTHON_BIN" -c "import pathlib, sys; p=(pathlib.Path(sys.base_prefix).resolve().parent/'usr'/'bin'); print(p.resolve() if p.is_dir() else '', end='')" 2>/dev/null || true)"
+  if [[ -n "$PY_MSYS_USBIN" ]]; then
+    LAUNCH_PATH="$LAUNCH_PATH:$PY_MSYS_USBIN"
+  fi
+fi
+if [[ -n "${MINGW_PREFIX:-}" && -d "${MINGW_PREFIX}/bin" ]]; then
+  LAUNCH_PATH="$LAUNCH_PATH:${MINGW_PREFIX}/bin"
+fi
+LAUNCH_PATH="$LAUNCH_PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Start with a clean environment but ensure we run the venv Python.
 # Note: Do NOT force a system LD_LIBRARY_PATH here (it can break PyQt5 by
 # mixing system Qt libs with the wheels' bundled Qt).
@@ -65,7 +91,7 @@ ENV_ARGS=(
   "LOGNAME=${LOGNAME:-${USER:-}}"
   "LANG=${LANG:-C.UTF-8}"
   "LC_ALL=${LC_ALL:-}"
-  "PATH=$VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  "PATH=$LAUNCH_PATH"
   "VIRTUAL_ENV=$VENV_DIR"
   "PYTHONNOUSERSITE=1"
   "SHELL=${SHELL:-/bin/bash}"

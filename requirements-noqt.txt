@@ -12,10 +12,10 @@ requests>=2.31
 websocket-client>=1.7
 python-dotenv>=1.0.1
 
-# CI / packaging
-setuptools>=61
-wheel
-cx_Freeze==7.0.0
+# cx_Freeze / lief are only needed for freeze.py installers; they are not in this file because pip often
+# cannot build lief on MSYS2/MinGW (CMake targets MSVC). Use requirements.txt for packaging, or on MSYS2:
+#   pacman -S --needed mingw-w64-x86_64-python-cx-freeze mingw-w64-x86_64-python-lief
+# with python -m venv --system-site-packages so the venv sees those packages.
 distro
 defusedxml
 certifi
