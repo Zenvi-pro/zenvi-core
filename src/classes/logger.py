@@ -44,13 +44,20 @@ class StreamToLogger(object):
         self.logbuf = ''
 
     def write(self, text):
-        self.logbuf += str(text) or ""
-        self.parent.write(text)
+        try:
+            self.logbuf += str(text) or ""
+            self.parent.write(text)
+        except Exception:
+            # During interpreter/Qt teardown on Windows, streams or COM can be invalid (RPC_E_DISCONNECTED).
+            pass
 
     def flush(self):
-        if self.logbuf.rstrip():
-            self.logger.log(self.log_level, self.logbuf.rstrip())
-        self.logbuf = ''
+        try:
+            if self.logbuf.rstrip():
+                self.logger.log(self.log_level, self.logbuf.rstrip())
+            self.logbuf = ''
+        except Exception:
+            self.logbuf = ''
 
     def errors(self):
         pass

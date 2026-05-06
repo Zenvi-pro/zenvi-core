@@ -32,7 +32,7 @@ import uuid
 
 from PyQt5.QtCore import (
     Qt, QCoreApplication, QMutex, QTimer,
-    QPoint, QPointF, QSize, QSizeF, QRect, QRectF,
+    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot,
 )
 from PyQt5.QtGui import (
     QTransform, QPainter, QIcon, QColor, QPen, QBrush, QCursor, QImage, QRegion
@@ -697,8 +697,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         # Always round up to next whole integer value
         return viewport_rect.toAlignedRect()
 
-    def present(self, image, *args):
-        """ Present the current frame """
+    @pyqtSlot(QImage)
+    def present(self, image):
+        """ Present the current frame (QImage slot for QueuedConnection / invokeMethod). """
 
         # Calculate "render" / "present" FPS
         current_sec = time.localtime(time.time()).tm_sec

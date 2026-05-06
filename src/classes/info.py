@@ -62,6 +62,20 @@ IMAGES_PATH = os.path.join(PATH, "images")
 EXPORT_PRESETS_PATH = os.path.join(PATH, "presets")
 COLORS_PATH = os.path.join(PATH, "colors")
 
+
+def application_icon_ico_path():
+    """Path to the application window/taskbar .ico, or '' if missing."""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        for rel in ("zenvi.ico", os.path.join("xdg", "zenvi.ico"), os.path.join("lib", "xdg", "zenvi.ico")):
+            p = os.path.join(exe_dir, rel)
+            if os.path.isfile(p):
+                return p
+    root = os.path.dirname(PATH)
+    p = os.path.join(root, "xdg", "zenvi.ico")
+    return p if os.path.isfile(p) else ""
+
+
 # User paths
 HOME_PATH = os.path.join(os.path.expanduser("~"))
 USER_PATH = os.path.join(HOME_PATH, ".openshot_qt")

@@ -739,6 +739,8 @@ jobs:
           if-no-files-found: error
 
   # ── 4. Windows build (.exe) ───────────────────────────────────────────
+  # MSYS2 MinGW x64 — same stack as README.md "MSYS2 (Windows): libopenshot + Zenvi Core".
+  # freeze.py already expects c:/msys64/mingw64/... for BABL DLLs on Windows.
   build-windows:
     needs: version
     runs-on: windows-latest
@@ -747,588 +749,104 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: msys2/setup-msys2@v2
         with:
-          python-version: "3.11"
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-ffmpeg
+            mingw-w64-x86_64-swig
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-zeromq
+            mingw-w64-x86_64-cppzmq
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-pyqt5
+            mingw-w64-x86_64-python-pyzmq
+            mingw-w64-x86_64-rust
+            mingw-w64-x86_64-qt5-svg
+            mingw-w64-x86_64-python-cx-freeze
+            mingw-w64-x86_64-python-lief
+            mingw-w64-x86_64-python-cffi
+            mingw-w64-x86_64-python-zstandard
+            mingw-w64-x86_64-qtwebkit
+            mingw-w64-x86_64-libffi
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-babl
+            mingw-w64-x86_64-libsamplerate
 
-      - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-        shell: powershell
-
-      - name: Cache libopenshot build (Windows MSVC + Qt 5.15.2)
+      - name: Cache libopenshot bundle (MSYS2 MinGW64)
         id: cache-libopenshot-win
         uses: actions/cache@v4
         with:
-          path: C:\libopenshot-install
-          key: libopenshot-v0.5.0-audio-v0.5.0-windows-msvc2022-qt5.15.2-py311-vcpkg-v21
+          path: .ci-deps/openshot-bundle
+          key: windows-msys2-libopenshot-v0.5.0-v2-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
 
-      - name: Build libopenshot from source (Windows MSVC + Qt 5.15.2)
+      - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
-        shell: powershell
+        shell: msys2 {0}
+        env:
+          MSYSTEM: MINGW64
+        run: bash installer/ci-win-msys-libopenshot.sh
+
+      - name: Export OpenShot bundle path for freeze
+        shell: msys2 {0}
         run: |
-          $ErrorActionPreference = "Stop"
-          $INSTALL = "C:\libopenshot-install"
-          New-Item -ItemType Directory -Path $INSTALL, "C:\Temp" -Force | Out-Null
+          set -euo pipefail
+          BUNDLE="${GITHUB_WORKSPACE}/.ci-deps/openshot-bundle"
+          test -f "${BUNDLE}/openshot.py" || { echo "::error::missing ${BUNDLE}/openshot.py"; exit 1; }
+          echo "ZENVI_OPENSHOT_PYROOT=${BUNDLE}" >> "${GITHUB_ENV}"
+          echo "ZENVI_OPENSHOT_BINDDIR=${BUNDLE}" >> "${GITHUB_ENV}"
+          echo "PYTHONPATH=" >> "${GITHUB_ENV}"
 
-          # Install Qt 5.15.2 MSVC2019 64-bit — same as PyQt5-Qt5-5.15.2 installed earlier.
-          # Building libopenshot with this Qt means libopenshot.dll will call Qt symbols that
-          # are already present in the MSVC Qt5Core/Gui/Widgets.dll that PyQt5 loads at runtime.
-          pip install aqtinstall --quiet
-          Write-Host "Installing Qt 5.15.2 MSVC2019 64-bit via aqtinstall..."
-          python -m aqt install-qt windows desktop 5.15.2 win64_msvc2019_64 -O C:\Qt5
-          $qtPrefix = "C:\Qt5\5.15.2\msvc2019_64"
-
-          # SWIG: Python binding generator (generates _openshot.pyd + openshot.py)
-          choco install swig --yes --no-progress --quiet 2>&1 | Out-Null
-          $env:PATH = "C:\ProgramData\chocolatey\bin;$env:PATH"
-          $swigExe = (Get-Command swig -ErrorAction SilentlyContinue).Source
-          if (!$swigExe) { throw "swig not found after choco install" }
-          Write-Host "SWIG: $swigExe"
-
-          # FFmpeg MSVC shared build (includes .dll + .lib import libs + headers)
-          $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip"
-          Write-Host "Downloading FFmpeg MSVC shared build..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile "C:\Temp\ffmpeg.zip" -UseBasicParsing
-          Expand-Archive "C:\Temp\ffmpeg.zip" -DestinationPath "C:\ffmpeg-src" -Force
-          $ffmpegDir = (Get-ChildItem "C:\ffmpeg-src" -Directory | Select-Object -First 1).FullName
-          Move-Item $ffmpegDir "C:\ffmpeg"
-          Write-Host "FFmpeg at C:\ffmpeg"
-
-          # Install required C/C++ libs via vcpkg (pre-installed on GitHub Actions Windows runners)
-          # zlib: required by libopenshot-audio (JUCE) and libopenshot
-          # libsamplerate: required by libopenshot-audio for sample-rate conversion
-          $vcpkg = "C:\vcpkg\vcpkg.exe"
-          Write-Host "Installing vcpkg deps..."
-          # zlib + libsamplerate: required by libopenshot-audio (JUCE)
-          # zeromq: required by libopenshot (inter-process communication)
-          # cppzmq: C++ header-only wrapper for zeromq (zmq.hpp, required by ZmqLogger.h)
-          & $vcpkg install "zlib:x64-windows" "libsamplerate:x64-windows" "zeromq:x64-windows" "cppzmq:x64-windows" --triplet x64-windows 2>&1 |
-            Where-Object { $_ -notmatch "^(  |Building|Fetching|Downloading|Installing|Stored)" } |
-            ForEach-Object { Write-Host $_ }
-          $vcpkgToolchain = "C:\vcpkg\scripts\buildsystems\vcpkg.cmake"
-          $vcpkgInstall   = "C:\vcpkg\installed\x64-windows"
-
-          # Build libopenshot-audio v0.5.0
-          git clone --depth=1 --branch v0.5.0 `
-            https://github.com/OpenShot/libopenshot-audio.git C:\libopenshot-audio-src
-
-          # Patch AppConfig.h to explicitly disable ASIO (JUCE defaults to enabled on Windows
-          # but iasiodrv.h requires the Steinberg ASIO SDK which is not freely available on CI).
-          $appConfig = "C:\libopenshot-audio-src\JuceLibraryCode\AppConfig.h"
-          if (Test-Path $appConfig) {
-            $t = Get-Content $appConfig -Raw
-            $t = [regex]::Replace($t, "#define JUCE_ASIO\s+1",  "#define JUCE_ASIO 0")
-            if ($t -notmatch "JUCE_ASIO") { $t += "`n#define JUCE_ASIO 0`n" }
-            [System.IO.File]::WriteAllText($appConfig, $t)
-            Write-Host "Patched AppConfig.h: disabled JUCE_ASIO"
-          }
-          # Patch root CMakeLists.txt:
-          # 1. Link dbghelp on Windows (JUCE SystemStats::getStackBacktrace → SymGetModuleInfo64)
-          # 2. WINDOWS_EXPORT_ALL_SYMBOLS: on MSVC, JUCE does not mark symbols with
-          #    __declspec(dllexport) unless JUCE_DLL_BUILD is set. Without exports, the linker
-          #    does NOT generate an import library (.lib). cmake's WINDOWS_EXPORT_ALL_SYMBOLS
-          #    causes it to generate a .def file exporting all non-data symbols, producing the
-          #    import library that libopenshot needs to link against openshot-audio.dll.
-          $audioRoot = "C:\libopenshot-audio-src\CMakeLists.txt"
-          $rt = [System.IO.File]::ReadAllText($audioRoot)
-          if ($rt -notmatch "dbghelp") {
-            $patch  = "`nif(WIN32 AND TARGET openshot-audio)`n"
-            $patch += "  target_link_libraries(openshot-audio PRIVATE dbghelp)`n"
-            $patch += "  set_target_properties(openshot-audio PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)`n"
-            $patch += "endif()`n"
-            [System.IO.File]::AppendAllText($audioRoot, $patch)
-            Write-Host "Patched CMakeLists.txt: added dbghelp + WINDOWS_EXPORT_ALL_SYMBOLS"
-          }
-          # Fallback compile flag: /EHsc must be explicit (CMAKE_CXX_FLAGS replaces MSVC defaults).
-          $juceAsioFlag = "/EHsc /DJUCE_ASIO=0"
-
-          cmake -S C:\libopenshot-audio-src -B C:\libopenshot-audio-src\build `
-            -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_INSTALL_PREFIX="$INSTALL" `
-            "-DCMAKE_PREFIX_PATH=$qtPrefix;$vcpkgInstall" `
-            "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            "-DCMAKE_CXX_FLAGS=$juceAsioFlag" `
-            -DCMAKE_BUILD_TYPE=Release
-          if ($LASTEXITCODE -ne 0) { throw "libopenshot-audio cmake configure failed (exit $LASTEXITCODE)" }
-          # Build only the main library target (not the demo executable which requires the import
-          # lib and fails if it's in an unexpected location — we don't need the demo).
-          cmake --build   C:\libopenshot-audio-src\build --config Release --parallel --target openshot-audio
-          if ($LASTEXITCODE -ne 0) { throw "libopenshot-audio cmake build failed (exit $LASTEXITCODE)" }
-          cmake --install C:\libopenshot-audio-src\build --config Release
-          # cmake --install may exit non-zero because the demo binary wasn't built
-          # (we used --target openshot-audio to skip it).  The main library and its
-          # cmake config files are installed by the root cmake_install.cmake BEFORE
-          # the src/ subdirectory (demo) is processed, so they should be present.
-          # We verify by checking for OpenShotAudioConfig.cmake instead of throwing here.
-          Write-Host "cmake --install exit code: $LASTEXITCODE (non-zero may be demo-only)"
-
-          # Manually copy the DLL/lib in case the partial install left them out
-          New-Item -ItemType Directory -Path "$INSTALL\bin","$INSTALL\lib" -Force | Out-Null
-          $relDir = "C:\libopenshot-audio-src\build\Release"
-          if (Test-Path "$relDir\openshot-audio.dll") {
-            Copy-Item "$relDir\openshot-audio.dll" "$INSTALL\bin\" -Force
-            Write-Host "Copied openshot-audio.dll to $INSTALL\bin\"
-          }
-          if (Test-Path "$relDir\openshot-audio.lib") {
-            Copy-Item "$relDir\openshot-audio.lib" "$INSTALL\lib\" -Force
-          }
-
-          # Find OpenShotAudioConfig.cmake — check install tree first, then build tree.
-          $audioConfig = Get-ChildItem -Path $INSTALL -Recurse -Filter "OpenShotAudioConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (!$audioConfig) {
-            # Build tree fallback: cmake also writes a build-tree config to the build dir
-            $audioConfig = Get-ChildItem -Path "C:\libopenshot-audio-src\build" -Recurse -Filter "OpenShotAudioConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
-          }
-          if (!$audioConfig) { throw "OpenShotAudioConfig.cmake not found in install or build tree" }
-          $audioConfigDir = $audioConfig.Directory.FullName
-          Write-Host "OpenShotAudio cmake config dir: $audioConfigDir"
-
-          # Clone libopenshot v0.5.0
-          git clone --depth=1 --branch v0.5.0 `
-            https://github.com/OpenShot/libopenshot.git C:\libopenshot-src
-
-          # Apply FFmpeg 7+ compatibility patches (same as macOS arm64 CI)
-          Get-ChildItem -Path C:\libopenshot-src -Recurse -Filter "*.cpp" |
-            ForEach-Object {
-              $f = $_.FullName; $t = Get-Content $f -Raw -ErrorAction SilentlyContinue
-              if (!$t) { return }
-              $changed = $false
-              if ($t -match "FF_PROFILE_") {
-                $t = $t -replace "FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE" `
-                        -replace "FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED" `
-                        -replace "FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN" `
-                        -replace "FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH"
-                $changed = $true
-              }
-              if ($t -match "av_stream_add_side_data") {
-                $t = [regex]::Replace($t, "av_stream_add_side_data\([^;]*\);", "(void)0; /* removed FFmpeg7+ */")
-                $changed = $true
-              }
-              if ($t -match "->nb_side_data") {
-                $t = $t -replace "->nb_side_data","->codecpar->nb_coded_side_data" `
-                        -replace "->side_data\[","->codecpar->coded_side_data["
-                $changed = $true
-              }
-              if ($changed) { [System.IO.File]::WriteAllText($f, $t) }
-            }
-
-          # Disable OpenMP in CMake (avoid linker issues on Windows CI)
-          Get-ChildItem -Path C:\libopenshot-src -Recurse -Filter "CMakeLists.txt" |
-            ForEach-Object {
-              $f = $_.FullName; $t = Get-Content $f -Raw -ErrorAction SilentlyContinue
-              if ($t -match "find_package.*OpenMP") {
-                $t = [regex]::Replace($t, "find_package\(OpenMP[^)]*\)",
-                  "set(OpenMP_FOUND FALSE) # disabled for Windows CI")
-                [System.IO.File]::WriteAllText($f, $t)
-              }
-            }
-
-          # Remove avresample (dropped in FFmpeg 5+)
-          Get-ChildItem -Path C:\libopenshot-src -Recurse -Include "CMakeLists.txt","*.cmake" |
-            ForEach-Object {
-              $f = $_.FullName; $t = Get-Content $f -Raw -ErrorAction SilentlyContinue
-              if ($t -match "avresample") {
-                [System.IO.File]::WriteAllText($f, ($t -replace " avresample",""))
-              }
-            }
-
-          # Patch POSIX-only includes that MSVC doesn't have:
-          # unistd.h (sleep/read/write), execinfo.h (backtrace) — guard with #ifndef _WIN32
-          @("C:\libopenshot-src\src\ChunkWriter.h",
-            "C:\libopenshot-src\src\FFmpegReader.cpp",
-            "C:\libopenshot-src\src\FFmpegWriter.cpp") | ForEach-Object {
-            if (Test-Path $_) {
-              $t = Get-Content $_ -Raw
-              if ($t -match '#include\s*<unistd\.h>') {
-                $t = [regex]::Replace($t, '(#include\s*<unistd\.h>)',
-                  "#ifndef _WIN32`n`$1`n#endif // _WIN32")
-                [System.IO.File]::WriteAllText($_, $t)
-                Write-Host "Patched unistd.h guard in $(Split-Path $_ -Leaf)"
-              }
-            }
-          }
-          # Guard execinfo.h and cxxabi.h (GCC/Clang-only, not available on MSVC)
-          # Also fix __MINGW32__ guards → _WIN32 so MSVC uses the Windows DbgHelp path
-          @("C:\libopenshot-src\src\CrashHandler.h") | ForEach-Object {
-            if (Test-Path $_) {
-              $t = [System.IO.File]::ReadAllText($_)
-              foreach ($hdr in @('execinfo\.h', 'cxxabi\.h')) {
-                if ($t -match "#include\s*<$hdr>") {
-                  $t = [regex]::Replace($t, "(#include\s*<$hdr>)",
-                    "#ifndef _WIN32`n`$1`n#endif // _WIN32")
-                }
-              }
-              # __MINGW32__ is only defined when using MinGW compiler; MSVC sets _WIN32 instead.
-              # Changing the guard makes MSVC pick the Windows DbgHelp stack-trace path rather
-              # than the POSIX sigaction path (which doesn't compile on MSVC).
-              $t = $t -replace '#ifdef __MINGW32__', '#if defined(_WIN32)'
-              $t = $t -replace '#elif __MINGW32__', '#elif defined(_WIN32)'
-              [System.IO.File]::WriteAllText($_, $t)
-              Write-Host "Patched CrashHandler.h (__MINGW32__ -> _WIN32, GCC-only headers guarded)"
-            }
-          }
-          # Same __MINGW32__ → _WIN32 fix for CrashHandler.cpp, and replace WINBOOL with BOOL.
-          # WINBOOL is a MinGW-specific typedef (defined in MinGW's windef.h) that MSVC does not
-          # provide. MSVC's windows.h uses plain BOOL instead.
-          $crashCpp = "C:\libopenshot-src\src\CrashHandler.cpp"
-          if (Test-Path $crashCpp) {
-            $t = [System.IO.File]::ReadAllText($crashCpp)
-            $t = $t -replace '#ifdef __MINGW32__', '#if defined(_WIN32)'
-            $t = $t -replace '#elif __MINGW32__', '#elif defined(_WIN32)'
-            $t = $t -replace '\bWINBOOL\b', 'BOOL'
-            [System.IO.File]::WriteAllText($crashCpp, $t)
-            Write-Host "Patched CrashHandler.cpp (__MINGW32__ -> _WIN32, WINBOOL -> BOOL)"
-          }
-
-          # Fix AV_GET_CODEC_CONTEXT macro in FFmpegUtilities.h:
-          # GCC statement expressions ({ ... }) are not valid C++ in MSVC.
-          # Append a _MSC_VER-guarded undef+redefine block using C++11 lambda.
-          # Note: PowerShell @"..."@ here-strings are NOT used here because the "@ terminator
-          # must be at column-0 which conflicts with YAML block-literal indentation rules.
-          $ffmpegUtils = "C:\libopenshot-src\src\FFmpegUtilities.h"
-          if (Test-Path $ffmpegUtils) {
-            $t = [System.IO.File]::ReadAllText($ffmpegUtils)
-            if ($t -notmatch '_MSC_VER.*AV_GET_CODEC_CONTEXT') {
-              $ov  = "`n#ifdef _MSC_VER`n"
-              $ov += "// GCC statement expressions ({...}) are not valid in MSVC.`n"
-              $ov += "// Override AV_GET_CODEC_CONTEXT with a C++11 immediately-invoked lambda.`n"
-              $ov += "#ifdef AV_GET_CODEC_CONTEXT`n"
-              $ov += "#  undef AV_GET_CODEC_CONTEXT`n"
-              $ov += "#endif`n"
-              $ov += '#define AV_GET_CODEC_CONTEXT(av_stream, av_codec) \' + "`n"
-              $ov += '  ([&]() -> AVCodecContext* { AVCodecContext *ctx = avcodec_alloc_context3(av_codec); \' + "`n"
-              $ov += '    avcodec_parameters_to_context(ctx, av_stream->codecpar); return ctx; }())' + "`n"
-              $ov += "#endif`n"
-              [System.IO.File]::AppendAllText($ffmpegUtils, $ov)
-              Write-Host "Patched FFmpegUtilities.h: appended _MSC_VER lambda override for AV_GET_CODEC_CONTEXT"
-            }
-          }
-
-          # Fix AVChannelLayout compound literal in FFmpegReader.cpp (C4576 with /permissive-).
-          # The line: ->ch_layout = (AVChannelLayout) AV_CHANNEL_LAYOUT_STEREO
-          # expands to a C99 compound literal which MSVC rejects.
-          # Replace with av_channel_layout_from_mask() function call.
-          $ffmpegReader = "C:\libopenshot-src\src\FFmpegReader.cpp"
-          if (Test-Path $ffmpegReader) {
-            $t = [System.IO.File]::ReadAllText($ffmpegReader)
-            if ($t -match '\(AVChannelLayout\)\s*AV_CHANNEL_LAYOUT_STEREO') {
-              $t = [regex]::Replace($t,
-                '(AV_GET_CODEC_ATTRIBUTES\(\w+,\s*\w+\)->ch_layout)\s*=\s*\(AVChannelLayout\)\s*AV_CHANNEL_LAYOUT_STEREO',
-                'av_channel_layout_from_mask(&$1, AV_CH_LAYOUT_STEREO)')
-              [System.IO.File]::WriteAllText($ffmpegReader, $t)
-              Write-Host "Patched FFmpegReader.cpp: AVChannelLayout compound literal -> av_channel_layout_from_mask()"
-            }
-          }
-
-          # libopenshot main library also needs WINDOWS_EXPORT_ALL_SYMBOLS ON so MSVC
-          # generates openshot.lib (import library) needed by pyopenshot.vcxproj.
-          # libopenshot uses GCC-default symbol visibility — no __declspec(dllexport) markers —
-          # so MSVC doesn't generate an import library without this setting.
-          $openshotCmake = "C:\libopenshot-src\src\CMakeLists.txt"
-          if (Test-Path $openshotCmake) {
-            $t = [System.IO.File]::ReadAllText($openshotCmake)
-            if ($t -notmatch 'WINDOWS_EXPORT_ALL_SYMBOLS') {
-              $patch  = "`nif(MSVC AND TARGET openshot)`n"
-              $patch += "  # Generate import library (.lib) for openshot.dll on MSVC`n"
-              $patch += "  set_target_properties(openshot PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)`n"
-              $patch += "endif()`n"
-              [System.IO.File]::AppendAllText($openshotCmake, $patch)
-              Write-Host "Patched src/CMakeLists.txt: added WINDOWS_EXPORT_ALL_SYMBOLS ON for openshot"
-            }
-          }
-
-          # Fix Python bindings cmake: -Wno-* flags are GCC/Clang-only, not valid in MSVC.
-          # Wrap the GENERATED_COMPILE_OPTIONS assignment in if(NOT MSVC) so MSVC skips them.
-          $pyBindCmake = "C:\libopenshot-src\bindings\python\CMakeLists.txt"
-          if (Test-Path $pyBindCmake) {
-            $t = [System.IO.File]::ReadAllText($pyBindCmake)
-            if ($t -notmatch 'NOT MSVC') {
-              # Literal string replacement (no regex) to safely handle ${sw_flags}
-              $oldProp = 'set_property(SOURCE openshot.i PROPERTY GENERATED_COMPILE_OPTIONS ${sw_flags})'
-              $newProp = "if(NOT MSVC)`n" + $oldProp + "`nendif() # NOT MSVC"
-              $t = $t.Replace($oldProp, $newProp)
-              [System.IO.File]::WriteAllText($pyBindCmake, $t)
-              Write-Host "Patched Python bindings cmake: wrapped GCC -Wno- flags in if(NOT MSVC)"
-            }
-          }
-
-          # Fix AVRational C99 compound literals: (AVRational){num, den} → AVRational{num, den}
-          # ONLY target AVRational — broader compound-literal regex breaks initializer lists
-          # and if/while bodies (pattern (identifier){ also matches those).
-          Get-ChildItem -Path C:\libopenshot-src\src -Filter "*.cpp" -Recurse |
-            ForEach-Object {
-              $f = $_.FullName; $t = Get-Content $f -Raw -ErrorAction SilentlyContinue
-              if ($t -match '\(AVRational\)\s*\{') {
-                $t = $t -replace '\(AVRational\)\s*\{', 'AVRational{'
-                [System.IO.File]::WriteAllText($f, $t)
-                Write-Host "Patched AVRational compound literals in $($_.Name)"
-              }
-            }
-
-          # Build libopenshot with MSVC + Qt5.15.2 + FFmpeg + Python 3.11
-          $pythonExe = (Get-Command python).Source
-
-          # libopenshot's FindZeroMQ.cmake searches for library name "zmq" but vcpkg
-          # installs it as "libzmq-mt-*.lib" (versioned, no plain zmq.lib alias).
-          # Fix: create a zmq.lib alias in the vcpkg lib dir so find_library finds it,
-          # AND patch FindZeroMQ.cmake to add libzmq to its NAMES list as fallback.
-          $zmqLib = Get-ChildItem "$vcpkgInstall\lib" -Filter "libzmq*.lib" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notmatch "d\.lib$" -and $_.Name -notmatch "-gd-" } |
-            Select-Object -First 1
-          if (!$zmqLib) { throw "ZeroMQ library not found under $vcpkgInstall\lib" }
-          Write-Host "Found ZeroMQ lib: $($zmqLib.FullName)"
-          # Create zmq.lib alias (FindZeroMQ.cmake searches for NAMES zmq)
-          Copy-Item $zmqLib.FullName "$vcpkgInstall\lib\zmq.lib" -Force
-          Write-Host "Created zmq.lib alias"
-
-          # Also patch FindZeroMQ.cmake in the source to search both zmq and libzmq
-          $findZmq = "C:\libopenshot-src\cmake\Modules\FindZeroMQ.cmake"
-          if (Test-Path $findZmq) {
-            $fz = Get-Content $findZmq -Raw
-            # Expand NAMES to include libzmq variants and add vcpkg lib dir to HINTS
-            $fz = [regex]::Replace($fz,
-              "(?i)(find_library\s*\(\s*ZeroMQ_LIBRARIES\s+NAMES\s+)(zmq)",
-              ('$1zmq libzmq' + "`n    HINTS `"$vcpkgInstall/lib`""))
-            [System.IO.File]::WriteAllText($findZmq, $fz)
-            Write-Host "Patched FindZeroMQ.cmake: added libzmq to NAMES"
-          }
-
-          cmake -S C:\libopenshot-src -B C:\libopenshot-src\build `
-            -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_INSTALL_PREFIX="$INSTALL" `
-            "-DCMAKE_PREFIX_PATH=$qtPrefix;C:\ffmpeg;$INSTALL;$vcpkgInstall" `
-            "-DCMAKE_TOOLCHAIN_FILE=$vcpkgToolchain" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DENABLE_TESTS=OFF `
-            -DENABLE_RUBY=OFF `
-            -DENABLE_JAVA=OFF `
-            -DENABLE_PYTHON=ON `
-            -DENABLE_OPENCV=OFF `
-            "-DPython3_EXECUTABLE=$pythonExe" `
-            "-DSWIG_EXECUTABLE=$swigExe" `
-            "-DOpenShotAudio_DIR=$audioConfigDir" `
-            "-DCMAKE_CXX_FLAGS=/EHsc /permissive- /std:c++17"
-          if ($LASTEXITCODE -ne 0) { throw "libopenshot cmake configure failed (exit $LASTEXITCODE)" }
-
-          # libopenshot's 'test-install-audio-dll' custom rule (ALL target) copies
-          # OpenShot::Audio LOCATION to ${PROJECT_BINARY_DIR}/tests/.
-          # Two workarounds needed:
-          # 1. Build-tree cmake config IMPORTED_LOCATION resolves to Debug/ path. Provide it.
-          # 2. tests/ directory is only created when ENABLE_TESTS=ON; create it manually.
-          $audioBuildRelease = "C:\libopenshot-audio-src\build\Release\openshot-audio.dll"
-          if (Test-Path $audioBuildRelease) {
-            New-Item -ItemType Directory -Path "C:\libopenshot-audio-src\build\Debug" -Force | Out-Null
-            Copy-Item $audioBuildRelease "C:\libopenshot-audio-src\build\Debug\openshot-audio.dll" -Force -ErrorAction SilentlyContinue
-            Write-Host "Copied audio DLL to Debug/ path (workaround for build-tree LOCATION)"
-          }
-          # Create tests/ dir — cmake only creates it when ENABLE_TESTS=ON, but the ALL-target
-          # custom rule unconditionally tries to copy the audio DLL into it.
-          New-Item -ItemType Directory -Path "C:\libopenshot-src\build\tests" -Force | Out-Null
-          Write-Host "Created build/tests/ for audio DLL custom rule"
-
-          cmake --build   C:\libopenshot-src\build --config Release --parallel
-          if ($LASTEXITCODE -ne 0) { throw "libopenshot cmake build failed (exit $LASTEXITCODE)" }
-          cmake --install C:\libopenshot-src\build --config Release
-          if ($LASTEXITCODE -ne 0) { throw "libopenshot cmake install failed (exit $LASTEXITCODE)" }
-
-          # Consolidate everything (pyd + all DLLs) into a single bundle dir so
-          # freeze.py can find them all from ZENVI_OPENSHOT_PYROOT / BINDDIR.
-          $bundle = "$INSTALL\bundle"
-          New-Item -ItemType Directory -Path $bundle -Force | Out-Null
-
-          # Copy libopenshot + libopenshot-audio DLLs
-          Get-ChildItem "$INSTALL\bin" -Filter "*.dll" -ErrorAction SilentlyContinue |
-            ForEach-Object { Copy-Item $_.FullName $bundle -Force }
-
-          # Copy FFmpeg DLLs (versioned names like avcodec-61.dll)
-          Get-ChildItem "C:\ffmpeg\bin" -Filter "*.dll" -ErrorAction SilentlyContinue |
-            ForEach-Object { Copy-Item $_.FullName $bundle -Force }
-
-          # Copy vcpkg runtime DLLs needed at runtime (zeromq, zlib, libsamplerate)
-          Get-ChildItem "$vcpkgInstall\bin" -Filter "*.dll" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match "^(libzmq|zlib|samplerate)" } |
-            ForEach-Object { Copy-Item $_.FullName $bundle -Force; Write-Host "Bundled vcpkg DLL: $($_.Name)" }
-
-          # Copy _openshot*.pyd (may be in python/ or Release/ subdir)
-          $pyd = Get-ChildItem -Path $INSTALL -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match "^_openshot.*\.pyd$" } | Select-Object -First 1
-          if (!$pyd) {
-            $pyd = Get-ChildItem -Path C:\libopenshot-src\build -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -match "^_openshot.*\.pyd$" } | Select-Object -First 1
-          }
-          if (!$pyd) { throw "Build completed but _openshot*.pyd not found" }
-          Copy-Item $pyd.FullName $bundle -Force
-          Write-Host "Copied $($pyd.Name) to bundle"
-
-          Write-Host "=== bundle contents ==="
-          Get-ChildItem $bundle | Select-Object -ExpandProperty Name | ForEach-Object { Write-Host $_ }
-
-      - name: Set up OpenShot paths (libopenshot MSVC build)
-        shell: powershell
-        run: |
-          $bundle = "C:\libopenshot-install\bundle"
-          if (!(Test-Path $bundle)) { throw "bundle dir not found: $bundle" }
-
-          # The SWIG build installs proxy-class definitions to python/ but not bundle/.
-          # Read the real SWIG openshot.py (contains class Profile, class Clip, class Timeline...)
-          # and PREPEND our DLL setup code so Windows finds vcomp140.dll + openshot.dll
-          # before _openshot.pyd is imported. This preserves ALL proxy classes.
-          $swigPy = "C:\libopenshot-install\python\openshot.py"
-          if (!(Test-Path $swigPy)) { throw "SWIG-generated openshot.py not found at $swigPy" }
-          $swigContent = [System.IO.File]::ReadAllText($swigPy, [System.Text.Encoding]::UTF8)
-          Write-Host "SWIG openshot.py size: $($swigContent.Length) bytes"
-          # DLL setup prefix using a scoped function to avoid polluting the module namespace.
-          $prefixLines = @(
-            "# --- CI-prepended Windows DLL setup (prepended to SWIG-generated file) ---",
-            "# Pre-loads vcomp140.dll (MSVC OpenMP runtime required by openshot.dll) and",
-            "# registers the lib directory with add_dll_directory before SWIG imports _openshot.",
-            "def _openshot_win_dll_setup():",
-            "    import os, ctypes, glob",
-            "    _d = os.path.dirname(os.path.abspath(__file__))",
-            "    if hasattr(os, 'add_dll_directory'):",
-            "        os.add_dll_directory(_d)",
-            "    for _p in ['avutil', 'avcodec', 'avformat', 'swresample', 'swscale',",
-            "               'postproc', 'vcomp140', 'libopenshot-audio', 'openshot-audio',",
-            "               'libopenshot', 'openshot']:",
-            "        for _f in sorted(glob.glob(os.path.join(_d, _p + '*.dll'))):",
-            "            try:",
-            "                ctypes.WinDLL(_f)",
-            "            except OSError:",
-            "                pass",
-            "_openshot_win_dll_setup()",
-            "del _openshot_win_dll_setup",
-            "# --- end Windows DLL setup. Original SWIG-generated openshot.py follows: ---",
-            ""
-          )
-          $prefix = $prefixLines -join "`n"
-          $combined = $prefix + $swigContent
-          [System.IO.File]::WriteAllText("$bundle\openshot.py", $combined, [System.Text.Encoding]::UTF8)
-          Write-Host "Created bundle\openshot.py: DLL prefix ($($prefix.Length)B) + SWIG ($($swigContent.Length)B) = $($combined.Length)B total"
-          if ($combined -notmatch "class Profile") { throw "SWIG content is missing 'class Profile': SWIG build may have failed" }
-          Write-Host "Verification OK: 'class Profile' present in bundle\openshot.py"
-
-          Add-Content $env:GITHUB_ENV "PYTHONPATH="
-          Add-Content $env:GITHUB_ENV "ZENVI_OPENSHOT_PYROOT=$bundle"
-          Add-Content $env:GITHUB_ENV "ZENVI_OPENSHOT_BINDDIR=$bundle"
-          Add-Content $env:GITHUB_ENV "PATH=$bundle;$env:PATH"
-          Write-Host "ZENVI_OPENSHOT_PYROOT=$bundle"
-
-      - name: Verify OpenShot Python bindings
+      - name: Verify OpenShot Python bindings (MinGW)
         continue-on-error: true
-        shell: powershell
+        shell: msys2 {0}
         run: |
-          # Use -u for unbuffered output so we can see any error before a potential crash.
-          # continue-on-error: the native .pyd may be ABI-incompatible with build-time Python
-          # (OpenShot ships its own Python runtime); the freeze step discovers files directly
-          # via ZENVI_OPENSHOT_PYROOT without importing, so this step is diagnostic only.
-          python -u -c "import os, sys; print('Python:', sys.version); sys.stdout.flush(); sys.path.append(os.environ['ZENVI_OPENSHOT_PYROOT']); import openshot; print('openshot:', getattr(openshot, '__file__', openshot)); import openshot; print('Profile:', openshot.Profile)"
+          set -euo pipefail
+          export PATH="/mingw64/bin:$PATH"
+          export PYTHONPATH="${ZENVI_OPENSHOT_PYROOT}"
+          /mingw64/bin/python.exe -u -c "import openshot; print('openshot OK', openshot.OPENSHOT_VERSION_FULL)"
+
+      - name: Python venv and pip deps (README)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export PATH="/mingw64/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}"
+          /mingw64/bin/python.exe -m venv --system-site-packages .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/python -m pip install -r requirements-noqt.txt
+          ./.venv/bin/python -m pip install setuptools wheel PyOpenGL \
+            "langchain-core>=0.3" "langchain>=0.3" "langchain-openai>=0.2" \
+            "langchain-anthropic>=0.2" "langchain-community>=0.3" "langchain-ollama>=0.2" \
+            "tiktoken>=0.7" "runware>=0.4.33"
 
       - name: Freeze with cx_Freeze
-        run: python freeze.py build --git-branch=production
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          export MSYSTEM=MINGW64
+          export PATH="/mingw64/bin:$PATH"
+          cd "${GITHUB_WORKSPACE}"
+          ./.venv/bin/python freeze.py build --git-branch=production
 
-      - name: Verify openshot.py in frozen build (SWIG proxy classes + DLL setup)
+      - name: Verify openshot.py in frozen build (SWIG bindings)
         shell: powershell
         run: |
-          # freeze.py copies bundle\openshot.py (DLL setup + SWIG proxy classes) to lib/.
-          # This step verifies the copy succeeded and contains what we expect.
           $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
           if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
           $libDir = Join-Path $exeDir.FullName "lib"
           $target = Join-Path $libDir "openshot.py"
-          if (!(Test-Path $target)) { throw "openshot.py not found at $target (freeze.py should have created it)" }
+          if (!(Test-Path $target)) { throw "openshot.py not found at $target" }
           $content = [System.IO.File]::ReadAllText($target, [System.Text.Encoding]::UTF8)
-          Write-Host "lib/openshot.py size: $($content.Length) bytes"
-          if ($content -notmatch "class Profile") { throw "Verification failed: 'class Profile' missing - SWIG proxy classes were not included" }
-          if ($content -notmatch "vcomp140") { throw "Verification failed: vcomp140 DLL setup missing from openshot.py" }
-          Write-Host "Verification OK: SWIG proxy classes and vcomp140 DLL setup both present"
-
-      - name: Bundle VCOMP140.DLL (MSVC OpenMP runtime required by openshot.dll)
-        shell: powershell
-        run: |
-          # openshot.dll is compiled with OpenMP (/openmp) and requires VCOMP140.DLL.
-          # This DLL is part of the MSVC redistributable and must be bundled with the app.
-          $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
-          if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
-          $libDir = Join-Path $exeDir.FullName "lib"
-          $dest = Join-Path $libDir "vcomp140.dll"
-          # Search for vcomp140.dll in MSVC redist (x64 variant)
-          $candidates = @(
-            "C:\Windows\System32\vcomp140.dll",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.40.33807\x64\Microsoft.VC143.OpenMP\vcomp140.dll",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.42.34433\x64\Microsoft.VC143.OpenMP\vcomp140.dll",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.38.33130\x64\Microsoft.VC143.OpenMP\vcomp140.dll"
-          )
-          $found = $null
-          foreach ($c in $candidates) {
-            if (Test-Path $c) { $found = $c; break }
+          if ($content -notmatch "class Profile") {
+            throw "Verification failed: 'class Profile' missing from frozen lib/openshot.py"
           }
-          if (!$found) {
-            # Broader search fallback
-            $found = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Filter "vcomp140.dll" -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -notmatch 'debug|Debug' -and $_.FullName -match 'x64' } |
-              Select-Object -ExpandProperty FullName -First 1
-          }
-          if (!$found) {
-            throw "vcomp140.dll not found in MSVC redist or System32. Cannot bundle OpenMP runtime."
-          }
-          Copy-Item $found $dest -Force
-          Write-Host "Bundled vcomp140.dll from $found -> $dest"
-          Write-Host "File size: $((Get-Item $dest).Length) bytes"
-
-      - name: Update MSVC CRT DLLs to VS2022 version (fixes msvcp140.dll crash)
-        shell: powershell
-        run: |
-          # cx_Freeze pulls msvcp140.dll from Python's directory (v14.26, VS2019 era).
-          # openshot.dll is compiled with VS2022 (v14.40+) and crashes with the old version.
-          # Replace all MSVC CRT DLLs in the frozen build root with the VS2022 versions.
-          $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
-          if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
-          $rootDir = $exeDir.FullName
-          # Find VS2022 CRT redist directory
-          $crtDir = $null
-          $crtCandidates = @(
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.40.33807\x64\Microsoft.VC143.CRT",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.42.34433\x64\Microsoft.VC143.CRT",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.38.33130\x64\Microsoft.VC143.CRT",
-            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.40.33807\x64\Microsoft.VC143.CRT",
-            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.42.34433\x64\Microsoft.VC143.CRT"
-          )
-          foreach ($c in $crtCandidates) {
-            if (Test-Path $c) { $crtDir = $c; break }
-          }
-          if (!$crtDir) {
-            $crtDir = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Filter "Microsoft.VC143.CRT" -Recurse -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match 'x64' } |
-              Select-Object -ExpandProperty FullName -First 1
-          }
-          if (!$crtDir) {
-            Write-Warning "VS2022 CRT redist not found - skipping MSVC CRT update"
-          } else {
-            Write-Host "Found VS2022 CRT redist: $crtDir"
-            # Copy CRT DLLs that are already in the frozen build root (replace old versions)
-            $crtDlls = @('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
-                         'vcruntime140.dll', 'vcruntime140_1.dll', 'concrt140.dll')
-            foreach ($dll in $crtDlls) {
-              $src = Join-Path $crtDir $dll
-              $dest = Join-Path $rootDir $dll
-              if (Test-Path $src) {
-                $srcVer = (Get-Item $src).VersionInfo.FileVersion
-                if (Test-Path $dest) {
-                  $oldVer = (Get-Item $dest).VersionInfo.FileVersion
-                  Copy-Item $src $dest -Force
-                  Write-Host "Updated $dll : $oldVer -> $srcVer"
-                } else {
-                  Copy-Item $src $dest -Force
-                  Write-Host "Added $dll : $srcVer"
-                }
-              }
-            }
-          }
+          Write-Host "Verification OK: SWIG openshot.py present in frozen build"
 
       - name: Install Inno Setup 6
         run: choco install innosetup --yes --no-progress

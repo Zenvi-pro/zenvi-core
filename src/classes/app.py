@@ -27,7 +27,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import atexit
 import sys
 import os
 import platform
@@ -142,6 +141,16 @@ class OpenShotApp(QApplication):
             sys.exit()
 
         self.info = info
+
+        # Task bar / window icon (Windows uses QApplication + main window icon; avoids generic/Qt default).
+        try:
+            from PyQt5.QtGui import QIcon
+
+            _ico = info.application_icon_ico_path()
+            if _ico:
+                self.setWindowIcon(QIcon(_ico))
+        except Exception:
+            pass
 
         # Log some basic system info
         self.log = log
@@ -381,24 +390,27 @@ class OpenShotApp(QApplication):
     @pyqtSlot()
     def cleanup(self):
         """aboutToQuit signal handler for application exit"""
+        # faulthandler on Windows reports benign COM teardown (0x80010108) as "fatal" during late exit.
+        if sys.platform == "win32":
+            try:
+                import faulthandler
+
+                faulthandler.disable()
+            except Exception:
+                pass
+
+        # Session footer while Qt/COM and logging are still valid (atexit is too late on Windows).
+        try:
+            import time
+            self.log.info("OpenShot's session ended".center(48))
+            self.log.info(time.asctime().center(48))
+            self.log.info("=" * 48)
+        except Exception:
+            pass
+
         self.log.debug("Saving settings in app.cleanup")
 
         try:
             self.settings.save()
         except Exception:
             self.log.error("Couldn't save user settings on exit.", exc_info=1)
-
-
-@atexit.register
-def onLogTheEnd():
-    """ Log when the primary Qt event loop ends """
-    try:
-        from classes.logger import log
-        import time
-        log.info("OpenShot's session ended".center(48))
-        log.info(time.asctime().center(48))
-        log.info("=" * 48)
-    except Exception:
-        import logging
-        log = logging.getLogger(".")
-        log.debug('Failed to write session ended log', exc_info=1)
