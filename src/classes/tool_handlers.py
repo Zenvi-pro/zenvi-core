@@ -1019,7 +1019,7 @@ def search_selected_clip_scenes(query="", top_k="5", use_openai_rerank="true", *
         if local_ai is None and source_ai is not None:
             local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
 
-        # Simple local search (no langchain dependency)
+        # Simple local search over cached paths/tags (no LLM)
         scenes = (local_ai or {}).get("scene_descriptions", [])
         if not scenes:
             return "No matches found."
@@ -1766,7 +1766,7 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
     """Find best match in selected clip, generate a V2V insert via Kling,
     bake an updated clip with crossfades, and import it.
 
-    Pipeline (ported from core/src/classes/ai_openshot_tools.py):
+    Pipeline (backend + local bake):
       1. Find the best insertion point via TwelveLabs / scene descriptions / midpoint
       2. Extract a seed video (two segments around the insertion point)
       3. Extract first/last frames for frame-constrained generation

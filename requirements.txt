@@ -17,8 +17,6 @@ defusedxml
 websocket-client>=1.7.0
 requests
 certifi
-# Runware SDK (WebSocket) for in-app video generation; optional but recommended
-runware>=0.4.33
 chardet
 urllib3
 
@@ -27,17 +25,6 @@ pyzmq
 
 # Markdown for chat rendering
 markdown>=3.5
-
-# LangChain and AI chat
-langchain-core>=0.3
-langchain>=0.3
-langchain-openai>=0.2
-langchain-anthropic>=0.2
-langchain-community>=0.3
-langchain-ollama>=0.2
-
-# Token counting for context-window tracking
-tiktoken>=0.7
 
 # Manim (educational video agent) - optional; needs system libs on Linux:
 #   sudo apt-get install -y libcairo2-dev libpango1.0-dev pkg-config
