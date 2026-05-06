@@ -28,6 +28,7 @@
  """
 
 import os
+import sys
 import time
 
 # Try to get the security-patched XML functions from defusedxml
@@ -48,6 +49,26 @@ from classes.logger import log
 from . import openshot_rc  # noqa
 
 DEFAULT_THEME_NAME = "Humanity"
+
+
+def frozen_win_file_dialog_options():
+    """Options for QFileDialog static methods when native shell COM breaks (frozen MinGW builds)."""
+    from PyQt5.QtWidgets import QFileDialog
+
+    opts = QFileDialog.Options()
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        # Native IFileOpenDialog can raise HRESULT 0x80040155 (interface not registered).
+        opts |= QFileDialog.DontUseNativeDialog
+    return opts
+
+
+def apply_frozen_win_file_dialog_options(dialog):
+    """For QFileDialog instances: same workaround as :func:`frozen_win_file_dialog_options`."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    from PyQt5.QtWidgets import QFileDialog
+
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
 
 
 def load_icon_theme():
