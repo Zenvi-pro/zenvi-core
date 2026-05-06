@@ -32,10 +32,24 @@ log = logging.getLogger(__name__)
 
 load_zenvi_dotenv()
 
+
+def _supabase_url() -> str:
+    """Read at call time so values from ``.env`` are visible after load (frozen layouts)."""
+    load_zenvi_dotenv()
+    return os.environ.get("SUPABASE_URL", "").strip()
+
+
+def _supabase_anon_key() -> str:
+    load_zenvi_dotenv()
+    return os.environ.get("SUPABASE_ANON_KEY", "").strip()
+
+
+def _zenvi_website() -> str:
+    load_zenvi_dotenv()
+    return os.environ.get("ZENVI_WEBSITE", "https://zenvi.pro").strip()
+
+
 # ── Constants ──────────────────────────────────────────────────────────────────
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-ZENVI_WEBSITE = os.environ.get("ZENVI_WEBSITE", "https://zenvi.pro")
 AUTH_FILE = os.path.join(info.USER_PATH, "zenvi_auth.json")
 
 POLL_INTERVAL = 2
@@ -66,7 +80,7 @@ class AuthManager:
 
     def _anon_headers(self) -> dict:
         return {
-            "apikey": SUPABASE_ANON_KEY,
+            "apikey": _supabase_anon_key(),
             "Content-Type": "application/json",
         }
 
@@ -127,11 +141,11 @@ class AuthManager:
         Returns True on success (session is updated on disk)."""
         if not self._session or not self._session.get("refresh_token"):
             return False
-        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        if not _supabase_url() or not _supabase_anon_key():
             return False
         try:
             resp = requests.post(
-                f"{SUPABASE_URL}/auth/v1/token?grant_type=refresh_token",
+                f"{_supabase_url()}/auth/v1/token?grant_type=refresh_token",
                 headers=self._anon_headers(),
                 json={"refresh_token": self._session["refresh_token"]},
                 timeout=10,
@@ -192,7 +206,7 @@ class AuthManager:
         Tries xdg-open first (Linux), then webbrowser as fallback.
         """
         state = str(uuid.uuid4())
-        url = f"{ZENVI_WEBSITE}/login?state={state}"
+        url = f"{_zenvi_website()}/login?state={state}"
         log.info("Opening auth URL: %s", url)
         opened = False
         if sys.platform.startswith("linux"):
@@ -227,7 +241,7 @@ class AuthManager:
             while not self._cancelled and time.monotonic() < deadline:
                 try:
                     resp = requests.post(
-                        f"{SUPABASE_URL}/rest/v1/rpc/poll_desktop_auth_session",
+                        f"{_supabase_url()}/rest/v1/rpc/poll_desktop_auth_session",
                         headers=self._anon_headers(),
                         json={"session_state": state},
                         timeout=8,
@@ -266,12 +280,12 @@ class AuthManager:
         Sign in via Supabase email+password REST API.
         Returns session dict on success; raises AuthError on failure.
         """
-        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        if not _supabase_url() or not _supabase_anon_key():
             raise AuthError("Supabase is not configured (check SUPABASE_URL / SUPABASE_ANON_KEY in .env).")
 
         try:
             resp = requests.post(
-                f"{SUPABASE_URL}/auth/v1/token?grant_type=password",
+                f"{_supabase_url()}/auth/v1/token?grant_type=password",
                 headers=self._anon_headers(),
                 json={"email": email, "password": password},
                 timeout=15,
@@ -313,12 +327,12 @@ class AuthManager:
         Register a new account via Supabase.
         Raises AuthError on failure (including when email confirmation is required).
         """
-        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+        if not _supabase_url() or not _supabase_anon_key():
             raise AuthError("Supabase is not configured (check SUPABASE_URL / SUPABASE_ANON_KEY in .env).")
 
         try:
             resp = requests.post(
-                f"{SUPABASE_URL}/auth/v1/signup",
+                f"{_supabase_url()}/auth/v1/signup",
                 headers=self._anon_headers(),
                 json={"email": email, "password": password},
                 timeout=15,
@@ -362,7 +376,7 @@ class AuthManager:
             return None
         try:
             resp = requests.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/get_user_subscription",
+                f"{_supabase_url()}/rest/v1/rpc/get_user_subscription",
                 headers=self._authed_headers(),
                 json={},
                 timeout=8,
@@ -381,7 +395,7 @@ class AuthManager:
             return None
         try:
             resp = requests.post(
-                f"{SUPABASE_URL}/rest/v1/rpc/get_user_subscription",
+                f"{_supabase_url()}/rest/v1/rpc/get_user_subscription",
                 headers=self._authed_headers(),
                 json={},
                 timeout=8,

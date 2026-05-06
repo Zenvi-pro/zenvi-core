@@ -82,6 +82,16 @@ os_files = [
     ('lib/mime/packages', ['xdg/zenvi']),
 ]
 
+# Env templates for pip / distro installs (frozen builds use freeze.py ``include_files``).
+# Never ship a real ``.env`` here — it is gitignored and may contain secrets.
+_share_zenvi_files = []
+for _env_name in ('.env.example', '.env.production'):
+    _p = os.path.join(PATH, _env_name)
+    if os.path.isfile(_p):
+        _share_zenvi_files.append(_p)
+if _share_zenvi_files:
+    os_files.append(('share/zenvi', _share_zenvi_files))
+
 # Find files matching patterns
 def find_files(directory, patterns):
     """ Recursively find all files in a folder tree """
