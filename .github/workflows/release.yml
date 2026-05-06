@@ -841,7 +841,7 @@ jobs:
           $dot = Join-Path $root ".env.production"
           $alias = Join-Path $root "zenvi.production.env"
           if (!(Test-Path $dot) -and !(Test-Path $alias)) {
-            throw "Frozen app has no .env.production or zenvi.production.env under $root — CI checkout may be missing .env.production (ensure it is tracked in git: .gitignore must include !.env.production and the file must be committed)."
+            throw "Frozen app has no .env.production or zenvi.production.env under $root. CI checkout may be missing .env.production (ensure it is tracked: .gitignore must include !.env.production and the file must be committed)."
           }
           Write-Host "OK: production env file present for frozen build"
 
