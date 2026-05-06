@@ -26,36 +26,16 @@ import webbrowser
 import requests
 
 from classes import info
+from classes.zenvi_env import load_zenvi_dotenv
 
 log = logging.getLogger(__name__)
 
-
-# ── Load .env file (zenvi-core root, one level above src/) ─────────────────────
-def _load_dotenv(env_path: str) -> None:
-    """Parse a simple KEY=value .env file into os.environ (no overwrite)."""
-    try:
-        if not os.path.exists(env_path):
-            return
-        with open(env_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                if key and key not in os.environ:
-                    os.environ[key] = value
-    except Exception as exc:
-        log.debug("Could not load .env: %s", exc)
-
-
-_load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+load_zenvi_dotenv()
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-ZENVI_WEBSITE = os.environ.get("ZENVI_WEBSITE", "https://zenvi.app")
+ZENVI_WEBSITE = os.environ.get("ZENVI_WEBSITE", "https://zenvi.pro")
 AUTH_FILE = os.path.join(info.USER_PATH, "zenvi_auth.json")
 
 POLL_INTERVAL = 2

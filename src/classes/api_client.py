@@ -31,12 +31,9 @@ import threading
 from typing import Any, Dict, List, Optional, Callable
 from classes.logger import log
 
-# Load .env so ZENVI_BACKEND_URL is available early
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from classes.zenvi_env import load_zenvi_dotenv
+
+load_zenvi_dotenv()
 
 _DEFAULT_BACKEND_URL = "http://localhost:8500"
 
