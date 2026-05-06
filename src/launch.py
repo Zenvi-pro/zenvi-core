@@ -262,6 +262,14 @@ def main():
     # Create any missing paths in the user's settings dir
     info.setup_userdirs()
 
+    # Windows taskbar / jump list grouping: use our own AUMID (not python.exe / generic host).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Zenvi.Zenvi.Editor.1")
+        except Exception:
+            pass
+
     # Create Qt application, pass any unprocessed arguments
     from classes.app import OpenShotApp
 

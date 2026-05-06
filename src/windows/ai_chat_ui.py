@@ -19,14 +19,7 @@ from PyQt5.QtGui import QColor, QTextCursor
 
 from classes.logger import log
 from classes.api_client import get_backend_client
-
-# Optional CEP/WebEngine for HTML chat UI
-try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView, QWebEnginePage
-    from PyQt5.QtWebChannel import QWebChannel
-    _WEBENGINE_AVAILABLE = True
-except ImportError:
-    _WEBENGINE_AVAILABLE = False
+from windows.embedded_web import web_embed_backend
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
 # Bloomberg Light: high information density, sharp edges, accent #6366F1.
@@ -379,8 +372,12 @@ class AIChatWindow(QDockWidget):
         )
 
         self.is_processing = False
-        self._use_web_ui = _WEBENGINE_AVAILABLE
+        self._embed_backend = web_embed_backend()
+        # Embedded HTML chat (WebEngine or WebKit); Qt widgets only when neither is available.
+        self._use_web_ui = self._embed_backend in ("webengine", "webkit")
+        self._chat_embed_backend = None  # set in _init_web_* ('webengine' | 'webkit')
         self._first_prompt_summary = None  # mirrors active session's first_prompt_summary
+        self._chat_web_initial_sync_done = False
         self._auto_attach_selected_clip_context = True
         self._clip_pick_purpose = None   # None | 'selected_clip' | 'transition_a' | 'transition_b'
 
@@ -431,12 +428,19 @@ class AIChatWindow(QDockWidget):
             self._save_chat_sessions_store()
 
         if self._use_web_ui:
-            self._init_web_ui()
+            if self._embed_backend == "webengine":
+                log.info("Zenvi Assistant: embedded HTML UI (Qt WebEngine)")
+                self._init_web_ui()
+            else:
+                log.info("Zenvi Assistant: embedded HTML UI (Qt WebKit + legacy-safe CSS)")
+                self._init_webkit_ui()
         else:
+            log.info(
+                "Zenvi Assistant: native Qt chat (no Qt WebEngine/WebKit in this environment)"
+            )
             self._init_widget_ui()
 
-        self.setMinimumWidth(400)
-        self.setMinimumHeight(450)
+        self.setMinimumSize(400, 450)
 
     # ------------------------------------------------------------------
     # Session management
@@ -619,8 +623,13 @@ class AIChatWindow(QDockWidget):
 
         system_parts = [m for m in self._sessions[session_id].get("messages", []) if m and m[0] == "system"]
         restored_messages = [(m.get("role", ""), m.get("html_body", ""), bool(m.get("is_assistant", False))) for m in restored_items]
-        # Preserve any existing system messages (if present) and append restored conversation turns.
-        self._sessions[session_id]["messages"] = system_parts + restored_messages
+        merged = system_parts + restored_messages
+        # Fresh chat with no backend history: match the UI shown after clicking "+" on the tab bar.
+        if session_id == self._active_sid and not merged:
+            welcome = "New session started. Ask anything about your project."
+            safe = html.escape(welcome).replace("\n", "<br/>")
+            merged = [("system", "<p>" + safe + "</p>", False)]
+        self._sessions[session_id]["messages"] = merged
         self._sessions[session_id]["unread"] = False
         self._sessions[session_id]["processing"] = False
 
@@ -662,28 +671,27 @@ class AIChatWindow(QDockWidget):
                 client = None
 
             for sid in session_ids:
-                if client is None:
-                    return
-                try:
-                    resp = client.get_chat_history(sid)
-                    messages = (resp or {}).get("messages", []) or []
-                except Exception:
-                    messages = []
-
                 restored_items = []
-                for m in messages:
-                    role = m.get("role", "")
-                    content = m.get("content", "") or ""
-                    if role == "assistant":
-                        html_body = _markdown_to_html(content)
-                        restored_items.append({"role": role, "html_body": html_body, "is_assistant": True})
-                    else:
-                        visible = _strip_context_blocks(content) if role == "user" else content
-                        safe = html.escape(visible).replace("\n", "<br/>")
-                        html_body = "<p>" + safe + "</p>"
-                        restored_items.append({"role": role, "html_body": html_body, "is_assistant": False})
+                messages = []
+                if client is not None:
+                    try:
+                        resp = client.get_chat_history(sid)
+                        messages = (resp or {}).get("messages", []) or []
+                    except Exception:
+                        messages = []
 
-                # Apply on the Qt main thread.
+                    for m in messages:
+                        role = m.get("role", "")
+                        content = m.get("content", "") or ""
+                        if role == "assistant":
+                            html_body = _markdown_to_html(content)
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": True})
+                        else:
+                            visible = _strip_context_blocks(content) if role == "user" else content
+                            safe = html.escape(visible).replace("\n", "<br/>")
+                            html_body = "<p>" + safe + "</p>"
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": False})
+
                 try:
                     QMetaObject.invokeMethod(
                         self,
@@ -990,9 +998,32 @@ class AIChatWindow(QDockWidget):
             pass
         return text
 
-    def _init_web_ui(self):
-        """Build CEP/WebEngine HTML chat UI."""
+    def _load_chat_html_for_embed(self, webkit=False):
+        """Load chat_ui/index.html; inject WebKit companion stylesheet + flag when needed."""
         from classes import info
+        chat_ui_dir = os.path.join(info.PATH, "chat_ui")
+        index_path = os.path.join(chat_ui_dir, "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+        if webkit:
+            if "<html " in html:
+                html = html.replace("<html ", '<html data-zenvi-webkit="1" ', 1)
+            else:
+                html = html.replace("<html>", '<html data-zenvi-webkit="1">', 1)
+            html = html.replace(
+                "</head>",
+                '\n    <link rel="stylesheet" href="chat-webkit.css">\n</head>',
+                1,
+            )
+        return html
+
+    def _init_web_ui(self):
+        """Build embedded HTML chat UI (Qt WebEngine)."""
+        from classes import info
+        from PyQt5.QtWebEngineWidgets import QWebEngineView
+        from PyQt5.QtWebChannel import QWebChannel
+
+        self._chat_embed_backend = "webengine"
         self._chat_fade_done = True
         self._chat_web_ready = lambda: None
         self.preamble_frame = self.preamble_label = None
@@ -1000,46 +1031,116 @@ class AIChatWindow(QDockWidget):
         self.send_btn = self.cancel_btn = self.clear_btn = None
         self._chat_opacity_effect = self._chat_fade_anim = None
 
+        self._chat_bridge = ChatBridge(window=self, parent=self)
+        self._chat_bridge.window = self
+
+        chat_ui_dir = os.path.join(info.PATH, "chat_ui")
+        index_path = os.path.join(chat_ui_dir, "index.html")
+        base_url = QUrl.fromLocalFile(QFileInfo(index_path).absoluteFilePath())
+        html = self._load_chat_html_for_embed(webkit=False)
+
+        inject_js = (
+            "var r = document.documentElement.style;"
+            "r.setProperty('--chat-bg',       '#0d0d0d');"
+            "r.setProperty('--chat-surface',  '#0d0d0d');"
+            "r.setProperty('--chat-input-bg', '#171717');"
+            "r.setProperty('--chat-border',   'transparent');"
+            "document.body.style.background = '#0d0d0d';"
+            "var msgs = document.getElementById('chat-messages');"
+            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "var preamble = document.querySelector('.chat-container > div');"
+            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
+        )
+
         self._chat_view = QWebEngineView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         self._chat_view.page().setBackgroundColor(QColor(13, 13, 13))
         self.setWidget(self._chat_view)
 
         self._chat_channel = QWebChannel(self._chat_view.page())
-        self._chat_bridge = ChatBridge(window=self, parent=self)
-        self._chat_bridge.window = self
-        self._chat_view.page().setWebChannel(self._chat_channel)
         self._chat_channel.registerObject("zenviChatBridge", self._chat_bridge)
-
-        chat_ui_dir = os.path.join(info.PATH, "chat_ui")
-        index_path = os.path.join(chat_ui_dir, "index.html")
-        base_url = QUrl.fromLocalFile(QFileInfo(index_path).absoluteFilePath())
-        with open(index_path, "r", encoding="utf-8") as f:
-            html = f.read()
+        self._chat_view.page().setWebChannel(self._chat_channel)
         self._chat_view.setHtml(html, base_url)
 
         def on_load_finished(ok):
             if ok:
-                # Force CSS variables and element backgrounds regardless of caching
-                self._chat_view.page().runJavaScript("""
-                    var r = document.documentElement.style;
-                    r.setProperty('--chat-bg',       '#0d0d0d');
-                    r.setProperty('--chat-surface',  '#0d0d0d');
-                    r.setProperty('--chat-input-bg', '#171717');
-                    r.setProperty('--chat-border',   'transparent');
-                    document.body.style.background = '#0d0d0d';
-                    var msgs = document.getElementById('chat-messages');
-                    if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }
-                    var preamble = document.querySelector('.chat-container > div');
-                    if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }
-                """)
+                self._chat_view.page().runJavaScript(inject_js)
                 self._chat_web_ready = self._inject_web_ready
+                self._inject_web_ready()
+
+        self._chat_view.loadFinished.connect(on_load_finished)
+
+    def _init_webkit_ui(self):
+        """Embedded HTML chat using Qt WebKit (MSYS2 / Windows WebKit builds)."""
+        from classes import info
+        from PyQt5.QtWebKitWidgets import QWebView
+        from PyQt5.QtWebKit import QWebSettings
+
+        from windows.embedded_web import attach_webkit_window_object, run_js as web_run_js
+
+        self._chat_embed_backend = "webkit"
+        self._chat_fade_done = True
+        self._chat_web_ready = lambda: None
+        self.preamble_frame = self.preamble_label = None
+        self.model_combo = self.chat_box = self.msg_input = None
+        self.send_btn = self.cancel_btn = self.clear_btn = None
+        self._chat_opacity_effect = self._chat_fade_anim = None
+
+        self._chat_bridge = ChatBridge(window=self, parent=self)
+        self._chat_bridge.window = self
+
+        chat_ui_dir = os.path.join(info.PATH, "chat_ui")
+        index_path = os.path.join(chat_ui_dir, "index.html")
+        base_url = QUrl.fromLocalFile(QFileInfo(index_path).absoluteFilePath())
+        html = self._load_chat_html_for_embed(webkit=True)
+
+        self._chat_view = QWebView(self)
+        self._chat_view.setObjectName("AIChatWindowContents")
+        pal = self._chat_view.palette()
+        pal.setColor(self._chat_view.backgroundRole(), QColor(13, 13, 13))
+        self._chat_view.setAutoFillBackground(True)
+        self._chat_view.setPalette(pal)
+
+        st = self._chat_view.settings()
+        st.setAttribute(QWebSettings.LocalContentCanAccessFileUrls, True)
+        st.setAttribute(QWebSettings.LocalContentCanAccessRemoteUrls, False)
+        st.setAttribute(QWebSettings.PluginsEnabled, False)
+
+        attach_webkit_window_object(self._chat_view, "zenviChatBridge", self._chat_bridge)
+        self.setWidget(self._chat_view)
+        self._chat_view.setHtml(html, base_url)
+
+        inject_js = (
+            "var r = document.documentElement.style;"
+            "r.setProperty('--chat-bg',       '#0d0d0d');"
+            "r.setProperty('--chat-surface',  '#0d0d0d');"
+            "r.setProperty('--chat-input-bg', '#171717');"
+            "r.setProperty('--chat-border',   'transparent');"
+            "document.body.style.background = '#0d0d0d';"
+            "var msgs = document.getElementById('chat-messages');"
+            "if (msgs) { msgs.style.background = '#0d0d0d'; msgs.style.border = 'none'; }"
+            "var preamble = document.querySelector('.chat-container > div');"
+            "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
+        )
+
+        def on_load_finished(ok):
+            if ok:
+                web_run_js(self._chat_view, "webkit", inject_js)
+                self._chat_web_ready = self._inject_web_ready
+                self._inject_web_ready()
 
         self._chat_view.loadFinished.connect(on_load_finished)
 
     def _run_js(self, code, callback=None):
-        """Run JavaScript in the chat WebEngine page. No-op if not using web UI."""
+        """Run JavaScript in the embedded WebEngine or WebKit chat page."""
         if not self._use_web_ui or not getattr(self, "_chat_view", None):
+            return
+        if getattr(self, "_chat_embed_backend", "webengine") == "webkit":
+            from windows.embedded_web import run_js as web_run_js
+
+            res = web_run_js(self._chat_view, "webkit", code)
+            if callback:
+                callback(res)
             return
         page = self._chat_view.page()
         if callback:
@@ -1049,6 +1150,8 @@ class AIChatWindow(QDockWidget):
 
     def _inject_web_ready(self):
         """Push theme colors, models, preamble and welcome message to the CEP UI."""
+        if getattr(self, "_chat_web_initial_sync_done", False):
+            return
         try:
             from classes.app import get_app
             app = get_app()
@@ -1071,7 +1174,9 @@ class AIChatWindow(QDockWidget):
                 mid = m.get("model_id", "")
                 models.append({"id": mid, "name": m.get("display_name", mid), "default": mid == default_id})
         except Exception:
-            log.warning("Failed to fetch models from backend")
+            log.debug(
+                "Zenvi Assistant: model list unavailable during web UI init; using empty list"
+            )
         self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
 
         preamble = self._get_preamble_html()
@@ -1080,6 +1185,7 @@ class AIChatWindow(QDockWidget):
         self._run_js("clearMessages();")
         self._push_tabs_to_js()
         self._start_restore_chat_histories_async()
+        self._chat_web_initial_sync_done = True
 
     def _get_preamble_html(self):
         """Return preamble as HTML: AI summary as heading when set, else 'Zenvi Assistant'."""
@@ -1314,11 +1420,15 @@ class AIChatWindow(QDockWidget):
         default_id = ""
         try:
             client = get_backend_client()
-            api_resp = client.list_models()
-            default_id = api_resp.get("default_model_id", "")
-            models = [(m["id"], m["name"]) for m in api_resp.get("models", [])]
+            api_models = client.list_models()
+            default_id = client.get_default_model_id()
+            for m in api_models:
+                mid = m.get("model_id", "")
+                models.append((mid, m.get("display_name", mid)))
         except Exception:
-            log.warning("Failed to fetch models from backend")
+            log.debug(
+                "Zenvi Assistant: model list unavailable for widget UI; combo left empty until backend is up"
+            )
         if not models:
             self.model_combo.addItem("No AI providers loaded", "")
             return

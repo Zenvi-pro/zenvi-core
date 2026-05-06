@@ -178,7 +178,12 @@ along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 
 ## MSYS2 (Windows): libopenshot + Zenvi Core
 
-Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. Qt **WebEngine** is **not** available in the MinGW64 pacman repos; install **qtwebkit** below for the HTML timeline (or run with `-b qwidget`).
+Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`.
+
+**Qt WebKit vs Qt WebEngine (important):**
+
+- **Qt WebKit** (`mingw-w64-x86_64-qtwebkit`): available in pacman. Use it for the **HTML/JS timeline** by installing the package and running with **`bash run-zenvi-core-msys2.sh -b webkit`** (or rely on auto-selection when WebEngine is absent). This is **not** Chromium; it is the legacy WebKit module for Qt5.
+- **Qt WebEngine** (Chromium engine used by embedded panels such as Director, plan review, thinking dock, and the HTML chat UI): **there is no `qt5-webengine` / PyQtWebEngine in MSYS2 MinGW64 repos.** Those UIs show placeholders on this stack unless you use a different setup (e.g. MSVC CPython with pip `PyQtWebEngine`). The timeline can still use WebKit or `-b qwidget`.
 
 1. Install [MSYS2](https://www.msys2.org/) and start `C:/msys64/msys2_shell.cmd` (or **MinGW x64** from the Start Menu).
 
@@ -210,6 +215,8 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. 
     pip3 install httplib2 tinys3 github3.py==0.9.6 requests --break-system-packages
     ```
 
+**Windows SDK / ASIO vs CI:** GitHub’s `windows-latest` runners already include the **Windows SDK** (typically under `C:\Program Files (x86)\Windows Kits\10`). The **production Windows release** (`.github/workflows/release.yml`) uses **MSYS2 MinGW64 only**; `installer/ci-win-msys-libopenshot.sh` **disables JUCE ASIO**, so the **Steinberg ASIO SDK is not required in CI**. MinGW/pacman headers and libs cover normal libopenshot/libopenshot-audio builds. Steps 4–5 below are for **your own machine** when you want **ASIO hardware drivers** in libopenshot-audio, or if CMake reports missing Windows/DirectX paths and you need to point `DXSDK_DIR` / `ASIO_SDK_DIR` explicitly.
+
 4. Install the [Windows SDK](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/) and set:
 
     ```sh
@@ -240,7 +247,8 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. 
     git clone https://github.com/OpenShot/libopenshot-audio.git
     cd libopenshot-audio && mkdir build && cd build
     cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_PREFIX:PATH=/usr ../
-    make && make install
+    make
+    make install
     export LIBOPENSHOT_AUDIO_DIR=C:\msys64\usr
     cd ~
     ```
@@ -266,7 +274,9 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. 
     cd ~
     ```
 
-10. **Packaging / lief** (prefer pacman; pip cannot reliably build `lief` on MinGW):
+10. **Packaging** — `cx_Freeze` and `lief` for `freeze.py` / installers only.
+
+    Pip can often install **cx_Freeze** on MinGW if MinGW is first on `PATH` (same idea as cffi) and you have build tools: `pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja`. **lief** may still need a long CMake build from pip or fail if CMake picks the wrong toolchain; **pacman is the reliable default for lief**.
 
     ```sh
     pacman -S --needed mingw64/mingw-w64-x86_64-python-cx-freeze mingw64/mingw-w64-x86_64-python-lief
@@ -278,14 +288,21 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. 
     git clone https://github.com/Zenvi-pro/zenvi-core.git
     cd zenvi-core
 
-    # HTML timeline: PyQt5 WebKit bindings are in python-pyqt5; Qt DLLs come from qtwebkit.
-    # (There is no qt5-webengine / PyQt5 QtWebEngine in MSYS2 MinGW64.)
-    pacman -S --needed mingw64/mingw-w64-x86_64-qtwebkit
-
     # Optional: inspect missing DLLs for native modules
     # pacman -S --needed mingw64/mingw-w64-x86_64-ntldd
 
-    python -m venv --system-site-packages .venv
+    # PyQt5, LangChain native deps (cffi/zstandard), and Qt WebKit for HTML/JS timeline (-b webkit).
+    # Qt WebEngine is NOT in MinGW pacman — see the note at the top of this MSYS2 section.
+    pacman -S --needed \
+      mingw-w64-x86_64-python-pyqt5 \
+      mingw-w64-x86_64-python-cffi \
+      mingw-w64-x86_64-python-zstandard \
+      mingw-w64-x86_64-qtwebkit \
+      mingw-w64-x86_64-libffi \
+      mingw-w64-x86_64-gcc
+
+    # Same MinGW Python as libopenshot; system-site-packages sees pacman PyQt / cffi / zstd / WebKit.
+    /mingw64/bin/python.exe -m venv --system-site-packages .venv
     source .venv/bin/activate
     pip install -r requirements-noqt.txt
     # pip install -r requirements-manim.txt   # if needed
@@ -296,14 +313,4 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`. 
     ```sh
     cd ~/zenvi-core
     PYTHONPATH_LIBOPENSHOT=~/libopenshot/build/bindings/python bash run-zenvi-core.sh
-    ```
-
-    `run-zenvi-core.sh` sets `PATH` and Windows DLL search paths so `libopenshot.dll` finds **`libopenshot-audio.dll`** under `C:/msys64/usr/bin` and MinGW/Qt FFmpeg DLLs under `/mingw64/bin`.
-
-    If the timeline backend fails to load, force WebKit or the Qt-only timeline:
-
-    ```sh
-    bash run-zenvi-core.sh -b webkit
-    # or
-    bash run-zenvi-core.sh -b qwidget
     ```

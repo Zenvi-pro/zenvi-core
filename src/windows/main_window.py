@@ -46,7 +46,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QIcon, QCursor, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QDockWidget,
+    QApplication, QMainWindow, QWidget, QDockWidget,
     QMessageBox, QDialog, QFileDialog, QInputDialog,
     QAction, QActionGroup, QSizePolicy,
     QStatusBar, QToolBar, QToolButton,
@@ -204,9 +204,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if self.http_server_thread:
             self.http_server_thread.kill()
 
-        # Stop ZMQ polling thread (if any)
+        # Stop ZMQ polling thread (if any); join so it exits before Qt tears down (reduces Windows RPC_E_DISCONNECTED on exit).
         if app.logger_libopenshot:
             app.logger_libopenshot.kill()
+            app.logger_libopenshot.join(timeout=3.0)
 
         # Process any queued events
         QCoreApplication.processEvents()
@@ -3995,6 +3996,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Init UI
         ui_util.init_ui(self)
+
+        # main-window.ui sets windowIcon to :/openshot.svg — override with Zenvi branding for taskbar/title.
+        _ico_path = info.application_icon_ico_path()
+        if _ico_path:
+            _win_icon = QIcon(_ico_path)
+            if not _win_icon.isNull():
+                self.setWindowIcon(_win_icon)
+                QApplication.instance().setWindowIcon(_win_icon)
 
         # Hide the Help menu from the menu bar
         if hasattr(self, "menuHelp"):
