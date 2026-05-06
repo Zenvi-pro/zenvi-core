@@ -90,11 +90,26 @@ shopt -s nullglob
 for f in "${PYBIND}"/_openshot*.pyd; do cp -v "$f" "${BUNDLE}/"; done
 shopt -u nullglob
 
-for pat in libavcodec-*.dll libavformat-*.dll libavutil-*.dll libswscale-*.dll libswresample-*.dll; do
+# FFmpeg (MSYS2 UCRT): shared libs are avcodec-N.dll / avutil-N.dll / … — not libavcodec-*.dll.
+for pat in \
+    avcodec-*.dll avformat-*.dll avutil-*.dll swscale-*.dll swresample-*.dll \
+    libavcodec-*.dll libavformat-*.dll libavutil-*.dll libswscale-*.dll libswresample-*.dll; do
+  shopt -s nullglob
   for f in /ucrt64/bin/${pat}; do
-    [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
+    cp -v "$f" "${BUNDLE}/"
   done
+  shopt -u nullglob
 done
+
+# libopenshot may link babl (ChromaKey); babl needs its DLL + typical lcms2 dependency.
+for f in /ucrt64/bin/libbabl-0.1-0.dll; do
+  [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
+done
+shopt -s nullglob
+for f in /ucrt64/bin/liblcms2-*.dll; do
+  cp -v "$f" "${BUNDLE}/"
+done
+shopt -u nullglob
 for f in /ucrt64/bin/libopenshot*.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
@@ -110,6 +125,14 @@ for f in /ucrt64/bin/libwinpthread-1.dll /ucrt64/bin/libstdc++-6.dll \
 done
 [[ -e /ucrt64/bin/zlib1.dll ]] && cp -v /ucrt64/bin/zlib1.dll "${BUNDLE}/" || true
 [[ -e /ucrt64/bin/libsamplerate-0.dll ]] && cp -v /ucrt64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
+
+shopt -s nullglob
+_avc=( "${BUNDLE}"/avcodec-*.dll "${BUNDLE}"/libavcodec-*.dll )
+shopt -u nullglob
+if [[ ${#_avc[@]} -eq 0 ]]; then
+  echo "::error::OpenShot bundle has no avcodec DLL — libopenshot will not load. Expect avcodec-*.dll under /ucrt64/bin (MSYS2 FFmpeg)."
+  exit 1
+fi
 
 ls -la "${BUNDLE}"
 touch "${BUNDLE}/.built"

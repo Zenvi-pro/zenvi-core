@@ -55,6 +55,21 @@ def _prepend_dll_search_path_for_libopenshot():
     add = getattr(os, "add_dll_directory", None)
     if not add:
         return
+    # cx_Freeze layout: <install>/<exe> with native deps in <install>/lib/
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        lib_dir = os.path.join(exe_dir, "lib")
+        if os.path.isdir(lib_dir):
+            try:
+                add(lib_dir)
+            except OSError:
+                pass
+            babl_ext = os.path.join(lib_dir, "babl-ext")
+            if os.path.isdir(babl_ext):
+                try:
+                    add(babl_ext)
+                except OSError:
+                    pass
     raw = os.environ.get("PYTHONPATH_LIBOPENSHOT", "")
     for part in raw.split(os.pathsep):
         bind = os.path.abspath(os.path.expanduser(part.strip()))
