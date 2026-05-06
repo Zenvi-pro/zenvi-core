@@ -739,8 +739,8 @@ jobs:
           if-no-files-found: error
 
   # ── 4. Windows build (.exe) ───────────────────────────────────────────
-  # MSYS2 MinGW x64 — same stack as README.md "MSYS2 (Windows): libopenshot + Zenvi Core".
-  # freeze.py already expects c:/msys64/mingw64/... for BABL DLLs on Windows.
+  # MSYS2 UCRT x64 — babl is only published for ucrt64/clang*, not legacy mingw64 (packages.msys2.org).
+  # freeze.py uses MSYSTEM (lowercased) for c:/msys64/<prefix>/lib/babl-0.1/ on Windows.
   build-windows:
     needs: version
     runs-on: windows-latest
@@ -751,45 +751,45 @@ jobs:
 
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           install: >-
             base-devel
             git
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-ffmpeg
-            mingw-w64-x86_64-swig
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-zeromq
-            mingw-w64-x86_64-cppzmq
-            mingw-w64-x86_64-python
-            mingw-w64-x86_64-python-pip
-            mingw-w64-x86_64-python-pyqt5
-            mingw-w64-x86_64-python-pyzmq
-            mingw-w64-x86_64-rust
-            mingw-w64-x86_64-qt5-svg
-            mingw-w64-x86_64-python-cx-freeze
-            mingw-w64-x86_64-python-lief
-            mingw-w64-x86_64-python-cffi
-            mingw-w64-x86_64-python-zstandard
-            mingw-w64-x86_64-qtwebkit
-            mingw-w64-x86_64-libffi
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-babl
-            mingw-w64-x86_64-libsamplerate
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-ffmpeg
+            mingw-w64-ucrt-x86_64-swig
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-zeromq
+            mingw-w64-ucrt-x86_64-cppzmq
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-python-pyqt5
+            mingw-w64-ucrt-x86_64-python-pyzmq
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-qt5-svg
+            mingw-w64-ucrt-x86_64-python-cx-freeze
+            mingw-w64-ucrt-x86_64-python-lief
+            mingw-w64-ucrt-x86_64-python-cffi
+            mingw-w64-ucrt-x86_64-python-zstandard
+            mingw-w64-ucrt-x86_64-qtwebkit
+            mingw-w64-ucrt-x86_64-libffi
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-babl
+            mingw-w64-ucrt-x86_64-libsamplerate
 
       - name: Cache libopenshot bundle (MSYS2 MinGW64)
         id: cache-libopenshot-win
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.5.0-v2-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.5.0-v3-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
         shell: msys2 {0}
         env:
-          MSYSTEM: MINGW64
+          MSYSTEM: UCRT64
         run: bash installer/ci-win-msys-libopenshot.sh
 
       - name: Export OpenShot bundle path for freeze
@@ -807,17 +807,17 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          export PATH="/mingw64/bin:$PATH"
+          export PATH="/ucrt64/bin:$PATH"
           export PYTHONPATH="${ZENVI_OPENSHOT_PYROOT}"
-          /mingw64/bin/python.exe -u -c "import openshot; print('openshot OK', openshot.OPENSHOT_VERSION_FULL)"
+          /ucrt64/bin/python.exe -u -c "import openshot; print('openshot OK', openshot.OPENSHOT_VERSION_FULL)"
 
       - name: Python venv and pip deps (README)
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          export PATH="/mingw64/bin:$PATH"
+          export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
-          /mingw64/bin/python.exe -m venv --system-site-packages .venv
+          /ucrt64/bin/python.exe -m venv --system-site-packages .venv
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements-noqt.txt
           ./.venv/bin/python -m pip install setuptools wheel PyOpenGL \
@@ -829,8 +829,8 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          export MSYSTEM=MINGW64
-          export PATH="/mingw64/bin:$PATH"
+          export MSYSTEM=UCRT64
+          export PATH="/ucrt64/bin:$PATH"
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
 
