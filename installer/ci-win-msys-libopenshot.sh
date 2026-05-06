@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# MSYS2 MinGW64: unittest-cpp + libopenshot-audio + libopenshot (see README.md "MSYS2 (Windows)").
+# MSYS2 UCRT64: unittest-cpp + libopenshot-audio + libopenshot (see README.md "MSYS2 (Windows)").
 set -euo pipefail
-export PATH="/mingw64/bin:$PATH"
+export PATH="/ucrt64/bin:$PATH"
 
 DEPS="${GITHUB_WORKSPACE}/.ci-deps"
 mkdir -p "${DEPS}"
@@ -35,7 +35,7 @@ cmake -S "${AUDIO_SRC}" -B "${AUDIO_SRC}/build" \
 cmake --build "${AUDIO_SRC}/build" --parallel "$(nproc)"
 cmake --install "${AUDIO_SRC}/build"
 
-# libopenshot v0.5.0 → /mingw64 + FFmpeg 7+ patches (same as macOS release job)
+# libopenshot v0.5.0 → /ucrt64 + FFmpeg 7+ patches (same as macOS release job)
 git clone --depth 1 --branch v0.5.0 https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
@@ -69,7 +69,7 @@ for f in glob.glob(os.path.join(root, '**', '*.cpp'), recursive=True):
 cmake -S "${LOS}" -B "${LOS}/build" \
   -G "MSYS Makefiles" \
   -DCMAKE_MAKE_PROGRAM=mingw32-make \
-  -DCMAKE_INSTALL_PREFIX=/mingw64 \
+  -DCMAKE_INSTALL_PREFIX=/ucrt64 \
   -DDISABLE_TESTS=1 \
   -DCMAKE_CXX_FLAGS="-include cstdint" \
   -DENABLE_TESTS=OFF \
@@ -77,7 +77,7 @@ cmake -S "${LOS}" -B "${LOS}/build" \
   -DENABLE_JAVA=OFF \
   -DENABLE_PYTHON=ON \
   -DENABLE_OPENCV=OFF \
-  -DPython3_EXECUTABLE=/mingw64/bin/python.exe
+  -DPython3_EXECUTABLE=/ucrt64/bin/python.exe
 mkdir -p "${LOS}/build/tests"
 cmake --build "${LOS}/build" --parallel "$(nproc)"
 cmake --install "${LOS}/build"
@@ -90,25 +90,25 @@ for f in "${PYBIND}"/_openshot*.pyd; do cp -v "$f" "${BUNDLE}/"; done
 shopt -u nullglob
 
 for pat in libavcodec-*.dll libavformat-*.dll libavutil-*.dll libswscale-*.dll libswresample-*.dll; do
-  for f in /mingw64/bin/${pat}; do
+  for f in /ucrt64/bin/${pat}; do
     [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
   done
 done
-for f in /mingw64/bin/libopenshot*.dll; do
+for f in /ucrt64/bin/libopenshot*.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
 for f in /usr/bin/openshot-audio.dll /usr/bin/libopenshot-audio.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
-for f in /mingw64/bin/libzmq*.dll; do
+for f in /ucrt64/bin/libzmq*.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
-for f in /mingw64/bin/libwinpthread-1.dll /mingw64/bin/libstdc++-6.dll \
-         /mingw64/bin/libgcc_s_seh-1.dll /mingw64/bin/libgomp-1.dll; do
+for f in /ucrt64/bin/libwinpthread-1.dll /ucrt64/bin/libstdc++-6.dll \
+         /ucrt64/bin/libgcc_s_seh-1.dll /ucrt64/bin/libgomp-1.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
-[[ -e /mingw64/bin/zlib1.dll ]] && cp -v /mingw64/bin/zlib1.dll "${BUNDLE}/" || true
-[[ -e /mingw64/bin/libsamplerate-0.dll ]] && cp -v /mingw64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
+[[ -e /ucrt64/bin/zlib1.dll ]] && cp -v /ucrt64/bin/zlib1.dll "${BUNDLE}/" || true
+[[ -e /ucrt64/bin/libsamplerate-0.dll ]] && cp -v /ucrt64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
 
 ls -la "${BUNDLE}"
 touch "${BUNDLE}/.built"
