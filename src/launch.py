@@ -114,8 +114,16 @@ try:
     # This needs to be imported before PyQt5
     # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
     import openshot
-except ImportError:
-    pass
+except ImportError as _openshot_import_err:
+    try:
+        from classes.openshot_import_diag import write_openshot_import_diagnostic
+
+        write_openshot_import_diagnostic(
+            _openshot_import_err,
+            show_message_box=getattr(sys, "frozen", False),
+        )
+    except ImportError:
+        pass
 
 # Load user-configured UI scale before importing PyQt
 scale = 1.0

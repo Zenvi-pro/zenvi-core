@@ -776,6 +776,7 @@ jobs:
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-babl
+            mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
 
       - name: Cache libopenshot bundle (MSYS2 MinGW64)
