@@ -291,7 +291,7 @@ Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`.
     # Optional: inspect missing DLLs for native modules
     # pacman -S --needed mingw64/mingw-w64-x86_64-ntldd
 
-    # PyQt5, LangChain native deps (cffi/zstandard), and Qt WebKit for HTML/JS timeline (-b webkit).
+    # PyQt5, cffi/zstandard (native wheels some deps use), and Qt WebKit for HTML/JS timeline (-b webkit).
     # Qt WebEngine is NOT in MinGW pacman — see the note at the top of this MSYS2 section.
     pacman -S --needed \
       mingw-w64-x86_64-python-pyqt5 \

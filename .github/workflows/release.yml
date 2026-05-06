@@ -820,10 +820,7 @@ jobs:
           /ucrt64/bin/python.exe -m venv --system-site-packages .venv
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements-noqt.txt
-          ./.venv/bin/python -m pip install setuptools wheel PyOpenGL \
-            "langchain-core>=0.3" "langchain>=0.3" "langchain-openai>=0.2" \
-            "langchain-anthropic>=0.2" "langchain-community>=0.3" "langchain-ollama>=0.2" \
-            "tiktoken>=0.7" "runware>=0.4.33"
+          ./.venv/bin/python -m pip install setuptools wheel PyOpenGL
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
