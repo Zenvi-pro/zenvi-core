@@ -16,6 +16,7 @@ openshot_qt.egg-info
 .venv/
 .env*
 !.env.example
+!.env.production
 
 protobuf_data/
 openshot_qt/

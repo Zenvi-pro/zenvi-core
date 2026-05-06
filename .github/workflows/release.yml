@@ -832,6 +832,19 @@ jobs:
           cd "${GITHUB_WORKSPACE}"
           ./.venv/bin/python freeze.py build --git-branch=production
 
+      - name: Verify production env present in frozen build (Supabase)
+        shell: powershell
+        run: |
+          $exeDir = Get-ChildItem -Path "build" -Directory -Filter "exe.*" | Select-Object -First 1
+          if (!$exeDir) { throw "cx_Freeze output directory build/exe.* not found" }
+          $root = $exeDir.FullName
+          $dot = Join-Path $root ".env.production"
+          $alias = Join-Path $root "zenvi.production.env"
+          if (!(Test-Path $dot) -and !(Test-Path $alias)) {
+            throw "Frozen app has no .env.production or zenvi.production.env under $root — CI checkout may be missing .env.production (ensure it is tracked in git: .gitignore must include !.env.production and the file must be committed)."
+          }
+          Write-Host "OK: production env file present for frozen build"
+
       - name: Verify openshot.py in frozen build (SWIG bindings)
         shell: powershell
         run: |

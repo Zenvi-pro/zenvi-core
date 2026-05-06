@@ -57,6 +57,15 @@ def _first_env_path(filename: str) -> str | None:
     return None
 
 
+def _first_env_path_any(*basenames: str) -> str | None:
+    """Return the first existing file among ``basenames`` (searched in root order)."""
+    for name in basenames:
+        hit = _first_env_path(name)
+        if hit:
+            return hit
+    return None
+
+
 def _merge_env_file(env_path: str) -> None:
     try:
         if not os.path.isfile(env_path):
@@ -85,15 +94,16 @@ def load_zenvi_dotenv(force: bool = False) -> None:
     global _loaded
     if _loaded and not force:
         return
-    path_env = _first_env_path(".env")
-    path_prod = _first_env_path(".env.production")
+    path_env = _first_env_path_any(".env", "zenvi.local.env")
+    path_prod = _first_env_path_any(".env.production", "zenvi.production.env")
     if path_env:
         _merge_env_file(path_env)
     if path_prod:
         _merge_env_file(path_prod)
     if not path_env and not path_prod:
         log.debug(
-            "No .env or .env.production found (searched under %s)",
+            "No env file found (tried .env, zenvi.local.env, .env.production, "
+            "zenvi.production.env under %s)",
             _candidate_search_roots(),
         )
     _loaded = True

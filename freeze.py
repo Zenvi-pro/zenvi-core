@@ -679,6 +679,14 @@ for _env_leaf in (".env", ".env.production"):
     if os.path.exists(_env_src):
         src_files.append((_env_src, _env_leaf))
 
+# Dot-prefixed names are sometimes dropped by toolchains; duplicate under non-dot names.
+_env_prod = os.path.join(PATH, ".env.production")
+if os.path.exists(_env_prod):
+    src_files.append((_env_prod, "zenvi.production.env"))
+_env_local = os.path.join(PATH, ".env")
+if os.path.exists(_env_local):
+    src_files.append((_env_local, "zenvi.local.env"))
+
 build_exe_options["packages"] = python_packages
 build_exe_options["include_files"] = src_files + external_so_files
 build_exe_options["includes"] = python_modules
