@@ -130,9 +130,25 @@ class OpenShotApp(QApplication):
         except ImportError as ex:
             tb = traceback.format_exc()
             log.error('OpenShotApp::Import Error', exc_info=1)
+            diag_hint = ""
+            try:
+                from classes.openshot_import_diag import write_openshot_import_diagnostic
+
+                _p = write_openshot_import_diagnostic(ex, show_message_box=False)
+                if _p:
+                    diag_hint = (
+                        "\n\nDLL diagnostic log (share this when reporting the issue):\n%s"
+                        % _p
+                    )
+            except Exception:
+                pass
             self.errors.append(StartupError(
                 "Import Error",
-                "Module: %(name)s\n\n%(tb)s" % {"name": ex.name, "tb": tb},
+                "Module: %(name)s\n\n%(tb)s%(diag)s" % {
+                    "name": getattr(ex, "name", "") or "(see traceback)",
+                    "tb": tb,
+                    "diag": diag_hint,
+                },
                 level="error"))
             # Stop launching
             raise

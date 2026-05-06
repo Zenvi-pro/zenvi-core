@@ -110,6 +110,14 @@ for f in /ucrt64/bin/liblcms2-*.dll; do
   cp -v "$f" "${BUNDLE}/"
 done
 shopt -u nullglob
+
+# jsoncpp (libopenshot links libjsoncpp-N.dll)
+shopt -s nullglob
+for f in /ucrt64/bin/libjsoncpp-*.dll; do
+  cp -v "$f" "${BUNDLE}/"
+done
+shopt -u nullglob
+
 for f in /ucrt64/bin/libopenshot*.dll; do
   [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
 done
@@ -131,6 +139,14 @@ _avc=( "${BUNDLE}"/avcodec-*.dll "${BUNDLE}"/libavcodec-*.dll )
 shopt -u nullglob
 if [[ ${#_avc[@]} -eq 0 ]]; then
   echo "::error::OpenShot bundle has no avcodec DLL — libopenshot will not load. Expect avcodec-*.dll under /ucrt64/bin (MSYS2 FFmpeg)."
+  exit 1
+fi
+
+shopt -s nullglob
+_jcpp=( "${BUNDLE}"/libjsoncpp-*.dll )
+shopt -u nullglob
+if [[ ${#_jcpp[@]} -eq 0 ]]; then
+  echo "::error::OpenShot bundle has no libjsoncpp DLL — install mingw-w64-ucrt-x86_64-jsoncpp and ensure /ucrt64/bin/libjsoncpp-*.dll exists."
   exit 1
 fi
 
