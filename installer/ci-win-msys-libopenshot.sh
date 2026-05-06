@@ -25,13 +25,14 @@ git clone --depth 1 --branch v0.5.0 https://github.com/OpenShot/libopenshot-audi
 AUDIO_SRC="${DEPS}/libopenshot-audio"
 APPCONFIG="${AUDIO_SRC}/JuceLibraryCode/AppConfig.h"
 if [[ -f "${APPCONFIG}" ]]; then
-  sed -i 's/#define JUCE_ASIO[[:space:]]*1/#define JUCE_ASIO 0/' "${APPCONFIG}" || true
-  grep -q 'JUCE_ASIO' "${APPCONFIG}" || echo '#define JUCE_ASIO 0' >> "${APPCONFIG}"
+  # Projucer emits indented/spaced "#define   JUCE_ASIO 1"; a naive sed misses it.
+  sed -E -i 's/^[[:space:]]*#[[:space:]]*define[[:space:]]+JUCE_ASIO[[:space:]]+1/#define JUCE_ASIO 0/' "${APPCONFIG}" || true
 fi
 cmake -S "${AUDIO_SRC}" -B "${AUDIO_SRC}/build" \
   -G "MSYS Makefiles" \
   -DCMAKE_MAKE_PROGRAM=mingw32-make \
-  -DCMAKE_INSTALL_PREFIX=/usr
+  -DCMAKE_INSTALL_PREFIX=/usr \
+  -DCMAKE_CXX_FLAGS="-DJUCE_ASIO=0"
 cmake --build "${AUDIO_SRC}/build" --parallel "$(nproc)"
 cmake --install "${AUDIO_SRC}/build"
 
