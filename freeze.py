@@ -354,11 +354,6 @@ if sys.platform == "win32":
     # Append some additional files for Windows (this is a debug launcher)
     src_files.append((os.path.join(PATH, "installer", "launch-win.bat"), "launch-win.bat"))
 
-    # Bundle .env credentials file if present (required for Supabase auth)
-    env_file = os.path.join(PATH, ".env")
-    if os.path.exists(env_file):
-        src_files.append((env_file, ".env"))
-
     # Add additional package
     python_packages.extend([
         "idna",
@@ -679,6 +674,11 @@ elif sys.platform == "darwin":
     ]
 
 # Dependencies are automatically detected, but it might need fine tuning.
+for _env_leaf in (".env", ".env.production"):
+    _env_src = os.path.join(PATH, _env_leaf)
+    if os.path.exists(_env_src):
+        src_files.append((_env_src, _env_leaf))
+
 build_exe_options["packages"] = python_packages
 build_exe_options["include_files"] = src_files + external_so_files
 build_exe_options["includes"] = python_modules
