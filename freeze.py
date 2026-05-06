@@ -334,11 +334,17 @@ if version_info:
         f.write(json.dumps(version_info, indent=4))
 
 if sys.platform == "win32":
-    # Define alternate terminal-based executable
-    extra_exe = {"base": None, "name": exe_name + "-cli.exe"}
-
-    # Standard graphical Win32 launcher
-    base = "Win32GUI"
+    # cx_Freeze 8+ uses cross-platform base names ("gui", "console"). Older releases
+    # expect Win32GUI / None (see https://github.com/marcelotduarte/cx_Freeze/issues/3184).
+    import cx_Freeze as _cx_freeze
+    _cx_major = int(str(_cx_freeze.__version__).split(".")[0])
+    if _cx_major >= 8:
+        base = "gui"
+        _cli_base = "console"
+    else:
+        base = "Win32GUI"
+        _cli_base = None
+    extra_exe = {"base": _cli_base, "name": exe_name + "-cli.exe"}
     build_exe_options["include_msvcr"] = True
     exe_name += ".exe"
 
