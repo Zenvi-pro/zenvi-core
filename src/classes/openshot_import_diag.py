@@ -98,12 +98,14 @@ def write_openshot_import_diagnostic(exc: BaseException, *, show_message_box: bo
     except OSError:
         return None
     abs_log = os.path.abspath(log_path)
-    try:
-        sys.stderr.write(
-            "\nZenvi: OpenShot DLL diagnostic written to:\n  %s\n" % abs_log
-        )
-    except OSError:
-        pass
+    err = sys.stderr
+    if err is not None:
+        try:
+            err.write(
+                "\nZenvi: OpenShot DLL diagnostic written to:\n  %s\n" % abs_log
+            )
+        except OSError:
+            pass
     if show_message_box:
         try:
             import ctypes
