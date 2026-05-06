@@ -78,6 +78,7 @@ cmake -S "${LOS}" -B "${LOS}/build" \
   -DENABLE_JAVA=OFF \
   -DENABLE_PYTHON=ON \
   -DENABLE_OPENCV=OFF \
+  -DENABLE_MAGICK=OFF \
   -DPython3_EXECUTABLE=/ucrt64/bin/python.exe
 mkdir -p "${LOS}/build/tests"
 cmake --build "${LOS}/build" --parallel "$(nproc)"
@@ -133,6 +134,46 @@ for f in /ucrt64/bin/libwinpthread-1.dll /ucrt64/bin/libstdc++-6.dll \
 done
 [[ -e /ucrt64/bin/zlib1.dll ]] && cp -v /ucrt64/bin/zlib1.dll "${BUNDLE}/" || true
 [[ -e /ucrt64/bin/libsamplerate-0.dll ]] && cp -v /ucrt64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
+
+# avcodec loads many codec DLLs at runtime; copy the full PE dependency closure from
+# /ucrt64/bin (and JUCE audio from /usr/bin) so libopenshot.dll loads on a clean PC.
+bundle_transitive_pe_deps() {
+  local -i iter=0 max_iter=14 added
+  while (( iter < max_iter )); do
+    added=0
+    shopt -s nullglob
+    for f in "${BUNDLE}"/*.dll; do
+      [[ -f "$f" ]] || continue
+      while IFS= read -r dllname; do
+        [[ -z "$dllname" ]] && continue
+        local base="${dllname##*[/\\]}"
+        local lcb="${base,,}"
+        [[ "$lcb" == *.dll ]] || continue
+        if [[ "$lcb" == python*.dll ]] || [[ "$lcb" == libpython*.dll ]]; then
+          continue
+        fi
+        if [[ -f "${BUNDLE}/${base}" ]]; then
+          continue
+        fi
+        local src=""
+        if [[ -f "/ucrt64/bin/${base}" ]]; then
+          src="/ucrt64/bin/${base}"
+        elif [[ -f "/usr/bin/${base}" ]]; then
+          src="/usr/bin/${base}"
+        fi
+        [[ -n "$src" ]] || continue
+        cp -v "$src" "${BUNDLE}/"
+        added=1
+      done < <(objdump -p "$f" 2>/dev/null | sed -n 's/.*DLL Name:[[:space:]]*//p')
+    done
+    shopt -u nullglob
+    if (( added == 0 )); then
+      break
+    fi
+    (( ++iter ))
+  done
+}
+bundle_transitive_pe_deps
 
 shopt -s nullglob
 _avc=( "${BUNDLE}"/avcodec-*.dll "${BUNDLE}"/libavcodec-*.dll )

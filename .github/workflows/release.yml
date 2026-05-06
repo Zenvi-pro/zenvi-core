@@ -784,7 +784,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.5.0-v3-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.5.0-v4-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
