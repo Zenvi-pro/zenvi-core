@@ -26,7 +26,7 @@
 
 import logging
 from fractions import Fraction
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, MutableMapping, Optional, Tuple
 
 from classes.app import get_app
 
@@ -73,6 +73,51 @@ def _to_positive_int(value: Any) -> Optional[int]:
     if number is None or number <= 0:
         return None
     return number
+
+
+def normalize_imported_media_channel_layout(
+    file_data: MutableMapping[str, Any], reader: Any = None
+) -> None:
+    """Fill in a valid OpenShot channel_layout when FFmpeg reports unknown (0).
+
+    Some MP4 streams omit a layout mask; stored JSON can then have ``channel_layout`` 0, which
+    confuses resampling (SWResample) in preview and on the timeline. Prefer the live reader
+    metadata when available, otherwise derive a standard layout from ``channels``.
+    """
+    if not file_data.get("has_audio"):
+        return
+    import openshot
+
+    channels = _rounded_int(file_data.get("channels")) or 0
+    if channels <= 0:
+        return
+
+    layout_val = _rounded_int(file_data.get("channel_layout"))
+    if reader is not None:
+        try:
+            ri = reader.info
+            rl = int(getattr(ri, "channel_layout", 0) or 0)
+            if rl > 0:
+                file_data["channel_layout"] = rl
+                return
+        except Exception:
+            pass
+
+    if layout_val is not None and layout_val > 0:
+        return
+
+    if channels == 1:
+        file_data["channel_layout"] = int(openshot.LAYOUT_MONO)
+    elif channels == 2:
+        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
+    elif channels == 3:
+        file_data["channel_layout"] = int(openshot.LAYOUT_SURROUND)
+    elif channels == 6:
+        file_data["channel_layout"] = int(openshot.LAYOUT_5POINT1)
+    elif channels == 8:
+        file_data["channel_layout"] = int(openshot.LAYOUT_7POINT1)
+    else:
+        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
 
 
 def _fps_fraction(fps_value: Any) -> Optional[Fraction]:
