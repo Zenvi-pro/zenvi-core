@@ -833,7 +833,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         ui_util.apply_frozen_win_file_dialog_options(fd)
         qurl_list = fd.getOpenFileUrls(
             self,
-            _("Import Files...")
+            _("Import Files..."),
+            recommended_path,
+            "",
+            "",
+            ui_util.frozen_win_file_dialog_options(),
         )[0]
 
         # Set cursor to waiting

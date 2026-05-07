@@ -37,6 +37,7 @@ import openshot  # Python module for libopenshot (required video editing module 
 
 from classes import info, ui_util, time_parts
 from classes.app import get_app
+from classes.clip_utils import normalize_imported_media_channel_layout
 from classes.logger import log
 from classes.metrics import track_metric_screen
 from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
@@ -78,6 +79,7 @@ class Cutting(QDialog):
 
         # Keep track of file object
         self.file = file
+        normalize_imported_media_channel_layout(file.data, None)
         self.file_path = file.absolute_path()
         self.video_length = int(file.data['video_length'])
         self.fps_num = int(file.data['fps']['num'])
