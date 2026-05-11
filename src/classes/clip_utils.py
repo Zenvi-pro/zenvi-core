@@ -75,6 +75,39 @@ def _to_positive_int(value: Any) -> Optional[int]:
     return number
 
 
+def _layout_matches_channels(layout: int, channels: int) -> bool:
+    """Return True if layout is a known OpenShot mask compatible with channel count."""
+    import openshot
+
+    if channels <= 0:
+        return False
+    known = (
+        (int(openshot.LAYOUT_MONO), 1),
+        (int(openshot.LAYOUT_STEREO), 2),
+        (int(openshot.LAYOUT_SURROUND), 3),
+        (int(openshot.LAYOUT_5POINT1), 6),
+        (int(openshot.LAYOUT_7POINT1), 8),
+    )
+    for mask, count in known:
+        if layout == mask:
+            return channels == count
+    return True
+
+
+def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> None:
+    """Copy normalized channels / channel_layout onto a libopenshot reader (for SWR input)."""
+    if reader is None:
+        return
+    try:
+        ri = reader.info
+        if not getattr(ri, "has_audio", False):
+            return
+        ri.channels = int(channels)
+        ri.channel_layout = int(channel_layout)
+    except Exception:
+        pass
+
+
 def normalize_imported_media_channel_layout(
     file_data: MutableMapping[str, Any], reader: Any = None
 ) -> None:
@@ -110,13 +143,19 @@ def normalize_imported_media_channel_layout(
         try:
             ri = reader.info
             rl = _rounded_int(getattr(ri, "channel_layout", None))
-            if rl is not None and rl > 0:
+            rch_read = _rounded_int(getattr(ri, "channels", None))
+            rch = rch_read if rch_read and rch_read > 0 else channels
+            if rl is not None and rl > 0 and _layout_matches_channels(rl, rch):
                 file_data["channel_layout"] = rl
                 return
         except Exception:
             pass
 
-    if layout_val is not None and layout_val > 0:
+    if (
+        layout_val is not None
+        and layout_val > 0
+        and _layout_matches_channels(layout_val, channels)
+    ):
         return
 
     if channels == 1:
