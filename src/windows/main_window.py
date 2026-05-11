@@ -831,10 +831,15 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         fd = QFileDialog()
         fd.setDirectory(recommended_path)
         ui_util.apply_frozen_win_file_dialog_options(fd)
+        directory_url = (
+            QUrl.fromLocalFile(os.fspath(recommended_path))
+            if recommended_path
+            else QUrl()
+        )
         qurl_list = fd.getOpenFileUrls(
             self,
             _("Import Files..."),
-            recommended_path,
+            directory_url,
             "",
             "",
             ui_util.frozen_win_file_dialog_options(),
