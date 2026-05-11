@@ -148,6 +148,13 @@ class Cutting(QDialog):
             self.clip.Start(clip_start)
             self.clip.End(clip_end)
 
+            # Reader knows real stream layout; JSON alone can leave layout 0 and break SWR.
+            normalize_imported_media_channel_layout(self.file.data, self.clip.Reader())
+            self.channels = max(1, int(self.file.data.get("channels") or self.channels))
+            self.channel_layout = int(self.file.data.get("channel_layout") or self.channel_layout)
+            self.r.info.channel_layout = self.channel_layout
+            self.r.info.channels = self.channels
+
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
                 self.clip.Waveform(True)
@@ -161,6 +168,14 @@ class Cutting(QDialog):
             # Display frame #
             self.clip.display = openshot.FRAME_DISPLAY_CLIP
             self.r.AddClip(self.clip)
+
+            try:
+                cri = self.clip.Reader().info
+                if getattr(cri, "has_audio", False):
+                    cri.channel_layout = self.channel_layout
+                    cri.channels = self.channels
+            except Exception:
+                pass
 
         except Exception:
             log.error(

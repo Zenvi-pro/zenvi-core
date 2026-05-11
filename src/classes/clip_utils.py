@@ -84,9 +84,22 @@ def normalize_imported_media_channel_layout(
     confuses resampling (SWResample) in preview and on the timeline. Prefer the live reader
     metadata when available, otherwise derive a standard layout from ``channels``.
     """
+    import openshot
+
+    if reader is not None:
+        try:
+            ri = reader.info
+            if getattr(ri, "has_audio", False):
+                file_data["has_audio"] = True
+                rch = _rounded_int(getattr(ri, "channels", None))
+                if rch is not None and rch > 0:
+                    if (_rounded_int(file_data.get("channels")) or 0) <= 0:
+                        file_data["channels"] = rch
+        except Exception:
+            pass
+
     if not file_data.get("has_audio"):
         return
-    import openshot
 
     channels = _rounded_int(file_data.get("channels")) or 0
     if channels <= 0:
@@ -96,8 +109,8 @@ def normalize_imported_media_channel_layout(
     if reader is not None:
         try:
             ri = reader.info
-            rl = int(getattr(ri, "channel_layout", 0) or 0)
-            if rl > 0:
+            rl = _rounded_int(getattr(ri, "channel_layout", None))
+            if rl is not None and rl > 0:
                 file_data["channel_layout"] = rl
                 return
         except Exception:
