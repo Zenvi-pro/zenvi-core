@@ -24,6 +24,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import json
 import logging
 from fractions import Fraction
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
@@ -95,15 +96,48 @@ def _layout_matches_channels(layout: int, channels: int) -> bool:
 
 
 def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> None:
-    """Copy normalized channels / channel_layout onto a libopenshot reader (for SWR input)."""
+    """Apply normalized channels / channel_layout so FFmpeg resampling sees a valid layout.
+
+    Setting Reader.info alone is often not enough: libopenshot configures SWR from values fed
+    through the reader JSON / codec path. Round-trip Reader.Json(), merge, then SetJson when
+    the binding exposes it (common on Windows FFmpeg builds); otherwise fall back to ReaderInfo.
+    """
+    if reader is None:
+        return
+    channels = int(channels)
+    channel_layout = int(channel_layout)
+    try:
+        merged = json.loads(reader.Json())
+        merged["channels"] = channels
+        merged["channel_layout"] = channel_layout
+        if not merged.get("has_audio") and channels > 0:
+            merged["has_audio"] = True
+        setter = getattr(reader, "SetJson", None)
+        if callable(setter):
+            setter(json.dumps(merged))
+            return
+    except Exception:
+        pass
+    try:
+        ri = reader.info
+        if getattr(ri, "has_audio", False):
+            ri.channels = channels
+            ri.channel_layout = channel_layout
+    except Exception:
+        pass
+
+
+def copy_audio_stream_fields_from_reader(
+    file_data: MutableMapping[str, Any], reader: Any
+) -> None:
+    """After SetJson on a probe clip, mirror stream audio fields into project file metadata."""
     if reader is None:
         return
     try:
-        ri = reader.info
-        if not getattr(ri, "has_audio", False):
-            return
-        ri.channels = int(channels)
-        ri.channel_layout = int(channel_layout)
+        rj = json.loads(reader.Json())
+        for key in ("channels", "channel_layout", "has_audio", "sample_rate"):
+            if key in rj:
+                file_data[key] = rj[key]
     except Exception:
         pass
 
