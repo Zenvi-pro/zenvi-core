@@ -457,16 +457,12 @@ class LoginWindow(QDialog):
     @pyqtSlot(dict)
     def _on_success(self, session: dict) -> None:
         print(f"[zenvi-auth] login successful: {session.get('user_email')}", file=sys.stderr)
-        # Stop threads without blocking (they've already finished their work)
-        self._auth.cancel_poll()
-        if self._browser_thread:
-            self._browser_thread.quit()
-            self._browser_thread = None
-            self._browser_worker = None
-        if self._pw_thread:
-            self._pw_thread.quit()
-            self._pw_thread = None
-            self._pw_worker = None
+        # Fully stop (quit + wait) both QThreads before the dialog is destroyed.
+        # WA_DeleteOnClose makes Qt delete this dialog right after accept(), and
+        # any QThread still running as its child would trigger
+        # "QThread: Destroyed while thread is still running" → SIGABRT.
+        self._stop_browser_thread()
+        self._stop_pw_thread()
         self.auth_completed.emit(session)
         self.accept()
 
