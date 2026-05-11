@@ -116,6 +116,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     MaxSizeChanged = pyqtSignal(object)
     InsertKeyframe = pyqtSignal()
     OpenProjectSignal = pyqtSignal(str)
+    # Emitted with the new project file path (or "" for an unsaved project)
+    # whenever the user opens, creates, or save-as's a project.  The AI chat
+    # dock listens to this so each project gets its own chat sessions.
+    projectChanged = pyqtSignal(str)
     ThumbnailUpdated = pyqtSignal(str, int)
     FileUpdated = pyqtSignal(str)
     CaptionTextUpdated = pyqtSignal(str, object)
@@ -336,6 +340,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.refreshFilesSignal.emit()
         log.info("New Project created.")
 
+        # Notify listeners that the active project changed.
+        try:
+            self.projectChanged.emit("")
+        except Exception:
+            pass
+
         # Set Window title
         self.SetWindowTitle()
 
@@ -477,6 +487,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             app = get_app()
             _ = app._tr  # Get translation function
 
+            previous_filepath = getattr(app.project, "current_filepath", None) or ""
+
             try:
                 # Update history in project data
                 s = app.get_settings()
@@ -495,6 +507,15 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self.load_recent_menu()
 
                 log.info("Saved project %s", file_path)
+
+                # Notify listeners if Save As (or first save of an Untitled
+                # project) actually changed the file path.  Plain Save into
+                # the same file is a no-op for project-scoped consumers.
+                try:
+                    if (file_path or "") != previous_filepath:
+                        self.projectChanged.emit(file_path or "")
+                except Exception:
+                    pass
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
@@ -635,6 +656,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self.load_recent_menu()
 
                 log.info("Loaded project {}".format(file_path))
+
+                # Notify listeners (AI chat dock, etc.) so per-project state
+                # can re-bind to the freshly loaded project.
+                try:
+                    self.projectChanged.emit(file_path or "")
+                except Exception:
+                    pass
             else:
                 log.info("File not found at {}".format(file_path))
                 self.statusBar.showMessage(
@@ -1078,7 +1106,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionUpdate_trigger(self, checked=True):
-        url = "https://zenvi.org/download/"
+        url = "https://zenvi.pro/download"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -3899,16 +3927,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
             elif theme and theme.name == ThemeName.COSMIC.value:
                 # handle COSMIC theme dock widgets
-                _nav_docks = {"dockFiles", "dockTransitions", "dockEffects", "dockEmojis"}
                 if dock_widget.isFloating():
                     # Use standard system title bar for floating docks
                     dock_widget.setTitleBarWidget(None)
-                elif dock_widget.objectName() in _nav_docks:
-                    # Nav docks: compact title bar with float + close buttons, no title text
-                    dock_widget.setTitleBarWidget(HiddenTitleBar(dock_widget, show_buttons=True))
                 else:
-                    # All other docks: completely suppress the title bar (no space, no buttons)
-                    dock_widget.setTitleBarWidget(QWidget())
+                    # Keep mandatory float/close actions visible for docked widgets.
+                    dock_widget.setTitleBarWidget(HiddenTitleBar(dock_widget, show_buttons=True))
 
             else:
                 # for ALL other themes, regardless of floating or tabbed
@@ -4064,6 +4088,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        # Re-bind chat sessions whenever the active project changes.
+        try:
+            self.projectChanged.connect(self.dockAIChat.reload_for_project)
+        except Exception as e:
+            log.warning("Failed to wire projectChanged → AI chat dock: %s", e)
 
         # Setup AI Media Panel (must be before addViewDocksMenu)
         from windows.ai_media_panel import AIMediaPanel

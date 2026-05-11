@@ -276,12 +276,19 @@
 
     var activityContainer = null;
     var activitySteps = [];
+    var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
 
     var ACTIVITY_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<path d="M3.5 7.5l2.5 2L10.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    var ACTIVITY_X_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
+        '<path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+    var TOOL_CHEVRON_SVG = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none">' +
+        '<path d="M3.5 2L6.5 5l-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
     const SUGGESTED_PROMPTS = 'List my files · Add a track · Export video · Undo';
     let typingInterval = null;
@@ -471,6 +478,108 @@
         messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
+    /* ── Cursor-style collapsible tool terminal blocks ───────────────── */
+
+    function setToolBlockExpanded(block, expanded) {
+        if (!block || !block.el) return;
+        if (expanded) {
+            block.el.classList.add('expanded');
+            block.body.style.display = 'block';
+        } else {
+            block.el.classList.remove('expanded');
+            block.body.style.display = 'none';
+        }
+    }
+
+    window.addToolBlock = function (payloadJson) {
+        if (!activityContainer) return;
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        var callId = data.call_id || ('tool_' + Date.now());
+        var title = data.title || 'Running tool';
+        var cmd = data.cmd || '';
+
+        // Finish any running reasoning step (the LLM has decided on a tool).
+        if (activitySteps.length > 0) {
+            var last = activitySteps[activitySteps.length - 1];
+            if (last.getAttribute('data-type') === 'reasoning') {
+                last.remove();
+                activitySteps.pop();
+            }
+        }
+
+        var el = document.createElement('div');
+        el.className = 'chat-tool-block running expanded chat-message-enter';
+        el.setAttribute('data-call-id', callId);
+
+        var header = document.createElement('button');
+        header.type = 'button';
+        header.className = 'chat-tool-header';
+        header.innerHTML =
+            '<span class="chat-tool-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-tool-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
+            '<span class="chat-tool-title">' + escapeHtml(title) + '</span>' +
+            '<span class="chat-tool-cmd">' + escapeHtml(cmd) + '</span>';
+
+        var body = document.createElement('div');
+        body.className = 'chat-tool-body';
+
+        header.addEventListener('click', function () {
+            var block = toolBlocks[callId];
+            if (!block) return;
+            var nowExpanded = !el.classList.contains('expanded');
+            setToolBlockExpanded(block, nowExpanded);
+        });
+
+        el.appendChild(header);
+        el.appendChild(body);
+        activityContainer.appendChild(el);
+
+        toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.appendToolLog = function (callId, line) {
+        var block = toolBlocks[callId];
+        if (!block || !line) return;
+        var row = document.createElement('div');
+        row.className = 'chat-tool-line';
+        row.textContent = line;
+        block.body.appendChild(row);
+        block.lines.push(line);
+        block.body.scrollTop = block.body.scrollHeight;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.completeToolBlock = function (callId, ok, summary) {
+        var block = toolBlocks[callId];
+        if (!block) return;
+        block.el.classList.remove('running');
+        block.el.classList.add(ok ? 'done' : 'error');
+
+        var iconEl = block.header.querySelector('.chat-tool-icon');
+        if (iconEl) iconEl.innerHTML = ok ? ACTIVITY_CHECK_SVG : ACTIVITY_X_SVG;
+
+        if (summary) {
+            var cmdEl = block.header.querySelector('.chat-tool-cmd');
+            if (cmdEl) cmdEl.textContent = summary;
+        }
+
+        // If body is empty, hide it and disable chevron toggling.
+        if (block.lines.length === 0) {
+            block.el.classList.add('empty');
+        }
+
+        // Auto-collapse, matching Cursor behaviour.
+        setToolBlockExpanded(block, false);
+
+        // LLM will reason about the tool result next.
+        addReasoningStep();
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
     /* ── Processing state ── */
 
     let typingEl = null;
@@ -507,12 +616,25 @@
                     completeActivityStep(activitySteps[i]);
                 }
             }
-            // Remove empty activity container
-            if (activityContainer && activitySteps.length === 0) {
+            // Close any tool blocks left running (e.g. on cancel/error)
+            Object.keys(toolBlocks).forEach(function (cid) {
+                var block = toolBlocks[cid];
+                if (block && block.el && block.el.classList.contains('running')) {
+                    block.el.classList.remove('running');
+                    block.el.classList.add('done');
+                    var iconEl = block.header.querySelector('.chat-tool-icon');
+                    if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
+                    setToolBlockExpanded(block, false);
+                }
+            });
+            // Remove empty activity container only if no tool blocks were rendered.
+            var hasToolBlocks = activityContainer && activityContainer.querySelector('.chat-tool-block');
+            if (activityContainer && activitySteps.length === 0 && !hasToolBlocks) {
                 activityContainer.remove();
             }
             activityContainer = null;
             activitySteps = [];
+            toolBlocks = {};
             // Calculate thought time
             if (processingStartTime) {
                 var elapsed = Math.round((Date.now() - processingStartTime) / 1000);
@@ -953,6 +1075,7 @@
             typingEl = null;
             activityContainer = null;
             activitySteps = [];
+            toolBlocks = {};
             overlayVisible = true;
             if (inputOverlay) inputOverlay.classList.remove('hidden');
             typingIndex = 0;

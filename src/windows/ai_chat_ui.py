@@ -1,5 +1,6 @@
 import html
 import json
+import logging
 import os
 import re
 import threading
@@ -81,8 +82,47 @@ CHAT_THEME_COLORS = {
 }
 
 
+_LANGCHAIN_BLOCKS_RE = re.compile(
+    r"^\s*\[\s*\{\s*['\"]\s*(?:text|type)\s*['\"]\s*:.+\}\s*\]\s*$",
+    re.DOTALL,
+)
+
+
+def _unwrap_langchain_content(text: str) -> str:
+    """Defensive unwrap for stringified LangChain content blocks.
+
+    Some providers (Anthropic, Gemini) return ``AIMessage.content`` as a list
+    of typed blocks, e.g. ``[{'text': '...', 'type': 'text', 'index': 0}]``.
+    If that ever leaks through as a Python ``repr`` string we extract every
+    ``text`` block and join them, otherwise the chat would render the raw
+    list literal as a single paragraph.
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+    if not _LANGCHAIN_BLOCKS_RE.match(text):
+        return text
+    try:
+        import ast
+        parsed = ast.literal_eval(text)
+    except Exception:
+        return text
+    if not isinstance(parsed, list):
+        return text
+    parts = []
+    for block in parsed:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict):
+            piece = block.get("text") or block.get("content") or ""
+            if isinstance(piece, str) and piece:
+                parts.append(piece)
+    joined = "".join(parts).strip()
+    return joined or text
+
+
 def _markdown_to_html(text: str) -> str:
     """Convert markdown to HTML suitable for QTextEdit. Uses theme text color for body."""
+    text = _unwrap_langchain_content(text)
     try:
         import markdown
         body = markdown.markdown(text, extensions=["extra"])
@@ -175,6 +215,189 @@ def _text_likely_needs_clip_context(text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+# Humanized titles for the chat tool-block header.  Anything not listed falls
+# back to a prettified version of the tool name (snake_case → "Title Case").
+_TOOL_LABELS = {
+    "get_project_info_tool": "Read project info",
+    "list_files_tool": "List files",
+    "list_clips_tool": "List clips",
+    "list_layers_tool": "List tracks",
+    "list_markers_tool": "List markers",
+    "new_project_tool": "New project",
+    "save_project_tool": "Save project",
+    "open_project_tool": "Open project",
+    "play_tool": "Toggle playback",
+    "go_to_start_tool": "Seek to start",
+    "go_to_end_tool": "Seek to end",
+    "undo_tool": "Undo",
+    "redo_tool": "Redo",
+    "add_track_tool": "Add track",
+    "add_marker_tool": "Add marker",
+    "remove_clip_tool": "Remove clip",
+    "delete_clips_on_track_tool": "Delete clips on track",
+    "zoom_in_tool": "Zoom in",
+    "zoom_out_tool": "Zoom out",
+    "center_on_playhead_tool": "Center on playhead",
+    "import_files_tool": "Import files",
+    "export_video_tool": "Export video",
+    "get_export_settings_tool": "Read export settings",
+    "set_export_setting_tool": "Update export setting",
+    "export_video_now_tool": "Export video",
+    "get_file_info_tool": "Read file info",
+    "split_file_add_clip_tool": "Split clip and add to timeline",
+    "add_clip_to_timeline_tool": "Add clip to timeline",
+    "slice_clip_at_playhead_tool": "Slice clip at playhead",
+    "search_selected_clip_scenes_tool": "Search clip scenes",
+    "slice_selected_clip_at_best_match_tool": "Slice clip at best match",
+    "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
+    "generate_video_and_add_to_timeline_tool": "Generate video",
+    "insert_kling_v2v_clip_into_selected_clip_tool": "Insert v2v clip",
+    "replace_object_in_selected_clip_tool": "Replace object in clip",
+    "generate_transition_clip_tool": "Generate transition clip",
+    "list_transitions_tool": "List transitions",
+    "search_transitions_tool": "Search transitions",
+    "add_transition_between_clips_tool": "Add transition between clips",
+    "add_transition_to_clip_tool": "Add transition to clip",
+    "add_tts_audio_to_timeline_tool": "Add TTS audio",
+    "analyze_timeline_structure_tool": "Analyze timeline",
+    "analyze_pacing_tool": "Analyze pacing",
+    "analyze_audio_levels_tool": "Analyze audio levels",
+    "analyze_transitions_tool": "Analyze transitions",
+    "analyze_clip_content_tool": "Analyze clip content",
+    "analyze_music_sync_tool": "Analyze music sync",
+    "get_project_metadata_tool": "Read project metadata",
+    "analyze_clip_visual_content_tool": "Analyze clip visuals",
+    "add_stock_media_to_project_tool": "Add stock media",
+    "retag_project_file_tool": "Retag file",
+    "reindex_project_file_tool": "Reindex file",
+    "get_clips_with_full_metadata_tool": "Read clips metadata",
+    "get_timeline_state_tool": "Read timeline state",
+}
+
+
+def _humanize_tool_name(tool_name: str) -> str:
+    if tool_name in _TOOL_LABELS:
+        return _TOOL_LABELS[tool_name]
+    base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
+    return base.replace("_", " ").strip().capitalize() or "Run tool"
+
+
+def _format_tool_command(tool_name: str, args: dict) -> str:
+    """Build a `$`-style preview line summarising the tool invocation."""
+    parts = [tool_name]
+    if isinstance(args, dict):
+        for k, v in args.items():
+            try:
+                if isinstance(v, str):
+                    if len(v) > 80:
+                        v_disp = v[:80] + "…"
+                    else:
+                        v_disp = v
+                    parts.append('%s=%s' % (k, json.dumps(v_disp)))
+                elif isinstance(v, (int, float, bool)) or v is None:
+                    parts.append('%s=%s' % (k, json.dumps(v)))
+                else:
+                    s = json.dumps(v, default=str)
+                    if len(s) > 80:
+                        s = s[:80] + "…"
+                    parts.append('%s=%s' % (k, s))
+            except Exception:
+                parts.append(str(k))
+    return " ".join(parts)
+
+
+# Modules whose log records get attached to a running tool block. Anything
+# outside this allow-list (and `ai_*`) is treated as unrelated background noise.
+_TOOL_LOG_ALLOW_MODULES = frozenset({
+    "project_data",
+    "main_window",
+    "timeline",
+    "tool_handlers",
+    "track_display",
+    "import_files",
+    "preview_thread",
+    "openshot_tools",
+    "ai_openshot_tools",
+    "ai_agent_runner",
+    "ai_chat_ui",
+})
+
+
+class _ToolLogCapture:
+    """Forwards relevant Python log records to one or more active tool calls.
+
+    Multiple tool calls can run concurrently (the WS layer fans them out).
+    A single shared ``_SharedToolHandler`` is attached to the OpenShot logger;
+    each call that wants log output registers itself, and the handler
+    dispatches every record to all currently-registered callbacks.
+    """
+
+    _shared_lock = threading.Lock()
+    _shared_handler = None
+    _active = {}  # call_id -> callback(call_id, line)
+
+    def __init__(self, call_id: str, callback):
+        self._call_id = call_id
+        self._callback = callback
+
+    @classmethod
+    def _ensure_attached(cls):
+        if cls._shared_handler is not None:
+            return
+        handler = _SharedToolHandler()
+        handler.setLevel(logging.INFO)
+        logging.getLogger("OpenShot").addHandler(handler)
+        cls._shared_handler = handler
+
+    @classmethod
+    def _maybe_detach(cls):
+        if cls._shared_handler is None:
+            return
+        if cls._active:
+            return
+        try:
+            logging.getLogger("OpenShot").removeHandler(cls._shared_handler)
+        except Exception:
+            pass
+        cls._shared_handler = None
+
+    def install(self):
+        with self._shared_lock:
+            self._ensure_attached()
+            self._active[self._call_id] = self._callback
+
+    def uninstall(self):
+        with self._shared_lock:
+            self._active.pop(self._call_id, None)
+            self._maybe_detach()
+
+
+class _SharedToolHandler(logging.Handler):
+    """Singleton handler that dispatches each filtered record to active calls."""
+
+    def emit(self, record):
+        try:
+            module = getattr(record, "module", "") or ""
+            if module not in _TOOL_LOG_ALLOW_MODULES and not module.startswith("ai_"):
+                return
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            if len(msg) > 500:
+                msg = msg[:500] + "... [truncated]"
+            line = "%s %s: %s" % (record.levelname, module, msg)
+            with _ToolLogCapture._shared_lock:
+                callbacks = list(_ToolLogCapture._active.items())
+            for call_id, cb in callbacks:
+                try:
+                    cb(call_id, line)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 class AIChatWorker(QObject):
     """Sends chat messages to the zenvi-backend API server in a background thread.
 
@@ -188,6 +411,9 @@ class AIChatWorker(QObject):
     response_ready = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     token_received = pyqtSignal(str)
+    tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
+    tool_log = pyqtSignal(str, str)            # call_id, line
+    tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -208,15 +434,39 @@ class AIChatWorker(QObject):
                 """Execute a tool locally and return the result."""
                 nonlocal last_tool_result
                 log.info("Tool delegated from backend: %s", tool_name)
-                args = tool_args or {}
+                args = dict(tool_args or {})
+                # Args displayed to the user shouldn't leak the chat session id.
+                args_for_ui = {k: v for k, v in args.items() if k != "chat_session_id"}
+                try:
+                    self.tool_started.emit(call_id or "", tool_name or "", json.dumps(args_for_ui, default=str))
+                except Exception:
+                    pass
+
                 # Ensure tool state that depends on the chat/request identity
                 # (e.g. split→add_clip chains) is isolated per UI tab/session.
                 if self._backend_session_id:
                     args["chat_session_id"] = self._backend_session_id
-                result = execute_tool(tool_name, args)
+
+                capture = _ToolLogCapture(
+                    call_id or tool_name or "tool",
+                    lambda cid, line: self.tool_log.emit(cid, line),
+                )
+                capture.install()
+                try:
+                    result = execute_tool(tool_name, args)
+                finally:
+                    capture.uninstall()
+
+                text = str(result) if result is not None else ""
+                ok = bool(text) and not text.startswith("Error")
+                try:
+                    self.tool_completed.emit(call_id or "", ok, text)
+                except Exception:
+                    pass
+
                 # Remember the last successful tool result so we can use it
                 # if the WebSocket breaks after the tool already completed.
-                if result and not str(result).startswith("Error"):
+                if ok:
                     last_tool_result = result
                 return result
 
@@ -389,6 +639,16 @@ class AIChatWindow(QDockWidget):
         self._sessions: dict = {}
         self._active_sid: str = ""
         self._history_restore_started = False
+        # Project path that the currently loaded sessions belong to.  Updated
+        # by ``reload_for_project`` whenever the active project changes.
+        self._current_project_path: str = ""
+        try:
+            from classes.app import get_app
+            self._current_project_path = (
+                getattr(get_app().project, "current_filepath", "") or ""
+            )
+        except Exception:
+            self._current_project_path = ""
 
         # Stop all threads on app quit (covers the shutdown path where
         # closeEvent is never called on dock widgets).
@@ -398,7 +658,7 @@ class AIChatWindow(QDockWidget):
             app_instance.aboutToQuit.connect(self._stop_all_threads)
 
         # Restore previously open chat sessions (if any) before building UI.
-        store = self._load_chat_sessions_store()
+        store = self._load_chat_sessions_store(self._current_project_path)
         restored_sessions = store.get("sessions", []) if isinstance(store, dict) else []
         if isinstance(restored_sessions, list) and restored_sessions:
             for entry in restored_sessions:
@@ -453,6 +713,9 @@ class AIChatWindow(QDockWidget):
         worker.response_ready.connect(self._on_response_ready)
         worker.error_occurred.connect(self._on_error)
         worker.token_received.connect(self._on_token)
+        worker.tool_started.connect(self._on_tool_started)
+        worker.tool_log.connect(self._on_tool_log)
+        worker.tool_completed.connect(self._on_tool_completed)
         thread.start()
         return worker, thread
 
@@ -563,16 +826,178 @@ class AIChatWindow(QDockWidget):
             })
         self._run_js("setTabs(%s);" % json.dumps(json.dumps(tabs)))
 
+    @pyqtSlot(str)
+    def reload_for_project(self, new_project_path: str):
+        """Switch the chat dock to the per-project sessions for ``new_project_path``.
+
+        Persists the currently open sessions under the previously active
+        project's bucket, tears down their worker threads, then rebuilds the
+        session list from the new project's store (creating a fresh session
+        if none exist).  No backend memory is cleared — old conversations
+        remain reachable when the original project is reopened.
+        """
+        try:
+            new_project_path = (new_project_path or "").strip()
+            prev_path = getattr(self, "_current_project_path", "") or ""
+            if self._project_key(new_project_path) == self._project_key(prev_path):
+                # Same bucket (e.g. saving an Untitled project under itself,
+                # or a no-op signal) — nothing to do.
+                return
+
+            # 1. Persist current sessions to the previous project's store.
+            try:
+                self._save_chat_sessions_store(prev_path)
+            except Exception:
+                pass
+
+            # 2. Tear down existing worker threads (do NOT clear backend
+            #    memory — we want to be able to come back to these chats
+            #    when the user reopens the previous project).
+            for sess in list(self._sessions.values()):
+                worker = sess.get("worker")
+                if worker is not None:
+                    try:
+                        worker._stopping = True
+                    except Exception:
+                        pass
+                thread = sess.get("thread")
+                if thread is not None and thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(1500):
+                        try:
+                            thread.terminate()
+                            thread.wait(500)
+                        except Exception:
+                            pass
+            self._sessions.clear()
+            self._active_sid = ""
+            self._first_prompt_summary = None
+            self._history_restore_started = False
+            self.is_processing = False
+
+            # 3. Bind to the new project and load its store.
+            self._current_project_path = new_project_path
+            store = self._load_chat_sessions_store(new_project_path)
+            restored_sessions = (
+                store.get("sessions", []) if isinstance(store, dict) else []
+            )
+            if isinstance(restored_sessions, list) and restored_sessions:
+                for entry in restored_sessions:
+                    if not isinstance(entry, dict):
+                        continue
+                    sid = entry.get("session_id")
+                    title = entry.get("title") or "New Chat"
+                    if not sid or sid in self._sessions:
+                        continue
+                    worker, thread = self._make_worker(sid)
+                    self._sessions[sid] = {
+                        "worker": worker,
+                        "thread": thread,
+                        "title": title,
+                        "messages": [],
+                        "processing": False,
+                        "unread": False,
+                        "first_prompt_summary": title,
+                    }
+                active_from_store = (
+                    store.get("active_session_id") if isinstance(store, dict) else None
+                )
+                if active_from_store in self._sessions:
+                    self._active_sid = active_from_store
+                else:
+                    self._active_sid = next(iter(self._sessions))
+                self._first_prompt_summary = self._sessions[self._active_sid].get(
+                    "first_prompt_summary"
+                )
+
+            if not self._sessions:
+                self._create_initial_session()
+
+            # 4. Refresh the visible chat surface and tab bar.
+            if self._use_web_ui:
+                try:
+                    self._run_js("clearMessages();")
+                except Exception:
+                    pass
+                self._push_tabs_to_js()
+                self._update_preamble()
+            else:
+                try:
+                    if hasattr(self, "chat_box") and self.chat_box is not None:
+                        self.chat_box.clear()
+                except Exception:
+                    pass
+                self._update_preamble()
+                self._render_active_session_widget()
+                self._rebuild_widget_tabs()
+
+            self._save_chat_sessions_store(new_project_path)
+
+            # 5. Re-fetch chat history for restored sessions in the
+            #    background (mirrors the post-init behaviour).
+            try:
+                self._start_restore_chat_histories_async()
+            except Exception:
+                pass
+        except Exception as e:
+            log.warning("AI chat reload_for_project failed: %s", e, exc_info=True)
+
     # ------------------------------------------------------------------
     # Local persistence for open chat sessions (session ids + titles)
     # ------------------------------------------------------------------
-    def _chat_sessions_store_path(self) -> str:
-        from classes import info
-        return os.path.join(info.USER_PATH, "zenvi_chat_sessions.json")
+    def _project_key(self, project_path: str = None) -> str:
+        """Return a stable storage key for the given project file path.
 
-    def _load_chat_sessions_store(self) -> dict:
+        Saved projects get a sha1 of the absolute path; the unsaved
+        ``Untitled Project`` (or any empty path) uses the legacy
+        ``_default`` bucket so existing chats are preserved.
+        """
+        import hashlib
+        if project_path is None:
+            project_path = getattr(self, "_current_project_path", "") or ""
+            if not project_path:
+                try:
+                    from classes.app import get_app
+                    project_path = (
+                        getattr(get_app().project, "current_filepath", "") or ""
+                    )
+                except Exception:
+                    project_path = ""
+        if not project_path:
+            return "_default"
         try:
-            path = self._chat_sessions_store_path()
+            abs_path = os.path.abspath(project_path)
+        except Exception:
+            abs_path = project_path
+        return hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:16]
+
+    def _chat_sessions_dir(self) -> str:
+        from classes import info
+        return os.path.join(info.USER_PATH, "chat_sessions")
+
+    def _chat_sessions_store_path(self, project_path: str = None) -> str:
+        key = self._project_key(project_path)
+        return os.path.join(self._chat_sessions_dir(), f"{key}.json")
+
+    def _migrate_legacy_chat_store(self) -> None:
+        """One-time move of the old global store into the ``_default`` bucket."""
+        try:
+            from classes import info
+            legacy_path = os.path.join(info.USER_PATH, "zenvi_chat_sessions.json")
+            if not os.path.isfile(legacy_path):
+                return
+            new_path = os.path.join(self._chat_sessions_dir(), "_default.json")
+            if os.path.isfile(new_path):
+                return
+            os.makedirs(self._chat_sessions_dir(), exist_ok=True)
+            os.replace(legacy_path, new_path)
+        except Exception:
+            pass
+
+    def _load_chat_sessions_store(self, project_path: str = None) -> dict:
+        try:
+            self._migrate_legacy_chat_store()
+            path = self._chat_sessions_store_path(project_path)
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
@@ -581,12 +1006,10 @@ class AIChatWindow(QDockWidget):
         except Exception:
             return {}
 
-    def _save_chat_sessions_store(self) -> None:
+    def _save_chat_sessions_store(self, project_path: str = None) -> None:
         try:
-            from classes import info
-
-            path = self._chat_sessions_store_path()
-            os.makedirs(info.USER_PATH, exist_ok=True)
+            path = self._chat_sessions_store_path(project_path)
+            os.makedirs(self._chat_sessions_dir(), exist_ok=True)
 
             sessions_payload = []
             for sid, sess in self._sessions.items():
@@ -1403,6 +1826,48 @@ class AIChatWindow(QDockWidget):
         if self._use_web_ui:
             self._run_js("if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
                          % json.dumps(text))
+
+    @pyqtSlot(str, str, str)
+    def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
+        """Render a Cursor-style collapsible terminal block for a tool call."""
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui:
+            return
+        try:
+            args = json.loads(args_json) if args_json else {}
+        except Exception:
+            args = {}
+        title = _humanize_tool_name(tool_name)
+        cmd = _format_tool_command(tool_name, args)
+        payload = {"call_id": call_id, "title": title, "cmd": cmd}
+        self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
+                     % json.dumps(json.dumps(payload)))
+
+    @pyqtSlot(str, str)
+    def _on_tool_log(self, call_id: str, line: str):
+        """Append one log line to a running tool block."""
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui or not line:
+            return
+        self._run_js("if(window.appendToolLog) window.appendToolLog(%s, %s);"
+                     % (json.dumps(call_id), json.dumps(line)))
+
+    @pyqtSlot(str, bool, str)
+    def _on_tool_completed(self, call_id: str, ok: bool, result: str):
+        """Mark a tool block as done/error and auto-collapse it."""
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        if sid != self._active_sid or not self._use_web_ui:
+            return
+        summary = ""
+        if result:
+            first_line = result.strip().splitlines()[0] if result.strip() else ""
+            if len(first_line) > 140:
+                first_line = first_line[:140] + "…"
+            summary = first_line
+        self._run_js(
+            "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
+            % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
+        )
 
     @pyqtSlot(str)
     def _on_response_ready(self, text: str):

@@ -3000,48 +3000,98 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
 
 
 def retag_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run AI tagging for an existing project file."""
+    """Re-run AI tagging for an existing project file.
+
+    Runs on a worker thread.  The only Qt-touching step (reading the
+    project File and scheduling the tagging worker) is briefly marshalled
+    onto the main thread; the rest stays off the GUI thread so the UI
+    never stalls.
+    """
     try:
         if not file_id:
             return "Error: file_id is required."
-        from classes.query import File
-        file_obj = File.get(id=file_id)
-        if not file_obj:
+
+        def _read_file_meta():
+            from classes.query import File
+            f = File.get(id=file_id)
+            if not f:
+                return None
+            return {
+                "path": f.data.get("path", ""),
+                "duration": f.data.get("duration", 0) or 0,
+            }
+
+        meta = _run_on_main_thread(_read_file_meta, timeout=10)
+        if meta is None:
             return f"Error: File not found (id={file_id})."
-        file_path = file_obj.data.get("path", "")
-        duration = file_obj.data.get("duration", 0) or 0
 
         MAX_SECONDS = 30 * 60
-        if duration > MAX_SECONDS:
+        if meta["duration"] > MAX_SECONDS:
             return (
-                f"Error: Clip is {duration / 60:.1f} min — exceeds the "
+                f"Error: Clip is {meta['duration'] / 60:.1f} min — exceeds the "
                 f"30-minute re-tagging limit."
             )
-        app = _get_app()
-        files_model = app.window.files_model
-        files_model._tag_file_async(file_id)
-        return f"Re-tagging started for file {file_id} ({file_path})."
+
+        def _kick_off_tagging():
+            try:
+                files_model = _get_app().window.files_model
+                files_model._tag_file_async(file_id)
+            except Exception as exc:
+                log.warning("retag_project_file: failed to start tagging: %s", exc)
+
+        # Fire-and-forget: marshal the call onto the GUI thread without
+        # waiting for it to complete (the actual tagging runs on a Qt worker
+        # spawned inside ``_tag_file_async``).
+        try:
+            dispatcher = _get_dispatcher()
+            dispatcher._dispatch.emit(
+                (_kick_off_tagging, (), [None], [None], threading.Event())
+            )
+        except Exception:
+            _kick_off_tagging()
+
+        return f"Re-tagging started for file {file_id} ({meta['path']})."
     except Exception as e:
         log.error("retag_project_file: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
 def reindex_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-index an existing project file in TwelveLabs."""
+    """Re-index an existing project file in TwelveLabs.
+
+    Runs entirely on a worker thread.  Only the brief project-data reads
+    (file path, duration, project id) are marshalled to the Qt main
+    thread; the long-running ``client.index_video`` poll happens off the
+    GUI thread so the UI stays responsive.
+    """
     try:
         if not file_id:
             return "Error: file_id is required."
-        from classes.query import File
-        file_obj = File.get(id=file_id)
-        if not file_obj:
+
+        def _read_project_state():
+            from classes.query import File
+            f = File.get(id=file_id)
+            if not f:
+                return None
+            project_id = ""
+            try:
+                project_id = _get_app().project.get("id") or ""
+            except Exception:
+                pass
+            return {
+                "path": f.data.get("path", ""),
+                "duration": f.data.get("duration", 0) or 0,
+                "project_id": project_id,
+            }
+
+        state = _run_on_main_thread(_read_project_state, timeout=10)
+        if state is None:
             return f"Error: File not found (id={file_id})."
-        file_path = file_obj.data.get("path", "")
-        duration = file_obj.data.get("duration", 0) or 0
 
         MAX_SECONDS = 30 * 60
-        if duration > MAX_SECONDS:
+        if state["duration"] > MAX_SECONDS:
             return (
-                f"Error: Clip is {duration / 60:.1f} min — exceeds the "
+                f"Error: Clip is {state['duration'] / 60:.1f} min — exceeds the "
                 f"30-minute re-indexing limit."
             )
 
@@ -3050,14 +3100,11 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
         if not client.is_indexing_configured():
             return "TwelveLabs is not configured — re-indexing unavailable."
 
-        project_id = ""
-        try:
-            project_id = _get_app().project.get("id") or ""
-        except Exception:
-            pass
-        index_name = f"zenvi-{project_id}" if project_id else "zenvi-videos"
+        index_name = (
+            f"zenvi-{state['project_id']}" if state["project_id"] else "zenvi-videos"
+        )
 
-        result = client.index_video(file_path, index_name, async_mode=False)
+        result = client.index_video(state["path"], index_name, async_mode=False)
         if isinstance(result, dict) and result.get("index_id"):
             return (
                 f"Re-indexing complete for file {file_id}. "
@@ -3298,6 +3345,16 @@ READ_ONLY_TOOLS = frozenset({
     "get_project_metadata_tool",
 })
 
+# Tools that perform long-running network/IO work and only briefly touch Qt
+# state.  They marshal those brief reads onto the main thread internally, so
+# the dispatcher must NOT wrap the entire call in ``_run_on_main_thread`` —
+# doing so would block the GUI for the duration of the network call (up to
+# 30 minutes for TwelveLabs indexing) and serialize parallel agent calls.
+BACKGROUND_SAFE_TOOLS = frozenset({
+    "reindex_project_file_tool",
+    "retag_project_file_tool",
+})
+
 
 def execute_tool(tool_name: str, tool_args: dict) -> str:
     """Execute a tool by name with the given arguments. Returns the result string."""
@@ -3325,7 +3382,7 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         app = _get_app()
         if QThread.currentThread() is app.thread():
             return _invoke()
-        if tool_name in READ_ONLY_TOOLS:
+        if tool_name in READ_ONLY_TOOLS or tool_name in BACKGROUND_SAFE_TOOLS:
             return _invoke()
         return _run_on_main_thread(_invoke)
     except Exception as e:
