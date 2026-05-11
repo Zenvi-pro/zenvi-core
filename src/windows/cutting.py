@@ -38,6 +38,7 @@ import openshot  # Python module for libopenshot (required video editing module 
 from classes import info, ui_util, time_parts
 from classes.app import get_app
 from classes.clip_utils import (
+    copy_audio_stream_fields_from_reader,
     normalize_imported_media_channel_layout,
     sync_reader_audio_info,
 )
@@ -145,9 +146,8 @@ class Cutting(QDialog):
         try:
             # Add clip for current preview file
             self.clip = openshot.Clip(self.file_path)
-            # NOTE: Do NOT inject file.data into the reader via SetJson.
-            # file.data may contain ai_metadata, tags, etc. that corrupt
-            # the native FrameMapper and cause preview drift / SIGSEGV.
+            # Do not SetJson the reader from full file.data (ai_metadata etc. can break
+            # FrameMapper). sync_reader_audio_info round-trips Reader.Json() only.
             self.clip.Start(clip_start)
             self.clip.End(clip_end)
 
@@ -160,6 +160,7 @@ class Cutting(QDialog):
 
             sync_reader_audio_info(
                 self.clip.Reader(), self.channels, self.channel_layout)
+            copy_audio_stream_fields_from_reader(self.file.data, self.clip.Reader())
             self.clip.Open()
 
             # Show waveform for audio files

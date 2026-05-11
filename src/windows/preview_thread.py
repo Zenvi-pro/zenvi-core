@@ -35,7 +35,11 @@ from PyQt5.QtWidgets import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes.app import get_app
-from classes.clip_utils import normalize_imported_media_channel_layout, sync_reader_audio_info
+from classes.clip_utils import (
+    copy_audio_stream_fields_from_reader,
+    normalize_imported_media_channel_layout,
+    sync_reader_audio_info,
+)
 from classes.logger import log
 from classes.updates import UpdateInterface
 
@@ -375,6 +379,7 @@ class PlayerWorker(QObject):
                 nc = max(1, int(probe.get("channels") or channels))
                 ncl = int(probe.get("channel_layout") or channel_layout)
                 sync_reader_audio_info(new_clip.Reader(), nc, ncl)
+                copy_audio_stream_fields_from_reader(probe, new_clip.Reader())
                 self.clip_reader.AddClip(new_clip)
             except Exception:
                 log.warning('Failed to load media file into video player: %s', path, exc_info=True)
