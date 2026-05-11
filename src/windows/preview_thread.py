@@ -182,14 +182,16 @@ class PlayerWorker(QObject):
             log.warning('Audio initialization error: %s', audio_error)
             self.error_found.emit(audio_error)
 
+        s = get_app().get_settings()
+
         # Check active sample rate from audio device
         # Parse string as float ("48000.0" -> 48000   OR   NaN)
+        detected_sample_rate_int = None
         detected_sample_rate = float(self.player.GetDefaultSampleRate())
         if detected_sample_rate and not math.isnan(detected_sample_rate) and detected_sample_rate > 0.0:
             # Convert float to Integer
             detected_sample_rate_int = round(detected_sample_rate)
 
-            s = get_app().get_settings()
             settings_sample_rate = int(s.get("default-samplerate") or 48000)
             if detected_sample_rate_int != settings_sample_rate:
                 log.warning("Your sample rate (%d) does not match OpenShot (%d). "
@@ -206,7 +208,7 @@ class PlayerWorker(QObject):
                 get_app().updates.update(["sample_rate"], detected_sample_rate_int)
 
         # Convert float 'settings' sample rate to Integer, if detected
-        if type(s.get("default-samplerate")) == float:
+        if detected_sample_rate_int is not None and type(s.get("default-samplerate")) == float:
             s.set("default-samplerate", detected_sample_rate_int)
 
         # Convert float 'project' sample rate to Integer, if detected
@@ -215,19 +217,22 @@ class PlayerWorker(QObject):
 
         # Check active audio device name and type from audio device
         active_audio_device = self.player.GetCurrentAudioDevice()
-        audio_device_value = f"{active_audio_device.get_name()}||{active_audio_device.get_type()}"
-        if s.get("playback-audio-device") != audio_device_value:
-            log.warning("Your active audio device (%s) does not match OpenShot (%s). "
-                        "Adjusting your 'Preferences->Playback->Audio Device' to match your "
-                        "active audio device: %s" % (audio_device_value,
-                                                     s.get("playback-audio-device"),
-                                                     audio_device_value))
-            s.set("playback-audio-device", audio_device_value)
+        dev_name = (active_audio_device.get_name() or "").strip()
+        dev_type = (active_audio_device.get_type() or "").strip()
+        if dev_name or dev_type:
+            audio_device_value = f"{dev_name}||{dev_type}"
+            if s.get("playback-audio-device") != audio_device_value:
+                log.warning("Your active audio device (%s) does not match OpenShot (%s). "
+                            "Adjusting your 'Preferences->Playback->Audio Device' to match your "
+                            "active audio device: %s" % (audio_device_value,
+                                                         s.get("playback-audio-device"),
+                                                         audio_device_value))
+                s.set("playback-audio-device", audio_device_value)
 
-            # Set libopenshot settings
-            lib_settings = openshot.Settings.Instance()
-            lib_settings.PLAYBACK_AUDIO_DEVICE_NAME = active_audio_device.get_name()
-            lib_settings.PLAYBACK_AUDIO_DEVICE_TYPE = active_audio_device.get_type()
+                # Set libopenshot settings
+                lib_settings = openshot.Settings.Instance()
+                lib_settings.PLAYBACK_AUDIO_DEVICE_NAME = active_audio_device.get_name()
+                lib_settings.PLAYBACK_AUDIO_DEVICE_TYPE = active_audio_device.get_type()
 
     @pyqtSlot()
     def Start(self):
