@@ -37,7 +37,10 @@ import openshot  # Python module for libopenshot (required video editing module 
 
 from classes import info, ui_util, time_parts
 from classes.app import get_app
-from classes.clip_utils import normalize_imported_media_channel_layout
+from classes.clip_utils import (
+    normalize_imported_media_channel_layout,
+    sync_reader_audio_info,
+)
 from classes.logger import log
 from classes.metrics import track_metric_screen
 from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
@@ -155,6 +158,10 @@ class Cutting(QDialog):
             self.r.info.channel_layout = self.channel_layout
             self.r.info.channels = self.channels
 
+            sync_reader_audio_info(
+                self.clip.Reader(), self.channels, self.channel_layout)
+            self.clip.Open()
+
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
                 self.clip.Waveform(True)
@@ -168,14 +175,6 @@ class Cutting(QDialog):
             # Display frame #
             self.clip.display = openshot.FRAME_DISPLAY_CLIP
             self.r.AddClip(self.clip)
-
-            try:
-                cri = self.clip.Reader().info
-                if getattr(cri, "has_audio", False):
-                    cri.channel_layout = self.channel_layout
-                    cri.channels = self.channels
-            except Exception:
-                pass
 
         except Exception:
             log.error(

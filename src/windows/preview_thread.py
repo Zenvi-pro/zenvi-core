@@ -28,12 +28,14 @@
 import time
 import sip
 import math
+import json
 
 from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSlot, pyqtSignal, QCoreApplication
 from PyQt5.QtWidgets import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes.app import get_app
+from classes.clip_utils import normalize_imported_media_channel_layout, sync_reader_audio_info
 from classes.logger import log
 from classes.updates import UpdateInterface
 
@@ -364,19 +366,26 @@ class PlayerWorker(QObject):
             self.clip_reader.info.sample_rate = sample_rate
             self.clip_reader.info.channels = channels
 
+            new_clip = None
             try:
                 # Add clip for current preview file
                 new_clip = openshot.Clip(path)
+                probe = json.loads(new_clip.Reader().Json())
+                normalize_imported_media_channel_layout(probe, new_clip.Reader())
+                nc = max(1, int(probe.get("channels") or channels))
+                ncl = int(probe.get("channel_layout") or channel_layout)
+                sync_reader_audio_info(new_clip.Reader(), nc, ncl)
                 self.clip_reader.AddClip(new_clip)
-            except:
-                log.warning('Failed to load media file into video player: %s' % path)
+            except Exception:
+                log.warning('Failed to load media file into video player: %s', path, exc_info=True)
 
             # Assign new clip_reader
             self.clip_path = path
 
             # Keep track of previous clip readers (so we can Close it later)
-            self.previous_clips.append(new_clip)
-            self.previous_clip_readers.append(self.clip_reader)
+            if new_clip is not None:
+                self.previous_clips.append(new_clip)
+                self.previous_clip_readers.append(self.clip_reader)
 
             # Open and set reader
             self.clip_reader.Open()
