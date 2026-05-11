@@ -59,7 +59,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media
+from classes.clip_utils import clamp_timing_to_media, normalize_imported_media_channel_layout
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
@@ -3792,6 +3792,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Create a new Clip object with the file path
         c = openshot.Clip(file_path)
+        normalize_imported_media_channel_layout(file.data, c.Reader())
 
         # Convert the clip object to JSON and fill missing attributes
         new_clip = json.loads(c.Json())
