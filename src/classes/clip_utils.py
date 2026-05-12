@@ -26,12 +26,23 @@
 
 import json
 import logging
+import os
 from fractions import Fraction
 from typing import Any, Mapping, MutableMapping, Optional, Tuple
 
 from classes.app import get_app
+from classes.logger import log
 
 logger = logging.getLogger(__name__)
+
+
+def _media_basename_for_log(file_data: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(file_data, Mapping):
+        return ""
+    try:
+        return os.path.basename(str(file_data.get("path") or "") or "")
+    except Exception:
+        return ""
 
 
 def _as_mapping(candidate: Any) -> Mapping[str, Any]:
@@ -92,7 +103,9 @@ def _layout_matches_channels(layout: int, channels: int) -> bool:
     for mask, count in known:
         if layout == mask:
             return channels == count
-    return True
+    # Unknown positive masks (e.g. odd FFmpeg bitmasks on some Windows builds) are not
+    # safe to pass through to SWResample — they can decode to an empty layout string.
+    return False
 
 
 def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> None:
@@ -106,6 +119,12 @@ def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> N
         return
     channels = int(channels)
     channel_layout = int(channel_layout)
+    path_hint = ""
+    try:
+        path_hint = os.path.basename(str(json.loads(reader.Json()).get("path") or "") or "")
+    except Exception:
+        pass
+    setjson_ok = False
     try:
         merged = json.loads(reader.Json())
         merged["channels"] = channels
@@ -115,16 +134,42 @@ def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> N
         setter = getattr(reader, "SetJson", None)
         if callable(setter):
             setter(json.dumps(merged))
+            setjson_ok = True
+            log.debug(
+                "clip_utils: reader audio synced via SetJson (media=%s): channels=%s layout_mask=0x%x",
+                path_hint or "?",
+                channels,
+                channel_layout,
+            )
             return
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning(
+            "clip_utils: Reader.Json merge or SetJson failed (media=%s): %s — "
+            "trying Reader.info; FFmpeg may still print [SWR] if the binding ignores .info.",
+            path_hint or "?",
+            exc,
+        )
     try:
         ri = reader.info
         if getattr(ri, "has_audio", False):
             ri.channels = channels
             ri.channel_layout = channel_layout
-    except Exception:
-        pass
+            if not setjson_ok:
+                log.warning(
+                    "clip_utils: reader audio updated via Reader.info only (SetJson missing or failed; "
+                    "media=%s): channels=%s layout_mask=0x%x — "
+                    "if stderr shows [SWR] input channel layout \"\", libopenshot may not be applying .info "
+                    "for resample; check libopenshot vs bundled FFmpeg.",
+                    path_hint or "?",
+                    channels,
+                    channel_layout,
+                )
+    except Exception as exc:
+        log.warning(
+            "clip_utils: could not set Reader.info audio fields (media=%s): %s",
+            path_hint or "?",
+            exc,
+        )
 
 
 def copy_audio_stream_fields_from_reader(
@@ -192,18 +237,38 @@ def normalize_imported_media_channel_layout(
     ):
         return
 
+    reader_layout_snap: Optional[int] = None
+    if reader is not None:
+        try:
+            reader_layout_snap = _rounded_int(getattr(reader.info, "channel_layout", None))
+        except Exception:
+            pass
+
     if channels == 1:
-        file_data["channel_layout"] = int(openshot.LAYOUT_MONO)
+        new_mask = int(openshot.LAYOUT_MONO)
     elif channels == 2:
-        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
+        new_mask = int(openshot.LAYOUT_STEREO)
     elif channels == 3:
-        file_data["channel_layout"] = int(openshot.LAYOUT_SURROUND)
+        new_mask = int(openshot.LAYOUT_SURROUND)
     elif channels == 6:
-        file_data["channel_layout"] = int(openshot.LAYOUT_5POINT1)
+        new_mask = int(openshot.LAYOUT_5POINT1)
     elif channels == 8:
-        file_data["channel_layout"] = int(openshot.LAYOUT_7POINT1)
+        new_mask = int(openshot.LAYOUT_7POINT1)
     else:
-        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
+        new_mask = int(openshot.LAYOUT_STEREO)
+
+    file_data["channel_layout"] = new_mask
+    media = _media_basename_for_log(file_data)
+    log.info(
+        "clip_utils: normalized channel_layout for SWResample (media=%s): channels=%s "
+        "stored_layout=%s reader_layout=%s -> mask=0x%x "
+        "(non-zero unknown masks often cause FFmpeg [SWR] empty layout on Windows)",
+        media or "?",
+        channels,
+        layout_val if layout_val is not None else "unset",
+        reader_layout_snap if reader_layout_snap is not None else "-",
+        new_mask,
+    )
 
 
 def _fps_fraction(fps_value: Any) -> Optional[Fraction]:

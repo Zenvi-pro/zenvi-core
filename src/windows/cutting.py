@@ -162,6 +162,13 @@ class Cutting(QDialog):
                 self.clip.Reader(), self.channels, self.channel_layout)
             copy_audio_stream_fields_from_reader(self.file.data, self.clip.Reader())
             self.clip.Open()
+            normalize_imported_media_channel_layout(self.file.data, self.clip.Reader())
+            self.channels = max(1, int(self.file.data.get("channels") or self.channels))
+            self.channel_layout = int(self.file.data.get("channel_layout") or self.channel_layout)
+            self.r.info.channel_layout = self.channel_layout
+            self.r.info.channels = self.channels
+            sync_reader_audio_info(
+                self.clip.Reader(), self.channels, self.channel_layout)
 
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
