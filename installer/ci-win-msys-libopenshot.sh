@@ -20,8 +20,8 @@ if [[ ! -f /usr/lib/libUnitTest++.a ]] && [[ ! -f /usr/lib/libUnitTest++.dll.a ]
   cmake --install build
 fi
 
-# libopenshot-audio v0.5.0 → /usr; disable ASIO (no Steinberg SDK on CI)
-git clone --depth 1 --branch v0.5.0 https://github.com/OpenShot/libopenshot-audio.git "${DEPS}/libopenshot-audio"
+# libopenshot-audio v0.6.0 → /usr (pairs with libopenshot 0.7.x OpenShotAudio >= 0.6.0); disable ASIO (no Steinberg SDK on CI)
+git clone --depth 1 --branch v0.6.0 https://github.com/OpenShot/libopenshot-audio.git "${DEPS}/libopenshot-audio"
 AUDIO_SRC="${DEPS}/libopenshot-audio"
 APPCONFIG="${AUDIO_SRC}/JuceLibraryCode/AppConfig.h"
 if [[ -f "${APPCONFIG}" ]]; then
@@ -36,8 +36,8 @@ cmake -S "${AUDIO_SRC}" -B "${AUDIO_SRC}/build" \
 cmake --build "${AUDIO_SRC}/build" --parallel "$(nproc)"
 cmake --install "${AUDIO_SRC}/build"
 
-# libopenshot v0.5.0 → /ucrt64 + FFmpeg 7+ patches (same as macOS release job)
-git clone --depth 1 --branch v0.5.0 https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
+# libopenshot v0.7.0 → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
+git clone --depth 1 --branch v0.7.0 https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   xargs -0 -r grep -l "avresample" 2>/dev/null | while read -r f; do
