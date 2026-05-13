@@ -729,7 +729,12 @@ jobs:
             ls -la build/ || true
             exit 1
           fi
-          clang -O2 -Wall -o "$FROZEN_DIR/launch-mac" installer/launch-mac.c
+          # Build universal2 (x86_64 + arm64). The macos-15 runner (used for the
+          # x86_64 matrix job) is Apple Silicon — without -arch x86_64, clang
+          # produces an arm64-only binary that wouldn't match the Rosetta-Python
+          # x86_64 'zenvi' it execs. Universal2 works for both matrix jobs.
+          clang -O2 -Wall -arch x86_64 -arch arm64 \
+            -o "$FROZEN_DIR/launch-mac" installer/launch-mac.c
           chmod +x "$FROZEN_DIR/launch-mac"
           echo "Compiled launch-mac:"
           file "$FROZEN_DIR/launch-mac"
@@ -764,6 +769,15 @@ jobs:
           # modules and tries to handle it as a code subcomponent, producing the error
           # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
           find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
+
+          # Move non-code files (icons) out of Contents/MacOS/ into Contents/Resources/.
+          # cx_Freeze dumps everything (binaries, icons, license txt) into a flat dir.
+          # codesign treats every file under Contents/MacOS/ as part of the executable
+          # surface; an .icns next to the binary confuses the bundle seal and produces
+          # "code object is not signed at all / In subcomponent: .../zenvi.icns".
+          # The icon also already lives at Contents/Resources/icon.icns (copied above),
+          # so the MacOS copies are pure duplicates.
+          find "$APP/Contents/MacOS" -maxdepth 2 -name '*.icns' -exec rm -f {} +
 
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
