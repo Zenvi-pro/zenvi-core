@@ -770,20 +770,23 @@ jobs:
           # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
           find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
 
-          # ── Bundle cleanup pass ────────────────────────────────────────────
-          # cx_Freeze emits a flat lib/ tree mixing code (.so/.dylib) with
-          # build-time metadata (.pyi type stubs, py.typed markers, .pxd/.pxi
-          # Cython headers, C/C++ source, IDE project files). codesign treats
-          # everything under Contents/MacOS/ as part of the bundle's sealed
-          # code surface, so any stray non-runtime file breaks the bundle seal
-          # with: "code object is not signed at all / In subcomponent: <path>".
-          # We can't move lib/* (Python's import system needs it at the path
-          # cx_Freeze hardcoded), so delete the metadata files that the running
-          # app never touches.
-
-          # 1. Top-level Contents/MacOS: move non-Mach-O files (icons, license)
-          #    to Resources/ so they stay reachable but aren't on the code path.
+          # ── Bundle restructure for codesign / notarization ────────────────
+          # Apple's bundle convention says Contents/MacOS/ is for Mach-O
+          # executables; everything else lives under Contents/Resources/.
+          # cx_Freeze 'build' (vs bdist_mac) dumps a flat dir with .so/.dylib
+          # mixed alongside .py/.pyc/icons/text. codesign then treats every
+          # file under MacOS/ as part of the bundle's sealed code surface and
+          # blows up with "code object is not signed at all / In subcomponent:
+          # <some non-code file>" — different file each iteration, same root
+          # cause. The proven fix (used upstream by openshot-qt's mac build)
+          # is to move the offending subdirectories to Resources/ and link
+          # them back from MacOS/. cx_Freeze's frozen binary follows the
+          # symlink and finds its modules at the original path; codesign sees
+          # the symlink itself as a single file and walks into Resources/
+          # under its resource-sealing rules (where mixed content is fine).
           mkdir -p "$APP/Contents/Resources"
+
+          # 1. Top-level non-Mach-O files (icons, license txt) → Resources/.
           MOVED=0
           while IFS= read -r -d '' f; do
             if ! file "$f" 2>/dev/null | grep -q "Mach-O"; then
@@ -791,28 +794,17 @@ jobs:
               MOVED=$((MOVED + 1))
             fi
           done < <(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print0)
-          echo "Moved $MOVED non-Mach-O top-level file(s) to Contents/Resources/"
+          echo "Moved $MOVED top-level non-Mach-O file(s) to Contents/Resources/"
 
-          # 2. Recursive: delete build-time-only files anywhere in the bundle.
-          #    Type stubs (.pyi, py.typed) are for IDEs/mypy, not the
-          #    interpreter. Cython sources (.pxd/.pxi/.pyx) and C/C++ headers
-          #    are for compilation, not import. IDE files are noise.
-          DELETED=$(find "$APP/Contents/MacOS" -type f \( \
-              -name '*.pyi' -o \
-              -name 'py.typed' -o \
-              -name '*.pxd' -o \
-              -name '*.pxi' -o \
-              -name '*.pyx' -o \
-              -name '*.h'   -o \
-              -name '*.hpp' -o \
-              -name '*.c'   -o \
-              -name '*.cc'  -o \
-              -name '*.cpp' -o \
-              -name '*.hash' -o \
-              -name '*.project' -o \
-              -name '*.settings' \
-            \) -print -delete | wc -l | tr -d ' ')
-          echo "Deleted $DELETED build-time-only file(s) from Contents/MacOS/"
+          # 2. Subdirectories that mix code + data (lib/, share/, plugins/)
+          #    → Resources/, replaced with a relative symlink.
+          for d in lib share plugins; do
+            if [ -d "$APP/Contents/MacOS/$d" ] && [ ! -L "$APP/Contents/MacOS/$d" ]; then
+              mv "$APP/Contents/MacOS/$d" "$APP/Contents/Resources/$d"
+              ln -s "../Resources/$d" "$APP/Contents/MacOS/$d"
+              echo "Relocated $d/: Contents/MacOS/$d → Contents/Resources/$d (symlinked back)"
+            fi
+          done
 
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
@@ -876,16 +868,15 @@ jobs:
               --options runtime --force "$QWE"
           fi
 
-          # Sign the full app bundle.
-          # NOTE: do NOT pass --deep. Apple has officially deprecated --deep for years,
-          # and on a cx_Freeze bundle it causes "bundle format unrecognized" because
-          # codesign tries to walk into stray non-code subdirectories. Inner Mach-O
-          # objects are already signed above; signing the bundle itself (without --deep)
-          # seals the Info.plist and wraps the existing per-object signatures.
+          # Sign the full app bundle with --deep --options runtime.
+          # --deep is OK here because we restructured the bundle above to put
+          # all non-code in Contents/Resources/, so --deep's recursive walk
+          # only encounters proper sub-bundles and sealed resources. This is
+          # the same approach upstream openshot-qt uses for its mac build.
           codesign -s "$SIGN_IDENTITY" \
             --timestamp=http://timestamp.apple.com/ts01 \
             --entitlements installer/zenvi.entitlements \
-            --options runtime --force "$APP"
+            --options runtime --deep --force "$APP"
 
           echo "Signing complete:"
           codesign -dvvv "$APP" 2>&1 | head -6
