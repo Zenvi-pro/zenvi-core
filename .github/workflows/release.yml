@@ -668,11 +668,24 @@ jobs:
 
       - name: Install Apple Developer ID certificate
         id: cert
-        continue-on-error: true
         env:
           APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          EXPECTED_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
         run: |
+          set -euo pipefail
+
+          # Fail loudly if either secret is missing — bash -u alone won't catch
+          # empty-but-defined env vars, so check explicitly.
+          if [ -z "${APPLE_CERT_BASE64:-}" ]; then
+            echo "::error::APPLE_CERT_BASE64 secret is empty or unset"
+            exit 1
+          fi
+          if [ -z "${APPLE_CERT_PASSWORD:-}" ]; then
+            echo "::error::APPLE_CERT_PASSWORD secret is empty or unset"
+            exit 1
+          fi
+
           KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -688,7 +701,19 @@ jobs:
             -S apple-tool:,apple: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Verify the signing identity we expect to use is actually in the keychain.
+          # Without this, downstream codesign calls fail with a cryptic message and
+          # there is no clear signal that the .p12 didn't contain what we thought.
+          echo "--- Identities in signing keychain ---"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+                | grep -F "$EXPECTED_IDENTITY" > /dev/null; then
+            echo "::error::Signing identity '$EXPECTED_IDENTITY' not found in keychain after .p12 import."
+            echo "::error::Check that APPLE_CERT_BASE64 contains a Developer ID Application cert + private key, and that APPLE_CERT_PASSWORD is correct."
+            exit 1
+          fi
+          echo "Signing identity verified: $EXPECTED_IDENTITY"
 
       - name: Assemble .app bundle
         run: |
@@ -742,10 +767,10 @@ jobs:
           ls "$APP/Contents/MacOS/" | head -20
 
       - name: Sign .app bundle
-        if: steps.cert.outcome == 'success'
         env:
           SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
         run: |
+          set -euo pipefail
           APP="Zenvi.app"
 
           # Sign all .dylib and .so files first
@@ -794,29 +819,62 @@ jobs:
           echo "Created $DMG_NAME ($(du -sh "$DMG_NAME" | cut -f1))"
 
       - name: Sign and notarize DMG
-        if: steps.cert.outcome == 'success'
         env:
           SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_NOTARIZE_PASSWORD: ${{ secrets.APPLE_NOTARIZE_PASSWORD }}
         run: |
+          set -euo pipefail
           DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
+
+          # Fail early if notarization secrets are missing (notarytool's own error
+          # for missing creds is opaque — better to surface it ourselves).
+          for v in APPLE_ID APPLE_TEAM_ID APPLE_NOTARIZE_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v secret is empty or unset"
+              exit 1
+            fi
+          done
 
           # Sign the DMG itself
           codesign -s "$SIGN_IDENTITY" \
             --timestamp=http://timestamp.apple.com/ts01 \
             --force "$DMG_NAME"
 
-          # Submit for notarization and wait
+          # Submit for notarization and wait. Capture the submission ID so we can
+          # pull the full rejection log if notarytool reports failure — without it,
+          # the only output is "Status: Invalid" which tells us nothing actionable.
+          SUBMIT_LOG="$RUNNER_TEMP/notarytool-submit.log"
+          set +e
           xcrun notarytool submit "$DMG_NAME" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_NOTARIZE_PASSWORD" \
-            --wait
+            --wait \
+            --output-format json | tee "$SUBMIT_LOG"
+          SUBMIT_EXIT=$?
+          set -e
 
-          # Staple the notarization ticket
+          STATUS=$(grep -o '"status":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+          SUBMIT_ID=$(grep -o '"id":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+
+          if [ "$STATUS" != "Accepted" ] || [ "$SUBMIT_EXIT" -ne 0 ]; then
+            echo "::error::Notarization did not succeed (status=$STATUS, exit=$SUBMIT_EXIT)"
+            if [ -n "$SUBMIT_ID" ]; then
+              echo "--- notarytool log for submission $SUBMIT_ID ---"
+              xcrun notarytool log "$SUBMIT_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_NOTARIZE_PASSWORD" || true
+            fi
+            exit 1
+          fi
+
+          # Staple the notarization ticket so Gatekeeper can verify offline
           xcrun stapler staple "$DMG_NAME"
+          xcrun stapler validate "$DMG_NAME"
+          spctl -a -t open --context context:primary-signature -vv "$DMG_NAME" || true
           echo "Notarization complete: $DMG_NAME"
 
       - name: Upload macOS artifact
