@@ -715,6 +715,25 @@ jobs:
           fi
           echo "Signing identity verified: $EXPECTED_IDENTITY"
 
+      - name: Compile launch-mac Mach-O launcher
+        # macOS will not codesign or notarize a bundle whose CFBundleExecutable
+        # is a shell script. installer/launch-mac is a bash script (kept for
+        # Linux / local dev); on macOS we replace it with a tiny compiled
+        # launcher (installer/launch-mac.c) that does the same env-var setup
+        # and execs the cx_Freeze-built `zenvi` binary.
+        run: |
+          set -euo pipefail
+          FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
+          if [ -z "$FROZEN_DIR" ]; then
+            echo "::error::cx_Freeze output directory build/exe.* not found"
+            ls -la build/ || true
+            exit 1
+          fi
+          clang -O2 -Wall -o "$FROZEN_DIR/launch-mac" installer/launch-mac.c
+          chmod +x "$FROZEN_DIR/launch-mac"
+          echo "Compiled launch-mac:"
+          file "$FROZEN_DIR/launch-mac"
+
       - name: Assemble .app bundle
         run: |
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -780,13 +799,24 @@ jobs:
           set -euo pipefail
           APP="Zenvi.app"
 
-          # Sign all .dylib and .so files first
-          find "$APP" \( -name '*.dylib' -o -name '*.so' \) | while read -r f; do
-            codesign -s "$SIGN_IDENTITY" \
-              --timestamp=http://timestamp.apple.com/ts01 \
-              --entitlements installer/zenvi.entitlements \
-              --force "$f"
-          done
+          # Sign every Mach-O binary in the bundle with Developer ID.
+          # Detect by content (magic bytes) rather than file extension — the
+          # previous filename glob `*.dylib`|`*.so` missed the main executable
+          # (Contents/MacOS/zenvi), the launch-mac launcher, and any helper
+          # binaries without those extensions. When the outer bundle codesign
+          # then ran without --deep, it reported "code object is not signed
+          # at all" because the main executable was still only ad-hoc signed.
+          SIGNED_COUNT=0
+          while IFS= read -r -d '' f; do
+            if file "$f" 2>/dev/null | grep -q "Mach-O"; then
+              codesign -s "$SIGN_IDENTITY" \
+                --timestamp=http://timestamp.apple.com/ts01 \
+                --entitlements installer/zenvi.entitlements \
+                --options runtime --force "$f"
+              SIGNED_COUNT=$((SIGNED_COUNT + 1))
+            fi
+          done < <(find "$APP/Contents" -type f -print0)
+          echo "Signed $SIGNED_COUNT Mach-O binaries with $SIGN_IDENTITY"
 
           # Sign QtWebEngineProcess if present
           QWE="$APP/Contents/MacOS/share/QtWebEngineProcess.app"
