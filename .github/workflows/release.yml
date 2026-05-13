@@ -251,7 +251,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v0.5.0-audio-v0.5.0-arm64-macos14-py311-v2
+          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v3
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -263,13 +263,14 @@ jobs:
           # Install build dependencies (Homebrew arm64 bottles)
           # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
           brew install swig zeromq cppzmq libsamplerate qt@5 || true
+          brew install libomp
           brew install ffmpeg 2>/dev/null || true
 
           QT5_PREFIX="$(brew --prefix qt@5)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
 
-          # Build libopenshot-audio v0.5.0 (JUCE 7 — has arm64 fix, satisfies >=0.4.0)
-          git clone --depth=1 --branch v0.5.0 \
+          # Build libopenshot-audio v0.6.0 (required by libopenshot 0.7.x: OpenShotAudio >= 0.6.0)
+          git clone --depth=1 --branch v0.6.0 \
             https://github.com/OpenShot/libopenshot-audio.git /tmp/libopenshot-audio
           cmake -S /tmp/libopenshot-audio -B /tmp/libopenshot-audio/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
@@ -277,8 +278,8 @@ jobs:
           cmake --build /tmp/libopenshot-audio/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot-audio/build
 
-          # Build libopenshot v0.5.0 with Python bindings
-          git clone --depth=1 --branch v0.5.0 \
+          # Build libopenshot v0.7.0 with Python bindings (OpenMP required — use Homebrew libomp)
+          git clone --depth=1 --branch v0.7.0 \
             https://github.com/OpenShot/libopenshot.git /tmp/libopenshot
 
           # Patch cmake files:
@@ -286,20 +287,8 @@ jobs:
           find /tmp/libopenshot -name "CMakeLists.txt" -o -name "*.cmake" | \
             xargs grep -l "avresample" 2>/dev/null | \
             xargs sed -i '' 's/ avresample//g'
-          # 2. Completely disable OpenMP in cmake (prevents NOTFOUND linker errors).
-          #    A stub omp.h (step 3) satisfies the #include <omp.h> in source files.
-          find /tmp/libopenshot -name "CMakeLists.txt" | \
-            xargs grep -l "find_package.*OpenMP" 2>/dev/null | \
-            xargs sed -i '' \
-              's/find_package(OpenMP[^)]*)/set(OpenMP_FOUND FALSE) # disabled for macOS CI/g'
 
-          # 3. Write a stub omp.h with all omp_* functions as inline stubs.
-          #    OpenMPUtilities.h includes omp.h and defines macros using omp_get_num_procs;
-          #    the stub satisfies those references without needing the real OpenMP runtime.
-          mkdir -p /tmp/omp-stub
-          printf '#ifndef _OMP_H_STUB\n#define _OMP_H_STUB\ntypedef int omp_lock_t;\nstatic inline int omp_get_num_procs(void){return 4;}\nstatic inline int omp_get_num_threads(void){return 1;}\nstatic inline int omp_get_thread_num(void){return 0;}\nstatic inline int omp_get_max_threads(void){return 1;}\nstatic inline void omp_set_num_threads(int n){(void)n;}\nstatic inline int omp_in_parallel(void){return 0;}\nstatic inline double omp_get_wtime(void){return 0.0;}\nstatic inline void omp_init_lock(int*l){(void)l;}\nstatic inline void omp_destroy_lock(int*l){(void)l;}\nstatic inline void omp_set_lock(int*l){(void)l;}\nstatic inline void omp_unset_lock(int*l){(void)l;}\nstatic inline int omp_test_lock(int*l){(void)l;return 1;}\n#endif\n' > /tmp/omp-stub/omp.h
-
-          # 4. FFmpeg 7/8 compat patches in all libopenshot .cpp source files:
+          # 2. FFmpeg 7/8 compat patches in all libopenshot .cpp source files (no-ops if already fixed upstream):
           #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*
           python3 -c 'import glob; [open(f,"w").write(t.replace("FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE").replace("FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED").replace("FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN").replace("FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "FF_PROFILE_" in (t:=open(f).read())]'
           #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op
@@ -315,9 +304,12 @@ jobs:
             -DENABLE_RUBY=OFF \
             -DENABLE_JAVA=OFF \
             -DENABLE_PYTHON=ON \
+            -DENABLE_OPENCV=OFF \
+            -DENABLE_MAGICK=OFF \
             -DPython3_EXECUTABLE="$(which python3)" \
-            -DCMAKE_CXX_FLAGS="-I/tmp/omp-stub -Wno-deprecated-declarations" \
-            -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$QT5_PREFIX"
+            -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" \
+            -DOpenMP_ROOT="$LIBOMP_PREFIX" \
+            -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$QT5_PREFIX;$LIBOMP_PREFIX"
           cmake --build /tmp/libopenshot/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot/build
 
@@ -590,9 +582,9 @@ jobs:
           # Map of versioned soname -> possible source files in bundle
           soname_fixups = [
               ('libopenshot-audio.10.dylib',
-               ['libopenshot-audio.0.5.0.dylib', 'libopenshot-audio.dylib']),
-              ('libopenshot.17.dylib',
-               ['libopenshot.0.5.0.dylib', 'libopenshot.dylib']),
+               ['libopenshot-audio.0.6.0.dylib', 'libopenshot-audio.dylib']),
+              ('libopenshot.30.dylib',
+               ['libopenshot.0.7.0.dylib', 'libopenshot.dylib']),
           ]
           for soname, candidates in soname_fixups:
               src = None
@@ -779,12 +771,12 @@ jobs:
             mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
 
-      - name: Cache libopenshot bundle (MSYS2 MinGW64)
+      - name: Cache libopenshot bundle (MSYS2 UCRT64)
         id: cache-libopenshot-win
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.5.0-v4-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
