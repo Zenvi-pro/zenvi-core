@@ -235,12 +235,21 @@ class PlayerWorker(QObject):
         log.info("QThread Start Method Invoked")
 
         # Init new player
-        self.initPlayer()
+        try:
+            self.initPlayer()
+        except Exception as exc:
+            log.error("Start: initPlayer raised unexpected exception: %s", exc, exc_info=True)
+            # Still try to start playback even if signal connection failed
+            pass
 
         # Connect player to timeline reader
-        self.player.Reader(self.timeline)
-        self.player.Play()
-        self.player.Pause()
+        try:
+            self.player.Reader(self.timeline)
+            self.player.Play()
+            self.player.Pause()
+        except Exception as exc:
+            log.error("Start: player init (Reader/Play/Pause) failed: %s", exc, exc_info=True)
+            return
 
         # Check for any Player initialization errors (only JUCE errors bubble up here now)
         # But slightly delay, to allow for correct audio thread initialization with the
@@ -280,9 +289,23 @@ class PlayerWorker(QObject):
 
         # Get the address of the player's renderer (a QObject that emits signals when frames are ready)
         self.renderer_address = self.player.GetRendererQObject()
+        log.info("initPlayer: renderer_address=%s", self.renderer_address)
+
+        if not self.renderer_address:
+            log.error("initPlayer: GetRendererQObject() returned null/zero — frames will not be delivered!")
+            return
+
         self.player.SetQWidget(sip.unwrapinstance(self.videoPreview))
+        log.info("initPlayer: SetQWidget called with ptr=%s", sip.unwrapinstance(self.videoPreview))
+
         self.renderer = sip.wrapinstance(self.renderer_address, QObject)
-        self.videoPreview.connectSignals(self.renderer)
+        log.info("initPlayer: renderer wrapped: %s", self.renderer)
+
+        try:
+            self.videoPreview.connectSignals(self.renderer)
+            log.info("initPlayer: connectSignals OK — present signal connected")
+        except Exception as exc:
+            log.error("initPlayer: connectSignals FAILED: %s", exc, exc_info=True)
 
     def kill(self):
         """ Kill this thread """
@@ -299,7 +322,13 @@ class PlayerWorker(QObject):
 
     def refreshFrame(self):
         """ Refresh a certain frame """
-        log.debug("refreshFrame")
+        log.debug("refreshFrame pos=%s mode=%s", self.player.Position(), self.player.Mode())
+
+        # Re-set the timeline reader so libopenshot picks up any clip changes
+        # (e.g. clips added since the last Reader() call at startup).
+        # Without this, Play+Pause serves stale cached frames from before the clip was added.
+        if not self.clip_path:
+            self.player.Reader(self.timeline)
 
         # Always load back in the timeline reader
         self.parent.LoadFileSignal.emit('')
@@ -307,7 +336,7 @@ class PlayerWorker(QObject):
         # Mark frame number for processing (if parent is done initializing)
         self.Seek(self.player.Position())
 
-        log.debug("player Position(): %s", self.player.Position())
+        log.debug("refreshFrame done pos=%s", self.player.Position())
 
     def LoadFile(self, path=None):
         """ Load a media file into the video player """
@@ -415,6 +444,12 @@ class PlayerWorker(QObject):
         # Seek to frame
         if self.parent.initialized:
             self.player.Seek(number)
+            # Force frame delivery when paused — libopenshot doesn't emit the
+            # present signal on Seek alone when the player is not playing.
+            # Play+Pause triggers the same frame-render path used at startup.
+            if self.player.Mode() != openshot.PLAYBACK_PLAY:
+                self.player.Play()
+                self.player.Pause()
 
     def Speed(self, new_speed):
         """ Set the speed of the video player """
