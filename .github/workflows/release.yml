@@ -796,15 +796,22 @@ jobs:
           done < <(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print0)
           echo "Moved $MOVED top-level non-Mach-O file(s) to Contents/Resources/"
 
-          # 2. Subdirectories that mix code + data (lib/, share/, plugins/)
-          #    → Resources/, replaced with a relative symlink.
-          for d in lib share plugins; do
-            if [ -d "$APP/Contents/MacOS/$d" ] && [ ! -L "$APP/Contents/MacOS/$d" ]; then
-              mv "$APP/Contents/MacOS/$d" "$APP/Contents/Resources/$d"
-              ln -s "../Resources/$d" "$APP/Contents/MacOS/$d"
-              echo "Relocated $d/: Contents/MacOS/$d → Contents/Resources/$d (symlinked back)"
-            fi
-          done
+          # 2. ALL non-bundle subdirectories under Contents/MacOS/ → Resources/,
+          #    symlinked back. The previous hardcoded list (lib, share, plugins)
+          #    missed dotted-name dirs that some packages drop in (e.g.
+          #    PyQt5.uic.widget-plugins), which codesign then mistook for a
+          #    malformed nested bundle: "bundle format unrecognized / In
+          #    subcomponent: <that dir>". Dynamic discovery catches all of them.
+          while IFS= read -r -d '' d; do
+            name=$(basename "$d")
+            # Skip symlinks (already-relocated entries) and anything that already
+            # exists at the destination.
+            [ -L "$d" ] && continue
+            [ -e "$APP/Contents/Resources/$name" ] && continue
+            mv "$d" "$APP/Contents/Resources/$name"
+            ln -s "../Resources/$name" "$APP/Contents/MacOS/$name"
+            echo "Relocated $name/: Contents/MacOS/$name → Contents/Resources/$name (symlinked back)"
+          done < <(find "$APP/Contents/MacOS" -mindepth 1 -maxdepth 1 -type d -print0)
 
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
