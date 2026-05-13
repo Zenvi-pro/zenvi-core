@@ -770,25 +770,49 @@ jobs:
           # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
           find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
 
-          # Strip non-Mach-O files from the TOP LEVEL of Contents/MacOS/.
-          # cx_Freeze emits a flat directory containing both code and stray data
-          # (icons, license txt, json, etc.). codesign treats every file under
-          # Contents/MacOS/ as part of the bundle's executable surface; any
-          # non-code file there breaks the bundle seal with:
-          #   "code object is not signed at all / In subcomponent: .../<that file>"
-          # Subdirectories (lib/, share/, plugins/) are fine — codesign handles
-          # nested content as resources. Move stray data files to Resources/
-          # instead of deleting so anything the app reads at runtime is still
-          # reachable (it just isn't on the codesign-sealed code path).
+          # ── Bundle cleanup pass ────────────────────────────────────────────
+          # cx_Freeze emits a flat lib/ tree mixing code (.so/.dylib) with
+          # build-time metadata (.pyi type stubs, py.typed markers, .pxd/.pxi
+          # Cython headers, C/C++ source, IDE project files). codesign treats
+          # everything under Contents/MacOS/ as part of the bundle's sealed
+          # code surface, so any stray non-runtime file breaks the bundle seal
+          # with: "code object is not signed at all / In subcomponent: <path>".
+          # We can't move lib/* (Python's import system needs it at the path
+          # cx_Freeze hardcoded), so delete the metadata files that the running
+          # app never touches.
+
+          # 1. Top-level Contents/MacOS: move non-Mach-O files (icons, license)
+          #    to Resources/ so they stay reachable but aren't on the code path.
           mkdir -p "$APP/Contents/Resources"
-          STRIPPED=0
+          MOVED=0
           while IFS= read -r -d '' f; do
             if ! file "$f" 2>/dev/null | grep -q "Mach-O"; then
               mv "$f" "$APP/Contents/Resources/"
-              STRIPPED=$((STRIPPED + 1))
+              MOVED=$((MOVED + 1))
             fi
           done < <(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print0)
-          echo "Moved $STRIPPED non-Mach-O file(s) from Contents/MacOS/ to Contents/Resources/"
+          echo "Moved $MOVED non-Mach-O top-level file(s) to Contents/Resources/"
+
+          # 2. Recursive: delete build-time-only files anywhere in the bundle.
+          #    Type stubs (.pyi, py.typed) are for IDEs/mypy, not the
+          #    interpreter. Cython sources (.pxd/.pxi/.pyx) and C/C++ headers
+          #    are for compilation, not import. IDE files are noise.
+          DELETED=$(find "$APP/Contents/MacOS" -type f \( \
+              -name '*.pyi' -o \
+              -name 'py.typed' -o \
+              -name '*.pxd' -o \
+              -name '*.pxi' -o \
+              -name '*.pyx' -o \
+              -name '*.h'   -o \
+              -name '*.hpp' -o \
+              -name '*.c'   -o \
+              -name '*.cc'  -o \
+              -name '*.cpp' -o \
+              -name '*.hash' -o \
+              -name '*.project' -o \
+              -name '*.settings' \
+            \) -print -delete | wc -l | tr -d ' ')
+          echo "Deleted $DELETED build-time-only file(s) from Contents/MacOS/"
 
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
