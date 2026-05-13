@@ -770,14 +770,25 @@ jobs:
           # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
           find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
 
-          # Move non-code files (icons) out of Contents/MacOS/ into Contents/Resources/.
-          # cx_Freeze dumps everything (binaries, icons, license txt) into a flat dir.
-          # codesign treats every file under Contents/MacOS/ as part of the executable
-          # surface; an .icns next to the binary confuses the bundle seal and produces
-          # "code object is not signed at all / In subcomponent: .../zenvi.icns".
-          # The icon also already lives at Contents/Resources/icon.icns (copied above),
-          # so the MacOS copies are pure duplicates.
-          find "$APP/Contents/MacOS" -maxdepth 2 -name '*.icns' -exec rm -f {} +
+          # Strip non-Mach-O files from the TOP LEVEL of Contents/MacOS/.
+          # cx_Freeze emits a flat directory containing both code and stray data
+          # (icons, license txt, json, etc.). codesign treats every file under
+          # Contents/MacOS/ as part of the bundle's executable surface; any
+          # non-code file there breaks the bundle seal with:
+          #   "code object is not signed at all / In subcomponent: .../<that file>"
+          # Subdirectories (lib/, share/, plugins/) are fine — codesign handles
+          # nested content as resources. Move stray data files to Resources/
+          # instead of deleting so anything the app reads at runtime is still
+          # reachable (it just isn't on the codesign-sealed code path).
+          mkdir -p "$APP/Contents/Resources"
+          STRIPPED=0
+          while IFS= read -r -d '' f; do
+            if ! file "$f" 2>/dev/null | grep -q "Mach-O"; then
+              mv "$f" "$APP/Contents/Resources/"
+              STRIPPED=$((STRIPPED + 1))
+            fi
+          done < <(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print0)
+          echo "Moved $STRIPPED non-Mach-O file(s) from Contents/MacOS/ to Contents/Resources/"
 
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
