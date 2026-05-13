@@ -739,6 +739,13 @@ jobs:
           # Strip extended attributes
           xattr -cr "$APP" 2>/dev/null || true
 
+          # Remove cx_Freeze .hash metadata directories. These are build-time integrity
+          # caches not needed at runtime. They confuse codesign --deep (or any recursive
+          # bundle traversal): codesign sees a dot-prefixed subdirectory next to compiled
+          # modules and tries to handle it as a code subcomponent, producing the error
+          # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
+          find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
+
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
           # frozen_application_license.txt, .hash, .json), which makes codesign
@@ -790,11 +797,16 @@ jobs:
               --options runtime --force "$QWE"
           fi
 
-          # Sign the full app bundle
+          # Sign the full app bundle.
+          # NOTE: do NOT pass --deep. Apple has officially deprecated --deep for years,
+          # and on a cx_Freeze bundle it causes "bundle format unrecognized" because
+          # codesign tries to walk into stray non-code subdirectories. Inner Mach-O
+          # objects are already signed above; signing the bundle itself (without --deep)
+          # seals the Info.plist and wraps the existing per-object signatures.
           codesign -s "$SIGN_IDENTITY" \
             --timestamp=http://timestamp.apple.com/ts01 \
             --entitlements installer/zenvi.entitlements \
-            --options runtime --deep --force "$APP"
+            --options runtime --force "$APP"
 
           echo "Signing complete:"
           codesign -dvvv "$APP" 2>&1 | head -6
