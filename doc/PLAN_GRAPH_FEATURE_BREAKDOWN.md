@@ -25,22 +25,13 @@ This doc breaks down the **plan graph** feature for the AI video editing tool: n
 
 ### 2.1 How editing works today
 
-- **Entry:** User types in the **AI chat** → `AIChat.send_message()` → `run_agent()`.
-- **Root agent** (`root_agent.run_root_agent`):
-  - Has 4 tools: `invoke_video_agent`, `invoke_manim_agent`, `invoke_voice_music_agent`, `invoke_music_agent`.
-  - Routes the user message to one (or over time, several) **sub-agents**.
-- **Sub-agents** (in `sub_agents.py`):
-  - **Video:** timeline, clips, export, video generation, split, etc. (OpenShot tools).
-  - **Manim:** educational/math animation.
-  - **Voice/Music:** TTS, tagging, storylines.
-  - **Music:** Suno background music.
-- **Execution:** Each sub-agent runs `run_agent_with_tools()` with its own tools. Tools run on the **main thread** via `MainThreadToolRunner.run_tool()`.
-- **Signals:** `tool_started(name, args_json)` and `tool_completed(name, result)` are already emitted and shown in the **chat** as a flat list of “activity steps” (`addActivityStep` / `completeLastActivityStep` in `chat_ui`).
+- **Entry:** User types in the **AI chat** (dock / Web UI) → [`AIChatWorker`](c:\msys64\home\ranje\zenvi-core\src\windows\ai_chat_ui.py) sends the message to **zenvi-backend** (WebSocket with REST fallback). The **LLM and LangChain agent run on the backend**, not inside the video editor.
+- **Tools:** When the backend agent needs timeline or project actions, it issues **tool calls**; the editor runs them on the Qt main thread via [`tool_handlers.execute_tool`](c:\msys64\home\ranje\zenvi-core\src\classes\tool_handlers.py) and returns results to the backend.
+- **UI:** Streamed tokens and final assistant text are shown in the chat Web UI; activity / tool steps depend on what the backend and chat client expose.
 
-So today you have:
+The editor no longer ships an in-process LangChain stack; multi-agent routing (e.g. video vs Manim vs voice) lives in **zenvi-backend** if enabled there.
 
-- A **tree in logic**: Root → (video | manim | voice_music | music) → (many tools).
-- A **flat list in UI**: only the leaf tool calls (name + args) are shown in the chat; the “root → sub-agent” level is not visualized.
+**Plan graph (separate):** The [`plan_graph`](c:\msys64\home\ranje\zenvi-core\src\classes\plan_graph) package provides builder + dock UI. It is not automatically wired to every chat session in the current tree; hooking it to backend-driven tool events is a follow-up.
 
 ### 2.2 “Agent mode” vs “Appearance mode”
 
@@ -60,11 +51,11 @@ So: **one plan graph data structure**, **two presentations** (chat context + gra
 You need a **tree (or DAG)** that represents one “edit run”:
 
 - **Root:** e.g. “Edit: &lt;user prompt&gt;” or “Session / Edit #N.”
-- **Level 1 (branches):** High-level categories. Today these map naturally to:
-  - **Script** (voice, TTS, captions, storylines) → from `invoke_voice_music_agent` (+ possibly video tools that touch captions).
-  - **Imaging** (timeline, clips, effects, transitions, video generation) → from `invoke_video_agent`.
-  - **Manim** (educational animation) → from `invoke_manim_agent`.
-  - **Music** (Suno, background music) → from `invoke_music_agent`.
+- **Level 1 (branches):** High-level categories. These may map to backend routing (e.g. video vs Manim vs voice/music):
+  - **Script** (voice, TTS, captions, storylines) — plus video tools that touch captions.
+  - **Imaging** (timeline, clips, effects, transitions, video generation).
+  - **Manim** (educational animation).
+  - **Music** (Suno, background music).
 - **Level 2+:** Under each branch, the **actual tool calls** (and optionally grouped):
   - e.g. under Imaging: “Add transition,” “Generate video,” “Export,” “Add clip,” etc.
   - Each node can store: **label**, **description**, **tool name**, **args**, **result** (or summary), and optionally **code** if the tool is script/code-like.
@@ -86,7 +77,7 @@ Two main options:
 
 **Option A – Instrument the current run (recommended to start)**  
 - While the root agent and sub-agents run, **record**:
-  - When the root calls `invoke_X_agent(task)` → create a **branch** node “X” with description from `task`.
+  - When the backend (or a future local coordinator) starts a high-level sub-task → create a **branch** node with that task’s description.
   - When a sub-agent calls a tool → create a **step** node under that branch (tool name, args, result).
 - So the graph is **built as a side effect** of the existing flow; no change to how the model “thinks,” only we add a **plan builder** that listens to tool invocations and builds the tree.
 - **Pros:** No new “plan” phase; works with current root + sub-agents.  
@@ -100,7 +91,7 @@ Two main options:
 
 **Practical path:** Start with **Option A** (instrument current run). Add a **plan builder** that:
 - Subscribes to or is called from the same place that currently emits `tool_started` / `tool_completed`.
-- Knows “current branch” (which invoke_* is running) so it can attach step nodes to the right branch.
+- Knows “current branch” (which high-level sub-task is running) so it can attach step nodes to the right branch.
 
 Later you can add an optional “plan-first” phase and merge that with the instrumented tree.
 
@@ -168,7 +159,7 @@ You can start with the simple version and add scope later.
 
 1. **Python – plan builder**
    - Define node types and a simple tree structure.
-   - Hook into the agent run (e.g. where `tool_started`/`tool_completed` are emitted, plus root’s invoke_* calls) and build the graph during one edit run.
+   - Hook into the agent run (e.g. tool start/complete events from the chat client, plus high-level sub-task boundaries from the backend) and build the graph during one edit run.
    - Expose the current run’s graph (and optionally last N from memory) to the UI.
 
 2. **Python – persistence**
@@ -204,8 +195,8 @@ This breakdown should give you a clear map from “idea” to “data + where it
 
 ## Implementation status (as implemented)
 
-- **Plan graph package** (`src/plan_graph/`): All plan-graph code lives here. Builder (`builder.py`), persistence (`storage.py`), dock (`dock.py`), and UI (`ui/index.html`). Thread-safe `get_plan_builder()` singleton.
-- **Hooks**: Root agent (`root_agent.py`) calls `start_branch`/`end_branch` around each `invoke_*`; `MainThreadToolRunner.run_tool` calls `add_step` and emits `plan_updated`.
+- **Plan graph package** (`src/classes/plan_graph/`): Builder (`builder.py`), persistence (`storage.py`), dock (`dock.py`), and UI (`ui/index.html`). Thread-safe `get_plan_builder()` singleton.
+- **Hooks (intended / historical):** Earlier designs instrumented an in-editor root agent and `MainThreadToolRunner` for `start_branch` / `add_step`. The product now runs the agent in **zenvi-backend**; re-connecting the plan graph to backend or `tool_handlers` tool events is future work.
 - **Persistence**: SQLite at `USER_PATH/plan_history.db`; `save_plan()` after each run; `list_plans()`, `load_plan(id)`.
-- **UI**: **Plan Graph** dock. Show via **View → Docks → Plan Graph**. Updates live as tools run and with final plan when the response is ready. Clearing chat clears the plan.
-- **Next steps** (optional): Click-to-edit (re-prompt for a node), load/save plan history in UI, breakdown view (transitions, captioning, script).
+- **UI**: **Plan Graph** dock. Show via **View → Docks → Plan Graph**. Updates live when the builder receives steps (when wired). Clearing chat may clear the plan depending on client behavior.
+- **Next steps** (optional): Wire builder to backend tool callbacks; click-to-edit (re-prompt for a node), load/save plan history in UI, breakdown view (transitions, captioning, script).

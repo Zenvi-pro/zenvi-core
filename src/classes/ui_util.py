@@ -28,6 +28,7 @@
  """
 
 import os
+import sys
 import time
 
 # Try to get the security-patched XML functions from defusedxml
@@ -48,6 +49,44 @@ from classes.logger import log
 from . import openshot_rc  # noqa
 
 DEFAULT_THEME_NAME = "Humanity"
+
+
+def win_use_non_native_file_dialog():
+    """True when the Windows install should avoid IFileOpenDialog (COM 0x80040155 on some bundles).
+
+    cx_Freeze sets ``sys.frozen``; other freezers (for example freeze_core) may not, while still
+    using the same layout next to the executable (``lib/settings/_default.settings``).
+    """
+    if sys.platform != "win32":
+        return False
+    if getattr(sys, "frozen", False):
+        return True
+    if hasattr(sys, "_MEIPASS"):
+        return True
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    if os.path.isfile(os.path.join(exe_dir, "lib", "settings", "_default.settings")):
+        return True
+    return False
+
+
+def frozen_win_file_dialog_options():
+    """Options for QFileDialog static methods when native shell COM breaks (frozen MinGW builds)."""
+    from PyQt5.QtWidgets import QFileDialog
+
+    opts = QFileDialog.Options()
+    if win_use_non_native_file_dialog():
+        # Native IFileOpenDialog can raise HRESULT 0x80040155 (interface not registered).
+        opts |= QFileDialog.DontUseNativeDialog
+    return opts
+
+
+def apply_frozen_win_file_dialog_options(dialog):
+    """For QFileDialog instances: same workaround as :func:`frozen_win_file_dialog_options`."""
+    if not win_use_non_native_file_dialog():
+        return
+    from PyQt5.QtWidgets import QFileDialog
+
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
 
 
 def load_icon_theme():

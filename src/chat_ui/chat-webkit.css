@@ -1,0 +1,353 @@
+/*
+ * Qt WebKit fallback layout + motion (legacy WebKit / MSYS2).
+ * Option 2 (plain compatible CSS): flex with -webkit- prefix, margins instead of gap,
+ * no grid, no color-mix / @property / conic-gradient (use rgba + simple keyframes).
+ * Theme colours still come from chat.js setThemeColors(); this file supplies structure.
+ */
+
+html[data-zenvi-webkit="1"] body {
+    margin: 0;
+    padding: 0;
+    /* Base colours — overridden by inline theme application */
+    background: #0d0d0d !important;
+    color: #d4d4d4 !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    height: 100%;
+    overflow: hidden;
+}
+
+html[data-zenvi-webkit="1"],
+html[data-zenvi-webkit="1"] body {
+    height: 100%;
+}
+
+html[data-zenvi-webkit="1"] .chat-container {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-direction: column;
+    flex-direction: column;
+    height: 100%;
+    min-height: 100%;
+    position: relative;
+}
+
+/* Tab bar */
+html[data-zenvi-webkit="1"] #chat-tab-bar {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-direction: row;
+    flex-direction: row;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-flex-shrink: 0;
+    flex-shrink: 0;
+    padding: 6px 8px 0 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+html[data-zenvi-webkit="1"] #chat-tab-bar > * {
+    margin-right: 4px;
+}
+html[data-zenvi-webkit="1"] #chat-tab-bar > *:last-child {
+    margin-right: 0;
+}
+
+/* Messages — flex-1 scroll (0% basis so WebKit gives remaining height reliably) */
+html[data-zenvi-webkit="1"] #chat-messages {
+    -webkit-flex: 1 1 0% !important;
+    flex: 1 1 0% !important;
+    min-height: 120px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: #0d0d0d !important;
+}
+
+/* Bottom toolbar rows: use margin, not gap */
+html[data-zenvi-webkit="1"] .chat-bottom-left {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-direction: row;
+    flex-direction: row;
+    -webkit-align-items: center;
+    align-items: center;
+}
+html[data-zenvi-webkit="1"] .chat-bottom-left > * {
+    margin-right: 4px;
+}
+
+html[data-zenvi-webkit="1"] .flex.items-center.gap-1\.5 {
+    display: -webkit-flex !important;
+    display: flex !important;
+    -webkit-align-items: center;
+    align-items: center;
+}
+html[data-zenvi-webkit="1"] .flex.items-center.gap-1\.5 > * {
+    margin-left: 6px;
+}
+html[data-zenvi-webkit="1"] .flex.items-center.gap-1\.5 > *:first-child {
+    margin-left: 0;
+}
+
+/* Command palette: avoid CSS grid */
+html[data-zenvi-webkit="1"] .chat-command-item {
+    display: block !important;
+    width: 100%;
+}
+
+html[data-zenvi-webkit="1"] .chat-command-item.active {
+    background: rgba(77, 156, 246, 0.14) !important;
+}
+
+/* Message enter animation — vendor prefixed */
+@-webkit-keyframes chat-message-enter-wk {
+    from {
+        opacity: 0;
+        -webkit-transform: translateY(12px);
+    }
+    to {
+        opacity: 1;
+        -webkit-transform: translateY(0);
+    }
+}
+
+html[data-zenvi-webkit="1"] .chat-message {
+    -webkit-animation: chat-message-enter-wk 0.3s ease forwards;
+    animation: chat-message-enter-wk 0.3s ease forwards;
+}
+
+/* Glow: WebKit-safe pulse (no conic-gradient / @property) */
+html[data-zenvi-webkit="1"] .chat-input-glow-border {
+    background: transparent !important;
+    border: 1px solid rgba(77, 156, 246, 0.35);
+    opacity: 0.55;
+}
+
+html[data-zenvi-webkit="1"] .chat-input-glow-wrap.glow-active .chat-input-glow-border {
+    -webkit-animation: webkit-glow-pulse 2s ease-in-out infinite;
+    animation: webkit-glow-pulse 2s ease-in-out infinite;
+}
+
+@-webkit-keyframes webkit-glow-pulse {
+    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
+    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
+}
+
+@keyframes webkit-glow-pulse {
+    0%, 100% { opacity: 0.35; border-color: rgba(77, 156, 246, 0.25); }
+    50% { opacity: 0.95; border-color: rgba(77, 156, 246, 0.65); }
+}
+
+/* Activity spinner */
+@-webkit-keyframes activity-spin-wk {
+    from { -webkit-transform: rotate(0deg); }
+    to { -webkit-transform: rotate(360deg); }
+}
+@keyframes activity-spin-wk {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Flex utility helpers used in index.html */
+html[data-zenvi-webkit="1"] .flex {
+    display: -webkit-flex !important;
+    display: flex !important;
+}
+html[data-zenvi-webkit="1"] .flex-col {
+    -webkit-flex-direction: column !important;
+    flex-direction: column !important;
+}
+html[data-zenvi-webkit="1"] .flex-1 {
+    -webkit-flex: 1 1 0% !important;
+    flex: 1 1 0% !important;
+}
+html[data-zenvi-webkit="1"] .flex-shrink-0 {
+    -webkit-flex-shrink: 0 !important;
+    flex-shrink: 0 !important;
+}
+html[data-zenvi-webkit="1"] .items-center {
+    -webkit-align-items: center !important;
+    align-items: center !important;
+}
+html[data-zenvi-webkit="1"] .justify-between {
+    -webkit-justify-content: space-between !important;
+    justify-content: space-between !important;
+}
+html[data-zenvi-webkit="1"] .min-h-0 {
+    min-height: 0 !important;
+}
+
+/* Model dropdown positioning + enter (matches chat.css chat-menu-enter) */
+@-webkit-keyframes chat-menu-enter-wk {
+    from { opacity: 0; -webkit-transform: translateY(4px); }
+    to   { opacity: 1; -webkit-transform: translateY(0); }
+}
+@keyframes chat-menu-enter-wk {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+html[data-zenvi-webkit="1"] .chat-model-menu {
+    -webkit-box-sizing: border-box;
+    box-sizing: border-box;
+    min-width: 200px;
+    max-height: 240px;
+    max-width: 260px;
+    width: 260px;
+    background: #1e1e1e;
+    border: 1px solid #2a2a2a;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+    -webkit-animation: chat-menu-enter-wk 0.15s ease;
+    animation: chat-menu-enter-wk 0.15s ease;
+}
+
+html[data-zenvi-webkit="1"] .chat-model-option {
+    display: -webkit-flex !important;
+    display: flex !important;
+    gap: 0 !important;
+    -webkit-align-items: center;
+    align-items: center;
+}
+html[data-zenvi-webkit="1"] .chat-model-option > * {
+    margin-right: 8px;
+}
+html[data-zenvi-webkit="1"] .chat-model-option > *:last-child {
+    margin-right: 0;
+}
+
+html[data-zenvi-webkit="1"] .chat-model-chevron {
+    -webkit-transition: -webkit-transform 0.2s ease;
+    transition: transform 0.2s ease;
+}
+html[data-zenvi-webkit="1"] .chat-model-trigger.active .chat-model-chevron {
+    -webkit-transform: rotate(180deg);
+    transform: rotate(180deg);
+}
+
+html[data-zenvi-webkit="1"] .chat-model-trigger {
+    -webkit-transition: border-color 0.12s ease, background 0.12s ease;
+    transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+/* Send button — absolute SVG centering (WebKit flex metrics are unreliable) */
+html[data-zenvi-webkit="1"] .chat-send-circle {
+    position: relative;
+    display: block;
+    line-height: 0;
+    padding: 0;
+    -webkit-transition: opacity 0.15s ease, -webkit-transform 0.15s ease;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+html[data-zenvi-webkit="1"] .chat-send-circle svg {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    display: block;
+    -webkit-transform: translate(-50%, -50%);
+    transform: translate(-50%, -50%);
+}
+html[data-zenvi-webkit="1"] .chat-send-circle:hover:not(:disabled) {
+    opacity: 0.88;
+    -webkit-transform: scale(1.04);
+    transform: scale(1.04);
+}
+
+/* Bottom icon strip */
+html[data-zenvi-webkit="1"] .chat-bottom-icon {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-align-items: center;
+    align-items: center;
+    -webkit-justify-content: center;
+    justify-content: center;
+    -webkit-transition: background 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+/* Tabs — gap → margin */
+html[data-zenvi-webkit="1"] .chat-tab {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    -webkit-align-items: center;
+    align-items: center;
+    margin-right: 6px;
+    -webkit-transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+/* Tags / pills — replace color-mix with rgba */
+html[data-zenvi-webkit="1"] .chat-tags-row {
+    display: -webkit-flex;
+    display: flex;
+    -webkit-flex-wrap: wrap;
+    flex-wrap: wrap;
+    padding: 5px 8px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+html[data-zenvi-webkit="1"] .chat-tags-row > * {
+    margin-right: 4px;
+    margin-bottom: 4px;
+}
+
+html[data-zenvi-webkit="1"] .chat-tag-pill {
+    display: -webkit-inline-flex;
+    display: inline-flex;
+    -webkit-align-items: center;
+    align-items: center;
+    background: rgba(77, 156, 246, 0.14);
+    border: 1px solid rgba(77, 156, 246, 0.28);
+}
+
+@-webkit-keyframes chat-pick-pulse-wk {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.55; }
+}
+@keyframes chat-pick-pulse-wk {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.55; }
+}
+html[data-zenvi-webkit="1"] .chat-pick-hint {
+    background: rgba(77, 156, 246, 0.08);
+    border-bottom: 1px solid rgba(77, 156, 246, 0.18);
+    -webkit-animation: chat-pick-pulse-wk 1.5s ease-in-out infinite;
+    animation: chat-pick-pulse-wk 1.5s ease-in-out infinite;
+}
+
+/* Activity row icon spin (matches .activity-icon svg in chat.css) */
+html[data-zenvi-webkit="1"] .chat-activity-step.running .activity-icon svg {
+    -webkit-animation: activity-spin-wk 1s linear infinite;
+    animation: activity-spin-wk 1s linear infinite;
+    display: block;
+}
+
+/* Input row bottom bar */
+html[data-zenvi-webkit="1"] .chat-input-row .border-t {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/*
+ * Idle overlay typing animation removed — keep input row in normal flow on WebKit.
+ */
+html[data-zenvi-webkit="1"] .chat-container.chat-input-idle .chat-input-row {
+    position: relative !important;
+    left: auto !important;
+    right: auto !important;
+    top: auto !important;
+    -webkit-transform: none !important;
+    transform: none !important;
+    -webkit-transition: none !important;
+    transition: none !important;
+}
+
+html[data-zenvi-webkit="1"] .chat-input-wrapper {
+    position: relative;
+}
+
+html[data-zenvi-webkit="1"] #chat-input {
+    position: relative;
+    z-index: 2;
+}

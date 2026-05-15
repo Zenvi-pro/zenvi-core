@@ -24,13 +24,25 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import json
 import logging
+import os
 from fractions import Fraction
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, MutableMapping, Optional, Tuple
 
 from classes.app import get_app
+from classes.logger import log
 
 logger = logging.getLogger(__name__)
+
+
+def _media_basename_for_log(file_data: Optional[Mapping[str, Any]]) -> str:
+    if not isinstance(file_data, Mapping):
+        return ""
+    try:
+        return os.path.basename(str(file_data.get("path") or "") or "")
+    except Exception:
+        return ""
 
 
 def _as_mapping(candidate: Any) -> Mapping[str, Any]:
@@ -73,6 +85,219 @@ def _to_positive_int(value: Any) -> Optional[int]:
     if number is None or number <= 0:
         return None
     return number
+
+
+def _layout_matches_channels(layout: int, channels: int) -> bool:
+    """Return True if layout is a known OpenShot mask compatible with channel count."""
+    import openshot
+
+    if channels <= 0:
+        return False
+    known = (
+        (int(openshot.LAYOUT_MONO), 1),
+        (int(openshot.LAYOUT_STEREO), 2),
+        (int(openshot.LAYOUT_SURROUND), 3),
+        (int(openshot.LAYOUT_5POINT1), 6),
+        (int(openshot.LAYOUT_7POINT1), 8),
+    )
+    for mask, count in known:
+        if layout == mask:
+            return channels == count
+    # Unknown positive masks (e.g. odd FFmpeg bitmasks on some Windows builds) are not
+    # safe to pass through to SWResample — they can decode to an empty layout string.
+    return False
+
+
+def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> None:
+    """Apply normalized channels / channel_layout so FFmpeg resampling sees a valid layout.
+
+    Setting Reader.info alone is often not enough: libopenshot configures SWR from values fed
+    through the reader JSON / codec path. Round-trip Reader.Json(), merge, then SetJson when
+    the binding exposes it (common on Windows FFmpeg builds); otherwise fall back to ReaderInfo.
+    """
+    if reader is None:
+        return
+    channels = int(channels)
+    channel_layout = int(channel_layout)
+    path_hint = ""
+    try:
+        path_hint = os.path.basename(str(json.loads(reader.Json()).get("path") or "") or "")
+    except Exception:
+        pass
+    setjson_ok = False
+    try:
+        merged = json.loads(reader.Json())
+        merged["channels"] = channels
+        merged["channel_layout"] = channel_layout
+        if not merged.get("has_audio") and channels > 0:
+            merged["has_audio"] = True
+        setter = getattr(reader, "SetJson", None)
+        if callable(setter):
+            setter(json.dumps(merged))
+            setjson_ok = True
+            log.info(
+                "clip_utils: reader audio synced via_SetJson (media=%s): channels=%s layout_mask=0x%x",
+                path_hint or "?",
+                channels,
+                channel_layout,
+            )
+            log.debug(
+                "clip_utils: reader audio synced via SetJson (detail media=%s channels=%s layout_mask=0x%x)",
+                path_hint or "?",
+                channels,
+                channel_layout,
+            )
+            return
+    except Exception as exc:
+        log.warning(
+            "clip_utils: Reader.Json merge or SetJson failed (media=%s): %s — "
+            "trying Reader.info; FFmpeg may still print [SWR] if the binding ignores .info.",
+            path_hint or "?",
+            exc,
+        )
+    try:
+        ri = reader.info
+        if getattr(ri, "has_audio", False):
+            ri.channels = channels
+            ri.channel_layout = channel_layout
+            if not setjson_ok:
+                log.warning(
+                    "clip_utils: reader audio updated via Reader.info only (SetJson missing or failed; "
+                    "media=%s): channels=%s layout_mask=0x%x — "
+                    "if stderr shows [SWR] input channel layout \"\", libopenshot may not be applying .info "
+                    "for resample; check libopenshot vs bundled FFmpeg.",
+                    path_hint or "?",
+                    channels,
+                    channel_layout,
+                )
+    except Exception as exc:
+        log.warning(
+            "clip_utils: could not set Reader.info audio fields (media=%s): %s",
+            path_hint or "?",
+            exc,
+        )
+
+
+def copy_audio_stream_fields_from_reader(
+    file_data: MutableMapping[str, Any], reader: Any
+) -> None:
+    """After SetJson on a probe clip, mirror stream audio fields into project file metadata."""
+    if reader is None:
+        return
+    try:
+        rj = json.loads(reader.Json())
+        for key in ("channels", "channel_layout", "has_audio", "sample_rate"):
+            if key in rj:
+                file_data[key] = rj[key]
+    except Exception:
+        pass
+
+
+def normalize_imported_media_channel_layout(
+    file_data: MutableMapping[str, Any], reader: Any = None
+) -> None:
+    """Fill in a valid OpenShot channel_layout when FFmpeg reports unknown (0).
+
+    Some MP4 streams omit a layout mask; stored JSON can then have ``channel_layout`` 0, which
+    confuses resampling (SWResample) in preview and on the timeline. Prefer the live reader
+    metadata when available, otherwise derive a standard layout from ``channels``.
+    """
+    import openshot
+
+    if reader is not None:
+        try:
+            ri = reader.info
+            if getattr(ri, "has_audio", False):
+                file_data["has_audio"] = True
+                rch = _rounded_int(getattr(ri, "channels", None))
+                if rch is not None and rch > 0:
+                    if (_rounded_int(file_data.get("channels")) or 0) <= 0:
+                        file_data["channels"] = rch
+        except Exception:
+            pass
+
+    if not file_data.get("has_audio"):
+        return
+
+    channels = _rounded_int(file_data.get("channels")) or 0
+    if channels <= 0:
+        return
+
+    layout_val = _rounded_int(file_data.get("channel_layout"))
+    if reader is not None:
+        try:
+            ri = reader.info
+            rl = _rounded_int(getattr(ri, "channel_layout", None))
+            rch_read = _rounded_int(getattr(ri, "channels", None))
+            rch = rch_read if rch_read and rch_read > 0 else channels
+            if rl is not None and rl > 0 and _layout_matches_channels(rl, rch):
+                file_data["channel_layout"] = rl
+                log.info(
+                    "clip_utils: channel_layout accepted_known_mask (media=%s): reason=reader "
+                    "channels=%s stored_layout=%s reader_layout=0x%x",
+                    _media_basename_for_log(file_data) or "?",
+                    channels,
+                    layout_val if layout_val is not None else "unset",
+                    rl,
+                )
+                return
+        except Exception:
+            pass
+
+    if (
+        layout_val is not None
+        and layout_val > 0
+        and _layout_matches_channels(layout_val, channels)
+    ):
+        reader_snap = "-"
+        if reader is not None:
+            try:
+                _rl = _rounded_int(getattr(reader.info, "channel_layout", None))
+                reader_snap = f"0x{_rl:x}" if _rl is not None and _rl > 0 else str(_rl)
+            except Exception:
+                pass
+        log.info(
+            "clip_utils: channel_layout accepted_known_mask (media=%s): reason=stored "
+            "channels=%s stored_layout=0x%x reader_layout=%s",
+            _media_basename_for_log(file_data) or "?",
+            channels,
+            layout_val,
+            reader_snap,
+        )
+        return
+
+    reader_layout_snap: Optional[int] = None
+    if reader is not None:
+        try:
+            reader_layout_snap = _rounded_int(getattr(reader.info, "channel_layout", None))
+        except Exception:
+            pass
+
+    if channels == 1:
+        new_mask = int(openshot.LAYOUT_MONO)
+    elif channels == 2:
+        new_mask = int(openshot.LAYOUT_STEREO)
+    elif channels == 3:
+        new_mask = int(openshot.LAYOUT_SURROUND)
+    elif channels == 6:
+        new_mask = int(openshot.LAYOUT_5POINT1)
+    elif channels == 8:
+        new_mask = int(openshot.LAYOUT_7POINT1)
+    else:
+        new_mask = int(openshot.LAYOUT_STEREO)
+
+    file_data["channel_layout"] = new_mask
+    media = _media_basename_for_log(file_data)
+    log.info(
+        "clip_utils: normalized channel_layout for SWResample (media=%s): channels=%s "
+        "stored_layout=%s reader_layout=%s -> mask=0x%x "
+        "(non-zero unknown masks often cause FFmpeg [SWR] empty layout on Windows)",
+        media or "?",
+        channels,
+        layout_val if layout_val is not None else "unset",
+        reader_layout_snap if reader_layout_snap is not None else "-",
+        new_mask,
+    )
 
 
 def _fps_fraction(fps_value: Any) -> Optional[Fraction]:

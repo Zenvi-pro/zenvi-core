@@ -27,7 +27,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import atexit
 import sys
 import os
 import platform
@@ -131,9 +130,25 @@ class OpenShotApp(QApplication):
         except ImportError as ex:
             tb = traceback.format_exc()
             log.error('OpenShotApp::Import Error', exc_info=1)
+            diag_hint = ""
+            try:
+                from classes.openshot_import_diag import write_openshot_import_diagnostic
+
+                _p = write_openshot_import_diagnostic(ex, show_message_box=False)
+                if _p:
+                    diag_hint = (
+                        "\n\nDLL diagnostic log (share this when reporting the issue):\n%s"
+                        % _p
+                    )
+            except Exception:
+                pass
             self.errors.append(StartupError(
                 "Import Error",
-                "Module: %(name)s\n\n%(tb)s" % {"name": ex.name, "tb": tb},
+                "Module: %(name)s\n\n%(tb)s%(diag)s" % {
+                    "name": getattr(ex, "name", "") or "(see traceback)",
+                    "tb": tb,
+                    "diag": diag_hint,
+                },
                 level="error"))
             # Stop launching
             raise
@@ -142,6 +157,16 @@ class OpenShotApp(QApplication):
             sys.exit()
 
         self.info = info
+
+        # Task bar / window icon (Windows uses QApplication + main window icon; avoids generic/Qt default).
+        try:
+            from PyQt5.QtGui import QIcon
+
+            _ico = info.application_icon_ico_path()
+            if _ico:
+                self.setWindowIcon(QIcon(_ico))
+        except Exception:
+            pass
 
         # Log some basic system info
         self.log = log
@@ -367,7 +392,10 @@ class OpenShotApp(QApplication):
     def show_errors(self):
         count = len(self.errors)
         if count > 0:
-            self.log.warning("Displaying %d startup messages", count)
+            _log = getattr(self, "log", None)
+            if _log is None:
+                from classes.logger import log as _log
+            _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
             error.show()
@@ -378,24 +406,27 @@ class OpenShotApp(QApplication):
     @pyqtSlot()
     def cleanup(self):
         """aboutToQuit signal handler for application exit"""
+        # faulthandler on Windows reports benign COM teardown (0x80010108) as "fatal" during late exit.
+        if sys.platform == "win32":
+            try:
+                import faulthandler
+
+                faulthandler.disable()
+            except Exception:
+                pass
+
+        # Session footer while Qt/COM and logging are still valid (atexit is too late on Windows).
+        try:
+            import time
+            self.log.info("OpenShot's session ended".center(48))
+            self.log.info(time.asctime().center(48))
+            self.log.info("=" * 48)
+        except Exception:
+            pass
+
         self.log.debug("Saving settings in app.cleanup")
 
         try:
             self.settings.save()
         except Exception:
             self.log.error("Couldn't save user settings on exit.", exc_info=1)
-
-
-@atexit.register
-def onLogTheEnd():
-    """ Log when the primary Qt event loop ends """
-    try:
-        from classes.logger import log
-        import time
-        log.info("OpenShot's session ended".center(48))
-        log.info(time.asctime().center(48))
-        log.info("=" * 48)
-    except Exception:
-        import logging
-        log = logging.getLogger(".")
-        log.debug('Failed to write session ended log', exc_info=1)
