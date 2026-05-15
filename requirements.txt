@@ -16,6 +16,7 @@ distro
 defusedxml
 websocket-client>=1.7.0
 requests
+websocket-client>=1.7.0
 certifi
 chardet
 urllib3

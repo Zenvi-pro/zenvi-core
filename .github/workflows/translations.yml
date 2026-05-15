@@ -1,0 +1,36 @@
+name: Validate translations
+on:
+  workflow_dispatch:
+  push:
+    paths: src/language/**
+  pull_request:
+    paths: src/language/**
+
+# Read-only: this workflow only runs a unit test, it shouldn't touch the repo.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+    # Bumped from v3 (Node 20, deprecated by GitHub Actions runners) to v4.
+    - uses: actions/checkout@v4
+
+    - name: Install translation deps
+      # `apt update` refreshes the package manifest so we don't try to install
+      # a version Canonical has already removed from the mirror — that's how
+      # this job broke in May 2026 (404 on libinput10_1.25.0-1ubuntu3.3).
+      # `--fix-missing` then tolerates any single-package mirror gap without
+      # failing the whole install (apt will skip the missing one and continue;
+      # the test only really needs qttranslations5-l10n + python3-pyqt5,
+      # which are stable packages).
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --fix-missing qttranslations5-l10n python3-pyqt5
+
+    - name: Translation Test
+      run: python3 ./src/language/test_translations.py

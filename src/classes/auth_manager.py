@@ -50,6 +50,14 @@ def _zenvi_website() -> str:
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
+# Module-level snapshots evaluated after load_zenvi_dotenv() above. Used by
+# external callers (credits_client, query_tests); the underscore helpers above
+# are the authoritative read path for auth_manager's own code, since they
+# re-call load_zenvi_dotenv() in case .env arrives after this module imports.
+SUPABASE_URL = _supabase_url()
+SUPABASE_ANON_KEY = _supabase_anon_key()
+ZENVI_WEBSITE = _zenvi_website()
+
 AUTH_FILE = os.path.join(info.USER_PATH, "zenvi_auth.json")
 
 POLL_INTERVAL = 2

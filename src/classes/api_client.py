@@ -35,7 +35,7 @@ from classes.zenvi_env import load_zenvi_dotenv
 
 load_zenvi_dotenv()
 
-_DEFAULT_BACKEND_URL = "http://localhost:8500"
+_DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 
 
 class ZenviBackendClient:
@@ -47,6 +47,8 @@ class ZenviBackendClient:
         self._session = None
         self._active_wss = set()  # active WebSockets during parallel chat requests
         self._ws_lock = threading.Lock()
+        # Disable SSL verification for non-production backends (self-signed certs)
+        self._ssl_verify = (self.base_url.rstrip("/") == _DEFAULT_BACKEND_URL.rstrip("/"))
 
     @staticmethod
     def _get_backend_url() -> str:
@@ -100,6 +102,10 @@ class ZenviBackendClient:
                 import requests
                 self._session = requests.Session()
                 self._session.headers.update({"Content-Type": "application/json"})
+                if not self._ssl_verify:
+                    self._session.verify = False
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
@@ -228,7 +234,8 @@ class ZenviBackendClient:
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
         try:
-            ws = websocket.create_connection(ws_url, timeout=600)
+            sslopt = {} if self._ssl_verify else {"cert_reqs": 0}  # 0 = ssl.CERT_NONE
+            ws = websocket.create_connection(ws_url, timeout=600, sslopt=sslopt)
             with self._ws_lock:
                 self._active_wss.add(ws)
 
