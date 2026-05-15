@@ -411,25 +411,28 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         event.accept()
         self.mutex.lock()
 
-        # Ensure screen-space handle attribute exists and reset each paint
-        if not hasattr(self, "cropOriginHandleScreen"):
-            self.cropOriginHandleScreen = None
-        else:
-            self.cropOriginHandleScreen = None
-
-        # Calculate "paint" FPS (and update widget title)
-        current_sec = time.localtime(time.time()).tm_sec
-        if current_sec != self.paint_fps_sec:
-            self.paint_fps = self.paint_fps_counter
-            self.update_title()
-            self.paint_fps_sec = current_sec
-            self.paint_fps_counter = 1
-        else:
-            self.paint_fps_counter += 1
-
         # Paint custom frame image on QWidget
         painter = QPainter(self)
         try:
+            # Ensure screen-space handle attribute exists and reset each paint
+            if not hasattr(self, "cropOriginHandleScreen"):
+                self.cropOriginHandleScreen = None
+            else:
+                self.cropOriginHandleScreen = None
+
+            # Calculate "paint" FPS (and update widget title)
+            current_sec = time.localtime(time.time()).tm_sec
+            if current_sec != self.paint_fps_sec:
+                self.paint_fps = self.paint_fps_counter
+                try:
+                    self.update_title()
+                except Exception:
+                    pass  # Never let title update crash/deadlock the paint loop
+                self.paint_fps_sec = current_sec
+                self.paint_fps_counter = 1
+            else:
+                self.paint_fps_counter += 1
+
             painter.setRenderHints(
                 QPainter.Antialiasing
                 | QPainter.SmoothPixmapTransform
@@ -448,8 +451,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.curr_frame_size = pix_size
 
                 scale = self.devicePixelRatioF()
+                # Use explicit QSize (int dimensions) to avoid QSizeF issues on Retina displays
                 scaled_img = self.current_image.scaled(
-                    pix_size * scale,
+                    QSize(max(1, round(pix_size.width() * scale)),
+                          max(1, round(pix_size.height() * scale))),
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation
                 )
@@ -707,8 +712,19 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             self.present_fps = self.present_fps_counter
             self.present_fps_sec = current_sec
             self.present_fps_counter = 1
+            # Log once per second so we know frames are arriving
+            log.debug(
+                "video_widget: present() called — image valid=%s size=%s",
+                not image.isNull() if image else False,
+                image.size() if image and not image.isNull() else "null",
+            )
         else:
             self.present_fps_counter += 1
+
+        # Validate image before storing
+        if image is None or image.isNull():
+            log.warning("video_widget: present() received null/empty frame — skipping")
+            return
 
         # Get frame's QImage from libopenshot
         self.current_image = image
@@ -1530,7 +1546,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         points = c.data.get(property_key, {}).get("Points", [])
         for point in points:
             co = point.get("co", {})
-            log.info("looping points: co.X = %s" % co.get("X"))
+            log.debug("looping points: co.X = %s" % co.get("X"))
 
             if co.get("X") == frame_number:
                 found_point = True
@@ -1587,7 +1603,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         for point in points_list:
             co = point.get("co", {})
-            log.info("looping points: co.X = %s" % co.get("X"))
+            log.debug("looping points: co.X = %s" % co.get("X"))
 
             if co.get("X") == frame_number:
                 found_point = True

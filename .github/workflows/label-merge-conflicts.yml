@@ -7,11 +7,27 @@ name: Label merge conflicts
 # to edit labels on other PRs.)
 on: push
 
+# Explicitly declare what the GITHUB_TOKEN needs. The action mutates PRs
+# (adds a 'conflicts' label, posts a comment), so it needs write on both
+# pull-requests and issues (PR labels are stored on the underlying issue,
+# so the issues:write scope is what the labels API actually checks).
+# Without this block, GitHub treats the workflow as inheriting the repo
+# default — which for most accounts/orgs is read-only — and the API
+# returns "Resource not accessible by integration". That's how this
+# workflow broke; declaring permissions in-tree pins the contract.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
   triage:
     runs-on: ubuntu-latest
     steps:
+      # Bumped from v2.1.0 to v3.0.3: v3 moved the action to Node 20, which
+      # GitHub Actions runners now require (Node 16 was removed). v3.0.x
+      # also fixes label-availability edge cases that occasionally surfaced.
       - uses: eps1lon/actions-label-merge-conflict@v3.0.3
         with:
           # Token for the repository. Can be passed in using {{ secrets.GITHUB_TOKEN }}
@@ -24,4 +40,4 @@ jobs:
           retryMax: 5
           # String. Comment to add when the pull request is conflicting. Supports markdown.
           commentOnDirty: 'Merge conflicts have been detected on this PR, please resolve.'
-  
+

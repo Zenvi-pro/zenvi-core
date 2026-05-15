@@ -272,6 +272,17 @@ jobs:
           # Build libopenshot-audio v0.6.0 (required by libopenshot 0.7.x: OpenShotAudio >= 0.6.0)
           git clone --depth=1 --branch v0.6.0 \
             https://github.com/OpenShot/libopenshot-audio.git /tmp/libopenshot-audio
+
+          # Apply zenvi-core Mac patches (removes -framework AGL — Apple removed
+          # AGL in macOS 10.14; modern SDKs may not provide it at all).
+          # Patch is tag-locked to v0.5.0; v0.6.0+ may already incorporate the fix.
+          # Tolerant: skip if the patch no longer applies cleanly.
+          git -C /tmp/libopenshot-audio apply --check --whitespace=nowarn \
+            "$GITHUB_WORKSPACE/installer/mac-patches/libopenshot-audio-v0.5.0-mac.patch" 2>/dev/null \
+            && git -C /tmp/libopenshot-audio apply --whitespace=nowarn \
+                 "$GITHUB_WORKSPACE/installer/mac-patches/libopenshot-audio-v0.5.0-mac.patch" \
+            || echo "libopenshot-audio v0.5.0 patch did not apply (likely already fixed in v0.6.0+)"
+
           cmake -S /tmp/libopenshot-audio -B /tmp/libopenshot-audio/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release
@@ -282,20 +293,22 @@ jobs:
           git clone --depth=1 --branch v0.7.0 \
             https://github.com/OpenShot/libopenshot.git /tmp/libopenshot
 
-          # Patch cmake files:
-          # 1. Remove avresample (dropped in FFmpeg 5+)
+          # Tolerant patching: each step is a no-op if upstream v0.7.0 already
+          # incorporated the fix (which it does for several of these).
+          # 1. Remove avresample (dropped in FFmpeg 5+).
           find /tmp/libopenshot -name "CMakeLists.txt" -o -name "*.cmake" | \
             xargs grep -l "avresample" 2>/dev/null | \
-            xargs sed -i '' 's/ avresample//g'
+            xargs sed -i '' 's/ avresample//g' || true
 
-          # 2. FFmpeg 7/8 compat patches in all libopenshot .cpp source files (no-ops if already fixed upstream):
-          #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*
+          # 2. FFmpeg 7/8 compat patches in libopenshot .cpp source files:
+          #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*.
           python3 -c 'import glob; [open(f,"w").write(t.replace("FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE").replace("FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED").replace("FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN").replace("FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "FF_PROFILE_" in (t:=open(f).read())]'
-          #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op
+          #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op.
           python3 -c 'import re,glob; [open(f,"w").write(re.sub(r"av_stream_add_side_data\([^;]*\);","(void)0; /* removed FFmpeg7+ */",t)) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "av_stream_add_side_data" in (t:=open(f).read())]'
-          #    c. AVStream::nb_side_data and AVStream::side_data removed in FFmpeg 7+
-          #       (moved to AVStream::codecpar->nb_coded_side_data / coded_side_data)
+          #    c. AVStream::nb_side_data / side_data moved to codecpar->{nb_coded_side_data,coded_side_data} in FFmpeg 7+.
           python3 -c 'import glob; [open(f,"w").write(t.replace("->nb_side_data","->codecpar->nb_coded_side_data").replace("->side_data[","->codecpar->coded_side_data[")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "nb_side_data" in (t:=open(f).read())]'
+          # Note: SWR channel layout (the FFmpeg 8 av_opt_set_chlayout fix) is
+          # included in libopenshot v0.7.0 upstream — no local patch needed.
 
           cmake -S /tmp/libopenshot -B /tmp/libopenshot/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
@@ -648,6 +661,79 @@ jobs:
             otool -L "$OPENSHOT_SO" 2>/dev/null | head -20 || true
           fi
 
+      - name: Install Apple Developer ID certificate
+        id: cert
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          EXPECTED_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
+        run: |
+          set -euo pipefail
+
+          # Fail loudly if either secret is missing — bash -u alone won't catch
+          # empty-but-defined env vars, so check explicitly.
+          if [ -z "${APPLE_CERT_BASE64:-}" ]; then
+            echo "::error::APPLE_CERT_BASE64 secret is empty or unset"
+            exit 1
+          fi
+          if [ -z "${APPLE_CERT_PASSWORD:-}" ]; then
+            echo "::error::APPLE_CERT_PASSWORD secret is empty or unset"
+            exit 1
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "$APPLE_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Verify the signing identity we expect to use is actually in the keychain.
+          # Without this, downstream codesign calls fail with a cryptic message and
+          # there is no clear signal that the .p12 didn't contain what we thought.
+          echo "--- Identities in signing keychain ---"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+                | grep -F "$EXPECTED_IDENTITY" > /dev/null; then
+            echo "::error::Signing identity '$EXPECTED_IDENTITY' not found in keychain after .p12 import."
+            echo "::error::Check that APPLE_CERT_BASE64 contains a Developer ID Application cert + private key, and that APPLE_CERT_PASSWORD is correct."
+            exit 1
+          fi
+          echo "Signing identity verified: $EXPECTED_IDENTITY"
+
+      - name: Compile launch-mac Mach-O launcher
+        # macOS will not codesign or notarize a bundle whose CFBundleExecutable
+        # is a shell script. installer/launch-mac is a bash script (kept for
+        # Linux / local dev); on macOS we replace it with a tiny compiled
+        # launcher (installer/launch-mac.c) that does the same env-var setup
+        # and execs the cx_Freeze-built `zenvi` binary.
+        run: |
+          set -euo pipefail
+          FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
+          if [ -z "$FROZEN_DIR" ]; then
+            echo "::error::cx_Freeze output directory build/exe.* not found"
+            ls -la build/ || true
+            exit 1
+          fi
+          # Build universal2 (x86_64 + arm64). The macos-15 runner (used for the
+          # x86_64 matrix job) is Apple Silicon — without -arch x86_64, clang
+          # produces an arm64-only binary that wouldn't match the Rosetta-Python
+          # x86_64 'zenvi' it execs. Universal2 works for both matrix jobs.
+          clang -O2 -Wall -arch x86_64 -arch arm64 \
+            -o "$FROZEN_DIR/launch-mac" installer/launch-mac.c
+          chmod +x "$FROZEN_DIR/launch-mac"
+          echo "Compiled launch-mac:"
+          file "$FROZEN_DIR/launch-mac"
+
       - name: Assemble .app bundle
         run: |
           FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
@@ -669,6 +755,59 @@ jobs:
           [ -f "installer/zenvi.icns" ] \
             && cp "installer/zenvi.icns" "$APP/Contents/Resources/icon.icns"
 
+          # Strip extended attributes
+          xattr -cr "$APP" 2>/dev/null || true
+
+          # Remove cx_Freeze .hash metadata directories. These are build-time integrity
+          # caches not needed at runtime. They confuse codesign --deep (or any recursive
+          # bundle traversal): codesign sees a dot-prefixed subdirectory next to compiled
+          # modules and tries to handle it as a code subcomponent, producing the error
+          # "bundle format unrecognized, invalid, or unsuitable / In subcomponent: .../.hash".
+          find "$APP/Contents" -type d -name '.hash' -exec rm -rf {} + 2>/dev/null || true
+
+          # ── Bundle restructure for codesign / notarization ────────────────
+          # Apple's bundle convention says Contents/MacOS/ is for Mach-O
+          # executables; everything else lives under Contents/Resources/.
+          # cx_Freeze 'build' (vs bdist_mac) dumps a flat dir with .so/.dylib
+          # mixed alongside .py/.pyc/icons/text. codesign then treats every
+          # file under MacOS/ as part of the bundle's sealed code surface and
+          # blows up with "code object is not signed at all / In subcomponent:
+          # <some non-code file>" — different file each iteration, same root
+          # cause. The proven fix (used upstream by openshot-qt's mac build)
+          # is to move the offending subdirectories to Resources/ and link
+          # them back from MacOS/. cx_Freeze's frozen binary follows the
+          # symlink and finds its modules at the original path; codesign sees
+          # the symlink itself as a single file and walks into Resources/
+          # under its resource-sealing rules (where mixed content is fine).
+          mkdir -p "$APP/Contents/Resources"
+
+          # 1. Top-level non-Mach-O files (icons, license txt) → Resources/.
+          MOVED=0
+          while IFS= read -r -d '' f; do
+            if ! file "$f" 2>/dev/null | grep -q "Mach-O"; then
+              mv "$f" "$APP/Contents/Resources/"
+              MOVED=$((MOVED + 1))
+            fi
+          done < <(find "$APP/Contents/MacOS" -maxdepth 1 -type f -print0)
+          echo "Moved $MOVED top-level non-Mach-O file(s) to Contents/Resources/"
+
+          # 2. ALL non-bundle subdirectories under Contents/MacOS/ → Resources/,
+          #    symlinked back. The previous hardcoded list (lib, share, plugins)
+          #    missed dotted-name dirs that some packages drop in (e.g.
+          #    PyQt5.uic.widget-plugins), which codesign then mistook for a
+          #    malformed nested bundle: "bundle format unrecognized / In
+          #    subcomponent: <that dir>". Dynamic discovery catches all of them.
+          while IFS= read -r -d '' d; do
+            name=$(basename "$d")
+            # Skip symlinks (already-relocated entries) and anything that already
+            # exists at the destination.
+            [ -L "$d" ] && continue
+            [ -e "$APP/Contents/Resources/$name" ] && continue
+            mv "$d" "$APP/Contents/Resources/$name"
+            ln -s "../Resources/$name" "$APP/Contents/MacOS/$name"
+            echo "Relocated $name/: Contents/MacOS/$name → Contents/Resources/$name (symlinked back)"
+          done < <(find "$APP/Contents/MacOS" -mindepth 1 -maxdepth 1 -type d -print0)
+
           # Make all files readable but do NOT add +x to everything.
           # chmod -R a+rx would give execute bits to text/data files (e.g.
           # frozen_application_license.txt, .hash, .json), which makes codesign
@@ -676,7 +815,6 @@ jobs:
           chmod -R a+r "$APP/Contents/"
 
           # Give execute permission to Mach-O libraries and known entry points.
-          # Info.plist declares CFBundleExecutable=launch-mac, so that must be +x too.
           find "$APP" \( -name '*.dylib' -o -name '*.so' \) -exec chmod +x {} \;
           for bin in zenvi launch launch-zenvi launch-mac; do
             [ -f "$APP/Contents/MacOS/$bin" ] && chmod +x "$APP/Contents/MacOS/$bin"
@@ -693,26 +831,67 @@ jobs:
             file "$f" 2>/dev/null | grep -q "Mach-O" \
               && codesign -s - --force "$f" 2>/dev/null || true
           done < <(find "$APP/Contents" -type f -print0)
-          echo "Signing complete. Contents:"
+
+          echo "Bundle assembled and ad-hoc signed. Contents:"
           ls "$APP/Contents/MacOS/" | head -20
+
+      - name: Sign .app bundle
+        env:
+          SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
+        run: |
+          set -euo pipefail
+          APP="Zenvi.app"
+
+          # Sign every Mach-O binary in the bundle with Developer ID.
+          # Detect by content (magic bytes) rather than file extension — the
+          # previous filename glob `*.dylib`|`*.so` missed the main executable
+          # (Contents/MacOS/zenvi), the launch-mac launcher, and any helper
+          # binaries without those extensions. When the outer bundle codesign
+          # then ran without --deep, it reported "code object is not signed
+          # at all" because the main executable was still only ad-hoc signed.
+          SIGNED_COUNT=0
+          while IFS= read -r -d '' f; do
+            if file "$f" 2>/dev/null | grep -q "Mach-O"; then
+              codesign -s "$SIGN_IDENTITY" \
+                --timestamp=http://timestamp.apple.com/ts01 \
+                --entitlements installer/zenvi.entitlements \
+                --options runtime --force "$f"
+              SIGNED_COUNT=$((SIGNED_COUNT + 1))
+            fi
+          done < <(find "$APP/Contents" -type f -print0)
+          echo "Signed $SIGNED_COUNT Mach-O binaries with $SIGN_IDENTITY"
+
+          # Sign QtWebEngineProcess if present
+          QWE="$APP/Contents/MacOS/share/QtWebEngineProcess.app"
+          if [ -d "$QWE" ]; then
+            codesign -s "$SIGN_IDENTITY" \
+              --timestamp=http://timestamp.apple.com/ts01 \
+              --entitlements installer/qtwebengine.entitlements \
+              --options runtime --force "$QWE"
+          fi
+
+          # Sign the full app bundle with --deep --options runtime.
+          # --deep is OK here because we restructured the bundle above to put
+          # all non-code in Contents/Resources/, so --deep's recursive walk
+          # only encounters proper sub-bundles and sealed resources. This is
+          # the same approach upstream openshot-qt uses for its mac build.
+          codesign -s "$SIGN_IDENTITY" \
+            --timestamp=http://timestamp.apple.com/ts01 \
+            --entitlements installer/zenvi.entitlements \
+            --options runtime --deep --force "$APP"
+
+          echo "Signing complete:"
+          codesign -dvvv "$APP" 2>&1 | head -6
+          spctl -a -vv "$APP" 2>&1 || true
 
       - name: Create DMG
         run: |
           DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
           rm -rf dmgroot && mkdir -p dmgroot
-
-          # Use ditto (not cp -R) — macOS-native bundle copy; handles resource
-          # forks and works more reliably with the security layer after codesigning.
           ditto "Zenvi.app" "dmgroot/Zenvi.app"
           ln -s /Applications dmgroot/Applications
-
-          # Strip quarantine and other extended attributes that keep security
-          # daemons (trustd, XProtect, mds_stores) attached to files, which
-          # causes hdiutil to fail with EBUSY.
           xattr -cr dmgroot/ 2>/dev/null || true
 
-          # Retry loop: macOS security daemons scan newly signed binaries
-          # asynchronously; they typically release file handles within ~5 seconds.
           for attempt in 1 2 3; do
             echo "hdiutil attempt $attempt ..."
             hdiutil create -volname "Zenvi" -srcfolder dmgroot \
@@ -722,6 +901,65 @@ jobs:
 
           [ -f "$DMG_NAME" ] || { echo "::error::DMG not created after 3 attempts"; exit 1; }
           echo "Created $DMG_NAME ($(du -sh "$DMG_NAME" | cut -f1))"
+
+      - name: Sign and notarize DMG
+        env:
+          SIGN_IDENTITY: "Developer ID Application: NILAY GOYAL (LF75V32M27)"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARIZE_PASSWORD: ${{ secrets.APPLE_NOTARIZE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
+
+          # Fail early if notarization secrets are missing (notarytool's own error
+          # for missing creds is opaque — better to surface it ourselves).
+          for v in APPLE_ID APPLE_TEAM_ID APPLE_NOTARIZE_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v secret is empty or unset"
+              exit 1
+            fi
+          done
+
+          # Sign the DMG itself
+          codesign -s "$SIGN_IDENTITY" \
+            --timestamp=http://timestamp.apple.com/ts01 \
+            --force "$DMG_NAME"
+
+          # Submit for notarization and wait. Capture the submission ID so we can
+          # pull the full rejection log if notarytool reports failure — without it,
+          # the only output is "Status: Invalid" which tells us nothing actionable.
+          SUBMIT_LOG="$RUNNER_TEMP/notarytool-submit.log"
+          set +e
+          xcrun notarytool submit "$DMG_NAME" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARIZE_PASSWORD" \
+            --wait \
+            --output-format json | tee "$SUBMIT_LOG"
+          SUBMIT_EXIT=$?
+          set -e
+
+          STATUS=$(grep -o '"status":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+          SUBMIT_ID=$(grep -o '"id":"[^"]*"' "$SUBMIT_LOG" | head -1 | cut -d'"' -f4 || echo "")
+
+          if [ "$STATUS" != "Accepted" ] || [ "$SUBMIT_EXIT" -ne 0 ]; then
+            echo "::error::Notarization did not succeed (status=$STATUS, exit=$SUBMIT_EXIT)"
+            if [ -n "$SUBMIT_ID" ]; then
+              echo "--- notarytool log for submission $SUBMIT_ID ---"
+              xcrun notarytool log "$SUBMIT_ID" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_NOTARIZE_PASSWORD" || true
+            fi
+            exit 1
+          fi
+
+          # Staple the notarization ticket so Gatekeeper can verify offline
+          xcrun stapler staple "$DMG_NAME"
+          xcrun stapler validate "$DMG_NAME"
+          spctl -a -t open --context context:primary-signature -vv "$DMG_NAME" || true
+          echo "Notarization complete: $DMG_NAME"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
