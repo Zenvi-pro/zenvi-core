@@ -24,11 +24,18 @@ if [[ "$(uname)" == "Darwin" ]]; then
   fi
 
   # python@3.11 is the version the build script and PyQt5 wheel paths assume.
-  if ! brew --prefix python@3.11 >/dev/null 2>&1; then
+  # `brew --prefix` returns the install path even when uninstalled, so test the
+  # interpreter binary directly to decide whether to invoke `brew install`.
+  PY311="$(brew --prefix python@3.11 2>/dev/null || true)/bin/python3.11"
+  if [[ ! -x "$PY311" ]]; then
     echo "Installing python@3.11 via Homebrew..."
     brew install python@3.11
+    PY311="$(brew --prefix python@3.11)/bin/python3.11"
   fi
-  PY311="$(brew --prefix python@3.11)/bin/python3.11"
+  if [[ ! -x "$PY311" ]]; then
+    echo "ERROR: brew install python@3.11 did not produce a usable interpreter at $PY311"
+    exit 1
+  fi
 
   if [[ ! -x .venv/bin/python3 ]]; then
     echo "Creating .venv with $PY311 ..."
