@@ -19,8 +19,38 @@ if [[ "$(uname)" == "Darwin" ]]; then
   ZENVI_DEPS="${ZENVI_DEPS:-$HOME/zenvi-deps}"
 
   if ! command -v brew >/dev/null 2>&1; then
-    echo "Homebrew is required for macOS native dev. Install from https://brew.sh and re-run."
-    exit 1
+    cat <<'MSG'
+Homebrew was not found, but zenvi-core's macOS native dev flow depends on it
+for python@3.11, qt@5, ffmpeg, and the rest of libopenshot's build deps.
+
+To install Homebrew manually:
+
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+See https://brew.sh for details.
+MSG
+
+    if [[ -t 0 && -t 1 ]]; then
+      read -r -p "Install Homebrew now? You will be prompted for your sudo password. [y/N] " _brew_ans
+      if [[ "$_brew_ans" =~ ^[Yy] ]]; then
+        if ! /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"; then
+          echo "Homebrew installer exited non-zero. Install it manually, then re-run ./run.sh."
+          exit 1
+        fi
+        # Installer prints "Next steps" telling the user to add brew to PATH;
+        # do that for this shell so the rest of the script can find it.
+        if [[ -x /opt/homebrew/bin/brew ]]; then
+          eval "$(/opt/homebrew/bin/brew shellenv)"
+        elif [[ -x /usr/local/bin/brew ]]; then
+          eval "$(/usr/local/bin/brew shellenv)"
+        fi
+      fi
+    fi
+
+    if ! command -v brew >/dev/null 2>&1; then
+      echo "Homebrew is still not on PATH. Install it, then re-run ./run.sh."
+      exit 1
+    fi
   fi
 
   # python@3.11 is the version the build script and PyQt5 wheel paths assume.
