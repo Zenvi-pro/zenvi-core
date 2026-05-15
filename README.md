@@ -175,3 +175,142 @@ along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
     PYTHONPATH_LIBOPENSHOT=[libopenshot folder]/build/bindings/python \
     bash run-zenvi-core.sh
     ```
+
+## MSYS2 (Windows): libopenshot + Zenvi Core
+
+Use the **MSYS2 MinGW x64** shell when possible so `/mingw64/bin` is on `PATH`.
+
+**Qt WebKit vs Qt WebEngine (important):**
+
+- **Qt WebKit** (`mingw-w64-x86_64-qtwebkit`): available in pacman. Use it for the **HTML/JS timeline** by installing the package and running with **`bash run-zenvi-core-msys2.sh -b webkit`** (or rely on auto-selection when WebEngine is absent). This is **not** Chromium; it is the legacy WebKit module for Qt5.
+- **Qt WebEngine** (Chromium engine used by embedded panels such as Director, plan review, thinking dock, and the HTML chat UI): **there is no `qt5-webengine` / PyQtWebEngine in MSYS2 MinGW64 repos.** Those UIs show placeholders on this stack unless you use a different setup (e.g. MSVC CPython with pip `PyQtWebEngine`). The timeline can still use WebKit or `-b qwidget`.
+
+1. Install [MSYS2](https://www.msys2.org/) and start `C:/msys64/msys2_shell.cmd` (or **MinGW x64** from the Start Menu).
+
+2. Persist PATH (optional):
+
+    ```sh
+    echo 'PATH=$PATH:/c/msys64/mingw64/bin:/c/msys64/mingw64/lib' >> ~/.bashrc
+    source ~/.bashrc
+    ```
+
+3. Sync and install build dependencies:
+
+    ```sh
+    pacman -Syu
+
+    pacman -S --needed --disable-download-timeout \
+      base-devel git \
+      mingw-w64-x86_64-toolchain \
+      mingw64/mingw-w64-x86_64-ffmpeg \
+      mingw64/mingw-w64-x86_64-swig \
+      mingw64/mingw-w64-x86_64-cmake \
+      mingw64/mingw-w64-x86_64-doxygen \
+      mingw64/mingw-w64-x86_64-zeromq \
+      mingw64/mingw-w64-x86_64-python-pyqt5 \
+      mingw64/mingw-w64-x86_64-python-pip \
+      mingw64/mingw-w64-x86_64-python-pyzmq \
+      mingw64/mingw-w64-x86_64-rust
+
+    pip3 install httplib2 tinys3 github3.py==0.9.6 requests --break-system-packages
+    ```
+
+**Windows SDK / ASIO vs CI:** GitHub’s `windows-latest` runners already include the **Windows SDK** (typically under `C:\Program Files (x86)\Windows Kits\10`). The **production Windows release** (`.github/workflows/release.yml`) uses **MSYS2 UCRT64** (same idea as MinGW64, different pacman prefix and CRT). `installer/ci-win-msys-libopenshot.sh` forces **`JUCE_ASIO` off** (`AppConfig.h` uses spaced `#define JUCE_ASIO 1`, so CI uses `-DJUCE_ASIO=0` plus a robust `sed`), so the **Steinberg ASIO SDK is not required in CI**. MinGW/pacman headers and libs cover normal libopenshot/libopenshot-audio builds. Steps 4–5 below are for **your own machine** when you want **ASIO hardware drivers** in libopenshot-audio, or if CMake reports missing Windows/DirectX paths and you need to point `DXSDK_DIR` / `ASIO_SDK_DIR` explicitly.
+
+4. Install the [Windows SDK](https://learn.microsoft.com/en-us/windows/apps/windows-sdk/) and set:
+
+    ```sh
+    export DXSDK_DIR="C:\Program Files (x86)\Windows Kits\10"
+    ```
+
+5. Install the [ASIO SDK](https://www.steinberg.net/asiosdk), extract to e.g. `C:\Program Files`, then:
+
+    ```sh
+    export ASIO_SDK_DIR="C:\Program Files\ASIOSDK\common"
+    ```
+
+6. **unittest-cpp** (install to MSYS `/usr`):
+
+    ```sh
+    git clone https://github.com/unittest-cpp/unittest-cpp.git
+    cd unittest-cpp/builds
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_POLICY_VERSION_MINIMUM=3.5 ../
+    make
+    make install
+    export UNITTEST_DIR=C:\msys64\usr
+    cd ~
+    ```
+
+7. **libopenshot-audio** (install to `/usr` so libraries land in `C:/msys64/usr/bin`):
+
+    ```sh
+    git clone https://github.com/OpenShot/libopenshot-audio.git
+    cd libopenshot-audio && mkdir build && cd build
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make -DCMAKE_INSTALL_PREFIX:PATH=/usr ../
+    make
+    make install
+    export LIBOPENSHOT_AUDIO_DIR=C:\msys64\usr
+    cd ~
+    ```
+
+8. Extra Qt / ZMQ for libopenshot:
+
+    ```sh
+    pacman -S mingw64/mingw-w64-x86_64-qt5-svg
+    pacman -S mingw64/mingw-w64-x86_64-cppzmq
+    ```
+
+9. **libopenshot** (install public libs to MinGW `/mingw64`):
+
+    ```sh
+    git clone https://github.com/OpenShot/libopenshot.git
+    cd libopenshot && mkdir build && cd build
+    cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make \
+      -DCMAKE_INSTALL_PREFIX:PATH=/mingw64 \
+      -DDISABLE_TESTS=1 \
+      -DCMAKE_CXX_FLAGS="-include cstdint" ../
+    make
+    make install
+    cd ~
+    ```
+
+10. **Packaging** — `cx_Freeze` and `lief` for `freeze.py` / installers only.
+
+    Pip can often install **cx_Freeze** on MinGW if MinGW is first on `PATH` (same idea as cffi) and you have build tools: `pacman -S --needed mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja`. **lief** may still need a long CMake build from pip or fail if CMake picks the wrong toolchain; **pacman is the reliable default for lief**.
+
+    ```sh
+    pacman -S --needed mingw64/mingw-w64-x86_64-python-cx-freeze mingw64/mingw-w64-x86_64-python-lief
+    ```
+
+11. **Clone Zenvi Core** and finish Python / Qt timeline deps:
+
+    ```sh
+    git clone https://github.com/Zenvi-pro/zenvi-core.git
+    cd zenvi-core
+
+    # Optional: inspect missing DLLs for native modules
+    # pacman -S --needed mingw64/mingw-w64-x86_64-ntldd
+
+    # PyQt5, cffi/zstandard (native wheels some deps use), and Qt WebKit for HTML/JS timeline (-b webkit).
+    # Qt WebEngine is NOT in MinGW pacman — see the note at the top of this MSYS2 section.
+    pacman -S --needed \
+      mingw-w64-x86_64-python-pyqt5 \
+      mingw-w64-x86_64-python-cffi \
+      mingw-w64-x86_64-python-zstandard \
+      mingw-w64-x86_64-qtwebkit \
+      mingw-w64-x86_64-libffi \
+      mingw-w64-x86_64-gcc
+
+    # Same MinGW Python as libopenshot; system-site-packages sees pacman PyQt / cffi / zstd / WebKit.
+    /mingw64/bin/python.exe -m venv --system-site-packages .venv
+    source .venv/bin/activate
+    pip install -r requirements-noqt.txt
+    # pip install -r requirements-manim.txt   # if needed
+    ```
+
+12. **Run Zenvi** against your **build tree** bindings (not only install):
+
+    ```sh
+    cd ~/zenvi-core
+    PYTHONPATH_LIBOPENSHOT=~/libopenshot/build/bindings/python bash run-zenvi-core.sh
+    ```

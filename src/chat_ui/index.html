@@ -25,7 +25,7 @@
         <div id="chat-tab-bar"
              class="flex-shrink-0 flex items-center gap-1 px-2 pt-1.5 overflow-x-auto"
              role="tablist" aria-label="Chat sessions"
-             style="display:none; background: var(--chat-bg); border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.07));">
+             style="display:flex; background: var(--chat-bg); border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.07));">
             <button type="button" id="chat-tab-add"
                     class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md ml-auto
                            text-[16px] leading-none transition-colors"
@@ -71,15 +71,8 @@
                     <!-- Attached context tags (hidden when empty) -->
                     <div id="chat-tags-row" class="chat-tags-row" style="display:none;"></div>
 
-                    <!-- Textarea + animated overlay -->
+                    <!-- Textarea -->
                     <div class="chat-input-wrapper relative w-full">
-                        <div id="chat-input-overlay"
-                             class="chat-input-overlay absolute inset-0 px-3 pt-2 flex items-start
-                                    text-[13px] pointer-events-auto cursor-text whitespace-pre-wrap break-words"
-                             style="color: var(--chat-muted);" aria-hidden="true">
-                            <span id="chat-typing-text"></span>
-                            <span class="chat-typing-cursor" style="color: var(--chat-accent);">|</span>
-                        </div>
                         <textarea id="chat-input"
                                   class="chat-input w-full bg-transparent border-none resize-none
                                          focus:outline-none px-3 pt-2 pb-1 text-[13px] font-sans"

@@ -1,6 +1,8 @@
 include AUTHORS
 include COPYING
 include README
+include .env.example
+include .env.production
 recursive-include bin *
 recursive-include doc *
 recursive-include openshot_qt *

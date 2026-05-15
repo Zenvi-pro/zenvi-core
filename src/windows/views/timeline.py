@@ -31,6 +31,7 @@ import json
 from copy import deepcopy
 import logging
 import os
+import sys
 import time
 import uuid
 from functools import partial
@@ -58,7 +59,12 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media
+from classes.clip_utils import (
+    clamp_timing_to_media,
+    copy_audio_stream_fields_from_reader,
+    normalize_imported_media_channel_layout,
+    sync_reader_audio_info,
+)
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
@@ -76,16 +82,30 @@ elif info.WEB_BACKEND and info.WEB_BACKEND == "webengine":
     from .timeline_backend.webengine import TimelineWebEngineView
     ViewClass = TimelineWebEngineView
 else:
-    try:
-        from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
-    except ImportError as ex:
+    # auto: Linux/macOS try WebEngine first; Windows prefers WebKit when available (same as MSYS2).
+    _prefer_webkit = info.WEB_BACKEND == "auto" and sys.platform == "win32"
+    if _prefer_webkit:
         try:
             from .timeline_backend.webkit import TimelineWebKitView as ViewClass
         except ImportError:
-            log.error("Import failure loading WebKit backend", exc_info=1)
-        finally:
-            if not ViewClass:
-                raise RuntimeError("Need PyQt5.QtWebEngine (or PyQt5.QtWebView on Win32)") from ex
+            try:
+                from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
+            except ImportError as ex:
+                log.error("Import failure loading timeline web backends", exc_info=True)
+                raise RuntimeError(
+                    "Need PyQt5.QtWebKitWidgets (preferred on Windows) or PyQt5.QtWebEngineWidgets"
+                ) from ex
+    else:
+        try:
+            from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
+        except ImportError:
+            try:
+                from .timeline_backend.webkit import TimelineWebKitView as ViewClass
+            except ImportError as ex:
+                log.error("Import failure loading WebKit backend", exc_info=True)
+                raise RuntimeError(
+                    "Need PyQt5.QtWebEngineWidgets or PyQt5.QtWebKitWidgets"
+                ) from ex
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -3777,6 +3797,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Create a new Clip object with the file path
         c = openshot.Clip(file_path)
+        normalize_imported_media_channel_layout(file.data, c.Reader())
+        _ch = max(1, int(file.data.get("channels") or 1))
+        _cl = int(file.data.get("channel_layout") or openshot.LAYOUT_STEREO)
+        sync_reader_audio_info(c.Reader(), _ch, _cl)
+        copy_audio_stream_fields_from_reader(file.data, c.Reader())
 
         # Convert the clip object to JSON and fill missing attributes
         new_clip = json.loads(c.Json())
