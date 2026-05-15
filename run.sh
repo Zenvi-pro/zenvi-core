@@ -1,11 +1,63 @@
 #!/usr/bin/env bash
 # Run OpenShot Video Editor from the repo root.
-# Requires: venv created and libopenshot installed (see SETUP.md).
+# - Linux: requires .venv + system libopenshot (see SETUP.md).
+# - macOS: auto-bootstraps Homebrew deps, .venv, and a native libopenshot
+#   build via scripts/build-mac-libopenshot.sh, then launches from source.
 
 set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
+if [[ "$(uname)" == "Darwin" ]]; then
+  # macOS native dev flow.
+  # libopenshot has no Homebrew bottle, and its compile-time Qt collides with
+  # PyQt5's bundled Qt at runtime (two QApplication singletons → segfault).
+  # scripts/build-mac-libopenshot.sh builds it from source and rewrites its
+  # Qt rpaths to share PyQt5's wheel Qt; the block below just bootstraps that
+  # script's prerequisites and skips rebuilds when artifacts already exist.
+
+  ZENVI_DEPS="${ZENVI_DEPS:-$HOME/zenvi-deps}"
+
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew is required for macOS native dev. Install from https://brew.sh and re-run."
+    exit 1
+  fi
+
+  # python@3.11 is the version the build script and PyQt5 wheel paths assume.
+  if ! brew --prefix python@3.11 >/dev/null 2>&1; then
+    echo "Installing python@3.11 via Homebrew..."
+    brew install python@3.11
+  fi
+  PY311="$(brew --prefix python@3.11)/bin/python3.11"
+
+  if [[ ! -x .venv/bin/python3 ]]; then
+    echo "Creating .venv with $PY311 ..."
+    # No --system-site-packages on Mac: PyQt5 must come from the wheel so that
+    # build-mac-libopenshot.sh can rewrite libopenshot's Qt deps against it.
+    "$PY311" -m venv .venv
+    .venv/bin/pip install --upgrade pip
+    .venv/bin/pip install -r requirements.txt
+  fi
+
+  if [[ ! -f "$ZENVI_DEPS/python/_openshot.so" ]]; then
+    echo "libopenshot not found at $ZENVI_DEPS; building from source (~10 min, brews extra deps)..."
+    ZENVI_DEPS="$ZENVI_DEPS" bash scripts/build-mac-libopenshot.sh
+  fi
+
+  # Runtime env for from-source Mac runs (mirrors build-mac-libopenshot.sh footer).
+  export ZENVI_OPENSHOT_INSTALL="$ZENVI_DEPS"
+  export PYTHONPATH="$ZENVI_DEPS/python${PYTHONPATH:+:$PYTHONPATH}"
+  export QT_MAC_WANTS_LAYER=1
+  export QTWEBENGINE_DISABLE_SANDBOX=1
+
+  if [[ -n "${OPENSHOT_HEADLESS:-}" ]]; then
+    export QT_QPA_PLATFORM=offscreen
+  fi
+
+  exec .venv/bin/python3 src/launch.py "$@"
+fi
+
+# Linux flow.
 if [[ ! -d .venv ]]; then
   echo "No .venv found. Run: python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r requirements.txt"
   exit 1
