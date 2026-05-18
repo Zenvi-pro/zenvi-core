@@ -975,6 +975,11 @@ jobs:
   build-windows:
     needs: version
     runs-on: windows-latest
+    # OIDC subject for Azure login is environment-based (stable across v* tags).
+    # Entra federated credential subject must be:
+    #   repo:Zenvi-pro/zenvi-core:environment:release
+    # (Not refs/tags/v* — partial tag wildcards often do not match in Entra.)
+    environment: release
     env:
       VER: ${{ needs.version.outputs.version }}
     steps:
@@ -1118,15 +1123,15 @@ jobs:
         shell: powershell
 
       # Optional: Azure Artifact Signing (SmartScreen / known publisher). Configure:
-      # 1) Entra app → Federated credentials (GitHub Actions). This workflow runs on tag
-      #    pushes, so the OIDC subject is e.g. repo:Zenvi-pro/zenvi-core:ref:refs/tags/v1.0.172
-      #    Add a credential with subject (wildcard for all release tags):
-      #      repo:Zenvi-pro/zenvi-core:ref:refs/tags/v*
-      #    or repo:Zenvi-pro/zenvi-core:ref:refs/tags/*
+      # 1) GitHub: Settings → Environments → create "release" (name must match job environment).
+      # 2) Entra app (same as AZURE_CODESIGNING_CLIENT_ID) → Federated credentials → GitHub Actions
+      #    → Entity type Environment → name "release", OR custom subject exactly:
+      #      repo:Zenvi-pro/zenvi-core:environment:release
       #    Issuer: https://token.actions.githubusercontent.com
       #    Audience: api://AzureADTokenExchange
-      #    A credential for branch main or environment only will NOT match tag releases.
-      #    https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust-github
+      #    Tag patterns (refs/tags/v*) are unreliable; use environment + this job's
+      #    `environment: release` instead.
+      #    https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure
       # 2) Role "Artifact Signing Certificate Profile Signer" on the certificate profile
       #    (or broader scope per Microsoft docs) for that app's service principal.
       # 3) Repo secrets: AZURE_CODESIGNING_CLIENT_ID, AZURE_CODESIGNING_TENANT_ID,
