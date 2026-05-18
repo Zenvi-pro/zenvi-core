@@ -1118,7 +1118,15 @@ jobs:
         shell: powershell
 
       # Optional: Azure Artifact Signing (SmartScreen / known publisher). Configure:
-      # 1) Entra app + federated credential for this repo (GitHub → Azure OIDC).
+      # 1) Entra app → Federated credentials (GitHub Actions). This workflow runs on tag
+      #    pushes, so the OIDC subject is e.g. repo:Zenvi-pro/zenvi-core:ref:refs/tags/v1.0.172
+      #    Add a credential with subject (wildcard for all release tags):
+      #      repo:Zenvi-pro/zenvi-core:ref:refs/tags/v*
+      #    or repo:Zenvi-pro/zenvi-core:ref:refs/tags/*
+      #    Issuer: https://token.actions.githubusercontent.com
+      #    Audience: api://AzureADTokenExchange
+      #    A credential for branch main or environment only will NOT match tag releases.
+      #    https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation-create-trust-github
       # 2) Role "Artifact Signing Certificate Profile Signer" on the certificate profile
       #    (or broader scope per Microsoft docs) for that app's service principal.
       # 3) Repo secrets: AZURE_CODESIGNING_CLIENT_ID, AZURE_CODESIGNING_TENANT_ID,
