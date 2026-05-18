@@ -29,7 +29,7 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.0.172"
+VERSION = "1.0.173"
 # 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
 # Windows/mac release CI builds libopenshot 0.7.x + libopenshot-audio 0.6.x; dev may use newer.
 MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
