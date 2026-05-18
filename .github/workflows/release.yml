@@ -18,7 +18,8 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write  # needed for creating releases & uploading assets
+  contents: write # needed for creating releases & uploading assets
+  id-token: write # Azure OIDC (Artifact Signing) on Windows job when secrets below are set
 
 env:
   # Parsed from src/classes/info.py at build time
@@ -1115,6 +1116,45 @@ jobs:
             throw "Expected installer Zenvi-v${env:VER}-x86_64.exe not created"
           }
         shell: powershell
+
+      # Optional: Azure Artifact Signing (SmartScreen / known publisher). Configure:
+      # 1) Entra app + federated credential for this repo (GitHub → Azure OIDC).
+      # 2) Role "Artifact Signing Certificate Profile Signer" on the certificate profile
+      #    (or broader scope per Microsoft docs) for that app's service principal.
+      # 3) Repo secrets: AZURE_CODESIGNING_CLIENT_ID, AZURE_CODESIGNING_TENANT_ID,
+      #    AZURE_CODESIGNING_SUBSCRIPTION_ID
+      # 4) Repo variables: AZURE_CODESIGNING_ENDPOINT (region URL, e.g. https://eus.codesigning.azure.net/),
+      #    AZURE_CODESIGNING_ACCOUNT_NAME, AZURE_CODESIGNING_PROFILE_NAME
+      # See: https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md
+      - name: Azure login (OIDC for Artifact Signing)
+        if: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID != '' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows installer (Azure Artifact Signing)
+        if: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID != '' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGNING_PROFILE_NAME }}
+          files: ${{ github.workspace }}\Zenvi-v${{ env.VER }}-x86_64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
