@@ -1125,9 +1125,10 @@ jobs:
       #    AZURE_CODESIGNING_SUBSCRIPTION_ID
       # 4) Repo variables: AZURE_CODESIGNING_ENDPOINT (region URL, e.g. https://eus.codesigning.azure.net/),
       #    AZURE_CODESIGNING_ACCOUNT_NAME, AZURE_CODESIGNING_PROFILE_NAME
+      # Signing steps run when all three variables are set (secrets cannot be used in `if:`).
       # See: https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md
       - name: Azure login (OIDC for Artifact Signing)
-        if: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID != '' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
@@ -1135,7 +1136,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
 
       - name: Sign Windows installer (Azure Artifact Signing)
-        if: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID != '' && vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
         uses: azure/artifact-signing-action@v1
         with:
           endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
