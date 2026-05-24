@@ -409,12 +409,6 @@ class PlayerWorker(QObject):
                 ncl = int(probe.get("channel_layout") or channel_layout)
                 sync_reader_audio_info(new_clip.Reader(), nc, ncl)
                 copy_audio_stream_fields_from_reader(probe, new_clip.Reader())
-                new_clip.Open()
-                probe_post = json.loads(new_clip.Reader().Json())
-                normalize_imported_media_channel_layout(probe_post, new_clip.Reader())
-                nc = max(1, int(probe_post.get("channels") or nc))
-                ncl = int(probe_post.get("channel_layout") or ncl)
-                sync_reader_audio_info(new_clip.Reader(), nc, ncl)
                 self.clip_reader.AddClip(new_clip)
             except Exception:
                 log.warning('Failed to load media file into video player: %s', path, exc_info=True)
