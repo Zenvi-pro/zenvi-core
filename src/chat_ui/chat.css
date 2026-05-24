@@ -157,11 +157,7 @@
 /* ── Placeholder text ───────────────────────────────────────────────── */
 .chat-placeholder { font-style: italic; padding: 6px 0; }
 
-/* ── Typing cursor blink ────────────────────────────────────────────── */
-@keyframes chat-cursor-blink { 50% { opacity: 0; } }
-.chat-typing-cursor { animation: chat-cursor-blink 1s step-end infinite; }
-
-/* ── Input overlay (animated prompt suggestions) ────────────────────── */
+/* ── Input overlay (reserved; idle typing UI removed) ─────────────────── */
 .chat-input-overlay         { transition: opacity 0.15s; }
 .chat-input-overlay.hidden  { display: none !important; pointer-events: none; }
 
@@ -470,18 +466,29 @@
 
 /* ── Send button ────────────────────────────────────────────────────── */
 .chat-send-circle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: relative;
+    display: block;
     width: 28px;
     height: 28px;
     padding: 0;
+    line-height: 0;
     background: var(--chat-accent);
     border: none;
     border-radius: 50%;
     color: #ffffff;
     cursor: pointer;
     transition: opacity 0.15s;
+}
+.chat-send-circle svg {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    display: block;
+    transform: translate(-50%, -50%);
 }
 .chat-send-circle:hover:not(:disabled) { opacity: 0.85; }
 .chat-send-circle:disabled             { opacity: 0.4; cursor: not-allowed; }

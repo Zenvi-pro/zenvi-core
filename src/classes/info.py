@@ -29,10 +29,10 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.0.153"
-# 0.5.0+ preferred; 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64)
+VERSION = "1.0.175"
+# 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
 MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
-DATE = "20250612000000"
+DATE = "20260515000000"
 NAME = "zenvi"
 PRODUCT_NAME = "Zenvi"
 GPL_VERSION = "3"
@@ -61,6 +61,20 @@ PROFILES_PATH = os.path.join(PATH, "profiles")
 IMAGES_PATH = os.path.join(PATH, "images")
 EXPORT_PRESETS_PATH = os.path.join(PATH, "presets")
 COLORS_PATH = os.path.join(PATH, "colors")
+
+
+def application_icon_ico_path():
+    """Path to the application window/taskbar .ico, or '' if missing."""
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(sys.executable)
+        for rel in ("zenvi.ico", os.path.join("xdg", "zenvi.ico"), os.path.join("lib", "xdg", "zenvi.ico")):
+            p = os.path.join(exe_dir, rel)
+            if os.path.isfile(p):
+                return p
+    root = os.path.dirname(PATH)
+    p = os.path.join(root, "xdg", "zenvi.ico")
+    return p if os.path.isfile(p) else ""
+
 
 # User paths
 HOME_PATH = os.path.join(os.path.expanduser("~"))

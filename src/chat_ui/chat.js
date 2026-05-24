@@ -10,7 +10,8 @@
     const qwebchannelUrl = 'qwebchannel.js';
 
     function getBridge(cb) {
-        if (window.qt && window.qt.webChannelTransport && window[bridgeName]) {
+        // Qt WebKit: Python exposes the bridge via addToJavaScriptWindowObject (no qt.webChannelTransport).
+        if (window[bridgeName]) {
             cb(window[bridgeName]);
             return;
         }
@@ -38,7 +39,6 @@
     const inputRow = document.getElementById('chat-input-row');
     const glowWrap = document.getElementById('chat-input-glow-wrap');
     const inputOverlay = document.getElementById('chat-input-overlay');
-    const typingTextEl = document.getElementById('chat-typing-text');
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
     const attachClipBtn = document.getElementById('chat-attach-clip-btn');
@@ -46,6 +46,7 @@
     const clearBtn = document.getElementById('chat-clear-btn');
     const tagsRow = document.getElementById('chat-tags-row');
     const inputRowEl = document.getElementById('chat-input-row');
+    const chatContainer = document.querySelector('.chat-container');
 
     // ── Tag / pick-mode state ─────────────────────────────────────────────
     var attachedContext = null;   // null | {type, ...}
@@ -283,11 +284,6 @@
     var ACTIVITY_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<path d="M3.5 7.5l2.5 2L10.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-    const SUGGESTED_PROMPTS = 'List my files · Add a track · Export video · Undo';
-    let typingInterval = null;
-    let typingIndex = 0;
-    let overlayVisible = true;
-
     function escapeHtml(s) {
         const div = document.createElement('div');
         div.textContent = s;
@@ -306,45 +302,24 @@
         else container.classList.remove('chat-input-idle');
     }
 
+    function syncTextareaMaskForOverlay() {
+        if (!inputEl) return;
+        inputEl.style.color = '';
+        inputEl.style.caretColor = '';
+        try { inputEl.style.removeProperty('-webkit-text-fill-color'); } catch (e) {}
+        inputEl.removeAttribute('readonly');
+        inputEl.style.pointerEvents = '';
+        if (chatContainer) chatContainer.classList.remove('chat-input-overlay-active');
+    }
+
     function hideOverlay() {
-        if (!overlayVisible) return;
-        overlayVisible = false;
-        if (typingInterval) {
-            clearInterval(typingInterval);
-            typingInterval = null;
-        }
         if (inputOverlay) inputOverlay.classList.add('hidden');
-        // Stay centered; only move down on send
+        syncTextareaMaskForOverlay();
         if (inputEl) inputEl.focus();
     }
 
     function exitIdle() {
         setInputIdle(false);
-    }
-
-    function tickTyping() {
-        if (!typingTextEl || !overlayVisible) return;
-        if (typingIndex <= SUGGESTED_PROMPTS.length) {
-            typingTextEl.textContent = SUGGESTED_PROMPTS.slice(0, typingIndex);
-            typingIndex++;
-        } else {
-            typingIndex = 0;
-            typingTextEl.textContent = '';
-        }
-    }
-
-    function startTypingAnimation() {
-        if (typingInterval) return;
-        typingIndex = 0;
-        tickTyping();
-        typingInterval = setInterval(tickTyping, 80);
-    }
-
-    function stopTypingAnimation() {
-        if (typingInterval) {
-            clearInterval(typingInterval);
-            typingInterval = null;
-        }
     }
 
     window.appendMessage = function (role, bodyHtml, isAssistant) {
@@ -674,21 +649,43 @@
         if (menuOpen) return;
         menuOpen = true;
         renderMenu();
-        // Use fixed positioning so the menu escapes any overflow:hidden ancestors
+        /* Fixed menu lives under document.body. Qt WebKit often reports unreliable innerHeight;
+           use client metrics and clamp horizontal position. */
         var rect = modelTrigger.getBoundingClientRect();
+        var vh = Math.max(
+            document.documentElement ? document.documentElement.clientHeight : 0,
+            window.innerHeight || 0,
+            1
+        );
+        var vw = Math.max(
+            document.documentElement ? document.documentElement.clientWidth : 0,
+            window.innerWidth || 0,
+            1
+        );
+        var gap = 6;
+        var menuMax = 280;
+        var left = rect.left;
+        var menuW = 260;
+        if (left + menuW > vw - 4) {
+            left = Math.max(4, vw - menuW - 4);
+        }
         modelMenu.style.position = 'fixed';
-        modelMenu.style.left = rect.left + 'px';
-        // Open upward or downward based on available space — when the input is
-        // centred (idle/no-messages state) rect.top is mid-screen, which made
-        // the upward bottom calculation push the menu to the very top.
-        var spaceAbove = rect.top;
-        var spaceBelow = window.innerHeight - rect.bottom;
-        if (spaceAbove > spaceBelow) {
-            modelMenu.style.bottom = (window.innerHeight - rect.top + 6) + 'px';
-            modelMenu.style.top = '';
+        modelMenu.style.left = Math.round(left) + 'px';
+        modelMenu.style.right = 'auto';
+        modelMenu.style.visibility = 'visible';
+        modelMenu.style.zIndex = '2147483647';
+        var spaceBelow = Math.max(0, vh - rect.bottom - 8);
+        var spaceAbove = Math.max(0, rect.top - 8);
+        modelMenu.style.top = '';
+        modelMenu.style.bottom = '';
+        if (spaceBelow >= 120 || spaceBelow >= spaceAbove) {
+            modelMenu.style.top = Math.round(rect.bottom + gap) + 'px';
+            modelMenu.style.bottom = 'auto';
+            modelMenu.style.maxHeight = Math.min(menuMax, spaceBelow) + 'px';
         } else {
-            modelMenu.style.top = (rect.bottom + 6) + 'px';
-            modelMenu.style.bottom = '';
+            modelMenu.style.bottom = Math.round(vh - rect.top + gap) + 'px';
+            modelMenu.style.top = 'auto';
+            modelMenu.style.maxHeight = Math.min(menuMax, spaceAbove) + 'px';
         }
         modelMenu.style.display = 'block';
         modelTrigger.classList.add('active');
@@ -698,6 +695,9 @@
         if (!menuOpen) return;
         menuOpen = false;
         modelMenu.style.display = 'none';
+        modelMenu.style.top = '';
+        modelMenu.style.bottom = '';
+        modelMenu.style.maxHeight = '';
         modelTrigger.classList.remove('active');
     }
 
@@ -780,8 +780,69 @@
             Object.keys(vars).forEach(function (key) {
                 root.style.setProperty('--' + key, vars[key]);
             });
+            // Qt WebKit: many builds lack reliable var() / modern CSS. Apply critical surfaces inline.
+            if (document.documentElement.getAttribute('data-zenvi-webkit') === '1') {
+                applyZenviWebKitInlineTheme(vars);
+            }
         } catch (e) {}
     };
+
+    function applyZenviWebKitInlineTheme(vars) {
+        try {
+            const bg = vars['chat-bg'] || '#0d0d0d';
+            const tx = vars['chat-text'] || '#d4d4d4';
+            const br = (vars['chat-border'] && vars['chat-border'] !== 'transparent')
+                ? vars['chat-border'] : 'rgba(255,255,255,0.07)';
+            const inp = vars['chat-input-bg'] || '#171717';
+            const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
+            const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
+            const acc = vars['chat-accent'] || '#4d9cf6';
+            const codeBg = vars['chat-code-bg'] || '#252525';
+
+            document.body.style.background = bg;
+            document.body.style.color = tx;
+
+            const msgs = document.getElementById('chat-messages');
+            if (msgs) {
+                msgs.style.background = surf;
+                msgs.style.color = tx;
+            }
+            const tabBar = document.getElementById('chat-tab-bar');
+            if (tabBar) {
+                tabBar.style.background = bg;
+                tabBar.style.borderBottom = '1px solid ' + br;
+            }
+            const preamble = document.getElementById('chat-preamble-label');
+            const preambleRow = preamble ? preamble.parentElement : null;
+            if (preambleRow) {
+                preambleRow.style.background = surf;
+                preambleRow.style.color = tx;
+            }
+            const glowInner = document.querySelector('.chat-input-glow-inner');
+            if (glowInner) {
+                glowInner.style.background = inp;
+            }
+            const inputRow = document.getElementById('chat-input-row');
+            if (inputRow) {
+                inputRow.style.color = tx;
+            }
+            const modelTrig = document.getElementById('chat-model-trigger');
+            if (modelTrig) {
+                modelTrig.style.borderColor = br;
+                modelTrig.style.background = surf;
+                modelTrig.style.color = tx;
+            }
+            const ta = document.getElementById('chat-input');
+            if (ta) {
+                ta.style.background = 'transparent';
+            }
+            syncTextareaMaskForOverlay();
+            /* Expose for glow CSS colour tweaks */
+            document.documentElement.style.setProperty('--chat-accent', acc);
+            document.documentElement.style.setProperty('--chat-muted', muted);
+            document.documentElement.style.setProperty('--chat-code-bg', codeBg);
+        } catch (e) {}
+    }
 
     window.clearMessages = function () {
         typingEl = null;
@@ -954,18 +1015,13 @@
     }
 
     function updateIdleState() {
-        const hasMessages = messagesEl.querySelectorAll('.chat-message').length > 0;
-        if (hasMessages) {
-            setInputIdle(false);
-            stopTypingAnimation();
-        } else if (overlayVisible) {
-            setInputIdle(true);
-            startTypingAnimation();
-        }
+        setInputIdle(false);
+        syncTextareaMaskForOverlay();
     }
 
-    setInputIdle(true);
-    startTypingAnimation();
+    setInputIdle(false);
+    if (inputOverlay) inputOverlay.classList.add('hidden');
+    syncTextareaMaskForOverlay();
 
     getBridge(function (bridge) {
         if (bridge && bridge.ready) bridge.ready();
@@ -977,9 +1033,7 @@
             typingEl = null;
             activityContainer = null;
             activitySteps = [];
-            overlayVisible = true;
-            if (inputOverlay) inputOverlay.classList.remove('hidden');
-            typingIndex = 0;
+            if (inputOverlay) inputOverlay.classList.add('hidden');
             lastRunTimestamp = null;
             lastThoughtSec = null;
             processingStartTime = null;
