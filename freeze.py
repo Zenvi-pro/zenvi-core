@@ -105,17 +105,6 @@ python_packages = ["os",
                    "zmq",
                    "webbrowser",
                    "json",
-                   # pydantic + its lazily-imported subpackages (required by langchain)
-                   "pydantic",
-                   "pydantic.deprecated",
-                   "pydantic_core",
-                   # langchain ecosystem (imported by sentry_sdk integrations at startup)
-                   "langchain",
-                   "langchain_core",
-                   "langchain_community",
-                   "langchain_openai",
-                   "langchain_anthropic",
-                   "langchain_ollama",
                    ]
 
 # Conditionally include openshot — it requires native C++ bindings (libopenshot)
@@ -346,11 +335,17 @@ if version_info:
         f.write(json.dumps(version_info, indent=4))
 
 if sys.platform == "win32":
-    # Define alternate terminal-based executable
-    extra_exe = {"base": None, "name": exe_name + "-cli.exe"}
-
-    # Standard graphical Win32 launcher
-    base = "Win32GUI"
+    # cx_Freeze 8+ uses cross-platform base names ("gui", "console"). Older releases
+    # expect Win32GUI / None (see https://github.com/marcelotduarte/cx_Freeze/issues/3184).
+    import cx_Freeze as _cx_freeze
+    _cx_major = int(str(_cx_freeze.__version__).split(".")[0])
+    if _cx_major >= 8:
+        base = "gui"
+        _cli_base = "console"
+    else:
+        base = "Win32GUI"
+        _cli_base = None
+    extra_exe = {"base": _cli_base, "name": exe_name + "-cli.exe"}
     build_exe_options["include_msvcr"] = True
     exe_name += ".exe"
 
@@ -359,11 +354,6 @@ if sys.platform == "win32":
 
     # Append some additional files for Windows (this is a debug launcher)
     src_files.append((os.path.join(PATH, "installer", "launch-win.bat"), "launch-win.bat"))
-
-    # Bundle .env credentials file if present (required for Supabase auth)
-    env_file = os.path.join(PATH, ".env")
-    if os.path.exists(env_file):
-        src_files.append((env_file, ".env"))
 
     # Add additional package
     python_packages.extend([
@@ -685,6 +675,19 @@ elif sys.platform == "darwin":
     ]
 
 # Dependencies are automatically detected, but it might need fine tuning.
+for _env_leaf in (".env", ".env.production"):
+    _env_src = os.path.join(PATH, _env_leaf)
+    if os.path.exists(_env_src):
+        src_files.append((_env_src, _env_leaf))
+
+# Dot-prefixed names are sometimes dropped by toolchains; duplicate under non-dot names.
+_env_prod = os.path.join(PATH, ".env.production")
+if os.path.exists(_env_prod):
+    src_files.append((_env_prod, "zenvi.production.env"))
+_env_local = os.path.join(PATH, ".env")
+if os.path.exists(_env_local):
+    src_files.append((_env_local, "zenvi.local.env"))
+
 build_exe_options["packages"] = python_packages
 build_exe_options["include_files"] = src_files + external_so_files
 build_exe_options["includes"] = python_modules

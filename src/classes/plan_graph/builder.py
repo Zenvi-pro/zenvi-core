@@ -1,8 +1,8 @@
 """
 Plan graph builder: tree of what the AI is doing during an edit run.
 Root -> branches (Script, Imaging, Manim) -> steps (tool calls).
-Built by instrumenting the root agent (start_branch/end_branch) and
-main-thread tools (add_step).
+Intended to be driven by backend/agent events (start_branch/end_branch)
+and editor tool execution (add_step on the Qt main thread).
 Thread-safe: worker thread sets branch, main thread adds steps.
 """
 

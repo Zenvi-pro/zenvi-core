@@ -27,7 +27,6 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import atexit
 import sys
 import os
 import platform
@@ -62,6 +61,61 @@ def _qt_message_handler(msg_type, context, message):
 # for the QtWebEngineWidgets to be rendered, otherwise no timeline is visible).
 # https://doc.qt.io/qt-5/qtwebengine-platform-notes.html#sandboxing-support
 os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+
+
+def _install_windows_qfiledialog_workaround():
+    """Avoid native IFileOpenDialog COM on MSYS2/MinGW (HRESULT 0x80040155)."""
+    if sys.platform != "win32":
+        return
+    from PyQt5.QtWidgets import QFileDialog
+
+    _FLAG = QFileDialog.DontUseNativeDialog
+
+    def _merge_options(options):
+        if options is None:
+            return _FLAG
+        return options | _FLAG
+
+    _orig_init = QFileDialog.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        self.setOption(_FLAG, True)
+
+    QFileDialog.__init__ = _patched_init
+
+    def _patch_static(method_name):
+        orig = getattr(QFileDialog, method_name)
+
+        def wrapped(*args, **kwargs):
+            args = list(args)
+            if "options" in kwargs:
+                kwargs["options"] = _merge_options(kwargs["options"])
+            elif method_name == "getExistingDirectory":
+                if len(args) >= 4:
+                    args[3] = _merge_options(args[3])
+                else:
+                    args.append(_FLAG)
+            else:
+                # getOpenFileName / getOpenFileNames / getSaveFileName:
+                # (parent, caption, directory, filter, selectedFilter="", options=0)
+                while len(args) < 5:
+                    args.append("")
+                if len(args) >= 6:
+                    args[5] = _merge_options(args[5])
+                else:
+                    args.append(_FLAG)
+            return orig(*args, **kwargs)
+
+        setattr(QFileDialog, method_name, wrapped)
+
+    for _method in (
+        "getOpenFileName",
+        "getOpenFileNames",
+        "getSaveFileName",
+        "getExistingDirectory",
+    ):
+        _patch_static(_method)
 
 
 def get_app():
@@ -101,6 +155,7 @@ class OpenShotApp(QApplication):
     def __init__(self, *args, **kwargs):
         self.mode = kwargs.pop("mode", None)
         super().__init__(*args, **kwargs)
+        _install_windows_qfiledialog_workaround()
         self.args = super().arguments()
         self.errors = []
 
@@ -131,9 +186,25 @@ class OpenShotApp(QApplication):
         except ImportError as ex:
             tb = traceback.format_exc()
             log.error('OpenShotApp::Import Error', exc_info=1)
+            diag_hint = ""
+            try:
+                from classes.openshot_import_diag import write_openshot_import_diagnostic
+
+                _p = write_openshot_import_diagnostic(ex, show_message_box=False)
+                if _p:
+                    diag_hint = (
+                        "\n\nDLL diagnostic log (share this when reporting the issue):\n%s"
+                        % _p
+                    )
+            except Exception:
+                pass
             self.errors.append(StartupError(
                 "Import Error",
-                "Module: %(name)s\n\n%(tb)s" % {"name": ex.name, "tb": tb},
+                "Module: %(name)s\n\n%(tb)s%(diag)s" % {
+                    "name": getattr(ex, "name", "") or "(see traceback)",
+                    "tb": tb,
+                    "diag": diag_hint,
+                },
                 level="error"))
             # Stop launching
             raise
@@ -142,6 +213,16 @@ class OpenShotApp(QApplication):
             sys.exit()
 
         self.info = info
+
+        # Task bar / window icon (Windows uses QApplication + main window icon; avoids generic/Qt default).
+        try:
+            from PyQt5.QtGui import QIcon
+
+            _ico = info.application_icon_ico_path()
+            if _ico:
+                self.setWindowIcon(QIcon(_ico))
+        except Exception:
+            pass
 
         # Log some basic system info
         self.log = log
@@ -367,7 +448,10 @@ class OpenShotApp(QApplication):
     def show_errors(self):
         count = len(self.errors)
         if count > 0:
-            self.log.warning("Displaying %d startup messages", count)
+            _log = getattr(self, "log", None)
+            if _log is None:
+                from classes.logger import log as _log
+            _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
             error.show()
@@ -378,24 +462,27 @@ class OpenShotApp(QApplication):
     @pyqtSlot()
     def cleanup(self):
         """aboutToQuit signal handler for application exit"""
+        # faulthandler on Windows reports benign COM teardown (0x80010108) as "fatal" during late exit.
+        if sys.platform == "win32":
+            try:
+                import faulthandler
+
+                faulthandler.disable()
+            except Exception:
+                pass
+
+        # Session footer while Qt/COM and logging are still valid (atexit is too late on Windows).
+        try:
+            import time
+            self.log.info("OpenShot's session ended".center(48))
+            self.log.info(time.asctime().center(48))
+            self.log.info("=" * 48)
+        except Exception:
+            pass
+
         self.log.debug("Saving settings in app.cleanup")
 
         try:
             self.settings.save()
         except Exception:
             self.log.error("Couldn't save user settings on exit.", exc_info=1)
-
-
-@atexit.register
-def onLogTheEnd():
-    """ Log when the primary Qt event loop ends """
-    try:
-        from classes.logger import log
-        import time
-        log.info("OpenShot's session ended".center(48))
-        log.info(time.asctime().center(48))
-        log.info("=" * 48)
-    except Exception:
-        import logging
-        log = logging.getLogger(".")
-        log.debug('Failed to write session ended log', exc_info=1)

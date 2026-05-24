@@ -31,6 +31,7 @@ import json
 from copy import deepcopy
 import logging
 import os
+import sys
 import time
 import uuid
 from functools import partial
@@ -76,16 +77,30 @@ elif info.WEB_BACKEND and info.WEB_BACKEND == "webengine":
     from .timeline_backend.webengine import TimelineWebEngineView
     ViewClass = TimelineWebEngineView
 else:
-    try:
-        from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
-    except ImportError as ex:
+    # auto: Linux/macOS try WebEngine first; Windows prefers WebKit when available (same as MSYS2).
+    _prefer_webkit = info.WEB_BACKEND == "auto" and sys.platform == "win32"
+    if _prefer_webkit:
         try:
             from .timeline_backend.webkit import TimelineWebKitView as ViewClass
         except ImportError:
-            log.error("Import failure loading WebKit backend", exc_info=1)
-        finally:
-            if not ViewClass:
-                raise RuntimeError("Need PyQt5.QtWebEngine (or PyQt5.QtWebView on Win32)") from ex
+            try:
+                from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
+            except ImportError as ex:
+                log.error("Import failure loading timeline web backends", exc_info=True)
+                raise RuntimeError(
+                    "Need PyQt5.QtWebKitWidgets (preferred on Windows) or PyQt5.QtWebEngineWidgets"
+                ) from ex
+    else:
+        try:
+            from .timeline_backend.webengine import TimelineWebEngineView as ViewClass
+        except ImportError:
+            try:
+                from .timeline_backend.webkit import TimelineWebKitView as ViewClass
+            except ImportError as ex:
+                log.error("Import failure loading WebKit backend", exc_info=True)
+                raise RuntimeError(
+                    "Need PyQt5.QtWebEngineWidgets or PyQt5.QtWebKitWidgets"
+                ) from ex
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
