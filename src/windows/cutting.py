@@ -37,11 +37,6 @@ import openshot  # Python module for libopenshot (required video editing module 
 
 from classes import info, ui_util, time_parts
 from classes.app import get_app
-from classes.clip_utils import (
-    copy_audio_stream_fields_from_reader,
-    normalize_imported_media_channel_layout,
-    sync_reader_audio_info,
-)
 from classes.logger import log
 from classes.metrics import track_metric_screen
 from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
@@ -83,7 +78,6 @@ class Cutting(QDialog):
 
         # Keep track of file object
         self.file = file
-        normalize_imported_media_channel_layout(file.data, None)
         self.file_path = file.absolute_path()
         self.video_length = int(file.data['video_length'])
         self.fps_num = int(file.data['fps']['num'])
@@ -146,22 +140,11 @@ class Cutting(QDialog):
         try:
             # Add clip for current preview file
             self.clip = openshot.Clip(self.file_path)
-            # Do not SetJson the reader from full file.data (ai_metadata etc. can break
-            # FrameMapper). sync_reader_audio_info round-trips Reader.Json() only.
+            # NOTE: Do NOT inject file.data into the reader via SetJson.
+            # file.data may contain ai_metadata, tags, etc. that corrupt
+            # the native FrameMapper and cause preview drift / SIGSEGV.
             self.clip.Start(clip_start)
             self.clip.End(clip_end)
-
-            # Reader knows real stream layout; JSON alone can leave layout 0 and break SWR.
-            normalize_imported_media_channel_layout(self.file.data, self.clip.Reader())
-            self.channels = max(1, int(self.file.data.get("channels") or self.channels))
-            self.channel_layout = int(self.file.data.get("channel_layout") or self.channel_layout)
-            self.r.info.channel_layout = self.channel_layout
-            self.r.info.channels = self.channels
-
-            sync_reader_audio_info(
-                self.clip.Reader(), self.channels, self.channel_layout)
-            copy_audio_stream_fields_from_reader(self.file.data, self.clip.Reader())
-            self.clip.Open()
 
             # Show waveform for audio files
             if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:

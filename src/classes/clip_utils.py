@@ -24,10 +24,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import json
 import logging
 from fractions import Fraction
-from typing import Any, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 from classes.app import get_app
 
@@ -74,136 +73,6 @@ def _to_positive_int(value: Any) -> Optional[int]:
     if number is None or number <= 0:
         return None
     return number
-
-
-def _layout_matches_channels(layout: int, channels: int) -> bool:
-    """Return True if layout is a known OpenShot mask compatible with channel count."""
-    import openshot
-
-    if channels <= 0:
-        return False
-    known = (
-        (int(openshot.LAYOUT_MONO), 1),
-        (int(openshot.LAYOUT_STEREO), 2),
-        (int(openshot.LAYOUT_SURROUND), 3),
-        (int(openshot.LAYOUT_5POINT1), 6),
-        (int(openshot.LAYOUT_7POINT1), 8),
-    )
-    for mask, count in known:
-        if layout == mask:
-            return channels == count
-    return True
-
-
-def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> None:
-    """Apply normalized channels / channel_layout so FFmpeg resampling sees a valid layout.
-
-    Setting Reader.info alone is often not enough: libopenshot configures SWR from values fed
-    through the reader JSON / codec path. Round-trip Reader.Json(), merge, then SetJson when
-    the binding exposes it (common on Windows FFmpeg builds); otherwise fall back to ReaderInfo.
-    """
-    if reader is None:
-        return
-    channels = int(channels)
-    channel_layout = int(channel_layout)
-    try:
-        merged = json.loads(reader.Json())
-        merged["channels"] = channels
-        merged["channel_layout"] = channel_layout
-        if not merged.get("has_audio") and channels > 0:
-            merged["has_audio"] = True
-        setter = getattr(reader, "SetJson", None)
-        if callable(setter):
-            setter(json.dumps(merged))
-            return
-    except Exception:
-        pass
-    try:
-        ri = reader.info
-        if getattr(ri, "has_audio", False):
-            ri.channels = channels
-            ri.channel_layout = channel_layout
-    except Exception:
-        pass
-
-
-def copy_audio_stream_fields_from_reader(
-    file_data: MutableMapping[str, Any], reader: Any
-) -> None:
-    """After SetJson on a probe clip, mirror stream audio fields into project file metadata."""
-    if reader is None:
-        return
-    try:
-        rj = json.loads(reader.Json())
-        for key in ("channels", "channel_layout", "has_audio", "sample_rate"):
-            if key in rj:
-                file_data[key] = rj[key]
-    except Exception:
-        pass
-
-
-def normalize_imported_media_channel_layout(
-    file_data: MutableMapping[str, Any], reader: Any = None
-) -> None:
-    """Fill in a valid OpenShot channel_layout when FFmpeg reports unknown (0).
-
-    Some MP4 streams omit a layout mask; stored JSON can then have ``channel_layout`` 0, which
-    confuses resampling (SWResample) in preview and on the timeline. Prefer the live reader
-    metadata when available, otherwise derive a standard layout from ``channels``.
-    """
-    import openshot
-
-    if reader is not None:
-        try:
-            ri = reader.info
-            if getattr(ri, "has_audio", False):
-                file_data["has_audio"] = True
-                rch = _rounded_int(getattr(ri, "channels", None))
-                if rch is not None and rch > 0:
-                    if (_rounded_int(file_data.get("channels")) or 0) <= 0:
-                        file_data["channels"] = rch
-        except Exception:
-            pass
-
-    if not file_data.get("has_audio"):
-        return
-
-    channels = _rounded_int(file_data.get("channels")) or 0
-    if channels <= 0:
-        return
-
-    layout_val = _rounded_int(file_data.get("channel_layout"))
-    if reader is not None:
-        try:
-            ri = reader.info
-            rl = _rounded_int(getattr(ri, "channel_layout", None))
-            rch_read = _rounded_int(getattr(ri, "channels", None))
-            rch = rch_read if rch_read and rch_read > 0 else channels
-            if rl is not None and rl > 0 and _layout_matches_channels(rl, rch):
-                file_data["channel_layout"] = rl
-                return
-        except Exception:
-            pass
-
-    if (
-        layout_val is not None
-        and layout_val > 0
-        and _layout_matches_channels(layout_val, channels)
-    ):
-        return
-
-    if channels == 1:
-        file_data["channel_layout"] = int(openshot.LAYOUT_MONO)
-    elif channels == 2:
-        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
-    elif channels == 3:
-        file_data["channel_layout"] = int(openshot.LAYOUT_SURROUND)
-    elif channels == 6:
-        file_data["channel_layout"] = int(openshot.LAYOUT_5POINT1)
-    elif channels == 8:
-        file_data["channel_layout"] = int(openshot.LAYOUT_7POINT1)
-    else:
-        file_data["channel_layout"] = int(openshot.LAYOUT_STEREO)
 
 
 def _fps_fraction(fps_value: Any) -> Optional[Fraction]:

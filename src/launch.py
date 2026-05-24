@@ -155,19 +155,6 @@ try:
 except Exception:
     pass
 
-# Frozen Windows: libopenshot preview uses OpenGL; some drivers show a black picture with the
-# default GL stack. Software OpenGL is slower but reliable. Opt out: ZENVI_DISABLE_SOFTWARE_OPENGL=1
-if (
-    sys.platform == "win32"
-    and getattr(sys, "frozen", False)
-    and os.environ.get("ZENVI_DISABLE_SOFTWARE_OPENGL", "").strip().lower()
-    not in ("1", "true", "yes")
-):
-    try:
-        QApplication.setAttribute(Qt.AA_UseSoftwareOpenGL, True)
-    except Exception:
-        pass
-
 try:
     # QtWebEngineWidgets must be loaded prior to creating a QApplication
     # But on systems with only WebKit, this will fail (and we ignore the failure)
