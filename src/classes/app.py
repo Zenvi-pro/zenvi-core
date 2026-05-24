@@ -63,6 +63,61 @@ def _qt_message_handler(msg_type, context, message):
 os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
 
 
+def _install_windows_qfiledialog_workaround():
+    """Avoid native IFileOpenDialog COM on MSYS2/MinGW (HRESULT 0x80040155)."""
+    if sys.platform != "win32":
+        return
+    from PyQt5.QtWidgets import QFileDialog
+
+    _FLAG = QFileDialog.DontUseNativeDialog
+
+    def _merge_options(options):
+        if options is None:
+            return _FLAG
+        return options | _FLAG
+
+    _orig_init = QFileDialog.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        self.setOption(_FLAG, True)
+
+    QFileDialog.__init__ = _patched_init
+
+    def _patch_static(method_name):
+        orig = getattr(QFileDialog, method_name)
+
+        def wrapped(*args, **kwargs):
+            args = list(args)
+            if "options" in kwargs:
+                kwargs["options"] = _merge_options(kwargs["options"])
+            elif method_name == "getExistingDirectory":
+                if len(args) >= 4:
+                    args[3] = _merge_options(args[3])
+                else:
+                    args.append(_FLAG)
+            else:
+                # getOpenFileName / getOpenFileNames / getSaveFileName:
+                # (parent, caption, directory, filter, selectedFilter="", options=0)
+                while len(args) < 5:
+                    args.append("")
+                if len(args) >= 6:
+                    args[5] = _merge_options(args[5])
+                else:
+                    args.append(_FLAG)
+            return orig(*args, **kwargs)
+
+        setattr(QFileDialog, method_name, wrapped)
+
+    for _method in (
+        "getOpenFileName",
+        "getOpenFileNames",
+        "getSaveFileName",
+        "getExistingDirectory",
+    ):
+        _patch_static(_method)
+
+
 def get_app():
     """ Get the current QApplication instance of OpenShot """
     return QApplication.instance()
@@ -100,6 +155,7 @@ class OpenShotApp(QApplication):
     def __init__(self, *args, **kwargs):
         self.mode = kwargs.pop("mode", None)
         super().__init__(*args, **kwargs)
+        _install_windows_qfiledialog_workaround()
         self.args = super().arguments()
         self.errors = []
 
