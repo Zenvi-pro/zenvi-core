@@ -47,7 +47,6 @@ from classes.image_types import get_media_type
 from classes.query import File
 from classes.logger import log
 from classes.app import get_app
-from classes.clip_utils import normalize_imported_media_channel_layout
 from classes.thumbnail import GetThumbPath
 from classes.api_client import get_backend_client
 
@@ -476,7 +475,6 @@ class FilesModel(QObject, updates.UpdateInterface):
                 # Get the JSON for the clip's internal reader
                 reader = clip.Reader()
                 file_data = json.loads(reader.Json())
-                normalize_imported_media_channel_layout(file_data, reader)
 
                 # Determine media type
                 file_data["media_type"] = get_media_type(file_data)
@@ -503,9 +501,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
                     # Load image sequence (to determine duration and video_length)
                     clip = openshot.Clip(new_path)
-                    _reader = clip.Reader()
-                    new_file.data = json.loads(_reader.Json())
-                    normalize_imported_media_channel_layout(new_file.data, _reader)
+                    new_file.data = json.loads(clip.Reader().Json())
                     if clip and clip.info.duration > 0.0:
                         # Update file details
                         new_file.data["media_type"] = "video"
