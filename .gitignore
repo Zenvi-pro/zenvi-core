@@ -39,3 +39,6 @@ google-cloud-sdk/
 # Windows system drives
 %SystemDrive%/
 ~/
+
+# notes
+notes.txt

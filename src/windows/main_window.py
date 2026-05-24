@@ -32,7 +32,6 @@ import json
 import os
 import re
 import shutil
-import sys
 import uuid
 import webbrowser
 from time import sleep, time
@@ -711,10 +710,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self,
             _("Open Project..."),
             recommended_folder,
-            _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"),
-            "",
-            ui_util.frozen_win_file_dialog_options(),
-        )[0]
+            _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"))[0]
 
         if file_path:
             # Load project file
@@ -737,10 +733,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self,
                 _("Save Project..."),
                 recommended_path,
-                _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"),
-                "",
-                ui_util.frozen_win_file_dialog_options(),
-            )[0]
+                _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"))[0]
 
         if file_path:
             s.setDefaultPath(s.actionType.SAVE, file_path)
@@ -810,10 +803,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self,
             _("Save Project As..."),
             recommended_path,
-            _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"),
-            "",
-            ui_util.frozen_win_file_dialog_options(),
-        )[0]
+            _("Zenvi Project (*.zvn);;Legacy projects (*.osp *.flow)"))[0]
         if file_path:
             s.setDefaultPath(s.actionType.SAVE, file_path)
             # Save As always writes the canonical .zvn extension
@@ -831,19 +821,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         fd = QFileDialog()
         fd.setDirectory(recommended_path)
-        ui_util.apply_frozen_win_file_dialog_options(fd)
-        directory_url = (
-            QUrl.fromLocalFile(os.fspath(recommended_path))
-            if recommended_path
-            else QUrl()
-        )
         qurl_list = fd.getOpenFileUrls(
             self,
-            _("Import Files..."),
-            directory_url,
-            "",
-            "",
-            ui_util.frozen_win_file_dialog_options(),
+            _("Import Files...")
         )[0]
 
         # Set cursor to waiting
@@ -1264,14 +1244,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                                            self.preview_thread.current_frame)
 
         # Ask user to confirm or update framePath
-        framePath = QFileDialog.getSaveFileName(
-            self,
-            _("Save Frame..."),
-            framePath,
-            _("Image files (*.png)"),
-            "",
-            ui_util.frozen_win_file_dialog_options(),
-        )[0]
+        framePath = QFileDialog.getSaveFileName(self, _("Save Frame..."), framePath, _("Image files (*.png)"))[0]
 
         if not framePath:
             # No path specified (save frame cancelled)
@@ -4255,26 +4228,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         lib_settings = openshot.Settings.Instance()
 
-        # Set hardware decoder (FFmpeg). Portable Windows bundles often lack D3D/CUDA pieces;
-        # non-zero hw-decoder can yield black preview. Opt in with ZENVI_ALLOW_HW_DECODER=1.
-        hw_val = s.get("hw-decoder")
-        try:
-            hw_i = int(str(hw_val)) if hw_val is not None and str(hw_val).strip() != "" else 0
-        except (TypeError, ValueError):
-            hw_i = 0
-        if (
-            sys.platform == "win32"
-            and getattr(sys, "frozen", False)
-            and hw_i != 0
-            and os.environ.get("ZENVI_ALLOW_HW_DECODER", "").strip().lower() not in ("1", "true", "yes")
-        ):
-            log.info(
-                "Frozen Windows build: using software video decode only (hw-decoder=%s ignored). "
-                "Set ZENVI_ALLOW_HW_DECODER=1 to keep hardware decode.",
-                hw_i,
-            )
-            hw_i = 0
-        lib_settings.HARDWARE_DECODER = hw_i
+        # Set encoding method
+        if s.get("hw-decoder"):
+            lib_settings.HARDWARE_DECODER = int(str(s.get("hw-decoder")))
+        else:
+            lib_settings.HARDWARE_DECODER = 0
 
         # Set graphics card for decoding
         if s.get("graca_number_de"):
