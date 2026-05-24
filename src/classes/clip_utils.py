@@ -135,14 +135,8 @@ def sync_reader_audio_info(reader: Any, channels: int, channel_layout: int) -> N
         if callable(setter):
             setter(json.dumps(merged))
             setjson_ok = True
-            log.info(
-                "clip_utils: reader audio synced via_SetJson (media=%s): channels=%s layout_mask=0x%x",
-                path_hint or "?",
-                channels,
-                channel_layout,
-            )
             log.debug(
-                "clip_utils: reader audio synced via SetJson (detail media=%s channels=%s layout_mask=0x%x)",
+                "clip_utils: reader audio synced via SetJson (media=%s): channels=%s layout_mask=0x%x",
                 path_hint or "?",
                 channels,
                 channel_layout,
@@ -232,14 +226,6 @@ def normalize_imported_media_channel_layout(
             rch = rch_read if rch_read and rch_read > 0 else channels
             if rl is not None and rl > 0 and _layout_matches_channels(rl, rch):
                 file_data["channel_layout"] = rl
-                log.info(
-                    "clip_utils: channel_layout accepted_known_mask (media=%s): reason=reader "
-                    "channels=%s stored_layout=%s reader_layout=0x%x",
-                    _media_basename_for_log(file_data) or "?",
-                    channels,
-                    layout_val if layout_val is not None else "unset",
-                    rl,
-                )
                 return
         except Exception:
             pass
@@ -249,21 +235,6 @@ def normalize_imported_media_channel_layout(
         and layout_val > 0
         and _layout_matches_channels(layout_val, channels)
     ):
-        reader_snap = "-"
-        if reader is not None:
-            try:
-                _rl = _rounded_int(getattr(reader.info, "channel_layout", None))
-                reader_snap = f"0x{_rl:x}" if _rl is not None and _rl > 0 else str(_rl)
-            except Exception:
-                pass
-        log.info(
-            "clip_utils: channel_layout accepted_known_mask (media=%s): reason=stored "
-            "channels=%s stored_layout=0x%x reader_layout=%s",
-            _media_basename_for_log(file_data) or "?",
-            channels,
-            layout_val,
-            reader_snap,
-        )
         return
 
     reader_layout_snap: Optional[int] = None
