@@ -8,33 +8,25 @@ In the split architecture, plan approval/rejection is communicated back to the b
 import os
 import json
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QUrl
-from PyQt5.QtWidgets import QDockWidget, QWidget, QVBoxLayout
-from classes.logger import log
+from PyQt5.QtWidgets import QDockWidget, QLabel
 
-try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
-    from PyQt5.QtWebChannel import QWebChannel
-    _WEBENGINE_AVAILABLE = True
-except ImportError:
-    _WEBENGINE_AVAILABLE = False
-    log.warning("QtWebEngine not available - Plan Review UI will not work")
+from classes.logger import log
+from windows.embedded_web import attach_webkit_window_object, web_embed_backend
 
 
 class PlanReviewBridge(QObject):
     """
     Bridge between Python and JavaScript for plan review UI.
 
-    Exposed to JavaScript via QWebChannel as 'planReviewBridge'.
+    Exposed as 'planReviewBridge' (WebChannel or WebKit window object).
     """
 
-    # Signals to JavaScript
-    planLoaded = pyqtSignal(str)  # plan JSON
+    planLoaded = pyqtSignal(str)
 
-    # Signals to Python
-    plan_approved = pyqtSignal(str)  # plan_id
-    plan_rejected = pyqtSignal(str)  # plan_id
-    plan_modified = pyqtSignal(str, str)  # plan_id, modifications JSON
-    step_toggled = pyqtSignal(str, bool)  # step_id, enabled
+    plan_approved = pyqtSignal(str)
+    plan_rejected = pyqtSignal(str)
+    plan_modified = pyqtSignal(str, str)
+    step_toggled = pyqtSignal(str, bool)
 
     def __init__(self):
         super().__init__()
@@ -42,7 +34,6 @@ class PlanReviewBridge(QObject):
 
     @pyqtSlot(str)
     def loadPlan(self, plan_json: str):
-        """Load a plan into the UI (called from Python)."""
         try:
             plan_data = json.loads(plan_json)
             self.current_plan = plan_data
@@ -53,40 +44,31 @@ class PlanReviewBridge(QObject):
 
     @pyqtSlot(str)
     def approvePlan(self, plan_id: str):
-        """Called from JavaScript when user clicks Approve."""
         log.info(f"Plan approved: {plan_id}")
         self.plan_approved.emit(plan_id)
 
     @pyqtSlot(str)
     def rejectPlan(self, plan_id: str):
-        """Called from JavaScript when user clicks Reject."""
         log.info(f"Plan rejected: {plan_id}")
         self.plan_rejected.emit(plan_id)
 
     @pyqtSlot(str, str)
     def modifyPlan(self, plan_id: str, modifications_json: str):
-        """Called from JavaScript when user modifies the plan."""
         log.info(f"Plan modified: {plan_id}")
         self.plan_modified.emit(plan_id, modifications_json)
 
     @pyqtSlot(str, bool)
     def toggleStep(self, step_id: str, enabled: bool):
-        """Called from JavaScript when user toggles a step."""
         log.info(f"Step toggled: {step_id} -> {enabled}")
         self.step_toggled.emit(step_id, enabled)
 
 
 class PlanReviewDockWidget(QDockWidget):
-    """
-    Dock widget for reviewing and approving director plans.
+    """Dock widget for reviewing and approving director plans."""
 
-    Uses QWebEngineView with HTML/CSS/JS for modern, responsive UI.
-    """
-
-    # Signals
-    plan_approved = pyqtSignal(str)  # plan_id
-    plan_rejected = pyqtSignal(str)  # plan_id
-    plan_modified = pyqtSignal(str, dict)  # plan_id, modifications
+    plan_approved = pyqtSignal(str)
+    plan_rejected = pyqtSignal(str)
+    plan_modified = pyqtSignal(str, dict)
 
     def __init__(self, parent=None):
         super().__init__("Director Plan Review", parent)
@@ -94,6 +76,8 @@ class PlanReviewDockWidget(QDockWidget):
         self.current_plan = None
         self.bridge = None
         self.web_view = None
+        self.channel = None
+        self._embed_backend = web_embed_backend()
 
         self.setObjectName("director_plan_review_dock")
         self.setAllowedAreas(Qt.BottomDockWidgetArea | Qt.RightDockWidgetArea)
@@ -101,56 +85,58 @@ class PlanReviewDockWidget(QDockWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        """Setup the UI with web view."""
-        if not _WEBENGINE_AVAILABLE:
-            from PyQt5.QtWidgets import QLabel
-            label = QLabel("QtWebEngine not available.\nPlan Review UI requires QtWebEngine.")
+        if self._embed_backend is None:
+            label = QLabel(
+                "Qt WebEngine and Qt WebKit are unavailable.\n"
+                "Plan review cannot display."
+            )
             label.setAlignment(Qt.AlignCenter)
             self.setWidget(label)
             return
 
-        self.web_view = QWebEngineView()
-
         self.bridge = PlanReviewBridge()
-
-        # Connect bridge signals
         self.bridge.plan_approved.connect(self._on_plan_approved)
         self.bridge.plan_rejected.connect(self._on_plan_rejected)
         self.bridge.plan_modified.connect(self._on_plan_modified)
 
-        # Setup web channel
-        self.channel = QWebChannel()
-        self.channel.registerObject("planReviewBridge", self.bridge)
-        self.web_view.page().setWebChannel(self.channel)
-
-        # Load HTML
         from classes import info
         html_path = os.path.join(info.PATH, "timeline", "directors", "plan_review.html")
 
-        if os.path.exists(html_path):
-            url = QUrl.fromLocalFile(html_path)
-            self.web_view.load(url)
-            log.info(f"Loaded plan review UI from {html_path}")
+        if self._embed_backend == "webengine":
+            from PyQt5.QtWebEngineWidgets import QWebEngineView
+            from PyQt5.QtWebChannel import QWebChannel
+
+            self.web_view = QWebEngineView()
+            self.channel = QWebChannel()
+            self.channel.registerObject("planReviewBridge", self.bridge)
+            self.web_view.page().setWebChannel(self.channel)
+
+            if os.path.exists(html_path):
+                self.web_view.load(QUrl.fromLocalFile(html_path))
+                log.info(f"Loaded plan review UI from {html_path}")
+            else:
+                log.error(f"Plan review HTML not found: {html_path}")
+                self.web_view.setHtml(
+                    "<html><body><p>Plan review HTML not found.</p></body></html>"
+                )
         else:
-            log.error(f"Plan review HTML not found: {html_path}")
-            self.web_view.setHtml("""
-                <html>
-                <body style="font-family: sans-serif; padding: 20px; text-align: center;">
-                    <h2>Plan Review UI</h2>
-                    <p>HTML file not found. UI components pending.</p>
-                </body>
-                </html>
-            """)
+            from PyQt5.QtWebKitWidgets import QWebView
+
+            self.web_view = QWebView()
+            attach_webkit_window_object(self.web_view, "planReviewBridge", self.bridge)
+            if os.path.exists(html_path):
+                self.web_view.load(QUrl.fromLocalFile(html_path))
+                log.info(f"Loaded plan review UI (WebKit) from {html_path}")
+            else:
+                log.error(f"Plan review HTML not found: {html_path}")
+                self.web_view.setHtml(
+                    "<html><body><p>Plan review HTML not found.</p></body></html>"
+                )
 
         self.setWidget(self.web_view)
+        self.setMinimumSize(400, 220)
 
     def show_plan(self, plan):
-        """
-        Display a director plan for review.
-
-        Args:
-            plan: Plan dict or object with to_dict() method
-        """
         if not self.bridge:
             log.error("Bridge not initialized")
             return
@@ -173,17 +159,14 @@ class PlanReviewDockWidget(QDockWidget):
             log.error(f"Failed to show plan: {e}", exc_info=True)
 
     def _on_plan_approved(self, plan_id: str):
-        """Handle plan approval."""
         self.plan_approved.emit(plan_id)
         self.hide()
 
     def _on_plan_rejected(self, plan_id: str):
-        """Handle plan rejection."""
         self.plan_rejected.emit(plan_id)
         self.hide()
 
     def _on_plan_modified(self, plan_id: str, modifications_json: str):
-        """Handle plan modifications."""
         try:
             modifications = json.loads(modifications_json)
             self.plan_modified.emit(plan_id, modifications)
@@ -191,12 +174,10 @@ class PlanReviewDockWidget(QDockWidget):
             log.error(f"Failed to parse modifications: {e}", exc_info=True)
 
 
-# Global instance
 _plan_review_dock = None
 
 
 def get_plan_review_dock(parent=None):
-    """Get or create global PlanReviewDockWidget instance."""
     global _plan_review_dock
     if _plan_review_dock is None:
         _plan_review_dock = PlanReviewDockWidget(parent)

@@ -42,7 +42,6 @@ class LoggerLibOpenShot(Thread):
         self.context = None
         self.socket = None
 
-
     def kill(self):
         self.running = False
         log.info('Shutting down libopenshot logger')
@@ -71,6 +70,7 @@ class LoggerLibOpenShot(Thread):
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt_string(zmq.SUBSCRIBE, '')
+        self.socket.setsockopt(zmq.LINGER, 0)
 
         poller = zmq.Poller()
         poller.register(self.socket, zmq.POLLIN)
@@ -78,12 +78,15 @@ class LoggerLibOpenShot(Thread):
         log.info("Connecting to libopenshot with debug port: %s" % port)
         self.socket.connect("tcp://localhost:%s" % port)
 
+        # Short poll so kill() is honored quickly during app shutdown (avoids COM/thread teardown races on Windows).
+        poll_ms = 250
+
         while self.running:
             msg = None
 
             # Receive all debug message sent from libopenshot (if any)
             try:
-                socks = dict(poller.poll(1000))
+                socks = dict(poller.poll(poll_ms))
                 if socks and socks.get(self.socket) == zmq.POLLIN:
                     msg = self.socket.recv(zmq.NOBLOCK)
                 if msg:
@@ -91,11 +94,21 @@ class LoggerLibOpenShot(Thread):
             except Exception as ex:
                 log.warning(ex)
 
-        # Close zmq connection
-        if self.context:
-            self.context.destroy()
-        if self.socket:
-            self.socket.close()
+        # Close ZMQ before libopenshot logger: correct order is socket then context.
+        sock, self.socket = self.socket, None
+        ctx, self.context = self.context, None
+        try:
+            if sock is not None:
+                sock.setsockopt(zmq.LINGER, 0)
+                sock.close()
+        except Exception:
+            pass
+        try:
+            if ctx is not None:
+                ctx.destroy(linger=0)
+        except Exception:
+            pass
+
         if openshot.ZmqLogger.Instance():
             # Close libopenshot logger
             openshot.ZmqLogger.Instance().Close()

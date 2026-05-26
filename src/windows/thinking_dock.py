@@ -11,26 +11,22 @@ and this dock renders them in real-time.
 import json
 import time
 from PyQt5.QtCore import Qt, QObject, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
-from PyQt5.QtWidgets import QDockWidget
-from classes.logger import log
+from PyQt5.QtWidgets import QDockWidget, QLabel
 
-try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
-    from PyQt5.QtWebChannel import QWebChannel
-    _WEBENGINE_AVAILABLE = True
-except ImportError:
-    _WEBENGINE_AVAILABLE = False
-    log.warning("QtWebEngine not available - Thinking Dock will not work")
+from classes.logger import log
+from windows.embedded_web import (
+    attach_webkit_window_object,
+    web_embed_backend,
+    run_js,
+)
 
 
 class ThinkingBridge(QObject):
     """Bridge for bidirectional Python<->JavaScript communication."""
 
-    # Signals TO JavaScript (emit from Python)
     messagePushed = pyqtSignal(str)  # JSON message
     phaseChanged = pyqtSignal(str)   # Phase name
 
-    # Signals FROM JavaScript (slots called by JS)
     clearRequested = pyqtSignal()
     pauseRequested = pyqtSignal()
 
@@ -48,7 +44,6 @@ class ThinkingBridge(QObject):
 class ThinkingDockWidget(QDockWidget):
     """Real-time display of director thinking and communication."""
 
-    # Public signals
     pause_requested = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -56,35 +51,46 @@ class ThinkingDockWidget(QDockWidget):
         self.setObjectName("thinkingDock")
         self.setAllowedAreas(Qt.AllDockWidgetAreas)
 
-        if not _WEBENGINE_AVAILABLE:
-            from PyQt5.QtWidgets import QLabel
-            label = QLabel("QtWebEngine not available.\nThinking Dock requires QtWebEngine.")
+        self.web_view = None
+        self.bridge = None
+        self.channel = None
+        self._embed_backend = web_embed_backend()
+
+        if self._embed_backend is None:
+            label = QLabel(
+                "Qt WebEngine and Qt WebKit are unavailable.\n"
+                "Thinking Dock cannot display."
+            )
             label.setAlignment(Qt.AlignCenter)
             self.setWidget(label)
-            self.web_view = None
-            self.bridge = None
             return
 
-        # Create web view
-        self.web_view = QWebEngineView()
+        if self._embed_backend == "webengine":
+            from PyQt5.QtWebEngineWidgets import QWebEngineView
+            from PyQt5.QtWebChannel import QWebChannel
 
-        # Create bridge
-        self.bridge = ThinkingBridge()
-        self.bridge.clearRequested.connect(self._clear)
-        self.bridge.pauseRequested.connect(self.pause_requested)
+            self.web_view = QWebEngineView()
+            self.bridge = ThinkingBridge()
+            self.bridge.clearRequested.connect(self._clear)
+            self.bridge.pauseRequested.connect(self.pause_requested)
+            self.channel = QWebChannel()
+            self.channel.registerObject("thinkingBridge", self.bridge)
+            self.web_view.page().setWebChannel(self.channel)
+            self._load_html_webengine()
+        else:
+            from PyQt5.QtWebKitWidgets import QWebView
 
-        # Setup web channel
-        self.channel = QWebChannel()
-        self.channel.registerObject("thinkingBridge", self.bridge)
-        self.web_view.page().setWebChannel(self.channel)
+            self.web_view = QWebView()
+            self.bridge = ThinkingBridge()
+            self.bridge.clearRequested.connect(self._clear)
+            self.bridge.pauseRequested.connect(self.pause_requested)
+            attach_webkit_window_object(self.web_view, "thinkingBridge", self.bridge)
+            self._load_html_webkit()
 
-        # Load HTML UI
-        self._load_html()
         self.setWidget(self.web_view)
-        self.setMinimumWidth(350)
+        self.setMinimumSize(350, 200)
 
-    def _load_html(self):
-        """Load the thinking UI HTML (inline for self-contained deployment)."""
+    def _load_html_webengine(self):
         html = """<!DOCTYPE html>
 <html>
 <head>
@@ -134,8 +140,9 @@ class ThinkingDockWidget(QDockWidget):
         .message-content { font-size: 13px; line-height: 1.5; color: #cccccc; }
         .controls {
             padding: 8px 12px; border-top: 1px solid #3c3c3c;
-            background: #252526; flex-shrink: 0; display: flex; gap: 8px;
+            background: #252526; flex-shrink: 0; display: flex;
         }
+        .controls button { margin-right: 8px; }
         button {
             padding: 6px 12px; background: #0e639c; color: white;
             border: none; border-radius: 3px; cursor: pointer;
@@ -165,7 +172,7 @@ class ThinkingDockWidget(QDockWidget):
         </div>
         <div id="messages" class="messages">
             <div class="empty-state">
-                <div class="empty-icon">💭</div>
+                <div class="empty-icon">&#128173;</div>
                 <div class="empty-text">Waiting for director analysis...</div>
             </div>
         </div>
@@ -176,14 +183,14 @@ class ThinkingDockWidget(QDockWidget):
     </div>
     <script src="qrc:/qtwebchannel/qwebchannel.js"></script>
     <script>
-        let messagesEl = document.getElementById('messages');
-        let phaseEl = document.getElementById('phase');
-        let messageCount = 0;
+        var messagesEl = document.getElementById('messages');
+        var phaseEl = document.getElementById('phase');
+        var messageCount = 0;
         if (window.qt && window.qt.webChannelTransport) {
             new QWebChannel(window.qt.webChannelTransport, function(channel) {
                 window.thinkingBridge = channel.objects.thinkingBridge;
                 thinkingBridge.messagePushed.connect(function(jsonStr) {
-                    try { let msg = JSON.parse(jsonStr); addMessage(msg); }
+                    try { var msg = JSON.parse(jsonStr); addMessage(msg); }
                     catch (e) { console.error('Failed to parse message:', e); }
                 });
                 thinkingBridge.phaseChanged.connect(function(phase) {
@@ -194,9 +201,9 @@ class ThinkingDockWidget(QDockWidget):
         function addMessage(msg) {
             if (messageCount === 0) { messagesEl.innerHTML = ''; }
             messageCount++;
-            let div = document.createElement('div');
+            var div = document.createElement('div');
             div.className = 'message ' + (msg.type || 'general');
-            let timestamp = new Date(msg.timestamp * 1000).toLocaleTimeString();
+            var timestamp = new Date(msg.timestamp * 1000).toLocaleTimeString();
             div.innerHTML =
                 '<div class="message-header">' +
                 '<span class="message-role">' + escapeHtml(msg.role) + '</span>' +
@@ -207,12 +214,12 @@ class ThinkingDockWidget(QDockWidget):
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
         function escapeHtml(text) {
-            let div = document.createElement('div');
+            var div = document.createElement('div');
             div.textContent = text; return div.innerHTML;
         }
         function clearMessages() {
             messagesEl.innerHTML = '<div class="empty-state">' +
-                '<div class="empty-icon">💭</div>' +
+                '<div class="empty-icon">&#128173;</div>' +
                 '<div class="empty-text">Cleared</div></div>';
             messageCount = 0;
         }
@@ -221,15 +228,136 @@ class ThinkingDockWidget(QDockWidget):
 </html>"""
         self.web_view.setHtml(html)
 
-    def add_message(self, role: str, content: str, msg_type: str = "general"):
-        """
-        Add a message to the thinking display (thread-safe).
+    def _load_html_webkit(self):
+        html = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Director Thinking</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: #1e1e1e; color: #d4d4d4; font-size: 13px; line-height: 1.5;
+        }
+        .container { display: -webkit-flex; display: flex; -webkit-flex-direction: column;
+            flex-direction: column; height: 100vh; }
+        .header {
+            padding: 12px 16px; background: #252526;
+            border-bottom: 1px solid #3c3c3c;
+        }
+        .phase {
+            font-size: 14px; font-weight: 600; color: #4ec9b0;
+            display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center;
+        }
+        .phase-icon {
+            display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            background: #4ec9b0; margin-right: 8px;
+        }
+        .messages { -webkit-flex: 1; flex: 1; overflow-y: auto; padding: 12px; }
+        .message {
+            margin: 8px 0; padding: 10px 12px; background: #2d2d30;
+            border-left: 3px solid #007acc; border-radius: 4px;
+        }
+        .message.analysis { border-color: #4ec9b0; background: #1a2d2d; }
+        .message.debate { border-color: #dcdcaa; background: #2d2d1a; }
+        .message.voting { border-color: #c586c0; background: #2d1a2d; }
+        .message.decision { border-color: #4fc1ff; background: #1a2a2d; }
+        .message-header {
+            display: -webkit-flex; display: flex; -webkit-justify-content: space-between;
+            justify-content: space-between; margin-bottom: 6px; -webkit-align-items: center;
+            align-items: center;
+        }
+        .message-role { font-weight: 600; color: #569cd6; font-size: 12px; }
+        .message-time { font-size: 11px; color: #858585; }
+        .message-content { font-size: 13px; line-height: 1.5; color: #cccccc; }
+        .controls {
+            padding: 8px 12px; border-top: 1px solid #3c3c3c;
+            background: #252526; display: -webkit-flex; display: flex;
+        }
+        .controls button { margin-right: 8px; }
+        button {
+            padding: 6px 12px; background: #0e639c; color: white;
+            border: none; border-radius: 3px; cursor: pointer;
+            font-size: 12px; font-weight: 500;
+        }
+        .empty-state {
+            display: -webkit-flex; display: flex; -webkit-flex-direction: column;
+            flex-direction: column; -webkit-align-items: center; align-items: center;
+            -webkit-justify-content: center; justify-content: center;
+            height: 100%; color: #858585; text-align: center; padding: 20px;
+        }
+        .empty-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
+        .empty-text { font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="phase" id="phase">
+                <span class="phase-icon"></span> Idle
+            </div>
+        </div>
+        <div id="messages" class="messages">
+            <div class="empty-state">
+                <div class="empty-icon">&#128173;</div>
+                <div class="empty-text">Waiting for director analysis...</div>
+            </div>
+        </div>
+        <div class="controls">
+            <button onclick="thinkingBridge.clear()">Clear</button>
+            <button onclick="thinkingBridge.pause()">Pause</button>
+        </div>
+    </div>
+    <script>
+        var messagesEl = document.getElementById('messages');
+        var phaseEl = document.getElementById('phase');
+        var messageCount = 0;
+        function bootThinking() {
+            if (typeof thinkingBridge === 'undefined') {
+                setTimeout(bootThinking, 50);
+                return;
+            }
+            thinkingBridge.messagePushed.connect(function(jsonStr) {
+                try { var msg = JSON.parse(jsonStr); addMessage(msg); }
+                catch (e) { }
+            });
+            thinkingBridge.phaseChanged.connect(function(phase) {
+                phaseEl.innerHTML = '<span class="phase-icon"></span>' + escapeHtml(phase);
+            });
+        }
+        function addMessage(msg) {
+            if (messageCount === 0) { messagesEl.innerHTML = ''; }
+            messageCount++;
+            var div = document.createElement('div');
+            div.className = 'message ' + (msg.type || 'general');
+            var timestamp = new Date(msg.timestamp * 1000).toLocaleTimeString();
+            div.innerHTML =
+                '<div class="message-header">' +
+                '<span class="message-role">' + escapeHtml(msg.role) + '</span>' +
+                '<span class="message-time">' + escapeHtml(timestamp) + '</span>' +
+                '</div>' +
+                '<div class="message-content">' + escapeHtml(msg.content) + '</div>';
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text; return div.innerHTML;
+        }
+        function clearMessages() {
+            messagesEl.innerHTML = '<div class="empty-state">' +
+                '<div class="empty-icon">&#128173;</div>' +
+                '<div class="empty-text">Cleared</div></div>';
+            messageCount = 0;
+        }
+        bootThinking();
+    </script>
+</body>
+</html>"""
+        self.web_view.setHtml(html)
 
-        Args:
-            role: Who is speaking (director name, "Orchestrator", etc.)
-            content: Message content
-            msg_type: Message type for styling ("analysis", "debate", "voting", "decision")
-        """
+    def add_message(self, role: str, content: str, msg_type: str = "general"):
         if not self.bridge:
             return
         msg = json.dumps({
@@ -242,12 +370,10 @@ class ThinkingDockWidget(QDockWidget):
 
     @pyqtSlot(str)
     def _push_message(self, msg_json: str):
-        """Push message to JavaScript (must run on main thread)."""
         if self.bridge:
             self.bridge.messagePushed.emit(msg_json)
 
     def set_phase(self, phase: str):
-        """Update the current phase display (thread-safe)."""
         if not self.bridge:
             return
         QMetaObject.invokeMethod(
@@ -256,19 +382,19 @@ class ThinkingDockWidget(QDockWidget):
 
     @pyqtSlot(str)
     def _set_phase(self, phase: str):
-        """Set phase in UI (must run on main thread)."""
         if self.bridge:
             self.bridge.phaseChanged.emit(phase)
 
     def clear(self):
-        """Clear all messages."""
         self._run_js("clearMessages();")
 
     def _clear(self):
-        """Internal clear handler."""
         self.clear()
 
     def _run_js(self, code: str):
-        """Execute JavaScript safely."""
-        if self.web_view and self.web_view.page():
-            self.web_view.page().runJavaScript(code)
+        if not self.web_view or self._embed_backend is None:
+            return
+        try:
+            run_js(self.web_view, self._embed_backend, code)
+        except Exception as exc:
+            log.debug("thinking_dock run_js: %s", exc)

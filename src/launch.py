@@ -45,6 +45,62 @@ import os
 import argparse
 import json
 import logging
+from pathlib import Path
+
+
+def _prepend_dll_search_path_for_libopenshot():
+    """Windows/MinGW: Python 3.8+ limits DLL dirs; add paths for _openshot.pyd dependencies."""
+    if sys.platform != "win32":
+        return
+    add = getattr(os, "add_dll_directory", None)
+    if not add:
+        return
+    # cx_Freeze layout: <install>/<exe> with native deps in <install>/lib/
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        lib_dir = os.path.join(exe_dir, "lib")
+        if os.path.isdir(lib_dir):
+            try:
+                add(lib_dir)
+            except OSError:
+                pass
+            babl_ext = os.path.join(lib_dir, "babl-ext")
+            if os.path.isdir(babl_ext):
+                try:
+                    add(babl_ext)
+                except OSError:
+                    pass
+    raw = os.environ.get("PYTHONPATH_LIBOPENSHOT", "")
+    for part in raw.split(os.pathsep):
+        bind = os.path.abspath(os.path.expanduser(part.strip()))
+        if not os.path.isdir(bind):
+            continue
+        for d in (
+            bind,
+            os.path.normpath(os.path.join(bind, os.pardir, os.pardir, "src")),
+        ):
+            if os.path.isdir(d):
+                try:
+                    add(d)
+                except OSError:
+                    pass
+    base_bin = os.path.join(sys.base_prefix, "bin")
+    if os.path.isdir(base_bin):
+        try:
+            add(base_bin)
+        except OSError:
+            pass
+    # libopenshot-audio is often installed with prefix /usr -> DLLs live in MSYS usr/bin;
+    # Win32 LoadLibrary does not reliably honor POSIX /usr/bin in PATH for MinGW python.exe.
+    try:
+        msys_usr_bin = Path(sys.base_prefix).resolve().parent / "usr" / "bin"
+        if msys_usr_bin.is_dir():
+            add(str(msys_usr_bin))
+    except OSError:
+        pass
+
+
+_prepend_dll_search_path_for_libopenshot()
 
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:
@@ -58,8 +114,16 @@ try:
     # This needs to be imported before PyQt5
     # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
     import openshot
-except ImportError:
-    pass
+except ImportError as _openshot_import_err:
+    try:
+        from classes.openshot_import_diag import write_openshot_import_diagnostic
+
+        write_openshot_import_diagnostic(
+            _openshot_import_err,
+            show_message_box=getattr(sys, "frozen", False),
+        )
+    except ImportError:
+        pass
 
 # Load user-configured UI scale before importing PyQt
 scale = 1.0
@@ -221,6 +285,14 @@ def main():
     # Create any missing paths in the user's settings dir
     info.setup_userdirs()
 
+    # Windows taskbar / jump list grouping: use our own AUMID (not python.exe / generic host).
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Zenvi.Zenvi.Editor.1")
+        except Exception:
+            pass
+
     # Create Qt application, pass any unprocessed arguments
     from classes.app import OpenShotApp
 
@@ -230,7 +302,11 @@ def main():
     try:
         app = OpenShotApp(argv)
     except Exception:
-        app.show_errors()
+        # OpenShotApp.__init__ can fail after QApplication.__init__; the module-level app may stay None.
+        inst = QApplication.instance()
+        if inst is not None and hasattr(inst, "show_errors"):
+            inst.show_errors()
+        sys.exit(1)
 
     # Setup Qt application details
     app.setApplicationName('zenvi')

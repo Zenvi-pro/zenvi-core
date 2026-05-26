@@ -9,5 +9,10 @@
     <!-- For LLVM. -->
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
+    <!-- Allow DYLD_LIBRARY_PATH etc. (set by the launch-mac launcher to point Qt
+         and ImageMagick at bundle-local plugin dirs). Hardened runtime strips
+         DYLD_* env vars by default. -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
 </dict>
 </plist>
