@@ -42,32 +42,37 @@
         }
 
         .actions-bar {
+            display: -webkit-flex;
             display: flex;
+            -webkit-justify-content: space-between;
             justify-content: space-between;
+            -webkit-align-items: center;
             align-items: center;
             margin-bottom: 25px;
-            gap: 15px;
+        }
+
+        .actions-bar .search-box {
+            margin-right: 15px;
         }
 
         .search-box {
+            -webkit-flex: 1;
             flex: 1;
             padding: 12px 20px;
             border: none;
             border-radius: 25px;
-            background: rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.25);
             color: white;
             font-size: 14px;
             outline: none;
-            transition: all 0.3s ease;
         }
 
-        .search-box::placeholder {
+        .search-box::-webkit-input-placeholder {
             color: rgba(255, 255, 255, 0.7);
         }
 
         .search-box:focus {
-            background: rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.35);
             box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
         }
 
@@ -78,7 +83,6 @@
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
             white-space: nowrap;
         }
 
@@ -89,34 +93,34 @@
         }
 
         .btn-primary:hover {
-            transform: translateY(-2px);
             box-shadow: 0 6px 20px rgba(245, 87, 108, 0.6);
         }
 
         .btn-secondary {
-            background: rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.25);
             color: white;
         }
 
         .btn-secondary:hover {
-            background: rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.35);
         }
 
         .directors-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 20px;
+            display: -webkit-flex;
+            display: flex;
+            -webkit-flex-wrap: wrap;
+            flex-wrap: wrap;
+            margin: -10px;
             margin-bottom: 20px;
         }
 
         .director-card {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
+            width: 280px;
+            margin: 10px;
+            background: rgba(255, 255, 255, 0.15);
             border-radius: 20px;
             padding: 20px;
             border: 1px solid rgba(255, 255, 255, 0.2);
-            transition: all 0.3s ease;
             cursor: pointer;
             position: relative;
             overflow: hidden;
@@ -130,17 +134,16 @@
             right: 0;
             height: 4px;
             background: linear-gradient(90deg, #f093fb, #f5576c);
+            -webkit-transform: scaleX(0);
             transform: scaleX(0);
-            transition: transform 0.3s ease;
         }
 
         .director-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
             border-color: rgba(255, 255, 255, 0.4);
         }
 
         .director-card:hover::before {
+            -webkit-transform: scaleX(1);
             transform: scaleX(1);
         }
 
@@ -151,12 +154,16 @@
         }
 
         .director-card.selected::before {
+            -webkit-transform: scaleX(1);
             transform: scaleX(1);
         }
 
         .card-header {
+            display: -webkit-flex;
             display: flex;
+            -webkit-justify-content: space-between;
             justify-content: space-between;
+            -webkit-align-items: flex-start;
             align-items: flex-start;
             margin-bottom: 15px;
         }
@@ -165,6 +172,7 @@
             font-size: 20px;
             font-weight: 700;
             margin-bottom: 5px;
+            -webkit-flex: 1;
             flex: 1;
         }
 
@@ -174,14 +182,12 @@
             border-radius: 8px;
             padding: 8px 10px;
             cursor: pointer;
-            transition: all 0.3s ease;
             font-size: 16px;
             margin-left: 10px;
         }
 
         .delete-btn:hover {
             background: rgba(255, 59, 48, 0.4);
-            transform: scale(1.1);
         }
 
         .director-author {
@@ -202,9 +208,10 @@
         }
 
         .director-tags {
+            display: -webkit-flex;
             display: flex;
+            -webkit-flex-wrap: wrap;
             flex-wrap: wrap;
-            gap: 6px;
             margin-bottom: 10px;
         }
 
@@ -214,6 +221,7 @@
             border-radius: 12px;
             font-size: 11px;
             font-weight: 500;
+            margin: 0 6px 6px 0;
         }
 
         .director-expertise {
@@ -227,13 +235,15 @@
         .selection-footer {
             position: sticky;
             bottom: 0;
-            background: linear-gradient(180deg, transparent 0%, rgba(102, 126, 234, 0.95) 20%);
-            backdrop-filter: blur(10px);
+            background: rgba(102, 126, 234, 0.95);
             padding: 20px;
             margin: -20px;
             margin-top: 20px;
+            display: -webkit-flex;
             display: flex;
+            -webkit-justify-content: space-between;
             justify-content: space-between;
+            -webkit-align-items: center;
             align-items: center;
             border-top: 1px solid rgba(255, 255, 255, 0.2);
         }
@@ -257,13 +267,13 @@
         .analyze-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
-            transform: none;
         }
 
         .empty-state {
             text-align: center;
             padding: 60px 20px;
             opacity: 0.7;
+            width: 100%;
         }
 
         .empty-state h2 {
@@ -280,6 +290,7 @@
         }
 
         .checkbox-wrapper input[type="checkbox"] {
+            -webkit-appearance: none;
             appearance: none;
             width: 24px;
             height: 24px;
@@ -287,7 +298,6 @@
             border-radius: 6px;
             background: rgba(255, 255, 255, 0.1);
             cursor: pointer;
-            transition: all 0.3s ease;
             position: relative;
         }
 
@@ -297,12 +307,13 @@
         }
 
         .checkbox-wrapper input[type="checkbox"]:checked::after {
-            content: '✓';
+            content: '\2713';
             position: absolute;
             color: white;
             font-size: 16px;
             top: 50%;
             left: 50%;
+            -webkit-transform: translate(-50%, -50%);
             transform: translate(-50%, -50%);
         }
     </style>
@@ -310,13 +321,13 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎬 AI Directors</h1>
+            <h1>&#127916; AI Directors</h1>
             <p>Select directors to analyze your project with AI-powered insights</p>
         </div>
 
         <div class="actions-bar">
             <input type="text" class="search-box" id="searchBox" placeholder="Search directors...">
-            <button class="btn btn-secondary" onclick="openMarketplace()">🛒 Marketplace</button>
+            <button class="btn btn-secondary" onclick="openMarketplace()">&#128722; Marketplace</button>
         </div>
 
         <div class="directors-grid" id="directorsGrid">
@@ -329,129 +340,189 @@
         <div class="selection-footer">
             <div class="selected-count" id="selectedCount">No directors selected</div>
             <button class="btn btn-primary analyze-btn" id="analyzeBtn" onclick="analyzeWithDirectors()" disabled>
-                ✨ Analyze Project
+                &#10024; Analyze Project
             </button>
         </div>
     </div>
 
     <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
     <script>
-        let bridge = null;
-        let directors = [];
-        let selectedDirectors = new Set();
+        var bridge = null;
+        var directors = [];
+        var selectedDirectors = {};
 
-        // Initialize QWebChannel
-        new QWebChannel(qt.webChannelTransport, function(channel) {
-            bridge = channel.objects.directorPanelBridge;
+        function selHas(id) {
+            return Object.prototype.hasOwnProperty.call(selectedDirectors, id);
+        }
+        function selToggle(id) {
+            if (selHas(id)) {
+                delete selectedDirectors[id];
+            } else {
+                selectedDirectors[id] = true;
+            }
+        }
+        function selKeys() {
+            var keys = [];
+            for (var k in selectedDirectors) {
+                if (selectedDirectors.hasOwnProperty(k)) {
+                    keys.push(k);
+                }
+            }
+            return keys;
+        }
+        function selCount() {
+            var n = 0;
+            for (var k in selectedDirectors) {
+                if (selectedDirectors.hasOwnProperty(k)) {
+                    n++;
+                }
+            }
+            return n;
+        }
 
-            // Listen for directors loaded
+        function escapeHtml(text) {
+            if (text == null) return '';
+            var div = document.createElement('div');
+            div.textContent = String(text);
+            return div.innerHTML;
+        }
+
+        function tagsHtml(d) {
+            var tags = d.tags || [];
+            var parts = [];
+            var lim = Math.min(4, tags.length);
+            var i;
+            for (i = 0; i < lim; i++) {
+                parts.push('<span class="tag">' + escapeHtml(tags[i]) + '</span>');
+            }
+            return parts.join('');
+        }
+
+        function expertiseLine(d) {
+            var ex = d.expertise || [];
+            var slice = ex.slice(0, 3);
+            return slice.join(', ');
+        }
+
+        function connectDirectorPanel() {
+            if (typeof qt !== 'undefined' && qt.webChannelTransport && typeof QWebChannel !== 'undefined') {
+                new QWebChannel(qt.webChannelTransport, function(channel) {
+                    wireDirectorPanel(channel.objects.directorPanelBridge);
+                });
+                return;
+            }
+            if (typeof directorPanelBridge !== 'undefined') {
+                wireDirectorPanel(directorPanelBridge);
+                return;
+            }
+            setTimeout(connectDirectorPanel, 30);
+        }
+
+        function wireDirectorPanel(b) {
+            bridge = b;
             bridge.directorsLoaded.connect(function(directorsJson) {
                 directors = JSON.parse(directorsJson);
-                renderDirectors();
+                renderDirectors('');
             });
-
-            // Load directors on init
             bridge.loadDirectors();
-        });
+        }
 
-        function renderDirectors(filter = '') {
-            const grid = document.getElementById('directorsGrid');
-            const filterLower = filter.toLowerCase();
+        connectDirectorPanel();
 
-            const filteredDirectors = directors.filter(d => {
-                if (!filter) return true;
-                return d.name.toLowerCase().includes(filterLower) ||
-                       d.description.toLowerCase().includes(filterLower) ||
-                       d.tags.some(tag => tag.toLowerCase().includes(filterLower)) ||
-                       d.expertise.some(exp => exp.toLowerCase().includes(filterLower));
+        function directorMatchesFilter(d, filterLower) {
+            if (!filterLower) return true;
+            if (d.name.toLowerCase().indexOf(filterLower) !== -1) return true;
+            if (d.description.toLowerCase().indexOf(filterLower) !== -1) return true;
+            var tags = d.tags || [];
+            var i;
+            for (i = 0; i < tags.length; i++) {
+                if (tags[i].toLowerCase().indexOf(filterLower) !== -1) return true;
+            }
+            var ex = d.expertise || [];
+            for (i = 0; i < ex.length; i++) {
+                if (ex[i].toLowerCase().indexOf(filterLower) !== -1) return true;
+            }
+            return false;
+        }
+
+        function renderDirectors(filter) {
+            filter = filter || '';
+            var grid = document.getElementById('directorsGrid');
+            var filterLower = filter.toLowerCase();
+
+            var filteredDirectors = directors.filter(function(d) {
+                return directorMatchesFilter(d, filterLower);
             });
 
+            var html;
+            var j;
             if (filteredDirectors.length === 0) {
-                grid.innerHTML = `
-                    <div class="empty-state">
-                        <h2>No directors found</h2>
-                        <p>${filter ? 'Try a different search term' : 'Click Marketplace to add directors'}</p>
-                    </div>
-                `;
+                html = '<div class="empty-state"><h2>No directors found</h2><p>';
+                html += filter ? 'Try a different search term' : 'Click Marketplace to add directors';
+                html += '</p></div>';
+                grid.innerHTML = html;
+                updateSelectedCount();
                 return;
             }
 
-            grid.innerHTML = filteredDirectors.map(director => {
-                const isSelected = selectedDirectors.has(director.id);
-                return `
-                    <div class="director-card ${isSelected ? 'selected' : ''}"
-                         onclick="toggleDirector('${director.id}')"
-                         data-id="${director.id}">
-                        <div class="card-header">
-                            <div>
-                                <div class="director-name">${director.name}</div>
-                                <div class="director-author">by ${director.author}</div>
-                            </div>
-                            <button class="delete-btn" onclick="deleteDirector(event, '${director.id}')" title="Delete director">
-                                🗑️
-                            </button>
-                        </div>
-                        <div class="director-description">${director.description}</div>
-                        <div class="director-tags">
-                            ${director.tags.slice(0, 4).map(tag =>
-                                `<span class="tag">${tag}</span>`
-                            ).join('')}
-                        </div>
-                        <div class="director-expertise">
-                            <strong>Expertise:</strong> ${director.expertise.slice(0, 3).join(', ')}
-                        </div>
-                        <div class="checkbox-wrapper">
-                            <input type="checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()">
-                        </div>
-                    </div>
-                `;
-            }).join('');
-
+            html = '';
+            for (j = 0; j < filteredDirectors.length; j++) {
+                var director = filteredDirectors[j];
+                var isSelected = selHas(director.id);
+                var idJson = JSON.stringify(director.id);
+                html += '<div class="director-card' + (isSelected ? ' selected' : '') + '"';
+                html += ' onclick="toggleDirector(' + idJson + ')" data-id="' + escapeHtml(director.id) + '">';
+                html += '<div class="card-header"><div>';
+                html += '<div class="director-name">' + escapeHtml(director.name) + '</div>';
+                html += '<div class="director-author">by ' + escapeHtml(director.author) + '</div></div>';
+                html += '<button class="delete-btn" onclick="deleteDirector(event, ' + idJson + ')" title="Delete director">&#128465;</button>';
+                html += '</div>';
+                html += '<div class="director-description">' + escapeHtml(director.description) + '</div>';
+                html += '<div class="director-tags">' + tagsHtml(director) + '</div>';
+                html += '<div class="director-expertise"><strong>Expertise:</strong> ' + escapeHtml(expertiseLine(director)) + '</div>';
+                html += '<div class="checkbox-wrapper"><input type="checkbox" ';
+                html += isSelected ? 'checked ' : '';
+                html += 'onclick="event.stopPropagation()"></div></div>';
+            }
+            grid.innerHTML = html;
             updateSelectedCount();
         }
 
         function toggleDirector(directorId) {
-            if (selectedDirectors.has(directorId)) {
-                selectedDirectors.delete(directorId);
-            } else {
-                selectedDirectors.add(directorId);
-            }
+            selToggle(directorId);
             renderDirectors(document.getElementById('searchBox').value);
         }
 
         function deleteDirector(event, directorId) {
             event.stopPropagation();
-
             if (confirm('Are you sure you want to delete this director? You can add it back from the Marketplace.')) {
                 if (bridge && bridge.deleteDirector) {
                     bridge.deleteDirector(directorId);
-
-                    // Remove from local array
-                    directors = directors.filter(d => d.id !== directorId);
-                    selectedDirectors.delete(directorId);
+                    directors = directors.filter(function(d) { return d.id !== directorId; });
+                    if (selHas(directorId)) {
+                        delete selectedDirectors[directorId];
+                    }
                     renderDirectors(document.getElementById('searchBox').value);
                 }
             }
         }
 
         function updateSelectedCount() {
-            const count = selectedDirectors.size;
-            const countEl = document.getElementById('selectedCount');
-            const analyzeBtn = document.getElementById('analyzeBtn');
-
+            var count = selCount();
+            var countEl = document.getElementById('selectedCount');
+            var analyzeBtn = document.getElementById('analyzeBtn');
             if (count === 0) {
                 countEl.textContent = 'No directors selected';
                 analyzeBtn.disabled = true;
             } else {
-                countEl.textContent = `${count} director${count > 1 ? 's' : ''} selected`;
+                countEl.textContent = count + ' director' + (count > 1 ? 's' : '') + ' selected';
                 analyzeBtn.disabled = false;
             }
         }
 
         function analyzeWithDirectors() {
-            if (selectedDirectors.size === 0) return;
-
-            const directorIds = Array.from(selectedDirectors);
+            if (selCount() === 0) return;
+            var directorIds = selKeys();
             if (bridge && bridge.selectDirectors) {
                 bridge.selectDirectors(JSON.stringify(directorIds));
             }
@@ -463,7 +534,6 @@
             }
         }
 
-        // Search functionality
         document.getElementById('searchBox').addEventListener('input', function(e) {
             renderDirectors(e.target.value);
         });

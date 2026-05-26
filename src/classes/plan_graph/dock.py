@@ -6,13 +6,9 @@ import json
 import os
 
 from PyQt5.QtCore import QFileInfo, Qt, QUrl, pyqtSlot
-from PyQt5.QtWidgets import QDockWidget, QSizePolicy
+from PyQt5.QtWidgets import QDockWidget, QLabel, QSizePolicy
 
-try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView
-    _WEBENGINE_AVAILABLE = True
-except ImportError:
-    _WEBENGINE_AVAILABLE = False
+from windows.embedded_web import web_embed_backend, run_js
 
 
 class PlanGraphDock(QDockWidget):
@@ -24,19 +20,31 @@ class PlanGraphDock(QDockWidget):
         self.setWindowTitle("Plan Graph")
         self.setAllowedAreas(Qt.AllDockWidgetAreas)
 
-        if not _WEBENGINE_AVAILABLE:
-            from PyQt5.QtWidgets import QLabel
-            label = QLabel("QtWebEngine not available.\nPlan Graph requires QtWebEngine.")
+        self._view = None
+        self._embed_backend = web_embed_backend()
+
+        if self._embed_backend is None:
+            label = QLabel(
+                "Qt WebEngine and Qt WebKit are unavailable.\n"
+                "Plan Graph cannot display (install PyQt5 WebEngine or WebKit)."
+            )
             label.setAlignment(Qt.AlignCenter)
             self.setWidget(label)
-            self._view = None
             return
 
-        self._view = QWebEngineView(self)
+        if self._embed_backend == "webengine":
+            from PyQt5.QtWebEngineWidgets import QWebEngineView
+
+            self._view = QWebEngineView(self)
+        else:
+            from PyQt5.QtWebKitWidgets import QWebView
+
+            self._view = QWebView(self)
+
         self._view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setWidget(self._view)
+        self.setMinimumSize(240, 160)
 
-        # Load UI from the plan_graph/ui/ folder within this package
         ui_dir = os.path.join(os.path.dirname(__file__), "ui")
         index_path = os.path.join(ui_dir, "index.html")
         if os.path.isfile(index_path):
@@ -53,10 +61,10 @@ class PlanGraphDock(QDockWidget):
     @pyqtSlot(str)
     def set_plan_json(self, json_str: str) -> None:
         """Update the graph with new plan JSON."""
-        if not json_str or self._view is None or not getattr(self._view, "page", None):
+        if not json_str or self._view is None or self._embed_backend is None:
             return
         try:
             escaped = json.dumps(json_str)
         except Exception:
             escaped = json.dumps("null")
-        self._view.page().runJavaScript("setPlanGraph(%s);" % escaped)
+        run_js(self._view, self._embed_backend, "setPlanGraph(%s);" % escaped)
