@@ -173,7 +173,7 @@ class OpenShotApp(QApplication):
 
             log.debug("Command line: %s", self.args)
 
-            from classes import settings, project_data, updates, update_queue as update_queue_module, task_queue, sentry
+            from classes import settings, project_data, updates, update_queue as update_queue_module, sentry
             import openshot
 
             # Re-route stdout and stderr to logger
@@ -214,13 +214,9 @@ class OpenShotApp(QApplication):
 
         self.info = info
 
-        # Task bar / window icon (Windows uses QApplication + main window icon; avoids generic/Qt default).
+        # Task bar / window icon (Windows uses QApplication + per-window icons).
         try:
-            from PyQt5.QtGui import QIcon
-
-            _ico = info.application_icon_ico_path()
-            if _ico:
-                self.setWindowIcon(QIcon(_ico))
+            info.apply_application_icon()
         except Exception:
             pass
 
@@ -241,7 +237,6 @@ class OpenShotApp(QApplication):
         # It is important that the project is the first listener if the key gets update
         self.updates.add_listener(self.project)
         self.updates.reset()
-        self.task_queue = task_queue.VideoTaskQueue(parent=self)
 
         # Set location of OpenShot program (for libopenshot)
         openshot.Settings.Instance().PATH_OPENSHOT_INSTALL = info.PATH
@@ -394,10 +389,11 @@ class OpenShotApp(QApplication):
         # Connect our exit signals
         self.aboutToQuit.connect(self.cleanup)
 
-        # Show auth dialog if user is not signed in
+        # Show auth dialog if user is not signed in (keep main window hidden from taskbar until then).
         from classes.auth_manager import AuthManager
         auth = AuthManager.instance()
         if not auth.is_authenticated():
+            self.window.hide()
             from windows.login_window import LoginWindow
             login_dlg = LoginWindow(parent=None)
             result = login_dlg.exec_()
@@ -407,8 +403,12 @@ class OpenShotApp(QApplication):
                 self.window.close()
                 return False
 
-        # Show main window
+        # Show main window (Win32 HWND icon needed when host is python.exe on Windows).
         self.window.show()
+        try:
+            info.schedule_application_icon(self.window)
+        except Exception:
+            pass
 
         args = self.args
         if len(args) < 2:

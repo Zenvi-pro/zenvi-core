@@ -30,9 +30,11 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
+    QWidget,
 )
 
 from classes.auth_manager import AuthManager, AuthError
+from classes import info
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +187,7 @@ class LoginWindow(QDialog):
         self.setWindowTitle("Sign in to Zenvi")
         self.setFixedWidth(400)
         self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        info.apply_application_icon(self)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setStyleSheet(_DIALOG_QSS)
 
@@ -194,7 +197,31 @@ class LoginWindow(QDialog):
 
         QTimer.singleShot(0, self._start_browser_flow)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        info.schedule_application_icon(self)
+
     # ── UI ─────────────────────────────────────────────────────────────────
+
+    def _brand_header(self) -> QWidget:
+        """Zenvi logo + wordmark for login pages."""
+        header = QWidget()
+        layout = QVBoxLayout(header)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignCenter)
+        pixmap = info.application_logo_pixmap(80)
+        if pixmap is not None and not pixmap.isNull():
+            logo.setPixmap(pixmap)
+            layout.addWidget(logo)
+
+        wordmark = QLabel("Zenvi")
+        wordmark.setAlignment(Qt.AlignCenter)
+        wordmark.setStyleSheet("font-size: 22px; font-weight: 700;")
+        layout.addWidget(wordmark)
+        return header
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -211,10 +238,8 @@ class LoginWindow(QDialog):
         layout.setContentsMargins(40, 40, 40, 36)
         layout.setSpacing(0)
 
-        wordmark = QLabel("Zenvi")
-        wordmark.setAlignment(Qt.AlignCenter)
-        wordmark.setStyleSheet("font-size: 22px; font-weight: 700; margin-bottom: 6px;")
-        layout.addWidget(wordmark)
+        layout.addWidget(self._brand_header())
+        layout.addSpacing(4)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -277,10 +302,7 @@ class LoginWindow(QDialog):
         layout.setContentsMargins(40, 40, 40, 36)
         layout.setSpacing(0)
 
-        wordmark = QLabel("Zenvi")
-        wordmark.setAlignment(Qt.AlignCenter)
-        wordmark.setStyleSheet("font-size: 22px; font-weight: 700; margin-bottom: 4px;")
-        layout.addWidget(wordmark)
+        layout.addWidget(self._brand_header())
 
         self._pw_subtitle = QLabel("Sign in to your account")
         self._pw_subtitle.setAlignment(Qt.AlignCenter)

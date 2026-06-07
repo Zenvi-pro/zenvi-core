@@ -22,9 +22,6 @@ from PyQt5.QtGui import QFont
 from classes.logger import log
 from classes.app import get_app
 from classes.ai_metadata_utils import get_scene_descriptions_formatted
-from classes.api_client import get_backend_client
-
-
 def _section_header(text: str) -> QLabel:
     """Return a flat section-header label that replaces QGroupBox titles."""
     lbl = QLabel(text.upper())
