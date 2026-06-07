@@ -3,6 +3,12 @@ Queue for agent-originated UpdateActions so they are applied one at a time
 on the main thread, keeping the UI responsive. When from_agent is True,
 UpdatesRouter sends insert/update/delete/load here instead of directly to
 UpdateManager; _process_next dispatches them sequentially via QTimer.
+
+NOTE: Nothing in the app calls ``set_agent_context(True)`` yet, so all updates
+still go directly to UpdateManager. Wire the chat/tool runner to call
+``app.updates.set_agent_context(True)`` before agent-driven timeline edits
+when batching is needed. If enabling the queue, pass ``reset_history`` through
+queued ``load`` actions into ``UpdateManager.load()``.
 """
 
 from collections import deque

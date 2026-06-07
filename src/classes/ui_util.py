@@ -92,6 +92,10 @@ def load_ui(window, path):
     if error:
         raise error
 
+    # UI files still reference legacy :/openshot.svg; use packaged Zenvi assets instead.
+    from classes import info
+    info.apply_application_icon(window)
+
     # Save xml tree for ui
     window.uiTree = ElementTree.parse(path)
 

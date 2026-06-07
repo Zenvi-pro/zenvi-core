@@ -32,13 +32,39 @@ import time
 
 
 # ---------------------------------------------------------------------------
-# Paths  (mirror the constants in info.py without importing it)
+# Paths  (must match info.UPDATE_PATH / auto_updater staging)
 # ---------------------------------------------------------------------------
 
-_USER_PATH = os.path.join(os.path.expanduser("~"), ".openshot_qt")
-UPDATE_STAGING_DIR = os.path.join(_USER_PATH, "updates")
+def _resolve_staging_dir():
+    """Must match info.UPDATE_PATH; fallback if info is not importable."""
+    try:
+        from classes import info
+        return info.UPDATE_PATH
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".openshot_qt", "updates")
+
+
+UPDATE_STAGING_DIR = _resolve_staging_dir()
 UPDATE_MANIFEST = os.path.join(UPDATE_STAGING_DIR, "update_manifest.json")
 UPDATE_LOG = os.path.join(UPDATE_STAGING_DIR, "install.log")
+
+
+# ---------------------------------------------------------------------------
+# Version comparison (shared with auto_updater)
+# ---------------------------------------------------------------------------
+
+def parse_version(version_str):
+    """Parse '3.4.1' or 'v3.4.1' into a comparable tuple."""
+    try:
+        clean = (version_str or "").strip().lstrip("v")
+        return tuple(int(x) for x in clean.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
+def is_version_newer(remote_version, local_version):
+    """Return True when remote_version is strictly newer than local_version."""
+    return parse_version(remote_version) > parse_version(local_version)
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +100,7 @@ def has_pending_update():
         if staged_ver:
             try:
                 from classes import info as _info
-                current = tuple(int(x) for x in _info.VERSION.split("."))
-                staged = tuple(int(x) for x in staged_ver.split("."))
-                if staged <= current:
+                if not is_version_newer(staged_ver, _info.VERSION):
                     return False
             except Exception:
                 pass
@@ -344,12 +368,24 @@ def _apply_windows(filepath, filename):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _read_manifest():
+def read_manifest():
+    """Read and return the update manifest dict, or None."""
     try:
         with open(UPDATE_MANIFEST, "r", encoding="utf-8") as fh:
             return json.load(fh)
     except Exception:
         return None
+
+
+def discard_staged_update(manifest=None):
+    """Remove staged installer + manifest without applying (failed/cancelled)."""
+    if manifest is None:
+        manifest = read_manifest()
+    _cleanup(manifest or {})
+
+
+def _read_manifest():
+    return read_manifest()
 
 
 def _verify_integrity(manifest):

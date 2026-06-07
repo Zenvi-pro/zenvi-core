@@ -97,6 +97,12 @@ def test_api_client_init():
     assert client._ssl_verify is True, "Production URL should verify SSL"
     dev_client = ZenviBackendClient(base_url="http://localhost:8000")
     assert dev_client._ssl_verify is False, "Non-production URL should skip SSL"
+    link = ZenviBackendClient.pick_pexels_hd_link({
+        "video_files": [{"quality": "hd", "link": "https://example.com/v.mp4"}],
+    })
+    assert link == "https://example.com/v.mp4"
+    meta = ZenviBackendClient._empty_ai_metadata()
+    assert meta.get("analyzed") is False
 
 
 if __name__ == "__main__":

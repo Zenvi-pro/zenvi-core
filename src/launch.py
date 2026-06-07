@@ -102,6 +102,27 @@ def _prepend_dll_search_path_for_libopenshot():
 
 _prepend_dll_search_path_for_libopenshot()
 
+# Ensure src/ is importable before PyQt (for pre-launch update installer).
+_launch_dir = os.path.dirname(os.path.abspath(__file__))
+if _launch_dir not in sys.path:
+    sys.path.insert(0, _launch_dir)
+
+try:
+    from classes.zenvi_env import load_zenvi_dotenv
+    load_zenvi_dotenv()
+except Exception:
+    pass
+
+# Apply a staged update from a previous session (no PyQt required).
+try:
+    from classes import update_installer
+
+    if update_installer.has_pending_update():
+        if update_installer.apply_pending_update():
+            sys.exit(0)
+except Exception:
+    pass
+
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:
     import faulthandler
@@ -285,13 +306,8 @@ def main():
     # Create any missing paths in the user's settings dir
     info.setup_userdirs()
 
-    # Windows taskbar / jump list grouping: use our own AUMID (not python.exe / generic host).
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Zenvi.Zenvi.Editor.1")
-        except Exception:
-            pass
+    # Windows taskbar: separate from python.exe before QApplication is constructed.
+    info.ensure_windows_app_user_model_id()
 
     # Create Qt application, pass any unprocessed arguments
     from classes.app import OpenShotApp
@@ -311,6 +327,8 @@ def main():
     # Setup Qt application details
     app.setApplicationName('zenvi')
     app.setApplicationVersion(info.VERSION)
+    info.ensure_windows_app_user_model_id()
+    info.apply_application_icon()
     try:
         # Qt 5.7+ only
         app.setDesktopFile("org.zenvi.Zenvi")

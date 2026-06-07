@@ -67,7 +67,6 @@ from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
 from classes.title_bar import HiddenTitleBar
-from classes.version import get_current_Version
 from themes.manager import ThemeName
 from windows.models.effects_model import EffectsModel
 from windows.models.emoji_model import EmojisModel
@@ -3234,6 +3233,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
+            info.schedule_application_icon(self)
         else:
             self.close()
 
@@ -3370,6 +3370,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def showEvent(self, event):
         """ Have any child windows follow main-window state """
         QMainWindow.showEvent(self, event)
+        if not getattr(self, "_zenvi_icon_on_show", False):
+            info.schedule_application_icon(self)
+            self._zenvi_icon_on_show = True
         for child in self.getDocks():
             if child.isFloating() and child.isEnabled():
                 child.raise_()
@@ -4022,13 +4025,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Init UI
         ui_util.init_ui(self)
 
-        # main-window.ui sets windowIcon to :/openshot.svg — override with Zenvi branding for taskbar/title.
-        _ico_path = info.application_icon_ico_path()
-        if _ico_path:
-            _win_icon = QIcon(_ico_path)
-            if not _win_icon.isNull():
-                self.setWindowIcon(_win_icon)
-                QApplication.instance().setWindowIcon(_win_icon)
+        # main-window.ui still references legacy :/openshot.svg; apply file-based Zenvi icon.
+        info.apply_application_icon(self)
 
         # Hide the Help menu from the menu bar
         if hasattr(self, "menuHelp"):
@@ -4050,12 +4048,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)
 
-        # Get current version of OpenShot via HTTP
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
-        get_current_Version()
 
-        # Start background auto-updater (checks GitHub 15s after launch)
+        # Background auto-updater (stable version + optional download)
         self._auto_updater = AutoUpdater()
         self._auto_updater.start()
 
