@@ -3323,6 +3323,294 @@ def build_editor_snapshot_for_chat(max_chars: int = 3500) -> str:
 
 _CAPTION_LAYER_NUMBER = 9000000  # Sits below all default layers (1M-5M), dedicated to captions
 
+# ---------------------------------------------------------------------------
+# Caption style helpers
+# ---------------------------------------------------------------------------
+
+def _make_kf_point(value: float) -> dict:
+    """Single constant-value keyframe point in libopenshot format."""
+    return {
+        "co": {"X": 1.0, "Y": float(value)},
+        "handle_left": {"X": 0.5, "Y": 1.0},
+        "handle_right": {"X": 0.5, "Y": 0.0},
+        "handle_type": 0,
+        "interpolation": 0,
+    }
+
+
+def _set_caption_kf(effect_json: dict, key: str, value: float) -> None:
+    """Set a constant keyframe value in a Caption effect property (safe for new or existing keys)."""
+    kf = effect_json.get(key)
+    if isinstance(kf, dict) and kf.get("Points"):
+        kf["Points"][0]["co"]["Y"] = float(value)
+    else:
+        effect_json[key] = {"Points": [_make_kf_point(value)]}
+
+
+def _set_caption_color(effect_json: dict, key: str, r: int, g: int, b: int, a: int = 255) -> None:
+    """Update an RGBA color field in a Caption effect (safe for new or existing keys)."""
+    color = effect_json.get(key) or {}
+    for channel, val in (("red", r), ("green", g), ("blue", b), ("alpha", a)):
+        ch = color.get(channel) or {}
+        pts = ch.get("Points", [])
+        if pts:
+            pts[0]["co"]["Y"] = float(val)
+        else:
+            ch = {"Points": [_make_kf_point(float(val))]}
+        color[channel] = ch
+    effect_json[key] = color
+
+
+def _parse_hex_color(s: str) -> tuple[int, int, int] | None:
+    """Parse '#RRGGBB' or '#RGB' hex string. Returns (r,g,b) or None."""
+    s = s.strip().lstrip("#")
+    try:
+        if len(s) == 6:
+            return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        if len(s) == 3:
+            return int(s[0]*2, 16), int(s[1]*2, 16), int(s[2]*2, 16)
+    except ValueError:
+        pass
+    return None
+
+
+_NAMED_COLORS: dict[str, tuple[int, int, int]] = {
+    "white": (255, 255, 255), "black": (0, 0, 0),
+    "yellow": (255, 230, 0), "gold": (255, 200, 0),
+    "red": (220, 30, 30), "green": (30, 200, 80),
+    "blue": (30, 100, 255), "cyan": (0, 220, 255),
+    "orange": (255, 140, 0), "pink": (255, 80, 180),
+    "purple": (160, 50, 255), "gray": (180, 180, 180),
+    "grey": (180, 180, 180), "cream": (255, 250, 210),
+}
+
+
+def _parse_color(s: str) -> tuple[int, int, int] | None:
+    """Parse a color name or '#RRGGBB' hex string. Returns (r,g,b) or None."""
+    if not s:
+        return None
+    s = s.strip().lower()
+    if s in _NAMED_COLORS:
+        return _NAMED_COLORS[s]
+    return _parse_hex_color(s)
+
+
+# Preset definitions — every value is in the coordinate system of libopenshot's Caption effect:
+#   font_size  = points (float)
+#   top        = 0.0 (very top) … 1.0 (very bottom); 0.85 ≈ lower fifth
+#   left/right = horizontal margin fraction (0.0–0.5)
+#   stroke_width, fade_in/out = float seconds / width
+#   background_alpha = 0.0 transparent … 1.0 opaque
+#   background_corner = corner radius px (pre-scale)
+#   background_padding = padding px (pre-scale)
+_CAPTION_PRESETS: dict[str, dict] = {
+    "netflix": {
+        "font_size": 28, "font_name": "Arial",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 1.2, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.85, "left": 0.05, "right": 0.05,
+        "fade_in": 0.08, "fade_out": 0.08,
+        "line_spacing": 1.1,
+    },
+    "tiktok": {
+        "font_size": 46, "font_name": "Arial Black",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 3.5, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.44, "left": 0.08, "right": 0.08,
+        "fade_in": 0.04, "fade_out": 0.04,
+        "line_spacing": 1.0,
+    },
+    "cinematic": {
+        "font_size": 24, "font_name": "Georgia",
+        "color": (255, 250, 210), "font_alpha": 0.95,
+        "stroke_width": 0.8, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.88, "left": 0.1, "right": 0.1,
+        "fade_in": 0.25, "fade_out": 0.25,
+        "line_spacing": 1.2,
+    },
+    "bold": {
+        "font_size": 54, "font_name": "Impact",
+        "color": (255, 230, 0), "font_alpha": 1.0,
+        "stroke_width": 4.0, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.44, "left": 0.04, "right": 0.04,
+        "fade_in": 0.0, "fade_out": 0.0,
+        "line_spacing": 1.0,
+    },
+    "minimal": {
+        "font_size": 22, "font_name": "Helvetica Neue",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 0.0, "stroke": (0, 0, 0),
+        "background_alpha": 0.75,
+        "background": (0, 0, 0), "background_corner": 8, "background_padding": 10,
+        "top": 0.88, "left": 0.12, "right": 0.12,
+        "fade_in": 0.12, "fade_out": 0.12,
+        "line_spacing": 1.1,
+    },
+    "subtitle": {
+        "font_size": 26, "font_name": "Arial",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 0.0, "stroke": (0, 0, 0),
+        "background_alpha": 0.65,
+        "background": (0, 0, 0), "background_corner": 4, "background_padding": 8,
+        "top": 0.88, "left": 0.08, "right": 0.08,
+        "fade_in": 0.06, "fade_out": 0.06,
+        "line_spacing": 1.1,
+    },
+}
+
+_POSITION_MAP = {
+    "top": 0.05, "upper": 0.12,
+    "center": 0.44, "middle": 0.44,
+    "bottom": 0.85, "lower": 0.85,
+    "very_bottom": 0.90, "very bottom": 0.90,
+}
+
+
+def _apply_style_to_effect(effect_json: dict, params: dict) -> None:
+    """Apply a style parameter dict onto a Caption effect JSON dict in-place."""
+    if "font_size" in params:
+        _set_caption_kf(effect_json, "font_size", params["font_size"])
+    if "font_name" in params:
+        effect_json["font_name"] = params["font_name"]
+    if "font_alpha" in params:
+        _set_caption_kf(effect_json, "font_alpha", params["font_alpha"])
+    if "color" in params:
+        r, g, b = params["color"]
+        _set_caption_color(effect_json, "color", r, g, b, 255)
+    if "stroke_width" in params:
+        _set_caption_kf(effect_json, "stroke_width", params["stroke_width"])
+    if "stroke" in params:
+        r, g, b = params["stroke"]
+        _set_caption_color(effect_json, "stroke", r, g, b, 255)
+    if "background_alpha" in params:
+        _set_caption_kf(effect_json, "background_alpha", params["background_alpha"])
+    if "background" in params:
+        r, g, b = params["background"]
+        _set_caption_color(effect_json, "background", r, g, b, 255)
+    if "background_corner" in params:
+        _set_caption_kf(effect_json, "background_corner", params["background_corner"])
+    if "background_padding" in params:
+        _set_caption_kf(effect_json, "background_padding", params["background_padding"])
+    if "top" in params:
+        _set_caption_kf(effect_json, "top", params["top"])
+    if "left" in params:
+        _set_caption_kf(effect_json, "left", params["left"])
+    if "right" in params:
+        _set_caption_kf(effect_json, "right", params["right"])
+    if "fade_in" in params:
+        _set_caption_kf(effect_json, "fade_in", params["fade_in"])
+    if "fade_out" in params:
+        _set_caption_kf(effect_json, "fade_out", params["fade_out"])
+    if "line_spacing" in params:
+        _set_caption_kf(effect_json, "line_spacing", params["line_spacing"])
+
+
+def style_captions(
+    clip_id: str = "",
+    preset: str = "",
+    font_size: int = 0,
+    font_color: str = "",
+    font_name: str = "",
+    bg_opacity: float = -1.0,
+    position: str = "",
+    stroke_width: float = -1.0,
+    stroke_color: str = "",
+    **kwargs,
+) -> str:
+    """Apply style changes to the Caption effect on a clip."""
+    try:
+        from classes.query import Clip
+        app = _get_app()
+
+        # Resolve clip
+        all_clips = Clip.filter()
+        if clip_id:
+            candidates = [c for c in all_clips if c.id == clip_id]
+        else:
+            # First clip that already has a Caption effect
+            candidates = [c for c in all_clips
+                          if any(e.get("type") == "Caption" for e in (c.data.get("effects") or []))]
+
+        if not candidates:
+            return ("No clip with captions found. "
+                    "Add captions first with 'add captions to clip'.")
+
+        clip = candidates[0]
+        effects = list(clip.data.get("effects") or [])
+        caption_idx = next((i for i, e in enumerate(effects) if e.get("type") == "Caption"), None)
+        if caption_idx is None:
+            return f"Clip {clip.id} has no Caption effect. Add captions first."
+
+        eff = dict(effects[caption_idx])  # shallow copy
+
+        # --- Build the parameter dict to apply ---
+        style_params: dict = {}
+
+        # 1. Start from preset if given
+        preset_key = preset.strip().lower()
+        if preset_key and preset_key in _CAPTION_PRESETS:
+            style_params.update(_CAPTION_PRESETS[preset_key])
+        elif preset_key:
+            return (f"Unknown preset '{preset}'. "
+                    f"Available: {', '.join(_CAPTION_PRESETS.keys())}")
+
+        # 2. Override with individual params
+        if font_size and font_size > 0:
+            style_params["font_size"] = float(font_size)
+        if font_name:
+            style_params["font_name"] = font_name.strip()
+        if font_color:
+            rgb = _parse_color(font_color)
+            if rgb is None:
+                return f"Could not parse color '{font_color}'. Use a color name or '#RRGGBB'."
+            style_params["color"] = rgb
+        if stroke_color:
+            rgb = _parse_color(stroke_color)
+            if rgb is None:
+                return f"Could not parse stroke color '{stroke_color}'."
+            style_params["stroke"] = rgb
+        if stroke_width >= 0:
+            style_params["stroke_width"] = stroke_width
+        if bg_opacity >= 0:
+            style_params["background_alpha"] = min(1.0, bg_opacity)
+        if position:
+            pos_key = position.strip().lower()
+            top_val = _POSITION_MAP.get(pos_key)
+            if top_val is None:
+                # Try numeric
+                try:
+                    top_val = float(pos_key)
+                except ValueError:
+                    return (f"Unknown position '{position}'. "
+                            f"Use: top, center, bottom, upper, lower.")
+            style_params["top"] = top_val
+
+        if not style_params:
+            return "No style changes specified."
+
+        _apply_style_to_effect(eff, style_params)
+        effects[caption_idx] = eff
+
+        def _save(c=clip, effs=effects):
+            c.data["effects"] = effs
+            c.save()
+
+        _run_on_main_thread(_save)
+
+        applied = preset_key or ", ".join(
+            f"{k}={v}" for k, v in style_params.items()
+            if k not in ("color", "stroke", "background")
+        )
+        return f"Caption style updated ({applied}). Refresh the preview to see the changes."
+
+    except Exception as e:
+        log.error("style_captions: %s", e, exc_info=True)
+        return f"Error: {e}"
+
 
 def _ensure_captions_layer(app):
     """Create the reserved Captions timeline layer if it doesn't exist yet."""
@@ -3443,18 +3731,28 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
                 effect_json = _json.loads(effect.Json())
                 # Inject the transcribed SRT text
                 effect_json["caption_text"] = srt_text
+                # Apply a clean default style (subtitle preset)
+                _apply_style_to_effect(effect_json, _CAPTION_PRESETS["subtitle"])
                 effects = list(c.data.get("effects") or [])
                 # Remove any existing Caption effect to avoid duplicates on retry
                 effects = [e for e in effects if e.get("type") != "Caption"]
                 effects.append(effect_json)
                 c.data["effects"] = effects
                 c.save()
+                # Auto-select the clip so Properties panel shows its effects
+                try:
+                    win = app.window
+                    win.SelectionAdded.emit(cid, "clip", True)
+                except Exception:
+                    pass
 
             _run_on_main_thread(_add_caption_effect)
 
             results.append(
-                f"Added {caption_count} captions to clip (language: {detected_lang or 'auto'}, "
-                f"{word_count} words with timestamps). Captions will now display on the video."
+                f"Added {caption_count} captions (language: {detected_lang or 'auto'}, "
+                f"{word_count} words with timestamps). "
+                f"Captions appear on the video. "
+                f"To restyle: 'netflix style', 'tiktok style', 'make captions yellow', etc."
             )
 
         return "\n".join(results) if results else "No clips were captioned."
@@ -3553,6 +3851,7 @@ TOOL_HANDLERS = {
     "add_transition_to_clip_tool": add_transition_to_clip,
     # Captions
     "add_captions_to_timeline_tool": add_captions_to_timeline,
+    "style_captions_tool": style_captions,
     # TTS (timeline insertion)
     "add_tts_audio_to_timeline_tool": add_tts_audio_to_timeline,
     # Director analysis (read-only project state access)
