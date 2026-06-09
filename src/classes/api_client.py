@@ -96,7 +96,7 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep the Authorization header fresh."""
         if self._session is None:
             try:
                 import requests
@@ -109,6 +109,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        # Refresh the bearer token on every access so expired tokens are handled.
+        try:
+            from classes.auth_manager import AuthManager
+            token = AuthManager.instance().get_access_token()
+            if token:
+                self._session.headers["Authorization"] = f"Bearer {token}"
+            else:
+                self._session.headers.pop("Authorization", None)
+        except Exception:
+            pass
         return self._session
 
     # ------------------------------------------------------------------
@@ -240,12 +250,19 @@ class ZenviBackendClient:
                 self._active_wss.add(ws)
 
             # Send user message
+            _auth_token = None
+            try:
+                from classes.auth_manager import AuthManager
+                _auth_token = AuthManager.instance().get_access_token()
+            except Exception:
+                pass
             ws.send(json.dumps({
                 "type": "user_message",
                 "data": {
                     "message": message,
                     "model_id": model_id,
                     "session_id": session_id,
+                    "auth_token": _auth_token,
                 },
             }))
 
@@ -879,13 +896,21 @@ class ZenviBackendClient:
         try:
             with open(audio_path, "rb") as f:
                 files = {"file": (os.path.basename(audio_path), f)}
-                data = {}
+                form = {}
                 if language:
-                    data["language"] = language
-                r = self.session.post(
+                    form["language"] = language
+                # Must not send Content-Type: application/json for multipart.
+                # Build a copy of the current session headers without Content-Type
+                # so requests can set the multipart boundary itself.
+                headers = {k: v for k, v in self.session.headers.items()
+                           if k.lower() != "content-type"}
+                import requests as _req_lib
+                r = _req_lib.post(
                     f"{self.api_url}/captions/transcribe",
                     files=files,
-                    data=data,
+                    data=form,
+                    headers=headers,
+                    verify=self._ssl_verify,
                     timeout=120,
                 )
             r.raise_for_status()
