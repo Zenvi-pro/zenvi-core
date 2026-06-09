@@ -3396,15 +3396,67 @@ def _parse_color(s: str) -> tuple[int, int, int] | None:
 
 
 # Preset definitions — every value is in the coordinate system of libopenshot's Caption effect:
-#   font_size  = points (float)
+#   font_size  = points (float, calibrated for 1080p — scaled at runtime by _caption_font_scale)
 #   top        = 0.0 (very top) … 1.0 (very bottom); 0.85 ≈ lower fifth
 #   left/right = horizontal margin fraction (0.0–0.5)
-#   stroke_width, fade_in/out = float seconds / width
+#   stroke_width = outline thickness
 #   background_alpha = 0.0 transparent … 1.0 opaque
-#   background_corner = corner radius px (pre-scale)
-#   background_padding = padding px (pre-scale)
+#   word_by_word = True → rebuild SRT as 1-word-per-segment at add time
 _CAPTION_PRESETS: dict[str, dict] = {
-    # font_size values are calibrated for 1080p — _caption_font_scale() scales them at runtime.
+    # ── word-by-word (the classic viral TikTok one-word-at-a-time style) ──────────────
+    "word": {
+        "font_size": 52, "font_name": "Arial Black",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 4.0, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.44, "left": 0.10, "right": 0.10,
+        "fade_in": 0.03, "fade_out": 0.03,
+        "line_spacing": 1.0,
+        "word_by_word": True,
+    },
+    # ── fire — hype/motivational, Impact, orange-amber ────────────────────────────────
+    "fire": {
+        "font_size": 50, "font_name": "Impact",
+        "color": (255, 120, 0), "font_alpha": 1.0,
+        "stroke_width": 3.5, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
+        "top": 0.44, "left": 0.08, "right": 0.08,
+        "fade_in": 0.03, "fade_out": 0.03,
+        "line_spacing": 1.0,
+    },
+    # ── clean — white text on dark rounded pill, no stroke, premium/MrBeast style ─────
+    "clean": {
+        "font_size": 30, "font_name": "Arial",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 0.0, "stroke": (0, 0, 0),
+        "background_alpha": 0.85,
+        "background": (15, 15, 15), "background_corner": 18, "background_padding": 14,
+        "top": 0.85, "left": 0.12, "right": 0.12,
+        "fade_in": 0.08, "fade_out": 0.08,
+        "line_spacing": 1.1,
+    },
+    # ── neon — electric cyan with thin glow stroke, gaming/cyberpunk ──────────────────
+    "neon": {
+        "font_size": 34, "font_name": "Arial Black",
+        "color": (0, 220, 255), "font_alpha": 1.0,
+        "stroke_width": 1.5, "stroke": (0, 180, 220),
+        "background_alpha": 0.0,
+        "top": 0.44, "left": 0.10, "right": 0.10,
+        "fade_in": 0.05, "fade_out": 0.05,
+        "line_spacing": 1.0,
+    },
+    # ── block — opaque black bar, broadcast/documentary style ─────────────────────────
+    "block": {
+        "font_size": 28, "font_name": "Arial",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 0.0, "stroke": (0, 0, 0),
+        "background_alpha": 1.0,
+        "background": (0, 0, 0), "background_corner": 0, "background_padding": 14,
+        "top": 0.88, "left": 0.0, "right": 0.0,
+        "fade_in": 0.04, "fade_out": 0.04,
+        "line_spacing": 1.1,
+    },
+    # ── legacy / standard presets ─────────────────────────────────────────────────────
     "netflix": {
         "font_size": 28, "font_name": "Arial",
         "color": (255, 255, 255), "font_alpha": 1.0,
@@ -3414,7 +3466,7 @@ _CAPTION_PRESETS: dict[str, dict] = {
         "fade_in": 0.08, "fade_out": 0.08,
         "line_spacing": 1.1,
     },
-    "tiktok": {
+    "tiktok": {  # alias → "word" for backwards compat
         "font_size": 46, "font_name": "Arial Black",
         "color": (255, 255, 255), "font_alpha": 1.0,
         "stroke_width": 3.5, "stroke": (0, 0, 0),
@@ -3472,6 +3524,33 @@ _POSITION_MAP = {
 
 # Preset font sizes are calibrated for 1080p. Scale linearly for other resolutions.
 _CAPTION_BASE_HEIGHT = 1080
+
+
+def _secs_to_srt_ts(seconds: float) -> str:
+    """Convert seconds to SRT timestamp string HH:MM:SS,mmm."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int(round((seconds % 1) * 1000))
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def _build_word_by_word_srt(words: list) -> str:
+    """Build an SRT where every word is its own timed segment (word-by-word pop style)."""
+    lines = []
+    for i, w in enumerate(words, 1):
+        text = w.get("word", "").strip()
+        if not text:
+            continue
+        start = float(w.get("start", 0.0))
+        end = float(w.get("end", start + 0.35))
+        # Ensure minimum on-screen time so very fast words are still readable
+        if end - start < 0.18:
+            end = start + 0.18
+        lines.append(
+            f"{i}\n{_secs_to_srt_ts(start)} --> {_secs_to_srt_ts(end)}\n{text}\n"
+        )
+    return "\n".join(lines)
 
 
 def _caption_font_scale(app) -> float:
@@ -3643,7 +3722,7 @@ def _ensure_captions_layer(app):
     app.updates.insert(["layers"], layer_data)
 
 
-def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
+def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str:
     """Transcribe the audio of a clip (or all clips if no clip_id) and add captions.
 
     Steps:
@@ -3718,20 +3797,34 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
 
             srt = resp.get("srt", "")
             detected_lang = resp.get("language", "")
-            word_count = len(resp.get("words", []))
+            raw_words = resp.get("words", [])
+            word_count = len(raw_words)
 
             if not srt.strip():
                 results.append(f"Clip {clip.id}: no speech detected.")
                 continue
 
-            # Count SRT blocks for the summary
-            import re as _re
-            caption_count = len(_re.findall(r"^\d+\s*$", srt.strip(), _re.MULTILINE))
+            # Resolve which preset to use; "word" preset implies word-by-word SRT
+            requested_style = style.strip().lower() if style else ""
+            preset_params = _CAPTION_PRESETS.get(requested_style, _CAPTION_PRESETS["subtitle"])
+            use_word_by_word = bool(preset_params.get("word_by_word") or requested_style == "word")
+
+            # Build the SRT that will be embedded in the Caption effect
+            if use_word_by_word and raw_words:
+                srt_for_effect = _build_word_by_word_srt(raw_words)
+                caption_count = word_count  # one entry per word
+            else:
+                srt_for_effect = srt
+                import re as _re
+                caption_count = len(_re.findall(r"^\d+\s*$", srt.strip(), _re.MULTILINE))
 
             clip_id_local = clip.id
-            srt_for_effect = srt
 
-            def _add_caption_effect(cid=clip_id_local, srt_text=srt_for_effect):
+            def _add_caption_effect(
+                cid=clip_id_local,
+                srt_text=srt_for_effect,
+                chosen_preset=preset_params,
+            ):
                 import openshot as _openshot
                 import json as _json
                 _ensure_captions_layer(app)
@@ -3747,9 +3840,9 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
                 effect_json = _json.loads(effect.Json())
                 # Inject the transcribed SRT text
                 effect_json["caption_text"] = srt_text
-                # Apply a clean default style scaled to the project resolution
+                # Apply chosen style scaled to the project resolution
                 _apply_style_to_effect(
-                    effect_json, _CAPTION_PRESETS["subtitle"],
+                    effect_json, chosen_preset,
                     font_scale=_caption_font_scale(app),
                 )
                 effects = list(c.data.get("effects") or [])
@@ -3767,11 +3860,13 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
 
             _run_on_main_thread(_add_caption_effect)
 
+            style_label = requested_style or "subtitle"
+            mode_note = " (word-by-word)" if use_word_by_word else ""
             results.append(
-                f"Added {caption_count} captions (language: {detected_lang or 'auto'}, "
-                f"{word_count} words with timestamps). "
-                f"Captions appear on the video. "
-                f"To restyle: 'netflix style', 'tiktok style', 'make captions yellow', etc."
+                f"Added {caption_count} captions{mode_note} in '{style_label}' style "
+                f"(language: {detected_lang or 'auto'}, {word_count} words). "
+                f"Styles: word, fire, clean, neon, block, netflix, cinematic, bold, minimal, subtitle. "
+                f"Or: 'make captions yellow', 'bigger font', 'move to top', etc."
             )
 
         return "\n".join(results) if results else "No clips were captioned."
