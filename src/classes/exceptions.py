@@ -67,7 +67,7 @@ def libopenshot_crash_recovery():
         # Read from bottom up
         for raw_line in reversed(tail_file(f, 500)):
             # Format and remove extra spaces from line
-            line = " ".join(str(raw_line, 'utf-8').split()) + "\n"
+            line = " ".join(raw_line.decode('utf-8', errors='replace').split()) + "\n"
             # Detect stack trace
             if "End of Stack Trace" in line:
                 found_stack = True
