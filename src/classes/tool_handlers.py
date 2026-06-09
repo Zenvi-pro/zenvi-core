@@ -3475,7 +3475,7 @@ def _apply_style_to_effect(effect_json: dict, params: dict) -> None:
     if "font_size" in params:
         _set_caption_kf(effect_json, "font_size", params["font_size"])
     if "font_name" in params:
-        effect_json["font_name"] = params["font_name"]
+        effect_json["caption_font"] = params["font_name"]
     if "font_alpha" in params:
         _set_caption_kf(effect_json, "font_alpha", params["font_alpha"])
     if "color" in params:
