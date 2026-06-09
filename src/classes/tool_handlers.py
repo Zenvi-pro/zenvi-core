@@ -3456,14 +3456,14 @@ _CAPTION_PRESETS: dict[str, dict] = {
         "fade_in": 0.04, "fade_out": 0.04,
         "line_spacing": 1.1,
     },
-    # ── karaoke — full phrase visible, active word yellow, solid black bar ───────────
+    # ── karaoke — full phrase, active word yellow, no background, stroke for readability ──
     "karaoke": {
         "font_size": 44, "font_name": "Arial Black",
         "color": (255, 255, 255), "font_alpha": 1.0,
-        "stroke_width": 0.0, "stroke": (0, 0, 0),
-        "background_alpha": 1.0,
+        "stroke_width": 2.5, "stroke": (0, 0, 0),
+        "background_alpha": 0.0,
         "background": (0, 0, 0), "background_corner": 0, "background_padding": 18,
-        "top": 0.85, "left": 0.0, "right": 0.0,
+        "top": 0.85, "left": 0.08, "right": 0.08,
         "fade_in": 0.0, "fade_out": 0.0,
         "line_spacing": 1.0,
         "karaoke": True,
