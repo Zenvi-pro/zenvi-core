@@ -3321,6 +3321,158 @@ def build_editor_snapshot_for_chat(max_chars: int = 3500) -> str:
         return ""
 
 
+_CAPTION_LAYER_NUMBER = 9000000  # Sits below all default layers (1M-5M), dedicated to captions
+
+
+def _ensure_captions_layer(app):
+    """Create the reserved Captions timeline layer if it doesn't exist yet."""
+    layers = app.project.get("layers") or []
+    if any(l.get("number") == _CAPTION_LAYER_NUMBER for l in layers):
+        return  # Already exists
+    layer_data = {
+        "id": str(uuid_module.uuid4()),
+        "label": "Captions",
+        "number": _CAPTION_LAYER_NUMBER,
+        "y": 0,
+        "lock": False,
+    }
+    app.updates.insert(["layers"], layer_data)
+
+
+def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
+    """Transcribe the audio of a clip (or all clips if no clip_id) and add a caption track.
+
+    Steps:
+    1. Find the target clip(s) and extract audio via FFmpeg.
+    2. Send audio to backend Whisper transcription endpoint.
+    3. Create a caption_track entry in the project with the returned SRT + word timestamps.
+    4. Ensure the dedicated Captions layer exists in the timeline.
+    5. Return a summary so the AI chat can confirm to the user.
+    """
+    try:
+        from classes.query import Clip, File, CaptionTrack
+        from classes.api_client import get_backend_client
+        app = _get_app()
+
+        # Resolve which clips to caption
+        if clip_id:
+            clips = [c for c in Clip.filter() if c.id == clip_id]
+            if not clips:
+                return f"Error: Clip '{clip_id}' not found on the timeline."
+        else:
+            clips = Clip.filter()
+            # Only video clips with a real source file
+            clips = [c for c in clips if c.data.get("reader", {}).get("has_video")]
+
+        if not clips:
+            return "No video clips found on the timeline. Add video clips first."
+
+        client = get_backend_client()
+        results = []
+
+        for clip in clips:
+            reader = clip.data.get("reader", {})
+            source_path = reader.get("path") or clip.data.get("image", "")
+            if not source_path or not os.path.isfile(source_path):
+                results.append(f"Skipped clip {clip.id}: source file not accessible.")
+                continue
+
+            # Extract audio to a temp WAV file
+            wav_path = tempfile.mktemp(suffix=".wav")
+            ok, err = _ffmpeg_run([
+                "ffmpeg", "-y", "-i", source_path,
+                "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+                wav_path,
+            ])
+            if not ok:
+                results.append(f"Skipped clip {clip.id}: audio extraction failed — {err}")
+                continue
+
+            try:
+                resp = client.transcribe_audio(wav_path, language=language)
+            finally:
+                try:
+                    os.remove(wav_path)
+                except Exception:
+                    pass
+
+            if not resp.get("success"):
+                results.append(f"Clip {clip.id}: transcription failed — {resp.get('error', 'unknown error')}")
+                continue
+
+            srt = resp.get("srt", "")
+            words = resp.get("words", [])
+            detected_lang = resp.get("language", "")
+
+            if not srt.strip():
+                results.append(f"Clip {clip.id}: no speech detected.")
+                continue
+
+            # Build caption objects from SRT segments
+            captions = _parse_srt_to_captions(srt, words)
+
+            track_id = str(uuid_module.uuid4())
+            track_data = {
+                "id": track_id,
+                "label": "Captions",
+                "language": detected_lang or language or "en",
+                "captions": captions,
+            }
+
+            def _insert_track(td=track_data):
+                _ensure_captions_layer(app)
+                app.updates.insert(["caption_tracks"], td)
+
+            _run_on_main_thread(_insert_track)
+
+            results.append(
+                f"Added {len(captions)} captions to a Caption track "
+                f"(language: {detected_lang or 'auto'}, {len(words)} words with timestamps)."
+            )
+
+        return "\n".join(results) if results else "No clips were captioned."
+
+    except Exception as e:
+        log.error("add_captions_to_timeline: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
+def _parse_srt_to_captions(srt: str, words: list) -> list:
+    """Convert SRT text + word timestamps into caption dicts for caption_tracks storage."""
+    captions = []
+    # Build a lookup of word -> timestamps for attaching to each segment
+    block_pattern = __import__("re").compile(
+        r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n([\s\S]+?)(?=\n\n|\Z)",
+        __import__("re").MULTILINE,
+    )
+
+    def _ts_to_secs(ts: str) -> float:
+        h, m, rest = ts.split(":")
+        s, ms = rest.split(",")
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+
+    for match in block_pattern.finditer(srt.strip()):
+        start = _ts_to_secs(match.group(2))
+        end = _ts_to_secs(match.group(3))
+        text = match.group(4).strip()
+
+        # Attach word timestamps that fall within this segment's time range
+        seg_words = [
+            w for w in words
+            if w.get("start", 0) >= start - 0.05 and w.get("end", 0) <= end + 0.05
+        ]
+
+        captions.append({
+            "id": str(uuid_module.uuid4()),
+            "text": text,
+            "start": start,
+            "end": end,
+            "word_timestamps": seg_words,
+        })
+
+    return captions
+
+
 TOOL_HANDLERS = {
     # Project
     "get_project_info_tool": get_project_info,
@@ -3372,6 +3524,8 @@ TOOL_HANDLERS = {
     "search_transitions_tool": search_transitions,
     "add_transition_between_clips_tool": add_transition_between_clips,
     "add_transition_to_clip_tool": add_transition_to_clip,
+    # Captions
+    "add_captions_to_timeline_tool": add_captions_to_timeline,
     # TTS (timeline insertion)
     "add_tts_audio_to_timeline_tool": add_tts_audio_to_timeline,
     # Director analysis (read-only project state access)

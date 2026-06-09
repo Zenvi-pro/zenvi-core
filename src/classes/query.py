@@ -435,3 +435,67 @@ class Effect(QueryObject):
             return matching_objects[0]
         else:
             return None
+
+
+class CaptionTrack(QueryObject):
+    """A dedicated caption track stored at the project root (not as a clip effect)."""
+    object_name = "caption_tracks"
+    object_key = [object_name]
+
+    def save(self):
+        super().save(CaptionTrack)
+
+    def delete(self):
+        super().delete(CaptionTrack)
+
+    def filter(**kwargs):
+        tracks = get_app().project.get("caption_tracks") or []
+        matching = []
+        for track in tracks:
+            match = all(track.get(k) == v for k, v in kwargs.items())
+            if match:
+                obj = CaptionTrack()
+                obj.id = track["id"]
+                obj.key = ["caption_tracks", {"id": obj.id}]
+                obj.data = json.loads(json.dumps(track))
+                obj.type = "update"
+                matching.append(obj)
+        return matching
+
+    def get(**kwargs):
+        results = CaptionTrack.filter(**kwargs)
+        return results[0] if results else None
+
+
+class Caption(QueryObject):
+    """A single timed caption entry within a CaptionTrack."""
+    object_name = "captions"
+    object_key = ["caption_tracks"]
+
+    def save(self):
+        super().save(Caption)
+
+    def delete(self):
+        super().delete(Caption)
+
+    def filter(track_id=None, **kwargs):
+        tracks = get_app().project.get("caption_tracks") or []
+        matching = []
+        for track in tracks:
+            if track_id and track.get("id") != track_id:
+                continue
+            for cap in track.get("captions", []):
+                match = all(cap.get(k) == v for k, v in kwargs.items())
+                if match:
+                    obj = Caption()
+                    obj.id = cap["id"]
+                    obj.key = ["caption_tracks", {"id": track["id"]}, "captions", {"id": obj.id}]
+                    obj.data = json.loads(json.dumps(cap))
+                    obj.type = "update"
+                    obj.parent = track
+                    matching.append(obj)
+        return matching
+
+    def get(track_id=None, **kwargs):
+        results = Caption.filter(track_id=track_id, **kwargs)
+        return results[0] if results else None

@@ -870,6 +870,30 @@ class ZenviBackendClient:
             log.error("Freesound download failed: %s", e)
             return {"local_path": "", "error": str(e)}
 
+    def transcribe_audio(self, audio_path: str, language: str = "") -> Dict[str, Any]:
+        """Upload an audio file to the backend for Whisper transcription.
+
+        Returns dict with keys: success, srt, words, language, duration, error.
+        words is a list of {word, start, end} dicts.
+        """
+        try:
+            with open(audio_path, "rb") as f:
+                files = {"file": (os.path.basename(audio_path), f)}
+                data = {}
+                if language:
+                    data["language"] = language
+                r = self.session.post(
+                    f"{self.api_url}/captions/transcribe",
+                    files=files,
+                    data=data,
+                    timeout=120,
+                )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.error("Transcription failed: %s", e)
+            return {"success": False, "srt": "", "words": [], "error": str(e)}
+
 
 # Singleton
 _client: Optional[ZenviBackendClient] = None

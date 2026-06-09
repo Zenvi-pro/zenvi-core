@@ -315,10 +315,6 @@ class OpenShotApp(QApplication):
         # Display any outstanding startup messages
         self.show_errors()
 
-        # Start libopenshot logging thread
-        self.logger_libopenshot = logger_libopenshot.LoggerLibOpenShot()
-        self.logger_libopenshot.start()
-
         # Track which dockable window received a context menu
         self.context_menu_object = None
 
@@ -326,6 +322,12 @@ class OpenShotApp(QApplication):
         from windows.main_window import MainWindow
         log.debug("Creating main interface window")
         self.window = MainWindow()
+
+        # Start libopenshot logging thread AFTER MainWindow loads UI widgets,
+        # to avoid a race where ZmqLogger.Instance() is called while Qt is
+        # registering custom widget metatypes (segfault on macOS).
+        self.logger_libopenshot = logger_libopenshot.LoggerLibOpenShot()
+        self.logger_libopenshot.start()
 
         # Check for gui launch failures
         if self.mode == "quit":

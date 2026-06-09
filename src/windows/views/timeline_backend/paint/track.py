@@ -170,8 +170,17 @@ class TrackPainter(BasePainter):
             vis = track_rect.intersected(area)
             if vis.isNull():
                 continue
-            bg = self.w.theme.track.background
-            bg2 = self.w.theme.track.background2
+            # Captions track gets a distinct teal tint so it's visually separate
+            is_caption_track = (
+                isinstance(getattr(_track, "data", None), dict)
+                and _track.data.get("number") == 9000000
+            )
+            if is_caption_track:
+                bg = QColor(20, 80, 90)
+                bg2 = QColor(15, 60, 70)
+            else:
+                bg = self.w.theme.track.background
+                bg2 = self.w.theme.track.background2
             if bg2.isValid() and bg2 != bg:
                 grad = QLinearGradient(vis.topLeft(), vis.bottomLeft())
                 grad.setColorAt(0, bg)
