@@ -3404,12 +3404,13 @@ def _parse_color(s: str) -> tuple[int, int, int] | None:
 #   background_corner = corner radius px (pre-scale)
 #   background_padding = padding px (pre-scale)
 _CAPTION_PRESETS: dict[str, dict] = {
+    # font_size values are calibrated for 1080p — _caption_font_scale() scales them at runtime.
     "netflix": {
         "font_size": 28, "font_name": "Arial",
         "color": (255, 255, 255), "font_alpha": 1.0,
         "stroke_width": 1.2, "stroke": (0, 0, 0),
         "background_alpha": 0.0,
-        "top": 0.85, "left": 0.05, "right": 0.05,
+        "top": 0.85, "left": 0.08, "right": 0.08,
         "fade_in": 0.08, "fade_out": 0.08,
         "line_spacing": 1.1,
     },
@@ -3418,7 +3419,7 @@ _CAPTION_PRESETS: dict[str, dict] = {
         "color": (255, 255, 255), "font_alpha": 1.0,
         "stroke_width": 3.5, "stroke": (0, 0, 0),
         "background_alpha": 0.0,
-        "top": 0.44, "left": 0.08, "right": 0.08,
+        "top": 0.44, "left": 0.10, "right": 0.10,
         "fade_in": 0.04, "fade_out": 0.04,
         "line_spacing": 1.0,
     },
@@ -3427,16 +3428,16 @@ _CAPTION_PRESETS: dict[str, dict] = {
         "color": (255, 250, 210), "font_alpha": 0.95,
         "stroke_width": 0.8, "stroke": (0, 0, 0),
         "background_alpha": 0.0,
-        "top": 0.88, "left": 0.1, "right": 0.1,
+        "top": 0.88, "left": 0.10, "right": 0.10,
         "fade_in": 0.25, "fade_out": 0.25,
         "line_spacing": 1.2,
     },
     "bold": {
-        "font_size": 54, "font_name": "Impact",
+        "font_size": 48, "font_name": "Impact",
         "color": (255, 230, 0), "font_alpha": 1.0,
         "stroke_width": 4.0, "stroke": (0, 0, 0),
         "background_alpha": 0.0,
-        "top": 0.44, "left": 0.04, "right": 0.04,
+        "top": 0.44, "left": 0.08, "right": 0.08,
         "fade_in": 0.0, "fade_out": 0.0,
         "line_spacing": 1.0,
     },
@@ -3469,11 +3470,25 @@ _POSITION_MAP = {
     "very_bottom": 0.90, "very bottom": 0.90,
 }
 
+# Preset font sizes are calibrated for 1080p. Scale linearly for other resolutions.
+_CAPTION_BASE_HEIGHT = 1080
 
-def _apply_style_to_effect(effect_json: dict, params: dict) -> None:
+
+def _caption_font_scale(app) -> float:
+    """Return a multiplier so font sizes calibrated at 1080p fit the project's actual height."""
+    try:
+        h = float(app.project.get("height") or _CAPTION_BASE_HEIGHT)
+        if h > 0:
+            return h / _CAPTION_BASE_HEIGHT
+    except Exception:
+        pass
+    return 1.0
+
+
+def _apply_style_to_effect(effect_json: dict, params: dict, font_scale: float = 1.0) -> None:
     """Apply a style parameter dict onto a Caption effect JSON dict in-place."""
     if "font_size" in params:
-        _set_caption_kf(effect_json, "font_size", params["font_size"])
+        _set_caption_kf(effect_json, "font_size", params["font_size"] * font_scale)
     if "font_name" in params:
         effect_json["caption_font"] = params["font_name"]
     if "font_alpha" in params:
@@ -3592,7 +3607,8 @@ def style_captions(
         if not style_params:
             return "No style changes specified."
 
-        _apply_style_to_effect(eff, style_params)
+        # Scale font_size to the project's actual resolution (presets calibrated at 1080p)
+        _apply_style_to_effect(eff, style_params, font_scale=_caption_font_scale(app))
         effects[caption_idx] = eff
 
         def _save(c=clip, effs=effects):
@@ -3731,8 +3747,11 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
                 effect_json = _json.loads(effect.Json())
                 # Inject the transcribed SRT text
                 effect_json["caption_text"] = srt_text
-                # Apply a clean default style (subtitle preset)
-                _apply_style_to_effect(effect_json, _CAPTION_PRESETS["subtitle"])
+                # Apply a clean default style scaled to the project resolution
+                _apply_style_to_effect(
+                    effect_json, _CAPTION_PRESETS["subtitle"],
+                    font_scale=_caption_font_scale(app),
+                )
                 effects = list(c.data.get("effects") or [])
                 # Remove any existing Caption effect to avoid duplicates on retry
                 effects = [e for e in effects if e.get("type") != "Caption"]
