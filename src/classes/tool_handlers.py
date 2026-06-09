@@ -3456,6 +3456,18 @@ _CAPTION_PRESETS: dict[str, dict] = {
         "fade_in": 0.04, "fade_out": 0.04,
         "line_spacing": 1.1,
     },
+    # ── karaoke — full phrase visible, active word yellow, solid black bar ───────────
+    "karaoke": {
+        "font_size": 44, "font_name": "Arial Black",
+        "color": (255, 255, 255), "font_alpha": 1.0,
+        "stroke_width": 0.0, "stroke": (0, 0, 0),
+        "background_alpha": 1.0,
+        "background": (0, 0, 0), "background_corner": 0, "background_padding": 18,
+        "top": 0.85, "left": 0.0, "right": 0.0,
+        "fade_in": 0.0, "fade_out": 0.0,
+        "line_spacing": 1.0,
+        "karaoke": True,
+    },
     # ── legacy / standard presets ─────────────────────────────────────────────────────
     "netflix": {
         "font_size": 28, "font_name": "Arial",
@@ -3526,31 +3538,143 @@ _POSITION_MAP = {
 _CAPTION_BASE_HEIGHT = 1080
 
 
-def _secs_to_srt_ts(seconds: float) -> str:
-    """Convert seconds to SRT timestamp string HH:MM:SS,mmm."""
+def _secs_to_los_ts(seconds: float) -> str:
+    """Convert seconds to libopenshot Caption timestamp HH:MM:SS:mmm (colons throughout)."""
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
     ms = int(round((seconds % 1) * 1000))
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    return f"{h:02d}:{m:02d}:{s:02d}:{ms:03d}"
+
+
+def _srt_to_los(srt: str) -> str:
+    """Convert standard SRT to libopenshot Caption format.
+
+    libopenshot Caption does not use block index numbers and expects colons
+    (not commas) before the millisecond component of timestamps.
+
+    Input:  "1\\n00:00:01,000 --> 00:00:03,000\\nHello world\\n"
+    Output: "00:00:01:000 --> 00:00:03:000\\nHello world"
+    """
+    lines_out = []
+    for line in srt.splitlines():
+        if re.match(r"^\s*\d+\s*$", line):
+            continue
+        line = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1:\2", line)
+        lines_out.append(line)
+    return "\n".join(lines_out)
 
 
 def _build_word_by_word_srt(words: list) -> str:
-    """Build an SRT where every word is its own timed segment (word-by-word pop style)."""
-    lines = []
-    for i, w in enumerate(words, 1):
+    """Build a libopenshot Caption SRT where every word is its own timed segment."""
+    segments = []
+    for w in words:
         text = w.get("word", "").strip()
         if not text:
             continue
         start = float(w.get("start", 0.0))
         end = float(w.get("end", start + 0.35))
-        # Ensure minimum on-screen time so very fast words are still readable
         if end - start < 0.18:
             end = start + 0.18
-        lines.append(
-            f"{i}\n{_secs_to_srt_ts(start)} --> {_secs_to_srt_ts(end)}\n{text}\n"
-        )
-    return "\n".join(lines)
+        segments.append(f"{_secs_to_los_ts(start)} --> {_secs_to_los_ts(end)}\n{text}")
+    return "\n\n".join(segments)
+
+
+def _build_karaoke_segments(words: list, words_per_phrase: int = 4) -> list:
+    """Build karaoke caption segments for PIL rendering.
+
+    Groups words into phrases. For each word, one segment shows the full phrase
+    with active word in yellow (#FFE600) and others in white (#FFFFFF).
+
+    Returns list of dicts: {start, end, text, word_colors: [(word, hex), ...]}
+    """
+    if not words:
+        return []
+
+    phrases = [words[i:i + words_per_phrase] for i in range(0, len(words), words_per_phrase)]
+    segments = []
+    for phrase in phrases:
+        phrase_texts = [w.get("word", "").strip() for w in phrase]
+        for wi, word_obj in enumerate(phrase):
+            start = float(word_obj.get("start", 0.0))
+            if wi + 1 < len(phrase):
+                end = float(phrase[wi + 1].get("start", word_obj.get("end", start + 0.3)))
+            else:
+                end = float(word_obj.get("end", start + 0.3))
+            if end - start < 0.18:
+                end = start + 0.18
+            word_colors = [
+                (t, "#FFE600" if j == wi else "#FFFFFF")
+                for j, t in enumerate(phrase_texts)
+            ]
+            phrase_text = " ".join(phrase_texts)
+            segments.append({
+                "start": start,
+                "end": end,
+                "text": phrase_text,
+                "word_colors": word_colors,
+            })
+    return segments
+
+
+def _build_word_segments(words: list) -> list:
+    """Build word-by-word caption segments for PIL rendering."""
+    segments = []
+    for w in words:
+        text = w.get("word", "").strip()
+        if not text:
+            continue
+        start = float(w.get("start", 0.0))
+        end = float(w.get("end", start + 0.35))
+        if end - start < 0.18:
+            end = start + 0.18
+        segments.append({"start": start, "end": end, "text": text, "word_colors": None})
+    return segments
+
+
+def _srt_to_segments(srt: str) -> list:
+    """Parse SRT text into segment dicts for PIL rendering."""
+    segments = []
+    block_pat = re.compile(
+        r"(?:^\d+\s*\n)?"
+        r"(\d{2}:\d{2}:\d{2}[,:]?\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,:]?\d{3})\s*\n"
+        r"([\s\S]+?)(?=\n\n|\Z)",
+        re.MULTILINE,
+    )
+
+    def _ts(s: str) -> float:
+        s = s.replace(",", ":").replace(".", ":")
+        parts = s.split(":")
+        if len(parts) == 4:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2]) + int(parts[3]) / 1000.0
+        return 0.0
+
+    for m in block_pat.finditer(srt.strip()):
+        text = m.group(3).strip()
+        if text:
+            segments.append({
+                "start": _ts(m.group(1)),
+                "end": _ts(m.group(2)),
+                "text": text,
+                "word_colors": None,
+            })
+    return segments
+
+
+# Keep these for backward-compat but they are no longer the primary path:
+def _build_word_by_word_srt(words: list) -> str:
+    """Build a libopenshot Caption SRT where every word is its own timed segment."""
+    segments = []
+    for w in words:
+        text = w.get("word", "").strip()
+        if not text:
+            continue
+        start = float(w.get("start", 0.0))
+        end = float(w.get("end", start + 0.35))
+        if end - start < 0.18:
+            end = start + 0.18
+        segments.append(f"{_secs_to_los_ts(start)} --> {_secs_to_los_ts(end)}\n{text}")
+    return "\n\n".join(segments)
 
 
 def _caption_font_scale(app) -> float:
@@ -3562,6 +3686,305 @@ def _caption_font_scale(app) -> float:
     except Exception:
         pass
     return 1.0
+
+
+# ---------------------------------------------------------------------------
+# PIL-based caption renderer
+# ---------------------------------------------------------------------------
+# libopenshot's built-in Caption effect has no Pango markup support and
+# limited font/style quality. We render captions as transparent RGBA PNGs
+# using Pillow and add them as individual image clips on the captions layer.
+
+_FONT_ALIASES: dict[str, list[str]] = {
+    "arial black": ["Arial Black.ttf"],
+    "arial": ["Arial.ttf", "Arial Regular.ttf"],
+    "impact": ["Impact.ttf"],
+    "georgia": ["Georgia.ttf"],
+    "helvetica neue": ["HelveticaNeue.ttc", "Helvetica Neue.ttc"],
+    "helvetica": ["Helvetica.ttc"],
+    "helvetica neue bold": ["HelveticaNeueBold.ttf", "Helvetica Neue Bold.ttf"],
+}
+_FONT_SEARCH_DIRS = [
+    "/System/Library/Fonts/Supplemental",
+    "/System/Library/Fonts",
+    "/Library/Fonts",
+    os.path.expanduser("~/Library/Fonts"),
+    "/usr/share/fonts/truetype",
+    "/usr/share/fonts",
+    "/usr/local/share/fonts",
+]
+
+
+def _find_system_font(font_name: str) -> str | None:
+    names_to_try = _FONT_ALIASES.get(font_name.lower(), [font_name + ".ttf", font_name])
+    for fname in names_to_try:
+        for d in _FONT_SEARCH_DIRS:
+            p = os.path.join(d, fname)
+            if os.path.exists(p):
+                return p
+    return None
+
+
+def _load_pil_font(font_name: str, size_px: int):
+    """Load a PIL TrueType font, falling back to a scaled default."""
+    try:
+        from PIL import ImageFont
+        path = _find_system_font(font_name)
+        if path:
+            try:
+                return ImageFont.truetype(path, size_px)
+            except Exception:
+                pass
+        try:
+            return ImageFont.truetype(font_name, size_px)
+        except Exception:
+            pass
+        return ImageFont.load_default(size=size_px)
+    except Exception:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+
+
+def _parse_hex_color_str(s: str) -> tuple[int, int, int] | None:
+    s = s.strip().lstrip("#")
+    try:
+        if len(s) == 6:
+            return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        if len(s) == 3:
+            return int(s[0] * 2, 16), int(s[1] * 2, 16), int(s[2] * 2, 16)
+    except ValueError:
+        pass
+    return None
+
+
+def _render_caption_frame(
+    text: str,
+    preset: dict,
+    video_w: int,
+    video_h: int,
+    font_scale: float = 1.0,
+    word_colors: list | None = None,
+) -> "PIL.Image.Image":
+    """Render one caption frame as a transparent RGBA PIL Image.
+
+    word_colors: for karaoke — list of (word_str, "#RRGGBB") in phrase order.
+                 Active word should have its color already set in the list.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (video_w, video_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # Font — preset font_size is calibrated for 1080p; multiply by 1.5 to get px
+    font_px = max(12, int(preset.get("font_size", 28) * 1.5 * font_scale))
+    font = _load_pil_font(preset.get("font_name", "Arial"), font_px)
+
+    fg = preset.get("color", (255, 255, 255))
+    stroke_w = max(0, int(round(preset.get("stroke_width", 0.0) * font_scale)))
+    stroke_c = preset.get("stroke", (0, 0, 0))
+    bg_alpha = int(min(1.0, max(0.0, preset.get("background_alpha", 0.65))) * 255)
+    bg_rgb = preset.get("background", (0, 0, 0))
+    bg_pad = max(0, int(preset.get("background_padding", 8) * font_scale))
+    bg_corner = max(0, int(preset.get("background_corner", 0) * font_scale))
+    top_f = float(preset.get("top", 0.85))
+    left_f = float(preset.get("left", 0.0))
+    right_f = float(preset.get("right", 0.0))
+    full_width = (left_f == 0.0 and right_f == 0.0)
+
+    margin_l = int(left_f * video_w)
+    margin_r = int(right_f * video_w)
+    usable_w = video_w - margin_l - margin_r
+
+    # ---- Measure ----
+    if word_colors:
+        # Total phrase width
+        total_text_w = 0
+        space_w_cache = draw.textbbox((0, 0), " ", font=font, stroke_width=stroke_w)
+        space_px = space_w_cache[2] - space_w_cache[0]
+        word_widths = []
+        for word, _ in word_colors:
+            wb = draw.textbbox((0, 0), word, font=font, stroke_width=stroke_w)
+            ww = wb[2] - wb[0]
+            word_widths.append(ww)
+            total_text_w += ww
+        total_text_w += space_px * max(0, len(word_colors) - 1)
+        text_w = total_text_w
+        text_h = draw.textbbox((0, 0), text or word_colors[0][0], font=font)[3] - \
+                 draw.textbbox((0, 0), text or word_colors[0][0], font=font)[1]
+    else:
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_w)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+
+    # ---- Position ----
+    x = margin_l + max(0, (usable_w - text_w) // 2)
+    y = int(top_f * video_h) - text_h // 2  # center vertically around the fraction
+
+    # Clamp to frame
+    y = max(bg_pad, min(video_h - text_h - bg_pad, y))
+
+    # ---- Background ----
+    if bg_alpha > 0:
+        if full_width:
+            bx0, bx1 = 0, video_w
+        else:
+            bx0 = x - bg_pad - stroke_w
+            bx1 = x + text_w + bg_pad + stroke_w
+        by0 = y - bg_pad - stroke_w
+        by1 = y + text_h + bg_pad + stroke_w
+        fill = (*bg_rgb, bg_alpha)
+        if bg_corner > 0 and not full_width:
+            draw.rounded_rectangle([bx0, by0, bx1, by1], radius=bg_corner, fill=fill)
+        else:
+            draw.rectangle([bx0, by0, bx1, by1], fill=fill)
+
+    # ---- Text ----
+    kw_common = {"font": font}
+    if stroke_w > 0:
+        kw_common["stroke_width"] = stroke_w
+        kw_common["stroke_fill"] = (*stroke_c, 255)
+
+    if word_colors:
+        cx = x
+        for i, (word, hex_color) in enumerate(word_colors):
+            rgb = _parse_hex_color_str(hex_color) or fg
+            draw.text((cx, y), word, fill=(*rgb, 255), **kw_common)
+            cx += word_widths[i]
+            if i < len(word_colors) - 1:
+                cx += space_px
+    else:
+        draw.text((x, y), text, fill=(*fg, 255), **kw_common)
+
+    return img
+
+
+def _get_caption_png_dir(clip_id: str) -> str:
+    d = os.path.join(os.path.expanduser("~/.cache/zenvi/captions"), clip_id)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _remove_old_pil_captions(clip, app) -> None:
+    """Delete any existing PIL-rendered caption clips for a source clip (call on main thread)."""
+    old_ids = list(clip.data.get("caption_clip_ids") or [])
+    if old_ids:
+        from classes.query import Clip as _Clip
+        existing_ids = {c.id for c in _Clip.filter()}
+        for cid in old_ids:
+            if cid in existing_ids:
+                try:
+                    app.updates.delete(["clips", {"id": cid}])
+                except Exception as e:
+                    log.warning("Could not delete old caption clip %s: %s", cid, e)
+        app.updates.update(["clips", {"id": clip.id}], {"caption_clip_ids": []})
+
+
+def _render_segments_to_pngs(
+    segments: list,
+    preset: dict,
+    video_w: int,
+    video_h: int,
+    font_scale: float,
+    png_dir: str,
+) -> list:
+    """Render caption segments to PNG files on the calling (background) thread.
+
+    Returns a list of (png_path, seg_start, seg_dur) tuples for successfully rendered segments.
+    """
+    rendered = []
+    for i, seg in enumerate(segments):
+        seg_start = float(seg.get("start", 0.0))
+        seg_end = float(seg.get("end", seg_start + 0.3))
+        seg_dur = max(0.05, seg_end - seg_start)
+        text = seg.get("text", "")
+        word_colors = seg.get("word_colors")
+
+        if not text and not word_colors:
+            continue
+
+        try:
+            frame_img = _render_caption_frame(
+                text=text,
+                preset=preset,
+                video_w=video_w,
+                video_h=video_h,
+                font_scale=font_scale,
+                word_colors=word_colors,
+            )
+        except Exception as exc:
+            log.warning("PIL caption render failed segment %d: %s", i, exc)
+            continue
+
+        png_path = os.path.join(png_dir, f"cap_{i:05d}.png")
+        try:
+            frame_img.save(png_path, "PNG")
+        except Exception as exc:
+            log.warning("PIL caption save failed: %s", exc)
+            continue
+
+        rendered.append((png_path, seg_start, seg_dur))
+
+    return rendered
+
+
+def _add_pil_caption_clips(
+    clip,
+    rendered_pngs: list,
+    app,
+) -> int:
+    """Add pre-rendered PNG files as image clips to the timeline (must run on main thread).
+
+    rendered_pngs: list of (png_path, seg_start_secs, seg_dur_secs)
+    Returns count of clips added.
+    """
+    if not rendered_pngs:
+        return 0
+
+    import openshot as _os
+    import json as _json
+
+    clip_timeline_pos = float(clip.data.get("position", 0.0))
+    log.info("caption clips: source clip position=%.3f, %d segments", clip_timeline_pos, len(rendered_pngs))
+
+    # Use openshot.Clip(path) to generate a fully-formed clip JSON template with all
+    # required keyframe properties (scale, alpha, location_x/y, rotation, etc.).
+    # Without these, video_widget.py raises KeyError: 'scale' when rendering.
+    first_path = rendered_pngs[0][0]
+    try:
+        template_clip = _os.Clip(first_path)
+        template_json = _json.loads(template_clip.Json())
+        log.info("caption clip template keys: %s", list(template_json.keys())[:8])
+    except Exception as exc:
+        log.error("openshot.Clip() failed for caption PNG — cannot add clips: %s", exc)
+        return 0
+
+    caption_clip_ids = []
+    for png_path, seg_start, seg_dur in rendered_pngs:
+        clip_id = str(uuid_module.uuid4())
+        caption_clip_ids.append(clip_id)
+
+        clip_data = dict(template_json)
+        clip_data["id"] = clip_id
+        clip_data["layer"] = _CAPTION_LAYER_NUMBER
+        clip_data["position"] = round(clip_timeline_pos + seg_start, 6)
+        clip_data["start"] = 0.0
+        clip_data["end"] = round(seg_dur, 6)
+        # Update reader path (keep all other reader fields from the template)
+        reader = dict(clip_data.get("reader") or {})
+        reader["path"] = png_path
+        clip_data["reader"] = reader
+
+        app.updates.insert(["clips"], clip_data)
+
+    log.info("caption clips: inserted %d clips starting at position %.3f", len(caption_clip_ids), clip_timeline_pos)
+
+    # Persist caption clip IDs on the source clip so style_captions can clean them up later
+    app.updates.update(
+        ["clips", {"id": clip.id}],
+        {"caption_clip_ids": caption_clip_ids},
+    )
+
+    return len(caption_clip_ids)
 
 
 def _apply_style_to_effect(effect_json: dict, params: dict, font_scale: float = 1.0) -> None:
@@ -3615,44 +4038,39 @@ def style_captions(
     stroke_color: str = "",
     **kwargs,
 ) -> str:
-    """Apply style changes to the Caption effect on a clip."""
+    """Re-render captions on a clip with new style parameters."""
     try:
         from classes.query import Clip
         app = _get_app()
 
-        # Resolve clip
         all_clips = Clip.filter()
         if clip_id:
             candidates = [c for c in all_clips if c.id == clip_id]
         else:
-            # First clip that already has a Caption effect
-            candidates = [c for c in all_clips
-                          if any(e.get("type") == "Caption" for e in (c.data.get("effects") or []))]
+            # Any clip that has PIL caption clips or legacy Caption effect
+            candidates = [
+                c for c in all_clips
+                if c.data.get("caption_clip_ids") or
+                any(e.get("type") == "Caption" for e in (c.data.get("effects") or []))
+            ]
 
         if not candidates:
-            return ("No clip with captions found. "
-                    "Add captions first with 'add captions to clip'.")
+            return ("No clip with captions found. Add captions first.")
 
         clip = candidates[0]
-        effects = list(clip.data.get("effects") or [])
-        caption_idx = next((i for i, e in enumerate(effects) if e.get("type") == "Caption"), None)
-        if caption_idx is None:
-            return f"Clip {clip.id} has no Caption effect. Add captions first."
 
-        eff = dict(effects[caption_idx])  # shallow copy
-
-        # --- Build the parameter dict to apply ---
-        style_params: dict = {}
-
-        # 1. Start from preset if given
+        # --- Build the merged style params dict ---
         preset_key = preset.strip().lower()
         if preset_key and preset_key in _CAPTION_PRESETS:
-            style_params.update(_CAPTION_PRESETS[preset_key])
+            style_params = dict(_CAPTION_PRESETS[preset_key])
         elif preset_key:
             return (f"Unknown preset '{preset}'. "
                     f"Available: {', '.join(_CAPTION_PRESETS.keys())}")
+        else:
+            # Start from current or default preset as base
+            current_style = clip.data.get("caption_style", "subtitle")
+            style_params = dict(_CAPTION_PRESETS.get(current_style, _CAPTION_PRESETS["subtitle"]))
 
-        # 2. Override with individual params
         if font_size and font_size > 0:
             style_params["font_size"] = float(font_size)
         if font_name:
@@ -3660,7 +4078,7 @@ def style_captions(
         if font_color:
             rgb = _parse_color(font_color)
             if rgb is None:
-                return f"Could not parse color '{font_color}'. Use a color name or '#RRGGBB'."
+                return f"Could not parse color '{font_color}'."
             style_params["color"] = rgb
         if stroke_color:
             rgb = _parse_color(stroke_color)
@@ -3675,32 +4093,83 @@ def style_captions(
             pos_key = position.strip().lower()
             top_val = _POSITION_MAP.get(pos_key)
             if top_val is None:
-                # Try numeric
                 try:
                     top_val = float(pos_key)
                 except ValueError:
-                    return (f"Unknown position '{position}'. "
-                            f"Use: top, center, bottom, upper, lower.")
+                    return f"Unknown position '{position}'. Use: top, center, bottom."
             style_params["top"] = top_val
 
-        if not style_params:
-            return "No style changes specified."
+        # Load transcription data from sidecar file
+        sidecar_dir = _get_caption_png_dir(clip.id)
+        sidecar_path = os.path.join(sidecar_dir, "captions_data.json")
+        raw_words = []
+        srt = ""
+        try:
+            if os.path.exists(sidecar_path):
+                import json as _jsc
+                with open(sidecar_path) as _sf:
+                    _sd = _jsc.load(_sf)
+                raw_words = _sd.get("words", [])
+                srt = _sd.get("srt", "")
+        except Exception as _e:
+            log.warning("Could not read captions sidecar: %s", _e)
 
-        # Scale font_size to the project's actual resolution (presets calibrated at 1080p)
-        _apply_style_to_effect(eff, style_params, font_scale=_caption_font_scale(app))
-        effects[caption_idx] = eff
+        # Also try clip.data as fallback (backward compat with old clips)
+        if not raw_words:
+            raw_words = clip.data.get("caption_words") or []
+        if not srt:
+            srt = clip.data.get("caption_srt") or ""
 
-        def _save(c=clip, effs=effects):
-            c.data["effects"] = effs
-            c.save()
+        use_karaoke = bool(style_params.get("karaoke") or preset_key == "karaoke")
+        use_word_by_word = bool(style_params.get("word_by_word") or preset_key == "word")
 
-        _run_on_main_thread(_save)
+        if use_karaoke and raw_words:
+            segments = _build_karaoke_segments(raw_words)
+        elif use_word_by_word and raw_words:
+            segments = _build_word_segments(raw_words)
+        elif srt:
+            segments = _srt_to_segments(srt)
+        elif raw_words:
+            segments = _build_word_segments(raw_words)
+        else:
+            return "No transcription data found. Re-add captions first ('add captions to my video')."
+
+        # Update sidecar with new style
+        try:
+            if os.path.exists(sidecar_path):
+                import json as _jsc2
+                with open(sidecar_path) as _sf2:
+                    _sdata = _jsc2.load(_sf2)
+                _sdata["style"] = preset_key or _sdata.get("style", "subtitle")
+                with open(sidecar_path, "w") as _sf2:
+                    _jsc2.dump(_sdata, _sf2)
+        except Exception:
+            pass
+
+        # Render PNGs on background thread
+        font_scale = _caption_font_scale(app)
+        video_w = int(app.project.get("width") or 1920)
+        video_h = int(app.project.get("height") or 1080)
+        rendered_pngs = _render_segments_to_pngs(
+            segments, style_params, video_w, video_h, font_scale, sidecar_dir,
+        )
+
+        def _do_restyle(c=clip, pngs=rendered_pngs):
+            _ensure_captions_layer(app)
+            _remove_old_pil_captions(c, app)
+            effects = [e for e in (c.data.get("effects") or []) if e.get("type") != "Caption"]
+            if effects != list(c.data.get("effects") or []):
+                app.updates.update(["clips", {"id": c.id}], {"effects": effects})
+            return _add_pil_caption_clips(c, pngs, app)
+
+        count = _run_on_main_thread(_do_restyle)
 
         applied = preset_key or ", ".join(
-            f"{k}={v}" for k, v in style_params.items()
-            if k not in ("color", "stroke", "background")
+            k for k in ["font_size", "font_color", "font_name", "bg_opacity", "position",
+                        "stroke_width", "stroke_color"]
+            if kwargs.get(k) or locals().get(k)
         )
-        return f"Caption style updated ({applied}). Refresh the preview to see the changes."
+        return f"Re-rendered {count} captions with updated style ({applied or 'custom'})."
 
     except Exception as e:
         log.error("style_captions: %s", e, exc_info=True)
@@ -3728,25 +4197,26 @@ def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str
     Steps:
     1. Find the target clip(s) and extract only the used portion of audio via FFmpeg.
     2. Send audio to backend Whisper transcription endpoint.
-    3. Add a Caption effect (libopenshot built-in) to the clip with the SRT text.
-       Captions are clip-relative — timestamps start at 0 = clip start.
-    4. Ensure the dedicated Captions layer exists for visual organisation.
-    5. Return a summary so the AI chat can confirm to the user.
+    3. Render each caption segment as a transparent PNG using Pillow.
+    4. Add the PNGs as image clips on the dedicated Captions layer.
+    5. Store word/SRT data on the clip for future re-styling.
     """
     try:
         from classes.query import Clip, File
         from classes.api_client import get_backend_client
         app = _get_app()
 
-        # Resolve which clips to caption
         if clip_id:
             clips = [c for c in Clip.filter() if c.id == clip_id]
             if not clips:
                 return f"Error: Clip '{clip_id}' not found on the timeline."
         else:
             clips = Clip.filter()
-            # Only video clips with a real source file
-            clips = [c for c in clips if c.data.get("reader", {}).get("has_video")]
+            clips = [
+                c for c in clips
+                if c.data.get("reader", {}).get("has_video")
+                and c.data.get("layer") != _CAPTION_LAYER_NUMBER
+            ]
 
         if not clips:
             return "No video clips found on the timeline. Add video clips first."
@@ -3761,8 +4231,6 @@ def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str
                 results.append(f"Skipped clip {clip.id}: source file not accessible.")
                 continue
 
-            # Extract only the clip-used portion of audio so Whisper timestamps
-            # are relative to the clip start (what Caption effect expects).
             clip_start = float(clip.data.get("start", 0.0) or 0.0)
             clip_end = float(clip.data.get("end", 0.0) or 0.0)
             clip_duration = clip_end - clip_start
@@ -3804,69 +4272,71 @@ def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str
                 results.append(f"Clip {clip.id}: no speech detected.")
                 continue
 
-            # Resolve which preset to use; "word" preset implies word-by-word SRT
             requested_style = style.strip().lower() if style else ""
             preset_params = _CAPTION_PRESETS.get(requested_style, _CAPTION_PRESETS["subtitle"])
+            use_karaoke = bool(preset_params.get("karaoke") or requested_style == "karaoke")
             use_word_by_word = bool(preset_params.get("word_by_word") or requested_style == "word")
 
-            # Build the SRT that will be embedded in the Caption effect
-            if use_word_by_word and raw_words:
-                srt_for_effect = _build_word_by_word_srt(raw_words)
-                caption_count = word_count  # one entry per word
+            if use_karaoke and raw_words:
+                segments = _build_karaoke_segments(raw_words)
+                caption_count = word_count
+            elif use_word_by_word and raw_words:
+                segments = _build_word_segments(raw_words)
+                caption_count = word_count
             else:
-                srt_for_effect = srt
-                import re as _re
-                caption_count = len(_re.findall(r"^\d+\s*$", srt.strip(), _re.MULTILINE))
+                segments = _srt_to_segments(srt)
+                caption_count = len(segments)
 
-            clip_id_local = clip.id
+            # Save transcription data to sidecar JSON so style_captions can re-render
+            # without storing large arrays on the clip object itself.
+            sidecar_dir = _get_caption_png_dir(clip.id)
+            sidecar_path = os.path.join(sidecar_dir, "captions_data.json")
+            try:
+                import json as _json_tmp
+                with open(sidecar_path, "w") as _sf:
+                    _json_tmp.dump({
+                        "words": [
+                            {"word": w.get("word", ""), "start": w.get("start", 0.0), "end": w.get("end", 0.0)}
+                            for w in raw_words
+                        ],
+                        "srt": srt,
+                        "language": detected_lang,
+                        "style": requested_style or "subtitle",
+                    }, _sf)
+            except Exception as _e:
+                log.warning("Could not write captions sidecar: %s", _e)
 
-            def _add_caption_effect(
-                cid=clip_id_local,
-                srt_text=srt_for_effect,
-                chosen_preset=preset_params,
-            ):
-                import openshot as _openshot
-                import json as _json
+            # Render PNGs on the background thread (slow PIL work, keeps Qt responsive)
+            font_scale = _caption_font_scale(app)
+            video_w = int(app.project.get("width") or 1920)
+            video_h = int(app.project.get("height") or 1080)
+            rendered_pngs = _render_segments_to_pngs(
+                segments, preset_params, video_w, video_h, font_scale, sidecar_dir,
+            )
+
+            def _do_add(c=clip, pngs=rendered_pngs):
                 _ensure_captions_layer(app)
-                # Re-fetch the clip to get its freshest data
-                from classes.query import Clip as _Clip
-                target_clips = [c for c in _Clip.filter() if c.id == cid]
-                if not target_clips:
-                    return
-                c = target_clips[0]
-                # Create Caption effect via libopenshot (correct keyframe format)
-                effect = _openshot.EffectInfo().CreateEffect("Caption")
-                effect.Id(app.project.generate_id())
-                effect_json = _json.loads(effect.Json())
-                # Inject the transcribed SRT text
-                effect_json["caption_text"] = srt_text
-                # Apply chosen style scaled to the project resolution
-                _apply_style_to_effect(
-                    effect_json, chosen_preset,
-                    font_scale=_caption_font_scale(app),
-                )
-                effects = list(c.data.get("effects") or [])
-                # Remove any existing Caption effect to avoid duplicates on retry
-                effects = [e for e in effects if e.get("type") != "Caption"]
-                effects.append(effect_json)
-                c.data["effects"] = effects
-                c.save()
-                # Auto-select the clip so Properties panel shows its effects
-                try:
-                    win = app.window
-                    win.SelectionAdded.emit(cid, "clip", True)
-                except Exception:
-                    pass
+                _remove_old_pil_captions(c, app)
+                # Strip any legacy Caption effect
+                effects = [e for e in (c.data.get("effects") or []) if e.get("type") != "Caption"]
+                if effects != list(c.data.get("effects") or []):
+                    app.updates.update(["clips", {"id": c.id}], {"effects": effects})
+                return _add_pil_caption_clips(c, pngs, app)
 
-            _run_on_main_thread(_add_caption_effect)
+            caption_count = _run_on_main_thread(_do_add)
 
             style_label = requested_style or "subtitle"
-            mode_note = " (word-by-word)" if use_word_by_word else ""
+            if use_karaoke:
+                mode_note = " (karaoke)"
+            elif use_word_by_word:
+                mode_note = " (word-by-word)"
+            else:
+                mode_note = ""
             results.append(
                 f"Added {caption_count} captions{mode_note} in '{style_label}' style "
                 f"(language: {detected_lang or 'auto'}, {word_count} words). "
-                f"Styles: word, fire, clean, neon, block, netflix, cinematic, bold, minimal, subtitle. "
-                f"Or: 'make captions yellow', 'bigger font', 'move to top', etc."
+                f"Styles: karaoke, word, fire, clean, neon, block, netflix, cinematic, bold, minimal, subtitle. "
+                f"Or: 'style captions fire', 'karaoke style', 'make captions yellow', etc."
             )
 
         return "\n".join(results) if results else "No clips were captioned."
