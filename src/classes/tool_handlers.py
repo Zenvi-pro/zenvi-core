@@ -3340,17 +3340,18 @@ def _ensure_captions_layer(app):
 
 
 def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
-    """Transcribe the audio of a clip (or all clips if no clip_id) and add a caption track.
+    """Transcribe the audio of a clip (or all clips if no clip_id) and add captions.
 
     Steps:
-    1. Find the target clip(s) and extract audio via FFmpeg.
+    1. Find the target clip(s) and extract only the used portion of audio via FFmpeg.
     2. Send audio to backend Whisper transcription endpoint.
-    3. Create a caption_track entry in the project with the returned SRT + word timestamps.
-    4. Ensure the dedicated Captions layer exists in the timeline.
+    3. Add a Caption effect (libopenshot built-in) to the clip with the SRT text.
+       Captions are clip-relative — timestamps start at 0 = clip start.
+    4. Ensure the dedicated Captions layer exists for visual organisation.
     5. Return a summary so the AI chat can confirm to the user.
     """
     try:
-        from classes.query import Clip, File, CaptionTrack
+        from classes.query import Clip, File
         from classes.api_client import get_backend_client
         app = _get_app()
 
@@ -3377,13 +3378,24 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
                 results.append(f"Skipped clip {clip.id}: source file not accessible.")
                 continue
 
-            # Extract audio to a temp WAV file
+            # Extract only the clip-used portion of audio so Whisper timestamps
+            # are relative to the clip start (what Caption effect expects).
+            clip_start = float(clip.data.get("start", 0.0) or 0.0)
+            clip_end = float(clip.data.get("end", 0.0) or 0.0)
+            clip_duration = clip_end - clip_start
+
             wav_path = tempfile.mktemp(suffix=".wav")
-            ok, err = _ffmpeg_run([
-                "ffmpeg", "-y", "-i", source_path,
+            ffmpeg_cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(clip_start),
+                "-i", source_path,
                 "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-                wav_path,
-            ])
+            ]
+            if clip_duration > 0:
+                ffmpeg_cmd += ["-t", str(clip_duration)]
+            ffmpeg_cmd.append(wav_path)
+
+            ok, err = _ffmpeg_run(ffmpeg_cmd)
             if not ok:
                 results.append(f"Skipped clip {clip.id}: audio extraction failed — {err}")
                 continue
@@ -3401,33 +3413,48 @@ def add_captions_to_timeline(clip_id="", language="", **kwargs) -> str:
                 continue
 
             srt = resp.get("srt", "")
-            words = resp.get("words", [])
             detected_lang = resp.get("language", "")
+            word_count = len(resp.get("words", []))
 
             if not srt.strip():
                 results.append(f"Clip {clip.id}: no speech detected.")
                 continue
 
-            # Build caption objects from SRT segments
-            captions = _parse_srt_to_captions(srt, words)
+            # Count SRT blocks for the summary
+            import re as _re
+            caption_count = len(_re.findall(r"^\d+\s*$", srt.strip(), _re.MULTILINE))
 
-            track_id = str(uuid_module.uuid4())
-            track_data = {
-                "id": track_id,
-                "label": "Captions",
-                "language": detected_lang or language or "en",
-                "captions": captions,
-            }
+            clip_id_local = clip.id
+            srt_for_effect = srt
 
-            def _insert_track(td=track_data):
+            def _add_caption_effect(cid=clip_id_local, srt_text=srt_for_effect):
+                import openshot as _openshot
+                import json as _json
                 _ensure_captions_layer(app)
-                app.updates.insert(["caption_tracks"], td)
+                # Re-fetch the clip to get its freshest data
+                from classes.query import Clip as _Clip
+                target_clips = [c for c in _Clip.filter() if c.id == cid]
+                if not target_clips:
+                    return
+                c = target_clips[0]
+                # Create Caption effect via libopenshot (correct keyframe format)
+                effect = _openshot.EffectInfo().CreateEffect("Caption")
+                effect.Id(app.project.generate_id())
+                effect_json = _json.loads(effect.Json())
+                # Inject the transcribed SRT text
+                effect_json["caption_text"] = srt_text
+                effects = list(c.data.get("effects") or [])
+                # Remove any existing Caption effect to avoid duplicates on retry
+                effects = [e for e in effects if e.get("type") != "Caption"]
+                effects.append(effect_json)
+                c.data["effects"] = effects
+                c.save()
 
-            _run_on_main_thread(_insert_track)
+            _run_on_main_thread(_add_caption_effect)
 
             results.append(
-                f"Added {len(captions)} captions to a Caption track "
-                f"(language: {detected_lang or 'auto'}, {len(words)} words with timestamps)."
+                f"Added {caption_count} captions to clip (language: {detected_lang or 'auto'}, "
+                f"{word_count} words with timestamps). Captions will now display on the video."
             )
 
         return "\n".join(results) if results else "No clips were captioned."
