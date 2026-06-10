@@ -8,6 +8,14 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
+# Load .env if present (values can still be overridden by the caller's environment)
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.env"
+  set +a
+fi
+
 if [[ "$(uname)" == "Darwin" ]]; then
   # macOS native dev flow.
   # libopenshot has no Homebrew bottle, and its compile-time Qt collides with
