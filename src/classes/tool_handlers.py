@@ -3321,7 +3321,38 @@ def build_editor_snapshot_for_chat(max_chars: int = 3500) -> str:
         return ""
 
 
-_CAPTION_LAYER_NUMBER = 9000000  # Sits below all default layers (1M-5M), dedicated to captions
+_CAPTIONS_LAYER_LABEL = "Captions"
+
+
+def _get_captions_layer_number(app) -> int:
+    """Return the layer number used for captions, creating the layer if needed.
+
+    Rather than a hardcoded number, we find the highest existing layer and go
+    one step above it (+ 1,000,000).  This works regardless of how many tracks
+    the user has or what numbering scheme the OS / OpenShot version uses.
+    """
+    layers = app.project.get("layers") or []
+
+    # Return existing Captions layer number if already present
+    for layer in layers:
+        if layer.get("label") == _CAPTIONS_LAYER_LABEL:
+            return int(layer["number"])
+
+    # Pick a number above every existing layer
+    existing_numbers = [int(l.get("number", 0)) for l in layers if l.get("number")]
+    base = max(existing_numbers) if existing_numbers else 1_000_000
+    new_number = base + 1_000_000
+
+    layer_data = {
+        "id": str(uuid_module.uuid4()),
+        "label": _CAPTIONS_LAYER_LABEL,
+        "number": new_number,
+        "y": 0,
+        "lock": False,
+    }
+    app.updates.insert(["layers"], layer_data)
+    log.info("Created Captions layer at number %d", new_number)
+    return new_number
 
 # ---------------------------------------------------------------------------
 # Caption style helpers
@@ -3958,6 +3989,8 @@ def _add_pil_caption_clips(
         log.error("openshot.Clip() failed for caption PNG — cannot add clips: %s", exc)
         return 0
 
+    caption_layer_num = _get_captions_layer_number(app)
+
     caption_clip_ids = []
     for png_path, seg_start, seg_dur in rendered_pngs:
         clip_id = str(uuid_module.uuid4())
@@ -3965,7 +3998,7 @@ def _add_pil_caption_clips(
 
         clip_data = dict(template_json)
         clip_data["id"] = clip_id
-        clip_data["layer"] = _CAPTION_LAYER_NUMBER
+        clip_data["layer"] = caption_layer_num
         clip_data["position"] = round(clip_timeline_pos + seg_start, 6)
         clip_data["start"] = 0.0
         clip_data["end"] = round(seg_dur, 6)
@@ -4176,19 +4209,9 @@ def style_captions(
         return f"Error: {e}"
 
 
-def _ensure_captions_layer(app):
-    """Create the reserved Captions timeline layer if it doesn't exist yet."""
-    layers = app.project.get("layers") or []
-    if any(l.get("number") == _CAPTION_LAYER_NUMBER for l in layers):
-        return  # Already exists
-    layer_data = {
-        "id": str(uuid_module.uuid4()),
-        "label": "Captions",
-        "number": _CAPTION_LAYER_NUMBER,
-        "y": 0,
-        "lock": False,
-    }
-    app.updates.insert(["layers"], layer_data)
+def _ensure_captions_layer(app) -> int:
+    """Ensure the Captions layer exists and return its layer number."""
+    return _get_captions_layer_number(app)
 
 
 def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str:
@@ -4211,11 +4234,16 @@ def add_captions_to_timeline(clip_id="", language="", style="", **kwargs) -> str
             if not clips:
                 return f"Error: Clip '{clip_id}' not found on the timeline."
         else:
-            clips = Clip.filter()
+            # Find the Captions layer number (if it exists) so we can exclude those PNG clips
+            _caption_layers = {
+                int(l.get("number", 0))
+                for l in (app.project.get("layers") or [])
+                if l.get("label") == _CAPTIONS_LAYER_LABEL
+            }
             clips = [
-                c for c in clips
+                c for c in Clip.filter()
                 if c.data.get("reader", {}).get("has_video")
-                and c.data.get("layer") != _CAPTION_LAYER_NUMBER
+                and int(c.data.get("layer", 0)) not in _caption_layers
             ]
 
         if not clips:
