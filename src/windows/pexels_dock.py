@@ -10,9 +10,9 @@ from typing import List, Dict, Any
 
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool,
-    pyqtSlot, QObject,
+    pyqtSlot, QObject, QMimeData, QUrl,
 )
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen, QBrush
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen, QBrush, QDrag
 from PyQt5.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
@@ -55,15 +55,13 @@ class _DownloadWorker(QObject):
 
     @pyqtSlot()
     def run(self):
-        try:
-            from classes.api_client import get_backend_client
-            result = get_backend_client().pexels_download(
-                self._video_id, self._link, self._filename
-            )
-            local_path = result.get("local_path", "")
-            error = result.get("error", "")
-        except Exception as exc:
-            local_path, error = "", str(exc)
+        # Download directly on the user's machine. The Pexels MP4 link is a
+        # public CDN URL, so we avoid the backend (which would save the file on
+        # the remote server, leaving the desktop with an unreadable path).
+        from classes.stock_media import download_stock_file
+        local_path, error = download_stock_file(
+            self._link, "zenvi_pexels", self._filename, "mp4"
+        )
         self.finished.emit(self._video_id, local_path, error)
 
 
@@ -112,6 +110,7 @@ class _VideoCard(QFrame):
         self._video = video
         self._thumb: QPixmap | None = None
         self._downloading = False
+        self._press_pos = None
 
         self.setFixedSize(CARD_W, CARD_H)
         self.setFrameShape(QFrame.NoFrame)
@@ -226,8 +225,60 @@ class _VideoCard(QFrame):
     def leaveEvent(self, event):
         self.update()
 
+    def _resolve_source(self):
+        """Return (url, filename_stem) for the best downloadable MP4, or (None, None)."""
+        files = self._video.get("video_files", [])
+        mp4_files = [f for f in files if "mp4" in f.get("file_type", "").lower()]
+        hd_files = [f for f in mp4_files if f.get("quality") == "hd"]
+        chosen = hd_files[0] if hd_files else (mp4_files[0] if mp4_files else None)
+        if not chosen:
+            return None, None
+        return chosen.get("link", ""), f"pexels_{self._video.get('id', 0)}"
+
+    def _start_drag(self):
+        """Download the clip locally and start a drag carrying its file URL.
+
+        The timeline accepts OS file-URL drops (imports + places a clip), so a
+        local file path is all the drop target needs.
+        """
+        url, filename = self._resolve_source()
+        if not url:
+            self.set_error("No downloadable MP4 found")
+            return
+        from classes.stock_media import download_stock_file
+        self.set_downloading(True)
+        QApplication.setOverrideCursor(Qt.BusyCursor)
+        try:
+            local_path, error = download_stock_file(url, "zenvi_pexels", filename, "mp4")
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.set_downloading(False)
+        if error or not local_path:
+            self.set_error(error or "Download failed")
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(local_path)])
+        drag.setMimeData(mime)
+        if self._thumb:
+            drag.setPixmap(self._thumb.scaled(96, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        drag.exec_(Qt.CopyAction)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and not self._downloading:
+            self._press_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton) and not self._downloading \
+                and self._press_pos is not None \
+                and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance():
+            self._press_pos = None
+            self._start_drag()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_pos is not None \
+                and not self._downloading:
+            self._press_pos = None
             self.clicked.emit(self._video)
 
 

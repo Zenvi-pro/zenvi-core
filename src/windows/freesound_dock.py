@@ -10,9 +10,9 @@ from typing import Dict, Any
 
 from PyQt5.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool,
-    pyqtSlot, QObject,
+    pyqtSlot, QObject, QMimeData, QUrl,
 )
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen
+from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen, QDrag
 from PyQt5.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
@@ -55,15 +55,13 @@ class _DownloadWorker(QObject):
 
     @pyqtSlot()
     def run(self):
-        try:
-            from classes.api_client import get_backend_client
-            result = get_backend_client().freesound_download(
-                self._sound_id, self._preview_url, self._filename
-            )
-            local_path = result.get("local_path", "")
-            error = result.get("error", "")
-        except Exception as exc:
-            local_path, error = "", str(exc)
+        # Download directly on the user's machine. The Freesound HQ MP3 preview
+        # is a public CDN URL, so we avoid the backend (which would save the file
+        # on the remote server, leaving the desktop with an unreadable path).
+        from classes.stock_media import download_stock_file
+        local_path, error = download_stock_file(
+            self._preview_url, "zenvi_freesound", self._filename, "mp3"
+        )
         self.finished.emit(self._sound_id, local_path, error)
 
 
@@ -112,6 +110,7 @@ class _SoundCard(QFrame):
         self._sound = sound
         self._waveform: QPixmap | None = None
         self._downloading = False
+        self._press_pos = None
 
         self.setFixedSize(CARD_W, CARD_H)
         self.setFrameShape(QFrame.NoFrame)
@@ -228,8 +227,61 @@ class _SoundCard(QFrame):
     def leaveEvent(self, event):
         self.update()
 
+    def _resolve_source(self):
+        """Return (url, filename_stem) for the HQ MP3 preview, or (None, None)."""
+        preview_url = (self._sound.get("previews") or {}).get("hq_mp3", "")
+        if not preview_url:
+            return None, None
+        import re
+        sid = self._sound.get("id", 0)
+        raw_name = self._sound.get("name", "") or f"freesound_{sid}"
+        safe_name = re.sub(r"[^\w\-]", "_", raw_name)[:60]
+        return preview_url, f"freesound_{sid}_{safe_name}"
+
+    def _start_drag(self):
+        """Download the preview locally and start a drag carrying its file URL.
+
+        The timeline accepts OS file-URL drops (imports + places a clip), so a
+        local file path is all the drop target needs.
+        """
+        url, filename = self._resolve_source()
+        if not url:
+            self.set_error("No preview URL available")
+            return
+        from classes.stock_media import download_stock_file
+        self.set_downloading(True)
+        QApplication.setOverrideCursor(Qt.BusyCursor)
+        try:
+            local_path, error = download_stock_file(url, "zenvi_freesound", filename, "mp3")
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.set_downloading(False)
+        if error or not local_path:
+            self.set_error(error or "Download failed")
+            return
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(local_path)])
+        drag.setMimeData(mime)
+        if self._waveform:
+            drag.setPixmap(self._waveform.scaled(120, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        drag.exec_(Qt.CopyAction)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and not self._downloading:
+            self._press_pos = event.pos()
+
+    def mouseMoveEvent(self, event):
+        if (event.buttons() & Qt.LeftButton) and not self._downloading \
+                and self._press_pos is not None \
+                and (event.pos() - self._press_pos).manhattanLength() >= QApplication.startDragDistance():
+            self._press_pos = None
+            self._start_drag()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_pos is not None \
+                and not self._downloading:
+            self._press_pos = None
             self.clicked.emit(self._sound)
 
 
