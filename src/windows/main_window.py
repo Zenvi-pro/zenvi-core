@@ -2484,6 +2484,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.dockTransitions,
             self.dockEffects,
             self.dockEmojis,
+            self.dockCaptionEditor,
             self.dockVideo,
             self.dockAIChat,
             ], Qt.TopDockWidgetArea)
@@ -2507,6 +2508,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             "AAAA/wAAAAD9AAAAAwAAAAAAAAEnAAAC3/wCAAAAA/wAAAJeAAAApwAAAAAA////+gAAAAACAAAAAfsAAAAYAGQAbwBjAGsASwBlAHkAZgByAGEAbQBlAAAAAAD/////AAAAAAAAAAD7AAAAHABkAG8AYwBrAFAAcgBvAHAAZQByAHQAaQBlAHMAAAAAJwAAAt8AAAChAP////sAAAAYAGQAbwBjAGsAVAB1AHQAbwByAGkAYQBsAgAABUQAAAF6AAABYAAAANwAAAABAAABHAAAAUD8AgAAAAH7AAAAGABkAG8AYwBrAEsAZQB5AGYAcgBhAG0AZQEAAAFYAAAAFQAAAAAAAAAAAAAAAgAABEYAAALC/AEAAAAC/AAAAAAAAARGAAAA+gD////8AgAAAAL8AAAAPQAAAa4AAACvAP////wBAAAAAvwAAAAAAAABwQAAAJcA////+gAAAAACAAAABPsAAAASAGQAbwBjAGsARgBpAGwAZQBzAQAAAAD/////AAAAkgD////7AAAAHgBkAG8AYwBrAFQAcgBhAG4AcwBpAHQAaQBvAG4AcwEAAAAA/////wAAAJIA////+wAAABYAZABvAGMAawBFAGYAZgBlAGMAdABzAQAAAAD/////AAAAkgD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAAD/////AAAAkgD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAHHAAACfwAAAEcA////+wAAABgAZABvAGMAawBUAGkAbQBlAGwAaQBuAGUBAAAB8QAAAQ4AAACWAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQB0AG8AcgAAAANtAAAA2QAAAFgA////AAAERgAAAAEAAAABAAAAAgAAAAEAAAAC/AAAAAEAAAACAAAAAQAAAA4AdABvAG8AbABCAGEAcgEAAAAA/////wAAAAAAAAAA"
         ])
         self.restoreState(qt_types.str_to_bytes(simple_state))
+
+        # Tabify caption panel into the left nav group after restoreState
+        # (restoreState overrides programmatic tabify, so we do it after)
+        self.tabifyDockWidget(self.dockEmojis, self.dockCaptionEditor)
+        self.dockCaptionEditor.show()  # show as background tab (not raised)
+
         QCoreApplication.processEvents()
 
     def actionAdvanced_View_trigger(self):
@@ -3175,19 +3182,22 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.timelineToolbar = QToolBar("Timeline Toolbar", self)
         self.timelineToolbar.setObjectName("timelineToolbar")
 
-        # Add Video Preview toolbar
+        # Caption toolbar (kept for legacy actionInsertTimestamp wiring)
         self.captionToolbar = QToolBar(_("Caption Toolbar"))
+        self.captionToolbar.addAction(self.actionInsertTimestamp)
+        self.captionToolbar.setVisible(False)  # hidden — legacy only
 
-        # Add Caption text editor widget
+        # Caption text editor (kept so existing caption_editor_load/save signals work)
         self.captionTextEdit = QTextEdit()
         self.captionTextEdit.setReadOnly(True)
+        self.captionTextEdit.setVisible(False)  # hidden — PIL panel replaces this
 
-        # Playback controls (centered)
-        self.captionToolbar.addAction(self.actionInsertTimestamp)
-        self.tabCaptions.layout().addWidget(self.captionToolbar)
-        self.tabCaptions.layout().addWidget(self.captionTextEdit)
+        # PIL caption control panel
+        from windows.caption_panel import CaptionPanel
+        self.captionPanel = CaptionPanel()
+        self.tabCaptions.layout().addWidget(self.captionPanel)
 
-        # Hook up caption editor signal
+        # Legacy caption editor signals (still wired so nothing crashes)
         self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
         self.caption_save_timer = QTimer(self)
         self.caption_save_timer.setInterval(1000)
@@ -3393,6 +3403,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.restoreGeometry(self.saved_geometry)
         if self.saved_state:
             self._restore_state_and_timeline()
+        # Ensure the Caption panel is tabified in the left nav group.
+        # Saved state may predate this panel being in the left group.
+        try:
+            self.tabifyDockWidget(self.dockEmojis, self.dockCaptionEditor)
+            self.dockCaptionEditor.show()  # show as a background tab (not raised)
+        except Exception:
+            pass
 
     def _restore_state_and_timeline(self):
         """Restore saved dock state and then apply timeline height."""
@@ -3928,7 +3945,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
             elif theme and theme.name == ThemeName.COSMIC.value:
                 # handle COSMIC theme dock widgets
-                _nav_docks = {"dockFiles", "dockTransitions", "dockEffects", "dockEmojis"}
+                _nav_docks = {"dockFiles", "dockTransitions", "dockEffects", "dockEmojis", "dockCaptionEditor"}
                 if dock_widget.isFloating():
                     # Use standard system title bar for floating docks
                     dock_widget.setTitleBarWidget(None)

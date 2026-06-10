@@ -1412,6 +1412,39 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         HideWaveform.triggered.connect(partial(self.Hide_Waveform_Triggered, clip_ids))
         menu.addMenu(Waveform_Menu)
 
+        # Captions submenu
+        menu.addSeparator()
+        Captions_Menu = StyledContextMenu(title=_("Captions"), parent=self)
+
+        Add_Captions = Captions_Menu.addAction(_("Add Captions"))
+        Add_Captions.triggered.connect(partial(self._captions_add_triggered, clip_id))
+
+        Style_Menu = StyledContextMenu(title=_("Change Style"), parent=self)
+        _CAPTION_STYLE_LABELS = [
+            ("karaoke",   "Karaoke"),
+            ("word",      "Word (TikTok)"),
+            ("fire",      "Fire"),
+            ("clean",     "Clean"),
+            ("neon",      "Neon"),
+            ("block",     "Block"),
+            ("netflix",   "Netflix"),
+            ("tiktok",    "TikTok"),
+            ("cinematic", "Cinematic"),
+            ("bold",      "Bold"),
+            ("minimal",   "Minimal"),
+            ("subtitle",  "Subtitle"),
+        ]
+        for key, label in _CAPTION_STYLE_LABELS:
+            act = Style_Menu.addAction(_(label))
+            act.triggered.connect(partial(self._captions_restyle_triggered, clip_id, key))
+        Captions_Menu.addMenu(Style_Menu)
+
+        Captions_Menu.addSeparator()
+        Remove_Captions = Captions_Menu.addAction(_("Remove Captions"))
+        Remove_Captions.triggered.connect(partial(self._captions_remove_triggered, clip_id))
+
+        menu.addMenu(Captions_Menu)
+
         # Properties
         menu.addAction(self.window.actionProperties)
 
@@ -1422,6 +1455,34 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
+
+    def _captions_add_triggered(self, clip_id):
+        import threading
+        from classes.tool_handlers import add_captions_to_timeline
+        threading.Thread(
+            target=add_captions_to_timeline,
+            kwargs={"clip_id": clip_id, "style": "karaoke"},
+            daemon=True,
+        ).start()
+
+    def _captions_restyle_triggered(self, clip_id, preset):
+        import threading
+        from classes.tool_handlers import style_captions
+        threading.Thread(
+            target=style_captions,
+            kwargs={"clip_id": clip_id, "preset": preset},
+            daemon=True,
+        ).start()
+
+    def _captions_remove_triggered(self, clip_id):
+        try:
+            from classes.query import Clip as _Clip
+            from classes.tool_handlers import _remove_old_pil_captions
+            clip = _Clip.get(id=clip_id)
+            if clip:
+                _remove_old_pil_captions(clip, get_app())
+        except Exception as exc:
+            log.warning("Remove captions failed: %s", exc)
 
     def Transform_Triggered(self, action, clip_ids):
         log.debug("Transform_Triggered")
