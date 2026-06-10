@@ -3058,14 +3058,43 @@ def analyze_clip_visual_content(clip_id=None, **kwargs) -> str:
 # Stock media / retag / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
-def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
-    """Import a downloaded stock file into Project Files."""
+def add_stock_media_to_project(local_path: str = "", url: str = "",
+                               media_kind: str = "", filename: str = "",
+                               **kwargs) -> str:
+    """Import a stock file into Project Files.
+
+    Accepts either a ``local_path`` to a file already on this machine, or a
+    public ``url`` (Pexels MP4 link / Freesound HQ MP3 preview) which is
+    downloaded here first. The backend runs remotely, so a path it produced is
+    not readable on the desktop — downloading from the URL on this machine is
+    what makes the file importable. ``media_kind`` ("video"/"audio") picks the
+    download folder/extension; when omitted it is inferred from the URL.
+    """
     try:
-        if not local_path:
-            return "Error: local_path is required."
         import os
-        if not os.path.isfile(local_path):
-            return f"Error: File not found: {local_path}"
+        # When we don't already have a readable local file, download from the URL.
+        if not local_path or not os.path.isfile(local_path):
+            if url:
+                from classes.stock_media import download_stock_file
+                kind = (media_kind or "").strip().lower()
+                url_ext = os.path.splitext(url.split("?")[0])[1].lstrip(".").lower()
+                if kind in ("video", "pexels", "pexels_video") or url_ext in ("mp4", "mov", "webm"):
+                    subdir, ext = "zenvi_pexels", (url_ext or "mp4")
+                elif kind in ("audio", "music", "sfx", "freesound", "freesound_audio") \
+                        or url_ext in ("mp3", "wav", "ogg", "flac", "m4a", "aac"):
+                    subdir, ext = "zenvi_freesound", (url_ext or "mp3")
+                else:
+                    subdir, ext = "zenvi_stock", (url_ext or "bin")
+                stem = (filename or kwargs.get("filename")
+                        or os.path.splitext(os.path.basename(url.split("?")[0]))[0]
+                        or "stock_media")
+                local_path, dl_error = download_stock_file(url, subdir, stem, ext)
+                if dl_error or not local_path:
+                    return f"Error: download failed: {dl_error or 'unknown error'}"
+            elif not local_path:
+                return "Error: local_path or url is required."
+            else:
+                return f"Error: File not found: {local_path}"
         app = _get_app()
         files_model = app.window.files_model
         from classes.query import File
