@@ -81,36 +81,72 @@ _LANGCHAIN_BLOCKS_RE = re.compile(
 )
 
 
-def _unwrap_langchain_content(text: str) -> str:
-    """Defensive unwrap for stringified LangChain content blocks.
-
-    Some providers (Anthropic, Gemini) return ``AIMessage.content`` as a list
-    of typed blocks, e.g. ``[{'text': '...', 'type': 'text', 'index': 0}]``.
-    If that ever leaks through as a Python ``repr`` string we extract every
-    ``text`` block and join them, otherwise the chat would render the raw
-    list literal as a single paragraph.
-    """
-    if not text or not isinstance(text, str):
-        return text or ""
-    if not _LANGCHAIN_BLOCKS_RE.match(text):
-        return text
-    try:
-        import ast
-        parsed = ast.literal_eval(text)
-    except Exception:
-        return text
-    if not isinstance(parsed, list):
-        return text
+def _join_content_blocks(blocks) -> str:
+    """Concatenate the text of a list of LangChain content blocks."""
     parts = []
-    for block in parsed:
+    for block in blocks:
         if isinstance(block, str):
             parts.append(block)
         elif isinstance(block, dict):
             piece = block.get("text") or block.get("content") or ""
             if isinstance(piece, str) and piece:
                 parts.append(piece)
-    joined = "".join(parts).strip()
-    return joined or text
+    return "".join(parts).strip()
+
+
+def _parse_content_blocks(text: str):
+    """Parse a stringified list/dict of content blocks. Returns a list or None.
+
+    Handles both JSON (double-quoted) and Python ``repr`` (single-quoted) forms.
+    """
+    import ast
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            obj = parser(text)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            return [obj]
+        if isinstance(obj, list):
+            return obj
+    return None
+
+
+def _unwrap_langchain_content(value) -> str:
+    """Normalize an assistant reply into a plain markdown string.
+
+    Some providers (Anthropic, Gemini) return ``AIMessage.content`` as a list of
+    typed blocks, e.g. ``[{'text': '...', 'type': 'text', 'index': 0}]``. That can
+    reach us either as a real list/dict object or as a Python ``repr`` / JSON
+    string. In every case we extract and join the ``text`` blocks, otherwise the
+    chat renders the raw list literal as a single paragraph. We also decode literal
+    ``\\n`` escape sequences that some payloads carry instead of real newlines,
+    which would otherwise suppress markdown paragraphs, lists and headings.
+    """
+    # Real content-block objects that were never stringified.
+    if isinstance(value, (list, tuple)):
+        return _join_content_blocks(value)
+    if isinstance(value, dict):
+        return _join_content_blocks([value])
+    if not isinstance(value, str):
+        return "" if value is None else str(value)
+
+    text = value
+    stripped = text.strip()
+    # Stringified content-block list/dict -> parse and join the text blocks.
+    if stripped[:2] in ("[{", "{'", '{"') or _LANGCHAIN_BLOCKS_RE.match(text):
+        parsed = _parse_content_blocks(stripped)
+        if parsed is not None:
+            joined = _join_content_blocks(parsed)
+            if joined:
+                text = joined
+
+    # Decode literal escape sequences when the text carries no real newlines.
+    if "\\n" in text and "\n" not in text:
+        text = (text.replace("\\r\\n", "\n")
+                    .replace("\\n", "\n")
+                    .replace("\\t", "\t"))
+    return text
 
 
 def _markdown_to_html(text: str) -> str:
