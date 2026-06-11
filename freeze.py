@@ -351,6 +351,10 @@ if sys.platform == "win32":
 
     # Append Windows ICON file
     iconFile += ".ico"
+    _zenvi_ico = os.path.join(PATH, "xdg", "zenvi.ico")
+    if os.path.isfile(_zenvi_ico):
+        src_files.append((_zenvi_ico, "zenvi.ico"))
+        src_files.append((_zenvi_ico, os.path.join("lib", "xdg", "zenvi.ico")))
 
     # Append some additional files for Windows (this is a debug launcher)
     src_files.append((os.path.join(PATH, "installer", "launch-win.bat"), "launch-win.bat"))

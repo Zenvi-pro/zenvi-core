@@ -522,8 +522,16 @@
     };
 
     window.appendToolLog = function (callId, line) {
+        if (!callId || !line) return;
+        if (!toolBlocks[callId]) {
+            window.addToolBlock(JSON.stringify({
+                call_id: callId,
+                title: 'Rendering',
+                cmd: 'product demo'
+            }));
+        }
         var block = toolBlocks[callId];
-        if (!block || !line) return;
+        if (!block) return;
         var row = document.createElement('div');
         row.className = 'chat-tool-line';
         row.textContent = line;
@@ -879,11 +887,18 @@
     window.updateCreditsBalance = function (balance) {
         var badge = document.getElementById('chat-credits-badge');
         if (!badge) return;
-        if (balance === null || balance === undefined || balance < 0) {
+        if (balance === null || balance === undefined) {
             badge.style.display = 'none';
             return;
         }
         badge.style.display = 'inline-flex';
+        if (balance < 0) {
+            badge.textContent = '…';
+            badge.style.background = 'rgba(124,111,247,0.08)';
+            badge.style.color = 'rgba(124,111,247,0.65)';
+            badge.style.borderColor = 'rgba(124,111,247,0.15)';
+            return;
+        }
         badge.textContent = balance + ' credits';
         if (balance === 0) {
             badge.style.background = 'rgba(239,68,68,0.12)';

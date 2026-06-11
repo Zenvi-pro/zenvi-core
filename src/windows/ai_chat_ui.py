@@ -20,6 +20,7 @@ from PyQt5.QtGui import QColor, QTextCursor
 
 from classes.logger import log
 from classes.api_client import get_backend_client
+from classes.tool_handlers import humanize_tool_name
 from windows.embedded_web import web_embed_backend
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
@@ -203,8 +204,11 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
             "Summarize the following user request in at most %d words. "
             "Reply with only the short phrase, no punctuation, no period."
         ) % max_words
-        resp = client.send_message(message=f"[SYSTEM]{system}[/SYSTEM]\n{prompt}")
-        out = resp.get("response", "").strip()
+        out = client.send_message_ws(
+            message=f"[SYSTEM]{system}[/SYSTEM]\n{prompt}",
+            auth_token=client.auth_token(),
+        )
+        out = (out or "").strip()
         return out[:80] if out else ""
     except Exception:
         return ""
@@ -244,73 +248,6 @@ def _text_likely_needs_clip_context(text: str) -> bool:
     return any(k in t for k in keywords)
 
 
-# Humanized titles for the chat tool-block header.  Anything not listed falls
-# back to a prettified version of the tool name (snake_case → "Title Case").
-_TOOL_LABELS = {
-    "get_project_info_tool": "Read project info",
-    "list_files_tool": "List files",
-    "list_clips_tool": "List clips",
-    "list_layers_tool": "List tracks",
-    "list_markers_tool": "List markers",
-    "new_project_tool": "New project",
-    "save_project_tool": "Save project",
-    "open_project_tool": "Open project",
-    "play_tool": "Toggle playback",
-    "go_to_start_tool": "Seek to start",
-    "go_to_end_tool": "Seek to end",
-    "undo_tool": "Undo",
-    "redo_tool": "Redo",
-    "add_track_tool": "Add track",
-    "add_marker_tool": "Add marker",
-    "remove_clip_tool": "Remove clip",
-    "delete_clips_on_track_tool": "Delete clips on track",
-    "zoom_in_tool": "Zoom in",
-    "zoom_out_tool": "Zoom out",
-    "center_on_playhead_tool": "Center on playhead",
-    "import_files_tool": "Import files",
-    "export_video_tool": "Export video",
-    "get_export_settings_tool": "Read export settings",
-    "set_export_setting_tool": "Update export setting",
-    "export_video_now_tool": "Export video",
-    "get_file_info_tool": "Read file info",
-    "split_file_add_clip_tool": "Split clip and add to timeline",
-    "add_clip_to_timeline_tool": "Add clip to timeline",
-    "slice_clip_at_playhead_tool": "Slice clip at playhead",
-    "search_selected_clip_scenes_tool": "Search clip scenes",
-    "slice_selected_clip_at_best_match_tool": "Slice clip at best match",
-    "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
-    "generate_video_and_add_to_timeline_tool": "Generate video",
-    "insert_kling_v2v_clip_into_selected_clip_tool": "Insert v2v clip",
-    "replace_object_in_selected_clip_tool": "Replace object in clip",
-    "generate_transition_clip_tool": "Generate transition clip",
-    "list_transitions_tool": "List transitions",
-    "search_transitions_tool": "Search transitions",
-    "add_transition_between_clips_tool": "Add transition between clips",
-    "add_transition_to_clip_tool": "Add transition to clip",
-    "add_tts_audio_to_timeline_tool": "Add TTS audio",
-    "analyze_timeline_structure_tool": "Analyze timeline",
-    "analyze_pacing_tool": "Analyze pacing",
-    "analyze_audio_levels_tool": "Analyze audio levels",
-    "analyze_transitions_tool": "Analyze transitions",
-    "analyze_clip_content_tool": "Analyze clip content",
-    "analyze_music_sync_tool": "Analyze music sync",
-    "get_project_metadata_tool": "Read project metadata",
-    "analyze_clip_visual_content_tool": "Analyze clip visuals",
-    "add_stock_media_to_project_tool": "Add stock media",
-    "retag_project_file_tool": "Retag file",
-    "reindex_project_file_tool": "Reindex file",
-    "get_clips_with_full_metadata_tool": "Read clips metadata",
-    "get_timeline_state_tool": "Read timeline state",
-}
-
-
-def _humanize_tool_name(tool_name: str) -> str:
-    if tool_name in _TOOL_LABELS:
-        return _TOOL_LABELS[tool_name]
-    base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
-    return base.replace("_", " ").strip().capitalize() or "Run tool"
-
-
 def _format_tool_command(tool_name: str, args: dict) -> str:
     """Build a `$`-style preview line summarising the tool invocation."""
     parts = [tool_name]
@@ -335,9 +272,77 @@ def _format_tool_command(tool_name: str, args: dict) -> str:
     return " ".join(parts)
 
 
+class WidgetToolBlock(QFrame):
+    """Collapsible tool-run block for native Qt chat (mirrors chat.js tool blocks)."""
+
+    def __init__(self, call_id: str, title: str, cmd: str, parent=None):
+        super().__init__(parent)
+        self.call_id = call_id
+        self._title = title
+        self._cmd = cmd
+        self._expanded = True
+        self._running = True
+
+        self.setObjectName("chatToolBlock")
+        self.setFrameShape(QFrame.StyledPanel)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 4, 6, 4)
+        outer.setSpacing(2)
+
+        self._header_btn = QToolButton()
+        self._header_btn.setObjectName("chatToolHeader")
+        self._header_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self._header_btn.setAutoRaise(True)
+        self._header_btn.clicked.connect(self._toggle_expanded)
+        self._refresh_header()
+        outer.addWidget(self._header_btn)
+
+        self._body = QTextEdit()
+        self._body.setObjectName("chatToolBody")
+        self._body.setReadOnly(True)
+        self._body.setMaximumHeight(100)
+        self._body.setLineWrapMode(QTextEdit.NoWrap)
+        mono = self._body.font()
+        mono.setFamily("Consolas")
+        mono.setPointSize(9)
+        self._body.setFont(mono)
+        self._body.setStyleSheet("background: #1a1a1a; color: #c8c8c8; border: none;")
+        outer.addWidget(self._body)
+
+    def _refresh_header(self):
+        chevron = "▼" if self._expanded else "▶"
+        prefix = "… " if self._running else ("✓ " if getattr(self, "_ok", True) else "✗ ")
+        cmd_part = self._cmd
+        if len(cmd_part) > 72:
+            cmd_part = cmd_part[:72] + "…"
+        self._header_btn.setText(f"{prefix}{chevron}  {self._title}  {cmd_part}")
+
+    def _toggle_expanded(self):
+        if self._running:
+            return
+        self._expanded = not self._expanded
+        self._body.setVisible(self._expanded)
+        self._refresh_header()
+
+    def append_log(self, line: str):
+        if line:
+            self._body.append(line.rstrip("\n"))
+
+    def complete(self, ok: bool, summary: str):
+        self._running = False
+        self._ok = ok
+        if summary:
+            self._cmd = summary
+        self._expanded = False
+        self._body.setVisible(False)
+        self._refresh_header()
+
+
 # Modules whose log records get attached to a running tool block. Anything
 # outside this allow-list (and `ai_*`) is treated as unrelated background noise.
 _TOOL_LOG_ALLOW_MODULES = frozenset({
+    "zenvi_backend",
     "project_data",
     "main_window",
     "timeline",
@@ -432,7 +437,6 @@ class AIChatWorker(QObject):
 
     Uses WebSocket for bidirectional communication: the backend can delegate
     tool calls (e.g. timeline operations) back to the frontend for execution.
-    Falls back to REST if WebSocket is unavailable.
 
     Emits *response_ready* with the assistant reply or *error_occurred* on failure.
     """
@@ -497,6 +501,12 @@ class AIChatWorker(QObject):
                 # if the WebSocket breaks after the tool already completed.
                 if ok:
                     last_tool_result = result
+                    if tool_name == "split_file_add_clip_tool":
+                        QMetaObject.invokeMethod(
+                            self,
+                            "clear_session",
+                            Qt.QueuedConnection,
+                        )
                 return result
 
             final_response = None
@@ -515,6 +525,34 @@ class AIChatWorker(QObject):
                 if text and not self._stopping:
                     self.token_received.emit(text)
 
+            def on_tool_progress(kind, call_id, tool_name, payload):
+                if self._stopping:
+                    return
+                if kind == "started":
+                    args_json = json.dumps(payload or {}, default=str)
+                    try:
+                        self.tool_started.emit(call_id or "", tool_name or "", args_json)
+                    except Exception:
+                        pass
+                    return
+                if kind == "completed":
+                    data = payload if isinstance(payload, dict) else {}
+                    try:
+                        self.tool_completed.emit(
+                            call_id or "",
+                            bool(data.get("ok")),
+                            str(data.get("result", "")),
+                        )
+                    except Exception:
+                        pass
+                    return
+                line = str(payload or "")
+                if line:
+                    try:
+                        self.tool_log.emit(call_id or "", line)
+                    except Exception:
+                        pass
+
             result = client.send_message_ws(
                 message=text,
                 model_id=model_id or None,
@@ -523,6 +561,8 @@ class AIChatWorker(QObject):
                 on_response=on_response,
                 on_error=on_error,
                 on_token=on_token,
+                on_tool_progress=on_tool_progress,
+                auth_token=client.auth_token(),
             )
 
             if final_error:
@@ -542,19 +582,7 @@ class AIChatWorker(QObject):
                     log.info("WebSocket failed (%s) but response already received", final_error)
                     self.response_ready.emit(final_response)
                     return
-                # Fall back to REST only if no tool result and no response
-                log.warning("WebSocket failed (%s), falling back to REST", final_error)
-                resp = client.send_message(
-                    message=text,
-                    model_id=model_id or None,
-                    session_id=self._backend_session_id,
-                )
-                result = resp.get("response", "")
-                self._backend_session_id = resp.get("session_id", self._backend_session_id)
-                if result is not None:
-                    self.response_ready.emit(result)
-                else:
-                    self.error_occurred.emit("No response from backend.")
+                self.error_occurred.emit(final_error or "Chat connection failed.")
                 return
 
             if self._stopping:
@@ -581,12 +609,6 @@ class AIChatWorker(QObject):
                 pass
             # Keep the backend session_id stable for this UI tab/session.
             # Clearing only resets conversation state + Supabase memory rows.
-
-    @pyqtSlot(str, str)
-    def on_tool_completed(self, tool_name: str, result: str):
-        """When split_file_add_clip runs, clear the session so the next message starts fresh."""
-        if tool_name == "split_file_add_clip_tool":
-            self.clear_session()
 
 
 class ChatBridge(QObject):
@@ -737,6 +759,9 @@ class AIChatWindow(QDockWidget):
             self._init_widget_ui()
 
         self.setMinimumSize(400, 450)
+
+        # Prefetch credits before the web UI finishes loading (avoids 0 → real flash).
+        self._start_credits_refresh()
 
     # ------------------------------------------------------------------
     # Session management
@@ -1324,6 +1349,21 @@ class AIChatWindow(QDockWidget):
         model_h.addStretch()
         layout.addLayout(model_h)
 
+        self._widget_tool_scroll = QScrollArea()
+        self._widget_tool_scroll.setObjectName("widgetToolScroll")
+        self._widget_tool_scroll.setWidgetResizable(True)
+        self._widget_tool_scroll.setFrameShape(QFrame.NoFrame)
+        self._widget_tool_scroll.setMaximumHeight(140)
+        self._widget_tool_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._widget_tool_blocks_host = QWidget()
+        self._widget_tool_container = QVBoxLayout(self._widget_tool_blocks_host)
+        self._widget_tool_container.setContentsMargins(4, 2, 4, 2)
+        self._widget_tool_container.setSpacing(4)
+        self._widget_tool_container.addStretch()
+        self._widget_tool_scroll.setWidget(self._widget_tool_blocks_host)
+        self._widget_tool_blocks = {}
+        layout.addWidget(self._widget_tool_scroll)
+
         self.chat_box = QTextEdit()
         self.chat_box.setObjectName("chatBox")
         self.chat_box.setReadOnly(True)
@@ -1646,8 +1686,18 @@ class AIChatWindow(QDockWidget):
         self._start_restore_chat_histories_async()
         self._chat_web_initial_sync_done = True
 
-        # Kick off credits balance display and start periodic refresh
-        self._start_credits_refresh()
+        # Push prefetched balance (or loading placeholder) when the web UI is ready.
+        try:
+            from classes.credits_client import credits as _creds
+            cached = _creds.cached_balance()
+            if cached is not None:
+                self._on_credits_balance(cached)
+            elif self._use_web_ui:
+                self._run_js(
+                    "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
+                )
+        except Exception:
+            pass
 
     def _start_credits_refresh(self):
         """Fetch credits balance once and start a 60-second refresh timer."""
@@ -1662,7 +1712,9 @@ class AIChatWindow(QDockWidget):
         def run():
             try:
                 from classes.credits_client import credits as _creds
-                _, balance = _creds.check(0)
+                authed, balance = _creds.balance()
+                if not authed:
+                    return
                 QMetaObject.invokeMethod(
                     self,
                     "_on_credits_balance",
@@ -1677,7 +1729,10 @@ class AIChatWindow(QDockWidget):
     @pyqtSlot(int)
     def _on_credits_balance(self, balance: int):
         """Push updated balance to the JS badge (called on main thread)."""
-        self._run_js("if(window.updateCreditsBalance) updateCreditsBalance(%d);" % balance)
+        self._run_js(
+            "if(window.updateCreditsBalance) updateCreditsBalance(%s);"
+            % json.dumps(balance)
+        )
 
     def _get_preamble_html(self):
         """Return preamble as HTML: AI summary as heading when set, else 'Zenvi Assistant'."""
@@ -1832,21 +1887,35 @@ class AIChatWindow(QDockWidget):
         # No structured tag — fall back to token-replacement / auto-attach behaviour
         return self._augment_text_with_clip_context(text)
 
-    def _handle_web_send_message(self, text: str, model_id: str, context_json: str = ""):
-        """Handle send from CEP UI (same logic as send_message but with args)."""
-        if self.is_processing:
-            self._run_js("alert('Processing previous message...');")
+    def _clear_widget_tool_blocks(self):
+        """Remove live tool blocks (widget mode) at the start of a new request."""
+        if self._use_web_ui or not getattr(self, "_widget_tool_container", None):
             return
-        if not text:
-            return
+        while self._widget_tool_container.count() > 1:
+            item = self._widget_tool_container.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        self._widget_tool_blocks.clear()
+        if getattr(self, "_widget_tool_scroll", None):
+            self._widget_tool_scroll.setVisible(False)
+
+    def _dispatch_user_message(self, text: str, model_id: str, context_json: str = ""):
+        """Shared send pipeline for web and widget chat UIs."""
         worker = self._active_session().get("worker")
         if worker is None:
             return
+        self._clear_widget_tool_blocks()
         self._add_user_msg(text)
         if self._try_local_command(text):
             return
         self._request_preamble_summary(text)
-        augmented_text, attached_summary = self._augment_text_with_context(text, context_json)
+        if context_json:
+            augmented_text, attached_summary = self._augment_text_with_context(
+                text, context_json
+            )
+        else:
+            augmented_text, attached_summary = self._augment_text_with_clip_context(text)
         augmented_text = self._prepend_editor_snapshot(augmented_text)
         if attached_summary:
             self._add_system_msg(f"Context attached: {attached_summary}")
@@ -1856,8 +1925,17 @@ class AIChatWindow(QDockWidget):
             "run_request",
             Qt.QueuedConnection,
             Q_ARG(str, augmented_text),
-            Q_ARG(str, model_id),
+            Q_ARG(str, model_id or ""),
         )
+
+    def _handle_web_send_message(self, text: str, model_id: str, context_json: str = ""):
+        """Handle send from CEP UI (same logic as send_message but with args)."""
+        if self.is_processing:
+            self._run_js("alert('Processing previous message...');")
+            return
+        if not text:
+            return
+        self._dispatch_user_message(text, model_id, context_json)
 
     def _stop_all_threads(self):
         """Cleanly stop all session worker threads. Safe to call more than once."""
@@ -1969,29 +2047,12 @@ class AIChatWindow(QDockWidget):
         text = self.msg_input.toPlainText().strip()
         if not text:
             return
-        self._add_user_msg(text)
         self.msg_input.clear()
-        if self._try_local_command(text):
-            return
-        self._request_preamble_summary(text)
-        augmented_text, attached_summary = self._augment_text_with_clip_context(text)
-        augmented_text = self._prepend_editor_snapshot(augmented_text)
-        if attached_summary:
-            self._add_system_msg(f"Context attached: {attached_summary}")
-        self._set_processing_ui(True)
         model_id = self.model_combo.currentData()
         if not model_id and self.model_combo.count():
             model_id = self.model_combo.currentText()
         model_id_str = model_id if model_id else ""
-        worker = self._active_session().get("worker")
-        if worker:
-            QMetaObject.invokeMethod(
-                worker,
-                "run_request",
-                Qt.QueuedConnection,
-                Q_ARG(str, augmented_text),
-                Q_ARG(str, model_id_str),
-            )
+        self._dispatch_user_message(text, model_id_str)
         self.msg_input.setFocus()
 
     def _set_processing_ui(self, processing: bool):
@@ -2034,47 +2095,70 @@ class AIChatWindow(QDockWidget):
             self._run_js("if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
                          % json.dumps(text))
 
+    def _tool_result_summary(self, result: str) -> str:
+        if not result:
+            return ""
+        first_line = result.strip().splitlines()[0] if result.strip() else ""
+        if len(first_line) > 140:
+            return first_line[:140] + "…"
+        return first_line
+
     @pyqtSlot(str, str, str)
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
         """Render a Cursor-style collapsible terminal block for a tool call."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        if sid != self._active_sid or not self._use_web_ui:
+        if sid != self._active_sid:
             return
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
             args = {}
-        title = _humanize_tool_name(tool_name)
+        title = humanize_tool_name(tool_name)
         cmd = _format_tool_command(tool_name, args)
-        payload = {"call_id": call_id, "title": title, "cmd": cmd}
-        self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
-                     % json.dumps(json.dumps(payload)))
+        if self._use_web_ui:
+            payload = {"call_id": call_id, "title": title, "cmd": cmd}
+            self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
+                         % json.dumps(json.dumps(payload)))
+            return
+        if not getattr(self, "_widget_tool_container", None):
+            return
+        block_id = call_id or tool_name or ("tool_%s" % time.time())
+        block = WidgetToolBlock(block_id, title, cmd, parent=self._widget_tool_blocks_host)
+        insert_at = max(0, self._widget_tool_container.count() - 1)
+        self._widget_tool_container.insertWidget(insert_at, block)
+        self._widget_tool_blocks[block_id] = block
+        self._widget_tool_scroll.setVisible(True)
 
     @pyqtSlot(str, str)
     def _on_tool_log(self, call_id: str, line: str):
         """Append one log line to a running tool block."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        if sid != self._active_sid or not self._use_web_ui or not line:
+        if sid != self._active_sid or not line:
             return
-        self._run_js("if(window.appendToolLog) window.appendToolLog(%s, %s);"
-                     % (json.dumps(call_id), json.dumps(line)))
+        if self._use_web_ui:
+            self._run_js("if(window.appendToolLog) window.appendToolLog(%s, %s);"
+                         % (json.dumps(call_id), json.dumps(line)))
+            return
+        block = self._widget_tool_blocks.get(call_id)
+        if block:
+            block.append_log(line)
 
     @pyqtSlot(str, bool, str)
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
         """Mark a tool block as done/error and auto-collapse it."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        if sid != self._active_sid or not self._use_web_ui:
+        if sid != self._active_sid:
             return
-        summary = ""
-        if result:
-            first_line = result.strip().splitlines()[0] if result.strip() else ""
-            if len(first_line) > 140:
-                first_line = first_line[:140] + "…"
-            summary = first_line
-        self._run_js(
-            "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
-            % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
-        )
+        summary = self._tool_result_summary(result)
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
+                % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
+            )
+            return
+        block = self._widget_tool_blocks.get(call_id)
+        if block:
+            block.complete(ok, summary)
 
     @pyqtSlot(str)
     def _on_response_ready(self, text: str):
@@ -2139,6 +2223,7 @@ class AIChatWindow(QDockWidget):
                 self._run_js("clearMessages();")
                 self._push_tabs_to_js()
             else:
+                self._clear_widget_tool_blocks()
                 self.chat_box.clear()
                 self._rebuild_widget_tabs()
             self._update_preamble()
