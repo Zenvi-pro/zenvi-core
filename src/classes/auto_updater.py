@@ -28,6 +28,14 @@ import requests
 
 from classes import info
 from classes.logger import log
+from classes.update_installer import (
+    UPDATE_MANIFEST,
+    UPDATE_STAGING_DIR,
+    discard_staged_update,
+    has_pending_update as installer_has_pending_update,
+    is_version_newer,
+    read_manifest,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -37,9 +45,6 @@ from classes.logger import log
 GITHUB_API_URL = (
     "https://api.github.com/repos/{repo}/releases/latest"
 )
-
-UPDATE_STAGING_DIR = os.path.join(info.USER_PATH, "updates")
-UPDATE_MANIFEST = os.path.join(UPDATE_STAGING_DIR, "update_manifest.json")
 
 # How long to wait after app launch before first check (seconds)
 INITIAL_DELAY = 15
@@ -83,57 +88,23 @@ def _platform_asset_arch_hint():
 
 
 # ---------------------------------------------------------------------------
-# Version comparison
-# ---------------------------------------------------------------------------
-
-def _parse_version(v):
-    """Parse a version string like '3.4.1' into a comparable tuple."""
-    try:
-        return tuple(int(x) for x in v.strip().split("."))
-    except (ValueError, AttributeError):
-        return (0,)
-
-
-def is_newer(remote_version, local_version):
-    """Return True if *remote_version* is strictly newer than *local_version*."""
-    return _parse_version(remote_version) > _parse_version(local_version)
-
-
-# ---------------------------------------------------------------------------
-# Manifest helpers (used by both auto_updater and update_installer)
+# Manifest helpers — delegate to update_installer (single source of truth)
 # ---------------------------------------------------------------------------
 
 def has_pending_update():
     """Return True when a verified update is staged and ready to install."""
-    if not os.path.exists(UPDATE_MANIFEST):
-        return False
-    try:
-        with open(UPDATE_MANIFEST, "r", encoding="utf-8") as fh:
-            manifest = json.load(fh)
-        return os.path.exists(manifest.get("filepath", ""))
-    except Exception:
-        return False
+    return installer_has_pending_update()
 
 
 def get_update_manifest():
     """Read and return the update manifest dict, or None."""
-    try:
-        with open(UPDATE_MANIFEST, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return None
+    return read_manifest()
 
 
 def cleanup_staged_update():
     """Remove all staged update files."""
     try:
-        manifest = get_update_manifest()
-        if manifest:
-            fp = manifest.get("filepath", "")
-            if os.path.exists(fp):
-                os.unlink(fp)
-        if os.path.exists(UPDATE_MANIFEST):
-            os.unlink(UPDATE_MANIFEST)
+        discard_staged_update()
         log.info("AutoUpdater: Staged update cleaned up")
     except Exception as exc:
         log.warning("AutoUpdater: Cleanup error: %s", exc)
@@ -178,7 +149,9 @@ class AutoUpdater:
     def _run(self):
         """Entry point for the background thread."""
         try:
-            # Wait before first check so the UI is fully loaded
+            release, latest_version = self._fetch_latest_release()
+
+            # Wait before download check so the UI is fully loaded
             for _ in range(INITIAL_DELAY):
                 if self._stop.is_set():
                     return
@@ -190,15 +163,19 @@ class AutoUpdater:
                 self._notify_ui_pending()
                 return
 
-            self._check_and_download()
+            if release is None:
+                return
+
+            self._check_and_download(release, latest_version)
         except Exception:
             log.error("AutoUpdater: Unhandled error in background thread", exc_info=True)
 
-    def _check_and_download(self):
-        """Query GitHub for the latest release; download if newer."""
-        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
-        log.info("AutoUpdater: Checking %s", url)
+    def _fetch_latest_release(self):
+        """Single GitHub /releases/latest fetch for Sentry, UI, and download logic.
 
+        Returns (release_dict_or_None, latest_version_str_or_empty).
+        """
+        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
         try:
             resp = requests.get(
                 url,
@@ -210,21 +187,27 @@ class AutoUpdater:
             )
         except requests.RequestException as exc:
             log.warning("AutoUpdater: Network error checking for updates: %s", exc)
-            return
+            return None, ""
 
         if resp.status_code != 200:
             log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
-            return
+            return None, ""
 
         release = resp.json()
         tag = release.get("tag_name", "")
         latest_version = tag.lstrip("v")
+        if latest_version:
+            info.ERROR_REPORT_STABLE_VERSION = latest_version
+            self._emit_version_signal(latest_version)
+        return release, latest_version
 
+    def _check_and_download(self, release, latest_version):
+        """Download the platform asset from an already-fetched release payload."""
         if not latest_version:
-            log.warning("AutoUpdater: Could not parse version from tag '%s'", tag)
+            log.warning("AutoUpdater: Could not parse version from release tag")
             return
 
-        if not is_newer(latest_version, info.VERSION):
+        if not is_version_newer(latest_version, info.VERSION):
             log.info(
                 "AutoUpdater: Current version %s is up-to-date (latest: %s)",
                 info.VERSION, latest_version,
@@ -355,6 +338,8 @@ class AutoUpdater:
 
     def _emit_version_signal(self, version):
         """Emit the existing FoundVersionSignal so the UI shows 'Update Available'."""
+        if version:
+            info.ERROR_REPORT_STABLE_VERSION = version
         try:
             from classes.app import get_app
             app = get_app()
@@ -375,7 +360,7 @@ class AutoUpdater:
 
     def _notify_ui_pending(self):
         """Notify the UI about an already-staged update."""
-        manifest = get_update_manifest()
+        manifest = read_manifest()
         if manifest:
             version = manifest.get("version", "")
             if version:

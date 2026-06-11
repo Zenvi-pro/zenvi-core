@@ -9,8 +9,8 @@ Usage:
     from classes.api_client import ZenviBackendClient
     client = ZenviBackendClient()  # reads ZENVI_BACKEND_URL from settings
 
-    # Chat
-    response = client.send_message("add a clip to the timeline")
+    # Chat (WebSocket only)
+    response = client.send_message_ws("add a clip to the timeline")
 
     # Models
     models = client.list_models()
@@ -18,16 +18,17 @@ Usage:
     # Search
     results = client.search("sunset")
 
-    # Tags
-    tags = client.get_tags(file_id)
-
     # Generation
     result = client.generate_video("a cat running on a beach")
 """
 
 import json
 import os
+import re
+import tempfile
 import threading
+import time
+import uuid
 from typing import Any, Dict, List, Optional, Callable
 from classes.logger import log
 
@@ -111,6 +112,162 @@ class ZenviBackendClient:
                 raise
         return self._session
 
+    def auth_token(self) -> Optional[str]:
+        """Current user JWT for backend usage/credits tracking."""
+        return self._auth_token()
+
+    @staticmethod
+    def _auth_token() -> Optional[str]:
+        try:
+            from classes.auth_manager import AuthManager
+            return AuthManager.instance().get_access_token()
+        except Exception:
+            return None
+
+    def _multipart_headers(self, session) -> Dict[str, str]:
+        return {
+            k: v for k, v in session.headers.items()
+            if k.lower() != "content-type"
+        }
+
+    def upload_media_file(
+        self,
+        local_path: str,
+        file_id: str = "",
+        filename: Optional[str] = None,
+        session=None,
+    ) -> Dict[str, Any]:
+        """Upload a file to the backend temp store; returns success + file_id."""
+        if not local_path or not os.path.isfile(local_path):
+            return {"success": False, "error": f"File not found: {local_path}"}
+        fid = file_id or uuid.uuid4().hex
+        name = filename or os.path.basename(local_path)
+        try:
+            s = session or self.session
+            with open(local_path, "rb") as fh:
+                r = s.post(
+                    f"{self.api_url}/media/upload",
+                    files={"file": (name, fh)},
+                    data={"file_id": fid, "filename": name},
+                    headers=self._multipart_headers(s),
+                    timeout=600,
+                )
+            r.raise_for_status()
+            data = r.json()
+            if not data.get("success"):
+                return {"success": False, "error": data.get("error", "Upload failed")}
+            return {"success": True, "file_id": fid, "server_path": data.get("server_path", "")}
+        except Exception as exc:
+            log.error("Media upload failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    def _post_media_multipart(
+        self,
+        endpoint: str,
+        local_path: str,
+        file_id: str = "",
+        extra: Optional[Dict[str, Any]] = None,
+        session=None,
+        timeout: int = 120,
+    ) -> Dict[str, Any]:
+        """POST multipart with file to a media endpoint; return parsed JSON."""
+        if not os.path.isfile(local_path):
+            return {"error": f"File not found: {local_path}"}
+        extra = dict(extra or {})
+        fid = file_id or extra.pop("file_id", None) or uuid.uuid4().hex
+        name = extra.pop("filename", None) or os.path.basename(local_path)
+        data = {"file_id": fid, "filename": name, **{k: v for k, v in extra.items() if v is not None}}
+        try:
+            s = session or self.session
+            with open(local_path, "rb") as fh:
+                r = s.post(
+                    f"{self.api_url}{endpoint}",
+                    files={"file": (name, fh)},
+                    data=data,
+                    headers=self._multipart_headers(s),
+                    timeout=timeout,
+                )
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            log.error("Multipart POST %s failed: %s", endpoint, exc)
+            return {"error": str(exc)}
+
+    def _poll_tagging_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 5) -> Dict[str, Any]:
+        deadline = time.time() + max_wait
+        while time.time() < deadline:
+            try:
+                r = self.session.get(f"{self.api_url}/tags/job/{job_id}", timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                status = data.get("status", "running")
+                if status == "done":
+                    result = data.get("result") or {}
+                    return result if isinstance(result, dict) else self._empty_ai_metadata()
+                if status == "failed":
+                    result = data.get("result") or {}
+                    meta = self._empty_ai_metadata()
+                    if isinstance(result, dict):
+                        meta.update(result)
+                    meta["error"] = (result or {}).get("error", "Tagging failed") if isinstance(result, dict) else "Tagging failed"
+                    return meta
+                if status == "not_found":
+                    meta = self._empty_ai_metadata()
+                    meta["error"] = f"Tagging job {job_id} not found"
+                    return meta
+            except Exception as exc:
+                log.warning("Tagging poll error (will retry): %s", exc)
+            time.sleep(poll_interval)
+        meta = self._empty_ai_metadata()
+        meta["error"] = f"Tagging job {job_id} timed out after {max_wait}s"
+        return meta
+
+    @staticmethod
+    def _download_url_to_temp(
+        url: str,
+        suffix: str,
+        filename_hint: str = "",
+        timeout: int = 180,
+    ) -> Dict[str, Any]:
+        """Download a public CDN URL to a local temp file on the desktop."""
+        if not url:
+            return {"local_path": "", "error": "No download URL"}
+        try:
+            import requests
+            from classes import info
+
+            safe = re.sub(r"[^\w\-]", "_", filename_hint) if filename_hint else f"zenvi_{uuid.uuid4().hex[:10]}"
+            dest_dir = os.path.join(info.USER_PATH, "Downloads")
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = os.path.join(dest_dir, f"{safe}{suffix}")
+            if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+                return {"local_path": dest}
+
+            resp = requests.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Zenvi/1.0"},
+                stream=True,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    if chunk:
+                        fh.write(chunk)
+            if os.path.getsize(dest) > 0:
+                return {"local_path": dest}
+            return {"local_path": "", "error": "Downloaded file is empty"}
+        except Exception as exc:
+            log.error("URL download failed: %s", exc)
+            return {"local_path": "", "error": str(exc)}
+
+    @staticmethod
+    def pick_pexels_hd_link(video: Dict[str, Any]) -> str:
+        files = video.get("video_files") or []
+        hd = next((f for f in files if f.get("quality") == "hd"), None)
+        pick = hd or (files[0] if files else {})
+        return str(pick.get("link") or "")
+
     # ------------------------------------------------------------------
     # Health
     # ------------------------------------------------------------------
@@ -136,17 +293,6 @@ class ZenviBackendClient:
             log.error("Failed to list models: %s", e)
             return []
 
-    def list_available_models(self) -> List[Dict[str, str]]:
-        """List models with valid API keys."""
-        try:
-            r = self.session.get(f"{self.api_url}/models/available", timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            return data.get("models", [])
-        except Exception as e:
-            log.error("Failed to list available models: %s", e)
-            return []
-
     def get_default_model_id(self) -> str:
         """Get the default model ID."""
         try:
@@ -155,33 +301,6 @@ class ZenviBackendClient:
             return r.json().get("default_model_id", "openai/gpt-4o-mini")
         except Exception:
             return "openai/gpt-4o-mini"
-
-    # ------------------------------------------------------------------
-    # Chat (synchronous REST)
-    # ------------------------------------------------------------------
-    def send_message(
-        self,
-        message: str,
-        model_id: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        session_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Send a chat message and get a response."""
-        try:
-            payload = {"message": message}
-            if model_id:
-                payload["model_id"] = model_id
-            if context:
-                payload["context"] = context
-            if session_id:
-                payload["session_id"] = session_id
-
-            r = self.session.post(f"{self.api_url}/chat", json=payload, timeout=600)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Chat request failed: %s", e)
-            return {"response": f"Error communicating with backend: {e}", "session_id": session_id or ""}
 
     def get_chat_history(self, session_id: str) -> Dict[str, Any]:
         """Get conversation history."""
@@ -213,6 +332,8 @@ class ZenviBackendClient:
         on_response: Optional[Callable] = None,
         on_error: Optional[Callable] = None,
         on_token: Optional[Callable] = None,
+        on_tool_progress: Optional[Callable] = None,
+        auth_token: Optional[str] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -250,14 +371,14 @@ class ZenviBackendClient:
                     log.debug("WS send failed: %s", exc)
                     return False
 
-            _ws_send({
-                "type": "user_message",
-                "data": {
-                    "message": message,
-                    "model_id": model_id,
-                    "session_id": session_id,
-                },
-            })
+            token = auth_token if auth_token is not None else self._auth_token()
+            payload_data: Dict[str, Any] = {
+                "message": message,
+                "model_id": model_id,
+                "session_id": session_id,
+                "auth_token": token,
+            }
+            _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them
             # before returning when the server signals 'done'.
@@ -341,6 +462,42 @@ class ZenviBackendClient:
 
                     if msg_type == "tool_call":
                         _spawn_tool_worker(data)
+                    elif msg_type == "tool_started":
+                        if on_tool_progress:
+                            try:
+                                on_tool_progress(
+                                    "started",
+                                    data.get("call_id", ""),
+                                    data.get("tool_name", ""),
+                                    data.get("tool_args", {}),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_tool_progress(start) error: %s", exc)
+                    elif msg_type == "tool_progress":
+                        if on_tool_progress:
+                            try:
+                                on_tool_progress(
+                                    "progress",
+                                    data.get("call_id", ""),
+                                    data.get("tool_name", ""),
+                                    data.get("line", ""),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_tool_progress error: %s", exc)
+                    elif msg_type == "tool_completed":
+                        if on_tool_progress:
+                            try:
+                                on_tool_progress(
+                                    "completed",
+                                    data.get("call_id", ""),
+                                    "",
+                                    {
+                                        "ok": data.get("ok", False),
+                                        "result": data.get("result", ""),
+                                    },
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_tool_completed error: %s", exc)
                     elif msg_type == "token":
                         if on_token:
                             try:
@@ -439,28 +596,36 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
-    def index_video(self, file_path: str, index_name: str, filename: Optional[str] = None,
-                    async_mode: bool = True) -> Dict[str, Any]:
-        """Index a video file.
-
-        Always uses the background-job pattern: POST returns a job_id immediately,
-        then we poll GET /indexing/job/{job_id} until complete. This avoids the
-        read-timeout that occurred when TwelveLabs took longer than the HTTP timeout.
-        The async_mode parameter is kept for backwards compatibility but ignored.
-        """
-        try:
-            payload: Dict[str, Any] = {"file_path": file_path, "index_name": index_name}
-            if filename:
-                payload["filename"] = filename
-            r = self.session.post(f"{self.api_url}/indexing", json=payload, timeout=30)
-            r.raise_for_status()
-            job_id = r.json().get("job_id")
-            if not job_id:
-                return {"success": False, "message": "Backend returned no job_id"}
-            return self._poll_indexing_job(job_id)
-        except Exception as e:
-            log.error("Indexing failed: %s", e)
-            return {"success": False, "message": str(e)}
+    def index_video(
+        self,
+        file_path: str,
+        index_name: str,
+        filename: Optional[str] = None,
+        file_id: str = "",
+        existing_index_id: Optional[str] = None,
+        async_mode: bool = True,  # noqa: ARG002 — kept for callers
+        session=None,
+    ) -> Dict[str, Any]:
+        """Index a video via multipart upload + job poll."""
+        extra: Dict[str, Any] = {"index_name": index_name}
+        if filename:
+            extra["filename"] = filename
+        if existing_index_id:
+            extra["existing_index_id"] = existing_index_id
+        data = self._post_media_multipart(
+            "/indexing",
+            file_path,
+            file_id=file_id,
+            extra=extra,
+            session=session,
+            timeout=120,
+        )
+        if data.get("error"):
+            return {"success": False, "error": data["error"], "message": data["error"]}
+        job_id = data.get("job_id")
+        if not job_id:
+            return {"success": False, "error": data.get("error", "Backend returned no job_id")}
+        return self._poll_indexing_job(job_id)
 
     def _poll_indexing_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 10) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
@@ -476,7 +641,8 @@ class ZenviBackendClient:
                     return data.get("result") or {"success": True}
                 if status == "failed":
                     result = data.get("result") or {}
-                    return {"success": False, "message": result.get("error", "Indexing failed")}
+                    err = result.get("error", "Indexing failed") if isinstance(result, dict) else "Indexing failed"
+                    return {"success": False, "error": err, "message": err}
                 if status == "not_found":
                     return {"success": False, "message": f"Job {job_id} not found on backend"}
             except Exception as e:
@@ -503,6 +669,32 @@ class ZenviBackendClient:
             log.error("Video generation failed: %s", e)
             return {"error": str(e)}
 
+    def generate_tts(
+        self,
+        text: str,
+        voice: str = "alloy",
+        model: str = "tts-1",
+        speed: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Generate narration MP3 via backend OpenAI TTS; returns audio_base64 on success."""
+        try:
+            payload = {
+                "text": text,
+                "voice": voice,
+                "model": model,
+                "speed": speed,
+            }
+            r = self.session.post(
+                f"{self.api_url}/generation/tts",
+                json=payload,
+                timeout=300,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.error("TTS generation failed: %s", e)
+            return {"success": False, "error": str(e)}
+
     def generate_morph_video(self, first_image_url: str, last_image_url: str, **kwargs) -> Dict[str, Any]:
         """Generate a morph/transition video between two images."""
         try:
@@ -516,214 +708,30 @@ class ZenviBackendClient:
             log.error("Morph video generation failed: %s", e)
             return {"error": str(e)}
 
-    def research_web(self, query: str, max_images: int = 3, **kwargs) -> Dict[str, Any]:
-        """Search the web via Perplexity through the backend."""
-        try:
-            payload = {"query": query, "max_images": max_images}
-            payload.update(kwargs)
-            r = self.session.post(f"{self.api_url}/research/search", json=payload, timeout=180)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Research failed: %s", e)
-            return {"error": str(e)}
-
-    def research_plan(self, topic: str, content_type: str = "video", aspects: str = "", **kwargs) -> Dict[str, Any]:
-        """Research a topic for content planning."""
-        try:
-            payload = {"query": topic, "content_type": content_type, "aspects": aspects}
-            payload.update(kwargs)
-            r = self.session.post(f"{self.api_url}/research/plan", json=payload, timeout=180)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Research plan failed: %s", e)
-            return {"error": str(e)}
-
-    # ------------------------------------------------------------------
-    # Tags
-    # ------------------------------------------------------------------
-    def get_tags(self, file_id: str) -> Dict[str, Any]:
-        try:
-            r = self.session.get(f"{self.api_url}/tags/{file_id}", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Get tags failed: %s", e)
-            return {}
-
-    def update_tags(self, file_id: str, tags: Dict[str, Any]) -> bool:
-        try:
-            r = self.session.post(f"{self.api_url}/tags", json={"file_id": file_id, "tags": tags}, timeout=10)
-            return r.status_code == 200
-        except Exception:
-            return False
-
-    def search_by_tag(self, tag_value: str, tag_type: Optional[str] = None) -> List[str]:
-        try:
-            payload = {"tag_value": tag_value}
-            if tag_type:
-                payload["tag_type"] = tag_type
-            r = self.session.post(f"{self.api_url}/tags/search", json=payload, timeout=10)
-            r.raise_for_status()
-            return r.json().get("file_ids", [])
-        except Exception:
-            return []
-
-    # ------------------------------------------------------------------
-    # Faces
-    # ------------------------------------------------------------------
-    def list_people(self) -> List[Dict[str, Any]]:
-        try:
-            r = self.session.get(f"{self.api_url}/faces/people", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            return []
-
-    def create_person(self, person_id: str, name: str = "") -> Dict[str, Any]:
-        try:
-            r = self.session.post(f"{self.api_url}/faces/people", json={"person_id": person_id, "name": name}, timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            return {}
-
-    # ------------------------------------------------------------------
-    # Collections
-    # ------------------------------------------------------------------
-    def list_collections(self) -> List[Dict[str, Any]]:
-        try:
-            r = self.session.get(f"{self.api_url}/collections", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            return []
-
-    def create_collection(self, collection_id: str, name: str, collection_type: str = "manual") -> Dict[str, Any]:
-        try:
-            r = self.session.post(f"{self.api_url}/collections", json={
-                "collection_id": collection_id, "name": name, "collection_type": collection_type,
-            }, timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            return {}
-
-    # ------------------------------------------------------------------
-    # Media
-    # ------------------------------------------------------------------
-    def media_command(self, command: str) -> Dict[str, Any]:
-        """Process a natural-language media management command."""
-        try:
-            r = self.session.post(f"{self.api_url}/media/command", params={"command": command}, timeout=60)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Media command failed: %s", e)
-            return {"success": False, "message": str(e)}
-
-    def get_media_statistics(self) -> Dict[str, Any]:
-        try:
-            r = self.session.get(f"{self.api_url}/media/statistics", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception:
-            return {}
-
-    # ------------------------------------------------------------------
-    # Analysis queue
-    # ------------------------------------------------------------------
-    def get_analysis_status(self) -> Dict[str, Any]:
-        """Get the analysis queue status from the backend."""
-        try:
-            r = self.session.get(f"{self.api_url}/media/analysis/status", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Get analysis status failed: %s", e)
-            return {"pending": 0, "processing": 0, "total": 0, "current_file": "", "queue": []}
-
-    def start_analysis(self) -> Dict[str, Any]:
-        """Start processing the analysis queue."""
-        try:
-            r = self.session.post(f"{self.api_url}/media/analysis/start", timeout=120)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Start analysis failed: %s", e)
-            return {"success": False, "message": str(e)}
-
-    def clear_analysis_queue(self) -> Dict[str, Any]:
-        """Clear the analysis queue."""
-        try:
-            r = self.session.post(f"{self.api_url}/media/analysis/clear", timeout=10)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Clear analysis queue failed: %s", e)
-            return {"success": False, "message": str(e)}
-
     # ------------------------------------------------------------------
     # Tagging & Indexing (for files_model)
     # ------------------------------------------------------------------
     def tag_video(self, video_path: str, file_id: str = "", session=None) -> Dict[str, Any]:
-        """Send a video to the backend for AI tagging/analysis (replaces GeminiVideoTagger)."""
-        try:
-            s = session or self.session
-            payload: Dict[str, Any] = {"video_path": video_path}
-            if file_id:
-                payload["file_id"] = file_id
-            r = s.post(
-                f"{self.api_url}/tags/analyze",
-                json=payload,
-                timeout=180,  # frame extraction + Gemini upload + inference can take > 30s
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Video tagging failed: %s", e)
-            return self._empty_ai_metadata()
-
-    def index_video_for_search(
-        self,
-        file_path: str,
-        index_name: str,
-        filename: str = "",
-        existing_index_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Index a video via the backend. Uses the job-based async pattern to avoid read timeouts."""
-        try:
-            r = self.session.post(
-                f"{self.api_url}/indexing/index",
-                json={
-                    "file_path": file_path,
-                    "index_name": index_name,
-                    "filename": filename,
-                    "existing_index_id": existing_index_id,
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-            job_id = r.json().get("job_id")
-            if not job_id:
-                return {"error": "Backend returned no job_id"}
-            return self._poll_indexing_job(job_id)
-        except Exception as e:
-            log.error("Video indexing failed: %s", e)
-            return {"error": str(e)}
-
-    def delete_indexed_video(self, index_id: str, video_id: str) -> bool:
-        """Delete a video from the search index (replaces twelvelabs delete_video_from_index)."""
-        try:
-            r = self.session.delete(
-                f"{self.api_url}/indexing/video",
-                params={"index_id": index_id, "video_id": video_id},
-                timeout=30,
-            )
-            return r.status_code == 200
-        except Exception:
-            return False
+        """Upload video to the backend and return AI metadata (sync or job poll)."""
+        data = self._post_media_multipart(
+            "/tags/analyze",
+            video_path,
+            file_id=file_id,
+            session=session,
+            timeout=600,
+        )
+        if data.get("error"):
+            meta = self._empty_ai_metadata()
+            meta["error"] = data["error"]
+            return meta
+        job_id = data.get("job_id")
+        if job_id:
+            return self._poll_tagging_job(job_id)
+        if data.get("analyzed"):
+            return data
+        meta = self._empty_ai_metadata()
+        meta["error"] = data.get("error", "Tagging did not complete")
+        return meta
 
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
@@ -751,20 +759,6 @@ class ZenviBackendClient:
             "confidence": 0.0,
         }
 
-    def queue_file_for_analysis(self, file_id: str, file_path: str, media_type: str = "video") -> Dict[str, Any]:
-        """Add a file to the backend analysis queue."""
-        try:
-            r = self.session.post(
-                f"{self.api_url}/media/analysis/queue",
-                json={"file_id": file_id, "file_path": file_path, "media_type": media_type},
-                timeout=10,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Queue file for analysis failed: %s", e)
-            return {"success": False, "message": str(e)}
-
     # ------------------------------------------------------------------
     # Pexels stock video
     # ------------------------------------------------------------------
@@ -783,18 +777,9 @@ class ZenviBackendClient:
             return {"videos": [], "error": str(e)}
 
     def pexels_download(self, video_id: int, link: str, filename: str = "") -> Dict[str, Any]:
-        """Download a Pexels video via the backend and return its local path."""
-        try:
-            r = self.session.post(
-                f"{self.api_url}/pexels/download",
-                json={"video_id": video_id, "link": link, "filename": filename},
-                timeout=300,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Pexels download failed: %s", e)
-            return {"local_path": "", "error": str(e)}
+        """Download a Pexels MP4 from the CDN URL to the local machine."""
+        hint = filename or f"pexels_{video_id}"
+        return self._download_url_to_temp(link, ".mp4", filename_hint=hint, timeout=180)
 
     # ------------------------------------------------------------------
     # Freesound stock music / SFX
@@ -814,67 +799,60 @@ class ZenviBackendClient:
             return {"sounds": [], "error": str(e)}
 
     # ------------------------------------------------------------------
-    # Re-tagging and re-indexing (manual triggers)
+    # Re-indexing (manual trigger via agent tools)
     # ------------------------------------------------------------------
-    def retag_video(self, file_id: str, file_path: str, force: bool = True) -> Dict[str, Any]:
-        """Re-run Gemini tagging for a file. Clips > 30 min are rejected by the backend."""
-        try:
-            r = self.session.post(
-                f"{self.api_url}/tags/retag",
-                json={"file_id": file_id, "file_path": file_path, "force": force},
-                timeout=300,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("retag_video failed: %s", e)
-            return {"success": False, "error": str(e)}
-
-    def reindex_video(self, file_id: str, file_path: str, index_name: str = "zenvi-videos",
-                      existing_index_id: str = "") -> Dict[str, Any]:
-        """Re-index a video in TwelveLabs. Clips > 30 min are rejected by the backend."""
-        try:
-            payload: Dict[str, Any] = {
-                "file_id": file_id,
-                "file_path": file_path,
-                "index_name": index_name,
-                "force": True,
-            }
-            if existing_index_id:
-                payload["existing_index_id"] = existing_index_id
-            r = self.session.post(
-                f"{self.api_url}/indexing/reindex",
-                json=payload,
-                timeout=600,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("reindex_video failed: %s", e)
-            return {"success": False, "error": str(e)}
+    def reindex_video(
+        self,
+        file_id: str,
+        file_path: str,
+        index_name: str = "zenvi-videos",
+        existing_index_id: str = "",
+        session=None,
+    ) -> Dict[str, Any]:
+        """Re-index a video via multipart upload (sync on backend)."""
+        extra: Dict[str, Any] = {"index_name": index_name, "force": "true"}
+        if existing_index_id:
+            extra["existing_index_id"] = existing_index_id
+        data = self._post_media_multipart(
+            "/indexing/reindex",
+            file_path,
+            file_id=file_id,
+            extra=extra,
+            session=session,
+            timeout=600,
+        )
+        if data.get("error"):
+            return {"success": False, "error": data["error"]}
+        return data
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
-        """Download a Freesound HQ MP3 preview via the backend and return its local path."""
+        """Download a Freesound preview MP3 from the CDN URL to the local machine."""
+        hint = filename or f"freesound_{sound_id}"
+        return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
+
+    def list_directors(self) -> List[Dict[str, Any]]:
         try:
-            r = self.session.post(
-                f"{self.api_url}/freesound/download",
-                json={"sound_id": sound_id, "preview_url": preview_url, "filename": filename},
-                timeout=120,
-            )
+            r = self.session.get(f"{self.api_url}/directors", timeout=15)
             r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            log.error("Freesound download failed: %s", e)
-            return {"local_path": "", "error": str(e)}
+            payload = r.json()
+            if isinstance(payload, list):
+                return payload
+            return payload.get("directors", [])
+        except Exception as exc:
+            log.error("list_directors failed: %s", exc)
+            return []
 
 
 # Singleton
 _client: Optional[ZenviBackendClient] = None
+_client_url: Optional[str] = None
 
 
-def get_backend_client() -> ZenviBackendClient:
-    """Get the singleton backend client."""
-    global _client
-    if _client is None:
-        _client = ZenviBackendClient()
+def get_backend_client(reset: bool = False) -> ZenviBackendClient:
+    """Get the singleton backend client (refreshed when backend URL changes)."""
+    global _client, _client_url
+    url = ZenviBackendClient._get_backend_url()
+    if reset or _client is None or _client_url != url:
+        _client = ZenviBackendClient(base_url=url)
+        _client_url = url
     return _client

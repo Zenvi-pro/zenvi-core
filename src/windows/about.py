@@ -95,12 +95,17 @@ class About(QDialog):
         self.app = get_app()
         _ = self.app._tr
 
+        _bg = ""
+        for _p in info.application_icon_paths():
+            if _p.lower().endswith((".svg", ".png")):
+                _bg = "background-image: url(%s);" % _p.replace("\\", "/")
+                break
         self.setStyleSheet("""
             QDialog {
-                background-image: url(:/about/AboutLogo.png);
+                %s
                 background-repeat: no-repeat;
                 background-position: center;
-                background-size: stretch;
+                background-size: contain;
                 margin: 0px;
                 padding: 0px;
                 border: none;

@@ -61,15 +61,12 @@ class BackendTaggingWorker(QThread):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
-        self._session = None  # requests.Session, stored so we can close() it to interrupt
 
     # Hard limit: clips longer than 30 minutes are not tagged or indexed.
     _MAX_TAGGING_SECONDS = 30 * 60
 
     def run(self):
         import os as _os
-        import requests
-        self._session = requests.Session()
         client = get_backend_client()
         metadata = client._empty_ai_metadata()
         error = None
@@ -93,40 +90,77 @@ class BackendTaggingWorker(QThread):
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                metadata = client.tag_video(file_path, file_id=file_id, session=self._session)
+                metadata = client.tag_video(file_path, file_id=file_id)
+                if metadata.get("error"):
+                    log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
+                elif not metadata.get("analyzed"):
+                    log.warning("Tagging did not complete for %s", file_path)
 
                 # TwelveLabs indexing — run synchronously so we can capture the
                 # index_id / video_id and store them in ai_metadata.  This worker
                 # already runs in a background QThread, so blocking here won't
                 # freeze the UI.
-                if client.is_indexing_configured():
+                if client.is_indexing_configured() and not metadata.get("error"):
                     try:
-                        filename = _os.path.basename(file_path)
-                        # Use per-project index name so different projects
-                        # don't mix their clips in the same TwelveLabs index.
-                        index_name = f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                        idx_result = client.index_video(
-                            file_path, index_name,
-                            filename=filename, async_mode=False,
+                        from classes.credits_client import (
+                            charge_operation_on_success,
+                            check_operation,
                         )
-                        if isinstance(idx_result, dict) and idx_result.get("index_id"):
+
+                        _, balance, blocked = check_operation(
+                            "indexing_per_minute",
+                            "video indexing",
+                            duration_seconds=duration,
+                        )
+                        if blocked:
                             metadata["twelvelabs"] = {
-                                "status": idx_result.get("status", "ready"),
-                                "index_id": idx_result["index_id"],
-                                "video_id": idx_result.get("video_id", ""),
-                                "index_name": index_name,
+                                "status": "skipped",
+                                "error": blocked,
+                                "index_name": (
+                                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
+                                ),
                             }
-                            log.info(
-                                "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
-                                index_name, idx_result.get("index_id"), idx_result.get("video_id"),
+                        else:
+                            filename = _os.path.basename(file_path)
+                            index_name = (
+                                f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
                             )
-                        elif isinstance(idx_result, dict) and idx_result.get("error"):
-                            log.warning("TwelveLabs indexing returned error: %s", idx_result["error"])
-                            metadata["twelvelabs"] = {
-                                "status": "failed",
-                                "error": idx_result["error"],
-                                "index_name": index_name,
-                            }
+                            idx_result = client.index_video(
+                                file_path,
+                                index_name,
+                                filename=filename,
+                                file_id=file_id,
+                                async_mode=False,
+                            )
+                            if isinstance(idx_result, dict) and idx_result.get("index_id"):
+                                charge_operation_on_success(
+                                    True,
+                                    "indexing_per_minute",
+                                    provider="twelvelabs",
+                                    note=f"import {file_id}",
+                                    duration_seconds=duration,
+                                )
+                                metadata["twelvelabs"] = {
+                                    "status": idx_result.get("status", "ready"),
+                                    "index_id": idx_result["index_id"],
+                                    "video_id": idx_result.get("video_id", ""),
+                                    "index_name": index_name,
+                                }
+                                log.info(
+                                    "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
+                                    index_name,
+                                    idx_result.get("index_id"),
+                                    idx_result.get("video_id"),
+                                )
+                            elif isinstance(idx_result, dict) and idx_result.get("error"):
+                                log.warning(
+                                    "TwelveLabs indexing returned error: %s", idx_result["error"]
+                                )
+                                metadata["twelvelabs"] = {
+                                    "status": "failed",
+                                    "error": idx_result["error"],
+                                    "index_name": index_name,
+                                }
                     except Exception as idx_exc:
                         log.warning(f"TwelveLabs indexing failed: {idx_exc}")
                         metadata["twelvelabs"] = {
@@ -136,18 +170,17 @@ class BackendTaggingWorker(QThread):
         except Exception as exc:
             error = exc
             log.error(f"Backend tagging worker failed: {exc}")
-        finally:
-            self._session = None
         self.completed.emit(self.file_data, metadata, error)
 
     def interrupt(self):
         """Close the active HTTP session to unblock any pending request."""
-        s = self._session
-        if s is not None:
-            try:
-                s.close()
-            except Exception:
-                pass
+        try:
+            client = get_backend_client()
+            if client._session is not None:
+                client._session.close()
+                client._session = None
+        except Exception:
+            pass
 
 
 class FileFilterProxyModel(QSortFilterProxyModel):

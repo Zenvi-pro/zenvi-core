@@ -325,6 +325,56 @@ def _output_path_for_generated_video():
     return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}.mp4")
 
 
+def _download_video_url_to_path(video_url: str, dest_path: str, timeout: int = 180) -> Optional[str]:
+    """Download a remote generated video to dest_path. Returns None on success, else an error message."""
+    if not video_url:
+        return "No video URL returned from generation."
+    try:
+        import requests
+
+        resp = requests.get(
+            video_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) Zenvi/1.0"},
+            stream=True,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        with open(dest_path, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=1024 * 64):
+                if chunk:
+                    fh.write(chunk)
+        if os.path.getsize(dest_path) > 0:
+            return None
+        return "Downloaded file is empty"
+    except Exception as exc:
+        return f"Download failed: {exc}"
+
+
+def _upload_generation_assets(client, seed_path=None, frame_specs=None):
+    """Upload seed/frame files for remote generation; returns (seed_file_id, frame_images_paths, error)."""
+    seed_file_id = None
+    if seed_path and os.path.isfile(seed_path):
+        uid = f"gen_seed_{uuid_module.uuid4().hex[:8]}"
+        up = client.upload_media_file(seed_path, file_id=uid)
+        if not up.get("success"):
+            return None, None, up.get("error", "Failed to upload seed video")
+        seed_file_id = uid
+
+    frame_images_paths = []
+    for idx, spec in enumerate(frame_specs or []):
+        path = spec.get("path") or ""
+        frame = spec.get("frame", "first")
+        if not path or not os.path.isfile(path):
+            continue
+        uid = f"gen_frame_{idx}_{uuid_module.uuid4().hex[:6]}"
+        up = client.upload_media_file(path, file_id=uid)
+        if not up.get("success"):
+            return None, None, up.get("error", f"Failed to upload frame: {path}")
+        frame_images_paths.append({"file_id": uid, "frame": frame})
+
+    return seed_file_id, frame_images_paths or None, None
+
+
 # Context for add_clip_to_timeline (remembers last split file id per chat session)
 _last_split_file_id_by_chat_session = {}
 
@@ -717,10 +767,20 @@ def import_files(**_kw) -> str:
 # Export
 # ---------------------------------------------------------------------------
 
-def export_video(**_kw) -> str:
+def export_video(show_dialog="true", output_path="", **_kw) -> str:
+    """Export the project. Opens the dialog by default; set show_dialog=false to render immediately."""
     try:
-        _get_app().window.actionExportVideo_trigger()
-        return "Export video dialog opened."
+        open_ui = str(show_dialog).lower().strip() not in ("0", "false", "no")
+        path = (output_path or "").strip()
+        if open_ui and not path:
+            _get_app().window.actionExportVideo_trigger()
+            return "Export video dialog opened."
+        from windows.export import export_video_headless, get_default_export_settings
+        _, _, _, default_path = get_default_export_settings()
+        err = export_video_headless(path or None, None, None, None)
+        if err:
+            return f"Export failed: {err}"
+        return f"Exported to {path or default_path}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -773,19 +833,6 @@ def set_export_setting(key="", value="", **_kw) -> str:
         app.updates.update(["export_overrides"], overrides)
         get_app().updates.ignore_history = False
         return f"Set {kl} = {value}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def export_video_now(output_path="", **_kw) -> str:
-    try:
-        from windows.export import export_video_headless, get_default_export_settings
-        _, _, _, default_path = get_default_export_settings()
-        path = (output_path or "").strip() or None
-        err = export_video_headless(path, None, None, None)
-        if err:
-            return f"Export failed: {err}"
-        return f"Exported to {path or default_path}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -1417,10 +1464,8 @@ def slice_selected_clip_at_best_match(query="", occurrence="0", **_kw) -> str:
             return (
                 "TwelveLabs indexing failed for this video"
                 + detail
-                + ". Common cause: the cloud API backend cannot open paths on your computer "
-                "(indexing runs on the server). Use a local Zenvi backend, or index via a "
-                "server-visible path. You can still slice by explicit times, e.g. "
-                "'from 4 seconds to 10 seconds'."
+                + ". Re-import the file or run reindex_project_file_tool to upload and index again. "
+                "You can still slice by explicit times, e.g. 'from 4 seconds to 10 seconds'."
             )
         if tw_status == "indexing":
             return (
@@ -1631,11 +1676,17 @@ def _import_generated_video(video_path):
     return f, None
 
 
-def fetch_remotion_video_from_supabase(supabase_url="", supabase_path="", **_kw) -> str:
+def fetch_remotion_video_from_supabase(
+    supabase_url="",
+    supabase_path="",
+    render_job_id="",
+    **_kw,
+) -> str:
     """Download a rendered Remotion video from its Supabase public URL,
-    import it into the project files panel, then delete it from Supabase storage.
+    import it into the project files panel, then delete it from Supabase storage
+    (final MP4 plus intermediate segment uploads).
 
-    Called by the agent after render_remotion_product_launch_tool succeeds.
+    Called by the agent after render_product_demo_tool succeeds.
     """
     import tempfile
     import json
@@ -1676,19 +1727,29 @@ def fetch_remotion_video_from_supabase(supabase_url="", supabase_path="", **_kw)
 
         file_id = f.id if f else ""
 
-        # Delete from Supabase now that the file is safely imported
-        if supabase_path:
-            pl_url = os.environ.get("REMOTION_PRODUCT_LAUNCH_URL", "http://localhost:3100")
+        # Delete final + segment intermediates from Supabase after import
+        if supabase_path or render_job_id:
+            remotion_api = (
+                os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1").rstrip("/")
+            )
             try:
-                body = json.dumps({"supabase_path": supabase_path}).encode()
+                payload = {}
+                if supabase_path:
+                    payload["supabase_path"] = supabase_path
+                if render_job_id:
+                    payload["job_id"] = render_job_id
+                body = json.dumps(payload).encode()
                 cleanup_req = urllib.request.Request(
-                    f"{pl_url}/api/cleanup",
+                    f"{remotion_api}/cleanup",
                     data=body,
                     method="DELETE",
                     headers={"Content-Type": "application/json"},
                 )
-                with urllib.request.urlopen(cleanup_req, timeout=30):
-                    log.info("Deleted Supabase file after import: %s", supabase_path)
+                with urllib.request.urlopen(cleanup_req, timeout=60) as cleanup_resp:
+                    log.info(
+                        "Supabase cleanup after import: %s",
+                        cleanup_resp.read().decode()[:500],
+                    )
             except Exception as cleanup_err:
                 log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
 
@@ -1727,42 +1788,32 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     # Pause auto-save during generation to prevent backup interference
     auto_save_was_active = _pause_auto_save()
     try:
-        from classes.credits_client import credits as _creds
-        _ok, _bal = _creds.check(10)
-        if not _ok:
-            return (
-                f"You've used all your credits ({_bal} remaining). "
-                "Enable pay-as-you-go in Account → Credits, or wait for your next billing cycle."
-            )
+        from classes.credits_client import check_operation, credits
+
+        _, _, blocked = check_operation("video_generation", "video generation")
+        if blocked:
+            return blocked
         from classes.api_client import get_backend_client
         client = get_backend_client()
         result = client.generate_video(prompt, duration_seconds=duration)
         video_url = result.get("video_url", "")
-        local_path = result.get("local_path", "")
         err = result.get("error", "")
         if err:
             return f"Error: {err}"
 
-        # Deduct points after confirmed success (non-blocking)
-        from classes.credits_client import credits
-        credits.deduct(10, "video_generation", provider="runware",
-                       note=f"txt2v: {prompt[:60]}")
-        credits.award_bonus("first_export")   # idempotent — only fires once ever
+        dl_err = _download_video_url_to_path(video_url, output_path)
+        if dl_err:
+            return f"Error: {dl_err}"
 
-        # Prefer local_path from backend; fall back to downloading
-        if local_path and os.path.isfile(local_path):
-            output_path = local_path
-        elif video_url:
-            try:
-                import requests as _req
-                resp = _req.get(video_url, timeout=120)
-                resp.raise_for_status()
-                with open(output_path, "wb") as f:
-                    f.write(resp.content)
-            except Exception as dl_exc:
-                return f"Error: Download failed: {dl_exc}"
-        else:
-            return "Error: No video URL or local path returned."
+        from classes.credits_client import charge_operation_on_success, credits
+
+        charge_operation_on_success(
+            True,
+            "video_generation",
+            provider="runware",
+            note=f"txt2v: {prompt[:60]}",
+        )
+        credits.award_bonus("first_export")   # idempotent — only fires once ever
 
         try:
             f, import_err = _import_generated_video(output_path)
@@ -1997,50 +2048,36 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
                 "Constraints: the first frame must exactly match the provided first frame. "
                 "Continue the scene naturally for the full duration."
             )
-            frame_images_paths = [{"path": first_jpg, "frame": "first"}]
+            from classes.credits_client import check_operation
 
-            from classes.credits_client import credits as _creds
-            _ok, _bal = _creds.check(10)
-            if not _ok:
-                return (
-                    f"You've used all your credits ({_bal} remaining). "
-                    "Enable pay-as-you-go in Account → Credits, or wait for your next billing cycle."
-                )
+            _, _, blocked = check_operation("video_generation", "video generation")
+            if blocked:
+                return blocked
             from classes.api_client import get_backend_client
             client = get_backend_client()
+            seed_fid, frame_images_paths, up_err = _upload_generation_assets(
+                client,
+                seed_path=seed_mp4,
+                frame_specs=[{"path": first_jpg, "frame": "first"}],
+            )
+            if up_err:
+                return f"Error: {up_err}"
             result = client.generate_video(
                 prompt,
                 duration_seconds=gen_duration,
-                seed_video_path=seed_mp4,
+                seed_video_file_id=seed_fid,
                 frame_images_paths=frame_images_paths,
                 width=vid_width,
                 height=vid_height,
             )
             video_url = result.get("video_url", "")
-            local_path = result.get("local_path", "")
             gen_err = result.get("error", "")
             if gen_err:
                 return f"Error: {gen_err}"
 
-            # Deduct points after confirmed success (non-blocking)
-            from classes.credits_client import credits
-            credits.deduct(10, "video_generation", provider="runware",
-                           note=f"v2v insert: {query[:60]}")
-
-            # Download the generated insert clip
-            if local_path and os.path.isfile(local_path):
-                shutil.copy2(local_path, insert_mp4)
-            elif video_url:
-                try:
-                    import requests as _req
-                    resp = _req.get(video_url, timeout=120)
-                    resp.raise_for_status()
-                    with open(insert_mp4, "wb") as f:
-                        f.write(resp.content)
-                except Exception as dl_exc:
-                    return f"Error: Download failed: {dl_exc}"
-            else:
-                return "Error: No video URL or local path returned."
+            dl_err = _download_video_url_to_path(video_url, insert_mp4)
+            if dl_err:
+                return f"Error: {dl_err}"
 
             # ---- Step 4: Bake updated clip with crossfades ----
             output_path = _output_path_for_generated_video()
@@ -2113,6 +2150,15 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
             ok, bake_err = _ffmpeg_run(bake_cmd)
             if not ok:
                 return f"Error: Failed to bake updated clip: {bake_err}"
+
+            from classes.credits_client import charge_operation_on_success
+
+            charge_operation_on_success(
+                True,
+                "video_generation",
+                provider="runware",
+                note=f"v2v insert: {query[:60]}",
+            )
 
             # ---- Step 5: Import the baked clip ----
             f, import_err = _import_generated_video(output_path)
@@ -2223,54 +2269,50 @@ def replace_object_in_selected_clip(description="", duration_seconds="", **_kw) 
                 "camera motion, scene composition, and lighting. The first and last frames "
                 "must match the provided frame constraints."
             )
-            frame_images_paths = [
-                {"path": first_jpg, "frame": "first"},
-                {"path": last_jpg, "frame": "last"},
-            ]
+            from classes.credits_client import check_operation
 
-            from classes.credits_client import credits as _creds
-            _ok, _bal = _creds.check(10)
-            if not _ok:
-                return (
-                    f"You've used all your credits ({_bal} remaining). "
-                    "Enable pay-as-you-go in Account → Credits, or wait for your next billing cycle."
-                )
+            _, _, blocked = check_operation("video_generation", "video generation")
+            if blocked:
+                return blocked
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
+            seed_fid, frame_images_paths, up_err = _upload_generation_assets(
+                client,
+                seed_path=ref_mp4,
+                frame_specs=[
+                    {"path": first_jpg, "frame": "first"},
+                    {"path": last_jpg, "frame": "last"},
+                ],
+            )
+            if up_err:
+                return f"Error: {up_err}"
             result = client.generate_video(
                 prompt,
                 duration_seconds=gen_duration,
-                seed_video_path=ref_mp4,
+                seed_video_file_id=seed_fid,
                 frame_images_paths=frame_images_paths,
                 width=vid_width,
                 height=vid_height,
             )
             video_url = result.get("video_url", "")
-            local_path = result.get("local_path", "")
             gen_err = result.get("error", "")
             if gen_err:
                 return f"Error: {gen_err}"
 
-            # Deduct points after confirmed success (non-blocking)
-            from classes.credits_client import credits
-            credits.deduct(10, "video_generation", provider="runware",
-                           note=f"replace object: {description[:60]}")
-
             output_path = _output_path_for_generated_video()
-            if local_path and os.path.isfile(local_path):
-                shutil.copy2(local_path, output_path)
-            elif video_url:
-                try:
-                    import requests as _req
-                    resp = _req.get(video_url, timeout=120)
-                    resp.raise_for_status()
-                    with open(output_path, "wb") as fh:
-                        fh.write(resp.content)
-                except Exception as dl_exc:
-                    return f"Error: Download failed: {dl_exc}"
-            else:
-                return "Error: No video URL or local path returned from generation."
+            dl_err = _download_video_url_to_path(video_url, output_path)
+            if dl_err:
+                return f"Error: {dl_err}"
+
+            from classes.credits_client import charge_operation_on_success
+
+            charge_operation_on_success(
+                True,
+                "video_generation",
+                provider="runware",
+                note=f"replace object: {description[:60]}",
+            )
 
             f, _import_err = _import_generated_video(output_path)
             if not f:
@@ -2405,42 +2447,54 @@ def generate_transition_clip(clip_a_id="", clip_b_id="", prompt_hint="", **_kw) 
             if not ok:
                 return f"Error: Failed to extract first frame from clip B: {err}"
 
-            frame_images_paths = [
-                {"path": frame_a_path, "frame": "first"},
-                {"path": frame_b_path, "frame": "last"},
-            ]
+            from classes.credits_client import check_operation
 
-            from classes.credits_client import credits as _creds
-            _ok, _bal = _creds.check(10)
-            if not _ok:
-                return (
-                    f"You've used all your credits ({_bal} remaining). "
-                    "Enable pay-as-you-go in Account → Credits, or wait for your next billing cycle."
-                )
+            _, _, blocked = check_operation("morph_generation", "morph generation")
+            if blocked:
+                return blocked
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
 
             if ref_mp4 and os.path.isfile(ref_mp4):
-                # V2V + frame constraints: reference video gives visual context,
-                # frame constraints pin the start/end to match both clips exactly.
                 log.info("generate_transition: using V2V reference + frame constraints")
+                seed_fid, frame_images_paths, up_err = _upload_generation_assets(
+                    client,
+                    seed_path=ref_mp4,
+                    frame_specs=[
+                        {"path": frame_a_path, "frame": "first"},
+                        {"path": frame_b_path, "frame": "last"},
+                    ],
+                )
+                if up_err:
+                    return f"Error: {up_err}"
                 result = client.generate_video(
                     prompt,
                     duration_seconds=int(morph_duration),
-                    seed_video_path=ref_mp4,
+                    seed_video_file_id=seed_fid,
                     frame_images_paths=frame_images_paths,
                     width=vid_w,
                     height=vid_h,
                 )
             else:
-                # Fallback: frame-only morph (original behaviour)
                 log.info("generate_transition: falling back to frame-only morph")
+                _, frames_a, up_err = _upload_generation_assets(
+                    client, frame_specs=[{"path": frame_a_path, "frame": "first"}]
+                )
+                if up_err:
+                    return f"Error: {up_err}"
+                _, frames_b, up_err2 = _upload_generation_assets(
+                    client, frame_specs=[{"path": frame_b_path, "frame": "last"}]
+                )
+                if up_err2:
+                    return f"Error: {up_err2}"
+                start_fid = frames_a[0]["file_id"] if frames_a else None
+                end_fid = frames_b[0]["file_id"] if frames_b else None
                 result = client.generate_morph_video(
                     first_image_url="",
                     last_image_url="",
-                    start_image_path=frame_a_path,
-                    end_image_path=frame_b_path,
+                    start_image_file_id=start_fid,
+                    end_image_file_id=end_fid,
                     prompt=prompt,
                     duration_seconds=int(morph_duration),
                     width=vid_w,
@@ -2448,36 +2502,28 @@ def generate_transition_clip(clip_a_id="", clip_b_id="", prompt_hint="", **_kw) 
                 )
 
             video_url = result.get("video_url", "")
-            local_path = result.get("local_path", "")
             gen_err = result.get("error", "")
             if gen_err:
                 return f"Error: {gen_err}"
 
-            # Deduct points after confirmed success (non-blocking)
-            from classes.credits_client import credits
-            credits.deduct(10, "video_generation", provider="runware",
-                           note="transition/morph generation")
-
-            # Download the transition video
             morph_path = os.path.join(tmpdir, "morph_video.mp4")
-            if local_path and os.path.isfile(local_path):
-                shutil.copy2(local_path, morph_path)
-            elif video_url:
-                try:
-                    import requests as _req
-                    resp = _req.get(video_url, timeout=120)
-                    resp.raise_for_status()
-                    with open(morph_path, "wb") as f:
-                        f.write(resp.content)
-                except Exception as dl_exc:
-                    return f"Error: Download failed: {dl_exc}"
-            else:
-                return "Error: No video URL or local path returned."
+            dl_err = _download_video_url_to_path(video_url, morph_path)
+            if dl_err:
+                return f"Error: {dl_err}"
 
             # Import the transition video
             f, import_err = _import_generated_video(morph_path)
             if not f:
                 return "Error: Transition video generated but could not be added to project."
+
+            from classes.credits_client import charge_operation_on_success
+
+            charge_operation_on_success(
+                True,
+                "morph_generation",
+                provider="runware",
+                note="transition/morph generation",
+            )
 
             # Probe actual duration from the re-encoded file that was imported
             # (not morph_path — _import_generated_video re-encodes to a new file
@@ -2645,6 +2691,29 @@ def search_transitions(query="", **_kw) -> str:
     except Exception as e:
         log.error("search_transitions: %s", e, exc_info=True)
         return f"Error: {e}"
+
+
+def apply_transition(
+    clip1_id="",
+    clip2_id="",
+    transition_name="",
+    duration="1.0",
+    placement="between",
+    **_kw,
+) -> str:
+    """Apply an OpenShot transition: placement='between' (two clips) or 'start'/'end' (one clip)."""
+    place = (placement or "between").lower().strip()
+    if place == "between":
+        if not clip2_id:
+            return "Error: clip2_id is required when placement='between'."
+        return add_transition_between_clips(
+            clip1_id, clip2_id, transition_name, duration, **_kw
+        )
+    if place in ("start", "end"):
+        return add_transition_to_clip(
+            clip1_id, transition_name, position=place, duration=duration, **_kw
+        )
+    return "Error: placement must be 'between', 'start', or 'end'."
 
 
 def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", duration="1.0", **_kw) -> str:
@@ -2852,8 +2921,60 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
 # ---------------------------------------------------------------------------
 
 
+def generate_tts_and_add_to_timeline(
+    text="",
+    voice="alloy",
+    model="tts-1",
+    speed=1.0,
+    track=0,
+    position=0.0,
+    **kwargs,
+) -> str:
+    """Generate narration via backend TTS API and add MP3 to the timeline."""
+    try:
+        narration = (text or "").strip()
+        if not narration:
+            return "Error: No text provided for narration."
+
+        from classes.api_client import get_backend_client
+
+        client = get_backend_client()
+        resp = client.generate_tts(
+            text=narration,
+            voice=(voice or "alloy"),
+            model=(model or "tts-1"),
+            speed=float(speed or 1.0),
+        )
+        if not resp.get("success"):
+            return f"Error: {resp.get('error', 'TTS generation failed')}"
+
+        import base64
+        import tempfile
+
+        raw = base64.b64decode(resp.get("audio_base64") or "")
+        if not raw:
+            return "Error: TTS returned empty audio."
+
+        out_path = os.path.join(
+            tempfile.gettempdir(),
+            f"zenvi_tts_{uuid_module.uuid4().hex}.mp3",
+        )
+        with open(out_path, "wb") as f:
+            f.write(raw)
+
+        return add_tts_audio_to_timeline(
+            audio_path=out_path,
+            track=track,
+            position=position,
+            **kwargs,
+        )
+    except Exception as e:
+        log.error("generate_tts_and_add_to_timeline: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
 def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) -> str:
-    """Add a generated TTS audio file to the timeline."""
+    """Add a generated TTS audio file to the timeline (internal; prefer generate_tts_and_add_to_timeline_tool)."""
     try:
         from classes.query import File, Clip
         app = _get_app()
@@ -3058,6 +3179,117 @@ def analyze_clip_visual_content(clip_id=None, **kwargs) -> str:
 # Stock media / retag / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
+def import_stock_media(
+    source="",
+    video_id="",
+    link="",
+    sound_id="",
+    preview_url="",
+    filename="",
+    local_path="",
+    **kwargs,
+) -> str:
+    """Download stock media (pexels|freesound) and import into Project Files, or import local_path."""
+    path = (local_path or "").strip()
+    if path:
+        return add_stock_media_to_project(local_path=path, **kwargs)
+
+    src = (source or "").lower().strip()
+    if src == "pexels":
+        dl = download_pexels_video_tool(
+            video_id=video_id, link=link, filename=filename, **kwargs
+        )
+    elif src == "freesound":
+        dl = download_freesound_music_tool(
+            sound_id=sound_id, preview_url=preview_url, filename=filename, **kwargs
+        )
+    else:
+        return "Error: source must be 'pexels' or 'freesound' (or pass local_path)."
+
+    if dl.startswith("Error"):
+        return dl
+    if "Downloaded to:" in dl:
+        path = dl.split("Downloaded to:", 1)[1].strip()
+        return add_stock_media_to_project(local_path=path, **kwargs)
+    return dl
+
+
+def modify_selected_clip(
+    mode="replace",
+    description="",
+    query="",
+    fade_ms="400",
+    duration_seconds="",
+    **kwargs,
+) -> str:
+    """AI-edit the selected clip: mode='replace' (restyle) or 'insert' (new footage at best match)."""
+    m = (mode or "replace").lower().strip()
+    text = (description or query or "").strip()
+    if m == "insert":
+        return insert_kling_v2v_clip_into_selected_clip(
+            query=text, fade_ms=fade_ms, **kwargs
+        )
+    return replace_object_in_selected_clip(
+        description=text, duration_seconds=duration_seconds, **kwargs
+    )
+
+
+def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str = "", **kwargs) -> str:
+    """Download a Pexels MP4 from the search-result link to the local machine."""
+    try:
+        if not link:
+            return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
+        from classes.credits_client import charge_operation_on_success, check_operation
+
+        _, _, blocked = check_operation("stock_add", "stock media download")
+        if blocked:
+            return blocked
+
+        from classes.api_client import get_backend_client
+        vid = int(video_id) if str(video_id).strip().isdigit() else 0
+        result = get_backend_client().pexels_download(vid, link, filename=filename or "")
+        err = result.get("error", "")
+        path = result.get("local_path", "")
+        if err or not path:
+            return f"Pexels download error: {err or 'no file path'}"
+        charge_operation_on_success(
+            True, "stock_add", "stock_add", provider="pexels", note=f"video {vid}"
+        )
+        return f"Downloaded to: {path}"
+    except Exception as exc:
+        return f"Error downloading Pexels video: {exc}"
+
+
+def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", filename: str = "", **kwargs) -> str:
+    """Download a Freesound HQ MP3 preview to the local machine."""
+    try:
+        if not preview_url:
+            return "Error: preview_url is required (from search_freesound_music_tool)."
+        try:
+            sid = int(sound_id)
+        except (ValueError, TypeError):
+            return f"Error: sound_id must be numeric Freesound ID, not '{sound_id}'."
+
+        from classes.credits_client import charge_operation_on_success, check_operation
+
+        _, _, blocked = check_operation("stock_add", "stock media download")
+        if blocked:
+            return blocked
+
+        from classes.api_client import get_backend_client
+        result = get_backend_client().freesound_download(sid, preview_url, filename=filename or "")
+        err = result.get("error", "")
+        path = result.get("local_path", "")
+        if err or not path:
+            return f"Freesound download error: {err or 'no file path'}"
+        charge_operation_on_success(
+            True, "stock_add", "stock_add", provider="freesound", note=f"sound {sid}"
+        )
+        return f"Downloaded to: {path}"
+    except Exception as exc:
+        return f"Error downloading Freesound audio: {exc}"
+
+
 def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
     """Import a downloaded stock file into Project Files."""
     try:
@@ -3172,8 +3404,7 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
 
     Runs entirely on a worker thread.  Only the brief project-data reads
     (file path, duration, project id) are marshalled to the Qt main
-    thread; the long-running ``client.index_video`` poll happens off the
-    GUI thread so the UI stays responsive.
+    thread; the long-running reindex upload runs off the GUI thread.
     """
     try:
         if not file_id:
@@ -3189,10 +3420,13 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
                 project_id = _get_app().project.get("id") or ""
             except Exception:
                 pass
+            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
                 "project_id": project_id,
+                "existing_index_id": tl.get("index_id") or "",
             }
 
         state = _run_on_main_thread(_read_project_state, timeout=10)
@@ -3207,19 +3441,42 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
             )
 
         from classes.api_client import get_backend_client
+        from classes.credits_client import charge_operation_on_success, check_operation
+
         client = get_backend_client()
         if not client.is_indexing_configured():
             return "TwelveLabs is not configured — re-indexing unavailable."
+
+        duration = float(state["duration"])
+        _, _, blocked = check_operation(
+            "indexing_per_minute",
+            "video re-indexing",
+            duration_seconds=duration,
+        )
+        if blocked:
+            return blocked
 
         index_name = (
             f"zenvi-{state['project_id']}" if state["project_id"] else "zenvi-videos"
         )
 
-        result = client.index_video(state["path"], index_name, async_mode=False)
-        if isinstance(result, dict) and result.get("index_id"):
+        result = client.reindex_video(
+            file_id,
+            state["path"],
+            index_name=index_name,
+            existing_index_id=state.get("existing_index_id") or "",
+        )
+        if isinstance(result, dict) and result.get("success"):
+            charge_operation_on_success(
+                True,
+                "indexing_per_minute",
+                provider="twelvelabs",
+                note=f"reindex {file_id}",
+                duration_seconds=duration,
+            )
             return (
                 f"Re-indexing complete for file {file_id}. "
-                f"index_id={result['index_id']}  video_id={result.get('video_id', '')}"
+                f"index_id={result.get('index_id', '')}  video_id={result.get('video_id', '')}"
             )
         return f"Re-indexing failed: {result.get('error', result.get('message', 'unknown'))}"
     except Exception as e:
@@ -3368,7 +3625,8 @@ def build_editor_snapshot_for_chat(max_chars: int = 3500) -> str:
         return ""
 
 
-TOOL_HANDLERS = {
+# Tools exposed to the main chat / video / transitions agents (not director-only).
+AGENT_TOOL_HANDLERS = {
     # Project
     "get_project_info_tool": get_project_info,
     "list_files_tool": list_files,
@@ -3398,30 +3656,36 @@ TOOL_HANDLERS = {
     "export_video_tool": export_video,
     "get_export_settings_tool": get_export_settings,
     "set_export_setting_tool": set_export_setting,
-    "export_video_now_tool": export_video_now,
     # Clips
     "get_file_info_tool": get_file_info,
     "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
-    # Search
+    # Search (selected clip)
     "search_selected_clip_scenes_tool": search_selected_clip_scenes,
     "slice_selected_clip_at_best_match_tool": slice_selected_clip_at_best_match,
     # Remotion
     "fetch_remotion_video_from_supabase_tool": fetch_remotion_video_from_supabase,
-    # Video generation
+    # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
-    "insert_kling_v2v_clip_into_selected_clip_tool": insert_kling_v2v_clip_into_selected_clip,
-    "replace_object_in_selected_clip_tool": replace_object_in_selected_clip,
+    "modify_selected_clip_tool": modify_selected_clip,
     "generate_transition_clip_tool": generate_transition_clip,
-    # Transitions
+    # OpenShot transitions (mask/dissolve)
     "list_transitions_tool": list_transitions,
     "search_transitions_tool": search_transitions,
-    "add_transition_between_clips_tool": add_transition_between_clips,
-    "add_transition_to_clip_tool": add_transition_to_clip,
-    # TTS (timeline insertion)
-    "add_tts_audio_to_timeline_tool": add_tts_audio_to_timeline,
-    # Director analysis (read-only project state access)
+    "apply_transition_tool": apply_transition,
+    # TTS
+    "generate_tts_and_add_to_timeline_tool": generate_tts_and_add_to_timeline,
+    # Stock / planning
+    "import_stock_media_tool": import_stock_media,
+    "retag_project_file_tool": retag_project_file,
+    "reindex_project_file_tool": reindex_project_file,
+    "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
+    "get_timeline_state_tool": get_timeline_state,
+}
+
+# Director orchestrator only — not registered on the root chat agent.
+DIRECTOR_TOOL_HANDLERS = {
     "analyze_timeline_structure_tool": analyze_timeline_structure,
     "analyze_pacing_tool": analyze_pacing,
     "analyze_audio_levels_tool": analyze_audio_levels,
@@ -3430,13 +3694,69 @@ TOOL_HANDLERS = {
     "analyze_music_sync_tool": analyze_music_sync,
     "get_project_metadata_tool": get_project_metadata_info,
     "analyze_clip_visual_content_tool": analyze_clip_visual_content,
-    # Stock media / retag / reindex / planning
-    "add_stock_media_to_project_tool": add_stock_media_to_project,
-    "retag_project_file_tool": retag_project_file,
-    "reindex_project_file_tool": reindex_project_file,
-    "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
-    "get_timeline_state_tool": get_timeline_state,
 }
+
+TOOL_HANDLERS = {**AGENT_TOOL_HANDLERS, **DIRECTOR_TOOL_HANDLERS}
+
+# Humanized titles for chat tool-block headers (main agent tools only).
+TOOL_DISPLAY_LABELS = {
+    "get_project_info_tool": "Read project info",
+    "list_files_tool": "List files",
+    "list_clips_tool": "List clips",
+    "list_layers_tool": "List tracks",
+    "list_markers_tool": "List markers",
+    "new_project_tool": "New project",
+    "save_project_tool": "Save project",
+    "open_project_tool": "Open project",
+    "watch_clip_tool": "Load and play clip",
+    "play_tool": "Toggle playback",
+    "go_to_start_tool": "Seek to start",
+    "go_to_end_tool": "Seek to end",
+    "undo_tool": "Undo",
+    "redo_tool": "Redo",
+    "add_track_tool": "Add track",
+    "add_marker_tool": "Add marker",
+    "remove_clip_tool": "Remove clip",
+    "delete_clips_on_track_tool": "Delete clips on track",
+    "zoom_in_tool": "Zoom in",
+    "zoom_out_tool": "Zoom out",
+    "center_on_playhead_tool": "Center on playhead",
+    "import_files_tool": "Import files",
+    "export_video_tool": "Export video",
+    "get_export_settings_tool": "Read export settings",
+    "set_export_setting_tool": "Update export setting",
+    "get_file_info_tool": "Read file info",
+    "split_file_add_clip_tool": "Split clip and add to timeline",
+    "add_clip_to_timeline_tool": "Add clip to timeline",
+    "slice_clip_at_playhead_tool": "Slice clip at playhead",
+    "search_selected_clip_scenes_tool": "Search clip scenes",
+    "slice_selected_clip_at_best_match_tool": "Slice clip at best match",
+    "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
+    "generate_video_and_add_to_timeline_tool": "Generate video",
+    "modify_selected_clip_tool": "AI edit selected clip",
+    "generate_transition_clip_tool": "AI bridge between clips",
+    "list_transitions_tool": "List transitions",
+    "search_transitions_tool": "Search transitions",
+    "apply_transition_tool": "Apply transition",
+    "generate_tts_and_add_to_timeline_tool": "Add narration (TTS)",
+    "import_stock_media_tool": "Import stock media",
+    "retag_project_file_tool": "Retag file",
+    "reindex_project_file_tool": "Reindex file",
+    "get_clips_with_full_metadata_tool": "Read clips metadata",
+    "get_timeline_state_tool": "Read timeline state",
+}
+
+assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
+    "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
+)
+
+
+def humanize_tool_name(tool_name: str) -> str:
+    """Return a short human-readable title for a tool name."""
+    if tool_name in TOOL_DISPLAY_LABELS:
+        return TOOL_DISPLAY_LABELS[tool_name]
+    base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
+    return base.replace("_", " ").strip().capitalize() or "Run tool"
 
 
 # Tools that only READ project / timeline data and don't mutate Qt widgets.
@@ -3454,7 +3774,6 @@ READ_ONLY_TOOLS = frozenset({
     "list_transitions_tool",
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
-    "get_project_metadata_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -3465,6 +3784,7 @@ READ_ONLY_TOOLS = frozenset({
 BACKGROUND_SAFE_TOOLS = frozenset({
     "reindex_project_file_tool",
     "retag_project_file_tool",
+    "import_stock_media_tool",
 })
 
 

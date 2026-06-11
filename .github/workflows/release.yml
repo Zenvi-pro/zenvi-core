@@ -109,16 +109,25 @@ jobs:
           # Copy frozen build
           cp -r build/exe.linux-*/* "$APPDIR/usr/bin/"
 
-          # Desktop file
-          cp xdg/*.desktop "$APPDIR/usr/share/applications/" 2>/dev/null || true
-          cp xdg/*.desktop "$APPDIR/" 2>/dev/null || true
-
-          # Icon
-          ICON=$(find images xdg -name "*.png" -path "*256*" 2>/dev/null | head -1)
-          if [ -n "$ICON" ]; then
-            cp "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
-            cp "$ICON" "$APPDIR/zenvi.png"
+          # Desktop + AppStream (Zenvi only — do not ship legacy OpenShot .desktop files)
+          DESKTOP="xdg/org.zenvi.Zenvi.desktop"
+          APPDATA="xdg/org.zenvi.Zenvi.appdata.xml"
+          if [ ! -f "$DESKTOP" ]; then
+            echo "::error::Missing $DESKTOP"
+            exit 1
           fi
+          cp "$DESKTOP" "$APPDIR/usr/share/applications/"
+          cp "$DESKTOP" "$APPDIR/zenvi.desktop"
+          [ -f "$APPDATA" ] && cp "$APPDATA" "$APPDIR/usr/share/metainfo/"
+
+          # Icon (same branding as installer/dmg-icon.png)
+          ICON="installer/dmg-icon.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::error::Missing packaging icon: $ICON"
+            exit 1
+          fi
+          cp "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
+          cp "$ICON" "$APPDIR/zenvi.png"
 
           # AppRun
           cat > "$APPDIR/AppRun" << 'APPRUN'
@@ -168,14 +177,21 @@ jobs:
           LAUNCHER
           chmod +x "$DEB_DIR/usr/bin/zenvi"
 
-          # Desktop file
-          cp xdg/*.desktop "$DEB_DIR/usr/share/applications/" 2>/dev/null || true
-
-          # Icon
-          ICON=$(find images xdg -name "*.png" -path "*256*" 2>/dev/null | head -1)
-          if [ -n "$ICON" ]; then
-            cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
+          # Desktop file (Zenvi only)
+          DESKTOP="xdg/org.zenvi.Zenvi.desktop"
+          if [ ! -f "$DESKTOP" ]; then
+            echo "::error::Missing $DESKTOP"
+            exit 1
           fi
+          cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
+
+          # Icon (same branding as installer/dmg-icon.png)
+          ICON="installer/dmg-icon.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::error::Missing packaging icon: $ICON"
+            exit 1
+          fi
+          cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
 
           # Control file
           cat > "$DEB_DIR/DEBIAN/control" << CTRL
@@ -1256,10 +1272,6 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: "Zenvi v${{ env.VER }}"
           body: |
-            ## What's New
-
-            See the [commit log](https://github.com/${{ github.repository }}/compare/v${{ env.VER }}...HEAD) for a full list of changes.
-
             ## Downloads
 
             | Platform | Installer |

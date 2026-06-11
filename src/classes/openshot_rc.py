@@ -8,6 +8,9 @@
 
 from PyQt5 import QtCore
 
+# Register Zenvi :/openshot.svg before this module's qInitResources() (Qt: first registration wins).
+from classes import zenvi_brand_rc  # noqa: F401
+
 qt_resource_data = b"\
 \x00\x02\xc8\x54\
 \x3c\
