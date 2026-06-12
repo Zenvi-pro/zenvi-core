@@ -3901,13 +3901,17 @@ def _remove_old_pil_captions(clip, app) -> None:
     if old_ids:
         from classes.query import Clip as _Clip
         existing_ids = {c.id for c in _Clip.filter()}
-        for cid in old_ids:
-            if cid in existing_ids:
-                try:
-                    app.updates.delete(["clips", {"id": cid}])
-                except Exception as e:
-                    log.warning("Could not delete old caption clip %s: %s", cid, e)
-        app.updates.update(["clips", {"id": clip.id}], {"caption_clip_ids": []})
+        app.window.IgnoreUpdates.emit(True, True)
+        try:
+            for cid in old_ids:
+                if cid in existing_ids:
+                    try:
+                        app.updates.delete(["clips", {"id": cid}])
+                    except Exception as e:
+                        log.warning("Could not delete old caption clip %s: %s", cid, e)
+            app.updates.update(["clips", {"id": clip.id}], {"caption_clip_ids": []})
+        finally:
+            app.window.IgnoreUpdates.emit(False, True)
 
 
 def _render_segments_to_pngs(
@@ -3992,31 +3996,36 @@ def _add_pil_caption_clips(
     caption_layer_num = _get_captions_layer_number(app)
 
     caption_clip_ids = []
-    for png_path, seg_start, seg_dur in rendered_pngs:
-        clip_id = str(uuid_module.uuid4())
-        caption_clip_ids.append(clip_id)
+    app.updates.transaction_id = str(uuid_module.uuid4())
+    app.window.IgnoreUpdates.emit(True, True)
+    try:
+        for png_path, seg_start, seg_dur in rendered_pngs:
+            clip_id = str(uuid_module.uuid4())
+            caption_clip_ids.append(clip_id)
 
-        clip_data = dict(template_json)
-        clip_data["id"] = clip_id
-        clip_data["layer"] = caption_layer_num
-        clip_data["position"] = round(clip_timeline_pos + seg_start, 6)
-        clip_data["start"] = 0.0
-        clip_data["end"] = round(seg_dur, 6)
-        # Update reader path (keep all other reader fields from the template)
-        reader = dict(clip_data.get("reader") or {})
-        reader["path"] = png_path
-        clip_data["reader"] = reader
+            clip_data = dict(template_json)
+            clip_data["id"] = clip_id
+            clip_data["layer"] = caption_layer_num
+            clip_data["position"] = round(clip_timeline_pos + seg_start, 6)
+            clip_data["start"] = 0.0
+            clip_data["end"] = round(seg_dur, 6)
+            # Update reader path (keep all other reader fields from the template)
+            reader = dict(clip_data.get("reader") or {})
+            reader["path"] = png_path
+            clip_data["reader"] = reader
 
-        app.updates.insert(["clips"], clip_data)
+            app.updates.insert(["clips"], clip_data)
+
+        # Persist caption clip IDs on the source clip so style_captions can clean them up later
+        app.updates.update(
+            ["clips", {"id": clip.id}],
+            {"caption_clip_ids": caption_clip_ids},
+        )
+    finally:
+        app.updates.transaction_id = None
+        app.window.IgnoreUpdates.emit(False, True)
 
     log.info("caption clips: inserted %d clips starting at position %.3f", len(caption_clip_ids), clip_timeline_pos)
-
-    # Persist caption clip IDs on the source clip so style_captions can clean them up later
-    app.updates.update(
-        ["clips", {"id": clip.id}],
-        {"caption_clip_ids": caption_clip_ids},
-    )
-
     return len(caption_clip_ids)
 
 
