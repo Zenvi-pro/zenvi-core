@@ -279,6 +279,8 @@
     var activitySteps = [];
     var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
     var currentReasoningStep = null; // the single live "Reasoning" step, or null
+    var enterStagger = 0;   // index within the current entrance burst
+    var lastEnterAt = 0;    // timestamp of the last staggered tool-block entrance
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
@@ -499,6 +501,21 @@
 
     /* ── Cursor-style collapsible tool terminal blocks ───────────────── */
 
+    // Stagger entrance animations so a burst of tool blocks pops in one-by-one
+    // rather than all at once. Blocks appearing >400ms apart start a fresh burst.
+    function staggerEntrance(el) {
+        var now = Date.now();
+        if (now - lastEnterAt > 400) {
+            enterStagger = 0;
+        } else {
+            enterStagger = Math.min(enterStagger + 1, 8);
+        }
+        lastEnterAt = now;
+        if (enterStagger > 0) {
+            el.style.animationDelay = (enterStagger * 80) + 'ms';
+        }
+    }
+
     function setToolBlockExpanded(block, expanded) {
         if (!block || !block.el) return;
         if (expanded) {
@@ -548,6 +565,7 @@
         var el = document.createElement('div');
         el.className = 'chat-tool-block running expanded chat-message-enter';
         el.setAttribute('data-call-id', callId);
+        staggerEntrance(el);
 
         var header = document.createElement('button');
         header.type = 'button';
@@ -563,7 +581,9 @@
 
         header.addEventListener('click', function () {
             var block = toolBlocks[callId];
-            if (!block) return;
+            // Only blocks that streamed log lines are expandable; the rest are
+            // just a tick + heading and have nothing to reveal.
+            if (!block || block.lines.length === 0) return;
             var nowExpanded = !el.classList.contains('expanded');
             setToolBlockExpanded(block, nowExpanded);
         });
@@ -592,6 +612,8 @@
         row.textContent = line;
         block.body.appendChild(row);
         block.lines.push(line);
+        // Reveal the chevron now that there's something to expand.
+        block.el.classList.add('has-logs');
         block.body.scrollTop = block.body.scrollHeight;
         messagesEl.scrollTop = messagesEl.scrollHeight;
     };
@@ -599,24 +621,22 @@
     window.completeToolBlock = function (callId, ok, summary) {
         var block = toolBlocks[callId];
         if (block && block.el) {
-            block.el.classList.remove('running');
-            block.el.classList.add(ok ? 'done' : 'error');
+            if (!ok) {
+                // Failed tool calls are transient noise — the agent retries and
+                // usually succeeds. Drop them so only successful steps remain.
+                if (block.el.parentNode) block.el.remove();
+                delete toolBlocks[callId];
+            } else {
+                block.el.classList.remove('running');
+                block.el.classList.add('done');
 
-            var iconEl = block.header.querySelector('.chat-tool-icon');
-            if (iconEl) iconEl.innerHTML = ok ? ACTIVITY_CHECK_SVG : ACTIVITY_X_SVG;
+                var iconEl = block.header.querySelector('.chat-tool-icon');
+                if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
 
-            if (summary) {
-                var cmdEl = block.header.querySelector('.chat-tool-cmd');
-                if (cmdEl) cmdEl.textContent = summary;
+                // Header is just the tick + heading; the summary/detail and the
+                // chevron (unless logs streamed) are hidden via CSS.
+                setToolBlockExpanded(block, false);
             }
-
-            // If body is empty, hide it and disable chevron toggling.
-            if (block.lines.length === 0) {
-                block.el.classList.add('empty');
-            }
-
-            // Auto-collapse, matching Cursor behaviour.
-            setToolBlockExpanded(block, false);
         }
         // Unknown call_id: nothing to stop — fall through so reasoning
         // bookkeeping below still runs.
