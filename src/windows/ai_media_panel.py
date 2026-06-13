@@ -58,6 +58,7 @@ class AIMediaPanel(QDockWidget):
         
         # Main widget
         main = QWidget()
+        main.setObjectName("AIMediaPanelContents")
         layout = QVBoxLayout()
         main.setLayout(layout)
         self.setWidget(main)
