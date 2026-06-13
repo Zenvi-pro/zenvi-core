@@ -278,6 +278,7 @@
     var activityContainer = null;
     var activitySteps = [];
     var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
+    var currentReasoningStep = null; // the single live "Reasoning" step, or null
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
@@ -407,8 +408,24 @@
 
     /* ── Activity log helpers (tool step display during processing) ── */
 
-    function addReasoningStep() {
+    // Number of tool blocks still spinning. The DOM is the single source of
+    // truth so dedupe / unknown-id handling can never desync a counter.
+    function runningToolCount() {
+        var n = 0;
+        for (var k in toolBlocks) {
+            if (toolBlocks.hasOwnProperty(k) && toolBlocks[k] &&
+                toolBlocks[k].el && toolBlocks[k].el.classList.contains('running')) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // Idempotent: at most one "Reasoning" step exists at any moment. Multiple
+    // tool completions in one turn must not stack multiple reasoning rows.
+    function ensureReasoningStep() {
         if (!activityContainer) return;
+        if (currentReasoningStep && currentReasoningStep.parentNode) return;
         var step = document.createElement('div');
         step.className = 'chat-activity-step running';
         step.setAttribute('data-type', 'reasoning');
@@ -416,7 +433,21 @@
                          '<span class="activity-label activity-reasoning">Reasoning</span>';
         activityContainer.appendChild(step);
         activitySteps.push(step);
+        currentReasoningStep = step;
     }
+
+    // Remove the live reasoning placeholder (used when a tool starts — the
+    // agent is no longer "just thinking").
+    function clearReasoningStep() {
+        if (!currentReasoningStep) return;
+        var idx = activitySteps.indexOf(currentReasoningStep);
+        if (idx !== -1) activitySteps.splice(idx, 1);
+        if (currentReasoningStep.parentNode) currentReasoningStep.remove();
+        currentReasoningStep = null;
+    }
+
+    // Back-compat alias for the older activity API / any external callers.
+    function addReasoningStep() { ensureReasoningStep(); }
 
     function completeActivityStep(step) {
         if (!step) return;
@@ -431,6 +462,8 @@
 
     window.addActivityStep = function (label, detail) {
         if (!activityContainer) return;
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
         // Complete current step (reasoning or previous tool)
         if (activitySteps.length > 0) {
             completeActivityStep(activitySteps[activitySteps.length - 1]);
@@ -452,9 +485,15 @@
 
     window.completeLastActivityStep = function () {
         if (!activityContainer || activitySteps.length === 0) return;
-        completeActivityStep(activitySteps[activitySteps.length - 1]);
-        // LLM will reason about the tool result next
-        addReasoningStep();
+        var last = activitySteps[activitySteps.length - 1];
+        // Don't "complete" the live reasoning placeholder — replace it.
+        if (last === currentReasoningStep) {
+            clearReasoningStep();
+        } else {
+            completeActivityStep(last);
+        }
+        // LLM will reason about the tool result next.
+        ensureReasoningStep();
         messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
@@ -481,13 +520,29 @@
         var title = data.title || 'Running tool';
         var cmd = data.cmd || '';
 
-        // Finish any running reasoning step (the LLM has decided on a tool).
-        if (activitySteps.length > 0) {
-            var last = activitySteps[activitySteps.length - 1];
-            if (last.getAttribute('data-type') === 'reasoning') {
-                last.remove();
-                activitySteps.pop();
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
+
+        // Dedupe: the same call_id can be announced twice (local on_tool_call
+        // and ws on_tool_progress both reach here). Reuse the existing block so
+        // we never orphan a still-spinning DOM node that completeToolBlock can't
+        // reach. Preserve any logs already streamed into its body.
+        var existing = toolBlocks[callId];
+        if (existing && existing.el && existing.el.parentNode) {
+            existing.el.classList.remove('done', 'error');
+            existing.el.classList.add('running');
+            var exIcon = existing.header.querySelector('.chat-tool-icon');
+            if (exIcon) exIcon.innerHTML = ACTIVITY_SPINNER_SVG;
+            if (title) {
+                var exTitle = existing.header.querySelector('.chat-tool-title');
+                if (exTitle) exTitle.textContent = title;
             }
+            if (cmd) {
+                var exCmd = existing.header.querySelector('.chat-tool-cmd');
+                if (exCmd) exCmd.textContent = cmd;
+            }
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            return;
         }
 
         var el = document.createElement('div');
@@ -543,28 +598,35 @@
 
     window.completeToolBlock = function (callId, ok, summary) {
         var block = toolBlocks[callId];
-        if (!block) return;
-        block.el.classList.remove('running');
-        block.el.classList.add(ok ? 'done' : 'error');
+        if (block && block.el) {
+            block.el.classList.remove('running');
+            block.el.classList.add(ok ? 'done' : 'error');
 
-        var iconEl = block.header.querySelector('.chat-tool-icon');
-        if (iconEl) iconEl.innerHTML = ok ? ACTIVITY_CHECK_SVG : ACTIVITY_X_SVG;
+            var iconEl = block.header.querySelector('.chat-tool-icon');
+            if (iconEl) iconEl.innerHTML = ok ? ACTIVITY_CHECK_SVG : ACTIVITY_X_SVG;
 
-        if (summary) {
-            var cmdEl = block.header.querySelector('.chat-tool-cmd');
-            if (cmdEl) cmdEl.textContent = summary;
+            if (summary) {
+                var cmdEl = block.header.querySelector('.chat-tool-cmd');
+                if (cmdEl) cmdEl.textContent = summary;
+            }
+
+            // If body is empty, hide it and disable chevron toggling.
+            if (block.lines.length === 0) {
+                block.el.classList.add('empty');
+            }
+
+            // Auto-collapse, matching Cursor behaviour.
+            setToolBlockExpanded(block, false);
         }
+        // Unknown call_id: nothing to stop — fall through so reasoning
+        // bookkeeping below still runs.
 
-        // If body is empty, hide it and disable chevron toggling.
-        if (block.lines.length === 0) {
-            block.el.classList.add('empty');
+        // Re-enter "thinking" only once the LAST running tool has finished.
+        // With N parallel tools this fires the single reasoning row exactly
+        // once instead of once per completion.
+        if (runningToolCount() === 0) {
+            ensureReasoningStep();
         }
-
-        // Auto-collapse, matching Cursor behaviour.
-        setToolBlockExpanded(block, false);
-
-        // LLM will reason about the tool result next.
-        addReasoningStep();
         messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
@@ -586,18 +648,13 @@
             activityContainer.className = 'chat-activity-log';
             activityContainer.setAttribute('aria-live', 'polite');
             messagesEl.appendChild(activityContainer);
-            addReasoningStep();
+            currentReasoningStep = null; // fresh turn
+            ensureReasoningStep();
             messagesEl.scrollTop = messagesEl.scrollHeight;
         } else {
             if (glowWrap) glowWrap.classList.remove('glow-active');
-            // Finalize activity log: remove trailing reasoning step
-            if (activityContainer && activitySteps.length > 0) {
-                var last = activitySteps[activitySteps.length - 1];
-                if (last.getAttribute('data-type') === 'reasoning') {
-                    last.remove();
-                    activitySteps.pop();
-                }
-            }
+            // Finalize activity log: drop the live reasoning placeholder.
+            clearReasoningStep();
             // Complete any remaining running steps
             for (var i = 0; i < activitySteps.length; i++) {
                 if (activitySteps[i].classList.contains('running')) {
@@ -623,6 +680,7 @@
             activityContainer = null;
             activitySteps = [];
             toolBlocks = {};
+            currentReasoningStep = null;
             // Calculate thought time
             if (processingStartTime) {
                 var elapsed = Math.round((Date.now() - processingStartTime) / 1000);
