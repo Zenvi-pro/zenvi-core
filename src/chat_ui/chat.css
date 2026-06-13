@@ -300,7 +300,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--chat-muted);
     opacity: 0.75;
     transition: opacity 0.2s;
@@ -367,32 +367,31 @@
 .chat-tool-header {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
     width: 100%;
-    padding: 6px 10px;
+    padding: 4px 10px;
     background: transparent;
     border: none;
     color: var(--chat-text);
-    cursor: pointer;
+    cursor: default;
     text-align: left;
     font: inherit;
     transition: background 0.12s ease;
 }
 
-.chat-tool-header:hover {
+/* Only blocks that streamed logs are interactive. */
+.chat-tool-block.has-logs .chat-tool-header {
+    cursor: pointer;
+}
+
+.chat-tool-block.has-logs .chat-tool-header:hover {
     background: rgba(255, 255, 255, 0.04);
 }
 
-.chat-tool-block.empty .chat-tool-header {
-    cursor: default;
-}
-
-.chat-tool-block.empty .chat-tool-chevron {
-    visibility: hidden;
-}
-
+/* Minimal display: just the tick + heading. The chevron only appears when
+   there are log lines to expand. */
 .chat-tool-chevron {
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
     width: 12px;
@@ -400,6 +399,10 @@
     flex-shrink: 0;
     color: var(--chat-muted);
     transition: transform 0.18s ease;
+}
+
+.chat-tool-block.has-logs .chat-tool-chevron {
+    display: flex;
 }
 
 .chat-tool-block.expanded .chat-tool-chevron {
@@ -430,20 +433,9 @@
 }
 
 .chat-tool-title {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--chat-text);
-    flex-shrink: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 35%;
-}
-
-.chat-tool-cmd {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
-    color: var(--chat-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -451,8 +443,13 @@
     min-width: 0;
 }
 
-.chat-tool-block.done .chat-tool-title,
-.chat-tool-block.done .chat-tool-cmd {
+/* The result summary / command detail is intentionally hidden — tool steps
+   show only a tick mark and a heading. */
+.chat-tool-cmd {
+    display: none;
+}
+
+.chat-tool-block.done .chat-tool-title {
     opacity: 0.85;
 }
 
