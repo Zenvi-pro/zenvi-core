@@ -29,7 +29,7 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 from classes.logger import log
 
 from classes.zenvi_env import load_zenvi_dotenv
@@ -124,11 +124,14 @@ class ZenviBackendClient:
         except Exception:
             return None
 
-    def _multipart_headers(self, session) -> Dict[str, str]:
-        return {
+    def _multipart_headers(self, session) -> Dict[str, Optional[str]]:
+        headers = {
             k: v for k, v in session.headers.items()
             if k.lower() != "content-type"
         }
+        # Override session default so requests sets multipart boundary.
+        headers["Content-Type"] = None
+        return headers
 
     def upload_media_file(
         self,
@@ -156,10 +159,26 @@ class ZenviBackendClient:
             data = r.json()
             if not data.get("success"):
                 return {"success": False, "error": data.get("error", "Upload failed")}
-            return {"success": True, "file_id": fid, "server_path": data.get("server_path", "")}
+            server_path = data.get("server_path", "")
+            log.info(
+                "Uploaded %s to backend (file_id=%s, server_path=%s)",
+                name, fid, server_path or "(unknown)",
+            )
+            return {"success": True, "file_id": fid, "server_path": server_path}
         except Exception as exc:
             log.error("Media upload failed: %s", exc)
             return {"success": False, "error": str(exc)}
+
+    def cleanup_backend_upload(self, file_id: str, session=None) -> None:
+        """Remove a temp upload on the backend after tag/index complete."""
+        if not file_id:
+            return
+        try:
+            s = session or self.session
+            r = s.delete(f"{self.api_url}/media/upload/{file_id}", timeout=30)
+            r.raise_for_status()
+        except Exception as exc:
+            log.debug("Backend upload cleanup failed for %s: %s", file_id, exc)
 
     def _post_media_multipart(
         self,
@@ -596,6 +615,49 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
+    def _new_http_session(self):
+        """Thread-safe session for parallel upload + tagging requests."""
+        import requests
+        s = requests.Session()
+        s.headers.update({"Content-Type": "application/json"})
+        if not self._ssl_verify:
+            s.verify = False
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return s
+
+    def start_indexing_job(
+        self,
+        file_id: str,
+        index_name: str,
+        filename: str = "",
+        existing_index_id: Optional[str] = None,
+        session=None,
+    ) -> Dict[str, Any]:
+        """Start TwelveLabs indexing for a file already on the backend (/media/upload)."""
+        payload: Dict[str, Any] = {
+            "file_id": file_id,
+            "index_name": index_name,
+            "filename": filename or file_id,
+        }
+        if existing_index_id:
+            payload["existing_index_id"] = existing_index_id
+        try:
+            s = session or self.session
+            r = s.post(f"{self.api_url}/indexing", json=payload, timeout=30)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as exc:
+            log.error("Index job start failed: %s", exc)
+            return {"success": False, "error": str(exc), "message": str(exc)}
+
+        if data.get("error"):
+            return {"success": False, "error": data["error"], "message": data["error"]}
+        job_id = data.get("job_id")
+        if not job_id:
+            return {"success": False, "error": data.get("error", "Backend returned no job_id")}
+        return self._poll_indexing_job(job_id)
+
     def index_video(
         self,
         file_path: str,
@@ -606,26 +668,25 @@ class ZenviBackendClient:
         async_mode: bool = True,  # noqa: ARG002 — kept for callers
         session=None,
     ) -> Dict[str, Any]:
-        """Index a video via multipart upload + job poll."""
-        extra: Dict[str, Any] = {"index_name": index_name}
-        if filename:
-            extra["filename"] = filename
-        if existing_index_id:
-            extra["existing_index_id"] = existing_index_id
-        data = self._post_media_multipart(
-            "/indexing",
+        """Index a video: upload once, then start job by file_id reference."""
+        fid = file_id or uuid.uuid4().hex
+        name = filename or os.path.basename(file_path)
+        up = self.upload_media_file(
             file_path,
-            file_id=file_id,
-            extra=extra,
+            file_id=fid,
+            filename=name,
             session=session,
-            timeout=120,
         )
-        if data.get("error"):
-            return {"success": False, "error": data["error"], "message": data["error"]}
-        job_id = data.get("job_id")
-        if not job_id:
-            return {"success": False, "error": data.get("error", "Backend returned no job_id")}
-        return self._poll_indexing_job(job_id)
+        if not up.get("success"):
+            return {"success": False, "error": up.get("error", "Upload failed"), "message": up.get("error", "")}
+
+        return self.start_indexing_job(
+            fid,
+            index_name,
+            filename=name,
+            existing_index_id=existing_index_id,
+            session=session,
+        )
 
     def _poll_indexing_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 10) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
@@ -711,6 +772,87 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Tagging & Indexing (for files_model)
     # ------------------------------------------------------------------
+    def tag_video_by_file_id(
+        self,
+        file_id: str,
+        filename: str = "",
+        session=None,
+    ) -> Dict[str, Any]:
+        """Tag a video already on the backend (server-side frame extraction)."""
+        payload: Dict[str, Any] = {"file_id": file_id}
+        if filename:
+            payload["filename"] = filename
+        try:
+            s = session or self.session
+            r = s.post(
+                f"{self.api_url}/tags/analyze",
+                json=payload,
+                timeout=600,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if data.get("error"):
+                meta = self._empty_ai_metadata()
+                meta["error"] = data["error"]
+                return meta
+            if data.get("analyzed"):
+                return data
+            meta = self._empty_ai_metadata()
+            meta["error"] = data.get("error", "Tagging did not complete")
+            return meta
+        except Exception as exc:
+            log.error("Tag by file_id failed: %s", exc)
+            meta = self._empty_ai_metadata()
+            meta["error"] = str(exc)
+            return meta
+
+    def tag_video_frames(
+        self,
+        file_id: str,
+        duration_seconds: float,
+        frames: List[Tuple[float, bytes]],
+        filename: str = "",
+        session=None,
+    ) -> Dict[str, Any]:
+        """Send pre-extracted JPEG frames for AI tagging (no video upload)."""
+        import base64
+        if not frames:
+            meta = self._empty_ai_metadata()
+            meta["error"] = "No frames to analyze"
+            return meta
+        payload = {
+            "file_id": file_id,
+            "duration_seconds": duration_seconds,
+            "filename": filename,
+            "frames": [
+                {"timestamp": ts, "data": base64.b64encode(jpeg).decode("ascii")}
+                for ts, jpeg in frames
+            ],
+        }
+        try:
+            s = session or self.session
+            r = s.post(
+                f"{self.api_url}/tags/analyze-frames",
+                json=payload,
+                timeout=120,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if data.get("error"):
+                meta = self._empty_ai_metadata()
+                meta["error"] = data["error"]
+                return meta
+            if data.get("analyzed"):
+                return data
+            meta = self._empty_ai_metadata()
+            meta["error"] = data.get("error", "Frame tagging did not complete")
+            return meta
+        except Exception as exc:
+            log.error("Frame tagging failed: %s", exc)
+            meta = self._empty_ai_metadata()
+            meta["error"] = str(exc)
+            return meta
+
     def tag_video(self, video_path: str, file_id: str = "", session=None) -> Dict[str, Any]:
         """Upload video to the backend and return AI metadata (sync or job poll)."""
         data = self._post_media_multipart(
@@ -809,21 +951,33 @@ class ZenviBackendClient:
         existing_index_id: str = "",
         session=None,
     ) -> Dict[str, Any]:
-        """Re-index a video via multipart upload (sync on backend)."""
-        extra: Dict[str, Any] = {"index_name": index_name, "force": "true"}
-        if existing_index_id:
-            extra["existing_index_id"] = existing_index_id
-        data = self._post_media_multipart(
-            "/indexing/reindex",
+        """Re-index: upload video once, then POST JSON to /indexing/reindex."""
+        name = os.path.basename(file_path) if file_path else ""
+        up = self.upload_media_file(
             file_path,
             file_id=file_id,
-            extra=extra,
+            filename=name,
             session=session,
-            timeout=600,
         )
-        if data.get("error"):
-            return {"success": False, "error": data["error"]}
-        return data
+        if not up.get("success"):
+            return {"success": False, "error": up.get("error", "Upload failed")}
+
+        payload: Dict[str, Any] = {
+            "file_id": file_id,
+            "index_name": index_name,
+            "filename": name,
+            "force": True,
+        }
+        if existing_index_id:
+            payload["existing_index_id"] = existing_index_id
+        try:
+            s = session or self.session
+            r = s.post(f"{self.api_url}/indexing/reindex", json=payload, timeout=600)
+            r.raise_for_status()
+            return r.json()
+        except Exception as exc:
+            log.error("Re-index failed: %s", exc)
+            return {"success": False, "error": str(exc)}
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
         """Download a Freesound preview MP3 from the CDN URL to the local machine."""
