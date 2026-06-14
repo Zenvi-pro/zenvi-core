@@ -346,22 +346,15 @@
 .chat-tool-block {
     display: flex;
     flex-direction: column;
-    margin: 4px 0;
-    border: 1px solid var(--chat-border, rgba(255,255,255,0.07));
+    margin: 1px 0;
+    border: none;
     border-radius: 6px;
-    background: var(--chat-surface);
+    /* Blend into the chat background — no raised card, just a row. */
+    background: transparent;
     overflow: hidden;
     opacity: 0;
     transform: translateY(8px);
     animation: chat-message-enter 0.25s ease forwards;
-}
-
-.chat-tool-block.running {
-    border-color: color-mix(in srgb, var(--chat-accent) 32%, var(--chat-border));
-}
-
-.chat-tool-block.error {
-    border-color: rgba(239, 68, 68, 0.45);
 }
 
 .chat-tool-header {
