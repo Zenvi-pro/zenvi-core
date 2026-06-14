@@ -67,6 +67,8 @@ class BackendTaggingWorker(QThread):
 
     def run(self):
         import os as _os
+        from concurrent.futures import ThreadPoolExecutor
+
         client = get_backend_client()
         metadata = client._empty_ai_metadata()
         error = None
@@ -90,17 +92,25 @@ class BackendTaggingWorker(QThread):
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                metadata = client.tag_video(file_path, file_id=file_id)
-                if metadata.get("error"):
-                    log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
-                elif not metadata.get("analyzed"):
-                    log.warning("Tagging did not complete for %s", file_path)
+                filename = _os.path.basename(file_path)
+                index_name = (
+                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
+                )
+                indexing_configured = client.is_indexing_configured()
 
-                # TwelveLabs indexing — run synchronously so we can capture the
-                # index_id / video_id and store them in ai_metadata.  This worker
-                # already runs in a background QThread, so blocking here won't
-                # freeze the UI.
-                if client.is_indexing_configured() and not metadata.get("error"):
+                # 1) Upload video once — backend stores under zenvi_uploads/{file_id}
+                upload_session = client._new_http_session()
+                up = client.upload_media_file(
+                    file_path, file_id=file_id, filename=filename, session=upload_session,
+                )
+                if not up.get("success"):
+                    metadata["error"] = up.get("error", "Video upload to backend failed")
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
+
+                # 2) Tag + index in parallel on the server copy (opencv + TwelveLabs).
+                run_indexing = False
+                if indexing_configured:
                     try:
                         from classes.credits_client import (
                             charge_operation_on_success,
@@ -116,23 +126,42 @@ class BackendTaggingWorker(QThread):
                             metadata["twelvelabs"] = {
                                 "status": "skipped",
                                 "error": blocked,
-                                "index_name": (
-                                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                                ),
+                                "index_name": index_name,
                             }
                         else:
-                            filename = _os.path.basename(file_path)
-                            index_name = (
-                                f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                            )
-                            idx_result = client.index_video(
-                                file_path,
-                                index_name,
-                                filename=filename,
-                                file_id=file_id,
-                                async_mode=False,
-                            )
+                            run_indexing = True
+                    except Exception as cred_exc:
+                        log.warning("Indexing credits check failed: %s", cred_exc)
+                        metadata["twelvelabs"] = {
+                            "status": "failed",
+                            "error": str(cred_exc),
+                            "index_name": index_name,
+                        }
+
+                def _tag_on_backend():
+                    s = client._new_http_session()
+                    return client.tag_video_by_file_id(
+                        file_id, filename=filename, session=s,
+                    )
+
+                def _index_on_backend():
+                    s = client._new_http_session()
+                    return client.start_indexing_job(
+                        file_id, index_name, filename=filename, session=s,
+                    )
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    tag_future = pool.submit(_tag_on_backend)
+                    index_future = (
+                        pool.submit(_index_on_backend) if run_indexing else None
+                    )
+                    metadata = tag_future.result()
+
+                    if index_future is not None:
+                        try:
+                            idx_result = index_future.result()
                             if isinstance(idx_result, dict) and idx_result.get("index_id"):
+                                from classes.credits_client import charge_operation_on_success
                                 charge_operation_on_success(
                                     True,
                                     "indexing_per_minute",
@@ -154,19 +183,28 @@ class BackendTaggingWorker(QThread):
                                 )
                             elif isinstance(idx_result, dict) and idx_result.get("error"):
                                 log.warning(
-                                    "TwelveLabs indexing returned error: %s", idx_result["error"]
+                                    "TwelveLabs indexing returned error: %s",
+                                    idx_result["error"],
                                 )
                                 metadata["twelvelabs"] = {
                                     "status": "failed",
                                     "error": idx_result["error"],
                                     "index_name": index_name,
                                 }
-                    except Exception as idx_exc:
-                        log.warning(f"TwelveLabs indexing failed: {idx_exc}")
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": str(idx_exc),
-                        }
+                        except Exception as idx_exc:
+                            log.warning("TwelveLabs indexing failed: %s", idx_exc)
+                            metadata["twelvelabs"] = {
+                                "status": "failed",
+                                "error": str(idx_exc),
+                                "index_name": index_name,
+                            }
+
+                client.cleanup_backend_upload(file_id)
+
+                if metadata.get("error"):
+                    log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
+                elif not metadata.get("analyzed"):
+                    log.warning("Tagging did not complete for %s", file_path)
         except Exception as exc:
             error = exc
             log.error(f"Backend tagging worker failed: {exc}")
