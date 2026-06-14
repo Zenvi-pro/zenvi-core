@@ -3474,6 +3474,23 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
                 note=f"reindex {file_id}",
                 duration_seconds=duration,
             )
+
+            def _persist_twelvelabs_metadata():
+                from classes.query import File
+                f = File.get(id=file_id)
+                if not f:
+                    return
+                ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+                ai["twelvelabs"] = {
+                    "status": "ready",
+                    "index_id": result.get("index_id", ""),
+                    "video_id": result.get("video_id", ""),
+                    "index_name": index_name,
+                }
+                f.data["ai_metadata"] = ai
+                f.save()
+
+            _run_on_main_thread(_persist_twelvelabs_metadata, timeout=10)
             return (
                 f"Re-indexing complete for file {file_id}. "
                 f"index_id={result.get('index_id', '')}  video_id={result.get('video_id', '')}"
