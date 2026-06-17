@@ -458,6 +458,22 @@ class FilesModel(QObject, updates.UpdateInterface):
         """Attach AI metadata to a file object (does not save)."""
         if not ai_metadata or not isinstance(ai_metadata, dict):
             return
+        from classes.ai_metadata_utils import is_ai_metadata_usable
+
+        # Don't let a failed / empty tagging result wipe out previously-good
+        # analysis. Keep the usable content; only record the new error and any
+        # fresh indexing status.
+        prev = file_obj.data.get("ai_metadata")
+        if (not is_ai_metadata_usable(ai_metadata)
+                and isinstance(prev, dict) and is_ai_metadata_usable(prev)):
+            merged = dict(prev)
+            if ai_metadata.get("error"):
+                merged["error"] = ai_metadata["error"]
+            if ai_metadata.get("twelvelabs"):
+                merged["twelvelabs"] = ai_metadata["twelvelabs"]
+            file_obj.data["ai_metadata"] = merged
+            return
+
         file_obj.data["ai_metadata"] = ai_metadata
         tags = ai_metadata.get("tags", {}) if isinstance(ai_metadata, dict) else {}
         top_objects = tags.get("objects", []) if isinstance(tags, dict) else []

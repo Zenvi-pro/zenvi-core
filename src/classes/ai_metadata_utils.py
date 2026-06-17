@@ -5,6 +5,30 @@ Utility functions for handling AI metadata on clips, especially for sub-clipping
 from typing import Dict, Any, List
 
 
+def is_ai_metadata_usable(ai_metadata: Dict[str, Any]) -> bool:
+    """Return True when ai_metadata actually contains usable analysis content.
+
+    The backend used to report ``analyzed=True`` even when the vision model
+    failed, leaving empty objects/scenes/description/scene_descriptions. Such a
+    result is worthless for the tags tab and chat, so we treat "analyzed but
+    empty" as NOT usable — it should be re-tagged rather than trusted.
+    """
+    if not ai_metadata or not isinstance(ai_metadata, dict):
+        return False
+    if not ai_metadata.get("analyzed"):
+        return False
+    if ai_metadata.get("scene_descriptions"):
+        return True
+    if (ai_metadata.get("description") or "").strip():
+        return True
+    tags = ai_metadata.get("tags") or {}
+    if isinstance(tags, dict):
+        for key in ("objects", "scenes", "activities", "mood"):
+            if tags.get(key):
+                return True
+    return False
+
+
 def adjust_scene_descriptions_for_subclip(
     ai_metadata: Dict[str, Any],
     start_time: float,

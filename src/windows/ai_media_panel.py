@@ -74,6 +74,10 @@ class AIMediaPanel(QDockWidget):
         self.update_timer.timeout.connect(self.update_analysis_status)
         # Timer starts on-demand; only runs while analysis is active
         
+        # File ids we've already auto-triggered a re-tag for this session, so
+        # viewing a clip with stale/empty metadata heals it at most once.
+        self._auto_retag_requested = set()
+
         # Track selection changes for clip tag display
         self._wire_selection_signals()
         self.update_selected_clip_tags()
@@ -155,6 +159,35 @@ class AIMediaPanel(QDockWidget):
             item.setHidden(text.lower() not in haystack if text else False)
             iterator += 1
 
+    def _maybe_auto_retag(self, file_id):
+        """Re-tag a source file whose metadata is missing/failed — once per session.
+
+        Returns True when a re-tag was started, so the caller can show
+        "Re-analyzing…" instead of a stale "no descriptions" message. This is
+        what heals clips that were tagged while the backend was returning empty
+        results; the panel refreshes via FileUpdated when tagging completes.
+        """
+        file_id = str(file_id or "")
+        if not file_id or file_id in self._auto_retag_requested:
+            return False
+        try:
+            from classes.query import File
+            f = File.get(id=file_id)
+            if not f or not isinstance(getattr(f, "data", None), dict):
+                return False
+            if f.data.get("media_type") != "video":
+                return False
+            files_model = getattr(get_app().window, "files_model", None)
+            if not files_model or not hasattr(files_model, "_tag_file_async"):
+                return False
+            self._auto_retag_requested.add(file_id)
+            log.info("AIMediaPanel: auto re-tagging %s (no usable metadata)", file_id)
+            files_model._tag_file_async(file_id)
+            return True
+        except Exception as exc:
+            log.warning("AIMediaPanel auto re-tag failed: %s", exc)
+            return False
+
     def _wire_selection_signals(self):
         """Listen for file selection changes to show per-clip tags."""
         try:
@@ -192,17 +225,21 @@ class AIMediaPanel(QDockWidget):
                 self.selected_clip_label.setText("Select a clip to view scene descriptions")
                 return
 
+            from classes.ai_metadata_utils import is_ai_metadata_usable
+
             ai_meta = {}
             name = ""
+            target_file_id = ""
 
             if timeline_clip and isinstance(getattr(timeline_clip, "data", None), dict):
                 clip_data = timeline_clip.data
                 name = clip_data.get("title") or clip_data.get("name") or "Timeline Clip"
+                target_file_id = str(clip_data.get("file_id") or "")
                 # First, prefer per-clip metadata (set during slice)
                 ai_meta = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else {}
 
                 # Fallback to source File's metadata
-                if not ai_meta.get("analyzed"):
+                if not is_ai_metadata_usable(ai_meta):
                     try:
                         file_id = clip_data.get("file_id")
                         source_file = File.get(id=str(file_id)) if file_id else None
@@ -217,13 +254,28 @@ class AIMediaPanel(QDockWidget):
             if not name and file_obj:
                 name = file_obj.data.get('name') or os.path.basename(file_obj.data.get('path', 'Clip'))
 
-            if (not ai_meta or not ai_meta.get("analyzed")) and file_obj:
+            if (not is_ai_metadata_usable(ai_meta)) and file_obj:
                 candidate = file_obj.get_ai_metadata()
                 ai_meta = candidate if isinstance(candidate, dict) else {}
+                if not target_file_id:
+                    target_file_id = str(getattr(file_obj, "id", "") or "")
 
-            if not ai_meta.get('analyzed'):
-                self.selected_clip_label.setText(f"{name} (processing scene descriptions...)")
-                self.selected_tags_list.addItem("Tagging in progress...")
+            if not is_ai_metadata_usable(ai_meta):
+                # No usable analysis: either still processing, or a previous
+                # tagging attempt failed/returned nothing. Tell the truth and
+                # self-heal by re-tagging the source file once per session.
+                error_msg = ai_meta.get("error") if isinstance(ai_meta, dict) else ""
+                healing = self._maybe_auto_retag(target_file_id)
+                if error_msg:
+                    self.selected_clip_label.setText(f"{name} — tagging failed")
+                    self.selected_tags_list.addItem(str(error_msg))
+                    if healing:
+                        self.selected_tags_list.addItem("Re-analyzing this clip…")
+                else:
+                    self.selected_clip_label.setText(f"{name} (processing scene descriptions...)")
+                    self.selected_tags_list.addItem(
+                        "Re-analyzing this clip…" if healing else "Tagging in progress…"
+                    )
                 return
 
             self.selected_clip_label.setText(name)
