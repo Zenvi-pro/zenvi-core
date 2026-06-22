@@ -41,16 +41,9 @@
     const inputOverlay = document.getElementById('chat-input-overlay');
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
-    const attachClipBtn = document.getElementById('chat-attach-clip-btn');
-    const transitionClipsBtn = document.getElementById('chat-transition-clips-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
-    const tagsRow = document.getElementById('chat-tags-row');
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
-
-    // ── Tag / pick-mode state ─────────────────────────────────────────────
-    var attachedContext = null;   // null | {type, ...}
-    var pickMode = null;          // null | 'selected_clip' | 'transition_a' | 'transition_b'
 
     // ── Command palette state ("/" commands) ─────────────────────────────
     var commandPaletteEl = null;
@@ -59,10 +52,10 @@
     var commandQuery = '';
     var COMMANDS = [
         { prefix: '/add-track', label: 'Add track', description: 'Add a new track to the timeline' },
-        { prefix: '/split', label: 'Split clip', description: 'Split the selected clip at the playhead' },
+        { prefix: '/split', label: 'Split clip', description: 'Split a timeline clip at the playhead (name the clip in chat or scrub to it first)' },
         { prefix: '/export', label: 'Export', description: 'Export the current project (choose preset)' },
-        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for the selected clip' },
-        { prefix: '/transition', label: 'Transition', description: 'Generate a transition clip between two selected clips' }
+        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for a timeline clip (describe which clip)' },
+        { prefix: '/transition', label: 'Transition', description: 'Generate a transition between two clips (describe both clips)' }
     ];
 
     function ensureCommandPaletteEl() {
@@ -190,85 +183,6 @@
             inputEl.style.height = next + 'px';
         } catch (e) {}
     }
-
-    function renderTags() {
-        if (!tagsRow) return;
-        tagsRow.innerHTML = '';
-        if (!attachedContext) { tagsRow.style.display = 'none'; return; }
-        tagsRow.style.display = 'flex';
-
-        var pill = document.createElement('span');
-        pill.className = 'chat-tag-pill';
-
-        var labelEl = document.createElement('span');
-        if (attachedContext.type === 'selected_clip') {
-            labelEl.textContent = '@clip: ' + (attachedContext.title || 'clip');
-        } else if (attachedContext.type === 'transition_clips') {
-            var aTitle = (attachedContext.clipA && attachedContext.clipA.title) || '…';
-            var bTitle = (attachedContext.clipB && attachedContext.clipB.title) || '…';
-            labelEl.textContent = '@transition: ' + aTitle + ' → ' + bTitle;
-            if (!attachedContext.clipB) pill.classList.add('chat-tag-pending');
-        }
-        pill.appendChild(labelEl);
-
-        var xBtn = document.createElement('button');
-        xBtn.type = 'button';
-        xBtn.className = 'chat-tag-remove';
-        xBtn.setAttribute('aria-label', 'Remove');
-        xBtn.textContent = '×';
-        xBtn.addEventListener('click', function () {
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            getBridge(function (bridge) { if (bridge && bridge.cancelClipPick) bridge.cancelClipPick(); });
-            renderTags();
-        });
-        pill.appendChild(xBtn);
-        tagsRow.appendChild(pill);
-    }
-
-    function showPickHint(msg) {
-        var existing = document.getElementById('chat-pick-hint');
-        if (!existing) {
-            existing = document.createElement('div');
-            existing.id = 'chat-pick-hint';
-            existing.className = 'chat-pick-hint';
-            if (tagsRow && tagsRow.parentNode) {
-                tagsRow.parentNode.insertBefore(existing, tagsRow);
-            }
-        }
-        existing.textContent = msg;
-        existing.style.display = 'block';
-    }
-
-    function hidePendingPickHint() {
-        var el = document.getElementById('chat-pick-hint');
-        if (el) el.style.display = 'none';
-    }
-
-    // Called from Python: window.chatSetPickResult({id, title, start, end})
-    window.chatSetPickResult = function (json) {
-        try {
-            var data = typeof json === 'string' ? JSON.parse(json) : json;
-            if (pickMode === 'selected_clip') {
-                attachedContext = { type: 'selected_clip', id: data.id, title: data.title,
-                                    start: data.start, end: data.end };
-                pickMode = null;
-                hidePendingPickHint();
-            } else if (pickMode === 'transition_a') {
-                attachedContext = { type: 'transition_clips', clipA: data, clipB: null };
-                pickMode = 'transition_b';
-                showPickHint('Now click the second clip (B) on the timeline…');
-                // Re-enter pick mode on Python side for clip B
-                getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_b'); });
-            } else if (pickMode === 'transition_b') {
-                attachedContext.clipB = data;
-                pickMode = null;
-                hidePendingPickHint();
-            }
-            renderTags();
-        } catch (e) {}
-    };
 
     var processingStartTime = null;
     var lastRunTimestamp = null;
@@ -1074,19 +988,11 @@
         if (!text) return;
         exitIdle();
         closeCommandPalette();
-        var ctxJson = attachedContext ? JSON.stringify(attachedContext) : '';
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '', ctxJson);
+            bridge.sendMessage(text, modelSelect.value || '');
             inputEl.value = '';
             adjustTextareaHeight();
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
-            // Note: Python's _handle_web_send_message will fire setProcessing(true)
-            // *after* the user message is appended, so the "Reasoning" row lines up
-            // beneath the user bubble instead of above it.
         });
     }
 
@@ -1121,30 +1027,6 @@
     }
 
     sendBtn.addEventListener('click', sendMessage);
-
-    // Attach single clip: enter pick mode → user clicks clip on timeline
-    if (attachClipBtn) {
-        attachClipBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
-
-    // Attach two clips for transition
-    if (transitionClipsBtn) {
-        transitionClipsBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
 
     cancelBtn.addEventListener('click', cancelRequest);
     clearBtn.addEventListener('click', clearChat);
@@ -1199,24 +1081,6 @@
         adjustTextareaHeight();
         maybeUpdateCommandPaletteFromValue(val);
         if (val.trim().length > 0) hideOverlay();
-        // Auto-detect typed @mentions and convert them to tags
-        if (val.includes('@transition_clips') || val.includes('@transition')) {
-            inputEl.value = val.replace(/@transition_clips?/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-        } else if (val.includes('@selected_clip') || val.includes('@clip')) {
-            inputEl.value = val.replace(/@selected_clip\b/g, '').replace(/@clip\b/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-        }
     });
 
     // Close command palette on outside click (but keep model menu behavior intact)
@@ -1264,11 +1128,6 @@
                 preambleStatus.classList.remove('visible');
                 preambleStatus.innerHTML = '';
             }
-            // Reset tag state
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
             updateIdleState();
         };
     })(window.clearMessages);
