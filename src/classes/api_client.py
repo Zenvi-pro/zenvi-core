@@ -598,7 +598,10 @@ class ZenviBackendClient:
     ) -> Dict[str, Any]:
         """Search for clips matching a query."""
         try:
-            payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+            effective_top_k = top_k
+            if page_limit and page_limit > effective_top_k:
+                effective_top_k = min(int(page_limit), 50)
+            payload: Dict[str, Any] = {"query": query, "top_k": effective_top_k}
             if index_id:
                 payload["index_id"] = index_id
             if video_id:
@@ -949,6 +952,7 @@ class ZenviBackendClient:
         file_path: str,
         index_name: str = "zenvi-videos",
         existing_index_id: str = "",
+        force: bool = False,
         session=None,
     ) -> Dict[str, Any]:
         """Re-index: upload video once, then POST JSON to /indexing/reindex."""
@@ -966,7 +970,7 @@ class ZenviBackendClient:
             "file_id": file_id,
             "index_name": index_name,
             "filename": name,
-            "force": True,
+            "force": bool(force),
         }
         if existing_index_id:
             payload["existing_index_id"] = existing_index_id

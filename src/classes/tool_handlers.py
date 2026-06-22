@@ -172,20 +172,22 @@ def _run_on_main_thread(func, *args, timeout=30):
     return result_box[0]
 
 
-def _get_selected_timeline_clip_and_window():
-    try:
-        from classes.query import Clip
+def _resolve_timeline_clip_for_tool(**kwargs):
+    """Resolve target clip from timeline_clip_id, clip_query, or single-clip shortcut."""
+    from classes.clip_resolver import resolve_timeline_clip
+
+    def _do_resolve():
+        return resolve_timeline_clip(
+            timeline_clip_id=str(kwargs.get("timeline_clip_id") or "").strip(),
+            clip_query=str(kwargs.get("clip_query") or "").strip(),
+            prefer_track=str(kwargs.get("prefer_track") or kwargs.get("track") or "").strip(),
+        )
+
+    if QThread is not None:
         app = _get_app()
-        win = app.window
-        selected_clip_ids = getattr(win, "selected_clips", []) or []
-        if not selected_clip_ids:
-            selected_clip_ids = getattr(win, "ai_last_selected_clips", []) or []
-        if selected_clip_ids:
-            clip_obj = Clip.get(id=str(selected_clip_ids[0]))
-            return clip_obj, win
-        return None, win
-    except Exception:
-        return None, getattr(_get_app(), "window", None)
+        if QThread.currentThread() is not app.thread():
+            return _run_on_main_thread(_do_resolve)
+    return _do_resolve()
 
 
 def _get_source_file_for_clip(clip_obj):
@@ -292,8 +294,16 @@ def _is_extreme_for_4_seconds(prompt):
 def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_id=""):
     try:
         from classes.api_client import get_backend_client
+        if not str(index_id or "").strip():
+            return [], "TwelveLabs index_id is missing for this file."
         client = get_backend_client()
-        resp = client.search(query=query_text, index_id=index_id, video_id=video_id, page_limit=page_limit)
+        resp = client.search(
+            query=query_text,
+            index_id=index_id,
+            video_id=video_id,
+            page_limit=page_limit,
+            top_k=page_limit,
+        )
         if isinstance(resp, dict) and resp.get("error"):
             return [], resp["error"]
         results = resp.get("results", []) if isinstance(resp, dict) else []
@@ -399,14 +409,52 @@ def get_project_info(**_kw) -> str:
 
 def list_files(**_kw) -> str:
     try:
+        import os
         from classes.query import File
         files = File.filter()
         if not files:
             return "No files in project."
-        lines = [f"  id={f.data.get('id','')} path={f.data.get('path','')}" for f in files]
-        return f"Files ({len(files)}):\n" + "\n".join(lines)
+        lines = []
+        for f in files:
+            d = f.data if isinstance(f.data, dict) else {}
+            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
+            dur = float(d.get("duration", 0) or 0)
+            lines.append(
+                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
+                f"path={d.get('path', '')}"
+            )
+        return f"Media bin files ({len(files)}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
+
+
+_TAGS_PREVIEW_MAX = 80
+
+
+def _tags_preview_for_file_data(file_data: dict) -> str:
+    """Top objects/scenes from ai_metadata for compact clip listing."""
+    if not isinstance(file_data, dict):
+        return ""
+    ai = file_data.get("ai_metadata") if isinstance(file_data.get("ai_metadata"), dict) else {}
+    tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
+    objs = ", ".join((tags.get("objects") or [])[:3])
+    scs = ", ".join((tags.get("scenes") or [])[:2])
+    parts = [p for p in (objs, scs) if p]
+    if not parts:
+        return ""
+    preview = " | ".join(parts)
+    if len(preview) > _TAGS_PREVIEW_MAX:
+        preview = preview[: _TAGS_PREVIEW_MAX - 1].rstrip() + "…"
+    return preview
+
+
+def _file_is_analyzed(file_data: dict) -> bool:
+    if not isinstance(file_data, dict):
+        return False
+    ai = file_data.get("ai_metadata")
+    if not isinstance(ai, dict):
+        return False
+    return bool(ai.get("analyzed"))
 
 
 def list_clips(layer="", **_kw) -> str:
@@ -444,11 +492,31 @@ def list_clips(layer="", **_kw) -> str:
                 else []
             )
             tid_part = f" track_id={tids[0]}" if tids and tids[0] else ""
+            title = d.get("title") or d.get("label") or ""
+            fid = d.get("file_id", "")
+            fname = ""
+            tags_preview = ""
+            if fid:
+                try:
+                    from classes.query import File as _File
+                    fobj = _File.get(id=str(fid))
+                    if fobj and isinstance(fobj.data, dict):
+                        import os
+                        fname = (
+                            fobj.data.get("name")
+                            or os.path.basename(str(fobj.data.get("path") or ""))
+                        )
+                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                except Exception:
+                    pass
+            tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
             lines.append(
-                f"  id={d.get('id','')} layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
+                f"  timeline_clip_id={d.get('id','')} media_bin_file_id={fid} "
+                f"title={title!r} file={fname!r}{tag_part} "
+                f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
                 f"position={d.get('position',0)} start={d.get('start',0)} end={d.get('end',0)}"
             )
-        return f"Clips ({len(clips)}):\n" + "\n".join(lines)
+        return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
@@ -1050,29 +1118,39 @@ def slice_clip_at_playhead(**_kw) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search (selected clip scenes)
+# Search (timeline clip scenes — tag/query resolved)
 # ---------------------------------------------------------------------------
 
-def search_selected_clip_scenes(query="", top_k="5", use_openai_rerank="true", **_kw) -> str:
+def search_clip_scenes(
+    query="",
+    top_k="5",
+    clip_query="",
+    timeline_clip_id="",
+    **_kw,
+) -> str:
     try:
         k = int(float(top_k)) if str(top_k).strip() else 5
     except Exception:
         k = 5
-    uo = str(use_openai_rerank).strip().lower() not in ("0", "false", "no", "off")
 
     try:
-        from classes.query import Clip
         from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
         from classes.api_client import get_backend_client
+        from classes.twelvelabs_match import select_hits_for_display
 
-        clip_obj, win = _get_selected_timeline_clip_and_window()
-        if not clip_obj:
-            return "Error: No timeline clip selected."
+        resolved = _resolve_timeline_clip_for_tool(
+            clip_query=clip_query,
+            timeline_clip_id=timeline_clip_id,
+            **_kw,
+        )
+        if not resolved.ok or not resolved.clip:
+            return resolved.error or "Error: Could not resolve timeline clip."
 
+        clip_obj = resolved.clip
         clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
         clip_start = float(clip_data.get("start", 0.0) or 0.0)
         clip_end = float(clip_data.get("end", 0.0) or 0.0)
-        clip_name = clip_data.get("title") or clip_data.get("label") or "Selected Clip"
+        clip_name = clip_data.get("title") or clip_data.get("label") or "Timeline clip"
 
         per_clip_ai = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else None
         source_file = _get_source_file_for_clip(clip_obj)
@@ -1081,6 +1159,7 @@ def search_selected_clip_scenes(query="", top_k="5", use_openai_rerank="true", *
             source_ai = source_file.data.get("ai_metadata") if isinstance(source_file.data.get("ai_metadata"), dict) else None
 
         client = get_backend_client()
+        nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
 
         # TwelveLabs search
         if client.is_indexing_configured():
@@ -1089,37 +1168,38 @@ def search_selected_clip_scenes(query="", top_k="5", use_openai_rerank="true", *
             index_id = tw.get("index_id") or ""
             video_id = tw.get("video_id") or ""
 
-            # Fallback: even if twelvelabs metadata is missing (old import),
-            # try searching with an empty index_id — the backend will use the
-            # first available TwelveLabs index.
-            if (status == "ready" and index_id) or not index_id:
-                items, err = _twelvelabs_search_in_window(str(index_id), query, page_limit=max(30, k * 10), video_id=str(video_id))
+            if status == "ready" and index_id and video_id:
+                search_query = _semantic_search_query(query)
+                items, err = _twelvelabs_search_in_window(
+                    str(index_id), search_query, page_limit=max(30, k * 10), video_id=str(video_id),
+                )
                 if not err and items:
-                    matches = []
-                    for it in items:
-                        s = float(getattr(it, "start", 0.0) or 0.0)
-                        e = float(getattr(it, "end", 0.0) or 0.0)
-                        if e < clip_start or s > clip_end:
-                            continue
-                        matches.append({
-                            "rel_start": max(s, clip_start) - clip_start,
-                            "rel_end": min(e, clip_end) - clip_start,
-                            "score": float(getattr(it, "score", 0.0) or 0.0),
-                            "transcription": getattr(it, "transcription", "") or "",
-                        })
-                    matches.sort(key=lambda x: x["score"], reverse=True)
-                    matches = matches[:max(1, k)]
-                    lines = [f"TwelveLabs matches in '{clip_name}' ({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"]
-                    for m in matches:
-                        mid = (m['rel_start'] + m['rel_end']) / 2.0
-                        lines.append(
-                            f"- timestamp {_fmt_mmss(mid)}"
-                            f" (segment {_fmt_mmss(m['rel_start'])}-{_fmt_mmss(m['rel_end'])})"
-                            f" score={m['score']:.3f}"
-                        )
-                        if m.get("transcription"):
-                            lines.append(f"  transcript: {str(m['transcription']).strip()[:180]}")
-                    return "\n".join(lines)
+                    matches = select_hits_for_display(
+                        items,
+                        clip_start=clip_start,
+                        clip_end=clip_end,
+                        occurrence=nth,
+                        top_k=k,
+                    )
+                    if matches:
+                        lines = [
+                            f"TwelveLabs matches in '{clip_name}' "
+                            f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
+                        ]
+                        for m in matches:
+                            rel_cut = m["cut_source"] - clip_start
+                            rel_seg_start = m["start"] - clip_start
+                            rel_seg_end = m["end"] - clip_start
+                            lines.append(
+                                f"- timestamp {_fmt_mmss(rel_cut)}"
+                                f" (segment {_fmt_mmss(rel_seg_start)}-{_fmt_mmss(rel_seg_end)},"
+                                f" rank={m.get('rank')}, overlap={m['overlap_ratio']:.2f})"
+                            )
+                            if m.get("transcription"):
+                                lines.append(
+                                    f"  transcript: {str(m['transcription']).strip()[:180]}"
+                                )
+                        return "\n".join(lines)
 
         # Local scene descriptions fallback
         local_ai = per_clip_ai
@@ -1158,7 +1238,7 @@ def search_selected_clip_scenes(query="", top_k="5", use_openai_rerank="true", *
             lines.append(f"- [{_fmt_mmss(r['time'])}] score={r['score']:.3f}: {r['description']}")
         return "\n".join(lines)
     except Exception as e:
-        log.error("search_selected_clip_scenes: %s", e, exc_info=True)
+        log.error("search_clip_scenes: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -1172,7 +1252,7 @@ _ORDINAL_MAP = {
 
 
 def _parse_occurrence(occurrence_str: str, query: str) -> int:
-    """Return 1-based occurrence index (0 = best-score). Checks explicit param first, then query text."""
+    """Return 1-based occurrence index (0 = best overlap+rank match)."""
     try:
         n = int(float(str(occurrence_str).strip()))
         if n > 0:
@@ -1184,6 +1264,111 @@ def _parse_occurrence(occurrence_str: str, query: str) -> int:
         if word in q_lower.split():
             return n
     return 0
+
+
+def _semantic_search_query(query: str) -> str:
+    """Strip ordinal words so TwelveLabs search uses semantic content only."""
+    if not query or not str(query).strip():
+        return ""
+    kept = []
+    for word in str(query).split():
+        bare = word.lower().strip(".,;:!?\"'")
+        if bare in _ORDINAL_MAP:
+            continue
+        kept.append(word)
+    cleaned = " ".join(kept).strip()
+    return cleaned if cleaned else str(query).strip()
+
+
+def _scene_description_cut_source(
+    clip_start: float,
+    clip_end: float,
+    source_ai,
+    query: str,
+    occurrence: int,
+    per_clip_ai=None,
+):
+    """Return a source-file cut time from scene descriptions, or None."""
+    from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+
+    local_ai = per_clip_ai
+    if local_ai is None and source_ai is not None:
+        local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
+    scenes = (local_ai or {}).get("scene_descriptions", [])
+    if not scenes:
+        return None
+    q_lower = (query or "").lower()
+    scored = []
+    for s in scenes:
+        if not isinstance(s, dict):
+            continue
+        desc = (s.get("description") or "").strip()
+        if not desc:
+            continue
+        t = float(s.get("time", 0.0) or 0.0)
+        if t < clip_start - 1e-3 or t > clip_end + 1e-3:
+            continue
+        score = 0.0
+        if q_lower and q_lower in desc.lower():
+            score = 10.0
+        elif q_lower:
+            qw = set(q_lower.split())
+            dw = set(desc.lower().split())
+            overlap = len(qw & dw)
+            if overlap:
+                score = overlap / (len(qw) ** 0.5 * len(dw) ** 0.5)
+        else:
+            score = 0.01
+        if score > 0:
+            scored.append((t, score))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: (-x[1], x[0]))
+    if occurrence > 0:
+        idx = min(occurrence - 1, len(scored) - 1)
+        return scored[idx][0]
+    return scored[0][0]
+
+
+def _slice_at_source_cut(
+    clip_id_str: str,
+    clip_start: float,
+    clip_end: float,
+    clip_pos: float,
+    cut_source: float,
+    *,
+    label: str = "match",
+) -> str:
+    from classes.twelvelabs_match import snap_source_time_to_frame, snap_timeline_position
+    from windows.views.timeline_backend.enums import MenuSlice
+
+    fps = _get_app().project.get("fps") or {}
+    fps_num = float(fps.get("num", 30))
+    fps_den = float(fps.get("den", 1)) or 1.0
+    cut_source = snap_source_time_to_frame(float(cut_source), fps_num, fps_den)
+    slice_pos = snap_timeline_position(
+        clip_pos + (cut_source - clip_start), fps_num, fps_den,
+    )
+    clip_timeline_end = clip_pos + (clip_end - clip_start)
+    if slice_pos <= clip_pos or slice_pos >= clip_timeline_end:
+        return (
+            f"Error: Computed slice position ({slice_pos:.3f}s) is outside "
+            f"the clip range [{clip_pos:.3f}s – {clip_timeline_end:.3f}s]."
+        )
+    slice_error_box = [None]
+
+    def _do_slice():
+        try:
+            _get_app().window.timeline.Slice_Triggered(
+                MenuSlice.KEEP_BOTH, [clip_id_str], [], slice_pos,
+            )
+        except Exception as exc:
+            slice_error_box[0] = str(exc)
+
+    _run_on_main_thread(_do_slice)
+    if slice_error_box[0]:
+        return f"Error during slice: {slice_error_box[0]}"
+    return f"Sliced at {_fmt_mmss(cut_source - clip_start)} ({label})."
 
 
 def _parse_mmss_or_hhmmss_token(tok: str):
@@ -1372,22 +1557,30 @@ def _slice_timeline_clip_at_source_times(
     )
 
 
-def slice_selected_clip_at_best_match(query="", occurrence="0", **_kw) -> str:
+def slice_clip_at_best_match(
+    query="",
+    occurrence="0",
+    clip_query="",
+    timeline_clip_id="",
+    **_kw,
+) -> str:
     try:
         from classes.api_client import get_backend_client
 
-        # ── 1. Read clip/file metadata on the MAIN thread so we see the
-        #       latest project state (avoids stale-cache problems when
-        #       reading from the background AI-chat thread).
-        clip_info_box = [None]   # (... , tw_status, tw_error)
+        clip_info_box = [None]
         error_box_pre = [None]
 
         def _read_clip_info():
             try:
-                obj, _win = _get_selected_timeline_clip_and_window()
-                if not obj:
-                    error_box_pre[0] = "Error: No timeline clip selected."
+                from classes.clip_resolver import resolve_timeline_clip
+                resolved = resolve_timeline_clip(
+                    timeline_clip_id=str(timeline_clip_id or "").strip(),
+                    clip_query=str(clip_query or "").strip(),
+                )
+                if not resolved.ok or not resolved.clip:
+                    error_box_pre[0] = resolved.error or "Error: Could not resolve timeline clip."
                     return
+                obj = resolved.clip
                 d = obj.data if isinstance(obj.data, dict) else {}
                 cs = float(d.get("start", 0.0) or 0.0)
                 ce = float(d.get("end", 0.0) or 0.0)
@@ -1478,50 +1671,104 @@ def slice_selected_clip_at_best_match(query="", occurrence="0", **_kw) -> str:
         if not client.is_indexing_configured():
             return "Error: TwelveLabs is not configured."
 
+        if not index_id:
+            return (
+                "Error: This clip's source file has no TwelveLabs index_id. "
+                "Re-import or re-index the file."
+            )
+        if not video_id:
+            return (
+                "Error: This clip's source file has no TwelveLabs video_id. "
+                "Re-import or re-index the file so searches target the correct video."
+            )
+
         # ── 3. TwelveLabs search (REST call – fine from background thread)
+        from classes.twelvelabs_match import (
+            select_twelvelabs_match,
+            snap_source_time_to_frame,
+            snap_timeline_position,
+        )
+
+        search_query = _semantic_search_query(query)
+        if not search_query:
+            return "Error: Empty search query."
+
         items, err = _twelvelabs_search_in_window(
-            index_id, query, page_limit=30, video_id=video_id,
+            index_id, search_query, page_limit=30, video_id=video_id,
         )
         if err:
             return f"Error: {err}"
         if not items:
+            sa_fb = None
+            try:
+                from classes.query import File
+                fobj = File.get(id=file_id_str)
+                if fobj and isinstance(fobj.data, dict):
+                    raw = fobj.data.get("ai_metadata")
+                    sa_fb = raw if isinstance(raw, dict) else None
+            except Exception:
+                pass
+            cut_from_scenes = _scene_description_cut_source(
+                clip_start, clip_end, sa_fb, query,
+                _parse_occurrence(occurrence, query),
+            )
+            if cut_from_scenes is not None:
+                return _slice_at_source_cut(
+                    clip_id_str, clip_start, clip_end, clip_pos, cut_from_scenes,
+                    label="scene description match",
+                )
             return "No matches found."
 
-        # ── 4. Collect overlapping matches
-        matches = []
-        for it in items:
-            s = float(getattr(it, "start", 0.0) or 0.0)
-            e = float(getattr(it, "end", 0.0) or 0.0)
-            if e < clip_start or s > clip_end:
-                continue
-            mid = (max(s, clip_start) + min(e, clip_end)) / 2.0
-            score = float(getattr(it, "score", 0.0) or 0.0)
-            matches.append({"mid": mid, "score": score, "start": s})
-
-        if not matches:
+        nth = _parse_occurrence(occurrence, query)
+        chosen = select_twelvelabs_match(
+            items,
+            clip_start=clip_start,
+            clip_end=clip_end,
+            occurrence=nth,
+            cut_mode="start",
+        )
+        if not chosen:
+            sa_fb = None
+            try:
+                from classes.query import File
+                fobj = File.get(id=file_id_str)
+                if fobj and isinstance(fobj.data, dict):
+                    raw = fobj.data.get("ai_metadata")
+                    sa_fb = raw if isinstance(raw, dict) else None
+            except Exception:
+                pass
+            cut_from_scenes = _scene_description_cut_source(
+                clip_start, clip_end, sa_fb, query, nth,
+            )
+            if cut_from_scenes is not None:
+                return _slice_at_source_cut(
+                    clip_id_str, clip_start, clip_end, clip_pos, cut_from_scenes,
+                    label="scene description match",
+                )
             return "No matches overlapped the clip window."
 
-        # ── 5. Determine which match to use
-        nth = _parse_occurrence(occurrence, query)
-        if nth > 0:
-            matches.sort(key=lambda x: x["start"])
-            idx = min(nth - 1, len(matches) - 1)
-            chosen = matches[idx]
-            ordinal_label = f"occurrence #{nth}"
-        else:
-            matches.sort(key=lambda x: x["score"], reverse=True)
-            chosen = matches[0]
-            ordinal_label = "best match"
+        ordinal_label = f"occurrence #{nth}" if nth > 0 else "best match"
 
-        slice_pos = clip_pos + (chosen["mid"] - clip_start)
-
-        log.info(
-            "slice_selected_clip_at_best_match: clip_id=%s clip_start=%.3f "
-            "clip_end=%.3f clip_pos=%.3f chosen_mid=%.3f → slice_pos=%.3f",
-            clip_id_str, clip_start, clip_end, clip_pos, chosen["mid"], slice_pos,
+        fps = _get_app().project.get("fps") or {}
+        fps_num = float(fps.get("num", 30))
+        fps_den = float(fps.get("den", 1)) or 1.0
+        cut_source = snap_source_time_to_frame(chosen["cut_source"], fps_num, fps_den)
+        slice_pos = snap_timeline_position(
+            clip_pos + (cut_source - clip_start), fps_num, fps_den,
         )
 
-        # ── 6. Validate: slice_pos must fall inside the clip on the timeline
+        log.info(
+            "slice_clip_at_best_match: clip_id=%s rank=%s overlap=%.3f "
+            "cut_source=%.3f slice_pos=%.3f (%s)",
+            clip_id_str,
+            chosen.get("rank"),
+            chosen.get("overlap_ratio", 0.0),
+            cut_source,
+            slice_pos,
+            ordinal_label,
+        )
+
+        # ── 4. Validate: slice_pos must fall inside the clip on the timeline
         clip_timeline_end = clip_pos + (clip_end - clip_start)
         if slice_pos <= clip_pos or slice_pos >= clip_timeline_end:
             return (
@@ -1529,7 +1776,7 @@ def slice_selected_clip_at_best_match(query="", occurrence="0", **_kw) -> str:
                 f"the clip range [{clip_pos:.3f}s – {clip_timeline_end:.3f}s]."
             )
 
-        # ── 7. Perform the slice on the Qt main thread
+        # ── 5. Perform the slice on the Qt main thread
         from windows.views.timeline_backend.enums import MenuSlice
 
         slice_error_box = [None]
@@ -1547,9 +1794,9 @@ def slice_selected_clip_at_best_match(query="", occurrence="0", **_kw) -> str:
         if slice_error_box[0]:
             return f"Error during slice: {slice_error_box[0]}"
 
-        return f"Sliced at {_fmt_mmss(chosen['mid'] - clip_start)} ({ordinal_label})."
+        return f"Sliced at {_fmt_mmss(cut_source - clip_start)} ({ordinal_label})."
     except Exception as e:
-        log.error("slice_selected_clip_at_best_match failed: %s", e, exc_info=True)
+        log.error("slice_clip_at_best_match failed: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -1886,24 +2133,23 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         _resume_auto_save(auto_save_was_active)
 
 
-def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> str:
-    """Find best match in selected clip, generate a V2V insert via Kling,
-    bake an updated clip with crossfades, and import it.
-
-    Pipeline (backend + local bake):
-      1. Find the best insertion point via TwelveLabs / scene descriptions / midpoint
-      2. Extract a seed video (two segments around the insertion point)
-      3. Extract first/last frames for frame-constrained generation
-      4. Generate V2V clip via Runware/Kling with seed video + frame constraints
-      5. Bake the generated insert into the original clip with crossfades
-      6. Re-encode and import with clean metadata
-    """
+def insert_kling_v2v_into_clip(
+    query="",
+    fade_ms="400",
+    clip_query="",
+    timeline_clip_id="",
+    **_kw,
+) -> str:
+    """Find best match in resolved clip, generate a V2V insert via Kling."""
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
 
-    clip_obj, win = _get_selected_timeline_clip_and_window()
-    if not clip_obj:
-        return "Error: No timeline clip selected."
+    resolved = _resolve_timeline_clip_for_tool(
+        clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
+    )
+    if not resolved.ok or not resolved.clip:
+        return resolved.error or "Error: Could not resolve timeline clip."
+    clip_obj = resolved.clip
 
     query = (query or "").strip()
     too_extreme, reason = _is_extreme_for_4_seconds(query)
@@ -1931,35 +2177,40 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
         else None
     )
 
-    best_mid, best_score = None, -1.0
+    from classes.twelvelabs_match import select_twelvelabs_match
 
-    # Strategy 1: TwelveLabs — results are already sorted rank-1-first by the API.
-    # Use the END of the rank-1 window so the insert follows after the scene ends.
+    best_mid = None
+
+    # Strategy 1: TwelveLabs overlap-aware match; cut after the scene ends.
     if source_ai:
         tw = source_ai.get("twelvelabs") if isinstance(source_ai.get("twelvelabs"), dict) else {}
         status = (tw.get("status") or "").lower()
         index_id = tw.get("index_id") or ""
         video_id = tw.get("video_id") or ""
-        if (status == "ready" and index_id) or not index_id:
-            items, err = _twelvelabs_search_in_window(str(index_id), query, page_limit=30, video_id=str(video_id))
+        if (status == "ready" and index_id and video_id):
+            search_query = _semantic_search_query(query)
+            items, err = _twelvelabs_search_in_window(
+                str(index_id), search_query, page_limit=30, video_id=str(video_id),
+            )
             if not err and items:
-                for it in items:
-                    s = float(getattr(it, "start", 0.0) or 0.0)
-                    e = float(getattr(it, "end", 0.0) or 0.0)
-                    if e < clip_start or s > clip_end:
-                        continue
-                    # Use the end of the scene window, clamped to the clip bounds.
-                    insertion = min(e, clip_end)
-                    # Need at least 1 s of original content after insertion for a
-                    # meaningful crossfade back; pull the point back if too close to the end.
+                chosen = select_twelvelabs_match(
+                    items,
+                    clip_start=clip_start,
+                    clip_end=clip_end,
+                    cut_mode="end",
+                )
+                if chosen:
+                    insertion = chosen["cut_source"]
                     if insertion > clip_end - 1.0:
                         insertion = max(clip_start, clip_end - 1.0)
                     best_mid = insertion
                     log.info(
-                        "insert_v2v: rank-1 match [%.2f, %.2f] → insertion at %.2f",
-                        s, e, best_mid,
+                        "insert_v2v: rank=%s segment [%.2f, %.2f] → insertion at %.2f",
+                        chosen.get("rank"),
+                        chosen["start"],
+                        chosen["end"],
+                        best_mid,
                     )
-                    break  # rank-1 result found — stop here
 
     # Strategy 2: Scene descriptions
     if best_mid is None and source_ai:
@@ -1970,9 +2221,9 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
                 continue
             desc = (sc.get("description") or "").lower()
             t = float(sc.get("time", 0.0) or 0.0)
-            if q_lower in desc and clip_start <= t <= clip_end and 0.0 > best_score:
-                best_score = 1.0
+            if q_lower in desc and clip_start <= t <= clip_end:
                 best_mid = t
+                break
 
     # Strategy 3: fallback — 80% through the clip (biased toward the end)
     if best_mid is None:
@@ -2179,21 +2430,23 @@ def insert_kling_v2v_clip_into_selected_clip(query="", fade_ms="400", **_kw) -> 
         _resume_auto_save(auto_save_was_active)
 
 
-def replace_object_in_selected_clip(description="", duration_seconds="", **_kw) -> str:
-    """Replace or update an object/visual element in the selected clip using Kling V2V.
-
-    Pipeline:
-      1. Extract the selected clip segment as a reference video (up to 10 s)
-      2. Extract first/last frames for frame constraints (maintains continuity)
-      3. Generate V2V via Runware/Kling with the clip as visual reference
-      4. Import the generated video into the project files panel
-    """
+def replace_object_in_clip(
+    description="",
+    duration_seconds="",
+    clip_query="",
+    timeline_clip_id="",
+    **_kw,
+) -> str:
+    """Replace or update an object/visual element in a resolved timeline clip using Kling V2V."""
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
 
-    clip_obj, _win = _get_selected_timeline_clip_and_window()
-    if not clip_obj:
-        return "Error: No timeline clip selected."
+    resolved = _resolve_timeline_clip_for_tool(
+        clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
+    )
+    if not resolved.ok or not resolved.clip:
+        return resolved.error or "Error: Could not resolve timeline clip."
+    clip_obj = resolved.clip
 
     description = (description or "").strip()
     if not description:
@@ -2325,29 +2578,35 @@ def replace_object_in_selected_clip(description="", duration_seconds="", **_kw) 
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
     except Exception as e:
-        log.error("replace_object_in_selected_clip: %s", e, exc_info=True)
+        log.error("replace_object_in_clip: %s", e, exc_info=True)
         return f"Error: {e}"
     finally:
         _resume_auto_save(auto_save_was_active)
 
 
-def generate_transition_clip(clip_a_id="", clip_b_id="", prompt_hint="", **_kw) -> str:
-    """Generate a transition video between two clips using Kling V2V with video reference.
-
-    Pipeline:
-      1. Extract the last 3 s of clip A as a reference video (gives Kling visual context)
-      2. Extract the last frame of clip A and first frame of clip B as frame constraints
-      3. Generate via Kling V2V: reference video + first/last frame constraints
-         → the result matches clip A's visual style and bridges naturally to clip B
-      4. Import the transition clip and insert it between the two clips on the timeline
-    """
+def generate_transition_clip(
+    clip_a_id="",
+    clip_b_id="",
+    clip_a_query="",
+    clip_b_query="",
+    prompt_hint="",
+    **_kw,
+) -> str:
+    """Generate a transition video between two clips using Kling V2V with video reference."""
+    from classes.clip_resolver import resolve_clip_pair
     from classes.query import Clip, File
     _get_app()
 
-    clip_a = Clip.get(id=clip_a_id) if clip_a_id else None
-    clip_b = Clip.get(id=clip_b_id) if clip_b_id else None
-    if not clip_a or not clip_b:
-        return "Error: Could not find both clips. Use list_clips_tool to get clip IDs."
+    pair = resolve_clip_pair(
+        clip_a_id=str(clip_a_id or "").strip(),
+        clip_b_id=str(clip_b_id or "").strip(),
+        clip_a_query=str(clip_a_query or "").strip(),
+        clip_b_query=str(clip_b_query or "").strip(),
+    )
+    if not pair.ok or not pair.clip_a or not pair.clip_b:
+        return pair.error or "Error: Could not resolve transition clip pair."
+    clip_a = pair.clip_a
+    clip_b = pair.clip_b
 
     # Get source file paths
     file_a_id = clip_a.data.get("file_id", "")
@@ -3214,23 +3473,33 @@ def import_stock_media(
     return dl
 
 
-def modify_selected_clip(
+def modify_clip(
     mode="replace",
     description="",
     query="",
     fade_ms="400",
     duration_seconds="",
+    clip_query="",
+    timeline_clip_id="",
     **kwargs,
 ) -> str:
-    """AI-edit the selected clip: mode='replace' (restyle) or 'insert' (new footage at best match)."""
+    """AI-edit a timeline clip resolved by tags/query: replace or insert footage."""
     m = (mode or "replace").lower().strip()
     text = (description or query or "").strip()
     if m == "insert":
-        return insert_kling_v2v_clip_into_selected_clip(
-            query=text, fade_ms=fade_ms, **kwargs
+        return insert_kling_v2v_into_clip(
+            query=text,
+            fade_ms=fade_ms,
+            clip_query=clip_query,
+            timeline_clip_id=timeline_clip_id,
+            **kwargs,
         )
-    return replace_object_in_selected_clip(
-        description=text, duration_seconds=duration_seconds, **kwargs
+    return replace_object_in_clip(
+        description=text,
+        duration_seconds=duration_seconds,
+        clip_query=clip_query,
+        timeline_clip_id=timeline_clip_id,
+        **kwargs,
     )
 
 
@@ -3399,9 +3668,10 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def reindex_project_file(file_id: str = "", **kwargs) -> str:
+def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> str:
     """Re-index an existing project file in TwelveLabs.
 
+    Skips when the file is already indexed unless force=true.
     Runs entirely on a worker thread.  Only the brief project-data reads
     (file path, duration, project id) are marshalled to the Qt main
     thread; the long-running reindex upload runs off the GUI thread.
@@ -3410,8 +3680,13 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
         if not file_id:
             return "Error: file_id is required."
 
+        force_reindex = str(force or kwargs.get("force", "false")).strip().lower() in (
+            "1", "true", "yes", "force",
+        )
+
         def _read_project_state():
             from classes.query import File
+            from classes.twelvelabs_match import twelvelabs_is_indexed
             f = File.get(id=file_id)
             if not f:
                 return None
@@ -3427,11 +3702,21 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
                 "duration": f.data.get("duration", 0) or 0,
                 "project_id": project_id,
                 "existing_index_id": tl.get("index_id") or "",
+                "twelvelabs": tl,
+                "already_indexed": twelvelabs_is_indexed(tl),
             }
 
         state = _run_on_main_thread(_read_project_state, timeout=10)
         if state is None:
             return f"Error: File not found (id={file_id})."
+
+        if state.get("already_indexed") and not force_reindex:
+            tl = state.get("twelvelabs") or {}
+            return (
+                f"File {file_id} is already indexed "
+                f"(index_id={tl.get('index_id', '')}, video_id={tl.get('video_id', '')}). "
+                "Pass force=true only when the file was replaced or indexing failed."
+            )
 
         MAX_SECONDS = 30 * 60
         if state["duration"] > MAX_SECONDS:
@@ -3465,6 +3750,7 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
             state["path"],
             index_name=index_name,
             existing_index_id=state.get("existing_index_id") or "",
+            force=force_reindex,
         )
         if isinstance(result, dict) and result.get("success"):
             charge_operation_on_success(
@@ -3501,10 +3787,11 @@ def reindex_project_file(file_id: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def get_clips_with_full_metadata(**kwargs) -> str:
-    """Return all project files with full AI metadata for planning complex edits."""
+def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
+    """Return all project files with AI metadata for planning and clip inference."""
     try:
         from classes.query import File
+        level = str(detail_level or kwargs.get("detail_level") or "summary").lower().strip()
         files = File.filter()
         if not files:
             return "No files in project."
@@ -3519,19 +3806,31 @@ def get_clips_with_full_metadata(**kwargs) -> str:
             tags = ai.get("tags", {})
             analyzed = ai.get("analyzed", False)
             tl = ai.get("twelvelabs", {}) or {}
-            indexed = bool(tl.get("index_id"))
+            from classes.twelvelabs_match import twelvelabs_is_indexed
+            indexed = twelvelabs_is_indexed(tl)
             scene_count = len(ai.get("scene_descriptions") or [])
             objects = ", ".join((tags.get("objects") or [])[:5])
             scenes = ", ".join((tags.get("scenes") or [])[:3])
+            activities = ", ".join((tags.get("activities") or [])[:3])
             desc = (ai.get("description") or "")[:120]
             lines.append(
-                f"\n  id={f.id}  name={name}  type={media_type}  "
+                f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
                 f"duration={m}:{s:02d}\n"
                 f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
+                f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
                 f"    objects=[{objects}]\n"
                 f"    scenes=[{scenes}]\n"
+                f"    activities=[{activities}]\n"
                 f"    description={desc}"
             )
+            snippets = ai.get("scene_descriptions") or []
+            if snippets:
+                limit = len(snippets) if level == "full" else min(3, len(snippets))
+                lines.append("    scene_snippets:")
+                for sc in snippets[:limit]:
+                    if isinstance(sc, dict) and sc.get("description"):
+                        t = float(sc.get("time", 0) or 0)
+                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
         return "\n".join(lines)
     except Exception as e:
         log.error("get_clips_with_full_metadata: %s", e, exc_info=True)
@@ -3589,15 +3888,29 @@ def get_timeline_state(**_kw) -> str:
             for d in sorted(by_layer[layer_num], key=lambda x: x.get("position", 0)):
                 clip_dur = d.get("end", 0) - d.get("start", 0)
                 clip_end = d.get("position", 0) + clip_dur
-                # Get file name from file_id
+                tags_preview = ""
+                analyzed_part = ""
                 try:
                     from classes.query import File as _File
                     fobj = _File.get(id=d.get("file_id", ""))
-                    fname = fobj.data.get("name", d.get("file_id", "?")) if fobj else d.get("file_id", "?")
+                    if fobj and isinstance(fobj.data, dict):
+                        fname = (
+                            fobj.data.get("name")
+                            or os.path.basename(str(fobj.data.get("path") or ""))
+                            or d.get("file_id", "?")
+                        )
+                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                        if not _file_is_analyzed(fobj.data):
+                            analyzed_part = " analyzed=False"
+                    else:
+                        fname = d.get("file_id", "?")
                 except Exception:
                     fname = d.get("file_id", "?")
+                tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
                 lines.append(
-                    f"  clip id={d.get('id','')} file={fname!r}"
+                    f"  timeline_clip_id={d.get('id','')} media_bin_file_id={d.get('file_id','')} "
+                    f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
+                    f"{tag_part}{analyzed_part}"
                     f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                 )
 
@@ -3624,7 +3937,7 @@ def get_timeline_state(**_kw) -> str:
         return f"Error: {e}"
 
 
-def build_editor_snapshot_for_chat(max_chars: int = 3500) -> str:
+def build_editor_snapshot_for_chat(max_chars: int = 4500) -> str:
     """Compact timeline + file count for LLM grounding. Call from Qt GUI thread."""
     try:
         from classes.query import File
@@ -3678,14 +3991,14 @@ AGENT_TOOL_HANDLERS = {
     "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
-    # Search (selected clip)
-    "search_selected_clip_scenes_tool": search_selected_clip_scenes,
-    "slice_selected_clip_at_best_match_tool": slice_selected_clip_at_best_match,
+    # Search / slice / modify (tag-query resolved)
+    "search_clip_scenes_tool": search_clip_scenes,
+    "slice_clip_at_best_match_tool": slice_clip_at_best_match,
     # Remotion
     "fetch_remotion_video_from_supabase_tool": fetch_remotion_video_from_supabase,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
-    "modify_selected_clip_tool": modify_selected_clip,
+    "modify_clip_tool": modify_clip,
     "generate_transition_clip_tool": generate_transition_clip,
     # OpenShot transitions (mask/dissolve)
     "list_transitions_tool": list_transitions,
@@ -3713,7 +4026,10 @@ DIRECTOR_TOOL_HANDLERS = {
     "analyze_clip_visual_content_tool": analyze_clip_visual_content,
 }
 
-TOOL_HANDLERS = {**AGENT_TOOL_HANDLERS, **DIRECTOR_TOOL_HANDLERS}
+TOOL_HANDLERS = {
+    **AGENT_TOOL_HANDLERS,
+    **DIRECTOR_TOOL_HANDLERS,
+}
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
@@ -3746,11 +4062,11 @@ TOOL_DISPLAY_LABELS = {
     "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
-    "search_selected_clip_scenes_tool": "Search clip scenes",
-    "slice_selected_clip_at_best_match_tool": "Slice clip at best match",
+    "search_clip_scenes_tool": "Search clip scenes",
+    "slice_clip_at_best_match_tool": "Slice clip at best match",
     "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
-    "modify_selected_clip_tool": "AI edit selected clip",
+    "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "AI bridge between clips",
     "list_transitions_tool": "List transitions",
     "search_transitions_tool": "Search transitions",
