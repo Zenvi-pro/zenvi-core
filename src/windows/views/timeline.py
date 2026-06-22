@@ -2584,32 +2584,24 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Left clip gets translated metadata
                     _apply_clip_ai_metadata(clip.data, source_ai_metadata)
 
-                    # Split into two clips (left and right side)
-                    right_clip = Clip.get(id=clip_id)
-                    if not right_clip:
-                        continue
-
-                    # Create right side clip. Work from deep copies so shared
-                    # references (such as effect dicts) are not retained between
-                    # the original and the new clip.
-                    right_clip_data = deepcopy(right_clip.data)
-                    right_clip_key = list(right_clip.key)
-
+                    # New Clip instance — never reuse Clip.get() after mutating the left clip.
+                    right_clip_data = deepcopy(clip.data)
+                    right_clip = Clip()
                     right_clip.id = None
                     right_clip.type = 'insert'
                     right_clip.data = right_clip_data
                     right_clip.data.pop('id', None)
+                    right_clip_key = list(clip.key)
                     if len(right_clip_key) > 1:
                         right_clip_key.pop(1)
                     right_clip.key = right_clip_key
                     right_clip.data["position"] = playhead_position
-                    right_clip.data["start"] = clip.data["end"]
+                    right_clip.data["start"] = new_end
                     right_clip.data["end"] = end_of_clip
                     right_start = float(right_clip.data["start"])
                     right_end = float(right_clip.data.get("end", right_start))
                     right_clip.data["duration"] = max(0.0, right_end - right_start)
 
-                    # Right clip gets translated metadata
                     _apply_clip_ai_metadata(right_clip.data, source_ai_metadata)
                     self._assign_new_effect_ids(right_clip.data)
                     right_clip.save()
@@ -2655,20 +2647,21 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 elif action == MenuSlice.KEEP_BOTH:
                     # Update data for the left transition
-                    trans.data["end"] = start_of_tran + (playhead_position - original_position)
+                    new_tran_end = start_of_tran + (playhead_position - original_position)
+                    trans.data["end"] = new_tran_end
 
-                    # Split into two transitions (left and right side)
-                    right_tran = Transition.get(id=trans_id)
-                    if not right_tran:
-                        continue
-
-                    # Create right side transition
+                    right_tran_data = deepcopy(trans.data)
+                    right_tran = Transition()
                     right_tran.id = None
                     right_tran.type = 'insert'
-                    right_tran.data.pop('id')
-                    right_tran.key.pop(1)
+                    right_tran.data = right_tran_data
+                    right_tran.data.pop('id', None)
+                    right_tran_key = list(trans.key)
+                    if len(right_tran_key) > 1:
+                        right_tran_key.pop(1)
+                    right_tran.key = right_tran_key
                     right_tran.data["position"] = playhead_position
-                    right_tran.data["start"] = trans.data["end"]
+                    right_tran.data["start"] = new_tran_end
                     right_tran.save()
 
                 # Save changes for the left or right slice
