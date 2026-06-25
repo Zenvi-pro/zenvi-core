@@ -601,6 +601,7 @@ class ZenviBackendClient:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
                 effective_top_k = min(int(page_limit), 50)
+            effective_top_k = min(effective_top_k, 50)
             payload: Dict[str, Any] = {"query": query, "top_k": effective_top_k}
             if index_id:
                 payload["index_id"] = index_id
@@ -966,11 +967,20 @@ class ZenviBackendClient:
         if not up.get("success"):
             return {"success": False, "error": up.get("error", "Upload failed")}
 
+        # Parse force parameter - handle string inputs like "false", "0", "true", "1"
+        force_bool = False
+        if isinstance(force, bool):
+            force_bool = force
+        elif isinstance(force, str):
+            force_bool = force.lower() in ("true", "1", "yes")
+        else:
+            force_bool = bool(force)
+
         payload: Dict[str, Any] = {
             "file_id": file_id,
             "index_name": index_name,
             "filename": name,
-            "force": bool(force),
+            "force": force_bool,
         }
         if existing_index_id:
             payload["existing_index_id"] = existing_index_id

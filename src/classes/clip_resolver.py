@@ -254,7 +254,8 @@ def resolve_timeline_clip(
                         and best.file_id == second.file_id
                     )
                     score_gap = best.score - second.score
-                    if same_file or score_gap < AMBIGUITY_GAP:
+                    # Only trigger same_file ambiguity if no track hint was provided
+                    if (same_file and not prefer_track) or score_gap < AMBIGUITY_GAP:
                         prefix = (
                             f"Same source file appears on multiple tracks for clip_query {q!r} — "
                             "pass timeline_clip_id or include track in clip_query:"
@@ -379,9 +380,22 @@ def resolve_clip_pair(
     for i in range(len(indexed) - 1):
         a_row = indexed[i]
         b_row = indexed[i + 1]
+        # Add layer constraint check
+        if a_row["layer"] != b_row["layer"]:
+            continue
         gap = b_row["pos"] - a_row["end"]
+        # Reject negative gaps (overlapping clips)
+        if gap < 0:
+            continue
         if gap > 2.0:
             continue
+        # When only one ID is provided, ensure at least one clip matches
+        if clip_a_id and not clip_b_id:
+            if a_row["clip"].id != clip_a_id and b_row["clip"].id != clip_a_id:
+                continue
+        elif clip_b_id and not clip_a_id:
+            if a_row["clip"].id != clip_b_id and b_row["clip"].id != clip_b_id:
+                continue
         sa = _score_clip_against_query(
             a_row["data"], a_row["file_data"], a_row["ai"], clip_a_query or "",
         ) if clip_a_query else 0.5

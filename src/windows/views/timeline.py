@@ -2662,6 +2662,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     right_tran.key = right_tran_key
                     right_tran.data["position"] = playhead_position
                     right_tran.data["start"] = new_tran_end
+                    right_tran.data["end"] = end_of_tran
                     right_tran.save()
 
                 # Save changes for the left or right slice

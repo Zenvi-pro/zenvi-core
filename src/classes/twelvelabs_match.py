@@ -120,7 +120,13 @@ def select_twelvelabs_match(
     if not overlapping:
         return None
 
-    idx = 0 if occurrence <= 0 else min(occurrence - 1, len(overlapping) - 1)
+    # Validate occurrence index is within range
+    if occurrence > 0:
+        idx = occurrence - 1
+        if idx >= len(overlapping):
+            return None
+    else:
+        idx = 0
     chosen = dict(overlapping[idx])
     chosen["cut_source"] = compute_cut_timestamp(
         chosen["start"],
@@ -159,7 +165,9 @@ def select_hits_for_display(
         return []
 
     if occurrence > 0:
-        idx = min(occurrence - 1, len(overlapping) - 1)
+        idx = occurrence - 1
+        if idx >= len(overlapping):
+            return []
         return [overlapping[idx]]
 
     return overlapping[:max(1, top_k)]

@@ -190,6 +190,25 @@ def _resolve_timeline_clip_for_tool(**kwargs):
     return _do_resolve()
 
 
+def _resolve_clip_pair_for_tool(**kwargs):
+    """Resolve adjacent clip pair with Qt main thread marshalling."""
+    from classes.clip_resolver import resolve_clip_pair
+
+    def _do_resolve():
+        return resolve_clip_pair(
+            clip_a_id=str(kwargs.get("clip_a_id") or "").strip(),
+            clip_b_id=str(kwargs.get("clip_b_id") or "").strip(),
+            clip_a_query=str(kwargs.get("clip_a_query") or "").strip(),
+            clip_b_query=str(kwargs.get("clip_b_query") or "").strip(),
+        )
+
+    if QThread is not None:
+        app = _get_app()
+        if QThread.currentThread() is not app.thread():
+            return _run_on_main_thread(_do_resolve)
+    return _do_resolve()
+
+
 def _get_source_file_for_clip(clip_obj):
     try:
         from classes.query import File
@@ -421,7 +440,7 @@ def list_files(**_kw) -> str:
             dur = float(d.get("duration", 0) or 0)
             lines.append(
                 f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
-                f"path={d.get('path', '')}"
+                f"path={os.path.basename(d.get('path', ''))}"
             )
         return f"Media bin files ({len(files)}):\n" + "\n".join(lines)
     except Exception as e:
@@ -511,7 +530,7 @@ def list_clips(layer="", **_kw) -> str:
                     pass
             tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
             lines.append(
-                f"  timeline_clip_id={d.get('id','')} media_bin_file_id={fid} "
+                f"  timeline_clip_id={c.id} media_bin_file_id={fid} "
                 f"title={title!r} file={fname!r}{tag_part} "
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
                 f"position={d.get('position',0)} start={d.get('start',0)} end={d.get('end',0)}"
@@ -2593,15 +2612,14 @@ def generate_transition_clip(
     **_kw,
 ) -> str:
     """Generate a transition video between two clips using Kling V2V with video reference."""
-    from classes.clip_resolver import resolve_clip_pair
     from classes.query import Clip, File
     _get_app()
 
-    pair = resolve_clip_pair(
-        clip_a_id=str(clip_a_id or "").strip(),
-        clip_b_id=str(clip_b_id or "").strip(),
-        clip_a_query=str(clip_a_query or "").strip(),
-        clip_b_query=str(clip_b_query or "").strip(),
+    pair = _resolve_clip_pair_for_tool(
+        clip_a_id=clip_a_id,
+        clip_b_id=clip_b_id,
+        clip_a_query=clip_a_query,
+        clip_b_query=clip_b_query,
     )
     if not pair.ok or not pair.clip_a or not pair.clip_b:
         return pair.error or "Error: Could not resolve transition clip pair."
@@ -3855,12 +3873,12 @@ def get_timeline_state(**_kw) -> str:
         if not clips and not effects_raw:
             return "Timeline is empty — no clips or effects have been added yet."
 
-        # Group clips by layer
+        # Group clips by layer (store tuple of clip object and data)
         by_layer = {}
         for c in clips:
             d = c.data
             layer = d.get("layer", 0)
-            by_layer.setdefault(layer, []).append(d)
+            by_layer.setdefault(layer, []).append((c, d))
 
         def _track_heading(layer_num):
             ui = layer_number_to_display_index(int(layer_num), layers)
@@ -3885,7 +3903,7 @@ def get_timeline_state(**_kw) -> str:
         lines = ["=== TIMELINE STATE ==="]
         for layer_num in sorted(by_layer.keys(), reverse=True):
             lines.append(f"\n{_track_heading(layer_num)}:")
-            for d in sorted(by_layer[layer_num], key=lambda x: x.get("position", 0)):
+            for c, d in sorted(by_layer[layer_num], key=lambda x: x[1].get("position", 0)):
                 clip_dur = d.get("end", 0) - d.get("start", 0)
                 clip_end = d.get("position", 0) + clip_dur
                 tags_preview = ""
@@ -3908,7 +3926,7 @@ def get_timeline_state(**_kw) -> str:
                     fname = d.get("file_id", "?")
                 tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
                 lines.append(
-                    f"  timeline_clip_id={d.get('id','')} media_bin_file_id={d.get('file_id','')} "
+                    f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                     f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
                     f"{tag_part}{analyzed_part}"
                     f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
