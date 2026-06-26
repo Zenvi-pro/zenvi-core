@@ -14,7 +14,7 @@ def get_tagging_interval(duration_seconds: float) -> tuple:
     if duration_seconds <= 60:
         interval, cap = 2.0, 30
     elif duration_seconds <= 300:
-        interval, cap = 10.0, 30
+        interval, cap = 20.0, 30
     elif duration_seconds <= 600:
         interval, cap = 30.0, 20
     else:

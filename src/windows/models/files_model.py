@@ -98,24 +98,12 @@ class BackendTaggingWorker(QThread):
                 )
                 indexing_configured = client.is_indexing_configured()
 
-                # 1) Upload video once — backend stores under zenvi_uploads/{file_id}
-                upload_session = client._new_http_session()
-                up = client.upload_media_file(
-                    file_path, file_id=file_id, filename=filename, session=upload_session,
-                )
-                if not up.get("success"):
-                    metadata["error"] = up.get("error", "Video upload to backend failed")
-                    self.completed.emit(self.file_data, metadata, None)
-                    return
+                from classes.frame_extractor import extract_tagging_frames
 
-                # 2) Tag + index in parallel on the server copy (opencv + TwelveLabs).
                 run_indexing = False
                 if indexing_configured:
                     try:
-                        from classes.credits_client import (
-                            charge_operation_on_success,
-                            check_operation,
-                        )
+                        from classes.credits_client import check_operation
 
                         _, balance, blocked = check_operation(
                             "indexing_per_minute",
@@ -138,24 +126,34 @@ class BackendTaggingWorker(QThread):
                             "index_name": index_name,
                         }
 
-                def _tag_on_backend():
+                def _local_extract_frames():
+                    return extract_tagging_frames(file_path, duration)
+
+                def _tag_frames(frames):
                     s = client._new_http_session()
-                    return client.tag_video_by_file_id(
-                        file_id, filename=filename, session=s,
+                    return client.tag_video_frames(
+                        file_id, duration, frames, filename=filename, session=s,
                     )
 
-                def _index_on_backend():
+                def _direct_index():
                     s = client._new_http_session()
-                    return client.start_indexing_job(
-                        file_id, index_name, filename=filename, session=s,
+                    return client.start_direct_indexing_job(
+                        file_path,
+                        index_name,
+                        file_id=file_id,
+                        filename=filename,
+                        session=s,
                     )
 
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    tag_future = pool.submit(_tag_on_backend)
-                    index_future = (
-                        pool.submit(_index_on_backend) if run_indexing else None
-                    )
-                    metadata = tag_future.result()
+                    frames_future = pool.submit(_local_extract_frames)
+                    index_future = pool.submit(_direct_index) if run_indexing else None
+
+                    frames, frame_err = frames_future.result()
+                    if frame_err:
+                        metadata["error"] = frame_err
+                    else:
+                        metadata = _tag_frames(frames)
 
                     if index_future is not None:
                         try:
@@ -198,8 +196,6 @@ class BackendTaggingWorker(QThread):
                                 "error": str(idx_exc),
                                 "index_name": index_name,
                             }
-
-                client.cleanup_backend_upload(file_id)
 
                 if metadata.get("error"):
                     log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
