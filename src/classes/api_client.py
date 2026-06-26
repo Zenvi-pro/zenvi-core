@@ -609,6 +609,7 @@ class ZenviBackendClient:
         filename: str = "",
         existing_index_id: Optional[str] = None,
         session=None,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
     ) -> Dict[str, Any]:
         """Index via presigned TwelveLabs upload (proxy encoded locally)."""
         from classes.index_proxy import create_index_proxy
@@ -659,12 +660,17 @@ class ZenviBackendClient:
                 rr.raise_for_status()
                 return rr.json().get("presigned_urls") or []
 
+            def _on_chunk_uploaded(done: int, total: int):
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int(done * 100 / total))
+
             parts, up_err = upload_file_via_presigned_urls(
                 proxy_path,
                 chunk_size=chunk_size,
                 presigned_urls=session_data.get("presigned_urls") or [],
                 fetch_more_urls=_fetch_more,
                 upload_headers=session_data.get("upload_headers") or {},
+                on_chunk_uploaded=_on_chunk_uploaded,
             )
             if up_err:
                 return {"success": False, "error": up_err}
@@ -679,7 +685,9 @@ class ZenviBackendClient:
             if not complete.get("success"):
                 return {"success": False, "error": complete.get("error", "upload-complete failed")}
 
-            return self._poll_indexing_job(job_id)
+            if progress_callback:
+                progress_callback("indexing", -1)
+            return self._poll_indexing_job(job_id, progress_callback=progress_callback)
         except Exception as exc:
             log.error("Direct indexing failed: %s", exc)
             return {"success": False, "error": str(exc)}
@@ -690,11 +698,19 @@ class ZenviBackendClient:
                 except OSError:
                     pass
 
-    def _poll_indexing_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 10) -> Dict[str, Any]:
+    def _poll_indexing_job(
+        self,
+        job_id: str,
+        max_wait: int = 1800,
+        poll_interval: int = 10,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
         import time
         deadline = time.time() + max_wait
         while time.time() < deadline:
+            if progress_callback:
+                progress_callback("indexing", -1)
             try:
                 r = self.session.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()

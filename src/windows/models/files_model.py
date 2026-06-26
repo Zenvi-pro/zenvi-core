@@ -56,6 +56,8 @@ import openshot
 class BackendTaggingWorker(QThread):
     """Background worker that calls the zenvi-backend tagging API."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
+    progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
+    intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
     def __init__(self, file_data, project_id="", parent=None):
         super().__init__(parent)
@@ -136,6 +138,9 @@ class BackendTaggingWorker(QThread):
                     )
 
                 def _direct_index():
+                    def _progress_cb(phase, percent):
+                        self.progress.emit(file_id, phase, percent)
+
                     s = client._new_http_session()
                     return client.start_direct_indexing_job(
                         file_path,
@@ -143,8 +148,10 @@ class BackendTaggingWorker(QThread):
                         file_id=file_id,
                         filename=filename,
                         session=s,
+                        progress_callback=_progress_cb,
                     )
 
+                self.progress.emit(file_id, "extracting", -1)
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     frames_future = pool.submit(_local_extract_frames)
                     index_future = pool.submit(_direct_index) if run_indexing else None
@@ -153,7 +160,15 @@ class BackendTaggingWorker(QThread):
                     if frame_err:
                         metadata["error"] = frame_err
                     else:
+                        self.progress.emit(file_id, "tagging", -1)
                         metadata = _tag_frames(frames)
+                        if run_indexing and metadata.get("analyzed"):
+                            partial = dict(metadata)
+                            partial["twelvelabs"] = {
+                                "status": "indexing",
+                                "index_name": index_name,
+                            }
+                            self.intermediate_save.emit(file_id, partial)
 
                     if index_future is not None:
                         try:
@@ -201,6 +216,8 @@ class BackendTaggingWorker(QThread):
                     log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
                 elif not metadata.get("analyzed"):
                     log.warning("Tagging did not complete for %s", file_path)
+                else:
+                    self.progress.emit(file_id, "done", 100)
         except Exception as exc:
             error = exc
             log.error(f"Backend tagging worker failed: {exc}")
@@ -279,6 +296,7 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
+    taggingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -460,6 +478,19 @@ class FilesModel(QObject, updates.UpdateInterface):
         if top_objects and not file_obj.data.get("tags"):
             file_obj.data["tags"] = ", ".join(top_objects[:5])
 
+    def _set_tagging_progress(self, file_id, phase, percent):
+        self._tagging_progress[str(file_id)] = {"phase": phase, "percent": percent}
+        self.taggingProgress.emit(str(file_id), phase, percent)
+
+    def is_file_tagging(self, file_id):
+        fid = str(file_id or "")
+        return any(
+            str(w.file_data.get("id", "")) == fid for w in self._active_taggers
+        )
+
+    def get_tagging_progress(self, file_id):
+        return self._tagging_progress.get(str(file_id or ""))
+
     def _tag_file_async(self, file_id):
         """Fire-and-forget background AI tagging for an already-saved file."""
         from classes.query import File as _File
@@ -477,12 +508,30 @@ class FilesModel(QObject, updates.UpdateInterface):
             pass
         worker = BackendTaggingWorker(dict(file_obj.data), project_id=project_id)
         self._active_taggers.append(worker)
+        self._set_tagging_progress(file_id, "extracting", -1)
 
         def _on_finished():
             try:
                 self._active_taggers.remove(worker)
             except ValueError:
                 pass
+            self._tagging_progress.pop(str(file_id), None)
+
+        def _on_progress(fid, phase, percent):
+            self._set_tagging_progress(fid, phase, percent)
+
+        def _on_intermediate(fid, metadata):
+            try:
+                if not metadata or not isinstance(metadata, dict):
+                    return
+                f = _File.get(id=fid)
+                if not f:
+                    return
+                self._apply_ai_metadata(f, metadata)
+                f.save()
+                get_app().window.FileUpdated.emit(str(fid))
+            except Exception as exc:
+                log.warning(f"Failed to apply intermediate tagging result: {exc}")
 
         def _on_complete(_file_data, metadata, error):
             try:
@@ -496,9 +545,12 @@ class FilesModel(QObject, updates.UpdateInterface):
                     return
                 self._apply_ai_metadata(f, metadata)
                 f.save()
+                get_app().window.FileUpdated.emit(str(file_id))
             except Exception as exc:
                 log.warning(f"Failed to apply background tagging result: {exc}")
 
+        worker.progress.connect(_on_progress)
+        worker.intermediate_save.connect(_on_intermediate)
         worker.completed.connect(_on_complete)
         worker.finished.connect(_on_finished)
         worker.start()
@@ -879,6 +931,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
         self._active_taggers = []  # strong refs to keep QThreads alive until finished
+        self._tagging_progress = {}
 
         # Stop any running tagging threads cleanly when the app quits
         try:

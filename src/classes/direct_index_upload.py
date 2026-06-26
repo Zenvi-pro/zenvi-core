@@ -14,6 +14,7 @@ def upload_file_via_presigned_urls(
     fetch_more_urls: Callable[[int, int], List[Dict[str, Any]]],
     upload_headers: Optional[Dict[str, str]] = None,
     batch_size: int = 10,
+    on_chunk_uploaded: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Upload file chunks; return (parts, error). parts match upload-complete schema."""
     if not file_path or not os.path.isfile(file_path):
@@ -77,5 +78,7 @@ def upload_file_via_presigned_urls(
                     "proof": etag,
                     "chunk_size": len(data),
                 })
+                if on_chunk_uploaded:
+                    on_chunk_uploaded(len(completed), total_chunks)
 
     return completed, ""
