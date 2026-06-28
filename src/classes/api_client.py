@@ -735,11 +735,11 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
-    def generate_video(self, prompt: str, duration_seconds: int = 4, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt.
+    def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
+        """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
-        Supported kwargs: input_image_path, seed_video, strength, frame_images,
-                          model, width, height, input_video_url.
+        Supported kwargs: mode, frame_images_paths, seed_video_file_id,
+                          keep_original_sound, width, height, input_video_url.
         """
         try:
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}

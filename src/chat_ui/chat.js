@@ -52,6 +52,7 @@
     var commandQuery = '';
     var COMMANDS = [
         { prefix: '/add-track', label: 'Add track', description: 'Add a new track to the timeline' },
+        { prefix: '/generate', label: 'Generate video', description: 'Generate a new AI video clip from a text prompt (Kling O1 Pro, default 5s)' },
         { prefix: '/split', label: 'Split clip', description: 'Split a timeline clip at the playhead (name the clip in chat or scrub to it first)' },
         { prefix: '/export', label: 'Export', description: 'Export the current project (choose preset)' },
         { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for a timeline clip (describe which clip)' },

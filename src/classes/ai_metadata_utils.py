@@ -94,3 +94,26 @@ def get_scene_descriptions_formatted(ai_metadata: Dict[str, Any]) -> List[str]:
         formatted.append(f"[{time_str}] {description}")
     
     return formatted
+
+
+def collect_scene_descriptions_for_baked_segment(
+    ai_metadata: Dict[str, Any],
+    seg_start: float,
+    seg_end: float,
+    baked_offset: float,
+) -> List[Dict[str, Any]]:
+    """Map source-file scene times into a baked timeline segment."""
+    if not ai_metadata or not isinstance(ai_metadata, dict):
+        return []
+
+    scenes: List[Dict[str, Any]] = []
+    for scene in ai_metadata.get("scene_descriptions") or []:
+        if not isinstance(scene, dict) or not scene.get("description"):
+            continue
+        scene_time = float(scene.get("time", 0) or 0)
+        if seg_start <= scene_time <= seg_end:
+            scenes.append({
+                "time": max(0.0, scene_time - seg_start + baked_offset),
+                "description": str(scene.get("description", "")),
+            })
+    return scenes
