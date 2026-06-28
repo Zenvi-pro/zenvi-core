@@ -857,9 +857,11 @@ class AIChatWindow(QDockWidget):
         try:
             new_project_path = (new_project_path or "").strip()
             prev_path = getattr(self, "_current_project_path", "") or ""
-            if self._project_key(new_project_path) == self._project_key(prev_path):
-                # Same bucket (e.g. saving an Untitled project under itself,
-                # or a no-op signal) — nothing to do.
+            same_bucket = self._project_key(new_project_path) == self._project_key(prev_path)
+            if same_bucket and new_project_path:
+                # Same saved project re-signaled — nothing to do.  An empty
+                # ``new_project_path`` (New Project / untitled) is allowed to
+                # fall through so the chat resets to a fresh session.
                 return
 
             # 1. Persist current sessions to the previous project's store.
@@ -1013,6 +1015,10 @@ class AIChatWindow(QDockWidget):
             pass
 
     def _load_chat_sessions_store(self, project_path: str = None) -> dict:
+        # Untitled / unsaved projects are ephemeral — never restore old chats
+        # (this also ignores any stale or pre-existing ``_default.json``).
+        if self._project_key(project_path) == "_default":
+            return {}
         try:
             self._migrate_legacy_chat_store()
             path = self._chat_sessions_store_path(project_path)
@@ -1025,6 +1031,9 @@ class AIChatWindow(QDockWidget):
             return {}
 
     def _save_chat_sessions_store(self, project_path: str = None) -> None:
+        # Untitled / unsaved projects are ephemeral — don't persist their chats.
+        if self._project_key(project_path) == "_default":
+            return
         try:
             path = self._chat_sessions_store_path(project_path)
             os.makedirs(self._chat_sessions_dir(), exist_ok=True)
