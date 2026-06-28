@@ -94,13 +94,16 @@ class BaseAgentRunner(QObject):
         self._cli_session_id = ""
 
     def cancel(self):
-        """Terminate the running subprocess (called from the GUI thread)."""
+        """Terminate the running subprocess (called from the GUI thread).
+
+        Non-blocking: the worker thread's read loop hits EOF and its final
+        ``wait()`` reaps the process, so we don't stall the UI here.
+        """
         self._stopping = True
         proc = self._proc
         if proc and proc.poll() is None:
             try:
                 proc.terminate()
-                proc.wait(timeout=3)
             except Exception:
                 try:
                     proc.kill()

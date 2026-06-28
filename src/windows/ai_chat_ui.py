@@ -900,6 +900,18 @@ class AIChatWindow(QDockWidget):
         sess = self._sessions.pop(session_id)
         # Clear backend session in background
         QMetaObject.invokeMethod(sess["worker"], "clear_session", Qt.QueuedConnection)
+        # Terminate any CLI subprocess before stopping the worker thread.
+        worker = sess.get("worker")
+        if worker is not None:
+            try:
+                worker._stopping = True
+            except Exception:
+                pass
+            if hasattr(worker, "cancel"):
+                try:
+                    worker.cancel()
+                except Exception:
+                    pass
         # Stop the worker thread
         thread = sess["thread"]
         if thread.isRunning():
@@ -965,6 +977,11 @@ class AIChatWindow(QDockWidget):
                         worker._stopping = True
                     except Exception:
                         pass
+                    if hasattr(worker, "cancel"):
+                        try:
+                            worker.cancel()  # terminate any CLI subprocess
+                        except Exception:
+                            pass
                 thread = sess.get("thread")
                 if thread is not None and thread.isRunning():
                     thread.quit()
@@ -1831,9 +1848,19 @@ class AIChatWindow(QDockWidget):
             worker = sess.get("worker")
             if worker:
                 worker._stopping = True
+                if hasattr(worker, "cancel"):
+                    try:
+                        worker.cancel()  # terminate any CLI subprocess
+                    except Exception:
+                        pass
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
+        except Exception:
+            pass
+        try:
+            from windows.agent_runners import cleanup_agent_mcp_configs
+            cleanup_agent_mcp_configs()
         except Exception:
             pass
         for sess in list(self._sessions.values()):
@@ -1969,6 +1996,14 @@ class AIChatWindow(QDockWidget):
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        # CLI backends: terminate the running subprocess for the active session.
+        sess = self._active_session()
+        worker = sess.get("worker") if sess else None
+        if worker is not None and hasattr(worker, "cancel"):
+            try:
+                worker.cancel()
+            except Exception:
+                pass
         self._set_processing_ui(False)
 
     @pyqtSlot(str)
