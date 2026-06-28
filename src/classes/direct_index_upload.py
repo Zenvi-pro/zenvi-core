@@ -15,6 +15,8 @@ def upload_file_via_presigned_urls(
     upload_headers: Optional[Dict[str, str]] = None,
     batch_size: int = 10,
     on_chunk_uploaded: Optional[Callable[[int, int], None]] = None,
+    session=None,
+    timeout: int = 600,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Upload file chunks; return (parts, error). parts match upload-complete schema."""
     if not file_path or not os.path.isfile(file_path):
@@ -35,6 +37,8 @@ def upload_file_via_presigned_urls(
     completed: List[Dict[str, Any]] = []
     headers = dict(upload_headers or {})
     headers.setdefault("Content-Type", "application/octet-stream")
+
+    s = session if session is not None else requests
 
     with open(file_path, "rb") as fh:
         for batch_start in range(0, total_chunks, batch_size):
@@ -64,7 +68,7 @@ def upload_file_via_presigned_urls(
 
                 url = url_map[chunk_index]
                 try:
-                    resp = requests.put(url, data=data, headers=headers, timeout=600)
+                    resp = s.put(url, data=data, headers=headers, timeout=timeout)
                     resp.raise_for_status()
                 except Exception as exc:
                     return completed, f"Chunk {chunk_index} upload failed: {exc}"

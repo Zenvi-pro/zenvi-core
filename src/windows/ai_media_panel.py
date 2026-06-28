@@ -77,13 +77,13 @@ class AIMediaPanel(QDockWidget):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        # Create tab pages (Tags only – Analysis/Collections are backend-internal)
-        self._create_tags_tab()
-
         # Update timer – polls while tagging/indexing is active for selected file
         self.update_timer = QTimer()
         self.update_timer.setInterval(2000)
         self.update_timer.timeout.connect(self._on_progress_timer)
+
+        # Create tab pages (Tags only – Analysis/Collections are backend-internal)
+        self._create_tags_tab()
 
         # Track selection changes for clip tag display
         self._wire_selection_signals()
@@ -227,7 +227,7 @@ class AIMediaPanel(QDockWidget):
             self.update_timer.start()
 
     def _stop_progress_timer(self):
-        if self.update_timer.isActive():
+        if hasattr(self, "update_timer") and self.update_timer.isActive():
             self.update_timer.stop()
 
     def _resolve_display_target(self, prefer_files=None):

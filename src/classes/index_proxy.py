@@ -86,7 +86,13 @@ def create_index_proxy(video_path: str) -> Tuple[str, bool, int, str]:
     fd, out_path = tempfile.mkstemp(suffix="_index_proxy.mp4", prefix="zenvi_")
     os.close(fd)
 
-    vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
+    if w and h:
+        if w >= h:
+            vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
+        else:
+            vf = f"scale=-2:'min({_MAX_LONG_EDGE},ih)',format=yuv420p"
+    else:
+        vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
     has_audio = _ffprobe_has_audio(video_path)
     if has_audio:
         cmd = [
