@@ -1,16 +1,21 @@
 """
-Unified stock-media search view for the Files panel.
+Unified media browser for the Files panel.
 
-Renders two titled sections for a single query — "Stock Footage" (Pexels) and
-"Stock music" (Freesound). Clicking a result downloads it and imports it into
-Project Files. This view is a thin orchestration layer: the search workers,
+A single scroll area stacks three titled sections:
+  * "Project Files" — the real project-files QListView, embedded here so it
+    scrolls together with the stock results (drag-to-timeline, context menus and
+    the hover quick-actions all keep working — it is the same widget).
+  * "Stock Footage" — Pexels results.
+  * "Stock music" — Freesound results.
+
+The stock sections only appear while a query is active. The search workers,
 download workers, result cards and async image loaders are reused as-is from
 ``pexels_dock`` and ``freesound_dock``.
 """
 
 from typing import Dict
 
-from PyQt5.QtCore import Qt, QThread, QThreadPool, pyqtSlot
+from PyQt5.QtCore import Qt, QSize, QThread, QThreadPool, pyqtSlot
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
@@ -37,13 +42,25 @@ _STYLESHEET = """
     QScrollArea { background: #0d0d0d; border: none; }
     QWidget#scrollContents { background: #0d0d0d; }
     QLabel#sectionHeader { color: #d4d4d4; font-size: 12px; font-weight: bold;
-        padding: 6px 2px 2px 2px; }
+        padding: 8px 2px 2px 2px; }
     QLabel#sectionStatus { color: #8a8a8a; font-size: 10px; padding-left: 2px; }
+"""
+
+# Project-file cards, sized to match the Pexels footage cards for a consistent grid.
+FILE_ICON = QSize(150, 84)
+FILE_GRID = QSize(162, 118)
+_FILES_STYLE = """
+    QListView { background: #0d0d0d; border: none; }
+    QListView::item { background: #1a1a1a; color: #d4d4d4;
+        border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;
+        padding-top: 2px; }
+    QListView::item:hover { border: 1px solid #4d9cf6; }
+    QListView::item:selected { border: 1px solid #4d9cf6; background: #1d2b3a; }
 """
 
 
 class StockSearchView(QWidget):
-    """Stock footage + music results for a single query, embedded in the Files panel."""
+    """Project files + stock footage + stock music, sharing one scroll area."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,7 +68,8 @@ class StockSearchView(QWidget):
         self.setStyleSheet(_STYLESHEET)
 
         self._query = ""
-        self._search_threads = []   # keep search threads alive while running
+        self._files_view = None
+        self._search_threads = []
         self._search_workers = []
         # Download threads/workers keyed by a provider-prefixed uid ("v123"/"s456")
         # so a Pexels id and a Freesound id can never clobber each other.
@@ -83,56 +101,122 @@ class StockSearchView(QWidget):
         cv.setContentsMargins(4, 4, 4, 4)
         cv.setSpacing(2)
 
+        # Project Files section — the real QListView is injected via set_files_view().
+        self._files_header = QLabel("Project Files")
+        self._files_header.setObjectName("sectionHeader")
+        cv.addWidget(self._files_header)
+        self._files_holder = QWidget()
+        self._files_holder_layout = QVBoxLayout(self._files_holder)
+        self._files_holder_layout.setContentsMargins(0, 2, 0, 6)
+        self._files_holder_layout.setSpacing(0)
+        cv.addWidget(self._files_holder)
+
+        # Stock Footage section (hidden until a query is active).
         self._footage_header = QLabel("Stock Footage")
         self._footage_header.setObjectName("sectionHeader")
         cv.addWidget(self._footage_header)
         self._footage_status = QLabel("")
         self._footage_status.setObjectName("sectionStatus")
         cv.addWidget(self._footage_status)
-        footage_container = QWidget()
-        self._footage_grid = QGridLayout(footage_container)
+        self._footage_container = QWidget()
+        self._footage_grid = QGridLayout(self._footage_container)
         self._footage_grid.setContentsMargins(0, 4, 0, 8)
         self._footage_grid.setSpacing(6)
-        cv.addWidget(footage_container)
+        cv.addWidget(self._footage_container)
 
+        # Stock music section (hidden until a query is active).
         self._music_header = QLabel("Stock music")
         self._music_header.setObjectName("sectionHeader")
         cv.addWidget(self._music_header)
         self._music_status = QLabel("")
         self._music_status.setObjectName("sectionStatus")
         cv.addWidget(self._music_status)
-        music_container = QWidget()
-        self._music_grid = QGridLayout(music_container)
+        self._music_container = QWidget()
+        self._music_grid = QGridLayout(self._music_container)
         self._music_grid.setContentsMargins(0, 4, 0, 8)
         self._music_grid.setSpacing(6)
-        cv.addWidget(music_container)
+        cv.addWidget(self._music_container)
 
         cv.addStretch(1)
         scroll.setWidget(content)
         outer.addWidget(scroll)
 
+        self._set_stock_visible(False)
+
+    def set_files_view(self, files_view):
+        """Embed the project-files QListView as the top section and restyle it
+        to match the stock cards. The view keeps its own behaviour (drag, menu)."""
+        self._files_view = files_view
+        files_view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        files_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        files_view.setIconSize(FILE_ICON)
+        files_view.setGridSize(FILE_GRID)
+        files_view.setStyleSheet(_FILES_STYLE)
+        self._files_holder_layout.addWidget(files_view)
+
+        # Refit the embedded view's height to its contents so the outer scroll
+        # area owns the only scrollbar.
+        try:
+            files_view.files_model.ModelRefreshed.connect(self._refit_files)
+        except Exception:
+            pass
+        model = files_view.model()
+        if model is not None:
+            model.layoutChanged.connect(self._refit_files)
+            model.rowsInserted.connect(lambda *a: self._refit_files())
+            model.rowsRemoved.connect(lambda *a: self._refit_files())
+            model.modelReset.connect(self._refit_files)
+        self._refit_files()
+
+    def _refit_files(self):
+        view = self._files_view
+        if view is None:
+            return
+        model = view.model()
+        count = model.rowCount() if model is not None else 0
+        grid = view.gridSize()
+        gw = grid.width() or 110
+        gh = grid.height() or 95
+        width = view.viewport().width() or self.width() or 320
+        cols = max(1, width // gw)
+        rows = (count + cols - 1) // cols
+        view.setFixedHeight(rows * gh + 8 if rows else 0)
+
     # ── Public API ──────────────────────────────────────────────────────────────
 
     def run_search(self, query: str):
-        """Search both providers for ``query`` and populate the two sections."""
+        """Search both stock providers for ``query`` and show the two sections."""
         query = (query or "").strip()
         if not query:
-            self.clear_results()
+            self.clear_stock()
             return
         self._query = query
-        self.clear_results()
+        self._clear_grids()
+        self._set_stock_visible(True)
         self._footage_status.setText("Searching…")
         self._music_status.setText("Searching…")
 
         self._start_search(PexelsSearchWorker(query, 1), self._on_footage_results)
         self._start_search(FreesoundSearchWorker(query, 1), self._on_music_results)
 
-    def clear_results(self):
+    def clear_stock(self):
+        """Hide and empty the stock sections (project files stay visible)."""
+        self._clear_grids()
+        self._footage_status.setText("")
+        self._music_status.setText("")
+        self._set_stock_visible(False)
+
+    # ── Section visibility ────────────────────────────────────────────────────────
+
+    def _set_stock_visible(self, visible: bool):
+        for w in (self._footage_header, self._footage_status, self._footage_container,
+                  self._music_header, self._music_status, self._music_container):
+            w.setVisible(visible)
+
+    def _clear_grids(self):
         self._clear_grid(self._footage_grid)
         self._clear_grid(self._music_grid)
         self._cards.clear()
-        self._footage_status.setText("")
-        self._music_status.setText("")
 
     # ── Search flow ───────────────────────────────────────────────────────────────
 
@@ -347,6 +431,7 @@ class StockSearchView(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._refit_files()
         self._reflow(self._footage_grid, VIDEO_W)
         self._reflow(self._music_grid, SOUND_W)
 
