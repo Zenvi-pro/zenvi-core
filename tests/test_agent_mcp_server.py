@@ -1,0 +1,170 @@
+"""Tests for the in-app MCP tool server (classes.agent_mcp_server).
+
+Covers schema derivation, tool listing, and an end-to-end check that an MCP
+client can list + call tools over the localhost streamable-HTTP transport with
+the per-launch bearer token. The optional ``claude`` CLI smoke is gated behind
+ZENVI_RUN_CLI_SMOKE=1 so normal runs don't spend model tokens.
+"""
+
+import asyncio
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import types
+import urllib.error
+import urllib.request
+
+import pytest
+
+from classes.agent_mcp_server import _build_input_schema
+
+
+# --- schema derivation (no server / no stubs needed) -----------------------
+
+def test_schema_is_permissive_for_kwargs_only():
+    def handler(**kwargs):
+        """List the media files in the current project bin."""
+
+    schema = _build_input_schema(handler)
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is True
+    assert "properties" not in schema
+
+
+def test_schema_extracts_typed_params_and_required():
+    def handler(name, label="x", count=3, **kwargs):
+        """Do a thing."""
+
+    schema = _build_input_schema(handler)
+    assert set(schema["properties"]) == {"name", "label", "count"}
+    assert schema["required"] == ["name"]
+    assert schema["properties"]["count"]["type"] == "integer"
+    assert schema["additionalProperties"] is True  # has **kwargs
+
+
+# --- a stubbed tool layer so we don't need Qt/libopenshot ------------------
+
+@pytest.fixture
+def tool_stub():
+    th = types.ModuleType("classes.tool_handlers")
+
+    def list_files(**_kw):
+        """List the media files in the current project bin."""
+        return "FIXTURE_FILES: a.mp4, b.wav"
+
+    def add_track(label="", **_kw):
+        """Add a new track to the timeline."""
+        return "added track %s" % label
+
+    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "add_track_tool": add_track}
+    th.humanize_tool_name = lambda n: n
+    th.execute_tool = lambda name, args: th.AGENT_TOOL_HANDLERS[name](**(args or {}))
+
+    saved = sys.modules.get("classes.tool_handlers")
+    sys.modules["classes.tool_handlers"] = th
+    try:
+        yield th
+    finally:
+        if saved is not None:
+            sys.modules["classes.tool_handlers"] = saved
+        else:
+            sys.modules.pop("classes.tool_handlers", None)
+
+
+def test_iter_tool_defs(tool_stub):
+    from classes.agent_mcp_server import iter_tool_defs
+    defs = {d["name"]: d for d in iter_tool_defs()}
+    assert set(defs) == {"list_files_tool", "add_track_tool"}
+    assert defs["add_track_tool"]["inputSchema"]["properties"]["label"]["type"] == "string"
+    assert "media files" in defs["list_files_tool"]["description"]
+
+
+# --- transport: an MCP client can list + call tools ------------------------
+
+def test_server_lists_and_calls_tools(tool_stub):
+    pytest.importorskip("mcp")
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    try:
+        async def run():
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamablehttp_client
+            headers = {"Authorization": "Bearer %s" % srv.token}
+            async with streamablehttp_client(srv.url(), headers=headers) as (r, w, _):
+                async with ClientSession(r, w) as session:
+                    await session.initialize()
+                    tools = await session.list_tools()
+                    result = await session.call_tool("list_files_tool", {})
+                    return [t.name for t in tools.tools], result.content[0].text
+
+        names, text = asyncio.run(run())
+        assert "list_files_tool" in names
+        assert "FIXTURE_FILES" in text
+    finally:
+        srv.stop()
+
+
+def test_server_requires_bearer_token(tool_stub):
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    try:
+        req = urllib.request.Request(
+            srv.url(), method="POST", data=b"{}",
+            headers={"content-type": "application/json",
+                     "accept": "application/json, text/event-stream"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=3)
+        assert exc.value.code == 401
+    finally:
+        srv.stop()
+
+
+# --- optional: drive the real claude CLI against the server ----------------
+
+_RUN_CLI = bool(shutil.which("claude")) and os.environ.get("ZENVI_RUN_CLI_SMOKE") == "1"
+
+
+@pytest.mark.skipif(not _RUN_CLI, reason="set ZENVI_RUN_CLI_SMOKE=1 (and have claude on PATH) to run")
+def test_claude_cli_invokes_mcp_tool(tool_stub):
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    cfg = {"mcpServers": {"zenvi-editor": {"type": "http", "url": srv.url(),
+            "headers": {"Authorization": "Bearer %s" % srv.token}}}}
+    cfg_path = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False).name
+    json.dump(cfg, open(cfg_path, "w"))
+    saw_tool_use = saw_fixture = False
+    try:
+        proc = subprocess.Popen(
+            ["claude", "-p", "Call the list_files_tool tool with no arguments and report the result.",
+             "--output-format", "stream-json", "--verbose",
+             "--mcp-config", cfg_path, "--strict-mcp-config",
+             "--permission-mode", "bypassPermissions",
+             "--allowedTools", "mcp__zenvi-editor__list_files_tool"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        for line in proc.stdout:
+            try:
+                ev = json.loads(line.strip())
+            except Exception:
+                continue
+            if ev.get("type") == "assistant":
+                for b in ev.get("message", {}).get("content", []):
+                    if b.get("type") == "tool_use" and "list_files_tool" in (b.get("name") or ""):
+                        saw_tool_use = True
+            if "FIXTURE_FILES" in json.dumps(ev):
+                saw_fixture = True
+        proc.wait(timeout=120)
+    finally:
+        srv.stop()
+        os.unlink(cfg_path)
+    assert saw_tool_use and saw_fixture
