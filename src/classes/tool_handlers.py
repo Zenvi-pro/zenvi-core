@@ -60,24 +60,34 @@ except ImportError:
 # the callable via a cross-thread signal which Qt routes through the main
 # event loop.
 
-class _MainThreadDispatcher(QObject):
-    """Singleton helper that runs callables on the Qt main (GUI) thread."""
+if pyqtSignal is not None:
 
-    _dispatch = pyqtSignal(object)
+    class _MainThreadDispatcher(QObject):
+        """Singleton helper that runs callables on the Qt main (GUI) thread."""
 
-    def __init__(self):
-        super().__init__()
-        self._dispatch.connect(self._on_dispatch)
+        _dispatch = pyqtSignal(object)
 
-    @pyqtSlot(object)
-    def _on_dispatch(self, payload):
-        func, args, result_box, error_box, done = payload
-        try:
-            result_box[0] = func(*args)
-        except Exception as exc:
-            error_box[0] = exc
-        finally:
-            done.set()
+        def __init__(self):
+            super().__init__()
+            self._dispatch.connect(self._on_dispatch)
+
+        @pyqtSlot(object)
+        def _on_dispatch(self, payload):
+            func, args, result_box, error_box, done = payload
+            try:
+                result_box[0] = func(*args)
+            except Exception as exc:
+                error_box[0] = exc
+            finally:
+                done.set()
+
+else:
+
+    class _MainThreadDispatcher:
+        """Headless fallback when PyQt5 is unavailable."""
+
+        def run(self, fn):
+            return fn()
 
 
 _dispatcher = None
@@ -177,10 +187,21 @@ def _resolve_timeline_clip_for_tool(**kwargs):
     from classes.clip_resolver import resolve_timeline_clip
 
     def _do_resolve():
+        pos_near = kwargs.get("position_near")
+        if pos_near is None:
+            pos_near = kwargs.get("prefer_position_near")
+        occ = kwargs.get("occurrence", 0)
+        try:
+            occ = int(float(str(occ).strip() or 0))
+        except (TypeError, ValueError):
+            occ = 0
         return resolve_timeline_clip(
             timeline_clip_id=str(kwargs.get("timeline_clip_id") or "").strip(),
             clip_query=str(kwargs.get("clip_query") or "").strip(),
             prefer_track=str(kwargs.get("prefer_track") or kwargs.get("track") or "").strip(),
+            track=str(kwargs.get("track") or kwargs.get("prefer_track") or "").strip(),
+            position_near=pos_near,
+            occurrence=occ,
         )
 
     if QThread is not None:
@@ -520,21 +541,14 @@ def list_files(**_kw) -> str:
 _TAGS_PREVIEW_MAX = 80
 
 
-def _tags_preview_for_file_data(file_data: dict) -> str:
-    """Top objects/scenes from ai_metadata for compact clip listing."""
+def _tags_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
+    """Top objects/scenes from effective metadata for compact clip listing."""
+    from classes.ai_metadata_utils import build_tags_preview, get_effective_ai_metadata
+
     if not isinstance(file_data, dict):
         return ""
-    ai = file_data.get("ai_metadata") if isinstance(file_data.get("ai_metadata"), dict) else {}
-    tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
-    objs = ", ".join((tags.get("objects") or [])[:3])
-    scs = ", ".join((tags.get("scenes") or [])[:2])
-    parts = [p for p in (objs, scs) if p]
-    if not parts:
-        return ""
-    preview = " | ".join(parts)
-    if len(preview) > _TAGS_PREVIEW_MAX:
-        preview = preview[: _TAGS_PREVIEW_MAX - 1].rstrip() + "…"
-    return preview
+    effective = get_effective_ai_metadata(file_data, clip_data=clip_data, rebased=True)
+    return build_tags_preview(effective)
 
 
 def _file_is_analyzed(file_data: dict) -> bool:
@@ -561,6 +575,18 @@ def list_clips(layer="", **_kw) -> str:
         clips = Clip.filter(**kwargs)
         if not clips:
             return "No clips in project."
+        from classes.timeline_clip_context import build_timeline_clip_context, clear_metadata_lookup_cache
+
+        clear_metadata_lookup_cache()
+        file_cache: dict[str, dict] = {}
+
+        file_dupes: dict[str, list] = {}
+        for c in clips:
+            fid = str(c.data.get("file_id") or "")
+            layer = c.data.get("layer")
+            if fid:
+                file_dupes.setdefault(f"{fid}:{layer}", []).append(c)
+
         lines = []
         for c in clips:
             d = c.data
@@ -585,25 +611,48 @@ def list_clips(layer="", **_kw) -> str:
             fid = d.get("file_id", "")
             fname = ""
             tags_preview = ""
+            parent_file_id = ""
+            source_start = d.get("start", 0)
+            source_end = d.get("end", 0)
+            timeline_end = float(d.get("position", 0) or 0)
             if fid:
                 try:
                     from classes.query import File as _File
-                    fobj = _File.get(id=str(fid))
-                    if fobj and isinstance(fobj.data, dict):
+                    if fid not in file_cache:
+                        fobj = _File.get(id=str(fid))
+                        file_cache[fid] = fobj.data if fobj and isinstance(fobj.data, dict) else None
+                    fdata = file_cache.get(fid)
+                    if fdata:
                         import os
                         fname = (
-                            fobj.data.get("name")
-                            or os.path.basename(str(fobj.data.get("path") or ""))
+                            fdata.get("name")
+                            or os.path.basename(str(fdata.get("path") or ""))
                         )
-                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                        ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
+                        tags_preview = ctx.tags_preview
+                        parent_file_id = ctx.parent_file_id
+                        source_start = ctx.source_start
+                        source_end = ctx.source_end
+                        timeline_end = ctx.timeline_end
                 except Exception:
                     pass
             tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
+            occ_hint = ""
+            dup_key = f"{fid}:{lid_int}"
+            dupes = file_dupes.get(dup_key, [])
+            if len(dupes) > 1:
+                ranked = sorted(dupes, key=lambda x: float(x.data.get("position", 0) or 0))
+                for idx, dc in enumerate(ranked, 1):
+                    if dc.id == c.id:
+                        occ_hint = f" occurrence_hint={idx}"
+                        break
+            parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
             lines.append(
-                f"  timeline_clip_id={c.id} media_bin_file_id={fid} "
-                f"title={title!r} file={fname!r}{tag_part} "
+                f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
+                f"title={title!r} file={fname!r}{tag_part}{occ_hint} "
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
-                f"position={d.get('position',0)} start={d.get('start',0)} end={d.get('end',0)}"
+                f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
+                f"source_start={source_start} source_end={source_end}"
             )
         return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
     except Exception as e:
@@ -1019,7 +1068,7 @@ def split_file_add_clip(file_id="", start_frame=0, end_frame=0, name="", **_kw) 
     try:
         from classes.query import File
         from classes import time_parts
-        from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+        from classes.ai_metadata_utils import get_effective_ai_metadata, filter_tags_string_for_window
 
         chat_session_id = str(_kw.get("chat_session_id", "") or "default")
 
@@ -1056,11 +1105,29 @@ def split_file_add_clip(file_id="", start_frame=0, end_frame=0, name="", **_kw) 
         new_file.type = "insert"
         new_file.data["start"] = start_sec
         new_file.data["end"] = end_sec
+        new_file.data["parent_file_id"] = file_id
 
         if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
-            new_file.data["ai_metadata"] = adjust_scene_descriptions_for_subclip(
-                new_file.data["ai_metadata"], start_sec, end_sec
-            )
+            from classes.timeline_clip_context import resolve_root_ai_metadata
+            from classes.ai_metadata_utils import materialize_clip_ai_metadata
+
+            root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
+            if root_ai:
+                effective = materialize_clip_ai_metadata(
+                    root_ai, start_sec, end_sec, rebased=True,
+                )
+            else:
+                effective = get_effective_ai_metadata(
+                    f.data,
+                    clip_data={"start": start_sec, "end": end_sec},
+                    rebased=True,
+                )
+            new_file.data["ai_metadata"] = effective
+            if new_file.data.get("tags"):
+                new_file.data["tags"] = filter_tags_string_for_window(
+                    str(new_file.data.get("tags") or ""),
+                    effective,
+                )
 
         if name and isinstance(name, str) and name.strip():
             new_file.data["name"] = name.strip()
@@ -1223,8 +1290,9 @@ def search_clip_scenes(
         k = 5
 
     try:
-        from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+        from classes.ai_metadata_utils import get_effective_ai_metadata
         from classes.api_client import get_backend_client
+        from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
         from classes.twelvelabs_match import select_hits_for_display
 
         resolved = _resolve_timeline_clip_for_tool(
@@ -1237,20 +1305,23 @@ def search_clip_scenes(
 
         clip_obj = resolved.clip
         clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        clip_start = float(clip_data.get("start", 0.0) or 0.0)
-        clip_end = float(clip_data.get("end", 0.0) or 0.0)
-        clip_name = clip_data.get("title") or clip_data.get("label") or "Timeline clip"
+        source_file = _get_source_file_for_clip(clip_obj)
+        file_data = source_file.data if source_file and isinstance(source_file.data, dict) else None
+        ctx = build_timeline_clip_context(clip_obj, clip_data, file_data)
+        clip_start = ctx.source_start
+        clip_end = ctx.source_end
+        clip_name = ctx.title or "Timeline clip"
 
         per_clip_ai = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else None
-        source_file = _get_source_file_for_clip(clip_obj)
+        parent_data = resolve_parent_file_data(file_data, file_id=ctx.file_id)
         source_ai = None
-        if source_file and isinstance(source_file.data, dict):
-            source_ai = source_file.data.get("ai_metadata") if isinstance(source_file.data.get("ai_metadata"), dict) else None
+        if parent_data:
+            source_ai = parent_data.get("ai_metadata") if isinstance(parent_data.get("ai_metadata"), dict) else None
 
         client = get_backend_client()
         nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
 
-        # TwelveLabs search
+        # TwelveLabs search (parent index + trim window)
         if client.is_indexing_configured():
             tw = (source_ai or {}).get("twelvelabs") if isinstance((source_ai or {}).get("twelvelabs"), dict) else {}
             status = (tw.get("status") or "").lower()
@@ -1292,8 +1363,12 @@ def search_clip_scenes(
 
         # Local scene descriptions fallback
         local_ai = per_clip_ai
-        if local_ai is None and source_ai is not None:
-            local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
+        if local_ai is None:
+            local_ai = get_effective_ai_metadata(
+                parent_data or file_data,
+                clip_data=clip_data,
+                rebased=True,
+            )
 
         # Simple local search over cached paths/tags (no LLM)
         scenes = (local_ai or {}).get("scene_descriptions", [])
@@ -1662,17 +1737,24 @@ def slice_clip_at_best_match(
         def _read_clip_info():
             try:
                 from classes.clip_resolver import resolve_timeline_clip
+                from classes.ai_metadata_utils import get_source_window
+                from classes.timeline_clip_context import resolve_parent_file_data
+
+                occ = _parse_occurrence(str(occurrence or _kw.get("occurrence", "0")), query)
                 resolved = resolve_timeline_clip(
                     timeline_clip_id=str(timeline_clip_id or "").strip(),
                     clip_query=str(clip_query or "").strip(),
+                    track=str(_kw.get("track") or _kw.get("prefer_track") or "").strip(),
+                    occurrence=occ,
                 )
                 if not resolved.ok or not resolved.clip:
                     error_box_pre[0] = resolved.error or "Error: Could not resolve timeline clip."
                     return
                 obj = resolved.clip
                 d = obj.data if isinstance(obj.data, dict) else {}
-                cs = float(d.get("start", 0.0) or 0.0)
-                ce = float(d.get("end", 0.0) or 0.0)
+                sf = _get_source_file_for_clip(obj)
+                fd = sf.data if sf and isinstance(sf.data, dict) else None
+                cs, ce = get_source_window(d, fd)
                 cp = float(d.get("position", 0.0) or 0.0)
                 ly = d.get("layer", 1)
                 try:
@@ -1680,11 +1762,10 @@ def slice_clip_at_best_match(
                 except (TypeError, ValueError):
                     layer_num = 1
                 fid = str(d.get("file_id") or "")
-                sf = _get_source_file_for_clip(obj)
+                parent_data = resolve_parent_file_data(fd, file_id=fid)
                 sa = (
-                    sf.data.get("ai_metadata")
-                    if sf and isinstance(sf.data, dict)
-                    and isinstance(sf.data.get("ai_metadata"), dict)
+                    parent_data.get("ai_metadata")
+                    if parent_data and isinstance(parent_data.get("ai_metadata"), dict)
                     else None
                 )
                 # Extract TwelveLabs info (may be absent for old imports)
@@ -2986,7 +3067,7 @@ def generate_transition_clip(
     **_kw,
 ) -> str:
     """Generate a baked clip A + AI morph + clip B for two timeline clips (Kling O1 Pro)."""
-    from classes.query import Clip, File
+    from classes.query import Clip
     _get_app()
 
     pair = _resolve_clip_pair_for_tool(
@@ -3000,11 +3081,8 @@ def generate_transition_clip(
     clip_a = pair.clip_a
     clip_b = pair.clip_b
 
-    # Get source file paths
-    file_a_id = clip_a.data.get("file_id", "")
-    file_b_id = clip_b.data.get("file_id", "")
-    file_a = File.get(id=file_a_id) if file_a_id else None
-    file_b = File.get(id=file_b_id) if file_b_id else None
+    file_a = _get_source_file_for_clip(clip_a)
+    file_b = _get_source_file_for_clip(clip_b)
     if not file_a or not file_b:
         return "Error: Could not find source files for the clips."
 
@@ -3021,6 +3099,13 @@ def generate_transition_clip(
     start_b, end_b = _clip_source_range(clip_b.data, file_b.data)
     duration_a = max(0.01, end_a - start_a)
     dur_b = max(0.01, end_b - start_b)
+
+    log.info(
+        "generate_transition: clip_a id=%s source=%.3f-%.3fs file=%s | "
+        "clip_b id=%s source=%.3f-%.3fs file=%s",
+        clip_a.id, start_a, end_a, os.path.basename(path_a),
+        clip_b.id, start_b, end_b, os.path.basename(path_b),
+    )
 
     layer = clip_a.data.get("layer")
 
@@ -3052,13 +3137,15 @@ def generate_transition_clip(
             frame_b_path = os.path.join(tmpdir, "frame_b.jpg")
 
             # Last frame of clip A → morph start (first constraint)
-            time_a = max(0.0, end_a - 0.1) if end_a > 0 else 0.0
+            time_a = max(start_a, end_a - 0.1) if end_a > start_a else start_a
             ok, err = _ffmpeg_run([
                 "ffmpeg", "-y", "-ss", str(time_a), "-i", path_a,
                 "-frames:v", "1", "-vf", frame_vf, "-q:v", "2", frame_a_path,
             ])
             if not ok:
-                return f"Error: Failed to extract last frame from clip A: {err}"
+                return f"Error: Failed to extract last frame from clip A at {time_a:.3f}s: {err}"
+            if not os.path.isfile(frame_a_path) or os.path.getsize(frame_a_path) < 512:
+                return f"Error: Extracted frame A is empty (time={time_a:.3f}s, path={path_a})"
 
             # First frame of clip B → morph end (last constraint)
             ok, err = _ffmpeg_run([
@@ -3066,7 +3153,17 @@ def generate_transition_clip(
                 "-frames:v", "1", "-vf", frame_vf, "-q:v", "2", frame_b_path,
             ])
             if not ok:
-                return f"Error: Failed to extract first frame from clip B: {err}"
+                return f"Error: Failed to extract first frame from clip B at {start_b:.3f}s: {err}"
+            if not os.path.isfile(frame_b_path) or os.path.getsize(frame_b_path) < 512:
+                return f"Error: Extracted frame B is empty (time={start_b:.3f}s, path={path_b})"
+
+            log.info(
+                "generate_transition: extracted frames A@%ss (%d bytes) B@%ss (%d bytes)",
+                f"{time_a:.3f}",
+                os.path.getsize(frame_a_path),
+                f"{start_b:.3f}",
+                os.path.getsize(frame_b_path),
+            )
 
             from classes.credits_client import check_operation
 
@@ -4117,9 +4214,11 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
 
 def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
-    """Return all project files with AI metadata for planning and clip inference."""
+    """Return project files with AI metadata for planning (excludes hidden subclips by default)."""
     try:
         from classes.query import File
+        from classes.timeline_clip_context import resolve_parent_file_id
+
         level = str(detail_level or kwargs.get("detail_level") or "summary").lower().strip()
         files = File.filter()
         if not files:
@@ -4127,6 +4226,8 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         lines = ["Project files with full metadata:"]
         for f in files:
             d = f.data
+            if d.get("zenvi_subclip") and level != "full":
+                continue
             dur = d.get("duration", 0) or 0
             m, s = divmod(int(dur), 60)
             media_type = d.get("media_type", "?")
@@ -4142,9 +4243,14 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             scenes = ", ".join((tags.get("scenes") or [])[:3])
             activities = ", ".join((tags.get("activities") or [])[:3])
             desc = (ai.get("description") or "")[:120]
+            parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
+            alias_part = ""
+            if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
+                alias_part = f"  alias_of={parent_id}\n"
             lines.append(
                 f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
                 f"duration={m}:{s:02d}\n"
+                f"{alias_part}"
                 f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
                 f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
                 f"    objects=[{objects}]\n"
@@ -4166,6 +4272,57 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         return f"Error: {e}"
 
 
+def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
+    """Return one row per timeline clip with trim-aware effective metadata."""
+    try:
+        from classes.timeline_clip_context import enumerate_timeline_contexts
+
+        level = str(detail_level or _kw.get("detail_level") or "summary").lower().strip()
+        contexts = enumerate_timeline_contexts()
+        if not contexts:
+            return "No clips on timeline."
+
+        dupe_groups: dict[str, list] = {}
+        for ctx in contexts:
+            key = f"{ctx.file_id}:{ctx.layer}"
+            dupe_groups.setdefault(key, []).append(ctx)
+
+        lines = [f"Timeline placements ({len(contexts)}):"]
+        for ctx in sorted(contexts, key=lambda c: (int(c.layer or 0), c.timeline_position)):
+            dup_key = f"{ctx.file_id}:{ctx.layer}"
+            dupes = dupe_groups.get(dup_key, [])
+            occ_hint = ""
+            if len(dupes) > 1:
+                ranked = sorted(dupes, key=lambda c: c.timeline_position)
+                for idx, dc in enumerate(ranked, 1):
+                    if dc.timeline_clip_id == ctx.timeline_clip_id:
+                        occ_hint = f" occurrence_hint={idx}"
+                        break
+            group_id = dup_key if len(dupes) > 1 else ""
+            ai = ctx.effective_metadata or {}
+            scenes = ai.get("scene_descriptions") or []
+            scene_limit = len(scenes) if level == "full" else min(3, len(scenes))
+            lines.append(
+                f"\n  timeline_clip_id={ctx.timeline_clip_id} file_id={ctx.file_id} "
+                f"parent_file_id={ctx.parent_file_id}{occ_hint}\n"
+                f"    title={ctx.title!r} track={ctx.layer} ui_track={ctx.ui_track} "
+                f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
+                f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
+                f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
+                f"    tags_preview={ctx.tags_preview!r}"
+            )
+            if scenes and scene_limit:
+                lines.append("    effective_scenes:")
+                for sc in scenes[:scene_limit]:
+                    if isinstance(sc, dict) and sc.get("description"):
+                        t = float(sc.get("time", 0) or 0)
+                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("get_timeline_placements_metadata: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Tool name → handler mapping
 # ---------------------------------------------------------------------------
@@ -4174,6 +4331,8 @@ def get_timeline_state(**_kw) -> str:
     """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects."""
     try:
         from classes.query import Clip
+        from classes.timeline_clip_context import build_timeline_clip_context
+
         app = _get_app()
 
         layers = app.project.get("layers") or []
@@ -4215,10 +4374,21 @@ def get_timeline_state(**_kw) -> str:
         for layer_num in sorted(by_layer.keys(), reverse=True):
             lines.append(f"\n{_track_heading(layer_num)}:")
             for c, d in sorted(by_layer[layer_num], key=lambda x: x[1].get("position", 0)):
-                clip_dur = d.get("end", 0) - d.get("start", 0)
+                clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
+                if clip_dur <= 0:
+                    try:
+                        from classes.query import File as _FileDur
+                        _fo = _FileDur.get(id=d.get("file_id", ""))
+                        if _fo:
+                            from classes.ai_metadata_utils import get_source_window
+                            ss, se = get_source_window(d, _fo.data)
+                            clip_dur = se - ss
+                    except Exception:
+                        clip_dur = 0
                 clip_end = d.get("position", 0) + clip_dur
                 tags_preview = ""
                 analyzed_part = ""
+                source_part = ""
                 try:
                     from classes.query import File as _File
                     fobj = _File.get(id=d.get("file_id", ""))
@@ -4228,7 +4398,11 @@ def get_timeline_state(**_kw) -> str:
                             or os.path.basename(str(fobj.data.get("path") or ""))
                             or d.get("file_id", "?")
                         )
-                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                        ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
+                        tags_preview = ctx.tags_preview
+                        source_part = (
+                            f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
+                        )
                         if not _file_is_analyzed(fobj.data):
                             analyzed_part = " analyzed=False"
                     else:
@@ -4239,7 +4413,7 @@ def get_timeline_state(**_kw) -> str:
                 lines.append(
                     f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                     f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                    f"{tag_part}{analyzed_part}"
+                    f"{tag_part}{analyzed_part}{source_part}"
                     f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                 )
 
@@ -4340,6 +4514,7 @@ AGENT_TOOL_HANDLERS = {
     "retag_project_file_tool": retag_project_file,
     "reindex_project_file_tool": reindex_project_file,
     "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
+    "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
 
@@ -4405,6 +4580,7 @@ TOOL_DISPLAY_LABELS = {
     "retag_project_file_tool": "Retag file",
     "reindex_project_file_tool": "Reindex file",
     "get_clips_with_full_metadata_tool": "Read clips metadata",
+    "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
 
@@ -4436,6 +4612,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_transitions_tool",
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
+    "get_timeline_placements_metadata_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt

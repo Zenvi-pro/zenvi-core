@@ -26,9 +26,10 @@
  """
 import copy
 import math
+import threading
 
 from PyQt5.QtCore import (
-    Qt, QCoreApplication, QRectF, QTimer, QSize
+    Qt, QCoreApplication, QRectF, QTimer, QSize, QThread, pyqtSignal
 )
 from PyQt5.QtGui import (
     QPainter, QColor, QPen, QBrush, QCursor, QPainterPath, QIcon
@@ -41,6 +42,54 @@ from classes import updates
 from classes.app import get_app
 from classes.query import Clip, Track, Transition, Marker
 from classes.logger import log
+from classes.recompute_queue import CoalescingRecomputeQueue
+from windows.views.minimap_geometry import compute_minimap_rects
+
+
+class _MinimapGeometryWorker(QThread):
+    """Background worker that recomputes minimap geometry off the GUI thread.
+
+    Pulls the newest queued snapshot, computes plain rect tuples, and commits
+    them latest-wins so superseded results are dropped. Emits result_ready (no
+    args) so the widget can pick up the committed result on the GUI thread.
+    """
+
+    result_ready = pyqtSignal()
+
+    def __init__(self, recompute_queue, parent=None):
+        super().__init__(parent)
+        self._queue = recompute_queue
+        self._wake = threading.Event()
+        self._running = True
+
+    def wake(self):
+        self._wake.set()
+
+    def stop(self):
+        self._running = False
+        self._wake.set()
+
+    def run(self):
+        while self._running:
+            self._wake.wait()
+            self._wake.clear()
+            if not self._running:
+                break
+            while True:
+                pending = self._queue.take_pending()
+                if pending is None:
+                    break
+                generation, payload = pending
+                if self._queue.is_stale(generation):
+                    # A newer recompute was already requested; skip this one.
+                    continue
+                try:
+                    rects = compute_minimap_rects(**payload)
+                except Exception as ex:
+                    log.warning("Minimap geometry recompute failed: %s", ex)
+                    continue
+                if self._queue.commit(rects, generation):
+                    self.result_ready.emit()
 
 
 class ZoomSlider(QWidget, updates.UpdateInterface):
@@ -60,61 +109,79 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         if (action and len(action.key) >= 1 and action.key[0].lower() in ["files", "history", "profile"]) or self.ignore_updates:
             return
 
-        # Clear previous rects
-        self.clip_rects.clear()
-        self.clip_rects_selected.clear()
-        self.marker_rects.clear()
+        # A committed change ends any live drag mirroring; recompute from persisted data.
+        self._drag_overrides = None
+        self._schedule_recompute()
 
-        # Get layer lookup
-        layers = {}
+    def apply_drag_overrides(self, overrides):
+        """Mirror the timeline's live drag overrides on the minimap.
+
+        Called while a clip/transition is being dragged on the timeline so the
+        overview tracks the cursor immediately (instead of jumping a drag behind
+        when the move is finally persisted). Passing a falsy value clears the
+        drag state and recomputes from persisted project data.
+        """
+        if overrides:
+            self._drag_overrides = dict(overrides)
+        else:
+            self._drag_overrides = None
+        self._schedule_recompute()
+
+    def _build_snapshot(self):
+        """Capture an immutable, plain-data snapshot for off-thread recompute.
+
+        Reads project data on the GUI thread (where the query cache lives) and
+        returns only plain dicts/sets so the worker never touches Qt or the
+        shared query cache.
+        """
+        app = get_app()
+        if not app or not getattr(app, "window", None) or not getattr(app.window, "timeline", None):
+            return None
+
+        project_duration = app.project.get("duration")
+        if not project_duration:
+            return None
+
+        # Layer lookup: layer number -> row index (0 at top), matching paint order.
+        layer_index = {}
         for count, layer in enumerate(reversed(sorted(Track.filter()))):
-            layers[layer.data.get('number')] = count
+            layer_index[layer.data.get('number')] = count
 
-        # Wait for timeline object and valid scrollbar positions
-        # TODO: Fix commented out logic
-        if hasattr(get_app().window, "timeline"):  # and self.scrollbar_position[2] != 0.0:
-            # Get max width of timeline
-            project_duration = get_app().project.get("duration")
-            pixels_per_second = self.width() / project_duration
+        # clip.data is an already-detached cached copy; the worker only reads it.
+        clips = [clip.data for clip in Clip.filter()]
+        transitions = [t.data for t in Transition.filter()]
+        markers = [m.data for m in Marker.filter()]
+        selected = set(app.window.selected_clips) | set(app.window.selected_transitions)
 
-            # Determine scale factor
-            vertical_factor = self.height() / len(layers.keys())
+        return {
+            "clips": clips,
+            "transitions": transitions,
+            "markers": markers,
+            "selected_ids": selected,
+            "layer_index": layer_index,
+            "width": float(self.width()),
+            "height": float(self.height()),
+            "duration": float(project_duration),
+            "overrides": dict(self._drag_overrides) if self._drag_overrides else None,
+        }
 
-            for clip in Clip.filter():
-                # Calculate clip geometry (and cache it)
-                clip_x = (clip.data.get('position', 0.0) * pixels_per_second)
-                clip_y = layers.get(clip.data.get('layer', 0), 0) * vertical_factor
-                clip_width = ((clip.data.get('end', 0.0) - clip.data.get('start', 0.0))
-                              * pixels_per_second)
-                clip_rect = QRectF(clip_x, clip_y, clip_width, 1.0 * vertical_factor)
-                if clip.id in get_app().window.selected_clips:
-                    # selected clip
-                    self.clip_rects_selected.append(clip_rect)
-                else:
-                    # un-selected clip
-                    self.clip_rects.append(clip_rect)
+    def _schedule_recompute(self):
+        """Queue a latest-wins minimap geometry recompute on the worker."""
+        snapshot = self._build_snapshot()
+        if snapshot is None:
+            return
+        generation = self._recompute_queue.next_generation()
+        self._recompute_queue.submit(generation, snapshot)
+        self._minimap_worker.wake()
 
-            for clip in Transition.filter():
-                # Calculate clip geometry (and cache it)
-                clip_x = (clip.data.get('position', 0.0) * pixels_per_second)
-                clip_y = layers.get(clip.data.get('layer', 0), 0) * vertical_factor
-                clip_width = ((clip.data.get('end', 0.0) - clip.data.get('start', 0.0))
-                              * pixels_per_second)
-                clip_rect = QRectF(clip_x, clip_y, clip_width, 1.0 * vertical_factor)
-                if clip.id in get_app().window.selected_transitions:
-                    # selected clip
-                    self.clip_rects_selected.append(clip_rect)
-                else:
-                    # un-selected clip
-                    self.clip_rects.append(clip_rect)
-
-            for marker in Marker.filter():
-                # Calculate clip geometry (and cache it)
-                marker_x = (marker.data.get('position', 0.0) * pixels_per_second)
-                marker_rect = QRectF(marker_x, 0, 0.5, len(layers) * vertical_factor)
-                self.marker_rects.append(marker_rect)
-
-        # Force re-paint
+    def _on_rects_ready(self):
+        """GUI-thread slot: adopt the latest committed geometry and repaint."""
+        result = self._recompute_queue.result
+        if not result:
+            return
+        self.clip_rects = [QRectF(*r) for r in result.get("clip_rects", [])]
+        self.clip_rects_selected = [QRectF(*r) for r in result.get("clip_rects_selected", [])]
+        self.marker_rects = [QRectF(*r) for r in result.get("marker_rects", [])]
         self.update()
 
     def paintEvent(self, event, *args):
@@ -456,6 +523,19 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         event.accept()
         self.delayed_size = self.size()
         self.delayed_resize_timer.start()
+        # Clip geometry depends on widget width, so recompute when the size changes.
+        self._schedule_recompute()
+
+    def closeEvent(self, event):
+        """Stop the background recompute worker when the widget closes."""
+        try:
+            worker = getattr(self, "_minimap_worker", None)
+            if worker is not None:
+                worker.stop()
+                worker.wait(1000)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def get_scroll_width(self):
         """Calculate the width of the scrollbar handle (i.e. selection width)"""
@@ -618,6 +698,15 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.ignore_updates = False
         self._syncing_backend = False
 
+        # Live drag overrides mirrored from the timeline track (or None when idle)
+        self._drag_overrides = None
+
+        # Coalescing latest-wins recompute pipeline (keeps geometry off the GUI thread)
+        self._recompute_queue = CoalescingRecomputeQueue()
+        self._minimap_worker = _MinimapGeometryWorker(self._recompute_queue, self)
+        self._minimap_worker.result_ready.connect(self._on_rects_ready)
+        self._minimap_worker.start()
+
         # Load icon (using display DPI)
         self.cursors = {}
         for cursor_name in ["move", "resize_x", "hand"]:
@@ -642,6 +731,10 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         self.win.TimelineResize.connect(self.timeline_resized)
         self.win.IgnoreUpdates.connect(self.ignore_updates_callback)
         self.win.TimelineZoom.connect(lambda z: self.setZoomFactor(z, emit=False))
+
+        # Live drag mirroring from the timeline track
+        if hasattr(self.win, "TimelineDragPreview"):
+            self.win.TimelineDragPreview.connect(self.apply_drag_overrides)
 
         # Connect Selection signals
         self.win.SelectionChanged.connect(self.handle_selection)

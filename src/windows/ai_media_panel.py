@@ -21,7 +21,13 @@ from PyQt5.QtGui import QFont
 
 from classes.logger import log
 from classes.app import get_app
-from classes.ai_metadata_utils import get_scene_descriptions_formatted, adjust_scene_descriptions_for_subclip
+from classes.ai_metadata_utils import (
+    clip_metadata_is_valid,
+    get_effective_ai_metadata,
+    get_scene_descriptions_formatted,
+    get_source_window,
+)
+from classes.timeline_clip_context import resolve_root_ai_metadata
 
 _PHASE_LABELS = {
     "extracting": "Extracting frames…",
@@ -59,6 +65,8 @@ class AIMediaPanel(QDockWidget):
         super().__init__("Scene Descriptions", parent)
         self.setObjectName("AIMediaPanel")
         self._display_file_id = ""
+        self._meta_cache_key = None
+        self._meta_cache: tuple = ()
 
         # Make it closable and movable
         self.setFeatures(
@@ -76,6 +84,13 @@ class AIMediaPanel(QDockWidget):
         # Create tabs
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
+
+        # Debounced refresh — selection/drag can fire many times per second
+        self._tags_debounce = QTimer()
+        self._tags_debounce.setSingleShot(True)
+        self._tags_debounce.setInterval(120)
+        self._tags_debounce.timeout.connect(self._flush_selected_clip_tags)
+        self._pending_prefer_files = None
 
         # Update timer – polls while tagging/indexing is active for selected file
         self.update_timer = QTimer()
@@ -108,7 +123,7 @@ class AIMediaPanel(QDockWidget):
 
         # Scene list tree (takes most of the space)
         self.tags_tree = QTreeWidget()
-        self.tags_tree.setHeaderLabels(["Time", "Description"])
+        self.tags_tree.setHeaderLabels(["Clip time", "Description"])
         self.tags_tree.setColumnWidth(0, 52)
         self.tags_tree.setUniformRowHeights(True)
         self.tags_tree.setWordWrap(True)
@@ -202,12 +217,22 @@ class AIMediaPanel(QDockWidget):
                 files_model.taggingProgress.connect(self._on_tagging_progress)
             window.FileUpdated.connect(self._on_file_updated)
             window.SelectionChanged.connect(
-                lambda *_a: self.update_selected_clip_tags(prefer_files=False)
+                lambda *_a: self._schedule_selected_clip_tags(prefer_files=False)
             )
         except Exception as e:
             log.warning(f"Failed to connect selection signals for tags: {e}")
 
+    def _schedule_selected_clip_tags(self, prefer_files=None):
+        self._pending_prefer_files = prefer_files
+        self._tags_debounce.start()
+
+    def _flush_selected_clip_tags(self):
+        self.update_selected_clip_tags(prefer_files=self._pending_prefer_files)
+
     def _on_file_updated(self, file_id):
+        if str(file_id) == str(self._display_file_id):
+            self._meta_cache_key = None
+            self._meta_cache = ()
         self.update_selected_clip_tags()
 
     def _on_tagging_progress(self, file_id, phase, percent):
@@ -268,34 +293,48 @@ class AIMediaPanel(QDockWidget):
         return None, None, ""
 
     def _load_ai_metadata(self, timeline_clip, file_obj):
-        """Resolve ai_metadata for the current display target."""
-        from classes.query import File
-
+        """Resolve trim-aware ai_metadata for the current display target."""
         ai_meta = {}
         name = ""
 
         if timeline_clip and isinstance(getattr(timeline_clip, "data", None), dict):
             clip_data = timeline_clip.data
             name = clip_data.get("title") or clip_data.get("name") or "Timeline Clip"
-            ai_meta = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else {}
+            clip_ai = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else None
+            source_start, source_end = get_source_window(clip_data, None)
 
-            if not ai_meta.get("analyzed"):
+            # Fast path: sliced clips keep valid local metadata (track/position changes don't matter)
+            if clip_metadata_is_valid(clip_ai, source_start, source_end):
+                return clip_ai, name
+
+            fid = str(clip_data.get("file_id") or "")
+            file_data = None
+            if file_obj and str(getattr(file_obj, "id", "")) == fid:
+                file_data = file_obj.data if isinstance(file_obj.data, dict) else None
+            if file_data is None and fid:
                 try:
-                    file_id = clip_data.get("file_id")
-                    source_file = File.get(id=str(file_id)) if file_id else None
-                    if source_file:
+                    from classes.query import File
+                    source_file = File.get(id=fid)
+                    if source_file and isinstance(source_file.data, dict):
+                        file_data = source_file.data
                         name = name or source_file.data.get("name") or os.path.basename(
                             source_file.data.get("path", "Clip")
                         )
-                        candidate = source_file.data.get("ai_metadata")
-                        if isinstance(candidate, dict) and candidate.get("analyzed"):
-                            clip_start = float(clip_data.get("start", 0.0) or 0.0)
-                            clip_end = float(clip_data.get("end", 0.0) or 0.0)
-                            ai_meta = adjust_scene_descriptions_for_subclip(
-                                candidate, clip_start, clip_end
-                            )
                 except Exception:
                     pass
+
+            source_start, source_end = get_source_window(clip_data, file_data)
+            root_ai, parent_data = resolve_root_ai_metadata(file_data, file_id=fid)
+            if root_ai:
+                ai_meta = get_effective_ai_metadata(
+                    parent_data or file_data,
+                    clip_data=clip_data,
+                    clip_ai_metadata=clip_ai,
+                    root_ai_metadata=root_ai,
+                    rebased=True,
+                )
+            elif clip_ai:
+                ai_meta = clip_ai
 
         elif file_obj:
             name = file_obj.data.get("name") or os.path.basename(file_obj.data.get("path", "Clip"))
@@ -303,6 +342,23 @@ class AIMediaPanel(QDockWidget):
             ai_meta = candidate if isinstance(candidate, dict) else {}
 
         return ai_meta, name
+
+    def _metadata_cache_key(self, timeline_clip, file_obj, file_id):
+        """Key by trim window only — layer/position drags must not force recomputation."""
+        if timeline_clip and isinstance(getattr(timeline_clip, "data", None), dict):
+            d = timeline_clip.data
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            sw = ai.get("source_window") if isinstance(ai.get("source_window"), dict) else {}
+            scenes = ai.get("scene_descriptions") or []
+            n_scenes = len(scenes) if isinstance(scenes, list) else 0
+            return (
+                f"{file_id}|{timeline_clip.id}|{d.get('start')}|{d.get('end')}|"
+                f"{sw.get('start')}|{sw.get('end')}|{n_scenes}|{bool(ai.get('analyzed'))}"
+            )
+        if file_obj and isinstance(file_obj.data, dict):
+            ai = file_obj.data.get("ai_metadata") if isinstance(file_obj.data.get("ai_metadata"), dict) else {}
+            return f"{file_id}|file|{bool(ai.get('analyzed'))}|{len(ai.get('scene_descriptions') or [])}"
+        return str(file_id or "")
 
     def _update_indexing_ui(self, phase, percent, twelvelabs):
         """Show or hide indexing progress bar and status label."""
@@ -350,24 +406,24 @@ class AIMediaPanel(QDockWidget):
             self.selected_tags_list.addItem("No scene descriptions found")
             return
 
-        formatted = get_scene_descriptions_formatted(ai_meta)
+        formatted = get_scene_descriptions_formatted(ai_meta, use_source_time=False)
         for line in formatted:
             self.selected_tags_list.addItem(line)
 
         for scene in scenes:
             if not isinstance(scene, dict):
                 continue
-            time_sec = scene.get("time", 0)
+            time_sec = float(scene.get("time", 0) or 0)
             desc = scene.get("description", "")
-            try:
-                minutes = int(float(time_sec) // 60)
-                seconds = int(float(time_sec) % 60)
-            except Exception:
-                minutes, seconds = 0, 0
+            minutes = int(time_sec // 60)
+            seconds = int(time_sec % 60)
             time_str = f"{minutes}:{seconds:02d}"
             row = QTreeWidgetItem(self.tags_tree)
             row.setText(0, time_str)
             row.setText(1, str(desc))
+            src = scene.get("source_time")
+            if src is not None:
+                row.setToolTip(0, f"Source file: {int(float(src) // 60)}:{int(float(src) % 60):02d}")
 
     def update_selected_clip_tags(self, prefer_files=None, *args, **kwargs):
         """Update the selected-clip scene list when selection or metadata changes."""
@@ -376,24 +432,40 @@ class AIMediaPanel(QDockWidget):
             files_model = getattr(window, "files_model", None)
 
             timeline_clip, file_obj, file_id = self._resolve_display_target(prefer_files)
-            self._display_file_id = file_id or ""
-
-            self.selected_tags_list.clear()
-            self.tags_tree.clear()
 
             if not timeline_clip and not file_obj:
+                self.selected_tags_list.clear()
+                self.tags_tree.clear()
                 self.selected_clip_label.setText("Select a clip to view scene descriptions")
                 self._update_indexing_ui(None, None, None)
                 self._stop_progress_timer()
+                self._meta_cache_key = None
+                self._meta_cache = ()
+                self._display_file_id = ""
                 return
-
-            ai_meta, name = self._load_ai_metadata(timeline_clip, file_obj)
-            twelvelabs = ai_meta.get("twelvelabs") if isinstance(ai_meta.get("twelvelabs"), dict) else {}
 
             progress = files_model.get_tagging_progress(file_id) if files_model and file_id else None
             is_active = files_model.is_file_tagging(file_id) if files_model and file_id else False
             phase = progress.get("phase") if progress else None
             percent = progress.get("percent") if progress else None
+            cache_key = self._metadata_cache_key(timeline_clip, file_obj, file_id)
+            indexing_busy = bool(is_active or phase)
+
+            if (
+                not indexing_busy
+                and cache_key == self._meta_cache_key
+                and self._meta_cache
+            ):
+                return
+
+            ai_meta, name = self._load_ai_metadata(timeline_clip, file_obj)
+            twelvelabs = ai_meta.get("twelvelabs") if isinstance(ai_meta.get("twelvelabs"), dict) else {}
+            self._meta_cache_key = cache_key
+            self._meta_cache = (ai_meta, name, twelvelabs, is_active, phase, percent)
+            self._display_file_id = file_id or ""
+
+            self.selected_tags_list.clear()
+            self.tags_tree.clear()
 
             if is_active or phase:
                 self._start_progress_timer()

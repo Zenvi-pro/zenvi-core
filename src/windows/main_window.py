@@ -129,6 +129,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     TimelineResize = pyqtSignal()  # Timeline length changed signal from timeline
     TimelineScroll = pyqtSignal(float)   # Signal to force scroll timeline to specific point
     TimelineCenter = pyqtSignal()        # Signal to force center scroll on playhead
+    TimelineDragPreview = pyqtSignal(object)  # Live clip-drag overrides for the overview (or None to clear)
     SelectionAdded = pyqtSignal(str, str, bool)  # Signal to add a selection
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)

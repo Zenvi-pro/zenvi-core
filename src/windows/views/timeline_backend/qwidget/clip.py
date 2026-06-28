@@ -466,52 +466,72 @@ class ClipInteractionMixin:
         self._keyframes_dirty = True
         self.update()
 
+        # Mirror the live drag positions onto the timeline overview/zoom slider so it
+        # tracks the cursor instead of lagging a drag behind.
+        self._emit_drag_preview()
+
+    def _emit_drag_preview(self):
+        """Publish the current drag overrides (clips + transitions) to the overview."""
+        app = get_app()
+        win = getattr(app, "window", None) if app else None
+        if not win or not hasattr(win, "TimelineDragPreview"):
+            return
+        combined = {}
+        combined.update(getattr(self, "_pending_clip_overrides", {}) or {})
+        combined.update(getattr(self, "_pending_transition_overrides", {}) or {})
+        win.TimelineDragPreview.emit(combined)
+
     def _finishClipDrag(self):
         """Persist all moved clips/transitions and refresh geometry."""
         items = getattr(self, "dragging_items", None) or []
         moved = bool(getattr(self, "_drag_moved", False))
 
-        if items and moved:
-            self._preserve_overrides_once = True
-            total = len(items)
-            transaction_id = self._drag_transaction_id
-            for idx, itm in enumerate(items):
-                ignore_refresh = idx < total - 1
-                if isinstance(itm, Transition):
-                    self.update_transition_data(
-                        itm.data,
-                        only_basic_props=True,
-                        ignore_refresh=ignore_refresh,
-                        transaction_id=transaction_id,
-                    )
-                else:
-                    self.update_clip_data(
-                        itm.data,
-                        only_basic_props=True,
-                        ignore_reader=True,
-                        ignore_refresh=ignore_refresh,
-                        transaction_id=transaction_id,
-                    )
-        elif items and not moved:
+        try:
+            if items and moved:
+                self._preserve_overrides_once = True
+                total = len(items)
+                transaction_id = self._drag_transaction_id
+                for idx, itm in enumerate(items):
+                    ignore_refresh = idx < total - 1
+                    if isinstance(itm, Transition):
+                        self.update_transition_data(
+                            itm.data,
+                            only_basic_props=True,
+                            ignore_refresh=ignore_refresh,
+                            transaction_id=transaction_id,
+                        )
+                    else:
+                        self.update_clip_data(
+                            itm.data,
+                            only_basic_props=True,
+                            ignore_reader=True,
+                            ignore_refresh=ignore_refresh,
+                            transaction_id=transaction_id,
+                        )
+            if moved:
+                self._update_project_duration()
+                self.changed(None)
+            else:
+                self.geometry.mark_dirty()
+        finally:
             for itm in items:
                 if isinstance(itm, Transition):
                     self._pending_transition_overrides.pop(itm.id, None)
                 else:
                     self._pending_clip_overrides.pop(itm.id, None)
-
-        self.dragging_items = []
-        self._drag_transaction_id = None
-        self.snap.reset()
-        if moved:
-            self._update_project_duration()
-            self.changed(None)
-        else:
-            self.geometry.mark_dirty()
-        self.update()
-        self._release_cursor()
-        if self._last_event:
-            self._updateCursor(self._last_event.pos())
-        self._drag_moved = False
+            self.dragging_items = []
+            self._drag_transaction_id = None
+            self.snap.reset()
+            self.update()
+            self._release_cursor()
+            if self._last_event:
+                self._updateCursor(self._last_event.pos())
+            self._drag_moved = False
+            # Clear live drag mirroring so the overview recomputes from persisted data.
+            app = get_app()
+            win = getattr(app, "window", None) if app else None
+            if win and hasattr(win, "TimelineDragPreview"):
+                win.TimelineDragPreview.emit(None)
         self._drag_press_pos = None
         self._drag_threshold_met = False
 
