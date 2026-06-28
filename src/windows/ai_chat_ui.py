@@ -397,6 +397,23 @@ class _SharedToolHandler(logging.Handler):
             pass
 
 
+# Agent backends selectable from the top of the chat panel. "zenvi" is the
+# built-in WebSocket assistant (unchanged); the others drive external agent CLIs.
+BACKEND_ZENVI = "zenvi"
+BACKEND_CLAUDE = "claude_code"
+BACKEND_CODEX = "codex"
+BACKENDS = [
+    {"id": BACKEND_ZENVI, "name": "Zenvi Assistant"},
+    {"id": BACKEND_CLAUDE, "name": "Claude Code"},
+    {"id": BACKEND_CODEX, "name": "Codex"},
+]
+_VALID_BACKENDS = {b["id"] for b in BACKENDS}
+
+
+def _coerce_backend(value) -> str:
+    return value if value in _VALID_BACKENDS else BACKEND_ZENVI
+
+
 class AIChatWorker(QObject):
     """Sends chat messages to the zenvi-backend API server in a background thread.
 
@@ -604,10 +621,15 @@ class ChatBridge(QObject):
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
 
-    @pyqtSlot(str)
-    def createSession(self, model_id: str):
+    @pyqtSlot(str, str)
+    def createSession(self, model_id: str, backend: str = ""):
         if self.window:
-            self.window._create_session(model_id)
+            self.window._create_session(model_id, backend or "zenvi")
+
+    @pyqtSlot(str, str)
+    def setBackend(self, session_id: str, backend: str):
+        if self.window:
+            self.window._set_session_backend(session_id, backend)
 
     @pyqtSlot(str)
     def switchSession(self, session_id: str):
@@ -624,7 +646,10 @@ class AIChatWindow(QDockWidget):
     """Zenvi Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
 
     def __init__(self, parent=None):
-        super().__init__("Zenvi Assistant", parent)
+        # Titled "Agents": the top selector chooses the backend (Zenvi Assistant,
+        # Claude Code, Codex). objectName is kept stable so saved dock-state /
+        # restoreState blobs continue to resolve this dock.
+        super().__init__("Agents", parent)
         self.setObjectName("AIChatWindow")
 
         self.setFeatures(
@@ -676,7 +701,8 @@ class AIChatWindow(QDockWidget):
                 title = entry.get("title") or "New Chat"
                 if not sid or sid in self._sessions:
                     continue
-                worker, thread = self._make_worker(sid)
+                backend = _coerce_backend(entry.get("backend"))
+                worker, thread = self._make_worker(sid, backend)
                 self._sessions[sid] = {
                     "worker": worker,
                     "thread": thread,
@@ -685,6 +711,7 @@ class AIChatWindow(QDockWidget):
                     "processing": False,
                     "unread": False,
                     "first_prompt_summary": title,
+                    "backend": backend,
                 }
 
             active_from_store = store.get("active_session_id") if isinstance(store, dict) else None
@@ -720,10 +747,21 @@ class AIChatWindow(QDockWidget):
     # Session management
     # ------------------------------------------------------------------
 
-    def _make_worker(self, session_id: str):
-        """Create and start a new AIChatWorker thread pair for the given session_id."""
+    def _make_worker(self, session_id: str, backend: str = BACKEND_ZENVI):
+        """Create and start a worker thread pair for *session_id* using *backend*.
+
+        All backends expose the same signals/slots, so the connections and the
+        ``_on_*`` handlers below are identical regardless of which one is chosen.
+        """
         thread = QThread()
-        worker = AIChatWorker()
+        if backend == BACKEND_CLAUDE:
+            from windows.agent_runners import ClaudeCodeRunner
+            worker = ClaudeCodeRunner()
+        elif backend == BACKEND_CODEX:
+            from windows.agent_runners import CodexRunner
+            worker = CodexRunner()
+        else:
+            worker = AIChatWorker()
         worker._session_id = session_id   # used by signal handlers to route responses
         # Keep backend memory namespaced by the same session id as the UI tab.
         worker._backend_session_id = session_id
@@ -740,7 +778,7 @@ class AIChatWindow(QDockWidget):
     def _create_initial_session(self):
         import uuid
         sid = str(uuid.uuid4())
-        worker, thread = self._make_worker(sid)
+        worker, thread = self._make_worker(sid, BACKEND_ZENVI)
         self._sessions[sid] = {
             "worker": worker,
             "thread": thread,
@@ -749,14 +787,16 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "backend": BACKEND_ZENVI,
         }
         self._active_sid = sid
 
-    def _create_session(self, model_id: str = ""):
+    def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
         import uuid
+        backend = _coerce_backend(backend)
         sid = str(uuid.uuid4())
-        worker, thread = self._make_worker(sid)
+        worker, thread = self._make_worker(sid, backend)
         self._sessions[sid] = {
             "worker": worker,
             "thread": thread,
@@ -765,6 +805,7 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "backend": backend,
         }
         self._active_sid = sid
         self._first_prompt_summary = None
@@ -779,6 +820,48 @@ class AIChatWindow(QDockWidget):
             self._add_system_msg("New session started. Ask anything about your project.")
             self._update_preamble()
             self._rebuild_widget_tabs()
+        self._save_chat_sessions_store()
+
+    def _set_session_backend(self, session_id: str, backend: str):
+        """Switch the agent backend used by *session_id*.
+
+        Recreating the worker is the minimal-risk approach: each runner stays
+        unaware of any prior backend's state, and the new one is wired to the
+        same ``_on_*`` slots.
+        """
+        backend = _coerce_backend(backend)
+        sess = self._sessions.get(session_id)
+        if not sess or sess.get("backend") == backend:
+            return
+        old_worker = sess.get("worker")
+        if old_worker is not None:
+            try:
+                old_worker._stopping = True
+            except Exception:
+                pass
+            if hasattr(old_worker, "cancel"):
+                try:
+                    old_worker.cancel()
+                except Exception:
+                    pass
+        old_thread = sess.get("thread")
+        if old_thread is not None and old_thread.isRunning():
+            old_thread.quit()
+            if not old_thread.wait(1500):
+                try:
+                    old_thread.terminate()
+                    old_thread.wait(500)
+                except Exception:
+                    pass
+        worker, thread = self._make_worker(session_id, backend)
+        sess["worker"] = worker
+        sess["thread"] = thread
+        sess["backend"] = backend
+        if session_id == self._active_sid:
+            self.is_processing = False
+            self._set_processing_ui(False)
+            if not self._use_web_ui:
+                self._sync_widget_backend_combo()
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
@@ -805,6 +888,7 @@ class AIChatWindow(QDockWidget):
             # Widget mode: render the stored messages for the newly active session.
             sess["unread"] = False
             self._render_active_session_widget()
+            self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
 
     def _close_session(self, session_id: str):
@@ -841,6 +925,7 @@ class AIChatWindow(QDockWidget):
                 "title": sess.get("first_prompt_summary") or sess.get("title", "New Chat"),
                 "active": sid == self._active_sid,
                 "processing": bool(sess.get("processing", False)),
+                "backend": sess.get("backend", BACKEND_ZENVI),
             })
         self._run_js("setTabs(%s);" % json.dumps(json.dumps(tabs)))
 
@@ -909,7 +994,8 @@ class AIChatWindow(QDockWidget):
                     title = entry.get("title") or "New Chat"
                     if not sid or sid in self._sessions:
                         continue
-                    worker, thread = self._make_worker(sid)
+                    backend = _coerce_backend(entry.get("backend"))
+                    worker, thread = self._make_worker(sid, backend)
                     self._sessions[sid] = {
                         "worker": worker,
                         "thread": thread,
@@ -918,6 +1004,7 @@ class AIChatWindow(QDockWidget):
                         "processing": False,
                         "unread": False,
                         "first_prompt_summary": title,
+                        "backend": backend,
                     }
                 active_from_store = (
                     store.get("active_session_id") if isinstance(store, dict) else None
@@ -1041,7 +1128,11 @@ class AIChatWindow(QDockWidget):
             sessions_payload = []
             for sid, sess in self._sessions.items():
                 title = sess.get("first_prompt_summary") or sess.get("title", "New Chat")
-                sessions_payload.append({"session_id": sid, "title": title})
+                sessions_payload.append({
+                    "session_id": sid,
+                    "title": title,
+                    "backend": sess.get("backend", BACKEND_ZENVI),
+                })
 
             payload = {
                 "version": 1,
@@ -1192,6 +1283,25 @@ class AIChatWindow(QDockWidget):
         for role, html_body, is_assistant in sess.get("messages", []):
             self._display_stored_msg_widget(role, html_body, is_assistant)
 
+    def _on_widget_backend_changed(self, _idx):
+        combo = getattr(self, "backend_combo", None)
+        if combo is None or not self._active_sid:
+            return
+        self._set_session_backend(self._active_sid, combo.currentData() or BACKEND_ZENVI)
+
+    def _sync_widget_backend_combo(self):
+        """Reflect the active session's backend in the widget combo (no signal)."""
+        combo = getattr(self, "backend_combo", None)
+        if combo is None:
+            return
+        sess = self._active_session()
+        backend = sess.get("backend", BACKEND_ZENVI) if sess else BACKEND_ZENVI
+        idx = combo.findData(backend)
+        if idx >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
     def _rebuild_widget_tabs(self):
         """Rebuild the widget fallback multi-chat tab bar."""
         if self._use_web_ui:
@@ -1244,7 +1354,8 @@ class AIChatWindow(QDockWidget):
         add_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
         add_btn.clicked.connect(
             lambda _=False: self._create_session(
-                self.model_combo.currentData() if getattr(self, "model_combo", None) else ""
+                self.model_combo.currentData() if getattr(self, "model_combo", None) else "",
+                self.backend_combo.currentData() if getattr(self, "backend_combo", None) else BACKEND_ZENVI,
             )
         )
         layout.addWidget(add_btn)
@@ -1271,6 +1382,22 @@ class AIChatWindow(QDockWidget):
         self._chat_fade_anim.setStartValue(0.0)
         self._chat_fade_anim.setEndValue(1.0)
         self._chat_fade_anim.finished.connect(self._on_chat_fade_finished)
+
+        # ------------------------------------------------------------------
+        # Agent backend selector (top of the panel)
+        # ------------------------------------------------------------------
+        backend_h = QHBoxLayout()
+        backend_h.setContentsMargins(8, 6, 8, 0)
+        backend_h.addWidget(QLabel("Agent:"))
+        self.backend_combo = QComboBox()
+        self.backend_combo.setObjectName("agentBackendCombo")
+        for b in BACKENDS:
+            self.backend_combo.addItem(b["name"], b["id"])
+        self._sync_widget_backend_combo()
+        self.backend_combo.currentIndexChanged.connect(self._on_widget_backend_changed)
+        backend_h.addWidget(self.backend_combo)
+        backend_h.addStretch()
+        layout.addLayout(backend_h)
 
         # ------------------------------------------------------------------
         # Widget multi-chat tab bar (fallback mode)
@@ -1555,6 +1682,7 @@ class AIChatWindow(QDockWidget):
                 "Zenvi Assistant: model list unavailable during web UI init; using empty list"
             )
         self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        self._run_js("if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS)))
 
         preamble = self._get_preamble_html()
         self._run_js("setPreamble(%s);" % json.dumps(preamble))

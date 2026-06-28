@@ -21,6 +21,19 @@
     <div class="chat-container relative flex flex-col h-full min-h-0"
          role="application" aria-label="Zenvi Assistant chat">
 
+        <!-- ── Agent backend selector (top of panel) ─────────────────── -->
+        <div id="chat-backend-bar"
+             class="flex-shrink-0 flex items-center gap-2 px-2.5 py-1.5"
+             style="background: var(--chat-bg); border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.07));">
+            <span class="text-[11px] uppercase tracking-wide"
+                  style="color: var(--chat-muted, rgba(255,255,255,0.45));">Agent</span>
+            <select id="chat-backend-select"
+                    aria-label="Agent backend"
+                    class="text-[12px] rounded-md px-2 py-1 focus:outline-none"
+                    style="background: var(--chat-input-bg, #171717); color: var(--chat-text);
+                           border: 1px solid var(--chat-border, rgba(255,255,255,0.12));"></select>
+        </div>
+
         <!-- ── Tab bar (hidden until tabs are populated) ─────────────── -->
         <div id="chat-tab-bar"
              class="flex-shrink-0 flex items-center gap-1 px-2 pt-1.5 overflow-x-auto"

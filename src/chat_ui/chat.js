@@ -28,6 +28,7 @@
     const preambleEl = document.getElementById('chat-preamble-label');
     const preambleStatus = document.getElementById('chat-preamble-status');
     const modelSelect = document.getElementById('chat-model-select');
+    const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
@@ -1145,6 +1146,7 @@
     var tabBarEl = document.getElementById('chat-tab-bar');
     var tabAddBtn = document.getElementById('chat-tab-add');
     var currentTabs = [];
+    var activeSessionId = '';  // tracked from the active tab for setBackend calls
     var unreadSessions = {};  // sessionId -> true if has unread messages
 
     window.setTabs = function (tabsJson) {
@@ -1163,6 +1165,10 @@
         tabBarEl.style.display = 'flex';
 
         currentTabs.forEach(function (tab) {
+            if (tab.active) {
+                activeSessionId = tab.id;
+                if (backendSelect && tab.backend) backendSelect.value = tab.backend;
+            }
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'chat-tab'
@@ -1207,9 +1213,36 @@
 
     tabAddBtn.addEventListener('click', function () {
         getBridge(function (bridge) {
-            if (bridge && bridge.createSession) bridge.createSession(modelSelect.value || '');
+            if (bridge && bridge.createSession) {
+                bridge.createSession(modelSelect.value || '', (backendSelect && backendSelect.value) || 'zenvi');
+            }
         });
     });
+
+    // Populate the agent backend selector and react to changes.
+    window.setBackends = function (backendsJson) {
+        if (!backendSelect) return;
+        var list = [];
+        try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
+        var current = backendSelect.value;
+        backendSelect.innerHTML = '';
+        list.forEach(function (b) {
+            var opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = b.name;
+            backendSelect.appendChild(opt);
+        });
+        if (current) backendSelect.value = current;
+    };
+
+    if (backendSelect) {
+        backendSelect.addEventListener('change', function () {
+            if (!activeSessionId) return;
+            getBridge(function (bridge) {
+                if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
+            });
+        });
+    }
 
     // Handle background responses (marks tab as unread)
     window.onBackgroundResponse = function (sessionId, bodyHtml) {
