@@ -3109,10 +3109,17 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesActionGroup.addAction(self.actionFilesShowAudio)
         self.filesActionGroup.addAction(self.actionFilesShowImage)
         self.actionFilesShowAll.setChecked(True)
-        # Keep filesFilter widget alive (referenced by FilesListView) but don't show it
+        # Search bar pinned to the top of the Files panel. Typing filters the
+        # Project Files list live (by name/tag, wired in FilesListView); pressing
+        # Enter additionally searches stock footage + music (see _on_files_search).
         self.filesFilter = QLineEdit()
         self.filesFilter.setObjectName("filesFilter")
-        # filesToolbar intentionally NOT inserted into tabFiles layout
+        self.filesFilter.setPlaceholderText(_("Search files & stock…"))
+        self.filesFilter.setClearButtonEnabled(True)
+        self.filesToolbar.addWidget(self.filesFilter)
+        self.tabFiles.layout().insertWidget(0, self.filesToolbar)
+        self.filesFilter.returnPressed.connect(self._on_files_search)
+        self.filesFilter.textChanged.connect(self._on_files_filter_changed)
 
         # Add transitions toolbar
         self.transitionsToolbar = QToolBar("Transitions Toolbar")
@@ -3489,6 +3496,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesView.show()
         self.filesView.setFocus()
 
+        # Stock search results (footage + music), shown below the project files
+        # when the search bar has a query (see _on_files_search).
+        from windows.views.stock_search_view import StockSearchView
+        self.stockSearchView = StockSearchView(self)
+        self.tabFiles.layout().insertWidget(-1, self.stockSearchView)
+        self.stockSearchView.hide()
+
         # Setup transitions tree and list views
         self.transition_model = TransitionsModel()
         self.transitionsTreeView = TransitionsTreeView(self.transition_model)
@@ -3528,6 +3542,24 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.emojis_model.update_model()
         self.emojiListView = EmojisListView(self.emojis_model)
         self.tabEmojis.layout().addWidget(self.emojiListView)
+
+    def _on_files_search(self):
+        """Enter pressed in the Files search bar — search stock footage + music."""
+        if not hasattr(self, "stockSearchView"):
+            return
+        text = self.filesFilter.text().strip()
+        if text:
+            self.stockSearchView.run_search(text)
+            self.stockSearchView.show()
+        else:
+            self.stockSearchView.clear_results()
+            self.stockSearchView.hide()
+
+    def _on_files_filter_changed(self, text):
+        """Hide the stock results when the search bar is cleared."""
+        if not text.strip() and hasattr(self, "stockSearchView"):
+            self.stockSearchView.clear_results()
+            self.stockSearchView.hide()
 
     def actionInsertKeyframe(self):
         log.debug("actionInsertKeyframe")
