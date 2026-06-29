@@ -100,6 +100,10 @@ class AIMediaPanel(QDockWidget):
         # Create tab pages (Tags only – Analysis/Collections are backend-internal)
         self._create_tags_tab()
 
+        # File ids we've already auto-triggered a re-tag for this session, so
+        # viewing a clip with stale/empty metadata heals it at most once.
+        self._auto_retag_requested = set()
+
         # Track selection changes for clip tag display
         self._wire_selection_signals()
         self.update_selected_clip_tags()
@@ -204,6 +208,35 @@ class AIMediaPanel(QDockWidget):
             haystack = f"{time_text} {desc_text}".strip()
             item.setHidden(text.lower() not in haystack if text else False)
             iterator += 1
+
+    def _maybe_auto_retag(self, file_id):
+        """Re-tag a source file whose metadata is missing/failed — once per session.
+
+        Returns True when a re-tag was started, so the caller can show
+        "Re-analyzing…" instead of a stale "no descriptions" message. This is
+        what heals clips that were tagged while the backend was returning empty
+        results; the panel refreshes via FileUpdated when tagging completes.
+        """
+        file_id = str(file_id or "")
+        if not file_id or file_id in self._auto_retag_requested:
+            return False
+        try:
+            from classes.query import File
+            f = File.get(id=file_id)
+            if not f or not isinstance(getattr(f, "data", None), dict):
+                return False
+            if f.data.get("media_type") != "video":
+                return False
+            files_model = getattr(get_app().window, "files_model", None)
+            if not files_model or not hasattr(files_model, "_tag_file_async"):
+                return False
+            self._auto_retag_requested.add(file_id)
+            log.info("AIMediaPanel: auto re-tagging %s (no usable metadata)", file_id)
+            files_model._tag_file_async(file_id)
+            return True
+        except Exception as exc:
+            log.warning("AIMediaPanel auto re-tag failed: %s", exc)
+            return False
 
     def _wire_selection_signals(self):
         """Listen for file selection changes to show per-clip tags."""
@@ -444,6 +477,11 @@ class AIMediaPanel(QDockWidget):
                 self._display_file_id = ""
                 return
 
+            from classes.ai_metadata_utils import is_ai_metadata_usable
+
+            ai_meta, name = self._load_ai_metadata(timeline_clip, file_obj)
+            twelvelabs = ai_meta.get("twelvelabs") if isinstance(ai_meta.get("twelvelabs"), dict) else {}
+
             progress = files_model.get_tagging_progress(file_id) if files_model and file_id else None
             is_active = files_model.is_file_tagging(file_id) if files_model and file_id else False
             phase = progress.get("phase") if progress else None
@@ -472,7 +510,7 @@ class AIMediaPanel(QDockWidget):
             elif str(twelvelabs.get("status") or "").lower() != "indexing":
                 self._stop_progress_timer()
 
-            if ai_meta.get("analyzed"):
+            if is_ai_metadata_usable(ai_meta):
                 self.selected_clip_label.setText(name)
                 self._populate_scene_views(ai_meta)
                 if is_active or phase:
@@ -495,8 +533,22 @@ class AIMediaPanel(QDockWidget):
                 self._update_indexing_ui("indexing", -1, twelvelabs)
                 return
 
-            self.selected_clip_label.setText(name)
-            self.selected_tags_list.addItem("Not yet analyzed")
+            # No usable analysis and nothing in progress: a previous tagging
+            # attempt failed or returned nothing. Tell the truth and self-heal
+            # by re-tagging the source file once per session.
+            error_msg = ai_meta.get("error") if isinstance(ai_meta, dict) else ""
+            healing = self._maybe_auto_retag(file_id)
+            if error_msg:
+                self.selected_clip_label.setText(f"{name} — tagging failed")
+                self.selected_tags_list.addItem(str(error_msg))
+                if healing:
+                    self.selected_tags_list.addItem("Re-analyzing this clip…")
+            elif healing:
+                self.selected_clip_label.setText(f"{name} (processing scene descriptions...)")
+                self.selected_tags_list.addItem("Re-analyzing this clip…")
+            else:
+                self.selected_clip_label.setText(name)
+                self.selected_tags_list.addItem("Not yet analyzed")
             self._update_indexing_ui(None, None, twelvelabs)
 
         except Exception as e:
