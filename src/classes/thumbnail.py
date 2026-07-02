@@ -31,6 +31,7 @@ import openshot
 import socket
 import time
 import shutil
+import subprocess
 from requests import get
 from threading import Thread
 from classes import info
@@ -73,48 +74,138 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
         return ''
 
 
+def _ensure_thumb_dir(thumb_path):
+    parent_path = os.path.dirname(thumb_path)
+    if parent_path and not os.path.exists(parent_path):
+        os.makedirs(parent_path, exist_ok=True)
+
+
+def _thumbnail_timestamp(file_path, thumbnail_frame):
+    if thumbnail_frame <= 1:
+        return 0.0
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            rate = proc.stdout.strip()
+            if "/" in rate:
+                num, den = rate.split("/", 1)
+                fps = float(num) / float(den)
+            else:
+                fps = float(rate)
+            if fps > 0:
+                return max(0.0, (thumbnail_frame - 1) / fps)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, height):
+    """Fallback thumbnail capture when libopenshot cannot read the file."""
+    if not file_path or not os.path.isfile(file_path):
+        return False
+
+    _ensure_thumb_dir(thumb_path)
+    ts = _thumbnail_timestamp(file_path, thumbnail_frame)
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+    )
+    tmp_path = thumb_path + ".tmp.png"
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", str(ts),
+        "-i", file_path,
+        "-frames:v", "1",
+        "-vf", vf,
+        tmp_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+        if proc.returncode != 0 or not os.path.isfile(tmp_path):
+            return False
+        shutil.move(tmp_path, thumb_path)
+        return os.path.isfile(thumb_path)
+    except Exception as exc:
+        log.warning("ffmpeg thumbnail failed for %s: %s", file_path, exc)
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+def _write_not_found_thumbnail(thumb_path):
+    not_found_path = os.path.join(info.IMAGES_PATH, "NotFound@2x.png")
+    _ensure_thumb_dir(thumb_path)
+    shutil.copyfile(not_found_path, thumb_path)
+    log.warning("Failed to generate thumbnail, using placeholder: %s", thumb_path)
+
+
 def GenerateThumbnail(file_path, thumb_path, thumbnail_frame, width, height, mask, overlay):
     """Create thumbnail image, and check for rotate metadata (if any)"""
+    if not file_path or not os.path.isfile(file_path):
+        _write_not_found_thumbnail(thumb_path)
+        log.warning("Failed to generate thumbnail for missing file: %s", file_path)
+        return
+
+    _ensure_thumb_dir(thumb_path)
+
     # Create a clip object and get the reader
     try:
         clip = openshot.Clip(file_path)
         reader = clip.Reader()
-    except RuntimeError:
-        # Any failure calling Reader (i.e. file missing or corrupt) use placeholder thumbnail
-        not_found_path = os.path.join(info.IMAGES_PATH, "NotFound@2x.png")
-        shutil.copyfile(not_found_path, thumb_path)
-        log.warning(f"Failed to generate thumbnail for missing file: {file_path}")
+        scale = get_app().devicePixelRatio()
+
+        if scale > 1.0:
+            clip.scale_x.AddPoint(1.0, 1.0 * scale)
+            clip.scale_y.AddPoint(1.0, 1.0 * scale)
+
+        reader.Open()
+
+        rotate = 0.0
+        try:
+            if reader.info.metadata.count("rotate"):
+                rotate_data = reader.info.metadata["rotate"]
+                rotate = float(rotate_data)
+        except ValueError as ex:
+            log.warning("Could not parse rotation value %s: %s", rotate_data, ex)
+        except Exception:
+            log.warning("Error reading rotation metadata from %s", file_path, exc_info=1)
+
+        reader.GetFrame(thumbnail_frame).Thumbnail(
+            thumb_path,
+            round(width * scale),
+            round(height * scale),
+            mask,
+            overlay,
+            "#000",
+            False,
+            "png",
+            85,
+            rotate,
+        )
+        reader.Close()
+        clip.Close()
+        if os.path.isfile(thumb_path):
+            return
+    except Exception as exc:
+        log.warning("libopenshot thumbnail failed for %s: %s", file_path, exc)
+
+    if _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, height):
         return
 
-    scale = get_app().devicePixelRatio()
-
-    if scale > 1.0:
-        clip.scale_x.AddPoint(1.0, 1.0 * scale)
-        clip.scale_y.AddPoint(1.0, 1.0 * scale)
-
-    # Open reader
-    reader.Open()
-
-    # Get the 'rotate' metadata (if any)
-    rotate = 0.0
-    try:
-        if reader.info.metadata.count("rotate"):
-            rotate_data = reader.info.metadata["rotate"]
-            rotate = float(rotate_data)
-    except ValueError as ex:
-        log.warning("Could not parse rotation value {}: {}".format(rotate_data, ex))
-    except Exception:
-        log.warning("Error reading rotation metadata from {}".format(file_path), exc_info=1)
-
-    # Create thumbnail folder (if needed)
-    parent_path = os.path.dirname(thumb_path)
-    if not os.path.exists(parent_path):
-        os.mkdir(parent_path)
-
-    # Save thumbnail image and close readers
-    reader.GetFrame(thumbnail_frame).Thumbnail(thumb_path, round(width * scale), round(height * scale), mask, overlay, "#000", False, "png", 85, rotate)
-    reader.Close()
-    clip.Close()
+    _write_not_found_thumbnail(thumb_path)
 
 
 class httpThumbnailServer(ThreadingMixIn, HTTPServer):

@@ -60,24 +60,34 @@ except ImportError:
 # the callable via a cross-thread signal which Qt routes through the main
 # event loop.
 
-class _MainThreadDispatcher(QObject):
-    """Singleton helper that runs callables on the Qt main (GUI) thread."""
+if pyqtSignal is not None:
 
-    _dispatch = pyqtSignal(object)
+    class _MainThreadDispatcher(QObject):
+        """Singleton helper that runs callables on the Qt main (GUI) thread."""
 
-    def __init__(self):
-        super().__init__()
-        self._dispatch.connect(self._on_dispatch)
+        _dispatch = pyqtSignal(object)
 
-    @pyqtSlot(object)
-    def _on_dispatch(self, payload):
-        func, args, result_box, error_box, done = payload
-        try:
-            result_box[0] = func(*args)
-        except Exception as exc:
-            error_box[0] = exc
-        finally:
-            done.set()
+        def __init__(self):
+            super().__init__()
+            self._dispatch.connect(self._on_dispatch)
+
+        @pyqtSlot(object)
+        def _on_dispatch(self, payload):
+            func, args, result_box, error_box, done = payload
+            try:
+                result_box[0] = func(*args)
+            except Exception as exc:
+                error_box[0] = exc
+            finally:
+                done.set()
+
+else:
+
+    class _MainThreadDispatcher:
+        """Headless fallback when PyQt5 is unavailable."""
+
+        def run(self, fn):
+            return fn()
 
 
 _dispatcher = None
@@ -177,10 +187,21 @@ def _resolve_timeline_clip_for_tool(**kwargs):
     from classes.clip_resolver import resolve_timeline_clip
 
     def _do_resolve():
+        pos_near = kwargs.get("position_near")
+        if pos_near is None:
+            pos_near = kwargs.get("prefer_position_near")
+        occ = kwargs.get("occurrence", 0)
+        try:
+            occ = int(float(str(occ).strip() or 0))
+        except (TypeError, ValueError):
+            occ = 0
         return resolve_timeline_clip(
             timeline_clip_id=str(kwargs.get("timeline_clip_id") or "").strip(),
             clip_query=str(kwargs.get("clip_query") or "").strip(),
             prefer_track=str(kwargs.get("prefer_track") or kwargs.get("track") or "").strip(),
+            track=str(kwargs.get("track") or kwargs.get("prefer_track") or "").strip(),
+            position_near=pos_near,
+            occurrence=occ,
         )
 
     if QThread is not None:
@@ -335,10 +356,11 @@ def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_i
 
 
 def _output_path_for_generated_video():
+    """Return an absolute path for a new generated MP4 (preview-safe)."""
     app = _get_app()
     project_path = getattr(app.project, "current_filepath", None) or ""
-    if project_path and os.path.isabs(project_path):
-        out_dir = os.path.join(os.path.dirname(project_path), "Generated")
+    if project_path and os.path.isabs(os.path.expanduser(str(project_path))):
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(project_path))), "Generated")
         try:
             os.makedirs(out_dir, exist_ok=True)
             return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}.mp4")
@@ -352,6 +374,13 @@ def _output_path_for_generated_video():
     except Exception:
         pass
     return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}.mp4")
+
+
+def _canonical_media_path(path):
+    """Normalize to an absolute, expanded path for libopenshot and preview."""
+    if not path:
+        return path
+    return os.path.normpath(os.path.abspath(os.path.expanduser(str(path))))
 
 
 def _download_video_url_to_path(video_url: str, dest_path: str, timeout: int = 180) -> Optional[str]:
@@ -404,6 +433,68 @@ def _upload_generation_assets(client, seed_path=None, frame_specs=None):
     return seed_file_id, frame_images_paths or None, None
 
 
+# Kling O1 Pro via Runware — desktop-side constraints (mirror backend constants).
+_KLING_O1_ALLOWED_DURATIONS = [5, 10]
+_KLING_O1_MIN_DIM = 720
+_KLING_O1_MAX_DIM = 2160
+
+
+def _snap_kling_o1_duration(duration):
+    """Snap to Kling O1 Pro duration: default 5s; use 10s only when clearly requested (>= 8)."""
+    try:
+        val = float(duration)
+    except (TypeError, ValueError):
+        return 5
+    val = max(1, min(10, val))
+    if val >= 8:
+        return 10
+    return 5
+
+
+def _kling_o1_output_dims(width, height):
+    """Snap arbitrary dimensions to Kling O1 Pro supported output or video-edit range."""
+    w = int(width or 1920)
+    h = int(height or 1080)
+    if w < _KLING_O1_MIN_DIM or h < _KLING_O1_MIN_DIM:
+        scale_f = max(_KLING_O1_MIN_DIM / max(w, 1), _KLING_O1_MIN_DIM / max(h, 1))
+        w = int(w * scale_f)
+        h = int(h * scale_f)
+    w += w % 2
+    h += h % 2
+    if w > _KLING_O1_MAX_DIM or h > _KLING_O1_MAX_DIM:
+        scale_d = min(_KLING_O1_MAX_DIM / max(w, 1), _KLING_O1_MAX_DIM / max(h, 1))
+        w = int(w * scale_d)
+        h = int(h * scale_d)
+        w += w % 2
+        h += h % 2
+    return w, h
+
+
+def _project_kling_o1_t2v_dims():
+    """Resolve T2V width/height from project settings, snapped for Kling O1 Pro."""
+    try:
+        proj = _get_app().project
+        w = int(proj.get("width") or 1920)
+        h = int(proj.get("height") or 1080)
+    except Exception:
+        w, h = 1920, 1080
+    aspect = w / max(h, 1)
+    if aspect > 1.2:
+        return 1920, 1080
+    if aspect < 0.8:
+        return 1080, 1920
+    return 1440, 1440
+
+
+def _kling_o1_scale_vf(width, height):
+    """FFmpeg scale+pad filter for Kling O1 video-edit dimension range."""
+    w, h = _kling_o1_output_dims(width, height)
+    return (
+        f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    ), w, h
+
+
 # Context for add_clip_to_timeline (remembers last split file id per chat session)
 _last_split_file_id_by_chat_session = {}
 
@@ -450,21 +541,14 @@ def list_files(**_kw) -> str:
 _TAGS_PREVIEW_MAX = 80
 
 
-def _tags_preview_for_file_data(file_data: dict) -> str:
-    """Top objects/scenes from ai_metadata for compact clip listing."""
+def _tags_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
+    """Top objects/scenes from effective metadata for compact clip listing."""
+    from classes.ai_metadata_utils import build_tags_preview, get_effective_ai_metadata
+
     if not isinstance(file_data, dict):
         return ""
-    ai = file_data.get("ai_metadata") if isinstance(file_data.get("ai_metadata"), dict) else {}
-    tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
-    objs = ", ".join((tags.get("objects") or [])[:3])
-    scs = ", ".join((tags.get("scenes") or [])[:2])
-    parts = [p for p in (objs, scs) if p]
-    if not parts:
-        return ""
-    preview = " | ".join(parts)
-    if len(preview) > _TAGS_PREVIEW_MAX:
-        preview = preview[: _TAGS_PREVIEW_MAX - 1].rstrip() + "…"
-    return preview
+    effective = get_effective_ai_metadata(file_data, clip_data=clip_data, rebased=True)
+    return build_tags_preview(effective)
 
 
 def _file_is_analyzed(file_data: dict) -> bool:
@@ -491,6 +575,18 @@ def list_clips(layer="", **_kw) -> str:
         clips = Clip.filter(**kwargs)
         if not clips:
             return "No clips in project."
+        from classes.timeline_clip_context import build_timeline_clip_context, clear_metadata_lookup_cache
+
+        clear_metadata_lookup_cache()
+        file_cache: dict[str, dict] = {}
+
+        file_dupes: dict[str, list] = {}
+        for c in clips:
+            fid = str(c.data.get("file_id") or "")
+            layer = c.data.get("layer")
+            if fid:
+                file_dupes.setdefault(f"{fid}:{layer}", []).append(c)
+
         lines = []
         for c in clips:
             d = c.data
@@ -515,25 +611,48 @@ def list_clips(layer="", **_kw) -> str:
             fid = d.get("file_id", "")
             fname = ""
             tags_preview = ""
+            parent_file_id = ""
+            source_start = d.get("start", 0)
+            source_end = d.get("end", 0)
+            timeline_end = float(d.get("position", 0) or 0)
             if fid:
                 try:
                     from classes.query import File as _File
-                    fobj = _File.get(id=str(fid))
-                    if fobj and isinstance(fobj.data, dict):
+                    if fid not in file_cache:
+                        fobj = _File.get(id=str(fid))
+                        file_cache[fid] = fobj.data if fobj and isinstance(fobj.data, dict) else None
+                    fdata = file_cache.get(fid)
+                    if fdata:
                         import os
                         fname = (
-                            fobj.data.get("name")
-                            or os.path.basename(str(fobj.data.get("path") or ""))
+                            fdata.get("name")
+                            or os.path.basename(str(fdata.get("path") or ""))
                         )
-                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                        ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
+                        tags_preview = ctx.tags_preview
+                        parent_file_id = ctx.parent_file_id
+                        source_start = ctx.source_start
+                        source_end = ctx.source_end
+                        timeline_end = ctx.timeline_end
                 except Exception:
                     pass
             tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
+            occ_hint = ""
+            dup_key = f"{fid}:{lid_int}"
+            dupes = file_dupes.get(dup_key, [])
+            if len(dupes) > 1:
+                ranked = sorted(dupes, key=lambda x: float(x.data.get("position", 0) or 0))
+                for idx, dc in enumerate(ranked, 1):
+                    if dc.id == c.id:
+                        occ_hint = f" occurrence_hint={idx}"
+                        break
+            parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
             lines.append(
-                f"  timeline_clip_id={c.id} media_bin_file_id={fid} "
-                f"title={title!r} file={fname!r}{tag_part} "
+                f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
+                f"title={title!r} file={fname!r}{tag_part}{occ_hint} "
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
-                f"position={d.get('position',0)} start={d.get('start',0)} end={d.get('end',0)}"
+                f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
+                f"source_start={source_start} source_end={source_end}"
             )
         return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
     except Exception as e:
@@ -949,7 +1068,7 @@ def split_file_add_clip(file_id="", start_frame=0, end_frame=0, name="", **_kw) 
     try:
         from classes.query import File
         from classes import time_parts
-        from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+        from classes.ai_metadata_utils import get_effective_ai_metadata, filter_tags_string_for_window
 
         chat_session_id = str(_kw.get("chat_session_id", "") or "default")
 
@@ -986,11 +1105,29 @@ def split_file_add_clip(file_id="", start_frame=0, end_frame=0, name="", **_kw) 
         new_file.type = "insert"
         new_file.data["start"] = start_sec
         new_file.data["end"] = end_sec
+        new_file.data["parent_file_id"] = file_id
 
         if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
-            new_file.data["ai_metadata"] = adjust_scene_descriptions_for_subclip(
-                new_file.data["ai_metadata"], start_sec, end_sec
-            )
+            from classes.timeline_clip_context import resolve_root_ai_metadata
+            from classes.ai_metadata_utils import materialize_clip_ai_metadata
+
+            root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
+            if root_ai:
+                effective = materialize_clip_ai_metadata(
+                    root_ai, start_sec, end_sec, rebased=True,
+                )
+            else:
+                effective = get_effective_ai_metadata(
+                    f.data,
+                    clip_data={"start": start_sec, "end": end_sec},
+                    rebased=True,
+                )
+            new_file.data["ai_metadata"] = effective
+            if new_file.data.get("tags"):
+                new_file.data["tags"] = filter_tags_string_for_window(
+                    str(new_file.data.get("tags") or ""),
+                    effective,
+                )
 
         if name and isinstance(name, str) and name.strip():
             new_file.data["name"] = name.strip()
@@ -1153,8 +1290,9 @@ def search_clip_scenes(
         k = 5
 
     try:
-        from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+        from classes.ai_metadata_utils import get_effective_ai_metadata
         from classes.api_client import get_backend_client
+        from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
         from classes.twelvelabs_match import select_hits_for_display
 
         resolved = _resolve_timeline_clip_for_tool(
@@ -1167,20 +1305,23 @@ def search_clip_scenes(
 
         clip_obj = resolved.clip
         clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        clip_start = float(clip_data.get("start", 0.0) or 0.0)
-        clip_end = float(clip_data.get("end", 0.0) or 0.0)
-        clip_name = clip_data.get("title") or clip_data.get("label") or "Timeline clip"
+        source_file = _get_source_file_for_clip(clip_obj)
+        file_data = source_file.data if source_file and isinstance(source_file.data, dict) else None
+        ctx = build_timeline_clip_context(clip_obj, clip_data, file_data)
+        clip_start = ctx.source_start
+        clip_end = ctx.source_end
+        clip_name = ctx.title or "Timeline clip"
 
         per_clip_ai = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else None
-        source_file = _get_source_file_for_clip(clip_obj)
+        parent_data = resolve_parent_file_data(file_data, file_id=ctx.file_id)
         source_ai = None
-        if source_file and isinstance(source_file.data, dict):
-            source_ai = source_file.data.get("ai_metadata") if isinstance(source_file.data.get("ai_metadata"), dict) else None
+        if parent_data:
+            source_ai = parent_data.get("ai_metadata") if isinstance(parent_data.get("ai_metadata"), dict) else None
 
         client = get_backend_client()
         nth = _parse_occurrence(str(_kw.get("occurrence", "0")), query)
 
-        # TwelveLabs search
+        # TwelveLabs search (parent index + trim window)
         if client.is_indexing_configured():
             tw = (source_ai or {}).get("twelvelabs") if isinstance((source_ai or {}).get("twelvelabs"), dict) else {}
             status = (tw.get("status") or "").lower()
@@ -1222,8 +1363,12 @@ def search_clip_scenes(
 
         # Local scene descriptions fallback
         local_ai = per_clip_ai
-        if local_ai is None and source_ai is not None:
-            local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
+        if local_ai is None:
+            local_ai = get_effective_ai_metadata(
+                parent_data or file_data,
+                clip_data=clip_data,
+                rebased=True,
+            )
 
         # Simple local search over cached paths/tags (no LLM)
         scenes = (local_ai or {}).get("scene_descriptions", [])
@@ -1592,17 +1737,24 @@ def slice_clip_at_best_match(
         def _read_clip_info():
             try:
                 from classes.clip_resolver import resolve_timeline_clip
+                from classes.ai_metadata_utils import get_source_window
+                from classes.timeline_clip_context import resolve_parent_file_data
+
+                occ = _parse_occurrence(str(occurrence or _kw.get("occurrence", "0")), query)
                 resolved = resolve_timeline_clip(
                     timeline_clip_id=str(timeline_clip_id or "").strip(),
                     clip_query=str(clip_query or "").strip(),
+                    track=str(_kw.get("track") or _kw.get("prefer_track") or "").strip(),
+                    occurrence=occ,
                 )
                 if not resolved.ok or not resolved.clip:
                     error_box_pre[0] = resolved.error or "Error: Could not resolve timeline clip."
                     return
                 obj = resolved.clip
                 d = obj.data if isinstance(obj.data, dict) else {}
-                cs = float(d.get("start", 0.0) or 0.0)
-                ce = float(d.get("end", 0.0) or 0.0)
+                sf = _get_source_file_for_clip(obj)
+                fd = sf.data if sf and isinstance(sf.data, dict) else None
+                cs, ce = get_source_window(d, fd)
                 cp = float(d.get("position", 0.0) or 0.0)
                 ly = d.get("layer", 1)
                 try:
@@ -1610,11 +1762,10 @@ def slice_clip_at_best_match(
                 except (TypeError, ValueError):
                     layer_num = 1
                 fid = str(d.get("file_id") or "")
-                sf = _get_source_file_for_clip(obj)
+                parent_data = resolve_parent_file_data(fd, file_id=fid)
                 sa = (
-                    sf.data.get("ai_metadata")
-                    if sf and isinstance(sf.data, dict)
-                    and isinstance(sf.data.get("ai_metadata"), dict)
+                    parent_data.get("ai_metadata")
+                    if parent_data and isinstance(parent_data.get("ai_metadata"), dict)
                     else None
                 )
                 # Extract TwelveLabs info (may be absent for old imports)
@@ -1825,34 +1976,68 @@ def slice_clip_at_best_match(
 
 def _pause_auto_save():
     """Pause auto-save timer to prevent backup interference during generation."""
-    try:
+    result_box = [False]
+
+    def _do():
+        try:
+            app = _get_app()
+            app._generation_in_progress = True
+            timer = getattr(app.window, "auto_save_timer", None)
+            if timer and timer.isActive():
+                timer.stop()
+                result_box[0] = True
+        except Exception:
+            pass
+
+    if QThread is not None:
         app = _get_app()
-        app._generation_in_progress = True
-        timer = getattr(app.window, "auto_save_timer", None)
-        if timer and timer.isActive():
-            timer.stop()
-            return True
-    except Exception:
-        pass
-    return False
+        if QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do, timeout=10)
+        else:
+            _do()
+    else:
+        _do()
+    return result_box[0]
 
 
 def _resume_auto_save(was_active):
     """Resume auto-save timer if it was previously active."""
-    try:
+
+    def _clear_flag():
+        try:
+            _get_app()._generation_in_progress = False
+        except Exception:
+            pass
+
+    if QThread is not None:
         app = _get_app()
-        app._generation_in_progress = False
-    except Exception:
-        pass
+        if QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_clear_flag, timeout=10)
+        else:
+            _clear_flag()
+    else:
+        _clear_flag()
+
     if not was_active:
         return
-    try:
+
+    def _restart():
+        try:
+            app = _get_app()
+            timer = getattr(app.window, "auto_save_timer", None)
+            if timer:
+                timer.start()
+        except Exception:
+            pass
+
+    if QThread is not None:
         app = _get_app()
-        timer = getattr(app.window, "auto_save_timer", None)
-        if timer:
-            timer.start()
-    except Exception:
-        pass
+        if QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_restart, timeout=10)
+        else:
+            _restart()
+    else:
+        _restart()
 
 
 def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080):
@@ -1899,6 +2084,326 @@ def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080
     return output_path, None
 
 
+def _normalize_imported_file_path(file_obj, final_path):
+    """Store an absolute path on imported File metadata (panel + thumbnails)."""
+    if not file_obj:
+        return
+    final_path = _canonical_media_path(final_path)
+    changed = False
+    if file_obj.data.get("path") != final_path:
+        file_obj.data["path"] = final_path
+        changed = True
+    reader = file_obj.data.get("reader")
+    if isinstance(reader, dict) and reader.get("path") != final_path:
+        reader["path"] = final_path
+        changed = True
+    if changed:
+        file_obj.save()
+
+
+def _refresh_imported_file_thumbnail(file_id, file_path):
+    """Pre-generate and refresh the files-panel thumbnail for an imported video."""
+    from classes import info
+    from classes.thumbnail import GenerateThumbnail
+
+    file_path = _canonical_media_path(file_path)
+    if not file_id or not file_path or not os.path.isfile(file_path):
+        return
+
+    mask_path = os.path.join(info.IMAGES_PATH, "mask.png")
+    overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
+    thumb_path = os.path.join(info.THUMBNAIL_PATH, file_id, "1.png")
+    GenerateThumbnail(file_path, thumb_path, 1, 98, 64, mask_path, overlay_path)
+
+    try:
+        _get_app().window.FileUpdated.emit(str(file_id))
+    except Exception as exc:
+        log.warning("_refresh_imported_file_thumbnail: could not refresh UI: %s", exc)
+
+
+def _merge_baked_transition_metadata(
+    file_a,
+    start_a,
+    end_a,
+    file_b,
+    start_b,
+    end_b,
+    seg_a_duration,
+    morph_duration,
+    prompt_hint="",
+):
+    """Merge tags/metadata for baked clip A + morph + B with segment-correct scene times."""
+    from classes.ai_metadata_utils import collect_scene_descriptions_for_baked_segment
+
+    tag_tokens = []
+    seen_tags = set()
+    list_keys = ("objects", "scenes", "activities", "mood")
+    ai_merged = {
+        "analyzed": True,
+        "tags": {key: [] for key in list_keys},
+    }
+    seen_lists = {key: set() for key in list_keys}
+    descriptions = []
+    scene_descriptions = []
+
+    def _absorb_file_tags(file_obj):
+        if not file_obj or not isinstance(getattr(file_obj, "data", None), dict):
+            return
+        for part in str(file_obj.data.get("tags") or "").split(","):
+            token = part.strip()
+            if not token:
+                continue
+            norm = token.lower()
+            if norm in seen_tags:
+                continue
+            seen_tags.add(norm)
+            tag_tokens.append(token)
+
+    def _absorb_ai_lists(ai):
+        if not isinstance(ai, dict):
+            return
+        tags = ai.get("tags")
+        if not isinstance(tags, dict):
+            return
+        for key in list_keys:
+            vals = tags.get(key) or []
+            if not isinstance(vals, list):
+                continue
+            for val in vals:
+                text = str(val).strip()
+                if not text:
+                    continue
+                norm = text.lower()
+                if norm in seen_lists[key]:
+                    continue
+                seen_lists[key].add(norm)
+                ai_merged["tags"][key].append(text)
+        desc = ai.get("description")
+        if desc and str(desc).strip():
+            descriptions.append(str(desc).strip())
+
+    _absorb_file_tags(file_a)
+    _absorb_file_tags(file_b)
+
+    ai_a = file_a.data.get("ai_metadata") if file_a and isinstance(file_a.data, dict) else None
+    ai_b = file_b.data.get("ai_metadata") if file_b and isinstance(file_b.data, dict) else None
+
+    if isinstance(ai_a, dict):
+        _absorb_ai_lists(ai_a)
+        scene_descriptions.extend(
+            collect_scene_descriptions_for_baked_segment(
+                ai_a, start_a, end_a, 0.0,
+            )
+        )
+
+    clip_b_offset = max(0.0, float(seg_a_duration)) + max(0.0, float(morph_duration))
+    if isinstance(ai_b, dict):
+        _absorb_ai_lists(ai_b)
+        scene_descriptions.extend(
+            collect_scene_descriptions_for_baked_segment(
+                ai_b, start_b, end_b, clip_b_offset,
+            )
+        )
+
+    hint = str(prompt_hint or "").strip()
+    if hint:
+        scene_descriptions.append({
+            "time": max(0.0, float(seg_a_duration)) + max(0.1, float(morph_duration) * 0.5),
+            "description": hint[:500],
+        })
+
+    scene_descriptions.sort(key=lambda item: float(item.get("time", 0) or 0))
+
+    if descriptions:
+        ai_merged["description"] = " | ".join(descriptions[:3])
+    elif scene_descriptions:
+        ai_merged["description"] = " ".join(
+            str(s.get("description", "")).strip()
+            for s in scene_descriptions[:6]
+            if str(s.get("description", "")).strip()
+        )
+
+    if scene_descriptions:
+        ai_merged["scene_descriptions"] = scene_descriptions[:24]
+
+    return ", ".join(tag_tokens), ai_merged
+
+
+def _merge_file_tags_and_metadata(*file_objs):
+    """Merge comma-separated tags and ai_metadata tag lists from File objects."""
+    tag_tokens = []
+    seen_tags = set()
+    list_keys = ("objects", "scenes", "activities", "mood")
+    ai_merged = {
+        "analyzed": True,
+        "tags": {key: [] for key in list_keys},
+    }
+    seen_lists = {key: set() for key in list_keys}
+    descriptions = []
+    scene_descriptions = []
+
+    for file_obj in file_objs:
+        if not file_obj or not isinstance(getattr(file_obj, "data", None), dict):
+            continue
+        data = file_obj.data
+        for part in str(data.get("tags") or "").split(","):
+            token = part.strip()
+            if not token:
+                continue
+            key = token.lower()
+            if key in seen_tags:
+                continue
+            seen_tags.add(key)
+            tag_tokens.append(token)
+
+        ai = data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            continue
+        tags = ai.get("tags")
+        if isinstance(tags, dict):
+            for key in list_keys:
+                vals = tags.get(key) or []
+                if not isinstance(vals, list):
+                    continue
+                for val in vals:
+                    text = str(val).strip()
+                    if not text:
+                        continue
+                    norm = text.lower()
+                    if norm in seen_lists[key]:
+                        continue
+                    seen_lists[key].add(norm)
+                    ai_merged["tags"][key].append(text)
+        desc = ai.get("description")
+        if desc and str(desc).strip():
+            descriptions.append(str(desc).strip())
+        for scene in ai.get("scene_descriptions") or []:
+            if isinstance(scene, dict) and scene.get("description"):
+                scene_descriptions.append(scene)
+
+    if descriptions:
+        ai_merged["description"] = " | ".join(descriptions[:3])
+    if scene_descriptions:
+        ai_merged["scene_descriptions"] = scene_descriptions[:24]
+
+    return ", ".join(tag_tokens), ai_merged
+
+
+def _clip_source_range(clip_data, file_data, fallback_duration=0.0):
+    """Return (start, end) source trim range for a timeline clip."""
+    start = float(clip_data.get("start", 0) or 0)
+    end = float(clip_data.get("end", 0) or 0)
+    if end <= start:
+        file_dur = float((file_data or {}).get("duration", 0) or 0)
+        end = file_dur if file_dur > start else start + max(0.1, float(fallback_duration or 0.1))
+    return start, end
+
+
+def _bake_transition_video(
+    path_a,
+    start_a,
+    end_a,
+    morph_path,
+    path_b,
+    start_b,
+    end_b,
+    width,
+    height,
+    output_path,
+):
+    """Concatenate clip A + AI morph + clip B into one MP4."""
+    dur_a = max(0.01, end_a - start_a)
+    dur_b = max(0.01, end_b - start_b)
+    morph_dur = _ffprobe_video_duration(morph_path)
+    if morph_dur < 0.1:
+        morph_dur = 5.0
+
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p,fps=24"
+    )
+    video_filters = (
+        f"[0:v]trim=start={start_a}:end={end_a},setpts=PTS-STARTPTS,{vf}[va];"
+        f"[1:v]setpts=PTS-STARTPTS,{vf}[vb];"
+        f"[2:v]trim=start={start_b}:end={end_b},setpts=PTS-STARTPTS,{vf}[vc];"
+        f"[va][vb][vc]concat=n=3:v=1:a=0[vout]"
+    )
+
+    has_audio_a = _ffprobe_has_audio(path_a)
+    has_audio_m = _ffprobe_has_audio(morph_path)
+    has_audio_b = _ffprobe_has_audio(path_b)
+    want_audio = has_audio_a or has_audio_m or has_audio_b
+
+    if want_audio:
+        def _audio_filter(input_idx, has_audio, trim_start=None, trim_end=None, null_dur=0.0):
+            if has_audio and trim_start is not None and trim_end is not None:
+                return (
+                    f"[{input_idx}:a]atrim=start={trim_start}:end={trim_end},"
+                    f"asetpts=PTS-STARTPTS"
+                )
+            if has_audio:
+                return f"[{input_idx}:a]asetpts=PTS-STARTPTS"
+            return (
+                "anullsrc=channel_layout=stereo:sample_rate=48000,"
+                f"atrim=start=0:end={null_dur},asetpts=PTS-STARTPTS"
+            )
+
+        audio_filters = (
+            f"{_audio_filter(0, has_audio_a, start_a, end_a, dur_a)}[aa];"
+            f"{_audio_filter(1, has_audio_m, null_dur=morph_dur)}[ab];"
+            f"{_audio_filter(2, has_audio_b, start_b, end_b, dur_b)}[ac];"
+            f"[aa][ab][ac]concat=n=3:v=0:a=1[aout]"
+        )
+        filter_complex = f"{video_filters};{audio_filters}"
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", path_a, "-i", morph_path, "-i", path_b,
+            "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", path_a, "-i", morph_path, "-i", path_b,
+            "-filter_complex", video_filters,
+            "-map", "[vout]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-an",
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ]
+
+    return _ffmpeg_run(cmd)
+
+
+def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, position, layer):
+    """Remove the two source clips and place the baked transition clip on the timeline."""
+    from classes.query import Clip
+    from PyQt5.QtCore import QPointF
+
+    def _do():
+        app = _get_app()
+        win = app.window
+        layer_num = int(layer) if layer is not None else 0
+        for cid in (clip_b_id, clip_a_id):
+            if not cid or not Clip.get(id=cid):
+                continue
+            if hasattr(win, "removeSelection"):
+                try:
+                    win.removeSelection(cid, "clip")
+                except Exception as exc:
+                    log.warning("Could not remove clip %s: %s", cid, exc)
+        win.timeline.addClip(baked_file_id, QPointF(float(position), 0.0), layer_num)
+
+    _run_on_main_thread(_do, timeout=30)
+
+
 def _import_generated_video(video_path):
     """Import a generated video into the project with clean metadata.
 
@@ -1912,13 +2417,13 @@ def _import_generated_video(video_path):
 
     # Re-encode for libopenshot compatibility, writing to a permanent path
     # so the file survives tmpdir cleanup after the caller returns.
-    perm_path = _output_path_for_generated_video()
+    perm_path = _canonical_media_path(_output_path_for_generated_video())
     clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
     if err:
         log.warning("Re-encode failed, using original: %s", err)
         clean_path = video_path
 
-    final_path = clean_path
+    final_path = _canonical_media_path(clean_path)
 
     # Import into project on the main thread
     def _do_import():
@@ -1939,6 +2444,13 @@ def _import_generated_video(video_path):
                     break
             except Exception:
                 continue
+    if f:
+        _normalize_imported_file_path(f, final_path)
+
+        def _refresh_thumb():
+            _refresh_imported_file_thumbnail(f.id, final_path)
+
+        _run_on_main_thread(_refresh_thumb, timeout=30)
     return f, None
 
 
@@ -2030,6 +2542,9 @@ def fetch_remotion_video_from_supabase(
         return f"Error downloading video from Supabase: {e}"
 
 
+_KLING_O1_DEFAULT_T2V_DURATION = 5
+
+
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
@@ -2038,18 +2553,18 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     if len(prompt) < 2:
         return "Error: Prompt must be at least 2 characters."
 
-    duration = None
-    if duration_seconds and str(duration_seconds).strip():
+    explicit_dur = str(duration_seconds or "").strip()
+    if explicit_dur:
         try:
-            duration = int(float(duration_seconds))
-        except Exception:
-            pass
-    if duration is None:
-        settings = app.get_settings()
-        duration = int(settings.get("video-generation-duration") or 4)
-    duration = max(1, min(10, duration))
+            duration = _snap_kling_o1_duration(int(float(explicit_dur)))
+        except (TypeError, ValueError):
+            duration = _KLING_O1_DEFAULT_T2V_DURATION
+    else:
+        # Default 5s unless user explicitly requests 10s in chat (passed via duration_seconds).
+        duration = _KLING_O1_DEFAULT_T2V_DURATION
+    t2v_w, t2v_h = _project_kling_o1_t2v_dims()
 
-    output_path = _output_path_for_generated_video()
+    output_path = _canonical_media_path(_output_path_for_generated_video())
 
     # Pause auto-save during generation to prevent backup interference
     auto_save_was_active = _pause_auto_save()
@@ -2061,7 +2576,13 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             return blocked
         from classes.api_client import get_backend_client
         client = get_backend_client()
-        result = client.generate_video(prompt, duration_seconds=duration)
+        result = client.generate_video(
+            prompt,
+            duration_seconds=duration,
+            width=t2v_w,
+            height=t2v_h,
+            mode="t2v",
+        )
         video_url = result.get("video_url", "")
         err = result.get("error", "")
         if err:
@@ -2152,14 +2673,14 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         _resume_auto_save(auto_save_was_active)
 
 
-def insert_kling_v2v_into_clip(
+def insert_v2v_into_clip(
     query="",
     fade_ms="400",
     clip_query="",
     timeline_clip_id="",
     **_kw,
 ) -> str:
-    """Find best match in resolved clip, generate a V2V insert via Kling."""
+    """Find best match in resolved clip, generate a V2V insert via Kling O1 Pro."""
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
 
@@ -2249,28 +2770,11 @@ def insert_kling_v2v_into_clip(
         best_mid = clip_start + (clip_end - clip_start) * 0.8
         log.info("insert_v2v: no search results, using 80%% fallback point %.2fs", best_mid)
 
-    # Get video dimensions — clamp to Kling O1 video-edit range [720, 2160]
+    # Get video dimensions — clamp to Kling O1 Pro video-edit range [720, 2160]
     vid_width = int(source_file.data.get("width", 1920))
     vid_height = int(source_file.data.get("height", 1080))
-    # Kling O1 requires input video width & height ∈ [720, 2160].
-    # Scale up proportionally if either dimension is below 720.
-    _min_dim = 720
-    if vid_width < _min_dim or vid_height < _min_dim:
-        scale_factor = max(_min_dim / max(vid_width, 1), _min_dim / max(vid_height, 1))
-        vid_width = int(vid_width * scale_factor)
-        vid_height = int(vid_height * scale_factor)
-    # Ensure even dimensions (required by libx264)
-    vid_width = vid_width + (vid_width % 2)
-    vid_height = vid_height + (vid_height % 2)
-    # Cap at 2160
-    if vid_width > 2160 or vid_height > 2160:
-        scale_down = min(2160 / max(vid_width, 1), 2160 / max(vid_height, 1))
-        vid_width = int(vid_width * scale_down)
-        vid_height = int(vid_height * scale_down)
-        vid_width = vid_width + (vid_width % 2)
-        vid_height = vid_height + (vid_height % 2)
+    vf, vid_width, vid_height = _kling_o1_scale_vf(vid_width, vid_height)
     log.info("insert_v2v: target dims %dx%d", vid_width, vid_height)
-    gen_duration = 5  # Kling O1 min supported duration; sent explicitly in I2V mode
 
     # Pause auto-save during the generation pipeline
     auto_save_was_active = _pause_auto_save()
@@ -2281,15 +2785,10 @@ def insert_kling_v2v_into_clip(
             # Sending Kling a reference video keeps the generated insert visually consistent
             # with the original clip (same scene, lighting, style).
             seed_mp4 = os.path.join(tmpdir, "seed.mp4")
-            first_jpg = os.path.join(tmpdir, "first.jpg")
             insert_mp4 = os.path.join(tmpdir, "insert.mp4")
 
             ref_dur = min(3.0, best_mid - clip_start)
             ref_start = max(0.0, best_mid - ref_dur)
-            vf = (
-                f"scale={vid_width}:{vid_height}:force_original_aspect_ratio=decrease,"
-                f"pad={vid_width}:{vid_height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
-            )
             ok, err = _ffmpeg_run([
                 "ffmpeg", "-y", "-ss", str(ref_start), "-i", source_path,
                 "-t", str(ref_dur), "-vf", vf, "-r", "24", "-an",
@@ -2298,25 +2797,11 @@ def insert_kling_v2v_into_clip(
             if not ok:
                 return f"Error: Failed to extract seed video: {err}"
 
-            # ---- Step 2: Extract the frame at the insertion point ----
-            # Used as the 'first' frame constraint so the generated clip picks up
-            # exactly where the original pauses.  No 'last' constraint — Kling
-            # generates freely after that, which gives natural-looking motion.
-            ok, err = _ffmpeg_run([
-                "ffmpeg", "-y", "-ss", str(best_mid), "-i", source_path,
-                "-frames:v", "1", "-q:v", "2", first_jpg,
-            ])
-            if not ok:
-                return f"Error: Failed to extract insertion frame: {err}"
-
-            # ---- Step 3: Generate V2V insert ----
-            # seed_video_path → V2V mode: Kling uses the reference clip for visual style.
-            # duration is sent as a *hint* only; in V2V mode the API may infer the output
-            # length from the seed. We probe the actual duration after download (Step 4b).
+            # ---- Step 2: Generate V2V insert (video-edit only; no frame constraints) ----
             prompt = (
                 f"{query}\n\n"
-                "Constraints: the first frame must exactly match the provided first frame. "
-                "Continue the scene naturally for the full duration."
+                "Continue the scene naturally from the source footage. "
+                "Preserve camera motion, lighting, and visual style."
             )
             from classes.credits_client import check_operation
 
@@ -2325,20 +2810,14 @@ def insert_kling_v2v_into_clip(
                 return blocked
             from classes.api_client import get_backend_client
             client = get_backend_client()
-            seed_fid, frame_images_paths, up_err = _upload_generation_assets(
-                client,
-                seed_path=seed_mp4,
-                frame_specs=[{"path": first_jpg, "frame": "first"}],
-            )
+            seed_fid, _, up_err = _upload_generation_assets(client, seed_path=seed_mp4)
             if up_err:
                 return f"Error: {up_err}"
             result = client.generate_video(
                 prompt,
-                duration_seconds=gen_duration,
                 seed_video_file_id=seed_fid,
-                frame_images_paths=frame_images_paths,
-                width=vid_width,
-                height=vid_height,
+                mode="v2v_edit",
+                keep_original_sound=_ffprobe_has_audio(source_path),
             )
             video_url = result.get("video_url", "")
             gen_err = result.get("error", "")
@@ -2350,14 +2829,14 @@ def insert_kling_v2v_into_clip(
                 return f"Error: {dl_err}"
 
             # ---- Step 4: Bake updated clip with crossfades ----
-            output_path = _output_path_for_generated_video()
+            output_path = _canonical_media_path(_output_path_for_generated_video())
             dur_a = max(0.0, best_mid - clip_start)
             dur_c = max(0.0, clip_end - best_mid)
             # Probe the actual duration of the generated clip — do NOT assume it equals
             # gen_duration.  Even a 1-second mismatch makes xfade offsets wrong → corruption.
             insert_dur = _ffprobe_video_duration(insert_mp4)
             if insert_dur < 0.5:
-                insert_dur = float(gen_duration)
+                insert_dur = 3.0
                 log.warning("insert_v2v: could not probe insert duration, using %s", insert_dur)
 
             # Clamp fade so xfade offsets are valid
@@ -2456,7 +2935,7 @@ def replace_object_in_clip(
     timeline_clip_id="",
     **_kw,
 ) -> str:
-    """Replace or update an object/visual element in a resolved timeline clip using Kling V2V."""
+    """Replace or update an object/visual element in a timeline clip using Kling O1 Pro V2V edit."""
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
 
@@ -2481,65 +2960,45 @@ def replace_object_in_clip(
         return "Error: Could not find source video for selected clip."
     source_path = source_file.absolute_path()
 
-    # Hard cap at 10 s (Kling O1 max) to avoid credit exhaustion on long clips.
-    # Snap to the nearest Kling-supported duration: 5 s or 10 s.
-    raw_dur = min(float(duration_seconds), 10.0) if str(duration_seconds).strip() else min(clip_duration, 10.0)
-    gen_duration = 10 if raw_dur >= 7.5 else 5
+    # Default 5s segment for V2V edit; honor duration_seconds when set (max 10s).
+    if str(duration_seconds).strip():
+        try:
+            extract_dur = min(float(duration_seconds), 10.0, clip_duration)
+        except (TypeError, ValueError):
+            extract_dur = min(5.0, clip_duration)
+    else:
+        extract_dur = min(5.0, clip_duration)
 
-    # Clamp video dimensions to Kling O1 video-edit range [720, 2160]
     vid_width = int(source_file.data.get("width", 1920))
     vid_height = int(source_file.data.get("height", 1080))
-    _min_dim = 720
-    if vid_width < _min_dim or vid_height < _min_dim:
-        scale_f = max(_min_dim / max(vid_width, 1), _min_dim / max(vid_height, 1))
-        vid_width = int(vid_width * scale_f)
-        vid_height = int(vid_height * scale_f)
-    vid_width += vid_width % 2
-    vid_height += vid_height % 2
-    if vid_width > 2160 or vid_height > 2160:
-        scale_d = min(2160 / max(vid_width, 1), 2160 / max(vid_height, 1))
-        vid_width = int(vid_width * scale_d)
-        vid_height = int(vid_height * scale_d)
-        vid_width += vid_width % 2
-        vid_height += vid_height % 2
+    vf, vid_width, vid_height = _kling_o1_scale_vf(vid_width, vid_height)
 
     auto_save_was_active = _pause_auto_save()
     try:
         tmpdir = tempfile.mkdtemp(prefix="zenvi_replace_")
         try:
             ref_mp4 = os.path.join(tmpdir, "ref.mp4")
-            first_jpg = os.path.join(tmpdir, "first.jpg")
-            last_jpg = os.path.join(tmpdir, "last.jpg")
 
-            vf = (
-                f"scale={vid_width}:{vid_height}:force_original_aspect_ratio=decrease,"
-                f"pad={vid_width}:{vid_height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
-            )
-
-            # Extract the clip segment as the reference video (cap at 10 s)
-            extract_dur = min(clip_duration, 10.0)
             ok, err = _ffmpeg_run([
                 "ffmpeg", "-y", "-ss", str(clip_start), "-i", source_path,
-                "-t", str(extract_dur), "-vf", vf, "-r", "24", "-an",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", ref_mp4,
+                "-t", str(extract_dur), "-vf", vf, "-r", "24",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k", ref_mp4,
             ])
             if not ok:
+                # Retry without audio if mux fails
+                ok, err = _ffmpeg_run([
+                    "ffmpeg", "-y", "-ss", str(clip_start), "-i", source_path,
+                    "-t", str(extract_dur), "-vf", vf, "-r", "24", "-an",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", ref_mp4,
+                ])
+            if not ok:
                 return f"Error: Failed to extract reference clip: {err}"
-
-            # Extract first and last frames for frame continuity constraints
-            ok, _ = _ffmpeg_run(["ffmpeg", "-y", "-i", ref_mp4, "-frames:v", "1", "-q:v", "2", first_jpg])
-            if not ok:
-                return "Error: Failed to extract first frame from reference clip."
-            ok, _ = _ffmpeg_run(["ffmpeg", "-y", "-sseof", "-0.1", "-i", ref_mp4,
-                                  "-frames:v", "1", "-q:v", "2", last_jpg])
-            if not ok:
-                return "Error: Failed to extract last frame from reference clip."
 
             prompt = (
                 f"{description}\n\n"
                 "Apply the change throughout the entire video while preserving the original "
-                "camera motion, scene composition, and lighting. The first and last frames "
-                "must match the provided frame constraints."
+                "camera motion, scene composition, and lighting."
             )
             from classes.credits_client import check_operation
 
@@ -2549,30 +3008,22 @@ def replace_object_in_clip(
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
-            seed_fid, frame_images_paths, up_err = _upload_generation_assets(
-                client,
-                seed_path=ref_mp4,
-                frame_specs=[
-                    {"path": first_jpg, "frame": "first"},
-                    {"path": last_jpg, "frame": "last"},
-                ],
-            )
+            seed_fid, _, up_err = _upload_generation_assets(client, seed_path=ref_mp4)
             if up_err:
                 return f"Error: {up_err}"
+            has_audio = _ffprobe_has_audio(ref_mp4)
             result = client.generate_video(
                 prompt,
-                duration_seconds=gen_duration,
                 seed_video_file_id=seed_fid,
-                frame_images_paths=frame_images_paths,
-                width=vid_width,
-                height=vid_height,
+                mode="v2v_edit",
+                keep_original_sound=has_audio,
             )
             video_url = result.get("video_url", "")
             gen_err = result.get("error", "")
             if gen_err:
                 return f"Error: {gen_err}"
 
-            output_path = _output_path_for_generated_video()
+            output_path = _canonical_media_path(_output_path_for_generated_video())
             dl_err = _download_video_url_to_path(video_url, output_path)
             if dl_err:
                 return f"Error: {dl_err}"
@@ -2586,11 +3037,15 @@ def replace_object_in_clip(
                 note=f"replace object: {description[:60]}",
             )
 
+            gen_duration = _ffprobe_video_duration(output_path)
+            if gen_duration < 0.5:
+                gen_duration = extract_dur
+
             f, _import_err = _import_generated_video(output_path)
             if not f:
                 log.warning("replace_object: File.get failed but add_files succeeded")
             return (
-                f"Object replacement complete. A {gen_duration}s AI video with '{description}' "
+                f"Object replacement complete. A {gen_duration:.1f}s AI video with '{description}' "
                 "applied has been added to the imported clips panel. "
                 "Drag it to the timeline to replace the original clip."
             )
@@ -2611,8 +3066,8 @@ def generate_transition_clip(
     prompt_hint="",
     **_kw,
 ) -> str:
-    """Generate a transition video between two clips using Kling V2V with video reference."""
-    from classes.query import Clip, File
+    """Generate a baked clip A + AI morph + clip B for two timeline clips (Kling O1 Pro)."""
+    from classes.query import Clip
     _get_app()
 
     pair = _resolve_clip_pair_for_tool(
@@ -2626,11 +3081,8 @@ def generate_transition_clip(
     clip_a = pair.clip_a
     clip_b = pair.clip_b
 
-    # Get source file paths
-    file_a_id = clip_a.data.get("file_id", "")
-    file_b_id = clip_b.data.get("file_id", "")
-    file_a = File.get(id=file_a_id) if file_a_id else None
-    file_b = File.get(id=file_b_id) if file_b_id else None
+    file_a = _get_source_file_for_clip(clip_a)
+    file_b = _get_source_file_for_clip(clip_b)
     if not file_a or not file_b:
         return "Error: Could not find source files for the clips."
 
@@ -2641,88 +3093,77 @@ def generate_transition_clip(
     if not path_b or not os.path.isfile(path_b):
         return f"Error: Source video for clip B not found: {path_b}"
 
-    # Timeline positions
+    # Timeline positions and source trim ranges
     pos_a = float(clip_a.data.get("position", 0))
-    start_a = float(clip_a.data.get("start", 0))
-    end_a = float(clip_a.data.get("end", 0))
-    duration_a = end_a - start_a
-    end_position_a = pos_a + duration_a
+    start_a, end_a = _clip_source_range(clip_a.data, file_a.data)
+    start_b, end_b = _clip_source_range(clip_b.data, file_b.data)
+    duration_a = max(0.01, end_a - start_a)
+    dur_b = max(0.01, end_b - start_b)
+
+    log.info(
+        "generate_transition: clip_a id=%s source=%.3f-%.3fs file=%s | "
+        "clip_b id=%s source=%.3f-%.3fs file=%s",
+        clip_a.id, start_a, end_a, os.path.basename(path_a),
+        clip_b.id, start_b, end_b, os.path.basename(path_b),
+    )
 
     layer = clip_a.data.get("layer")
-    track = str(layer) if layer is not None else ""
 
-    morph_duration = 5.0
     prompt = (prompt_hint or "").strip()
     if not prompt:
         prompt = (
             "Gradually evolve the opening scene into the closing scene through a fluid, "
-            "continuous motion. Preserve the appearance and identity of all people and key "
-            "objects while naturally transitioning the pose, setting, and lighting from "
-            "the first frame to the last. The movement should feel organic and cinematic, "
-            "with no abrupt cuts or unrelated imagery."
+            "continuous motion. Begin on the first frame composition and evolve smoothly "
+            "toward the last frame image. Preserve the appearance and identity of all people "
+            "and key objects while naturally transitioning pose, setting, and lighting. "
+            "The movement should feel organic and cinematic, with no abrupt cuts."
         )
 
-    # Clamp clip A dimensions to Kling O1 video-edit range [720, 2160]
-    vid_w = int(file_a.data.get("width", 1920))
-    vid_h = int(file_a.data.get("height", 1080))
-    _min_dim = 720
-    if vid_w < _min_dim or vid_h < _min_dim:
-        _sf = max(_min_dim / max(vid_w, 1), _min_dim / max(vid_h, 1))
-        vid_w = int(vid_w * _sf)
-        vid_h = int(vid_h * _sf)
-    vid_w += vid_w % 2
-    vid_h += vid_h % 2
-    if vid_w > 2160 or vid_h > 2160:
-        _sd = min(2160 / max(vid_w, 1), 2160 / max(vid_h, 1))
-        vid_w = int(vid_w * _sd)
-        vid_h = int(vid_h * _sd)
-        vid_w += vid_w % 2
-        vid_h += vid_h % 2
+    morph_duration = _snap_kling_o1_duration(5)
+
+    # Scale extracted frames to project dimensions for consistent morph output
+    t2v_w, t2v_h = _project_kling_o1_t2v_dims()
+    frame_vf = (
+        f"scale={t2v_w}:{t2v_h}:force_original_aspect_ratio=decrease,"
+        f"pad={t2v_w}:{t2v_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    )
 
     # Pause auto-save during the generation pipeline
     auto_save_was_active = _pause_auto_save()
     try:
         tmpdir = tempfile.mkdtemp(prefix="zenvi_morph_")
         try:
-            ref_mp4 = os.path.join(tmpdir, "ref_a.mp4")
             frame_a_path = os.path.join(tmpdir, "frame_a.jpg")
             frame_b_path = os.path.join(tmpdir, "frame_b.jpg")
 
-            # Extract last 3 s of clip A as the V2V reference video.
-            # This gives Kling the visual style/content of clip A so the
-            # generated transition matches it rather than generating arbitrary content.
-            ref_dur = min(3.0, duration_a)
-            ref_start = max(start_a, end_a - ref_dur)
-            vf = (
-                f"scale={vid_w}:{vid_h}:force_original_aspect_ratio=decrease,"
-                f"pad={vid_w}:{vid_h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
-            )
-            ok, err = _ffmpeg_run([
-                "ffmpeg", "-y", "-ss", str(ref_start), "-i", path_a,
-                "-t", str(ref_dur), "-vf", vf, "-r", "24", "-an",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", ref_mp4,
-            ])
-            if not ok:
-                log.warning("generate_transition: could not extract ref video: %s", err)
-                ref_mp4 = None  # fall back to frame-only mode
-
-            # Extract last frame of clip A
-            time_a = max(0.0, end_a - 0.1) if end_a > 0 else 0.0
+            # Last frame of clip A → morph start (first constraint)
+            time_a = max(start_a, end_a - 0.1) if end_a > start_a else start_a
             ok, err = _ffmpeg_run([
                 "ffmpeg", "-y", "-ss", str(time_a), "-i", path_a,
-                "-frames:v", "1", "-q:v", "2", frame_a_path,
+                "-frames:v", "1", "-vf", frame_vf, "-q:v", "2", frame_a_path,
             ])
             if not ok:
-                return f"Error: Failed to extract last frame from clip A: {err}"
+                return f"Error: Failed to extract last frame from clip A at {time_a:.3f}s: {err}"
+            if not os.path.isfile(frame_a_path) or os.path.getsize(frame_a_path) < 512:
+                return f"Error: Extracted frame A is empty (time={time_a:.3f}s, path={path_a})"
 
-            # Extract first frame of clip B
-            start_b = float(clip_b.data.get("start", 0))
+            # First frame of clip B → morph end (last constraint)
             ok, err = _ffmpeg_run([
                 "ffmpeg", "-y", "-ss", str(start_b), "-i", path_b,
-                "-frames:v", "1", "-q:v", "2", frame_b_path,
+                "-frames:v", "1", "-vf", frame_vf, "-q:v", "2", frame_b_path,
             ])
             if not ok:
-                return f"Error: Failed to extract first frame from clip B: {err}"
+                return f"Error: Failed to extract first frame from clip B at {start_b:.3f}s: {err}"
+            if not os.path.isfile(frame_b_path) or os.path.getsize(frame_b_path) < 512:
+                return f"Error: Extracted frame B is empty (time={start_b:.3f}s, path={path_b})"
+
+            log.info(
+                "generate_transition: extracted frames A@%ss (%d bytes) B@%ss (%d bytes)",
+                f"{time_a:.3f}",
+                os.path.getsize(frame_a_path),
+                f"{start_b:.3f}",
+                os.path.getsize(frame_b_path),
+            )
 
             from classes.credits_client import check_operation
 
@@ -2733,50 +3174,22 @@ def generate_transition_clip(
             from classes.api_client import get_backend_client
             client = get_backend_client()
 
-            if ref_mp4 and os.path.isfile(ref_mp4):
-                log.info("generate_transition: using V2V reference + frame constraints")
-                seed_fid, frame_images_paths, up_err = _upload_generation_assets(
-                    client,
-                    seed_path=ref_mp4,
-                    frame_specs=[
-                        {"path": frame_a_path, "frame": "first"},
-                        {"path": frame_b_path, "frame": "last"},
-                    ],
-                )
-                if up_err:
-                    return f"Error: {up_err}"
-                result = client.generate_video(
-                    prompt,
-                    duration_seconds=int(morph_duration),
-                    seed_video_file_id=seed_fid,
-                    frame_images_paths=frame_images_paths,
-                    width=vid_w,
-                    height=vid_h,
-                )
-            else:
-                log.info("generate_transition: falling back to frame-only morph")
-                _, frames_a, up_err = _upload_generation_assets(
-                    client, frame_specs=[{"path": frame_a_path, "frame": "first"}]
-                )
-                if up_err:
-                    return f"Error: {up_err}"
-                _, frames_b, up_err2 = _upload_generation_assets(
-                    client, frame_specs=[{"path": frame_b_path, "frame": "last"}]
-                )
-                if up_err2:
-                    return f"Error: {up_err2}"
-                start_fid = frames_a[0]["file_id"] if frames_a else None
-                end_fid = frames_b[0]["file_id"] if frames_b else None
-                result = client.generate_morph_video(
-                    first_image_url="",
-                    last_image_url="",
-                    start_image_file_id=start_fid,
-                    end_image_file_id=end_fid,
-                    prompt=prompt,
-                    duration_seconds=int(morph_duration),
-                    width=vid_w,
-                    height=vid_h,
-                )
+            log.info("generate_transition: Kling O1 Pro frame morph (last frame A → first frame B)")
+            _, frame_images_paths, up_err = _upload_generation_assets(
+                client,
+                frame_specs=[
+                    {"path": frame_a_path, "frame": "first"},
+                    {"path": frame_b_path, "frame": "last"},
+                ],
+            )
+            if up_err:
+                return f"Error: {up_err}"
+            result = client.generate_video(
+                prompt,
+                duration_seconds=int(morph_duration),
+                frame_images_paths=frame_images_paths,
+                mode="frame_morph",
+            )
 
             video_url = result.get("video_url", "")
             gen_err = result.get("error", "")
@@ -2788,10 +3201,49 @@ def generate_transition_clip(
             if dl_err:
                 return f"Error: {dl_err}"
 
-            # Import the transition video
-            f, import_err = _import_generated_video(morph_path)
+            baked_path = _canonical_media_path(_output_path_for_generated_video())
+            ok, bake_err = _bake_transition_video(
+                path_a, start_a, end_a,
+                morph_path,
+                path_b, start_b, end_b,
+                t2v_w, t2v_h,
+                baked_path,
+            )
+            if not ok:
+                return f"Error: Failed to bake transition clip: {bake_err}"
+
+            morph_dur_actual = _ffprobe_video_duration(morph_path)
+            if morph_dur_actual < 0.1:
+                morph_dur_actual = float(morph_duration)
+
+            f, import_err = _import_generated_video(baked_path)
             if not f:
-                return "Error: Transition video generated but could not be added to project."
+                return "Error: Baked transition clip could not be added to project."
+
+            merged_tags, merged_ai = _merge_baked_transition_metadata(
+                file_a,
+                start_a,
+                end_a,
+                file_b,
+                start_b,
+                end_b,
+                duration_a,
+                morph_dur_actual,
+                prompt_hint=prompt,
+            )
+            if merged_tags:
+                f.data["tags"] = merged_tags
+            existing_ai = f.data.get("ai_metadata")
+            if not isinstance(existing_ai, dict):
+                existing_ai = {}
+            existing_ai.update(merged_ai)
+            f.data["ai_metadata"] = existing_ai
+            _normalize_imported_file_path(f, f.absolute_path() if hasattr(f, "absolute_path") else baked_path)
+            try:
+                f.save()
+                _get_app().window.FileUpdated.emit(str(f.id))
+            except Exception as exc:
+                log.warning("generate_transition: could not save merged tags: %s", exc)
 
             from classes.credits_client import charge_operation_on_success
 
@@ -2802,78 +3254,34 @@ def generate_transition_clip(
                 note="transition/morph generation",
             )
 
-            # Probe actual duration from the re-encoded file that was imported
-            # (not morph_path — _import_generated_video re-encodes to a new file
-            # whose duration may differ slightly from the original download).
-            clean_path = f.absolute_path() if hasattr(f, "absolute_path") else None
-            actual_dur = _ffprobe_video_duration(clean_path) if clean_path else 0.0
-            if actual_dur < 0.5:
-                actual_dur = float(morph_duration)
-                log.warning("generate_transition: could not probe morph duration, using %s", actual_dur)
-            else:
-                log.info("generate_transition: probed morph duration=%.3fs", actual_dur)
-
-            # Shift clip B (and all clips after it) right to make room for the
-            # transition clip.  This MUST run on the main thread — Clip.save()
-            # triggers Qt signals that must fire as direct (synchronous)
-            # connections. When called from a background thread they become
-            # queued connections and arrive after subsequent timeline mutations,
-            # leaving clips in corrupted / overlapping positions.
-            #
-            # Two precision buffers are applied:
-            #  • _snap_tol  — condition tolerance: catches clip B when float drift
-            #                 from a prior snap-to-grid leaves its position a
-            #                 sub-frame behind end_position_a.
-            #  • _pad       — shift padding: shift clip B one frame further than
-            #                 actual_dur so that independent snap-to-grid rounding
-            #                 on the transition clip and on clip B can never
-            #                 produce a sub-frame overlap on the timeline.
-            try:
-                _fps = _get_app().project.get("fps") or {}
-                _fps_float = float(_fps.get("num", 30)) / float(_fps.get("den", 1) or 1)
-            except Exception:
-                _fps_float = 30.0
-            _one_frame = 1.0 / max(_fps_float, 1.0)
-
-            _clip_a_id = clip_a_id
-            _end_pos = end_position_a
-            _snap_tol = _one_frame          # look back up to 1 frame for clip B
-            _shift = actual_dur + _one_frame  # push clip B 1 frame beyond the transition end
-
-            # Determine clip A's layer so we only ripple same-layer clips
-            _clip_a_layer = clip_a.data.get("layer", 0)
-            _app_ref = _get_app()
-
-            def _shift_clips():
-                for c in list(Clip.filter()):
-                    c_pos = float(c.data.get("position", 0))
-                    c_layer = c.data.get("layer", 0)
-                    if (c_pos >= _end_pos - _snap_tol
-                            and c.id != _clip_a_id
-                            and c_layer == _clip_a_layer):
-                        cid = c.data.get("id")
-                        if cid:
-                            _app_ref.updates.update(
-                                ["clips", {"id": cid}], {"position": c_pos + _shift}
-                            )
-
-            _run_on_main_thread(_shift_clips)
-
-            # Insert the transition clip at the end of clip A
-            was_playing = _pause_player()
-            try:
-                msg = add_clip_to_timeline(
-                    file_id=f.id,
-                    position_seconds=str(end_position_a),
-                    track=track,
+            baked_duration = _ffprobe_video_duration(
+                f.absolute_path() if hasattr(f, "absolute_path") else baked_path
+            )
+            if baked_duration < 0.5:
+                baked_duration = duration_a + morph_dur_actual + dur_b
+                log.warning(
+                    "generate_transition: could not probe baked duration, using %.3fs",
+                    baked_duration,
                 )
-            finally:
-                _resume_player(was_playing)
+            else:
+                log.info("generate_transition: probed baked duration=%.3fs", baked_duration)
+
+            _clip_a_id = clip_a.id
+            _clip_b_id = clip_b.id
+            _clip_a_layer = clip_a.data.get("layer", 0)
+
+            _replace_timeline_clips_with_baked(
+                _clip_a_id,
+                _clip_b_id,
+                f.id,
+                pos_a,
+                _clip_a_layer,
+            )
 
             return (
-                f"Transition clip created! A {actual_dur:.2f}s AI transition video was "
-                f"generated using Kling (video reference from clip A + frame constraints) "
-                f"and inserted between the clips. {msg}"
+                f"Transition baked! A {baked_duration:.2f}s clip (clip A + "
+                f"{morph_dur_actual:.1f}s AI morph + clip B) was added to the project files "
+                f"with merged tags and placed on the timeline at {pos_a:.2f}s."
             )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -3505,7 +3913,7 @@ def modify_clip(
     m = (mode or "replace").lower().strip()
     text = (description or query or "").strip()
     if m == "insert":
-        return insert_kling_v2v_into_clip(
+        return insert_v2v_into_clip(
             query=text,
             fade_ms=fade_ms,
             clip_query=clip_query,
@@ -3806,9 +4214,11 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
 
 def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
-    """Return all project files with AI metadata for planning and clip inference."""
+    """Return project files with AI metadata for planning (excludes hidden subclips by default)."""
     try:
         from classes.query import File
+        from classes.timeline_clip_context import resolve_parent_file_id
+
         level = str(detail_level or kwargs.get("detail_level") or "summary").lower().strip()
         files = File.filter()
         if not files:
@@ -3816,6 +4226,8 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         lines = ["Project files with full metadata:"]
         for f in files:
             d = f.data
+            if d.get("zenvi_subclip") and level != "full":
+                continue
             dur = d.get("duration", 0) or 0
             m, s = divmod(int(dur), 60)
             media_type = d.get("media_type", "?")
@@ -3831,9 +4243,14 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             scenes = ", ".join((tags.get("scenes") or [])[:3])
             activities = ", ".join((tags.get("activities") or [])[:3])
             desc = (ai.get("description") or "")[:120]
+            parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
+            alias_part = ""
+            if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
+                alias_part = f"  alias_of={parent_id}\n"
             lines.append(
                 f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
                 f"duration={m}:{s:02d}\n"
+                f"{alias_part}"
                 f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
                 f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
                 f"    objects=[{objects}]\n"
@@ -3855,6 +4272,57 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         return f"Error: {e}"
 
 
+def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
+    """Return one row per timeline clip with trim-aware effective metadata."""
+    try:
+        from classes.timeline_clip_context import enumerate_timeline_contexts
+
+        level = str(detail_level or _kw.get("detail_level") or "summary").lower().strip()
+        contexts = enumerate_timeline_contexts()
+        if not contexts:
+            return "No clips on timeline."
+
+        dupe_groups: dict[str, list] = {}
+        for ctx in contexts:
+            key = f"{ctx.file_id}:{ctx.layer}"
+            dupe_groups.setdefault(key, []).append(ctx)
+
+        lines = [f"Timeline placements ({len(contexts)}):"]
+        for ctx in sorted(contexts, key=lambda c: (int(c.layer or 0), c.timeline_position)):
+            dup_key = f"{ctx.file_id}:{ctx.layer}"
+            dupes = dupe_groups.get(dup_key, [])
+            occ_hint = ""
+            if len(dupes) > 1:
+                ranked = sorted(dupes, key=lambda c: c.timeline_position)
+                for idx, dc in enumerate(ranked, 1):
+                    if dc.timeline_clip_id == ctx.timeline_clip_id:
+                        occ_hint = f" occurrence_hint={idx}"
+                        break
+            group_id = dup_key if len(dupes) > 1 else ""
+            ai = ctx.effective_metadata or {}
+            scenes = ai.get("scene_descriptions") or []
+            scene_limit = len(scenes) if level == "full" else min(3, len(scenes))
+            lines.append(
+                f"\n  timeline_clip_id={ctx.timeline_clip_id} file_id={ctx.file_id} "
+                f"parent_file_id={ctx.parent_file_id}{occ_hint}\n"
+                f"    title={ctx.title!r} track={ctx.layer} ui_track={ctx.ui_track} "
+                f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
+                f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
+                f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
+                f"    tags_preview={ctx.tags_preview!r}"
+            )
+            if scenes and scene_limit:
+                lines.append("    effective_scenes:")
+                for sc in scenes[:scene_limit]:
+                    if isinstance(sc, dict) and sc.get("description"):
+                        t = float(sc.get("time", 0) or 0)
+                        lines.append(f"      [{_fmt_mmss(t)}] {str(sc['description'])[:160]}")
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("get_timeline_placements_metadata: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Tool name → handler mapping
 # ---------------------------------------------------------------------------
@@ -3863,6 +4331,8 @@ def get_timeline_state(**_kw) -> str:
     """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects."""
     try:
         from classes.query import Clip
+        from classes.timeline_clip_context import build_timeline_clip_context
+
         app = _get_app()
 
         layers = app.project.get("layers") or []
@@ -3904,10 +4374,21 @@ def get_timeline_state(**_kw) -> str:
         for layer_num in sorted(by_layer.keys(), reverse=True):
             lines.append(f"\n{_track_heading(layer_num)}:")
             for c, d in sorted(by_layer[layer_num], key=lambda x: x[1].get("position", 0)):
-                clip_dur = d.get("end", 0) - d.get("start", 0)
+                clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
+                if clip_dur <= 0:
+                    try:
+                        from classes.query import File as _FileDur
+                        _fo = _FileDur.get(id=d.get("file_id", ""))
+                        if _fo:
+                            from classes.ai_metadata_utils import get_source_window
+                            ss, se = get_source_window(d, _fo.data)
+                            clip_dur = se - ss
+                    except Exception:
+                        clip_dur = 0
                 clip_end = d.get("position", 0) + clip_dur
                 tags_preview = ""
                 analyzed_part = ""
+                source_part = ""
                 try:
                     from classes.query import File as _File
                     fobj = _File.get(id=d.get("file_id", ""))
@@ -3917,7 +4398,11 @@ def get_timeline_state(**_kw) -> str:
                             or os.path.basename(str(fobj.data.get("path") or ""))
                             or d.get("file_id", "?")
                         )
-                        tags_preview = _tags_preview_for_file_data(fobj.data)
+                        ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
+                        tags_preview = ctx.tags_preview
+                        source_part = (
+                            f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
+                        )
                         if not _file_is_analyzed(fobj.data):
                             analyzed_part = " analyzed=False"
                     else:
@@ -3928,7 +4413,7 @@ def get_timeline_state(**_kw) -> str:
                 lines.append(
                     f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                     f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                    f"{tag_part}{analyzed_part}"
+                    f"{tag_part}{analyzed_part}{source_part}"
                     f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                 )
 
@@ -4029,6 +4514,7 @@ AGENT_TOOL_HANDLERS = {
     "retag_project_file_tool": retag_project_file,
     "reindex_project_file_tool": reindex_project_file,
     "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
+    "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
 
@@ -4085,7 +4571,7 @@ TOOL_DISPLAY_LABELS = {
     "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "modify_clip_tool": "AI edit clip",
-    "generate_transition_clip_tool": "AI bridge between clips",
+    "generate_transition_clip_tool": "Bake A + morph + B",
     "list_transitions_tool": "List transitions",
     "search_transitions_tool": "Search transitions",
     "apply_transition_tool": "Apply transition",
@@ -4094,6 +4580,7 @@ TOOL_DISPLAY_LABELS = {
     "retag_project_file_tool": "Retag file",
     "reindex_project_file_tool": "Reindex file",
     "get_clips_with_full_metadata_tool": "Read clips metadata",
+    "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
 
@@ -4125,6 +4612,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_transitions_tool",
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
+    "get_timeline_placements_metadata_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -4136,6 +4624,10 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "reindex_project_file_tool",
     "retag_project_file_tool",
     "import_stock_media_tool",
+    # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
+    "generate_video_and_add_to_timeline_tool",
+    "modify_clip_tool",
+    "generate_transition_clip_tool",
 })
 
 

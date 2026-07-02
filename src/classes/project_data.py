@@ -1214,6 +1214,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Don't track unsaved changes when loading a project
             pass
 
+        # Now that project data has been committed, invalidate cached query objects so
+        # downstream listeners/threads read the new state instead of a stale snapshot.
+        get_app().updates.commit_data_version()
+
     # Utility methods
     def generate_id(self, digits=10):
         """ Generate random alphanumeric ids """
