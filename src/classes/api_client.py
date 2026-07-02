@@ -671,7 +671,6 @@ class ZenviBackendClient:
                 fetch_more_urls=_fetch_more,
                 upload_headers=session_data.get("upload_headers") or {},
                 on_chunk_uploaded=_on_chunk_uploaded,
-                session=s,
             )
             if up_err:
                 return {"success": False, "error": up_err}
@@ -688,7 +687,7 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("indexing", -1)
-            return self._poll_indexing_job(job_id, progress_callback=progress_callback, session=s)
+            return self._poll_indexing_job(job_id, progress_callback=progress_callback)
         except Exception as exc:
             log.error("Direct indexing failed: %s", exc)
             return {"success": False, "error": str(exc)}
@@ -705,17 +704,15 @@ class ZenviBackendClient:
         max_wait: int = 1800,
         poll_interval: int = 10,
         progress_callback: Optional[Callable[[str, int], None]] = None,
-        session=None,
     ) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
         import time
-        s = session or self.session
         deadline = time.time() + max_wait
         while time.time() < deadline:
             if progress_callback:
                 progress_callback("indexing", -1)
             try:
-                r = s.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
+                r = self.session.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()
                 data = r.json()
                 status = data.get("status", "running")
@@ -920,7 +917,7 @@ class ZenviBackendClient:
         """Re-index via direct TwelveLabs presigned upload."""
         if isinstance(force, str):
             force = force.strip().lower() in ("true", "1", "yes", "force")
-        if not file_path:
+        if not force and not file_path:
             return {"success": False, "error": "file_path is required"}
 
         result = self.start_direct_indexing_job(
