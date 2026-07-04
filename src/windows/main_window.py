@@ -162,7 +162,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 event.accept()
             elif ret == QMessageBox.Cancel:
                 # Show tutorial again, if any
-                self.tutorial_manager.re_show_dialog()
+                if self.tutorial_manager:
+                    self.tutorial_manager.re_show_dialog()
                 # User canceled prompt - don't quit
                 event.ignore()
                 return
@@ -4339,8 +4340,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.toolBar.topLevelChanged.connect(
             functools.partial(self.freezeMainToolBar, None))
 
-        # Create tutorial manager
-        self.tutorial_manager = TutorialManager(self)
+        # Create tutorial manager (auto-start disabled; use F2 to launch manually)
+        self.tutorial_manager = TutorialManager(self, auto_start=False)
 
         # Apply theme
         theme_name = s.get("theme")
