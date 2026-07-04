@@ -2356,7 +2356,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Files
         if app.context_menu_object == "files":
             s.set("file_view", "details")
-            self.filesListView.hide()
+            self.stockSearchView.hide()
             self.filesView = self.filesTreeView
             self.filesView.show()
 
@@ -2386,7 +2386,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             s.set("file_view", "thumbnail")
             self.filesTreeView.hide()
             self.filesView = self.filesListView
-            self.filesView.show()
+            self.stockSearchView.show()
+            self.filesListView.show()
 
         # Transitions
         elif app.context_menu_object == "transitions":
@@ -3111,10 +3112,30 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesActionGroup.addAction(self.actionFilesShowAudio)
         self.filesActionGroup.addAction(self.actionFilesShowImage)
         self.actionFilesShowAll.setChecked(True)
-        # Keep filesFilter widget alive (referenced by FilesListView) but don't show it
+        # Search bar pinned to the top of the Files panel. Typing filters the
+        # Project Files list live (by name/tag, wired in FilesListView) and, after a
+        # short debounce, searches stock footage + music (see _on_files_search).
+        self.filesToolbar.setMovable(False)
+        self.filesToolbar.setFloatable(False)
+        self.filesToolbar.setStyleSheet(
+            "QToolBar { border: none; background: transparent; padding: 4px 2px; }")
         self.filesFilter = QLineEdit()
         self.filesFilter.setObjectName("filesFilter")
-        # filesToolbar intentionally NOT inserted into tabFiles layout
+        self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
+        self.filesFilter.setClearButtonEnabled(True)
+        self.filesFilter.setStyleSheet(
+            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
+            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
+            " padding: 7px 14px; font-size: 12px; }"
+            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
+        self.filesToolbar.addWidget(self.filesFilter)
+        self.tabFiles.layout().insertWidget(0, self.filesToolbar)
+        # Debounce stock searches so we don't hit the network on every keystroke.
+        self._stock_search_timer = QTimer(self)
+        self._stock_search_timer.setSingleShot(True)
+        self._stock_search_timer.timeout.connect(self._on_files_search)
+        self.filesFilter.returnPressed.connect(self._on_files_search)
+        self.filesFilter.textChanged.connect(self._on_files_filter_changed)
 
         # Add transitions toolbar
         self.transitionsToolbar = QToolBar("Transitions Toolbar")
@@ -3479,16 +3500,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
+
+        # Unified media browser: the project-files card view (filesListView) is
+        # embedded together with stock footage + music in a single scroll area, so
+        # everything scrolls as one. Details view (filesTreeView) stays a separate
+        # widget, shown only in details mode.
+        from windows.views.stock_search_view import StockSearchView
+        self.stockSearchView = StockSearchView(self)
+        self.stockSearchView.set_files_view(self.filesListView)
         self.tabFiles.layout().insertWidget(-1, self.filesTreeView)
-        self.tabFiles.layout().insertWidget(-1, self.filesListView)
+        self.tabFiles.layout().insertWidget(-1, self.stockSearchView)
+
         if s.get("file_view") == "details":
             self.filesView = self.filesTreeView
-            self.filesListView.hide()
+            self.stockSearchView.hide()
+            self.filesTreeView.show()
         else:
             self.filesView = self.filesListView
             self.filesTreeView.hide()
-        # Show our currently-enabled project files view
-        self.filesView.show()
+            self.stockSearchView.show()
         self.filesView.setFocus()
 
         # Setup transitions tree and list views
@@ -3530,6 +3560,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.emojis_model.update_model()
         self.emojiListView = EmojisListView(self.emojis_model)
         self.tabEmojis.layout().addWidget(self.emojiListView)
+
+    def _on_files_search(self):
+        """Run the stock footage + music search for the current query."""
+        if not hasattr(self, "stockSearchView"):
+            return
+        text = self.filesFilter.text().strip()
+        if len(text) >= 2:
+            self.stockSearchView.run_search(text)
+        else:
+            self.stockSearchView.clear_stock()
+
+    def _on_files_filter_changed(self, text):
+        """Live local filtering is handled by FilesListView; here we debounce the
+        stock search so it fires as the user types (not only on Enter)."""
+        if not hasattr(self, "stockSearchView"):
+            return
+        if len(text.strip()) >= 2:
+            self._stock_search_timer.start(400)
+        else:
+            self._stock_search_timer.stop()
+            self.stockSearchView.clear_stock()
 
     def actionInsertKeyframe(self):
         log.debug("actionInsertKeyframe")
