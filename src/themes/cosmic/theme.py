@@ -410,21 +410,29 @@ QTabBar::tab:hover:!selected {
     background: rgba(255, 255, 255, 0.05);
 }
 
-/* Override for export / preferences dialogs that use horizontal (North) tabs */
+/* Override for dialogs that use horizontal (North) tabs with visible labels */
 QTabWidget#exportTabs QTabBar::tab,
 QTabWidget#tabCategories QTabBar::tab,
-QTabWidget#tabCredits QTabBar::tab {
+QTabWidget#tabCredits QTabBar::tab,
+QTabWidget#tabChangelog QTabBar::tab,
+QTabWidget#tabWidget QTabBar::tab {
+    color: #d4d4d4;
+    font-size: 12px;
+    min-width: 0;
+    min-height: 0;
+    max-width: 400px;
     padding: 6px 14px;
     border-right: none;
     border-bottom: 2px solid transparent;
     margin-bottom: 8px;
-    max-width: 400px;
     text-align: center;
 }
 
 QTabWidget#exportTabs QTabBar::tab:selected,
 QTabWidget#tabCategories QTabBar::tab:selected,
-QTabWidget#tabCredits QTabBar::tab:selected {
+QTabWidget#tabCredits QTabBar::tab:selected,
+QTabWidget#tabChangelog QTabBar::tab:selected,
+QTabWidget#tabWidget QTabBar::tab:selected {
     border-right: none;
     border-bottom: 2px solid #4d9cf6;
     background: transparent;
@@ -837,8 +845,11 @@ QDockWidget#AIMediaPanel QTreeWidget {
 }
 
 QDockWidget#AIMediaPanel QTabBar::tab {
+    color: #d4d4d4;
     padding: 5px 12px;
     font-size: 11px;
+    min-width: 0;
+    min-height: 0;
     max-width: 400px;
 }
 
