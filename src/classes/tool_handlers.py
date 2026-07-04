@@ -2625,6 +2625,62 @@ def fetch_remotion_video_from_supabase(
 _KLING_O1_DEFAULT_T2V_DURATION = 5
 
 
+def import_video_url_and_add_to_timeline(video_url="", track="", position_seconds="", **_kw) -> str:
+    """Download a video from a public URL, import it into project files, and place it on the timeline.
+
+    Used for server-rendered clips (e.g. Manim) delivered as a public URL. One shot:
+    download → re-encode/import (via _import_generated_video) → add_clip_to_timeline.
+    """
+    import tempfile
+    import urllib.request
+
+    video_url = (video_url or "").strip()
+    if not video_url:
+        return "Error: video_url is required."
+
+    try:
+        # Derive a clean .mp4 filename from the URL path.
+        url_path = video_url.split("?")[0].rstrip("/")
+        raw_name = url_path.split("/")[-1] or "video.mp4"
+        if not raw_name.lower().endswith(".mp4"):
+            raw_name += ".mp4"
+
+        tmp_dir = tempfile.mkdtemp(prefix="zenvi_url_import_")
+        dest_path = os.path.join(tmp_dir, raw_name)
+
+        log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+        req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
+        with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+
+        # Import into project files (re-encodes for libopenshot compatibility).
+        f, err = _import_generated_video(dest_path)
+        if err:
+            return f"Error importing video: {err}"
+        file_id = f.id if f else ""
+        if not file_id:
+            return "Error: video imported but its file_id could not be resolved."
+
+        # Place it on the timeline.
+        placement = add_clip_to_timeline(
+            file_id=file_id, position_seconds=position_seconds, track=track, **_kw
+        )
+        return (
+            f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
+            f"{placement}"
+        )
+    except Exception as e:
+        log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
+        return f"Error importing video from URL: {e}"
+
+
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
@@ -4573,6 +4629,7 @@ AGENT_TOOL_HANDLERS = {
     "get_file_info_tool": get_file_info,
     "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
+    "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
     # Search / slice / modify (tag-query resolved)
     "search_clip_scenes_tool": search_clip_scenes,
@@ -4645,6 +4702,7 @@ TOOL_DISPLAY_LABELS = {
     "get_file_info_tool": "Read file info",
     "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
+    "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
     "search_clip_scenes_tool": "Search clip scenes",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
@@ -4702,6 +4760,9 @@ READ_ONLY_TOOLS = frozenset({
 # 30 minutes for TwelveLabs indexing) and serialize parallel agent calls.
 BACKGROUND_SAFE_TOOLS = frozenset({
     "reindex_project_file_tool",
+    # Downloads + re-encodes off the GUI thread; its timeline mutations
+    # marshal to the main thread internally.
+    "import_video_url_and_add_to_timeline_tool",
     "retag_project_file_tool",
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
