@@ -41,16 +41,9 @@
     const inputOverlay = document.getElementById('chat-input-overlay');
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
-    const attachClipBtn = document.getElementById('chat-attach-clip-btn');
-    const transitionClipsBtn = document.getElementById('chat-transition-clips-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
-    const tagsRow = document.getElementById('chat-tags-row');
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
-
-    // ── Tag / pick-mode state ─────────────────────────────────────────────
-    var attachedContext = null;   // null | {type, ...}
-    var pickMode = null;          // null | 'selected_clip' | 'transition_a' | 'transition_b'
 
     // ── Command palette state ("/" commands) ─────────────────────────────
     var commandPaletteEl = null;
@@ -59,10 +52,11 @@
     var commandQuery = '';
     var COMMANDS = [
         { prefix: '/add-track', label: 'Add track', description: 'Add a new track to the timeline' },
-        { prefix: '/split', label: 'Split clip', description: 'Split the selected clip at the playhead' },
+        { prefix: '/generate', label: 'Generate video', description: 'Generate a new AI video clip from a text prompt (Kling O1 Pro, default 5s)' },
+        { prefix: '/split', label: 'Split clip', description: 'Split a timeline clip at the playhead (name the clip in chat or scrub to it first)' },
         { prefix: '/export', label: 'Export', description: 'Export the current project (choose preset)' },
-        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for the selected clip' },
-        { prefix: '/transition', label: 'Transition', description: 'Generate a transition clip between two selected clips' }
+        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for a timeline clip (describe which clip)' },
+        { prefix: '/transition', label: 'Transition', description: 'Generate a transition between two clips (describe both clips)' }
     ];
 
     function ensureCommandPaletteEl() {
@@ -191,85 +185,6 @@
         } catch (e) {}
     }
 
-    function renderTags() {
-        if (!tagsRow) return;
-        tagsRow.innerHTML = '';
-        if (!attachedContext) { tagsRow.style.display = 'none'; return; }
-        tagsRow.style.display = 'flex';
-
-        var pill = document.createElement('span');
-        pill.className = 'chat-tag-pill';
-
-        var labelEl = document.createElement('span');
-        if (attachedContext.type === 'selected_clip') {
-            labelEl.textContent = '@clip: ' + (attachedContext.title || 'clip');
-        } else if (attachedContext.type === 'transition_clips') {
-            var aTitle = (attachedContext.clipA && attachedContext.clipA.title) || '…';
-            var bTitle = (attachedContext.clipB && attachedContext.clipB.title) || '…';
-            labelEl.textContent = '@transition: ' + aTitle + ' → ' + bTitle;
-            if (!attachedContext.clipB) pill.classList.add('chat-tag-pending');
-        }
-        pill.appendChild(labelEl);
-
-        var xBtn = document.createElement('button');
-        xBtn.type = 'button';
-        xBtn.className = 'chat-tag-remove';
-        xBtn.setAttribute('aria-label', 'Remove');
-        xBtn.textContent = '×';
-        xBtn.addEventListener('click', function () {
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            getBridge(function (bridge) { if (bridge && bridge.cancelClipPick) bridge.cancelClipPick(); });
-            renderTags();
-        });
-        pill.appendChild(xBtn);
-        tagsRow.appendChild(pill);
-    }
-
-    function showPickHint(msg) {
-        var existing = document.getElementById('chat-pick-hint');
-        if (!existing) {
-            existing = document.createElement('div');
-            existing.id = 'chat-pick-hint';
-            existing.className = 'chat-pick-hint';
-            if (tagsRow && tagsRow.parentNode) {
-                tagsRow.parentNode.insertBefore(existing, tagsRow);
-            }
-        }
-        existing.textContent = msg;
-        existing.style.display = 'block';
-    }
-
-    function hidePendingPickHint() {
-        var el = document.getElementById('chat-pick-hint');
-        if (el) el.style.display = 'none';
-    }
-
-    // Called from Python: window.chatSetPickResult({id, title, start, end})
-    window.chatSetPickResult = function (json) {
-        try {
-            var data = typeof json === 'string' ? JSON.parse(json) : json;
-            if (pickMode === 'selected_clip') {
-                attachedContext = { type: 'selected_clip', id: data.id, title: data.title,
-                                    start: data.start, end: data.end };
-                pickMode = null;
-                hidePendingPickHint();
-            } else if (pickMode === 'transition_a') {
-                attachedContext = { type: 'transition_clips', clipA: data, clipB: null };
-                pickMode = 'transition_b';
-                showPickHint('Now click the second clip (B) on the timeline…');
-                // Re-enter pick mode on Python side for clip B
-                getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_b'); });
-            } else if (pickMode === 'transition_b') {
-                attachedContext.clipB = data;
-                pickMode = null;
-                hidePendingPickHint();
-            }
-            renderTags();
-        } catch (e) {}
-    };
-
     var processingStartTime = null;
     var lastRunTimestamp = null;
     var lastThoughtSec = null;
@@ -277,12 +192,27 @@
 
     var activityContainer = null;
     var activitySteps = [];
+    var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
+    var currentReasoningStep = null; // the single live "Reasoning" step, or null
+    var enterStagger = 0;   // index within the current entrance burst
+    var lastEnterAt = 0;    // timestamp of the last staggered tool-block entrance
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
 
     var ACTIVITY_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<path d="M3.5 7.5l2.5 2L10.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    var ACTIVITY_X_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
+        '<path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+    var TOOL_CHEVRON_SVG = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none">' +
+        '<path d="M3.5 2L6.5 5l-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    const SUGGESTED_PROMPTS = 'List my files · Add a track · Export video · Undo';
+    let typingInterval = null;
+    let typingIndex = 0;
+    let overlayVisible = true;
 
     function escapeHtml(s) {
         const div = document.createElement('div');
@@ -395,8 +325,24 @@
 
     /* ── Activity log helpers (tool step display during processing) ── */
 
-    function addReasoningStep() {
+    // Number of tool blocks still spinning. The DOM is the single source of
+    // truth so dedupe / unknown-id handling can never desync a counter.
+    function runningToolCount() {
+        var n = 0;
+        for (var k in toolBlocks) {
+            if (toolBlocks.hasOwnProperty(k) && toolBlocks[k] &&
+                toolBlocks[k].el && toolBlocks[k].el.classList.contains('running')) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    // Idempotent: at most one "Reasoning" step exists at any moment. Multiple
+    // tool completions in one turn must not stack multiple reasoning rows.
+    function ensureReasoningStep() {
         if (!activityContainer) return;
+        if (currentReasoningStep && currentReasoningStep.parentNode) return;
         var step = document.createElement('div');
         step.className = 'chat-activity-step running';
         step.setAttribute('data-type', 'reasoning');
@@ -404,7 +350,21 @@
                          '<span class="activity-label activity-reasoning">Reasoning</span>';
         activityContainer.appendChild(step);
         activitySteps.push(step);
+        currentReasoningStep = step;
     }
+
+    // Remove the live reasoning placeholder (used when a tool starts — the
+    // agent is no longer "just thinking").
+    function clearReasoningStep() {
+        if (!currentReasoningStep) return;
+        var idx = activitySteps.indexOf(currentReasoningStep);
+        if (idx !== -1) activitySteps.splice(idx, 1);
+        if (currentReasoningStep.parentNode) currentReasoningStep.remove();
+        currentReasoningStep = null;
+    }
+
+    // Back-compat alias for the older activity API / any external callers.
+    function addReasoningStep() { ensureReasoningStep(); }
 
     function completeActivityStep(step) {
         if (!step) return;
@@ -419,6 +379,8 @@
 
     window.addActivityStep = function (label, detail) {
         if (!activityContainer) return;
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
         // Complete current step (reasoning or previous tool)
         if (activitySteps.length > 0) {
             completeActivityStep(activitySteps[activitySteps.length - 1]);
@@ -440,9 +402,166 @@
 
     window.completeLastActivityStep = function () {
         if (!activityContainer || activitySteps.length === 0) return;
-        completeActivityStep(activitySteps[activitySteps.length - 1]);
-        // LLM will reason about the tool result next
-        addReasoningStep();
+        var last = activitySteps[activitySteps.length - 1];
+        // Don't "complete" the live reasoning placeholder — replace it.
+        if (last === currentReasoningStep) {
+            clearReasoningStep();
+        } else {
+            completeActivityStep(last);
+        }
+        // LLM will reason about the tool result next.
+        ensureReasoningStep();
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    /* ── Cursor-style collapsible tool terminal blocks ───────────────── */
+
+    // Stagger entrance animations so a burst of tool blocks pops in one-by-one
+    // rather than all at once. Blocks appearing >400ms apart start a fresh burst.
+    function staggerEntrance(el) {
+        var now = Date.now();
+        if (now - lastEnterAt > 400) {
+            enterStagger = 0;
+        } else {
+            enterStagger = Math.min(enterStagger + 1, 8);
+        }
+        lastEnterAt = now;
+        if (enterStagger > 0) {
+            el.style.animationDelay = (enterStagger * 80) + 'ms';
+        }
+    }
+
+    function setToolBlockExpanded(block, expanded) {
+        if (!block || !block.el) return;
+        if (expanded) {
+            block.el.classList.add('expanded');
+            block.body.style.display = 'block';
+        } else {
+            block.el.classList.remove('expanded');
+            block.body.style.display = 'none';
+        }
+    }
+
+    window.addToolBlock = function (payloadJson) {
+        if (!activityContainer) return;
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        var callId = data.call_id || ('tool_' + Date.now());
+        var title = data.title || 'Running tool';
+        var cmd = data.cmd || '';
+
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
+
+        // Dedupe: the same call_id can be announced twice (local on_tool_call
+        // and ws on_tool_progress both reach here). Reuse the existing block so
+        // we never orphan a still-spinning DOM node that completeToolBlock can't
+        // reach. Preserve any logs already streamed into its body.
+        var existing = toolBlocks[callId];
+        if (existing && existing.el && existing.el.parentNode) {
+            existing.el.classList.remove('done', 'error');
+            existing.el.classList.add('running');
+            var exIcon = existing.header.querySelector('.chat-tool-icon');
+            if (exIcon) exIcon.innerHTML = ACTIVITY_SPINNER_SVG;
+            if (title) {
+                var exTitle = existing.header.querySelector('.chat-tool-title');
+                if (exTitle) exTitle.textContent = title;
+            }
+            if (cmd) {
+                var exCmd = existing.header.querySelector('.chat-tool-cmd');
+                if (exCmd) exCmd.textContent = cmd;
+            }
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+            return;
+        }
+
+        var el = document.createElement('div');
+        el.className = 'chat-tool-block running expanded chat-message-enter';
+        el.setAttribute('data-call-id', callId);
+        staggerEntrance(el);
+
+        var header = document.createElement('button');
+        header.type = 'button';
+        header.className = 'chat-tool-header';
+        header.innerHTML =
+            '<span class="chat-tool-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-tool-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
+            '<span class="chat-tool-title">' + escapeHtml(title) + '</span>' +
+            '<span class="chat-tool-cmd">' + escapeHtml(cmd) + '</span>';
+
+        var body = document.createElement('div');
+        body.className = 'chat-tool-body';
+
+        header.addEventListener('click', function () {
+            var block = toolBlocks[callId];
+            // Only blocks that streamed log lines are expandable; the rest are
+            // just a tick + heading and have nothing to reveal.
+            if (!block || block.lines.length === 0) return;
+            var nowExpanded = !el.classList.contains('expanded');
+            setToolBlockExpanded(block, nowExpanded);
+        });
+
+        el.appendChild(header);
+        el.appendChild(body);
+        activityContainer.appendChild(el);
+
+        toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.appendToolLog = function (callId, line) {
+        if (!callId || !line) return;
+        if (!toolBlocks[callId]) {
+            window.addToolBlock(JSON.stringify({
+                call_id: callId,
+                title: 'Rendering',
+                cmd: 'product demo'
+            }));
+        }
+        var block = toolBlocks[callId];
+        if (!block) return;
+        var row = document.createElement('div');
+        row.className = 'chat-tool-line';
+        row.textContent = line;
+        block.body.appendChild(row);
+        block.lines.push(line);
+        // Reveal the chevron now that there's something to expand.
+        block.el.classList.add('has-logs');
+        block.body.scrollTop = block.body.scrollHeight;
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.completeToolBlock = function (callId, ok, summary) {
+        var block = toolBlocks[callId];
+        if (block && block.el) {
+            if (!ok) {
+                // Failed tool calls are transient noise — the agent retries and
+                // usually succeeds. Drop them so only successful steps remain.
+                if (block.el.parentNode) block.el.remove();
+                delete toolBlocks[callId];
+            } else {
+                block.el.classList.remove('running');
+                block.el.classList.add('done');
+
+                var iconEl = block.header.querySelector('.chat-tool-icon');
+                if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
+
+                // Header is just the tick + heading; the summary/detail and the
+                // chevron (unless logs streamed) are hidden via CSS.
+                setToolBlockExpanded(block, false);
+            }
+        }
+        // Unknown call_id: nothing to stop — fall through so reasoning
+        // bookkeeping below still runs.
+
+        // Re-enter "thinking" only once the LAST running tool has finished.
+        // With N parallel tools this fires the single reasoning row exactly
+        // once instead of once per completion.
+        if (runningToolCount() === 0) {
+            ensureReasoningStep();
+        }
         messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
@@ -464,30 +583,39 @@
             activityContainer.className = 'chat-activity-log';
             activityContainer.setAttribute('aria-live', 'polite');
             messagesEl.appendChild(activityContainer);
-            addReasoningStep();
+            currentReasoningStep = null; // fresh turn
+            ensureReasoningStep();
             messagesEl.scrollTop = messagesEl.scrollHeight;
         } else {
             if (glowWrap) glowWrap.classList.remove('glow-active');
-            // Finalize activity log: remove trailing reasoning step
-            if (activityContainer && activitySteps.length > 0) {
-                var last = activitySteps[activitySteps.length - 1];
-                if (last.getAttribute('data-type') === 'reasoning') {
-                    last.remove();
-                    activitySteps.pop();
-                }
-            }
+            // Finalize activity log: drop the live reasoning placeholder.
+            clearReasoningStep();
             // Complete any remaining running steps
             for (var i = 0; i < activitySteps.length; i++) {
                 if (activitySteps[i].classList.contains('running')) {
                     completeActivityStep(activitySteps[i]);
                 }
             }
-            // Remove empty activity container
-            if (activityContainer && activitySteps.length === 0) {
+            // Close any tool blocks left running (e.g. on cancel/error)
+            Object.keys(toolBlocks).forEach(function (cid) {
+                var block = toolBlocks[cid];
+                if (block && block.el && block.el.classList.contains('running')) {
+                    block.el.classList.remove('running');
+                    block.el.classList.add('done');
+                    var iconEl = block.header.querySelector('.chat-tool-icon');
+                    if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
+                    setToolBlockExpanded(block, false);
+                }
+            });
+            // Remove empty activity container only if no tool blocks were rendered.
+            var hasToolBlocks = activityContainer && activityContainer.querySelector('.chat-tool-block');
+            if (activityContainer && activitySteps.length === 0 && !hasToolBlocks) {
                 activityContainer.remove();
             }
             activityContainer = null;
             activitySteps = [];
+            toolBlocks = {};
+            currentReasoningStep = null;
             // Calculate thought time
             if (processingStartTime) {
                 var elapsed = Math.round((Date.now() - processingStartTime) / 1000);
@@ -752,11 +880,18 @@
     window.updateCreditsBalance = function (balance) {
         var badge = document.getElementById('chat-credits-badge');
         if (!badge) return;
-        if (balance === null || balance === undefined || balance < 0) {
+        if (balance === null || balance === undefined) {
             badge.style.display = 'none';
             return;
         }
         badge.style.display = 'inline-flex';
+        if (balance < 0) {
+            badge.textContent = '…';
+            badge.style.background = 'rgba(124,111,247,0.08)';
+            badge.style.color = 'rgba(124,111,247,0.65)';
+            badge.style.borderColor = 'rgba(124,111,247,0.15)';
+            return;
+        }
         badge.textContent = balance + ' credits';
         if (balance === 0) {
             badge.style.background = 'rgba(239,68,68,0.12)';
@@ -854,19 +989,11 @@
         if (!text) return;
         exitIdle();
         closeCommandPalette();
-        var ctxJson = attachedContext ? JSON.stringify(attachedContext) : '';
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '', ctxJson);
+            bridge.sendMessage(text, modelSelect.value || '');
             inputEl.value = '';
             adjustTextareaHeight();
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
-            // Note: Python's _handle_web_send_message will fire setProcessing(true)
-            // *after* the user message is appended, so the "Reasoning" row lines up
-            // beneath the user bubble instead of above it.
         });
     }
 
@@ -901,30 +1028,6 @@
     }
 
     sendBtn.addEventListener('click', sendMessage);
-
-    // Attach single clip: enter pick mode → user clicks clip on timeline
-    if (attachClipBtn) {
-        attachClipBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
-
-    // Attach two clips for transition
-    if (transitionClipsBtn) {
-        transitionClipsBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
 
     cancelBtn.addEventListener('click', cancelRequest);
     clearBtn.addEventListener('click', clearChat);
@@ -979,24 +1082,6 @@
         adjustTextareaHeight();
         maybeUpdateCommandPaletteFromValue(val);
         if (val.trim().length > 0) hideOverlay();
-        // Auto-detect typed @mentions and convert them to tags
-        if (val.includes('@transition_clips') || val.includes('@transition')) {
-            inputEl.value = val.replace(/@transition_clips?/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-        } else if (val.includes('@selected_clip') || val.includes('@clip')) {
-            inputEl.value = val.replace(/@selected_clip\b/g, '').replace(/@clip\b/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-        }
     });
 
     // Close command palette on outside click (but keep model menu behavior intact)
@@ -1033,7 +1118,10 @@
             typingEl = null;
             activityContainer = null;
             activitySteps = [];
-            if (inputOverlay) inputOverlay.classList.add('hidden');
+            toolBlocks = {};
+            overlayVisible = true;
+            if (inputOverlay) inputOverlay.classList.remove('hidden');
+            typingIndex = 0;
             lastRunTimestamp = null;
             lastThoughtSec = null;
             processingStartTime = null;
@@ -1041,11 +1129,6 @@
                 preambleStatus.classList.remove('visible');
                 preambleStatus.innerHTML = '';
             }
-            // Reset tag state
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
             updateIdleState();
         };
     })(window.clearMessages);

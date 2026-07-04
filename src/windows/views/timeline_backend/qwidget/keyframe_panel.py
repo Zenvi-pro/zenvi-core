@@ -194,7 +194,8 @@ class KeyframePanelMixin:
                     )
                 )
 
-        return (tuple(selection_signature), enabled_sorted)
+        data_version = getattr(get_app().updates, "data_version", 0)
+        return (tuple(selection_signature), enabled_sorted, data_version)
 
     def _panel_lane_padding(self):
         row_height = float(self.keyframe_panel_row_height or 0.0)
@@ -1637,6 +1638,7 @@ class KeyframePanelMixin:
         if item_type == "clip":
             clip = Clip.get(id=item_id)
             data = clip.data if clip and isinstance(clip.data, dict) else {}
+            data = self._apply_clip_override_fields(data, item_id)
             position = self._panel_float(data.get("position"), 0.0)
             clip_start = self._panel_float(data.get("start"), 0.0)
             clip_end = self._panel_float(data.get("end"), clip_start)

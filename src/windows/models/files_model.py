@@ -56,20 +56,21 @@ import openshot
 class BackendTaggingWorker(QThread):
     """Background worker that calls the zenvi-backend tagging API."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
+    progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
+    intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
     def __init__(self, file_data, project_id="", parent=None):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
-        self._session = None  # requests.Session, stored so we can close() it to interrupt
 
     # Hard limit: clips longer than 30 minutes are not tagged or indexed.
     _MAX_TAGGING_SECONDS = 30 * 60
 
     def run(self):
         import os as _os
-        import requests
-        self._session = requests.Session()
+        from concurrent.futures import ThreadPoolExecutor
+
         client = get_backend_client()
         metadata = client._empty_ai_metadata()
         error = None
@@ -93,61 +94,144 @@ class BackendTaggingWorker(QThread):
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                metadata = client.tag_video(file_path, file_id=file_id, session=self._session)
+                filename = _os.path.basename(file_path)
+                index_name = (
+                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
+                )
+                indexing_configured = client.is_indexing_configured()
 
-                # TwelveLabs indexing — run synchronously so we can capture the
-                # index_id / video_id and store them in ai_metadata.  This worker
-                # already runs in a background QThread, so blocking here won't
-                # freeze the UI.
-                if client.is_indexing_configured():
+                from classes.frame_extractor import extract_tagging_frames
+
+                run_indexing = False
+                if indexing_configured:
                     try:
-                        filename = _os.path.basename(file_path)
-                        # Use per-project index name so different projects
-                        # don't mix their clips in the same TwelveLabs index.
-                        index_name = f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                        idx_result = client.index_video(
-                            file_path, index_name,
-                            filename=filename, async_mode=False,
+                        from classes.credits_client import check_operation
+
+                        _, balance, blocked = check_operation(
+                            "indexing_per_minute",
+                            "video indexing",
+                            duration_seconds=duration,
                         )
-                        if isinstance(idx_result, dict) and idx_result.get("index_id"):
+                        if blocked:
                             metadata["twelvelabs"] = {
-                                "status": idx_result.get("status", "ready"),
-                                "index_id": idx_result["index_id"],
-                                "video_id": idx_result.get("video_id", ""),
+                                "status": "skipped",
+                                "error": blocked,
                                 "index_name": index_name,
                             }
-                            log.info(
-                                "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
-                                index_name, idx_result.get("index_id"), idx_result.get("video_id"),
-                            )
-                        elif isinstance(idx_result, dict) and idx_result.get("error"):
-                            log.warning("TwelveLabs indexing returned error: %s", idx_result["error"])
-                            metadata["twelvelabs"] = {
-                                "status": "failed",
-                                "error": idx_result["error"],
-                                "index_name": index_name,
-                            }
-                    except Exception as idx_exc:
-                        log.warning(f"TwelveLabs indexing failed: {idx_exc}")
+                        else:
+                            run_indexing = True
+                    except Exception as cred_exc:
+                        log.warning("Indexing credits check failed: %s", cred_exc)
                         metadata["twelvelabs"] = {
                             "status": "failed",
-                            "error": str(idx_exc),
+                            "error": str(cred_exc),
+                            "index_name": index_name,
                         }
+
+                def _local_extract_frames():
+                    return extract_tagging_frames(file_path, duration)
+
+                def _tag_frames(frames):
+                    s = client._new_http_session()
+                    return client.tag_video_frames(
+                        file_id, duration, frames, filename=filename, session=s,
+                    )
+
+                def _direct_index():
+                    def _progress_cb(phase, percent):
+                        self.progress.emit(file_id, phase, percent)
+
+                    s = client._new_http_session()
+                    return client.start_direct_indexing_job(
+                        file_path,
+                        index_name,
+                        file_id=file_id,
+                        filename=filename,
+                        session=s,
+                        progress_callback=_progress_cb,
+                    )
+
+                self.progress.emit(file_id, "extracting", -1)
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    frames_future = pool.submit(_local_extract_frames)
+                    index_future = pool.submit(_direct_index) if run_indexing else None
+
+                    frames, frame_err = frames_future.result()
+                    if frame_err:
+                        metadata["error"] = frame_err
+                    else:
+                        self.progress.emit(file_id, "tagging", -1)
+                        metadata = _tag_frames(frames)
+                        if run_indexing and metadata.get("analyzed"):
+                            partial = dict(metadata)
+                            partial["twelvelabs"] = {
+                                "status": "indexing",
+                                "index_name": index_name,
+                            }
+                            self.intermediate_save.emit(file_id, partial)
+
+                    if index_future is not None:
+                        try:
+                            idx_result = index_future.result()
+                            if isinstance(idx_result, dict) and idx_result.get("index_id"):
+                                from classes.credits_client import charge_operation_on_success
+                                charge_operation_on_success(
+                                    True,
+                                    "indexing_per_minute",
+                                    provider="twelvelabs",
+                                    note=f"import {file_id}",
+                                    duration_seconds=duration,
+                                )
+                                metadata["twelvelabs"] = {
+                                    "status": idx_result.get("status", "ready"),
+                                    "index_id": idx_result["index_id"],
+                                    "video_id": idx_result.get("video_id", ""),
+                                    "index_name": index_name,
+                                }
+                                log.info(
+                                    "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
+                                    index_name,
+                                    idx_result.get("index_id"),
+                                    idx_result.get("video_id"),
+                                )
+                            elif isinstance(idx_result, dict) and idx_result.get("error"):
+                                log.warning(
+                                    "TwelveLabs indexing returned error: %s",
+                                    idx_result["error"],
+                                )
+                                metadata["twelvelabs"] = {
+                                    "status": "failed",
+                                    "error": idx_result["error"],
+                                    "index_name": index_name,
+                                }
+                        except Exception as idx_exc:
+                            log.warning("TwelveLabs indexing failed: %s", idx_exc)
+                            metadata["twelvelabs"] = {
+                                "status": "failed",
+                                "error": str(idx_exc),
+                                "index_name": index_name,
+                            }
+
+                if metadata.get("error"):
+                    log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
+                elif not metadata.get("analyzed"):
+                    log.warning("Tagging did not complete for %s", file_path)
+                else:
+                    self.progress.emit(file_id, "done", 100)
         except Exception as exc:
             error = exc
             log.error(f"Backend tagging worker failed: {exc}")
-        finally:
-            self._session = None
         self.completed.emit(self.file_data, metadata, error)
 
     def interrupt(self):
         """Close the active HTTP session to unblock any pending request."""
-        s = self._session
-        if s is not None:
-            try:
-                s.close()
-            except Exception:
-                pass
+        try:
+            client = get_backend_client()
+            if client._session is not None:
+                client._session.close()
+                client._session = None
+        except Exception:
+            pass
 
 
 class FileFilterProxyModel(QSortFilterProxyModel):
@@ -212,6 +296,7 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
+    taggingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -387,11 +472,40 @@ class FilesModel(QObject, updates.UpdateInterface):
         """Attach AI metadata to a file object (does not save)."""
         if not ai_metadata or not isinstance(ai_metadata, dict):
             return
+        from classes.ai_metadata_utils import is_ai_metadata_usable
+
+        # Don't let a failed / empty tagging result wipe out previously-good
+        # analysis. Keep the usable content; only record the new error and any
+        # fresh indexing status.
+        prev = file_obj.data.get("ai_metadata")
+        if (not is_ai_metadata_usable(ai_metadata)
+                and isinstance(prev, dict) and is_ai_metadata_usable(prev)):
+            merged = dict(prev)
+            if ai_metadata.get("error"):
+                merged["error"] = ai_metadata["error"]
+            if ai_metadata.get("twelvelabs"):
+                merged["twelvelabs"] = ai_metadata["twelvelabs"]
+            file_obj.data["ai_metadata"] = merged
+            return
+
         file_obj.data["ai_metadata"] = ai_metadata
         tags = ai_metadata.get("tags", {}) if isinstance(ai_metadata, dict) else {}
         top_objects = tags.get("objects", []) if isinstance(tags, dict) else []
         if top_objects and not file_obj.data.get("tags"):
             file_obj.data["tags"] = ", ".join(top_objects[:5])
+
+    def _set_tagging_progress(self, file_id, phase, percent):
+        self._tagging_progress[str(file_id)] = {"phase": phase, "percent": percent}
+        self.taggingProgress.emit(str(file_id), phase, percent)
+
+    def is_file_tagging(self, file_id):
+        fid = str(file_id or "")
+        return any(
+            str(w.file_data.get("id", "")) == fid for w in self._active_taggers
+        )
+
+    def get_tagging_progress(self, file_id):
+        return self._tagging_progress.get(str(file_id or ""))
 
     def _tag_file_async(self, file_id):
         """Fire-and-forget background AI tagging for an already-saved file."""
@@ -410,12 +524,30 @@ class FilesModel(QObject, updates.UpdateInterface):
             pass
         worker = BackendTaggingWorker(dict(file_obj.data), project_id=project_id)
         self._active_taggers.append(worker)
+        self._set_tagging_progress(file_id, "extracting", -1)
 
         def _on_finished():
             try:
                 self._active_taggers.remove(worker)
             except ValueError:
                 pass
+            self._tagging_progress.pop(str(file_id), None)
+
+        def _on_progress(fid, phase, percent):
+            self._set_tagging_progress(fid, phase, percent)
+
+        def _on_intermediate(fid, metadata):
+            try:
+                if not metadata or not isinstance(metadata, dict):
+                    return
+                f = _File.get(id=fid)
+                if not f:
+                    return
+                self._apply_ai_metadata(f, metadata)
+                f.save()
+                get_app().window.FileUpdated.emit(str(fid))
+            except Exception as exc:
+                log.warning(f"Failed to apply intermediate tagging result: {exc}")
 
         def _on_complete(_file_data, metadata, error):
             try:
@@ -429,9 +561,12 @@ class FilesModel(QObject, updates.UpdateInterface):
                     return
                 self._apply_ai_metadata(f, metadata)
                 f.save()
+                get_app().window.FileUpdated.emit(str(file_id))
             except Exception as exc:
                 log.warning(f"Failed to apply background tagging result: {exc}")
 
+        worker.progress.connect(_on_progress)
+        worker.intermediate_save.connect(_on_intermediate)
         worker.completed.connect(_on_complete)
         worker.finished.connect(_on_finished)
         worker.start()
@@ -812,6 +947,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
         self._active_taggers = []  # strong refs to keep QThreads alive until finished
+        self._tagging_progress = {}
 
         # Stop any running tagging threads cleanly when the app quits
         try:

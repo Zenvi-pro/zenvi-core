@@ -56,12 +56,27 @@ class _DownloadWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
+            from classes.credits_client import charge_operation_on_success, check_operation
+
+            _, _, blocked = check_operation("stock_add", "stock media download")
+            if blocked:
+                self.finished.emit(self._video_id, "", blocked)
+                return
+
             from classes.api_client import get_backend_client
             result = get_backend_client().pexels_download(
                 self._video_id, self._link, self._filename
             )
             local_path = result.get("local_path", "")
             error = result.get("error", "")
+            if not error and local_path:
+                charge_operation_on_success(
+                    True,
+                    "stock_add",
+                    "stock_add",
+                    provider="pexels",
+                    note=f"dock video {self._video_id}",
+                )
         except Exception as exc:
             local_path, error = "", str(exc)
         self.finished.emit(self._video_id, local_path, error)

@@ -69,6 +69,7 @@ from ..snap import SnapHelper
 from ..theme import DEFAULT_THEME, apply_theme as parse_theme
 from ..state import TimelineStateMachine
 from windows.views.menu import StyledContextMenu
+from classes.ai_metadata_utils import merge_basic_clip_props
 from classes.app import get_app
 from classes.query import Clip, Transition, File
 from classes.logger import log
@@ -724,6 +725,59 @@ class TimelineWidgetBase(QWidget):
 
     def get_html(self):
         """Placeholder due to webview compatibility"""
+
+    def _clip_override_fields(self, clip_id):
+        """Return pending drag/resize overrides for a clip, if any."""
+        overrides_map = getattr(self, "_pending_clip_overrides", None)
+        if not overrides_map or clip_id is None:
+            return {}
+        ov = overrides_map.get(clip_id)
+        return dict(ov) if isinstance(ov, dict) else {}
+
+    def _apply_clip_override_fields(self, clip_data, clip_id):
+        """Merge pending visual overrides into clip data (position/layer/timing)."""
+        if not isinstance(clip_data, dict):
+            return clip_data
+        ov = self._clip_override_fields(clip_id)
+        if not ov:
+            return clip_data
+        patch = {k: ov[k] for k in ("position", "layer", "start", "end") if k in ov}
+        if not patch:
+            return clip_data
+        return merge_basic_clip_props(clip_data, {**clip_data, **patch})
+
+    def _flush_pending_clip_overrides(self, clip_ids=None):
+        """Persist visual overrides before edits that read Clip.get() from the store."""
+        overrides_map = getattr(self, "_pending_clip_overrides", None)
+        if not overrides_map:
+            return
+        update_clip = getattr(self, "update_clip_data", None)
+        if not callable(update_clip):
+            overrides_map.clear()
+            return
+        if clip_ids is not None:
+            pending_ids = [cid for cid in clip_ids if cid in overrides_map]
+        else:
+            pending_ids = list(overrides_map.keys())
+        for cid in pending_ids:
+            ov = overrides_map.get(cid)
+            if not ov:
+                continue
+            clip = Clip.get(id=cid)
+            if not clip or not isinstance(clip.data, dict):
+                continue
+            merged = self._apply_clip_override_fields(clip.data, cid)
+            if merged is clip.data:
+                continue
+            update_clip(merged, only_basic_props=False, ignore_reader=True, ignore_refresh=True)
+        overrides_map.clear()
+
+    def _sync_timeline_geometry_after_edit(self):
+        """Clear stale visual overrides/caches after batch timeline mutations (e.g. slice)."""
+        getattr(self, "_pending_clip_overrides", {}).clear()
+        getattr(self, "_pending_transition_overrides", {}).clear()
+        self._panel_refresh_signature = None
+        self.changed(None)
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):

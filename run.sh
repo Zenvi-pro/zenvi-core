@@ -114,4 +114,11 @@ if [[ -n "${OPENSHOT_HEADLESS:-}" ]]; then
   export QT_QPA_PLATFORM=offscreen
 fi
 
+# For local testing: start with fresh cache each run.
+# This preserves projects/settings while removing cache artifacts.
+ZENVI_USER_DIR="${HOME}/.openshot_qt"
+for cache_dir in cache preview-cache thumbnail; do
+  rm -rf "${ZENVI_USER_DIR}/${cache_dir}"
+done
+
 exec .venv/bin/python3 src/launch.py "$@"

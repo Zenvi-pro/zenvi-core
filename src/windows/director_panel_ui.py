@@ -56,22 +56,13 @@ class DirectorPanelBridge(QObject):
         """Load available directors from backend API."""
         try:
             from classes.api_client import get_backend_client
-            client = get_backend_client()
-            try:
-                import requests
-                resp = requests.get(
-                    f"{client.base_url}/api/v1/directors",
-                    timeout=5,
-                )
-                if resp.status_code == 200:
-                    directors_data = resp.json().get("directors", [])
-                    self.directors = directors_data
-                    directors_json = json.dumps(directors_data)
-                    self.directorsLoaded.emit(directors_json)
-                    log.info(f"Loaded {len(directors_data)} directors from backend")
-                    return
-            except Exception as api_err:
-                log.warning(f"Backend directors API unavailable: {api_err}")
+            directors_data = get_backend_client().list_directors()
+            if directors_data:
+                self.directors = directors_data
+                directors_json = json.dumps(directors_data)
+                self.directorsLoaded.emit(directors_json)
+                log.info(f"Loaded {len(directors_data)} directors from backend")
+                return
 
             self._load_local_directors()
 

@@ -360,9 +360,12 @@ class UpdateManager:
     def dispatch_action(self, action):
         """ Distribute changes to all listeners (by calling their changed() method) """
 
-        # Every dispatched action reflects a project mutation; bump the version
-        self.data_version += 1
-
+        # NOTE: data_version is intentionally NOT bumped here. It is bumped by the
+        # authoritative project store (ProjectDataStore.changed) immediately AFTER it
+        # commits the mutation to project data. Bumping before the data is written would
+        # let earlier listeners (or worker threads sharing the QueryObject cache) snapshot
+        # stale data under the new version, causing a one-update-behind ("previous drag")
+        # desync in downstream consumers such as the timeline overview/zoom slider.
         try:
             # Loop through all listeners
             for listener in self.updateListeners:
@@ -372,6 +375,14 @@ class UpdateManager:
         except Exception as ex:
             log.error("Couldn't apply '{}' to update listener: {}\n{}".format(action.type, listener, ex))
         self.update_watchers()
+
+    def commit_data_version(self):
+        """ Invalidate cached query objects by bumping the project data version.
+
+        Called by the authoritative project store immediately AFTER it writes a
+        mutation to project data, so any listener/thread that reads project data
+        afterwards observes the committed state (never a stale snapshot). """
+        self.data_version += 1
 
     # Perform load action (loading all project data), clearing history for taking a new path
     def load(self, values, reset_history=True):

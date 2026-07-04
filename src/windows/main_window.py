@@ -67,7 +67,6 @@ from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
 from classes.title_bar import HiddenTitleBar
-from classes.version import get_current_Version
 from themes.manager import ThemeName
 from windows.models.effects_model import EffectsModel
 from windows.models.emoji_model import EmojisModel
@@ -117,6 +116,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     MaxSizeChanged = pyqtSignal(object)
     InsertKeyframe = pyqtSignal()
     OpenProjectSignal = pyqtSignal(str)
+    # Emitted with the new project file path (or "" for an unsaved project)
+    # whenever the user opens, creates, or save-as's a project.  The AI chat
+    # dock listens to this so each project gets its own chat sessions.
+    projectChanged = pyqtSignal(str)
     ThumbnailUpdated = pyqtSignal(str, int)
     FileUpdated = pyqtSignal(str)
     CaptionTextUpdated = pyqtSignal(str, object)
@@ -126,6 +129,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     TimelineResize = pyqtSignal()  # Timeline length changed signal from timeline
     TimelineScroll = pyqtSignal(float)   # Signal to force scroll timeline to specific point
     TimelineCenter = pyqtSignal()        # Signal to force center scroll on playhead
+    TimelineDragPreview = pyqtSignal(object)  # Live clip-drag overrides for the overview (or None to clear)
     SelectionAdded = pyqtSignal(str, str, bool)  # Signal to add a selection
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
@@ -158,7 +162,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 event.accept()
             elif ret == QMessageBox.Cancel:
                 # Show tutorial again, if any
-                self.tutorial_manager.re_show_dialog()
+                if self.tutorial_manager:
+                    self.tutorial_manager.re_show_dialog()
                 # User canceled prompt - don't quit
                 event.ignore()
                 return
@@ -338,6 +343,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.refreshFilesSignal.emit()
         log.info("New Project created.")
 
+        # Notify listeners that the active project changed.
+        try:
+            self.projectChanged.emit("")
+        except Exception:
+            pass
+
         # Set Window title
         self.SetWindowTitle()
 
@@ -479,6 +490,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             app = get_app()
             _ = app._tr  # Get translation function
 
+            previous_filepath = getattr(app.project, "current_filepath", None) or ""
+
             try:
                 # Update history in project data
                 s = app.get_settings()
@@ -497,6 +510,15 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self.load_recent_menu()
 
                 log.info("Saved project %s", file_path)
+
+                # Notify listeners if Save As (or first save of an Untitled
+                # project) actually changed the file path.  Plain Save into
+                # the same file is a no-op for project-scoped consumers.
+                try:
+                    if (file_path or "") != previous_filepath:
+                        self.projectChanged.emit(file_path or "")
+                except Exception:
+                    pass
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
@@ -637,6 +659,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self.load_recent_menu()
 
                 log.info("Loaded project {}".format(file_path))
+
+                # Notify listeners (AI chat dock, etc.) so per-project state
+                # can re-bind to the freshly loaded project.
+                try:
+                    self.projectChanged.emit(file_path or "")
+                except Exception:
+                    pass
             else:
                 log.info("File not found at {}".format(file_path))
                 self.statusBar.showMessage(
@@ -1080,7 +1109,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionUpdate_trigger(self, checked=True):
-        url = "https://zenvi.org/download/"
+        url = "https://zenvi.pro/download"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -2327,7 +2356,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Files
         if app.context_menu_object == "files":
             s.set("file_view", "details")
-            self.filesListView.hide()
+            self.stockSearchView.hide()
             self.filesView = self.filesTreeView
             self.filesView.show()
 
@@ -2357,7 +2386,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             s.set("file_view", "thumbnail")
             self.filesTreeView.hide()
             self.filesView = self.filesListView
-            self.filesView.show()
+            self.stockSearchView.show()
+            self.filesListView.show()
 
         # Transitions
         elif app.context_menu_object == "transitions":
@@ -2771,14 +2801,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Notify UI that selection has been potentially changed
         self.SelectionChanged.emit()
 
-        # Cache last clip selection for AI tools/UI that may query selection after focus changes.
-        try:
-            clip_ids = self.selected_clips
-            if clip_ids:
-                self.ai_last_selected_clips = list(clip_ids)
-        except Exception:
-            pass
-
         # Clear caption editor (if nothing is selected)
         get_app().window.CaptionTextLoaded.emit("", None)
 
@@ -3090,10 +3112,30 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesActionGroup.addAction(self.actionFilesShowAudio)
         self.filesActionGroup.addAction(self.actionFilesShowImage)
         self.actionFilesShowAll.setChecked(True)
-        # Keep filesFilter widget alive (referenced by FilesListView) but don't show it
+        # Search bar pinned to the top of the Files panel. Typing filters the
+        # Project Files list live (by name/tag, wired in FilesListView) and, after a
+        # short debounce, searches stock footage + music (see _on_files_search).
+        self.filesToolbar.setMovable(False)
+        self.filesToolbar.setFloatable(False)
+        self.filesToolbar.setStyleSheet(
+            "QToolBar { border: none; background: transparent; padding: 4px 2px; }")
         self.filesFilter = QLineEdit()
         self.filesFilter.setObjectName("filesFilter")
-        # filesToolbar intentionally NOT inserted into tabFiles layout
+        self.filesFilter.setPlaceholderText(_("Search files, footage & music…"))
+        self.filesFilter.setClearButtonEnabled(True)
+        self.filesFilter.setStyleSheet(
+            "QLineEdit#filesFilter { background: #1a1a1a; color: #d4d4d4;"
+            " border: 1px solid rgba(255,255,255,0.09); border-radius: 15px;"
+            " padding: 7px 14px; font-size: 12px; }"
+            "QLineEdit#filesFilter:focus { border: 1px solid #4d9cf6; }")
+        self.filesToolbar.addWidget(self.filesFilter)
+        self.tabFiles.layout().insertWidget(0, self.filesToolbar)
+        # Debounce stock searches so we don't hit the network on every keystroke.
+        self._stock_search_timer = QTimer(self)
+        self._stock_search_timer.setSingleShot(True)
+        self._stock_search_timer.timeout.connect(self._on_files_search)
+        self.filesFilter.returnPressed.connect(self._on_files_search)
+        self.filesFilter.textChanged.connect(self._on_files_filter_changed)
 
         # Add transitions toolbar
         self.transitionsToolbar = QToolBar("Transitions Toolbar")
@@ -3206,6 +3248,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         result = login_dlg.exec_()
         if result == LoginWindow.Accepted:
             self.show()
+            info.schedule_application_icon(self)
         else:
             self.close()
 
@@ -3342,6 +3385,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def showEvent(self, event):
         """ Have any child windows follow main-window state """
         QMainWindow.showEvent(self, event)
+        if not getattr(self, "_zenvi_icon_on_show", False):
+            info.schedule_application_icon(self)
+            self._zenvi_icon_on_show = True
         for child in self.getDocks():
             if child.isFloating() and child.isEnabled():
                 child.raise_()
@@ -3454,16 +3500,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
+
+        # Unified media browser: the project-files card view (filesListView) is
+        # embedded together with stock footage + music in a single scroll area, so
+        # everything scrolls as one. Details view (filesTreeView) stays a separate
+        # widget, shown only in details mode.
+        from windows.views.stock_search_view import StockSearchView
+        self.stockSearchView = StockSearchView(self)
+        self.stockSearchView.set_files_view(self.filesListView)
         self.tabFiles.layout().insertWidget(-1, self.filesTreeView)
-        self.tabFiles.layout().insertWidget(-1, self.filesListView)
+        self.tabFiles.layout().insertWidget(-1, self.stockSearchView)
+
         if s.get("file_view") == "details":
             self.filesView = self.filesTreeView
-            self.filesListView.hide()
+            self.stockSearchView.hide()
+            self.filesTreeView.show()
         else:
             self.filesView = self.filesListView
             self.filesTreeView.hide()
-        # Show our currently-enabled project files view
-        self.filesView.show()
+            self.stockSearchView.show()
         self.filesView.setFocus()
 
         # Setup transitions tree and list views
@@ -3505,6 +3560,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.emojis_model.update_model()
         self.emojiListView = EmojisListView(self.emojis_model)
         self.tabEmojis.layout().addWidget(self.emojiListView)
+
+    def _on_files_search(self):
+        """Run the stock footage + music search for the current query."""
+        if not hasattr(self, "stockSearchView"):
+            return
+        text = self.filesFilter.text().strip()
+        if len(text) >= 2:
+            self.stockSearchView.run_search(text)
+        else:
+            self.stockSearchView.clear_stock()
+
+    def _on_files_filter_changed(self, text):
+        """Live local filtering is handled by FilesListView; here we debounce the
+        stock search so it fires as the user types (not only on Enter)."""
+        if not hasattr(self, "stockSearchView"):
+            return
+        if len(text.strip()) >= 2:
+            self._stock_search_timer.start(400)
+        else:
+            self._stock_search_timer.stop()
+            self.stockSearchView.clear_stock()
 
     def actionInsertKeyframe(self):
         log.debug("actionInsertKeyframe")
@@ -3901,16 +3977,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
             elif theme and theme.name == ThemeName.COSMIC.value:
                 # handle COSMIC theme dock widgets
-                _nav_docks = {"dockFiles", "dockTransitions", "dockEffects", "dockEmojis"}
                 if dock_widget.isFloating():
                     # Use standard system title bar for floating docks
                     dock_widget.setTitleBarWidget(None)
-                elif dock_widget.objectName() in _nav_docks:
-                    # Nav docks: compact title bar with float + close buttons, no title text
-                    dock_widget.setTitleBarWidget(HiddenTitleBar(dock_widget, show_buttons=True))
                 else:
-                    # All other docks: completely suppress the title bar (no space, no buttons)
-                    dock_widget.setTitleBarWidget(QWidget())
+                    # Keep mandatory float/close actions visible for docked widgets.
+                    dock_widget.setTitleBarWidget(HiddenTitleBar(dock_widget, show_buttons=True))
 
             else:
                 # for ALL other themes, regardless of floating or tabbed
@@ -3998,13 +4070,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Init UI
         ui_util.init_ui(self)
 
-        # main-window.ui sets windowIcon to :/openshot.svg — override with Zenvi branding for taskbar/title.
-        _ico_path = info.application_icon_ico_path()
-        if _ico_path:
-            _win_icon = QIcon(_ico_path)
-            if not _win_icon.isNull():
-                self.setWindowIcon(_win_icon)
-                QApplication.instance().setWindowIcon(_win_icon)
+        # main-window.ui still references legacy :/openshot.svg; apply file-based Zenvi icon.
+        info.apply_application_icon(self)
 
         # Hide the Help menu from the menu bar
         if hasattr(self, "menuHelp"):
@@ -4026,12 +4093,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)
 
-        # Get current version of OpenShot via HTTP
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
-        get_current_Version()
 
-        # Start background auto-updater (checks GitHub 15s after launch)
+        # Background auto-updater (stable version + optional download)
         self._auto_updater = AutoUpdater()
         self._auto_updater.start()
 
@@ -4078,6 +4143,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        # Re-bind chat sessions whenever the active project changes.
+        try:
+            self.projectChanged.connect(self.dockAIChat.reload_for_project)
+        except Exception as e:
+            log.warning("Failed to wire projectChanged → AI chat dock: %s", e)
 
         # Setup AI Media Panel (must be before addViewDocksMenu)
         from windows.ai_media_panel import AIMediaPanel
@@ -4321,8 +4391,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.toolBar.topLevelChanged.connect(
             functools.partial(self.freezeMainToolBar, None))
 
-        # Create tutorial manager
-        self.tutorial_manager = TutorialManager(self)
+        # Create tutorial manager (auto-start disabled; use F2 to launch manually)
+        self.tutorial_manager = TutorialManager(self, auto_start=False)
 
         # Apply theme
         theme_name = s.get("theme")
