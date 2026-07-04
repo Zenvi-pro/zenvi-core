@@ -45,8 +45,8 @@ def _project_file_path(project_file=None):
 def _project_folder(project_file=None):
     project_file = _project_file_path(project_file)
     if project_file:
-        return os.path.dirname(project_file)
-    return info.HOME_PATH
+        return os.path.normpath(os.path.expanduser(os.path.dirname(project_file)))
+    return os.path.normpath(os.path.expanduser(info.HOME_PATH))
 
 
 def _token_suffix(path_value):
@@ -62,6 +62,10 @@ def absolute_media_path(path_value, project_file=None):
         return ""
 
     normalized = path_value.replace("\\", "/")
+
+    # Repair legacy paths like ~/~/.openshot_qt/... from tilde + relative join.
+    while normalized.startswith("~/~/"):
+        normalized = normalized[2:]
 
     if normalized.startswith("@emojis"):
         suffix = _token_suffix(normalized)
@@ -85,6 +89,9 @@ def absolute_media_path(path_value, project_file=None):
         project_file = _project_file_path(project_file)
         assets_root = get_assets_path(project_file, create_paths=False)
         return os.path.normpath(os.path.join(assets_root, normalized.replace("thumbnail/", "thumbnail" + os.sep)))
+
+    if normalized.startswith("~/") or normalized == "~":
+        return os.path.normpath(os.path.expanduser(normalized))
 
     if os.path.isabs(normalized):
         return os.path.normpath(normalized)

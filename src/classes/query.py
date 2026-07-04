@@ -27,6 +27,7 @@
 import copy
 import json
 import os
+import threading
 
 import openshot
 
@@ -41,6 +42,10 @@ class QueryObject:
     # Cache detached project objects per update version
     _cache_version = None
     _cache = {}
+    # Guards _cache / _cache_version: the cache is shared across the main thread and
+    # worker threads (preview, thumbnails, AI tagging), so concurrent reads must not
+    # race on cache invalidation or population.
+    _cache_lock = threading.RLock()
 
     def __init__(self):
         """ Constructor """
@@ -94,27 +99,35 @@ class QueryObject:
         return None
 
     @classmethod
-    def _get_cached_child(cls, OBJECT_TYPE, child):
-        """Return a cached, detached copy of child, clearing cache when project changes"""
-        updates = get_app().updates
-        current_version = getattr(updates, "data_version", 0)
+    def _get_cached_child(cls, OBJECT_TYPE, child, current_version):
+        """Return a cached, detached copy of child, clearing cache when project changes.
 
-        if cls._cache_version != current_version:
-            cls._cache = {}
-            cls._cache_version = current_version
+        current_version must be read by the caller BEFORE it snapshots project
+        data. The project store writes a mutation and then bumps the version, so
+        a version captured before the data read can never key a stale snapshot to
+        the current version (the source of the "previous drag" desync).
+        """
+        with cls._cache_lock:
+            if cls._cache_version != current_version:
+                cls._cache = {}
+                cls._cache_version = current_version
 
-        object_cache = cls._cache.setdefault(OBJECT_TYPE.object_name, {})
-        child_id = child.get("id")
+            object_cache = cls._cache.setdefault(OBJECT_TYPE.object_name, {})
+            child_id = child.get("id")
 
-        # Cache deep copies by id; reuse within the same project version
-        cached = object_cache.get(child_id)
-        if cached is None:
-            cached = copy.deepcopy(child)
-            object_cache[child_id] = cached
-        return cached
+            # Cache deep copies by id; reuse within the same project version
+            cached = object_cache.get(child_id)
+            if cached is None:
+                cached = copy.deepcopy(child)
+                object_cache[child_id] = cached
+            return cached
 
     def filter(OBJECT_TYPE, **kwargs):
         """ Take any arguments given as filters, and find a list of matching objects """
+
+        # Capture the data version BEFORE reading project data so a concurrent
+        # write+version-bump cannot key a stale snapshot to the current version.
+        current_version = getattr(get_app().updates, "data_version", 0)
 
         # Get a list of all objects of this type
         parent = get_app().project.get(OBJECT_TYPE.object_key)
@@ -152,7 +165,7 @@ class QueryObject:
                 object = OBJECT_TYPE()
                 object.id = child["id"]
                 object.key = [OBJECT_TYPE.object_name, {"id": object.id}]
-                object.data = QueryObject._get_cached_child(OBJECT_TYPE, child)
+                object.data = QueryObject._get_cached_child(OBJECT_TYPE, child, current_version)
                 object.type = "update"
                 matching_objects.append(object)
 

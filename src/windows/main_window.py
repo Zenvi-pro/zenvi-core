@@ -129,6 +129,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     TimelineResize = pyqtSignal()  # Timeline length changed signal from timeline
     TimelineScroll = pyqtSignal(float)   # Signal to force scroll timeline to specific point
     TimelineCenter = pyqtSignal()        # Signal to force center scroll on playhead
+    TimelineDragPreview = pyqtSignal(object)  # Live clip-drag overrides for the overview (or None to clear)
     SelectionAdded = pyqtSignal(str, str, bool)  # Signal to add a selection
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
@@ -2797,14 +2798,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
 
         # Notify UI that selection has been potentially changed
         self.SelectionChanged.emit()
-
-        # Cache last clip selection for AI tools/UI that may query selection after focus changes.
-        try:
-            clip_ids = self.selected_clips
-            if clip_ids:
-                self.ai_last_selected_clips = list(clip_ids)
-        except Exception:
-            pass
 
         # Clear caption editor (if nothing is selected)
         get_app().window.CaptionTextLoaded.emit("", None)

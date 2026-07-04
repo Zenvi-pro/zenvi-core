@@ -212,35 +212,6 @@ class ZenviBackendClient:
             log.error("Multipart POST %s failed: %s", endpoint, exc)
             return {"error": str(exc)}
 
-    def _poll_tagging_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 5) -> Dict[str, Any]:
-        deadline = time.time() + max_wait
-        while time.time() < deadline:
-            try:
-                r = self.session.get(f"{self.api_url}/tags/job/{job_id}", timeout=15)
-                r.raise_for_status()
-                data = r.json()
-                status = data.get("status", "running")
-                if status == "done":
-                    result = data.get("result") or {}
-                    return result if isinstance(result, dict) else self._empty_ai_metadata()
-                if status == "failed":
-                    result = data.get("result") or {}
-                    meta = self._empty_ai_metadata()
-                    if isinstance(result, dict):
-                        meta.update(result)
-                    meta["error"] = (result or {}).get("error", "Tagging failed") if isinstance(result, dict) else "Tagging failed"
-                    return meta
-                if status == "not_found":
-                    meta = self._empty_ai_metadata()
-                    meta["error"] = f"Tagging job {job_id} not found"
-                    return meta
-            except Exception as exc:
-                log.warning("Tagging poll error (will retry): %s", exc)
-            time.sleep(poll_interval)
-        meta = self._empty_ai_metadata()
-        meta["error"] = f"Tagging job {job_id} timed out after {max_wait}s"
-        return meta
-
     @staticmethod
     def _download_url_to_temp(
         url: str,
@@ -598,7 +569,11 @@ class ZenviBackendClient:
     ) -> Dict[str, Any]:
         """Search for clips matching a query."""
         try:
-            payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+            effective_top_k = top_k
+            if page_limit and page_limit > effective_top_k:
+                effective_top_k = min(int(page_limit), 50)
+            effective_top_k = min(effective_top_k, 50)
+            payload: Dict[str, Any] = {"query": query, "top_k": effective_top_k}
             if index_id:
                 payload["index_id"] = index_id
             if video_id:
@@ -626,73 +601,116 @@ class ZenviBackendClient:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return s
 
-    def start_indexing_job(
-        self,
-        file_id: str,
-        index_name: str,
-        filename: str = "",
-        existing_index_id: Optional[str] = None,
-        session=None,
-    ) -> Dict[str, Any]:
-        """Start TwelveLabs indexing for a file already on the backend (/media/upload)."""
-        payload: Dict[str, Any] = {
-            "file_id": file_id,
-            "index_name": index_name,
-            "filename": filename or file_id,
-        }
-        if existing_index_id:
-            payload["existing_index_id"] = existing_index_id
-        try:
-            s = session or self.session
-            r = s.post(f"{self.api_url}/indexing", json=payload, timeout=30)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as exc:
-            log.error("Index job start failed: %s", exc)
-            return {"success": False, "error": str(exc), "message": str(exc)}
-
-        if data.get("error"):
-            return {"success": False, "error": data["error"], "message": data["error"]}
-        job_id = data.get("job_id")
-        if not job_id:
-            return {"success": False, "error": data.get("error", "Backend returned no job_id")}
-        return self._poll_indexing_job(job_id)
-
-    def index_video(
+    def start_direct_indexing_job(
         self,
         file_path: str,
         index_name: str,
-        filename: Optional[str] = None,
         file_id: str = "",
+        filename: str = "",
         existing_index_id: Optional[str] = None,
-        async_mode: bool = True,  # noqa: ARG002 — kept for callers
         session=None,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
     ) -> Dict[str, Any]:
-        """Index a video: upload once, then start job by file_id reference."""
+        """Index via presigned TwelveLabs upload (proxy encoded locally)."""
+        from classes.index_proxy import create_index_proxy
+        from classes.direct_index_upload import upload_file_via_presigned_urls
+
+        proxy_path, is_temp, proxy_size, proxy_err = create_index_proxy(file_path)
+        if proxy_err:
+            log.warning("Index proxy failed, using source file: %s", proxy_err)
+            proxy_path = file_path
+            is_temp = False
+            try:
+                proxy_size = os.path.getsize(file_path)
+            except OSError as exc:
+                return {"success": False, "error": str(exc)}
+
+        name = filename or os.path.basename(file_path) or file_id or "video.mp4"
         fid = file_id or uuid.uuid4().hex
-        name = filename or os.path.basename(file_path)
-        up = self.upload_media_file(
-            file_path,
-            file_id=fid,
-            filename=name,
-            session=session,
-        )
-        if not up.get("success"):
-            return {"success": False, "error": up.get("error", "Upload failed"), "message": up.get("error", "")}
+        s = session or self._new_http_session()
 
-        return self.start_indexing_job(
-            fid,
-            index_name,
-            filename=name,
-            existing_index_id=existing_index_id,
-            session=session,
-        )
+        try:
+            payload: Dict[str, Any] = {
+                "file_id": fid,
+                "index_name": index_name,
+                "filename": name,
+                "total_size": int(proxy_size),
+            }
+            if existing_index_id:
+                payload["existing_index_id"] = existing_index_id
 
-    def _poll_indexing_job(self, job_id: str, max_wait: int = 1800, poll_interval: int = 10) -> Dict[str, Any]:
+            r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
+            r.raise_for_status()
+            session_data = r.json()
+            if session_data.get("error"):
+                return {"success": False, "error": session_data["error"]}
+
+            job_id = session_data.get("job_id")
+            upload_id = session_data.get("upload_id")
+            chunk_size = int(session_data.get("chunk_size") or 0)
+            if not job_id or not upload_id or chunk_size <= 0:
+                return {"success": False, "error": "Invalid upload-session response"}
+
+            def _fetch_more(start: int, count: int):
+                rr = s.post(
+                    f"{self.api_url}/indexing/upload-session/{upload_id}/urls",
+                    json={"start": start, "count": count},
+                    timeout=30,
+                )
+                rr.raise_for_status()
+                return rr.json().get("presigned_urls") or []
+
+            def _on_chunk_uploaded(done: int, total: int):
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int(done * 100 / total))
+
+            parts, up_err = upload_file_via_presigned_urls(
+                proxy_path,
+                chunk_size=chunk_size,
+                presigned_urls=session_data.get("presigned_urls") or [],
+                fetch_more_urls=_fetch_more,
+                upload_headers=session_data.get("upload_headers") or {},
+                on_chunk_uploaded=_on_chunk_uploaded,
+            )
+            if up_err:
+                return {"success": False, "error": up_err}
+
+            cr = s.post(
+                f"{self.api_url}/indexing/upload-complete",
+                json={"job_id": job_id, "upload_id": upload_id, "parts": parts},
+                timeout=60,
+            )
+            cr.raise_for_status()
+            complete = cr.json()
+            if not complete.get("success"):
+                return {"success": False, "error": complete.get("error", "upload-complete failed")}
+
+            if progress_callback:
+                progress_callback("indexing", -1)
+            return self._poll_indexing_job(job_id, progress_callback=progress_callback)
+        except Exception as exc:
+            log.error("Direct indexing failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+        finally:
+            if is_temp and proxy_path:
+                try:
+                    os.unlink(proxy_path)
+                except OSError:
+                    pass
+
+    def _poll_indexing_job(
+        self,
+        job_id: str,
+        max_wait: int = 1800,
+        poll_interval: int = 10,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
         import time
         deadline = time.time() + max_wait
         while time.time() < deadline:
+            if progress_callback:
+                progress_callback("indexing", -1)
             try:
                 r = self.session.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()
@@ -714,11 +732,11 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
-    def generate_video(self, prompt: str, duration_seconds: int = 4, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt.
+    def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
+        """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
-        Supported kwargs: input_image_path, seed_video, strength, frame_images,
-                          model, width, height, input_video_url.
+        Supported kwargs: mode, frame_images_paths, seed_video_file_id,
+                          keep_original_sound, width, height, input_video_url.
         """
         try:
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
@@ -772,40 +790,6 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Tagging & Indexing (for files_model)
     # ------------------------------------------------------------------
-    def tag_video_by_file_id(
-        self,
-        file_id: str,
-        filename: str = "",
-        session=None,
-    ) -> Dict[str, Any]:
-        """Tag a video already on the backend (server-side frame extraction)."""
-        payload: Dict[str, Any] = {"file_id": file_id}
-        if filename:
-            payload["filename"] = filename
-        try:
-            s = session or self.session
-            r = s.post(
-                f"{self.api_url}/tags/analyze",
-                json=payload,
-                timeout=600,
-            )
-            r.raise_for_status()
-            data = r.json()
-            if data.get("error"):
-                meta = self._empty_ai_metadata()
-                meta["error"] = data["error"]
-                return meta
-            if data.get("analyzed"):
-                return data
-            meta = self._empty_ai_metadata()
-            meta["error"] = data.get("error", "Tagging did not complete")
-            return meta
-        except Exception as exc:
-            log.error("Tag by file_id failed: %s", exc)
-            meta = self._empty_ai_metadata()
-            meta["error"] = str(exc)
-            return meta
-
     def tag_video_frames(
         self,
         file_id: str,
@@ -852,28 +836,6 @@ class ZenviBackendClient:
             meta = self._empty_ai_metadata()
             meta["error"] = str(exc)
             return meta
-
-    def tag_video(self, video_path: str, file_id: str = "", session=None) -> Dict[str, Any]:
-        """Upload video to the backend and return AI metadata (sync or job poll)."""
-        data = self._post_media_multipart(
-            "/tags/analyze",
-            video_path,
-            file_id=file_id,
-            session=session,
-            timeout=600,
-        )
-        if data.get("error"):
-            meta = self._empty_ai_metadata()
-            meta["error"] = data["error"]
-            return meta
-        job_id = data.get("job_id")
-        if job_id:
-            return self._poll_tagging_job(job_id)
-        if data.get("analyzed"):
-            return data
-        meta = self._empty_ai_metadata()
-        meta["error"] = data.get("error", "Tagging did not complete")
-        return meta
 
     def is_indexing_configured(self) -> bool:
         """Check whether the backend has video indexing configured."""
@@ -949,35 +911,35 @@ class ZenviBackendClient:
         file_path: str,
         index_name: str = "zenvi-videos",
         existing_index_id: str = "",
+        force: bool = False,
         session=None,
     ) -> Dict[str, Any]:
-        """Re-index: upload video once, then POST JSON to /indexing/reindex."""
-        name = os.path.basename(file_path) if file_path else ""
-        up = self.upload_media_file(
+        """Re-index via direct TwelveLabs presigned upload."""
+        if isinstance(force, str):
+            force = force.strip().lower() in ("true", "1", "yes", "force")
+        if not force and not file_path:
+            return {"success": False, "error": "file_path is required"}
+
+        result = self.start_direct_indexing_job(
             file_path,
+            index_name,
             file_id=file_id,
-            filename=name,
+            filename=os.path.basename(file_path) if file_path else "",
+            existing_index_id=existing_index_id or None,
             session=session,
         )
-        if not up.get("success"):
-            return {"success": False, "error": up.get("error", "Upload failed")}
-
-        payload: Dict[str, Any] = {
+        if result.get("index_id"):
+            return {
+                "success": True,
+                "file_id": file_id,
+                "index_id": result.get("index_id"),
+                "video_id": result.get("video_id"),
+            }
+        return {
+            "success": False,
             "file_id": file_id,
-            "index_name": index_name,
-            "filename": name,
-            "force": True,
+            "error": result.get("error") or result.get("message") or "Re-index failed",
         }
-        if existing_index_id:
-            payload["existing_index_id"] = existing_index_id
-        try:
-            s = session or self.session
-            r = s.post(f"{self.api_url}/indexing/reindex", json=payload, timeout=600)
-            r.raise_for_status()
-            return r.json()
-        except Exception as exc:
-            log.error("Re-index failed: %s", exc)
-            return {"success": False, "error": str(exc)}
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
         """Download a Freesound preview MP3 from the CDN URL to the local machine."""

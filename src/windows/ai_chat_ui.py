@@ -177,20 +177,16 @@ def _plain_to_html(text: str) -> str:
     return "<p>" + html.escape(text).replace("\n", "<br/>") + "</p>"
 
 
-# Wrapper blocks that we prepend to the user's prompt before sending to the LLM
-# (editor snapshot, attached clip context, transition clips context). The backend
-# stores the augmented prompt verbatim, so we must strip them when rendering
-# restored history into the chat — otherwise they leak into the user's bubble.
+# Wrapper blocks prepended before sending to the LLM (editor snapshot + legacy clip context).
 _CONTEXT_BLOCK_RE = re.compile(
-    r"\[(Editor snapshot|Selected timeline clip context|Transition clips context)\]"
-    r".*?"
-    r"\[/\1\]\s*",
+    r"\[(?:Editor snapshot|Selected timeline clip context)\].*?"
+    r"\[/(?:Editor snapshot|Selected timeline clip context)\]\s*",
     re.DOTALL,
 )
 
 
 def _strip_context_blocks(text: str) -> str:
-    """Remove any [Editor snapshot] / [...clip context] wrapper blocks from text."""
+    """Remove [Editor snapshot] and legacy [Selected timeline clip context] blocks from text."""
     if not text:
         return text
     return _CONTEXT_BLOCK_RE.sub("", text).lstrip()
@@ -215,37 +211,6 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
 
 
 REQUEST_TIMEOUT_SECONDS = 120
-
-
-def _format_mmss(seconds: float) -> str:
-    try:
-        seconds = float(seconds)
-    except Exception:
-        seconds = 0.0
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    return f"{m}:{s:02d}"
-
-
-def _text_likely_needs_clip_context(text: str) -> bool:
-    t = (text or "").lower()
-    keywords = [
-        "this clip",
-        "selected clip",
-        "timeline clip",
-        "in this clip",
-        "within this clip",
-        "search",
-        "find",
-        "slice",
-        "split",
-        "cut",
-        "razor",
-        "yellow marker",
-        "where",
-        "when",
-    ]
-    return any(k in t for k in keywords)
 
 
 def _format_tool_command(tool_name: str, args: dict) -> str:
@@ -618,10 +583,10 @@ class ChatBridge(QObject):
         super().__init__(parent)
         self.window = window
 
-    @pyqtSlot(str, str, str)
-    def sendMessage(self, text: str, model_id: str, context_json: str = ""):
+    @pyqtSlot(str, str)
+    def sendMessage(self, text: str, model_id: str):
         if self.window:
-            self.window._handle_web_send_message(text.strip(), model_id or "", context_json)
+            self.window._handle_web_send_message(text.strip(), model_id or "")
 
     @pyqtSlot()
     def cancelRequest(self):
@@ -638,17 +603,6 @@ class ChatBridge(QObject):
         """Called from JS when QWebChannel is ready; push initial state."""
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
-
-    @pyqtSlot(str)
-    def requestClipPick(self, purpose: str):
-        """Enter clip-pick mode: the next timeline SelectionChanged fires chatSetPickResult in JS."""
-        if self.window:
-            self.window._start_clip_pick(purpose)
-
-    @pyqtSlot()
-    def cancelClipPick(self):
-        if self.window:
-            self.window._cancel_clip_pick()
 
     @pyqtSlot(str)
     def createSession(self, model_id: str):
@@ -686,8 +640,7 @@ class AIChatWindow(QDockWidget):
         self._chat_embed_backend = None  # set in _init_web_* ('webengine' | 'webkit')
         self._first_prompt_summary = None  # mirrors active session's first_prompt_summary
         self._chat_web_initial_sync_done = False
-        self._auto_attach_selected_clip_context = True
-        self._clip_pick_purpose = None   # None | 'selected_clip' | 'transition_a' | 'transition_b'
+        self._user_cancelled = False
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -904,9 +857,11 @@ class AIChatWindow(QDockWidget):
         try:
             new_project_path = (new_project_path or "").strip()
             prev_path = getattr(self, "_current_project_path", "") or ""
-            if self._project_key(new_project_path) == self._project_key(prev_path):
-                # Same bucket (e.g. saving an Untitled project under itself,
-                # or a no-op signal) — nothing to do.
+            same_bucket = self._project_key(new_project_path) == self._project_key(prev_path)
+            if same_bucket and new_project_path:
+                # Same saved project re-signaled — nothing to do.  An empty
+                # ``new_project_path`` (New Project / untitled) is allowed to
+                # fall through so the chat resets to a fresh session.
                 return
 
             # 1. Persist current sessions to the previous project's store.
@@ -1060,6 +1015,10 @@ class AIChatWindow(QDockWidget):
             pass
 
     def _load_chat_sessions_store(self, project_path: str = None) -> dict:
+        # Untitled / unsaved projects are ephemeral — never restore old chats
+        # (this also ignores any stale or pre-existing ``_default.json``).
+        if self._project_key(project_path) == "_default":
+            return {}
         try:
             self._migrate_legacy_chat_store()
             path = self._chat_sessions_store_path(project_path)
@@ -1072,6 +1031,9 @@ class AIChatWindow(QDockWidget):
             return {}
 
     def _save_chat_sessions_store(self, project_path: str = None) -> None:
+        # Untitled / unsaved projects are ephemeral — don't persist their chats.
+        if self._project_key(project_path) == "_default":
+            return
         try:
             path = self._chat_sessions_store_path(project_path)
             os.makedirs(self._chat_sessions_dir(), exist_ok=True)
@@ -1380,10 +1342,6 @@ class AIChatWindow(QDockWidget):
         layout.addLayout(input_h)
 
         btn_h = QHBoxLayout()
-        self.attach_btn = QPushButton("Attach Clip")
-        self.attach_btn.setObjectName("attachClipBtn")
-        self.attach_btn.setToolTip("Insert @selected_clip into your message")
-        self.attach_btn.clicked.connect(self._insert_selected_clip_token)
         self.send_btn = QPushButton("Send")
         self.send_btn.setObjectName("sendBtn")
         self.send_btn.clicked.connect(self.send_message)
@@ -1395,7 +1353,6 @@ class AIChatWindow(QDockWidget):
         self.clear_btn.setObjectName("clearBtn")
         self.clear_btn.clicked.connect(self.clear_chat)
         btn_h.addStretch()
-        btn_h.addWidget(self.attach_btn)
         btn_h.addWidget(self.send_btn)
         btn_h.addWidget(self.cancel_btn)
         btn_h.addWidget(self.clear_btn)
@@ -1405,85 +1362,6 @@ class AIChatWindow(QDockWidget):
         self._add_system_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
-
-    def _insert_selected_clip_token(self):
-        """Attach the currently selected timeline clip as context (widget UI only)."""
-        try:
-            if self._use_web_ui:
-                # Web UI handles this via the JS tag system.
-                return
-            if not self.msg_input:
-                return
-            cursor = self.msg_input.textCursor()
-            cursor.insertText("@selected_clip ")
-            self.msg_input.setTextCursor(cursor)
-            self.msg_input.setFocus()
-        except Exception:
-            pass
-
-    def _build_selected_clip_context(self) -> tuple[str, str]:
-        """Return (context_block, short_summary). Empty strings if no timeline clip is selected."""
-        try:
-            from classes.app import get_app
-            from classes.query import Clip, File
-
-            app = get_app()
-            win = getattr(app, "window", None)
-            selected_ids = getattr(win, "selected_clips", []) or []
-            if not selected_ids:
-                selected_ids = getattr(win, "ai_last_selected_clips", []) or []
-            if not selected_ids:
-                return "", ""
-            clip_obj = Clip.get(id=str(selected_ids[0]))
-            if not clip_obj:
-                return "", ""
-            data = clip_obj.data if isinstance(getattr(clip_obj, "data", None), dict) else {}
-            title = data.get("title") or data.get("label") or "Selected Clip"
-
-            clip_start = float(data.get("start", 0.0) or 0.0)
-            clip_end = float(data.get("end", 0.0) or 0.0)
-            position = float(data.get("position", 0.0) or 0.0)
-            # Keep context minimal (avoid leaking internal IDs into the prompt)
-
-            context = (
-                "[Selected timeline clip context]\n"
-                f"title: {title}\n"
-                f"source_window_seconds: {clip_start:.3f} to {clip_end:.3f}\n"
-                f"source_window_mmss: {_format_mmss(clip_start)} to {_format_mmss(clip_end)}\n"
-                f"timeline_position_seconds: {position:.3f}\n"
-                "[/Selected timeline clip context]"
-            )
-            summary = f"{title} ({_format_mmss(clip_start)}–{_format_mmss(clip_end)})"
-            return context, summary
-        except Exception:
-            return "", ""
-
-    def _augment_text_with_clip_context(self, text: str) -> tuple[str, str]:
-        """Return (augmented_text, attached_summary)."""
-        ctx, summary = self._build_selected_clip_context()
-        if not ctx:
-            try:
-                log.debug("AIChat: no selected clip context available")
-            except Exception:
-                pass
-            return text, ""
-
-        if "@selected_clip" in text or "@clip" in text:
-            augmented = text.replace("@selected_clip", ctx).replace("@clip", ctx)
-            try:
-                log.debug("AIChat: attached selected clip context via token: %s", summary)
-            except Exception:
-                pass
-            return augmented, summary
-
-        if self._auto_attach_selected_clip_context and _text_likely_needs_clip_context(text):
-            try:
-                log.debug("AIChat: auto-attached selected clip context: %s", summary)
-            except Exception:
-                pass
-            return f"{ctx}\n\n{text}", summary
-
-        return text, ""
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread)."""
@@ -1772,121 +1650,6 @@ class AIChatWindow(QDockWidget):
             self._push_tabs_to_js()
             self._save_chat_sessions_store()
 
-    def _start_clip_pick(self, purpose: str):
-        """Connect one-shot to SelectionChanged for the given pick purpose."""
-        self._clip_pick_purpose = purpose
-        try:
-            from classes.app import get_app
-            win = getattr(get_app(), "window", None)
-            if win:
-                win.SelectionChanged.connect(self._on_pick_selection_changed)
-        except Exception as exc:
-            log.debug("AIChat: _start_clip_pick connect error: %s", exc)
-
-    def _cancel_clip_pick(self):
-        self._clip_pick_purpose = None
-        try:
-            from classes.app import get_app
-            win = getattr(get_app(), "window", None)
-            if win:
-                try:
-                    win.SelectionChanged.disconnect(self._on_pick_selection_changed)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _on_pick_selection_changed(self):
-        """Called when the timeline selection changes while in pick mode."""
-        purpose = self._clip_pick_purpose
-        if not purpose:
-            return
-        try:
-            from classes.app import get_app
-            from classes.query import Clip
-            import json as _json
-            win = getattr(get_app(), "window", None)
-            if not win:
-                return
-            try:
-                win.SelectionChanged.disconnect(self._on_pick_selection_changed)
-            except Exception:
-                pass
-            selected_ids = list(getattr(win, "selected_clips", []) or [])
-            if not selected_ids:
-                return
-            clip_obj = Clip.get(id=str(selected_ids[0]))
-            if not clip_obj:
-                return
-            data = clip_obj.data if isinstance(getattr(clip_obj, "data", None), dict) else {}
-            title = data.get("title") or data.get("label") or "Clip"
-            result = {
-                "id": str(selected_ids[0]),
-                "title": title,
-                "start": float(data.get("start", 0.0) or 0.0),
-                "end": float(data.get("end", 0.0) or 0.0),
-            }
-            self._clip_pick_purpose = None
-            self._run_js(f"window.chatSetPickResult({_json.dumps(result)});")
-        except Exception as exc:
-            log.error("AIChat: _on_pick_selection_changed: %s", exc)
-
-    def _build_clip_context_from_data(self, data: dict) -> tuple[str, str]:
-        """Build a [Selected timeline clip context] block from a JS tag data dict."""
-        title = data.get("title", "Selected Clip")
-        clip_start = float(data.get("start", 0.0))
-        clip_end = float(data.get("end", 0.0))
-        context = (
-            "[Selected timeline clip context]\n"
-            f"title: {title}\n"
-            f"source_window_seconds: {clip_start:.3f} to {clip_end:.3f}\n"
-            f"source_window_mmss: {_format_mmss(clip_start)} to {_format_mmss(clip_end)}\n"
-            "[/Selected timeline clip context]"
-        )
-        summary = f"{title} ({_format_mmss(clip_start)}–{_format_mmss(clip_end)})"
-        return context, summary
-
-    def _build_transition_clip_context(self, data: dict) -> tuple[str, str]:
-        """Build context for generate_transition_clip_tool from a JS transition tag dict."""
-        clip_a = data.get("clipA") or {}
-        clip_b = data.get("clipB") or {}
-        a_id = clip_a.get("id", "")
-        b_id = clip_b.get("id", "")
-        a_title = clip_a.get("title", "Clip A")
-        b_title = clip_b.get("title", "Clip B")
-        context = (
-            "[Transition clips context]\n"
-            f"clip_a_id: {a_id}\n"
-            f"clip_a_title: {a_title}\n"
-            f"clip_b_id: {b_id}\n"
-            f"clip_b_title: {b_title}\n"
-            "Call generate_transition_clip_tool with the clip_a_id and clip_b_id values above.\n"
-            "[/Transition clips context]"
-        )
-        summary = f"Transition: {a_title} → {b_title}"
-        return context, summary
-
-    def _augment_text_with_context(self, text: str, context_json: str = "") -> tuple[str, str]:
-        """Augment text using the structured tag context (JS tags) or fall back to auto-attach."""
-        import json as _json
-        ctx_data: dict = {}
-        if context_json:
-            try:
-                ctx_data = _json.loads(context_json)
-            except Exception:
-                pass
-
-        ctx_type = ctx_data.get("type", "")
-        if ctx_type == "selected_clip":
-            ctx, summary = self._build_clip_context_from_data(ctx_data)
-            return f"{ctx}\n\n{text}", summary
-        if ctx_type == "transition_clips":
-            ctx, summary = self._build_transition_clip_context(ctx_data)
-            return f"{ctx}\n\n{text}", summary
-
-        # No structured tag — fall back to token-replacement / auto-attach behaviour
-        return self._augment_text_with_clip_context(text)
-
     def _clear_widget_tool_blocks(self):
         """Remove live tool blocks (widget mode) at the start of a new request."""
         if self._use_web_ui or not getattr(self, "_widget_tool_container", None):
@@ -1900,8 +1663,9 @@ class AIChatWindow(QDockWidget):
         if getattr(self, "_widget_tool_scroll", None):
             self._widget_tool_scroll.setVisible(False)
 
-    def _dispatch_user_message(self, text: str, model_id: str, context_json: str = ""):
+    def _dispatch_user_message(self, text: str, model_id: str):
         """Shared send pipeline for web and widget chat UIs."""
+        self._user_cancelled = False
         worker = self._active_session().get("worker")
         if worker is None:
             return
@@ -1910,15 +1674,7 @@ class AIChatWindow(QDockWidget):
         if self._try_local_command(text):
             return
         self._request_preamble_summary(text)
-        if context_json:
-            augmented_text, attached_summary = self._augment_text_with_context(
-                text, context_json
-            )
-        else:
-            augmented_text, attached_summary = self._augment_text_with_clip_context(text)
-        augmented_text = self._prepend_editor_snapshot(augmented_text)
-        if attached_summary:
-            self._add_system_msg(f"Context attached: {attached_summary}")
+        augmented_text = self._prepend_editor_snapshot(text)
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -1928,14 +1684,14 @@ class AIChatWindow(QDockWidget):
             Q_ARG(str, model_id or ""),
         )
 
-    def _handle_web_send_message(self, text: str, model_id: str, context_json: str = ""):
+    def _handle_web_send_message(self, text: str, model_id: str):
         """Handle send from CEP UI (same logic as send_message but with args)."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
         if not text:
             return
-        self._dispatch_user_message(text, model_id, context_json)
+        self._dispatch_user_message(text, model_id)
 
     def _stop_all_threads(self):
         """Cleanly stop all session worker threads. Safe to call more than once."""
@@ -2078,13 +1834,19 @@ class AIChatWindow(QDockWidget):
             self.msg_input.setFocus()
 
     def cancel_request(self):
-        """Stop waiting for the current request; UI can accept follow-up messages. Late replies still appear."""
+        """Stop the in-flight request and reset the chat UI."""
+        self._user_cancelled = True
+        try:
+            from classes.api_client import get_backend_client
+            get_backend_client().cancel_current_request()
+        except Exception:
+            pass
         self._set_processing_ui(False)
 
     @pyqtSlot(str)
     def _on_token(self, text: str):
         """Forward a streamed LLM token chunk to the active chat view."""
-        if not text:
+        if not text or self._user_cancelled:
             return
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         # Only stream into the visible session; background tabs get the
@@ -2173,6 +1935,10 @@ class AIChatWindow(QDockWidget):
                 if not self._use_web_ui:
                     self._sessions[sid]["unread"] = True
         if sid == self._active_sid:
+            if self._user_cancelled:
+                self._user_cancelled = False
+                self._set_processing_ui(False)
+                return
             # If we streamed tokens, replace the streaming bubble with the
             # finalised markdown-rendered message instead of appending a new one.
             if self._use_web_ui:
@@ -2199,6 +1965,9 @@ class AIChatWindow(QDockWidget):
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
         if sid == self._active_sid:
+            if self._user_cancelled:
+                self._user_cancelled = False
+                return
             log.debug("ai_chat_ui _on_error: %s", text[:80] if text else "")
             self._add_system_msg("Error: %s" % text)
             self._set_processing_ui(False)
