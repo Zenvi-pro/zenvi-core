@@ -2454,92 +2454,172 @@ def _import_generated_video(video_path):
     return f, None
 
 
+def _download_remotion_file(url, default_name="remotion_segment.mp4"):
+    """Download a Supabase mp4 to a fresh temp path. Returns (dest_path, size_mb)."""
+    import tempfile
+    import urllib.request
+
+    url_path = url.split("?")[0].rstrip("/")
+    raw_name = url_path.split("/")[-1] or default_name
+    if not raw_name.lower().endswith(".mp4"):
+        raw_name += ".mp4"
+
+    tmp_dir = tempfile.mkdtemp(prefix="zenvi_remotion_")
+    dest_path = os.path.join(tmp_dir, raw_name)
+
+    log.info("Downloading Remotion video from Supabase: %s → %s", url, dest_path)
+    req = urllib.request.Request(url, headers={"User-Agent": "ZenviApp/1.0"})
+    with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+        while True:
+            chunk = response.read(65536)
+            if not chunk:
+                break
+            out.write(chunk)
+
+    size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+    log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+    return dest_path, size_mb
+
+
+def _download_and_import_one(url):
+    """Download one Supabase mp4 and import it as a project file.
+
+    Returns (file_id, size_mb, error). One retry on transient download failure.
+    """
+    try:
+        last_err = None
+        dest_path = None
+        size_mb = 0.0
+        for attempt in (1, 2):
+            try:
+                dest_path, size_mb = _download_remotion_file(url)
+                break
+            except Exception as e:
+                last_err = e
+                log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
+        if dest_path is None:
+            return "", 0.0, f"download failed: {last_err}"
+
+        # Import into project files (re-encodes for libopenshot compatibility).
+        f, err = _import_generated_video(dest_path)
+        if err:
+            return "", size_mb, f"import failed: {err}"
+        return (f.id if f else ""), size_mb, None
+    except Exception as e:
+        log.error("download/import failed for %s: %s", url, e, exc_info=True)
+        return "", 0.0, str(e)
+
+
+def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
+    """Best-effort DELETE {REMOTION_URL}/cleanup. Non-critical — failures are logged only."""
+    import json
+    import urllib.request
+
+    if not (supabase_path or render_job_id):
+        return
+    remotion_api = os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1").rstrip("/")
+    try:
+        payload = {}
+        if supabase_path:
+            payload["supabase_path"] = supabase_path
+        if render_job_id:
+            payload["job_id"] = render_job_id
+        body = json.dumps(payload).encode()
+        cleanup_req = urllib.request.Request(
+            f"{remotion_api}/cleanup",
+            data=body,
+            method="DELETE",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(cleanup_req, timeout=60) as cleanup_resp:
+            log.info("Supabase cleanup after import: %s", cleanup_resp.read().decode()[:500])
+    except Exception as cleanup_err:
+        log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
+
+
 def fetch_remotion_video_from_supabase(
+    segment_urls=None,
     supabase_url="",
     supabase_path="",
     render_job_id="",
     **_kw,
 ) -> str:
-    """Download a rendered Remotion video from its Supabase public URL,
-    import it into the project files panel, then delete it from Supabase storage
-    (final MP4 plus intermediate segment uploads).
+    """Import a rendered product demo into the project files panel.
+
+    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs from
+    render_product_demo_tool. Each segment is imported as its own clip and the Supabase
+    storage is cleaned up ONCE, only after every segment imported successfully.
+
+    Legacy: pass a single supabase_url to import one stitched video.
 
     Called by the agent after render_product_demo_tool succeeds.
     """
-    import tempfile
     import json
-    import urllib.request
+    import re
 
-    supabase_url = (supabase_url or "").strip()
-    if not supabase_url:
-        return "Error: supabase_url is required."
+    # The LLM may pass segment_urls as a JSON-encoded string.
+    if isinstance(segment_urls, str):
+        try:
+            segment_urls = json.loads(segment_urls)
+        except Exception:
+            segment_urls = [segment_urls]
+    segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
 
-    try:
-        # Derive a clean filename from the URL path
-        url_path = supabase_url.split("?")[0].rstrip("/")
-        raw_name = url_path.split("/")[-1] or "remotion_product_launch.mp4"
-        if not raw_name.lower().endswith(".mp4"):
-            raw_name += ".mp4"
+    # ---- Multi-segment import (preferred) ----
+    if segment_urls:
+        # Deterministic timeline order: sort by the numeric index in segment_NN.mp4,
+        # independent of the order the agent passed the URLs in.
+        def _seg_index(u):
+            name = u.split("?")[0].rsplit("/", 1)[-1]
+            m = re.search(r"segment[_-]?(\d+)", name, re.IGNORECASE)
+            return int(m.group(1)) if m else 1_000_000
 
-        tmp_dir = tempfile.mkdtemp(prefix="zenvi_remotion_")
-        dest_path = os.path.join(tmp_dir, raw_name)
+        ordered = sorted(enumerate(segment_urls), key=lambda iu: (_seg_index(iu[1]), iu[0]))
 
-        log.info("Downloading Remotion video from Supabase: %s → %s", supabase_url, dest_path)
+        file_ids = []
+        failures = []  # (original_index, url, error)
+        total_mb = 0.0
+        for orig_i, url in ordered:
+            file_id, size_mb, err = _download_and_import_one(url)
+            if err:
+                failures.append((orig_i, url, err))
+                log.warning("Segment %d import failed: %s", orig_i, err)
+            else:
+                file_ids.append(file_id)
+                total_mb += size_mb
 
-        # Download with a 5-minute timeout
-        req = urllib.request.Request(supabase_url, headers={"User-Agent": "ZenviApp/1.0"})
-        with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
-
-        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
-
-        # Import into project files (re-encodes for libopenshot compatibility)
-        f, err = _import_generated_video(dest_path)
-        if err:
-            return f"Error importing video: {err}"
-
-        file_id = f.id if f else ""
-
-        # Delete final + segment intermediates from Supabase after import
-        if supabase_path or render_job_id:
-            remotion_api = (
-                os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1").rstrip("/")
+        n = len(segment_urls)
+        if failures:
+            # Leave storage intact so the failed segments can be re-fetched without a re-render.
+            failed_lines = "\n".join(f"  [{i}] {u} ({e})" for i, u, e in failures)
+            return (
+                f"⚠️ Imported {len(file_ids)}/{n} demo segments; {len(failures)} failed. "
+                f"Storage was NOT cleaned up so you can retry the failed ones. "
+                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}"
             )
-            try:
-                payload = {}
-                if supabase_path:
-                    payload["supabase_path"] = supabase_path
-                if render_job_id:
-                    payload["job_id"] = render_job_id
-                body = json.dumps(payload).encode()
-                cleanup_req = urllib.request.Request(
-                    f"{remotion_api}/cleanup",
-                    data=body,
-                    method="DELETE",
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(cleanup_req, timeout=60) as cleanup_resp:
-                    log.info(
-                        "Supabase cleanup after import: %s",
-                        cleanup_resp.read().decode()[:500],
-                    )
-            except Exception as cleanup_err:
-                log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
 
+        # All segments imported — clean up Supabase storage once.
+        _remotion_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
         return (
-            f"✅ Remotion product-launch video imported into project files (file_id: {file_id}, "
-            f"size: {size_mb:.1f} MB).\n"
-            "Use add_clip_to_timeline_tool to add it to the timeline."
+            f"✅ Imported {len(file_ids)}/{n} demo segments as separate clips "
+            f"(file_ids: {file_ids}, total {total_mb:.1f} MB).\n"
+            "Use add_clip_to_timeline_tool to add them to the timeline."
         )
 
-    except Exception as e:
-        log.error("fetch_remotion_video_from_supabase failed: %s", e, exc_info=True)
-        return f"Error downloading video from Supabase: {e}"
+    # ---- Legacy single-video import (back-compat) ----
+    supabase_url = (supabase_url or "").strip()
+    if not supabase_url:
+        return "Error: segment_urls or supabase_url is required."
+
+    file_id, size_mb, err = _download_and_import_one(supabase_url)
+    if err:
+        return f"Error importing video: {err}"
+    _remotion_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
+    return (
+        f"✅ Remotion product-demo video imported into project files (file_id: {file_id}, "
+        f"size: {size_mb:.1f} MB).\n"
+        "Use add_clip_to_timeline_tool to add it to the timeline."
+    )
 
 
 _KLING_O1_DEFAULT_T2V_DURATION = 5
