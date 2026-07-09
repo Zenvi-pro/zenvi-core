@@ -86,6 +86,14 @@
                         <!-- Left: model selector + icon buttons -->
                         <div class="chat-bottom-left relative flex items-center gap-1">
 
+                            <!-- Mode toggle: Plan / Agent -->
+                            <div id="chat-mode-toggle" class="chat-mode-toggle flex items-center gap-0.5 rounded-full p-0.5 border"
+                                 style="border-color: var(--chat-border); background: var(--chat-surface);"
+                                 role="group" aria-label="Agent mode">
+                                <button type="button" id="chat-mode-plan" class="chat-mode-btn" data-mode="planning">Plan</button>
+                                <button type="button" id="chat-mode-agent" class="chat-mode-btn active" data-mode="agent">Agent</button>
+                            </div>
+
                             <!-- Hidden native select (QWebChannel reads its value) -->
                             <select id="chat-model-select" class="hidden" aria-hidden="true"></select>
 

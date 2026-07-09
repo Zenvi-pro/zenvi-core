@@ -1330,7 +1330,7 @@ def search_clip_scenes(
 
             if status == "ready" and index_id and video_id:
                 search_query = _semantic_search_query(query)
-                items, err = _twelvelabs_search_in_window(
+                items, err = _tl_search_items_in_window(
                     str(index_id), search_query, page_limit=max(30, k * 10), video_id=str(video_id),
                 )
                 if not err and items:
@@ -1360,6 +1360,34 @@ def search_clip_scenes(
                                     f"  transcript: {str(m['transcription']).strip()[:180]}"
                                 )
                         return "\n".join(lines)
+
+                # Broader project search filtered to this video before tag fallback
+                search_query = _semantic_search_query(query)
+                broad_items, broad_err = _tl_search_items_in_window(
+                    str(index_id), search_query, page_limit=max(50, k * 15), video_id="",
+                )
+                if not broad_err and broad_items:
+                    filtered = [
+                        it for it in broad_items
+                        if str(it.get("video_id") or it.get("twelvelabs_video_id") or "") == str(video_id)
+                    ]
+                    if filtered:
+                        matches = select_hits_for_display(
+                            filtered,
+                            clip_start=clip_start,
+                            clip_end=clip_end,
+                            occurrence=nth,
+                            top_k=k,
+                        )
+                        if matches:
+                            lines = [
+                                f"TwelveLabs matches in '{clip_name}' "
+                                f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
+                            ]
+                            for m in matches:
+                                rel_cut = m["cut_source"] - clip_start
+                                lines.append(f"- timestamp {_fmt_mmss(rel_cut)} (project search)")
+                            return "\n".join(lines)
 
         # Local scene descriptions fallback
         local_ai = per_clip_ai
@@ -1442,6 +1470,32 @@ def _semantic_search_query(query: str) -> str:
         kept.append(word)
     cleaned = " ".join(kept).strip()
     return cleaned if cleaned else str(query).strip()
+
+
+def _audio_biased_tl_query(query: str, source_ai=None) -> str:
+    """Build an audio/dialogue-oriented TwelveLabs query."""
+    q = _semantic_search_query(query)
+    if not q:
+        return "spoken dialogue"
+    import re
+    if re.search(r"[^\x00-\x7F]", q):
+        return f"spoken words: {q}"
+    return f"spoken dialogue about {q}"
+
+
+def _tl_search_items_in_window(index_id, query_text, *, page_limit=30, video_id=""):
+    """Run TL search; on zero hits retry with audio-biased query."""
+    items, err = _twelvelabs_search_in_window(
+        index_id, query_text, page_limit=page_limit, video_id=video_id,
+    )
+    if err or items:
+        return items, err
+    audio_q = _audio_biased_tl_query(query_text)
+    if audio_q != query_text:
+        return _twelvelabs_search_in_window(
+            index_id, audio_q, page_limit=page_limit, video_id=video_id,
+        )
+    return items, err
 
 
 def _scene_description_cut_source(
@@ -3695,172 +3749,6 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
 
 
 # ---------------------------------------------------------------------------
-# Director analysis tools (frontend-delegated: read project state for directors)
-# ---------------------------------------------------------------------------
-
-
-def analyze_timeline_structure(**kwargs) -> str:
-    """Get overview of timeline structure: tracks, clips, transitions."""
-    try:
-        from classes.query import Clip, Track
-        app = _get_app()
-        proj = app.project
-        clips = Clip.filter()
-        layers = {}
-        for clip in clips:
-            layer = clip.data.get("layer", 0)
-            layers.setdefault(layer, []).append(clip)
-        lines = [f"Timeline Structure:"]
-        lines.append(f"  Total clips: {len(clips)}")
-        lines.append(f"  Total layers: {len(layers)}")
-        for layer_num in sorted(layers.keys()):
-            lines.append(f"  Layer {layer_num}: {len(layers[layer_num])} clips")
-        transitions = proj.get("transitions") or []
-        lines.append(f"  Total transitions: {len(transitions)}")
-        effects = proj.get("effects") or []
-        lines.append(f"  Total effects: {len(effects)}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_timeline_structure: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_pacing(**kwargs) -> str:
-    """Analyze video pacing: cut frequency, scene durations, rhythm."""
-    try:
-        from classes.query import Clip
-        app = _get_app()
-        proj = app.project
-        clips = Clip.filter()
-        if not clips:
-            return "No clips to analyze"
-        fps = proj.get("fps", {})
-        fps_num = fps.get("num", 30)
-        fps_den = fps.get("den", 1)
-        fps_value = fps_num / fps_den if fps_den else 30
-        durations = []
-        for clip in clips:
-            start = clip.data.get("start", 0)
-            end = clip.data.get("end", 0)
-            duration_seconds = (end - start) / fps_value
-            durations.append(duration_seconds)
-        if not durations:
-            return "No clip durations available"
-        avg_dur = sum(durations) / len(durations)
-        if avg_dur < 2: cat = "Very fast-paced"
-        elif avg_dur < 4: cat = "Fast-paced"
-        elif avg_dur < 6: cat = "Moderate"
-        elif avg_dur < 10: cat = "Slow-paced"
-        else: cat = "Very slow-paced"
-        lines = [
-            f"Pacing Analysis:",
-            f"  Total clips: {len(clips)}",
-            f"  Average clip duration: {avg_dur:.2f}s",
-            f"  Shortest: {min(durations):.2f}s",
-            f"  Longest: {max(durations):.2f}s",
-            f"  Pacing: {cat}",
-            f"  Cuts/min: {60/avg_dur:.1f}" if avg_dur > 0 else "  Cuts/min: N/A",
-        ]
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_pacing: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_audio_levels(**kwargs) -> str:
-    """Analyze audio levels."""
-    try:
-        from classes.query import Clip
-        clips = Clip.filter()
-        audio_clips = [c for c in clips if c.data.get("reader", {}).get("has_audio", False)]
-        return f"Audio Analysis:\n  Total audio clips: {len(audio_clips)}\n  Detailed audio analysis requires libopenshot integration."
-    except Exception as e:
-        log.error("analyze_audio_levels: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_transitions_structure(**kwargs) -> str:
-    """Analyze transitions: types, timing, effectiveness."""
-    try:
-        app = _get_app()
-        proj = app.project
-        transitions = proj.get("transitions") or []
-        if not transitions:
-            return "No transitions in project"
-        types = {}
-        for t in transitions:
-            tt = t.get("type", "unknown")
-            types[tt] = types.get(tt, 0) + 1
-        lines = [f"Transition Analysis:", f"  Total: {len(transitions)}", "  Types:"]
-        for tt, count in types.items():
-            lines.append(f"    {tt}: {count}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_transitions_structure: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_clip_content(**kwargs) -> str:
-    """Analyze visual content of clips using metadata."""
-    try:
-        from classes.query import File
-        files = File.filter()
-        files_with_meta = sum(1 for f in files if f.data.get("ai_metadata"))
-        return f"Content Analysis:\n  Total files: {len(files)}\n  Files with AI analysis: {files_with_meta}"
-    except Exception as e:
-        log.error("analyze_clip_content: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_music_sync(**kwargs) -> str:
-    """Analyze music beat alignment with cuts."""
-    return "Music Sync Analysis:\n  Music sync analysis not yet implemented.\n  Requires beat detection and cut timing correlation."
-
-
-def get_project_metadata_info(**kwargs) -> str:
-    """Get project metadata: duration, resolution, fps, format."""
-    try:
-        app = _get_app()
-        proj = app.project
-        profile = proj.get("profile") or "unknown"
-        fps = proj.get("fps") or {}
-        fps_str = f"{fps.get('num', '')}/{fps.get('den', 1)}" if fps else "unknown"
-        return (
-            f"Project Metadata:\n"
-            f"  Profile: {profile}\n"
-            f"  Resolution: {proj.get('width', 0)}x{proj.get('height', 0)}\n"
-            f"  FPS: {fps_str}\n"
-            f"  Duration: {proj.get('duration', 0)} seconds"
-        )
-    except Exception as e:
-        log.error("get_project_metadata_info: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_clip_visual_content(clip_id=None, **kwargs) -> str:
-    """Analyze visual content using AI vision models."""
-    try:
-        from classes.query import Clip
-        clips = [Clip.get(id=clip_id)] if clip_id else Clip.filter()
-        clips = [c for c in clips if c]
-        if not clips:
-            return "No clips found to analyze"
-        lines = [f"Visual Content Analysis:", f"  Total clips: {len(clips)}"]
-        for clip in clips:
-            meta = clip.data.get("ai_metadata", {})
-            if meta:
-                desc = meta.get("description", "N/A")
-                if len(desc) > 100:
-                    desc = desc[:97] + "..."
-                lines.append(f"\n  Clip {clip.id}:")
-                lines.append(f"    Description: {desc}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_clip_visual_content: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-# ---------------------------------------------------------------------------
 # Stock media / retag / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
@@ -4073,7 +3961,7 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
         def _kick_off_tagging():
             try:
                 files_model = _get_app().window.files_model
-                files_model._tag_file_async(file_id)
+                files_model._tag_file_async(file_id, tag_only=True)
             except Exception as exc:
                 log.warning("retag_project_file: failed to start tagging: %s", exc)
 
@@ -4237,7 +4125,9 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             analyzed = ai.get("analyzed", False)
             tl = ai.get("twelvelabs", {}) or {}
             from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.tl_search_strategy import infer_tl_search_hint
             indexed = twelvelabs_is_indexed(tl)
+            hint = infer_tl_search_hint(ai, name)
             scene_count = len(ai.get("scene_descriptions") or [])
             objects = ", ".join((tags.get("objects") or [])[:5])
             scenes = ", ".join((tags.get("scenes") or [])[:3])
@@ -4252,6 +4142,7 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
                 f"duration={m}:{s:02d}\n"
                 f"{alias_part}"
                 f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
+                f"    tl_search_hint={hint}\n"
                 f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
                 f"    objects=[{objects}]\n"
                 f"    scenes=[{scenes}]\n"
@@ -4458,7 +4349,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 4500) -> str:
         return ""
 
 
-# Tools exposed to the main chat / video / transitions agents (not director-only).
+# Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
     "get_project_info_tool": get_project_info,
@@ -4518,22 +4409,7 @@ AGENT_TOOL_HANDLERS = {
     "get_timeline_state_tool": get_timeline_state,
 }
 
-# Director orchestrator only — not registered on the root chat agent.
-DIRECTOR_TOOL_HANDLERS = {
-    "analyze_timeline_structure_tool": analyze_timeline_structure,
-    "analyze_pacing_tool": analyze_pacing,
-    "analyze_audio_levels_tool": analyze_audio_levels,
-    "analyze_transitions_tool": analyze_transitions_structure,
-    "analyze_clip_content_tool": analyze_clip_content,
-    "analyze_music_sync_tool": analyze_music_sync,
-    "get_project_metadata_tool": get_project_metadata_info,
-    "analyze_clip_visual_content_tool": analyze_clip_visual_content,
-}
-
-TOOL_HANDLERS = {
-    **AGENT_TOOL_HANDLERS,
-    **DIRECTOR_TOOL_HANDLERS,
-}
+TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {

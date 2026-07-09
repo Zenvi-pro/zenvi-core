@@ -42,6 +42,9 @@
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
+    const modePlanBtn = document.getElementById('chat-mode-plan');
+    const modeAgentBtn = document.getElementById('chat-mode-agent');
+    var currentAgentMode = 'agent';
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
 
@@ -193,9 +196,16 @@
     var activityContainer = null;
     var activitySteps = [];
     var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
-    var currentReasoningStep = null; // the single live "Reasoning" step, or null
+    var currentReasoningStep = null; // legacy; kept for compat
     var enterStagger = 0;   // index within the current entrance burst
     var lastEnterAt = 0;    // timestamp of the last staggered tool-block entrance
+
+    // Cursor-style collapsible thinking block (tool activity lives inside)
+    var thinkingBlockEl = null;
+    var thinkingBlockBody = null;
+    var thinkingBlockHeader = null;
+    var thinkingBlockCollapsed = false;
+    var firstAnswerTokenReceived = false;
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
@@ -224,6 +234,70 @@
         const ph = messagesEl.querySelector('.chat-placeholder');
         if (ph) ph.remove();
     }
+
+    function isPinnedToBottom(el, threshold) {
+        threshold = threshold || 80;
+        return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    }
+
+    function scrollToBottomIfPinned() {
+        if (messagesEl && isPinnedToBottom(messagesEl)) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+    }
+
+    function openThinkingBlock() {
+        if (thinkingBlockEl) return;
+        thinkingBlockCollapsed = false;
+        firstAnswerTokenReceived = false;
+        thinkingBlockEl = document.createElement('div');
+        thinkingBlockEl.className = 'chat-thinking-block expanded';
+        thinkingBlockHeader = document.createElement('button');
+        thinkingBlockHeader.type = 'button';
+        thinkingBlockHeader.className = 'chat-thinking-header';
+        thinkingBlockHeader.innerHTML =
+            '<span class="chat-thinking-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-thinking-title">Thinking…</span>';
+        thinkingBlockHeader.addEventListener('click', function () {
+            if (!thinkingBlockEl) return;
+            var expanded = thinkingBlockEl.classList.toggle('expanded');
+            if (thinkingBlockBody) {
+                thinkingBlockBody.style.display = expanded ? 'block' : 'none';
+            }
+        });
+        thinkingBlockBody = document.createElement('div');
+        thinkingBlockBody.className = 'chat-thinking-body';
+        thinkingBlockBody.style.display = 'block';
+        thinkingBlockEl.appendChild(thinkingBlockHeader);
+        thinkingBlockEl.appendChild(thinkingBlockBody);
+        messagesEl.appendChild(thinkingBlockEl);
+        activityContainer = document.createElement('div');
+        activityContainer.className = 'chat-activity-log';
+        activityContainer.setAttribute('aria-live', 'polite');
+        thinkingBlockBody.appendChild(activityContainer);
+        activitySteps = [];
+        currentReasoningStep = null;
+        scrollToBottomIfPinned();
+    }
+
+    window.openThinkingBlock = openThinkingBlock;
+
+    function collapseThinkingBlock(elapsedMs) {
+        if (!thinkingBlockEl || thinkingBlockCollapsed) return;
+        thinkingBlockCollapsed = true;
+        var sec = Math.round((elapsedMs || 0) / 1000);
+        var title = thinkingBlockHeader && thinkingBlockHeader.querySelector('.chat-thinking-title');
+        if (title) {
+            title.textContent = 'Thought for ' + (sec < 1 ? '<1' : sec) + 's';
+        }
+        thinkingBlockEl.classList.remove('expanded');
+        if (thinkingBlockBody) thinkingBlockBody.style.display = 'none';
+        clearReasoningStep();
+        lastThoughtSec = sec;
+        scrollToBottomIfPinned();
+    }
+
+    window.collapseThinkingBlock = collapseThinkingBlock;
 
     function setInputIdle(idle) {
         const container = document.querySelector('.chat-container');
@@ -263,7 +337,8 @@
             streamingMessageEl.classList.remove('chat-message-streaming');
             streamingMessageEl = null;
             streamingBuffer = '';
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            streamMdEl = null;
+            scrollToBottomIfPinned();
             return;
         }
         const div = document.createElement('div');
@@ -277,15 +352,14 @@
             div.innerHTML = '<div class="chat-message-body">' + (isAssistant ? bodyHtml : '<p>' + bodyHtml + '</p>') + '</div>';
         }
         messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     // ── Streaming-token rendering ──────────────────────────────────────────
-    // Tokens arrive incrementally from the backend WebSocket; we paint them
-    // into a single in-progress assistant bubble that's later replaced with
-    // the finalised markdown-rendered HTML when the full response arrives.
     var streamingMessageEl = null;
     var streamingBuffer = '';
+    var streamFlushScheduled = false;
+    var streamMdEl = null;
 
     function escapeHtmlForStream(s) {
         return s.replace(/&/g, '&amp;')
@@ -293,31 +367,68 @@
                 .replace(/>/g, '&gt;');
     }
 
+    function lightMarkdown(text) {
+        var s = escapeHtmlForStream(text);
+        s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
+            return '<pre><code>' + code + '</code></pre>';
+        });
+        s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/\n/g, '<br/>');
+        return s;
+    }
+
+    function flushStreamingBuffer() {
+        streamFlushScheduled = false;
+        if (!streamingMessageEl) return;
+        var body = streamingMessageEl.querySelector('.chat-message-body');
+        if (!body) return;
+        if (!streamMdEl) {
+            body.innerHTML = '<div class="stream-md"></div>';
+            streamMdEl = body.querySelector('.stream-md');
+        }
+        if (streamMdEl) streamMdEl.innerHTML = lightMarkdown(streamingBuffer);
+        scrollToBottomIfPinned();
+    }
+
+    window.resetStreamingMessage = function () {
+        if (streamingMessageEl && streamingMessageEl.parentNode) {
+            streamingMessageEl.remove();
+        }
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+    };
+
     window.appendOrUpdateStreamingMessage = function (text) {
         if (!text) return;
         removePlaceholder();
+        if (!firstAnswerTokenReceived) {
+            firstAnswerTokenReceived = true;
+            clearReasoningStep();
+            var elapsed = processingStartTime ? (Date.now() - processingStartTime) : 0;
+            collapseThinkingBlock(elapsed);
+        }
         if (!streamingMessageEl) {
             streamingMessageEl = document.createElement('div');
             streamingMessageEl.className = 'chat-message chat-message-enter chat-message-streaming';
-            streamingMessageEl.innerHTML = '<div class="chat-message-body"><p></p></div>';
+            streamingMessageEl.innerHTML = '<div class="chat-message-body"></div>';
             messagesEl.appendChild(streamingMessageEl);
             streamingBuffer = '';
+            streamMdEl = null;
         }
         streamingBuffer += text;
-        var body = streamingMessageEl.querySelector('.chat-message-body');
-        if (body) {
-            // Render line breaks; keep it cheap — full markdown comes with the
-            // finalised message via appendMessage() once the turn completes.
-            body.innerHTML = '<p>' + escapeHtmlForStream(streamingBuffer).replace(/\n/g, '<br/>') + '</p>';
+        if (!streamFlushScheduled) {
+            streamFlushScheduled = true;
+            requestAnimationFrame(flushStreamingBuffer);
         }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
     };
 
     window.finalizeStreamingMessage = function () {
-        // Called right before appendMessage delivers the markdown-rendered
-        // version of the same content.  appendMessage handles the swap, so
-        // we just ensure no stale buffer lingers if appendMessage isn't
-        // called (e.g. error path).
+        if (streamFlushScheduled) {
+            flushStreamingBuffer();
+        }
         if (streamingMessageEl) {
             streamingMessageEl.classList.remove('chat-message-streaming');
         }
@@ -338,19 +449,9 @@
         return n;
     }
 
-    // Idempotent: at most one "Reasoning" step exists at any moment. Multiple
-    // tool completions in one turn must not stack multiple reasoning rows.
+    // Idempotent: reasoning spinner retired — thinking block replaces it.
     function ensureReasoningStep() {
-        if (!activityContainer) return;
-        if (currentReasoningStep && currentReasoningStep.parentNode) return;
-        var step = document.createElement('div');
-        step.className = 'chat-activity-step running';
-        step.setAttribute('data-type', 'reasoning');
-        step.innerHTML = '<span class="activity-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
-                         '<span class="activity-label activity-reasoning">Reasoning</span>';
-        activityContainer.appendChild(step);
-        activitySteps.push(step);
-        currentReasoningStep = step;
+        return;
     }
 
     // Remove the live reasoning placeholder (used when a tool starts — the
@@ -378,6 +479,7 @@
     }
 
     window.addActivityStep = function (label, detail) {
+        if (!activityContainer) openThinkingBlock();
         if (!activityContainer) return;
         // A tool is starting — dismiss the live reasoning placeholder.
         clearReasoningStep();
@@ -397,21 +499,18 @@
         step.innerHTML = h;
         activityContainer.appendChild(step);
         activitySteps.push(step);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     window.completeLastActivityStep = function () {
         if (!activityContainer || activitySteps.length === 0) return;
         var last = activitySteps[activitySteps.length - 1];
-        // Don't "complete" the live reasoning placeholder — replace it.
         if (last === currentReasoningStep) {
             clearReasoningStep();
         } else {
             completeActivityStep(last);
         }
-        // LLM will reason about the tool result next.
-        ensureReasoningStep();
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     /* ── Cursor-style collapsible tool terminal blocks ───────────────── */
@@ -443,6 +542,7 @@
     }
 
     window.addToolBlock = function (payloadJson) {
+        if (!activityContainer) openThinkingBlock();
         if (!activityContainer) return;
         var data;
         try {
@@ -473,7 +573,7 @@
                 var exCmd = existing.header.querySelector('.chat-tool-cmd');
                 if (exCmd) exCmd.textContent = cmd;
             }
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            scrollToBottomIfPinned();
             return;
         }
 
@@ -508,7 +608,7 @@
         activityContainer.appendChild(el);
 
         toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     window.appendToolLog = function (callId, line) {
@@ -530,7 +630,7 @@
         // Reveal the chevron now that there's something to expand.
         block.el.classList.add('has-logs');
         block.body.scrollTop = block.body.scrollHeight;
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     window.completeToolBlock = function (callId, ok, summary) {
@@ -553,16 +653,9 @@
                 setToolBlockExpanded(block, false);
             }
         }
-        // Unknown call_id: nothing to stop — fall through so reasoning
-        // bookkeeping below still runs.
+        // Unknown call_id: nothing to stop — fall through.
 
-        // Re-enter "thinking" only once the LAST running tool has finished.
-        // With N parallel tools this fires the single reasoning row exactly
-        // once instead of once per completion.
-        if (runningToolCount() === 0) {
-            ensureReasoningStep();
-        }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     /* ── Processing state ── */
@@ -572,31 +665,27 @@
         sendBtn.disabled = processing;
         cancelBtn.style.display = processing ? 'flex' : 'none';
         if (processing) {
-            // Guard against duplicate calls (JS sendMessage + Python _set_processing_ui
-            // both fire setProcessing(true) for the same turn). Without this we'd append
-            // a second activity container and end up with two "Reasoning" rows.
-            if (activityContainer) return;
+            if (thinkingBlockEl && !thinkingBlockCollapsed) return;
+            if (thinkingBlockEl && thinkingBlockCollapsed) {
+                thinkingBlockEl = null;
+                thinkingBlockBody = null;
+                thinkingBlockHeader = null;
+                thinkingBlockCollapsed = false;
+                activityContainer = null;
+            }
             processingStartTime = Date.now();
             if (glowWrap) glowWrap.classList.add('glow-active');
             removePlaceholder();
-            activityContainer = document.createElement('div');
-            activityContainer.className = 'chat-activity-log';
-            activityContainer.setAttribute('aria-live', 'polite');
-            messagesEl.appendChild(activityContainer);
-            currentReasoningStep = null; // fresh turn
-            ensureReasoningStep();
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            openThinkingBlock();
+            scrollToBottomIfPinned();
         } else {
             if (glowWrap) glowWrap.classList.remove('glow-active');
-            // Finalize activity log: drop the live reasoning placeholder.
             clearReasoningStep();
-            // Complete any remaining running steps
             for (var i = 0; i < activitySteps.length; i++) {
                 if (activitySteps[i].classList.contains('running')) {
                     completeActivityStep(activitySteps[i]);
                 }
             }
-            // Close any tool blocks left running (e.g. on cancel/error)
             Object.keys(toolBlocks).forEach(function (cid) {
                 var block = toolBlocks[cid];
                 if (block && block.el && block.el.classList.contains('running')) {
@@ -607,29 +696,27 @@
                     setToolBlockExpanded(block, false);
                 }
             });
-            // Remove empty activity container only if no tool blocks were rendered.
-            var hasToolBlocks = activityContainer && activityContainer.querySelector('.chat-tool-block');
-            if (activityContainer && activitySteps.length === 0 && !hasToolBlocks) {
-                activityContainer.remove();
+            if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {
+                collapseThinkingBlock(Date.now() - processingStartTime);
+            }
+            window.resetStreamingMessage();
+            if (thinkingBlockEl && thinkingBlockBody) {
+                var hasTools = thinkingBlockBody.querySelector('.chat-tool-block');
+                var hasSteps = activitySteps.length > 0;
+                if (!hasTools && !hasSteps && !thinkingBlockCollapsed) {
+                    thinkingBlockEl.remove();
+                    thinkingBlockEl = null;
+                    thinkingBlockBody = null;
+                    thinkingBlockHeader = null;
+                }
             }
             activityContainer = null;
             activitySteps = [];
             toolBlocks = {};
             currentReasoningStep = null;
-            // Calculate thought time
             if (processingStartTime) {
-                var elapsed = Math.round((Date.now() - processingStartTime) / 1000);
-                lastThoughtSec = elapsed;
                 lastRunTimestamp = Date.now();
                 processingStartTime = null;
-                // Insert "Thought X sec" badge before the last assistant message
-                var badge = document.createElement('div');
-                badge.className = 'chat-thought-badge';
-                badge.textContent = 'Thought ' + (elapsed < 1 ? '<1' : elapsed) + ' sec';
-                var lastMsg = messagesEl.querySelector('.chat-message:last-child');
-                if (lastMsg) {
-                    messagesEl.insertBefore(badge, lastMsg);
-                }
                 updatePreambleStatus();
             }
             if (inputEl) inputEl.focus();
@@ -991,11 +1078,279 @@
         closeCommandPalette();
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '');
+            bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
             inputEl.value = '';
             adjustTextareaHeight();
         });
     }
+
+    function setAgentModeUI(mode) {
+        currentAgentMode = mode === 'planning' ? 'planning' : 'agent';
+        if (modePlanBtn) modePlanBtn.classList.toggle('active', currentAgentMode === 'planning');
+        if (modeAgentBtn) modeAgentBtn.classList.toggle('active', currentAgentMode === 'agent');
+        if (inputEl) {
+            inputEl.placeholder = currentAgentMode === 'planning'
+                ? 'Describe the edit; I will draft a plan without changing the timeline…'
+                : 'Ask or edit directly…';
+        }
+        var wrap = document.getElementById('chat-input-glow-wrap');
+        if (wrap) {
+            wrap.classList.toggle('planning-mode', currentAgentMode === 'planning');
+        }
+    }
+
+    window.setAgentModeUI = setAgentModeUI;
+
+    function onModeButtonClick(mode) {
+        setAgentModeUI(mode);
+        getBridge(function (bridge) {
+            if (bridge && bridge.setAgentMode) {
+                bridge.setAgentMode(mode);
+            }
+        });
+    }
+
+    if (modePlanBtn) modePlanBtn.addEventListener('click', function () { onModeButtonClick('planning'); });
+    if (modeAgentBtn) modeAgentBtn.addEventListener('click', function () { onModeButtonClick('agent'); });
+
+    window.setPlanReadyBanner = function (show) {
+        if (!show) window.setPlanChip(null);
+    };
+
+    var currentPlanData = null;
+
+    function escapeAttr(s) {
+        if (!s) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
+    }
+
+    window.setPlanChip = function (planJson) {
+        var root = document.getElementById('chat-plan-chip');
+        if (!planJson) {
+            currentPlanData = null;
+            if (root && root.parentNode) root.remove();
+            return;
+        }
+        var plan = typeof planJson === 'string' ? JSON.parse(planJson) : planJson;
+        currentPlanData = plan;
+        if (!root) {
+            root = document.createElement('div');
+            root.id = 'chat-plan-chip';
+            root.className = 'chat-plan-chip';
+            var messages = document.getElementById('chat-messages');
+            if (messages) messages.appendChild(root);
+        }
+        var status = (plan.status || 'draft').toUpperCase();
+        var steps = plan.steps || [];
+        var done = 0;
+        var failed = 0;
+        for (var i = 0; i < steps.length; i++) {
+            var st = (steps[i].status || '').toLowerCase();
+            if (st === 'completed') done++;
+            if (st === 'failed' || st === 'blocked') failed++;
+        }
+        var progress = steps.length ? (done + '/' + steps.length + ' done') : '';
+        if (failed > 0) progress += ' (' + failed + ' failed)';
+        var html = '<div class="chat-plan-chip-inner">' +
+            '<span class="chat-plan-chip-title">' + escapeHtml(plan.title || 'Edit plan') + '</span>' +
+            '<span class="chat-plan-chip-badge chat-plan-chip-badge-' + escapeHtml(status.toLowerCase()) + '">' + escapeHtml(status) + '</span>' +
+            (progress ? '<span class="chat-plan-chip-progress" id="chat-plan-chip-progress">' + escapeHtml(progress) + '</span>' : '') +
+            '<div class="chat-plan-chip-actions">' +
+            '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>';
+        if (status === 'READY' || status === 'BLOCKED') {
+            var execLabel = status === 'BLOCKED' ? 'Retry execution' : 'Execute';
+            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">' + execLabel + '</button>';
+        }
+        if (status === 'BLOCKED') {
+            html += '<button type="button" class="chat-plan-chip-edit" id="chat-plan-chip-edit">Edit in Plan mode</button>';
+        }
+        html += '</div></div>';
+        root.innerHTML = html;
+        var openBtn = document.getElementById('chat-plan-chip-open');
+        if (openBtn) {
+            openBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.openPlanDock) bridge.openPlanDock();
+                });
+            };
+        }
+        var execBtn = document.getElementById('chat-plan-chip-exec');
+        if (execBtn) {
+            execBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.executePlanNoArgs) bridge.executePlanNoArgs();
+                    else if (bridge && bridge.executePlan) bridge.executePlan('', '');
+                });
+            };
+        }
+        var editBtn = document.getElementById('chat-plan-chip-edit');
+        if (editBtn) {
+            editBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.editPlanInPlanningMode) bridge.editPlanInPlanningMode();
+                });
+            };
+        }
+    };
+
+    window.setPlanData = window.setPlanChip;
+
+    window.updatePlanChipProgress = function (stepId, status, error) {
+        if (!currentPlanData || !currentPlanData.steps) return;
+        for (var i = 0; i < currentPlanData.steps.length; i++) {
+            if (currentPlanData.steps[i].step_id === stepId) {
+                currentPlanData.steps[i].status = status;
+                if (error) currentPlanData.steps[i].last_error = error;
+                break;
+            }
+        }
+        var el = document.getElementById('chat-plan-chip-progress');
+        if (!el) return;
+        var done = 0;
+        var failed = 0;
+        var steps = currentPlanData.steps;
+        for (var j = 0; j < steps.length; j++) {
+            var st = (steps[j].status || '').toLowerCase();
+            if (st === 'completed') done++;
+            if (st === 'failed' || st === 'blocked') failed++;
+        }
+        var text = done + '/' + steps.length + ' done';
+        if (failed > 0) text += ' (' + failed + ' failed)';
+        el.textContent = text;
+    };
+
+    window.updatePlanStep = function () { /* chip uses updatePlanChipProgress */ };
+
+    window.clearPlanQuestions = function () {
+        var el = document.getElementById('chat-plan-questions');
+        if (el && el.parentNode) el.remove();
+    };
+
+    window.setPlanQuestions = function (questionsJson) {
+        var questions = typeof questionsJson === 'string' ? JSON.parse(questionsJson) : questionsJson;
+        if (!questions || !questions.length) {
+            window.clearPlanQuestions();
+            return;
+        }
+        window.clearPlanQuestions();
+        var root = document.createElement('div');
+        root.id = 'chat-plan-questions';
+        root.className = 'chat-plan-questions';
+        var requiredIds = [];
+        var html = '<div class="chat-plan-questions-header">A few questions before I finalize the plan</div>';
+        for (var i = 0; i < questions.length; i++) {
+            var q = questions[i];
+            var qid = String(q.id || ('q' + (i + 1)));
+            requiredIds.push(qid);
+            html += '<div class="chat-plan-question" data-qid="' + escapeAttr(qid) + '">';
+            html += '<label class="chat-plan-question-prompt">' + escapeHtml(q.prompt || '') + '</label>';
+            if (q.options && q.options.length) {
+                html += '<div class="chat-plan-question-options">';
+                for (var j = 0; j < q.options.length; j++) {
+                    var opt = q.options[j];
+                    html += '<button type="button" class="chat-plan-option-btn" data-qid="' + escapeAttr(qid) + '" data-value="' + escapeAttr(opt) + '">' + escapeHtml(opt) + '</button>';
+                }
+                html += '</div>';
+            }
+            html += '<input type="text" class="chat-plan-question-input" data-qid="' + escapeAttr(qid) + '" placeholder="Your answer…" />';
+            html += '</div>';
+        }
+        root.dataset.requiredIds = JSON.stringify(requiredIds);
+        html += '<textarea class="chat-plan-questions-notes" placeholder="Anything else? (optional)" rows="2"></textarea>';
+        html += '<div class="chat-plan-questions-actions">';
+        html += '<button type="button" class="chat-plan-questions-submit" id="chat-plan-questions-submit" disabled>Submit answers</button>';
+        html += '<button type="button" class="chat-plan-questions-skip" id="chat-plan-questions-skip">Skip — use your judgment</button>';
+        html += '</div>';
+        root.innerHTML = html;
+        var messages = document.getElementById('chat-messages');
+        if (messages) messages.appendChild(root);
+
+        function allAnswered() {
+            var ids;
+            try {
+                ids = JSON.parse(root.dataset.requiredIds || '[]');
+            } catch (e) {
+                ids = requiredIds;
+            }
+            for (var k = 0; k < ids.length; k++) {
+                var input = root.querySelector('.chat-plan-question-input[data-qid="' + ids[k] + '"]');
+                if (!input || !input.value.trim()) return false;
+            }
+            return ids.length > 0;
+        }
+
+        function updateSubmitState() {
+            var submitBtn = document.getElementById('chat-plan-questions-submit');
+            if (submitBtn) submitBtn.disabled = !allAnswered();
+        }
+
+        root.querySelectorAll('.chat-plan-option-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var qid = btn.getAttribute('data-qid');
+                var input = root.querySelector('.chat-plan-question-input[data-qid="' + qid + '"]');
+                if (input) input.value = btn.getAttribute('data-value') || '';
+                root.querySelectorAll('.chat-plan-option-btn[data-qid="' + qid + '"]').forEach(function (b) {
+                    b.classList.toggle('selected', b === btn);
+                });
+                updateSubmitState();
+            });
+        });
+
+        root.querySelectorAll('.chat-plan-question-input').forEach(function (input) {
+            input.addEventListener('input', updateSubmitState);
+        });
+
+        var submitBtn = document.getElementById('chat-plan-questions-submit');
+        if (submitBtn) {
+            submitBtn.onclick = function () {
+                if (!allAnswered()) return;
+                var answers = {};
+                root.querySelectorAll('.chat-plan-question-input').forEach(function (input) {
+                    var qid = input.getAttribute('data-qid');
+                    if (qid && input.value.trim()) answers[qid] = input.value.trim();
+                });
+                var notesEl = root.querySelector('.chat-plan-questions-notes');
+                var payload = { answers: answers, notes: notesEl ? notesEl.value.trim() : '' };
+                getBridge(function (bridge) {
+                    if (bridge && bridge.submitPlanAnswers) {
+                        bridge.submitPlanAnswers(JSON.stringify(payload));
+                    } else {
+                        console.warn('submitPlanAnswers bridge method missing');
+                    }
+                });
+                window.clearPlanQuestions();
+            };
+        }
+        var skipBtn = document.getElementById('chat-plan-questions-skip');
+        if (skipBtn) {
+            skipBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.submitPlanAnswers) {
+                        bridge.submitPlanAnswers(JSON.stringify({ skip: true }));
+                    } else {
+                        console.warn('submitPlanAnswers bridge method missing');
+                    }
+                });
+                window.clearPlanQuestions();
+            };
+        }
+        scrollToBottomIfPinned();
+        root.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    };
+
+    window.setChatInput = function (text) {
+        if (!inputEl) return;
+        inputEl.value = text || '';
+        try {
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (e) {}
+        inputEl.focus();
+    };
+
+    setAgentModeUI('agent');
 
     function insertAtCursor(text) {
         try {
@@ -1119,6 +1474,13 @@
             activityContainer = null;
             activitySteps = [];
             toolBlocks = {};
+            currentReasoningStep = null;
+            thinkingBlockEl = null;
+            thinkingBlockBody = null;
+            thinkingBlockHeader = null;
+            thinkingBlockCollapsed = false;
+            firstAnswerTokenReceived = false;
+            window.resetStreamingMessage();
             overlayVisible = true;
             if (inputOverlay) inputOverlay.classList.remove('hidden');
             typingIndex = 0;

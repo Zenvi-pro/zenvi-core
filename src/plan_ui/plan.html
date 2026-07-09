@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plan</title>
+    <link rel="stylesheet" href="plan.css">
+</head>
+<body>
+    <div id="plan-root" class="plan-root">
+        <div id="plan-empty" class="plan-empty">
+            <p>No plan yet.</p>
+            <p class="plan-empty-hint">Use Plan mode in AI chat to research your project and draft an edit plan.</p>
+        </div>
+        <div id="plan-content" class="plan-content" hidden>
+            <header class="plan-header">
+                <h1 id="plan-title" class="plan-title"></h1>
+                <span id="plan-status" class="plan-status"></span>
+            </header>
+            <p id="plan-summary" class="plan-summary"></p>
+            <h2 class="plan-steps-heading">Steps</h2>
+            <ul id="plan-steps" class="plan-steps"></ul>
+            <div id="plan-actions" class="plan-actions" hidden>
+                <button type="button" id="plan-exec-btn" class="plan-exec-btn">Execute Plan</button>
+                <button type="button" id="plan-edit-btn" class="plan-edit-btn" hidden>Edit in Plan mode</button>
+            </div>
+        </div>
+    </div>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <script src="plan.js"></script>
+</body>
+</html>

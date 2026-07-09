@@ -59,10 +59,11 @@ class BackendTaggingWorker(QThread):
     progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
     intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
-    def __init__(self, file_data, project_id="", parent=None):
+    def __init__(self, file_data, project_id="", tag_only=False, parent=None):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
+        self.tag_only = bool(tag_only)
 
     # Hard limit: clips longer than 30 minutes are not tagged or indexed.
     _MAX_TAGGING_SECONDS = 30 * 60
@@ -101,9 +102,17 @@ class BackendTaggingWorker(QThread):
                 indexing_configured = client.is_indexing_configured()
 
                 from classes.frame_extractor import extract_tagging_frames
+                from classes.twelvelabs_match import twelvelabs_is_indexed
+
+                existing_tl = (self.file_data.get("ai_metadata") or {}).get("twelvelabs")
+                already_indexed = twelvelabs_is_indexed(existing_tl)
 
                 run_indexing = False
-                if indexing_configured:
+                if already_indexed:
+                    metadata["twelvelabs"] = dict(existing_tl)
+                elif self.tag_only:
+                    pass
+                elif indexing_configured:
                     try:
                         from classes.credits_client import check_operation
 
@@ -457,8 +466,11 @@ class FilesModel(QObject, updates.UpdateInterface):
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
 
+    _MAX_TAGGING_WORKERS = 2
+
     def _stop_active_taggers(self):
         """Called at app quit — interrupt any pending HTTP requests, then wait briefly."""
+        self._tagging_queue.clear()
         for worker in list(self._active_taggers):
             try:
                 worker.interrupt()  # close session to unblock requests.post()
@@ -507,13 +519,37 @@ class FilesModel(QObject, updates.UpdateInterface):
     def get_tagging_progress(self, file_id):
         return self._tagging_progress.get(str(file_id or ""))
 
-    def _tag_file_async(self, file_id):
+    def _enqueue_tag(self, file_id, tag_only=False):
+        """Queue a file for background tagging with bounded concurrency."""
+        fid = str(file_id or "")
+        if not fid:
+            return
+        if self.is_file_tagging(fid):
+            return
+        if any(qid == fid for qid, _ in self._tagging_queue):
+            return
+        self._tagging_queue.append((fid, bool(tag_only)))
+        self._drain_tagging_queue()
+
+    def _drain_tagging_queue(self):
+        while len(self._active_taggers) < self._MAX_TAGGING_WORKERS and self._tagging_queue:
+            file_id, tag_only = self._tagging_queue.pop(0)
+            if self.is_file_tagging(file_id):
+                continue
+            self._start_tagging_worker(file_id, tag_only=tag_only)
+
+    def _tag_file_async(self, file_id, tag_only=False):
         """Fire-and-forget background AI tagging for an already-saved file."""
+        self._enqueue_tag(file_id, tag_only=tag_only)
+
+    def _start_tagging_worker(self, file_id, tag_only=False):
         from classes.query import File as _File
         file_obj = _File.get(id=file_id)
         if not file_obj or not isinstance(file_obj.data, dict):
             return
         if file_obj.data.get("media_type") != "video":
+            return
+        if self.is_file_tagging(file_id):
             return
 
         # Pass project ID so the worker can build a per-project index name.
@@ -522,7 +558,9 @@ class FilesModel(QObject, updates.UpdateInterface):
             project_id = get_app().project.get("id") or ""
         except Exception:
             pass
-        worker = BackendTaggingWorker(dict(file_obj.data), project_id=project_id)
+        worker = BackendTaggingWorker(
+            dict(file_obj.data), project_id=project_id, tag_only=tag_only,
+        )
         self._active_taggers.append(worker)
         self._set_tagging_progress(file_id, "extracting", -1)
 
@@ -532,6 +570,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             except ValueError:
                 pass
             self._tagging_progress.pop(str(file_id), None)
+            self._drain_tagging_queue()
 
         def _on_progress(fid, phase, percent):
             self._set_tagging_progress(fid, phase, percent)
@@ -947,6 +986,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
         self._active_taggers = []  # strong refs to keep QThreads alive until finished
+        self._tagging_queue = []  # (file_id, tag_only) waiting for a worker slot
         self._tagging_progress = {}
 
         # Stop any running tagging threads cleanly when the app quits
