@@ -86,6 +86,11 @@ from windows.views.transitions_listview import TransitionsListView
 from windows.views.transitions_treeview import TransitionsTreeView
 from windows.views.tutorial import TutorialManager
 
+# Shipped Simple View / default window_state_v2 blob (must match _default.settings).
+_DEFAULT_WINDOW_STATE = (
+    "AAAA/wAAAAD9AAAAAwAAAAAAAAEnAAAC3/wCAAAAA/wAAAJeAAAApwAAAAAA////+gAAAAACAAAAAfsAAAAYAGQAbwBjAGsASwBlAHkAZgByAGEAbQBlAAAAAAD/////AAAAAAAAAAD7AAAAHABkAG8AYwBrAFAAcgBvAHAAZQByAHQAaQBlAHMAAAAAJwAAAt8AAAChAP////sAAAAYAGQAbwBjAGsAVAB1AHQAbwByAGkAYQBsAgAABUQAAAF6AAABYAAAANwAAAABAAABHAAAAUD8AgAAAAH7AAAAGABkAG8AYwBrAEsAZQB5AGYAcgBhAG0AZQEAAAFYAAAAFQAAAAAAAAAAAAAAAgAABEYAAALC/AEAAAAC/AAAAAAAAARGAAAA+gD////8AgAAAAL8AAAAPQAAAa4AAACvAP////wBAAAAAvwAAAAAAAABwQAAAJcA////+gAAAAACAAAABPsAAAASAGQAbwBjAGsARgBpAGwAZQBzAQAAAAD/////AAAAkgD////7AAAAHgBkAG8AYwBrAFQAcgBhAG4AcwBpAHQAaQBvAG4AcwEAAAAA/////wAAAJIA////+wAAABYAZABvAGMAawBFAGYAZgBlAGMAdABzAQAAAAD/////AAAAkgD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAAD/////AAAAkgD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAHHAAACfwAAAEcA////+wAAABgAZABvAGMAawBUAGkAbQBlAGwAaQBuAGUBAAAB8QAAAQ4AAACWAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQB0AG8AcgAAAANtAAAA2QAAAFgA////AAAERgAAAAEAAAABAAAAAgAAAAEAAAAC/AAAAAEAAAACAAAAAQAAAA4AdABvAG8AbABCAGEAcgEAAAAA/////wAAAAAAAAAA"
+)
+
 
 class MainWindow(updates.UpdateWatcher, QMainWindow):
     """ This class contains the logic for the main window widget """
@@ -2488,7 +2493,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.dockEffects,
             self.dockEmojis,
             self.dockVideo,
-            self.dockAIChat,
             ], Qt.TopDockWidgetArea)
 
         self.floatDocks(False)
@@ -2502,14 +2506,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.dockEmojis,
             self.dockVideo,
         ])
-        # Keep AI Chat dock hidden but accessible via menu
-        self.dockAIChat.hide()
 
-        # Set initial size of docks
-        simple_state = "".join([
-            "AAAA/wAAAAD9AAAAAwAAAAAAAAEnAAAC3/wCAAAAA/wAAAJeAAAApwAAAAAA////+gAAAAACAAAAAfsAAAAYAGQAbwBjAGsASwBlAHkAZgByAGEAbQBlAAAAAAD/////AAAAAAAAAAD7AAAAHABkAG8AYwBrAFAAcgBvAHAAZQByAHQAaQBlAHMAAAAAJwAAAt8AAAChAP////sAAAAYAGQAbwBjAGsAVAB1AHQAbwByAGkAYQBsAgAABUQAAAF6AAABYAAAANwAAAABAAABHAAAAUD8AgAAAAH7AAAAGABkAG8AYwBrAEsAZQB5AGYAcgBhAG0AZQEAAAFYAAAAFQAAAAAAAAAAAAAAAgAABEYAAALC/AEAAAAC/AAAAAAAAARGAAAA+gD////8AgAAAAL8AAAAPQAAAa4AAACvAP////wBAAAAAvwAAAAAAAABwQAAAJcA////+gAAAAACAAAABPsAAAASAGQAbwBjAGsARgBpAGwAZQBzAQAAAAD/////AAAAkgD////7AAAAHgBkAG8AYwBrAFQAcgBhAG4AcwBpAHQAaQBvAG4AcwEAAAAA/////wAAAJIA////+wAAABYAZABvAGMAawBFAGYAZgBlAGMAdABzAQAAAAD/////AAAAkgD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAAD/////AAAAkgD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAHHAAACfwAAAEcA////+wAAABgAZABvAGMAawBUAGkAbQBlAGwAaQBuAGUBAAAB8QAAAQ4AAACWAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQB0AG8AcgAAAANtAAAA2QAAAFgA////AAAERgAAAAEAAAABAAAAAgAAAAEAAAAC/AAAAAEAAAACAAAAAQAAAA4AdABvAG8AbABCAGEAcgEAAAAA/////wAAAAAAAAAA"
-        ])
-        self.restoreState(qt_types.str_to_bytes(simple_state))
+        self.restoreState(qt_types.str_to_bytes(_DEFAULT_WINDOW_STATE))
+        self._apply_default_ai_chat_dock()
         QCoreApplication.processEvents()
 
     def actionAdvanced_View_trigger(self):
@@ -3413,11 +3412,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if self.saved_state:
             self._restore_state_and_timeline()
 
+    def _is_default_window_state(self):
+        """True when the saved layout matches the shipped Simple View blob."""
+        if not self.saved_state:
+            return True
+        return self.saved_state == qt_types.str_to_bytes(_DEFAULT_WINDOW_STATE)
+
+    def _apply_default_ai_chat_dock(self):
+        """Show Zenvi Assistant docked on the right (default layout)."""
+        if not getattr(self, "dockAIChat", None):
+            return
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        self.dockAIChat.show()
+        self.resizeDocks([self.dockAIChat], [360], Qt.Horizontal)
+
     def _restore_state_and_timeline(self):
         """Restore saved dock state and then apply timeline height."""
         if self.saved_state:
             self.restoreState(self.saved_state)
         self._apply_saved_timeline_height()
+        if self._is_first_launch or self._is_default_window_state():
+            self._apply_default_ai_chat_dock()
 
     def _apply_saved_timeline_height(self):
         """Apply the saved timeline dock height without a visible two-pass resize."""
@@ -4040,7 +4055,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         track_metric_session()  # start session
 
         # Set unique install id (if blank)
-        if not s.get("unique_install_id"):
+        self._is_first_launch = not s.get("unique_install_id")
+        if self._is_first_launch:
             # This is assumed to be the 1st launch
             s.set("unique_install_id", str(uuid4()))
 
@@ -4269,8 +4285,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self._timeline_height_restored = False
         self.load_settings()
         
-        # Hide AI Chat dock by default (ensure it stays hidden even after restore state)
-        self.dockAIChat.hide()
+        # Hide AI Chat dock unless using the default layout (shown after restore).
+        if not self._is_first_launch and not self._is_default_window_state():
+            self.dockAIChat.hide()
 
         # Setup Cache settings
         self.cache_object = None
