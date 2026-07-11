@@ -35,7 +35,18 @@
     // Move menu to <body> so it escapes any CSS transform on ancestor elements
     // (transform creates a new containing block that breaks position:fixed)
     document.body.appendChild(modelMenu);
+    const agentTrigger = document.getElementById('chat-agent-trigger');
+    const agentLabelText = document.getElementById('chat-agent-label-text');
+    const agentMenu = document.getElementById('chat-agent-menu');
+    if (agentMenu) document.body.appendChild(agentMenu);
+    const gapLogBtn = document.getElementById('chat-gap-log-btn');
+    const gapLogOverlay = document.getElementById('chat-gap-log-overlay');
+    const gapLogClose = document.getElementById('chat-gap-log-close');
+    const gapLogListEl = document.getElementById('chat-gap-log-list');
+    if (gapLogOverlay) document.body.appendChild(gapLogOverlay);
     const messagesEl = document.getElementById('chat-messages');
+    const cliEmptyStateEl = document.getElementById('chat-cli-empty-state');
+    const liveBadgeEl = document.getElementById('chat-live-badge');
     const inputEl = document.getElementById('chat-input');
     const inputRow = document.getElementById('chat-input-row');
     const glowWrap = document.getElementById('chat-input-glow-wrap');
@@ -191,6 +202,11 @@
     var statusInterval = null;
 
     var activityContainer = null;
+    // True when activityContainer was lazily created for a "Live from terminal"
+    // tool call (see addToolBlock below) rather than by a normal setProcessing(true)
+    // turn — those never call setProcessing(false), so nothing would ever clear
+    // a "Reasoning" placeholder row; completeToolBlock skips creating one in that case.
+    var activityContainerIsLive = false;
     var activitySteps = [];
     var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
     var currentReasoningStep = null; // the single live "Reasoning" step, or null
@@ -443,7 +459,18 @@
     }
 
     window.addToolBlock = function (payloadJson) {
-        if (!activityContainer) return;
+        if (!activityContainer) {
+            // Normally created by setProcessing(true) for a Zenvi-driven turn;
+            // a "Live from terminal" tool call has no such turn (see
+            // setLiveFromTerminal), so create one lazily here and flag it as
+            // such — completeToolBlock uses this to skip spawning a
+            // "Reasoning" placeholder that nothing would ever clear.
+            activityContainer = document.createElement('div');
+            activityContainer.className = 'chat-activity-log';
+            activityContainer.setAttribute('aria-live', 'polite');
+            activityContainerIsLive = true;
+            messagesEl.appendChild(activityContainer);
+        }
         var data;
         try {
             data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
@@ -558,8 +585,11 @@
 
         // Re-enter "thinking" only once the LAST running tool has finished.
         // With N parallel tools this fires the single reasoning row exactly
-        // once instead of once per completion.
-        if (runningToolCount() === 0) {
+        // once instead of once per completion. Skipped for a "Live from
+        // terminal" activity log (activityContainerIsLive): nothing calls
+        // setProcessing(false) for those, so a spinner started here would
+        // never be cleared.
+        if (runningToolCount() === 0 && !activityContainerIsLive) {
             ensureReasoningStep();
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -582,6 +612,7 @@
             activityContainer = document.createElement('div');
             activityContainer.className = 'chat-activity-log';
             activityContainer.setAttribute('aria-live', 'polite');
+            activityContainerIsLive = false;
             messagesEl.appendChild(activityContainer);
             currentReasoningStep = null; // fresh turn
             ensureReasoningStep();
@@ -887,9 +918,9 @@
         badge.style.display = 'inline-flex';
         if (balance < 0) {
             badge.textContent = '…';
-            badge.style.background = 'rgba(124,111,247,0.08)';
-            badge.style.color = 'rgba(124,111,247,0.65)';
-            badge.style.borderColor = 'rgba(124,111,247,0.15)';
+            badge.style.background = 'rgba(77,156,246,0.08)';
+            badge.style.color = 'rgba(77,156,246,0.65)';
+            badge.style.borderColor = 'rgba(77,156,246,0.15)';
             return;
         }
         badge.textContent = balance + ' credits';
@@ -902,9 +933,9 @@
             badge.style.color = 'rgba(245,158,11,0.9)';
             badge.style.borderColor = 'rgba(245,158,11,0.25)';
         } else {
-            badge.style.background = 'rgba(124,111,247,0.12)';
-            badge.style.color = 'rgba(124,111,247,0.9)';
-            badge.style.borderColor = 'rgba(124,111,247,0.2)';
+            badge.style.background = 'rgba(77,156,246,0.12)';
+            badge.style.color = 'rgba(77,156,246,0.95)';
+            badge.style.borderColor = 'rgba(77,156,246,0.25)';
         }
     };
 
@@ -1117,6 +1148,7 @@
             if (orig) orig();
             typingEl = null;
             activityContainer = null;
+            activityContainerIsLive = false;
             activitySteps = [];
             toolBlocks = {};
             overlayVisible = true;
@@ -1168,6 +1200,10 @@
             if (tab.active) {
                 activeSessionId = tab.id;
                 if (backendSelect && tab.backend) backendSelect.value = tab.backend;
+                syncAgentTrigger();
+                updateCliEmptyState();
+                setLiveFromTerminal(!!tab.live);
+                if (modelTrigger) modelTrigger.style.display = (tab.backend === 'zenvi' || !tab.backend) ? '' : 'none';
             }
             var btn = document.createElement('button');
             btn.type = 'button';
@@ -1219,30 +1255,344 @@
         });
     });
 
-    // Populate the agent backend selector and react to changes.
+    // Populate the agent backend selector and react to changes. The hidden native
+    // <select> stays the single source of truth (read by Python via QWebChannel);
+    // the pill button + menu below are purely a presentation layer over it, mirroring
+    // the Model trigger/menu pattern so both selectors share one visual language.
+    var backendItems = [];
+    var agentMenuOpen = false;
+    // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
+    // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
+    var cliStatus = {};
+    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+
+    function findBackendName(id) {
+        var item = backendItems.find(function (b) { return b.id === id; });
+        return item ? item.name : (id || 'Zenvi Assistant');
+    }
+
+    function syncAgentTrigger() {
+        if (agentLabelText && backendSelect) {
+            agentLabelText.textContent = findBackendName(backendSelect.value);
+        }
+    }
+
+    function isCliBackend(id) {
+        return id === 'claude_code' || id === 'codex';
+    }
+
+    // Empty state (calm, not an error) shown instead of messages when the active
+    // tab's backend is a CLI agent that's missing or not yet connected.
+    function updateCliEmptyState() {
+        if (!cliEmptyStateEl || !messagesEl || !backendSelect) return;
+        var id = backendSelect.value;
+        var info = cliStatus[id];
+        if (!isCliBackend(id) || !info) {
+            cliEmptyStateEl.style.display = 'none';
+            messagesEl.style.display = '';
+            return;
+        }
+        if (info.installed === false) {
+            cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
+                findBackendName(id) + " CLI not found. Install it and make sure '" +
+                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+            ) + '</div>';
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            return;
+        }
+        if (!info.registered) {
+            cliEmptyStateEl.innerHTML =
+                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
+                ' is installed but not connected to Zenvi yet.</div>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Connect</button>' +
+                '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            var btn = document.getElementById('chat-cli-connect-btn');
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    btn.disabled = true;
+                    btn.textContent = 'Connecting…';
+                    var statusEl = document.getElementById('chat-cli-connect-status');
+                    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                    getBridge(function (bridge) {
+                        if (bridge && bridge.connectCli) bridge.connectCli(id);
+                    });
+                });
+            }
+            return;
+        }
+        // Installed and connected — nothing to show, back to the normal chat view.
+        cliEmptyStateEl.style.display = 'none';
+        messagesEl.style.display = '';
+    }
+
+    window.setCliStatus = function (statusJson) {
+        try { cliStatus = JSON.parse(statusJson) || {}; } catch (e) { cliStatus = {}; }
+        renderAgentMenu();
+        updateCliEmptyState();
+    };
+
+    window.onConnectResult = function (backendId, ok, message) {
+        var statusEl = document.getElementById('chat-cli-connect-status');
+        var btn = document.getElementById('chat-cli-connect-btn');
+        if (statusEl) {
+            statusEl.textContent = message || (ok ? 'Connected.' : 'Connect failed.');
+            statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        if (btn && !ok) {
+            btn.disabled = false;
+            btn.textContent = 'Connect';
+        }
+        // A fresh setCliStatus push (from the re-detect Python triggers right
+        // after this) will re-render the empty state — if now registered, it
+        // flips straight back to the normal chat view.
+    };
+
+    // ── "Live from terminal" mode: a genuine external terminal session is
+    // driving this tab's MCP calls, so this tab becomes a read-only view —
+    // badge shown, input disabled. See ai_chat_ui.py's _external_target_sid
+    // for how Python decides when this applies. ──────────────────────────
+    window.setLiveFromTerminal = function (isLive) {
+        if (liveBadgeEl) liveBadgeEl.style.display = isLive ? 'inline-flex' : 'none';
+        if (inputRow) inputRow.classList.toggle('is-live-readonly', !!isLive);
+        if (inputEl) {
+            inputEl.disabled = !!isLive;
+            inputEl.placeholder = isLive ? 'Live from terminal — this is a read-only view.' : ' ';
+        }
+        if (sendBtn) sendBtn.disabled = !!isLive;
+    };
+
     window.setBackends = function (backendsJson) {
         if (!backendSelect) return;
         var list = [];
         try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
+        backendItems = list.map(function (b) {
+            return { id: b.id || '', name: b.name || b.id || '' };
+        });
         var current = backendSelect.value;
         backendSelect.innerHTML = '';
-        list.forEach(function (b) {
+        backendItems.forEach(function (b) {
             var opt = document.createElement('option');
             opt.value = b.id;
             opt.textContent = b.name;
             backendSelect.appendChild(opt);
         });
         if (current) backendSelect.value = current;
+        syncAgentTrigger();
     };
 
     if (backendSelect) {
         backendSelect.addEventListener('change', function () {
+            syncAgentTrigger();
+            updateCliEmptyState();
+            // Changing backends always leaves "Live from terminal" mode (Python
+            // resets sess["live_from_terminal"] on the same change — this is
+            // just the instant local echo, matching the model-pill toggle below).
+            setLiveFromTerminal(false);
             if (!activeSessionId) return;
             getBridge(function (bridge) {
                 if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
             });
+            if (modelTrigger) modelTrigger.style.display = (backendSelect.value === 'zenvi' || !backendSelect.value) ? '' : 'none';
         });
     }
+
+    function statusDotHtml(id, info) {
+        // Not-installed already gets the dimmed row + "not installed" tag below;
+        // the dot is reserved for the two "installed" states (amber/green).
+        if (!isCliBackend(id) || !info || info.installed === false) return '';
+        return '<span class="chat-agent-status-dot ' + (info.registered ? 'connected' : 'amber') + '"></span>';
+    }
+
+    function renderAgentMenu() {
+        if (!agentMenu) return;
+        agentMenu.innerHTML = '';
+        backendItems.forEach(function (item) {
+            var info = cliStatus[item.id];
+            var notInstalled = isCliBackend(item.id) && info && info.installed === false;
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'chat-model-option'
+                + (item.id === backendSelect.value ? ' selected' : '')
+                + (notInstalled ? ' not-installed' : '');
+            btn.setAttribute('role', 'option');
+            btn.setAttribute('aria-selected', item.id === backendSelect.value ? 'true' : 'false');
+            btn.innerHTML = statusDotHtml(item.id, info) +
+                '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
+                (notInstalled ? '<span class="chat-agent-option-tag">not installed</span>' : '') +
+                getCheckIcon();
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                selectAgent(item.id);
+                closeAgentMenu();
+            });
+            agentMenu.appendChild(btn);
+        });
+    }
+
+    function selectAgent(id) {
+        if (!backendSelect || backendSelect.value === id) return;
+        backendSelect.value = id;
+        // Real 'change' event so the listener above (setBackend + model-pill toggle)
+        // fires exactly as it would for a native <select> interaction.
+        backendSelect.dispatchEvent(new Event('change'));
+    }
+
+    function openAgentMenu() {
+        if (!agentMenu || !agentTrigger || agentMenuOpen) return;
+        agentMenuOpen = true;
+        renderAgentMenu();
+        var rect = agentTrigger.getBoundingClientRect();
+        var vh = Math.max(
+            document.documentElement ? document.documentElement.clientHeight : 0,
+            window.innerHeight || 0,
+            1
+        );
+        var vw = Math.max(
+            document.documentElement ? document.documentElement.clientWidth : 0,
+            window.innerWidth || 0,
+            1
+        );
+        var gap = 6;
+        var menuMax = 280;
+        var left = rect.left;
+        var menuW = 220;
+        if (left + menuW > vw - 4) {
+            left = Math.max(4, vw - menuW - 4);
+        }
+        agentMenu.style.position = 'fixed';
+        agentMenu.style.left = Math.round(left) + 'px';
+        agentMenu.style.right = 'auto';
+        agentMenu.style.visibility = 'visible';
+        agentMenu.style.zIndex = '2147483647';
+        var spaceBelow = Math.max(0, vh - rect.bottom - 8);
+        var spaceAbove = Math.max(0, rect.top - 8);
+        agentMenu.style.top = '';
+        agentMenu.style.bottom = '';
+        if (spaceBelow >= 120 || spaceBelow >= spaceAbove) {
+            agentMenu.style.top = Math.round(rect.bottom + gap) + 'px';
+            agentMenu.style.bottom = 'auto';
+            agentMenu.style.maxHeight = Math.min(menuMax, spaceBelow) + 'px';
+        } else {
+            agentMenu.style.bottom = Math.round(vh - rect.top + gap) + 'px';
+            agentMenu.style.top = 'auto';
+            agentMenu.style.maxHeight = Math.min(menuMax, spaceAbove) + 'px';
+        }
+        agentMenu.style.display = 'block';
+        agentTrigger.classList.add('active');
+    }
+
+    function closeAgentMenu() {
+        if (!agentMenuOpen) return;
+        agentMenuOpen = false;
+        if (agentMenu) {
+            agentMenu.style.display = 'none';
+            agentMenu.style.top = '';
+            agentMenu.style.bottom = '';
+            agentMenu.style.maxHeight = '';
+        }
+        if (agentTrigger) agentTrigger.classList.remove('active');
+    }
+
+    if (agentTrigger) {
+        agentTrigger.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (agentMenuOpen) {
+                closeAgentMenu();
+            } else {
+                openAgentMenu();
+                // Status must always be real, never stale — re-check on every open
+                // rather than relying solely on the 60s background refresh.
+                getBridge(function (bridge) {
+                    if (bridge && bridge.refreshCliStatus) bridge.refreshCliStatus();
+                });
+            }
+        });
+        document.addEventListener('click', function (e) {
+            if (agentMenuOpen && !agentMenu.contains(e.target) && !agentTrigger.contains(e.target)) {
+                closeAgentMenu();
+            }
+        });
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && agentMenuOpen) closeAgentMenu();
+        });
+    }
+
+    // ==================================================================
+    // Tool-gap log panel (silent capability gaps — see the agent spec, Part B)
+    // ==================================================================
+    function openGapLog() {
+        if (!gapLogOverlay) return;
+        gapLogOverlay.style.display = 'flex';
+        // Status must always be real, never stale — re-fetch every time it opens.
+        getBridge(function (bridge) {
+            if (bridge && bridge.getGaps) bridge.getGaps();
+        });
+    }
+
+    function closeGapLog() {
+        if (gapLogOverlay) gapLogOverlay.style.display = 'none';
+    }
+
+    function renderGapEntry(entry) {
+        var row = document.createElement('div');
+        row.className = 'chat-gap-log-entry';
+        var when = '';
+        try { when = new Date(entry.ts * 1000).toLocaleString(); } catch (e) { when = ''; }
+        row.innerHTML =
+            '<div class="chat-gap-log-entry-request">' + escapeHtml(entry.request || '') + '</div>' +
+            '<div class="chat-gap-log-entry-capability">' + escapeHtml(entry.missing_capability || '') + '</div>' +
+            '<div class="chat-gap-log-entry-footer">' +
+            '<span class="chat-gap-log-entry-time">' + escapeHtml(when) + '</span>' +
+            '<span class="chat-gap-log-entry-actions">' +
+            '<button type="button" class="chat-gap-log-action-btn resolve">Resolve</button>' +
+            '<button type="button" class="chat-gap-log-action-btn delete">Delete</button>' +
+            '</span></div>';
+        row.querySelector('.resolve').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.resolveGap) bridge.resolveGap(entry.id);
+            });
+        });
+        row.querySelector('.delete').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.deleteGap) bridge.deleteGap(entry.id);
+            });
+        });
+        return row;
+    }
+
+    window.setGapList = function (entriesJson) {
+        if (!gapLogListEl) return;
+        var entries = [];
+        try { entries = JSON.parse(entriesJson) || []; } catch (e) { entries = []; }
+        var open = entries.filter(function (e) { return !e.resolved; });
+        gapLogListEl.innerHTML = '';
+        if (!open.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-gap-log-empty';
+            empty.textContent = 'No tool gaps logged.';
+            gapLogListEl.appendChild(empty);
+            return;
+        }
+        open.forEach(function (entry) {
+            gapLogListEl.appendChild(renderGapEntry(entry));
+        });
+    };
+
+    if (gapLogBtn) gapLogBtn.addEventListener('click', openGapLog);
+    if (gapLogClose) gapLogClose.addEventListener('click', closeGapLog);
+    if (gapLogOverlay) {
+        gapLogOverlay.addEventListener('click', function (e) {
+            if (e.target === gapLogOverlay) closeGapLog();
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && gapLogOverlay && gapLogOverlay.style.display !== 'none') {
+            closeGapLog();
+        }
+    });
 
     // Handle background responses (marks tab as unread)
     window.onBackgroundResponse = function (sessionId, bodyHtml) {

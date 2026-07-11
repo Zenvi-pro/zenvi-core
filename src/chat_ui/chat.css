@@ -474,6 +474,7 @@
     background: var(--chat-surface) !important;
 }
 .chat-model-trigger.active .chat-model-chevron { transform: rotate(180deg); }
+.chat-model-trigger:active { transform: scale(0.96); }
 
 /* ── Model dropdown ─────────────────────────────────────────────────── */
 @keyframes chat-menu-enter {
@@ -514,6 +515,54 @@
 .chat-model-option-check { flex-shrink: 0; width: 14px; height: 14px; opacity: 0; }
 .chat-model-option.selected .chat-model-option-check { opacity: 1; color: var(--chat-accent); }
 
+/* Agent menu option whose CLI binary isn't installed — dimmed, tagged, still clickable
+   (picking it shows the calm "not found" empty state, not a dead end). */
+.chat-model-option.not-installed { opacity: 0.55; }
+.chat-agent-option-tag {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--chat-muted);
+    margin-right: 4px;
+    white-space: nowrap;
+}
+
+/* Installed-CLI status dot: amber = not connected to Zenvi yet, green = connected. */
+.chat-agent-status-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+.chat-agent-status-dot.amber { background: #f59e0b; }
+.chat-agent-status-dot.connected { background: #22c55e; }
+
+/* ── Inline "Connect" flow in the CLI empty state ─────────────────────── */
+.chat-cli-connect-msg { margin-bottom: 10px; }
+
+.chat-cli-connect-btn {
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--chat-accent);
+    background: transparent;
+    color: var(--chat-accent);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.chat-cli-connect-btn:hover:not(:disabled) { background: var(--chat-accent); color: #fff; }
+.chat-cli-connect-btn:disabled { opacity: 0.6; cursor: default; }
+
+.chat-cli-connect-status {
+    margin-top: 8px;
+    font-size: 11px;
+    min-height: 14px;
+    white-space: pre-wrap;
+}
+.chat-cli-connect-status.ok { color: #22c55e; }
+.chat-cli-connect-status.error { color: #ef4444; }
+
 /* ── Icon buttons in the toolbar ────────────────────────────────────── */
 .chat-bottom-icon {
     display: flex;
@@ -531,6 +580,158 @@
 }
 .chat-bottom-icon:hover           { background: var(--chat-button-bg); color: var(--chat-text); }
 .chat-cancel-icon:hover           { color: #ef4444 !important; }
+
+/* ── Agent backend selector bar ─────────────────────────────────────── */
+.chat-agent-bar {
+    background: var(--chat-bg);
+    border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.06));
+}
+
+.chat-agent-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--chat-muted);
+    opacity: 0.75;
+}
+
+/* Trigger and menu reuse .chat-model-trigger / .chat-model-menu / .chat-model-option
+   (defined above) so the Agent pill matches the Model pill's look and interaction
+   states exactly, with no duplicated CSS. */
+
+/* ── New-chat "+" button ─────────────────────────────────────────────── */
+#chat-tab-add {
+    color: var(--chat-muted);
+}
+#chat-tab-add:hover {
+    background: var(--chat-button-bg);
+    color: var(--chat-text);
+}
+#chat-tab-add:active {
+    transform: scale(0.9);
+}
+
+/* ── Tool-gap log button + panel ──────────────────────────────────────── */
+#chat-gap-log-btn { color: var(--chat-muted); }
+#chat-gap-log-btn:hover { background: var(--chat-button-bg); color: var(--chat-text); }
+#chat-gap-log-btn:active { transform: scale(0.9); }
+
+.chat-gap-log-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.chat-gap-log-panel {
+    width: min(92%, 360px);
+    max-height: 70%;
+    display: flex;
+    flex-direction: column;
+    background: var(--chat-surface);
+    border: 1px solid var(--chat-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.55), 0 1px 4px rgba(0,0,0,0.35);
+    overflow: hidden;
+}
+
+.chat-gap-log-header {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.08));
+}
+
+.chat-gap-log-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--chat-text);
+}
+
+.chat-gap-log-close {
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    color: var(--chat-muted);
+    cursor: pointer;
+    font-size: 15px;
+    line-height: 1;
+    transition: background 0.12s, color 0.12s;
+}
+.chat-gap-log-close:hover { background: var(--chat-button-bg); color: var(--chat-text); }
+
+.chat-gap-log-list {
+    overflow-y: auto;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.chat-gap-log-empty {
+    padding: 24px 10px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--chat-muted);
+}
+
+.chat-gap-log-entry {
+    border: 1px solid var(--chat-border, rgba(255,255,255,0.08));
+    border-radius: 8px;
+    padding: 8px 10px;
+    background: var(--chat-input-bg);
+}
+
+.chat-gap-log-entry-request {
+    font-size: 12px;
+    color: var(--chat-text);
+    margin-bottom: 3px;
+    word-break: break-word;
+}
+
+.chat-gap-log-entry-capability {
+    font-size: 11px;
+    color: var(--chat-muted);
+    word-break: break-word;
+}
+
+.chat-gap-log-entry-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 6px;
+}
+
+.chat-gap-log-entry-time {
+    font-size: 10px;
+    color: var(--chat-muted);
+    opacity: 0.7;
+}
+
+.chat-gap-log-entry-actions { display: flex; gap: 4px; }
+
+.chat-gap-log-action-btn {
+    font-size: 10px;
+    padding: 3px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--chat-border, rgba(255,255,255,0.12));
+    background: transparent;
+    color: var(--chat-muted);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.chat-gap-log-action-btn:hover { background: var(--chat-button-bg); color: var(--chat-text); }
+.chat-gap-log-action-btn.resolve:hover { color: var(--chat-accent); border-color: var(--chat-accent); }
+.chat-gap-log-action-btn.delete:hover { color: #ef4444; border-color: rgba(239,68,68,0.4); }
 
 /* ── Send button ────────────────────────────────────────────────────── */
 .chat-send-circle {
@@ -559,6 +760,7 @@
     transform: translate(-50%, -50%);
 }
 .chat-send-circle:hover:not(:disabled) { opacity: 0.85; }
+.chat-send-circle:active:not(:disabled) { transform: scale(0.92); }
 .chat-send-circle:disabled             { opacity: 0.4; cursor: not-allowed; }
 
 /* ── Multi-chat tab bar ─────────────────────────────────────────────── */
@@ -639,7 +841,29 @@
     color: #ef4444;
 }
 
+.chat-tab-close:active { transform: scale(0.88); }
+
 @keyframes chat-processing-pulse {
     0%, 100% { transform: scale(0.9); opacity: 0.55; }
     50% { transform: scale(1.25); opacity: 1; }
 }
+
+/* ── "Live from terminal" badge (read-only external-session view) ────── */
+.chat-live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(34,197,94,0.12);
+    color: rgba(34,197,94,0.95);
+    border: 1px solid rgba(34,197,94,0.25);
+}
+.chat-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #22c55e;
+    animation: chat-processing-pulse 1.1s ease-in-out infinite;
+}
+
+/* ── Read-only input state (Live from terminal mode) ──────────────────── */
+.chat-input-row.is-live-readonly { opacity: 0.6; pointer-events: none; }

@@ -569,6 +569,7 @@ class AIChatWorker(QObject):
 
             if self._stopping:
                 return
+            self._log_tool_gap_if_any(text)
             if result is not None:
                 self.response_ready.emit(result)
             elif final_response is not None:
@@ -580,6 +581,24 @@ class AIChatWorker(QObject):
                 return  # Swallow exceptions during shutdown — Qt stack is going away
             log.error("AI chat error: %s", e, exc_info=True)
             self.error_occurred.emit(str(e))
+
+    def _log_tool_gap_if_any(self, request_text: str):
+        """Silently record a missing-capability gap, if this request needed one.
+
+        Runs on this worker's own thread (never the GUI thread), so it never
+        blocks the UI. The chat response itself is unaffected either way.
+        """
+        try:
+            from classes.agent_gap_log import classify_gap, append_gap
+            gap = classify_gap(request_text)
+            if gap:
+                append_gap({
+                    "request": request_text,
+                    "missing_capability": gap,
+                    "session_id": getattr(self, "_session_id", "") or "",
+                })
+        except Exception:
+            log.debug("tool-gap logging failed", exc_info=True)
 
     @pyqtSlot()
     def clear_session(self):
@@ -640,6 +659,33 @@ class ChatBridge(QObject):
     def closeSession(self, session_id: str):
         if self.window:
             self.window._close_session(session_id)
+
+    @pyqtSlot()
+    def refreshCliStatus(self):
+        """Called from JS when the Agent dropdown opens — status must always be
+        real, never stale, so re-check rather than rely solely on the timer."""
+        if self.window:
+            self.window._detect_clis()
+
+    @pyqtSlot()
+    def getGaps(self):
+        if self.window:
+            self.window._push_gap_list()
+
+    @pyqtSlot(str)
+    def resolveGap(self, entry_id: str):
+        if self.window:
+            self.window._resolve_gap(entry_id)
+
+    @pyqtSlot(str)
+    def deleteGap(self, entry_id: str):
+        if self.window:
+            self.window._delete_gap(entry_id)
+
+    @pyqtSlot(str)
+    def connectCli(self, backend_id: str):
+        if self.window:
+            self.window._connect_cli(backend_id)
 
 
 class AIChatWindow(QDockWidget):
@@ -742,6 +788,19 @@ class AIChatWindow(QDockWidget):
 
         # Prefetch credits before the web UI finishes loading (avoids 0 → real flash).
         self._start_credits_refresh()
+        # Detect claude/codex CLI availability for the Agent dropdown's status dots.
+        self._start_cli_detection_refresh()
+
+        # Every MCP tool call (Zenvi-driven or a genuine external terminal
+        # session — the MCP layer can't tell those apart) is broadcast here;
+        # see _external_target_sid for how we decide whether to render it.
+        try:
+            from classes.agent_mcp_server import get_tool_call_broadcaster
+            broadcaster = get_tool_call_broadcaster()
+            broadcaster.tool_call_started.connect(self._on_external_tool_started)
+            broadcaster.tool_call_completed.connect(self._on_external_tool_completed)
+        except Exception:
+            log.debug("Failed to connect tool-call broadcaster", exc_info=True)
 
     # ------------------------------------------------------------------
     # Session management
@@ -788,6 +847,7 @@ class AIChatWindow(QDockWidget):
             "unread": False,
             "first_prompt_summary": None,
             "backend": BACKEND_ZENVI,
+            "live_from_terminal": False,
         }
         self._active_sid = sid
 
@@ -806,6 +866,7 @@ class AIChatWindow(QDockWidget):
             "unread": False,
             "first_prompt_summary": None,
             "backend": backend,
+            "live_from_terminal": False,
         }
         self._active_sid = sid
         self._first_prompt_summary = None
@@ -819,6 +880,7 @@ class AIChatWindow(QDockWidget):
             self.chat_box.clear()
             self._add_system_msg("New session started. Ask anything about your project.")
             self._update_preamble()
+            self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
         self._save_chat_sessions_store()
 
@@ -857,10 +919,16 @@ class AIChatWindow(QDockWidget):
         sess["worker"] = worker
         sess["thread"] = thread
         sess["backend"] = backend
+        # Switching backends always leaves "Live from terminal" mode, even
+        # switching between the two CLI backends — the old runner/live view
+        # is gone either way.
+        sess["live_from_terminal"] = False
         if session_id == self._active_sid:
             self.is_processing = False
             self._set_processing_ui(False)
-            if not self._use_web_ui:
+            if self._use_web_ui:
+                self._run_js("if(window.setLiveFromTerminal) setLiveFromTerminal(false);")
+            else:
                 self._sync_widget_backend_combo()
         self._save_chat_sessions_store()
 
@@ -917,10 +985,12 @@ class AIChatWindow(QDockWidget):
         if thread.isRunning():
             thread.quit()
             thread.wait(1000)
-        # If we just closed the active session, switch to the first remaining one
+        # If we just closed the active session, switch to the first remaining one.
+        # Let _switch_session assign self._active_sid itself — presetting it here
+        # would trip that method's own "already active" early-return guard and
+        # skip the tab/message/model-pill re-render entirely.
         if self._active_sid == session_id:
-            self._active_sid = next(iter(self._sessions))
-            self._switch_session(self._active_sid)
+            self._switch_session(next(iter(self._sessions)))
         else:
             if self._use_web_ui:
                 self._push_tabs_to_js()
@@ -938,6 +1008,7 @@ class AIChatWindow(QDockWidget):
                 "active": sid == self._active_sid,
                 "processing": bool(sess.get("processing", False)),
                 "backend": sess.get("backend", BACKEND_ZENVI),
+                "live": bool(sess.get("live_from_terminal", False)),
             })
         self._run_js("setTabs(%s);" % json.dumps(json.dumps(tabs)))
 
@@ -1318,6 +1389,21 @@ class AIChatWindow(QDockWidget):
             combo.blockSignals(True)
             combo.setCurrentIndex(idx)
             combo.blockSignals(False)
+        is_cli = backend in (BACKEND_CLAUDE, BACKEND_CODEX)
+        model_combo = getattr(self, "model_combo", None)
+        if model_combo is not None:
+            model_combo.setVisible(not is_cli)
+        # Re-apply (or clear) the "Live from terminal" read-only input state
+        # for whichever session just became active — _mark_live_from_terminal
+        # only fires once per session, so switching tabs needs its own resync.
+        is_live = bool(sess.get("live_from_terminal")) if sess else False
+        if self.msg_input:
+            self.msg_input.setReadOnly(is_live)
+            self.msg_input.setPlaceholderText(
+                "Live from terminal — this is a read-only view." if is_live else ""
+            )
+        if self.send_btn:
+            self.send_btn.setEnabled(not is_live)
 
     def _rebuild_widget_tabs(self):
         """Rebuild the widget fallback multi-chat tab bar."""
@@ -1709,6 +1795,14 @@ class AIChatWindow(QDockWidget):
         self._start_restore_chat_histories_async()
         self._chat_web_initial_sync_done = True
 
+        # Push already-detected CLI status (detection started in __init__, before
+        # this page finished loading) so the dropdown doesn't wait another 60s.
+        cached_cli_status = getattr(self, "_cli_status", None)
+        if cached_cli_status:
+            self._run_js(
+                "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(cached_cli_status)
+            )
+
         # Push prefetched balance (or loading placeholder) when the web UI is ready.
         try:
             from classes.credits_client import credits as _creds
@@ -1756,6 +1850,106 @@ class AIChatWindow(QDockWidget):
             "if(window.updateCreditsBalance) updateCreditsBalance(%s);"
             % json.dumps(balance)
         )
+
+    def _start_cli_detection_refresh(self):
+        """Detect claude/codex CLI availability once, then refresh every 60s."""
+        self._detect_clis()
+        if not getattr(self, "_cli_detect_timer", None):
+            self._cli_detect_timer = QTimer(self)
+            self._cli_detect_timer.timeout.connect(self._detect_clis)
+            self._cli_detect_timer.start(60_000)   # refresh every 60 seconds
+
+    def _detect_clis(self):
+        """Check claude/codex CLI availability in a background thread; push to JS."""
+        def run():
+            try:
+                from windows.agent_runners import detect_cli
+                status = {
+                    BACKEND_CLAUDE: detect_cli("claude"),
+                    BACKEND_CODEX: detect_cli("codex"),
+                }
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_cli_status",
+                    Qt.QueuedConnection,
+                    Q_ARG(str, json.dumps(status)),
+                )
+            except Exception as exc:
+                log.debug("CLI detection failed: %s", exc)
+
+        threading.Thread(target=run, daemon=True, name="cli-detect").start()
+
+    @pyqtSlot(str)
+    def _on_cli_status(self, status_json: str):
+        """Push CLI availability to the Agent dropdown (called on main thread)."""
+        self._cli_status = status_json
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(status_json)
+            )
+
+    def _push_gap_list(self):
+        """Push the current tool-gap log to the JS viewer (called on open)."""
+        try:
+            from classes.agent_gap_log import read_gaps
+            entries = read_gaps()
+        except Exception:
+            log.debug("read_gaps failed", exc_info=True)
+            entries = []
+        if self._use_web_ui:
+            self._run_js("if(window.setGapList) setGapList(%s);" % json.dumps(json.dumps(entries)))
+
+    def _resolve_gap(self, entry_id: str):
+        try:
+            from classes.agent_gap_log import mark_resolved
+            mark_resolved(entry_id)
+        except Exception:
+            log.debug("mark_resolved failed", exc_info=True)
+        self._push_gap_list()
+
+    def _delete_gap(self, entry_id: str):
+        try:
+            from classes.agent_gap_log import delete_gap
+            delete_gap(entry_id)
+        except Exception:
+            log.debug("delete_gap failed", exc_info=True)
+        self._push_gap_list()
+
+    def _connect_cli(self, backend_id: str):
+        """Register Zenvi's MCP server with claude/codex (Connect button in
+        the empty state) so an external terminal session can reach it."""
+        def run():
+            ok, message = False, "Unknown backend."
+            try:
+                from classes.agent_mcp_server import get_mcp_server
+                srv = get_mcp_server().start()
+                if backend_id == BACKEND_CLAUDE:
+                    from windows.agent_runners import register_claude
+                    ok, message = register_claude(srv.port, srv.token)
+                elif backend_id == BACKEND_CODEX:
+                    from windows.agent_runners import register_codex
+                    ok, message = register_codex(srv.port, srv.token)
+            except Exception as e:
+                log.debug("connect_cli failed: %s", e, exc_info=True)
+                ok, message = False, str(e)
+            QMetaObject.invokeMethod(
+                self, "_on_connect_result", Qt.QueuedConnection,
+                Q_ARG(str, backend_id), Q_ARG(bool, ok), Q_ARG(str, message),
+            )
+
+        threading.Thread(target=run, daemon=True, name="cli-connect").start()
+
+    @pyqtSlot(str, bool, str)
+    def _on_connect_result(self, backend_id: str, ok: bool, message: str):
+        """Called on the main thread once register_claude/register_codex finishes."""
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.onConnectResult) onConnectResult(%s, %s, %s);"
+                % (json.dumps(backend_id), json.dumps(ok), json.dumps(message))
+            )
+        # Status must always be real, never stale — re-check right away so the
+        # dropdown/empty-state flips live instead of waiting for the 60s timer.
+        self._detect_clis()
 
     def _get_preamble_html(self):
         """Return preamble as HTML: AI summary as heading when set, else 'Zenvi Assistant'."""
@@ -2034,6 +2228,13 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
+        self._render_tool_started(call_id, tool_name, args_json)
+
+    def _render_tool_started(self, call_id: str, tool_name: str, args_json: str):
+        """Shared by ``_on_tool_started`` (worker-driven, this tab's own
+        request) and ``_on_external_tool_started`` (a genuine external
+        terminal session's tool call) — same rendering either way, only how
+        the target session is resolved differs."""
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
@@ -2074,6 +2275,11 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
+        self._render_tool_completed(call_id, ok, result)
+
+    def _render_tool_completed(self, call_id: str, ok: bool, result: str):
+        """Shared by ``_on_tool_completed`` and ``_on_external_tool_completed``
+        — see ``_render_tool_started`` for why this split exists."""
         summary = self._tool_result_summary(result)
         if self._use_web_ui:
             self._run_js(
@@ -2084,6 +2290,60 @@ class AIChatWindow(QDockWidget):
         block = self._widget_tool_blocks.get(call_id)
         if block:
             block.complete(ok, summary)
+
+    def _external_target_sid(self):
+        """Which open tab (if any) is entitled to render a genuine external
+        MCP tool call live. Tool blocks only ever render into the ACTIVE tab
+        (see the sid guards above) — so this only needs to check whether the
+        active tab qualifies: its backend must be a CLI backend, and it must
+        NOT currently be mid a Zenvi-driven request (that request's own
+        runner already renders its own tool calls through this same MCP
+        server; broadcasting here too would duplicate them — the MCP layer
+        itself can't distinguish "Zenvi's own spawned CLI" from "the user's
+        own terminal session", so this processing-flag check is how v1
+        approximates it, per the plan's noted limitation).
+        """
+        sess = self._sessions.get(self._active_sid)
+        if not sess or sess.get("backend") not in (BACKEND_CLAUDE, BACKEND_CODEX):
+            return None
+        if sess.get("processing"):
+            return None
+        return self._active_sid
+
+    @pyqtSlot(str, str, str)
+    def _on_external_tool_started(self, call_id: str, tool_name: str, args_json: str):
+        sid = self._external_target_sid()
+        if not sid:
+            return
+        self._mark_live_from_terminal(sid)
+        self._render_tool_started(call_id, tool_name, args_json)
+
+    @pyqtSlot(str, bool, str)
+    def _on_external_tool_completed(self, call_id: str, ok: bool, result: str):
+        sid = self._external_target_sid()
+        if not sid:
+            return
+        self._render_tool_completed(call_id, ok, result)
+
+    def _mark_live_from_terminal(self, sid: str):
+        """Flip a session into "Live from terminal" mode the first time a
+        genuine external tool call is observed for it: shows a badge and
+        disables the input box (this tab isn't a two-way conversation — the
+        real session is happening in the user's terminal, not here)."""
+        sess = self._sessions.get(sid)
+        if not sess or sess.get("live_from_terminal"):
+            return
+        sess["live_from_terminal"] = True
+        if sid != self._active_sid:
+            return
+        if self._use_web_ui:
+            self._run_js("if(window.setLiveFromTerminal) setLiveFromTerminal(true);")
+        else:
+            if self.msg_input:
+                self.msg_input.setReadOnly(True)
+                self.msg_input.setPlaceholderText("Live from terminal — this is a read-only view.")
+            if self.send_btn:
+                self.send_btn.setEnabled(False)
 
     @pyqtSlot(str)
     def _on_response_ready(self, text: str):

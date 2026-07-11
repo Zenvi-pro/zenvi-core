@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import uuid
@@ -56,6 +57,194 @@ def _strip_mcp_prefix(name: str) -> str:
     if name and name.startswith("mcp__"):
         return name.split("__")[-1]
     return name or ""
+
+
+def detect_cli(binary_name: str) -> dict:
+    """Check whether *binary_name* (``claude`` or ``codex``) is on PATH, and
+    (if installed) whether Zenvi's MCP server is already registered with it.
+
+    Runs synchronously with short timeouts; callers on the GUI thread must
+    offload this to a background thread (see ``AIChatWindow``'s detection
+    worker) rather than call it directly.
+    """
+    if not shutil.which(binary_name):
+        return {"installed": False, "version": None, "registered": False}
+    version = None
+    try:
+        result = subprocess.run(
+            [binary_name, "--version"], capture_output=True, text=True, timeout=3
+        )
+        version = (result.stdout or result.stderr or "").strip() or None
+    except Exception:
+        version = None
+    return {"installed": True, "version": version, "registered": _is_registered(binary_name)}
+
+
+def _is_registered(binary_name: str) -> bool:
+    if binary_name == "claude":
+        return _claude_is_registered()
+    if binary_name == "codex":
+        return _codex_is_registered()
+    return False
+
+
+def _claude_config_path() -> str:
+    return os.path.expanduser("~/.claude.json")
+
+
+def _claude_is_registered() -> bool:
+    """Check the ``mcpServers`` table in ``~/.claude.json`` directly.
+
+    ``claude mcp list`` also reports this, but it live health-checks every
+    configured server (including ones needing OAuth) before printing
+    anything — slow and network-dependent, and observed to occasionally
+    exceed a reasonable subprocess timeout right after a fresh registration,
+    which would misreport a real registration as absent. Reading the config
+    file is instant and has no such race.
+    """
+    try:
+        with open(_claude_config_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if "zenvi" in (data.get("mcpServers") or {}):
+            return True
+    except Exception:
+        pass
+    return _claude_is_registered_via_cli()
+
+
+def _claude_is_registered_via_cli() -> bool:
+    """Fallback for when the config file can't be read directly: ask the CLI.
+    ``claude mcp list`` prints one ``<name>: <url> (<transport>) - <status>``
+    line per server; anchor on the colon so we don't false-match some other
+    server whose URL/args happen to contain the substring "zenvi"."""
+    try:
+        result = subprocess.run(
+            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10
+        )
+        return "zenvi:" in (result.stdout or "")
+    except Exception:
+        return False
+
+
+def _codex_config_path() -> str:
+    return os.path.expanduser("~/.codex/config.toml")
+
+
+def _codex_is_registered() -> bool:
+    path = _codex_config_path()
+    try:
+        import tomllib
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+        return "zenvi_editor" in (data.get("mcp_servers") or {})
+    except Exception:
+        return False
+
+
+def register_claude(port: int, token: str):
+    """Register Zenvi's MCP server with the ``claude`` CLI (user scope).
+
+    Idempotent: removes any prior ``zenvi`` registration first (ignoring
+    failure — it's fine if none existed) so re-running this after the port
+    changed (e.g. a fallback-port restart) cleanly replaces the old entry
+    rather than erroring on a duplicate name.
+
+    Returns ``(ok, message)``.
+    """
+    try:
+        subprocess.run(
+            ["claude", "mcp", "remove", "-s", "user", "zenvi"],
+            capture_output=True, text=True, timeout=10,
+        )
+        result = subprocess.run(
+            ["claude", "mcp", "add", "--transport", "http", "zenvi",
+             "http://127.0.0.1:%d/mcp" % port,
+             "--header", "Authorization: Bearer %s" % token,
+             "--scope", "user"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return True, "Connected. Run `claude` in your terminal to use it."
+        return False, (result.stderr or result.stdout or "claude mcp add failed").strip()
+    except Exception as e:
+        return False, str(e)
+
+
+_CODEX_SECTION_HEADER = "[mcp_servers.zenvi_editor]"
+
+
+def _codex_desired_section(port: int) -> str:
+    return (
+        '%s\n'
+        'url = "http://127.0.0.1:%d/mcp"\n'
+        'bearer_token_env_var = "ZENVI_MCP_TOKEN"\n'
+    ) % (_CODEX_SECTION_HEADER, port)
+
+
+def register_codex(port: int, token: str):
+    """Write/update the ``[mcp_servers.zenvi_editor]`` table in
+    ``~/.codex/config.toml`` (Codex has no CLI command for registering an
+    HTTP-transport MCP server — only stdio servers via ``codex mcp add``;
+    confirmed against the current Codex CLI docs).
+
+    Validates the file both before and after editing, and writes a
+    ``.zenvi-backup`` copy first — this mutates a config file we don't fully
+    control the rest of the schema/contents of, so failing safe matters more
+    than convenience here.
+
+    The token itself is never written to the file (Codex reads it from the
+    ``ZENVI_MCP_TOKEN`` env var at runtime via ``bearer_token_env_var``), so
+    the returned message tells the caller to export it before running codex.
+
+    Returns ``(ok, message)``.
+    """
+    path = _codex_config_path()
+    try:
+        import tomllib
+    except ImportError:
+        return False, "Python 3.11+ (tomllib) is required to edit config.toml."
+
+    original = ""
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+        except Exception as e:
+            return False, "Failed to read ~/.codex/config.toml: %s" % e
+        try:
+            tomllib.loads(original)
+        except Exception as e:
+            return False, "~/.codex/config.toml has invalid TOML, not touching it: %s" % e
+
+    new_section = _codex_desired_section(port)
+    if _CODEX_SECTION_HEADER in original:
+        pattern = re.compile(re.escape(_CODEX_SECTION_HEADER) + r".*?(?=\n\[|\Z)", re.DOTALL)
+        updated = pattern.sub(new_section.rstrip("\n"), original, count=1)
+    else:
+        if original and not original.endswith("\n"):
+            original += "\n"
+        sep = "\n" if original else ""
+        updated = original + sep + new_section
+
+    try:
+        tomllib.loads(updated)
+    except Exception as e:
+        return False, "Generated config would be invalid TOML, aborting: %s" % e
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if original:
+            with open(path + ".zenvi-backup", "w", encoding="utf-8") as fh:
+                fh.write(original)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(updated)
+    except Exception as e:
+        return False, "Failed to write ~/.codex/config.toml: %s" % e
+
+    return True, (
+        "Updated ~/.codex/config.toml. Before running codex, run:\n"
+        "export ZENVI_MCP_TOKEN=%s"
+    ) % token
 
 
 class BaseAgentRunner(QObject):
@@ -143,7 +332,14 @@ class BaseAgentRunner(QObject):
             argv = self._build_argv(text)
             self._proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=self._build_env(), cwd=_project_cwd(),
+                # Explicit UTF-8, not text=True's locale-dependent default: a
+                # GUI-launched app's environment often lacks LANG/LC_ALL, which
+                # can silently resolve to ASCII and crash on the CLI's normal
+                # non-ASCII output (em dashes, arrows, checkmarks, etc.).
+                # errors="replace" so a genuinely malformed byte degrades to
+                # U+FFFD instead of killing the whole read loop.
+                encoding="utf-8", errors="replace",
+                bufsize=1, env=self._build_env(), cwd=_project_cwd(),
             )
         except Exception as e:
             if not self._stopping:

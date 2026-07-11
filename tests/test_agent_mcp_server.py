@@ -93,21 +93,77 @@ def test_server_lists_and_calls_tools(tool_stub):
     time.sleep(1.0)
     try:
         async def run():
+            import httpx
             from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
+            from mcp.client.streamable_http import streamable_http_client
             headers = {"Authorization": "Bearer %s" % srv.token}
-            async with streamablehttp_client(srv.url(), headers=headers) as (r, w, _):
-                async with ClientSession(r, w) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    result = await session.call_tool("list_files_tool", {})
-                    return [t.name for t in tools.tools], result.content[0].text
+            async with httpx.AsyncClient(headers=headers) as http_client:
+                async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        result = await session.call_tool("list_files_tool", {})
+                        return [t.name for t in tools.tools], result.content[0].text
 
         names, text = asyncio.run(run())
         assert "list_files_tool" in names
         assert "FIXTURE_FILES" in text
     finally:
         srv.stop()
+
+
+def test_call_tool_broadcasts_started_and_completed(tool_stub):
+    """Phase 9: every MCP tool call (Zenvi-driven or a genuine external
+    terminal session — this layer can't tell those apart) must broadcast a
+    matched started/completed pair via get_tool_call_broadcaster(), which is
+    what lets AIChatWindow render a read-only "Live from terminal" view."""
+    pytest.importorskip("mcp")
+    pytest.importorskip("PyQt5.QtCore")
+    from PyQt5.QtWidgets import QApplication
+    from classes.agent_mcp_server import ZenviMcpServer, get_tool_call_broadcaster
+
+    app = QApplication.instance() or QApplication([])
+    broadcaster = get_tool_call_broadcaster()
+    started, completed = [], []
+    broadcaster.tool_call_started.connect(lambda cid, name, args: started.append((cid, name, args)))
+    broadcaster.tool_call_completed.connect(lambda cid, ok, text: completed.append((cid, ok, text)))
+
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    try:
+        async def run():
+            import httpx
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+            headers = {"Authorization": "Bearer %s" % srv.token}
+            async with httpx.AsyncClient(headers=headers) as http_client:
+                async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        await session.initialize()
+                        await session.call_tool("list_files_tool", {})
+
+        asyncio.run(run())
+
+        # The HTTP round-trip only completes after both signals were already
+        # emitted server-side; pump the (not-otherwise-running) Qt event loop
+        # briefly so the queued cross-thread deliveries land before asserting.
+        deadline = time.time() + 2.0
+        while (not started or not completed) and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+    finally:
+        srv.stop()
+
+    assert len(started) == 1
+    call_id, tool_name, args_json = started[0]
+    assert tool_name == "list_files_tool"
+    assert call_id  # non-empty
+
+    assert len(completed) == 1
+    completed_call_id, ok, text = completed[0]
+    assert completed_call_id == call_id  # started/completed pair up by call_id
+    assert ok is True
+    assert "FIXTURE_FILES" in text
 
 
 def test_server_requires_bearer_token(tool_stub):
@@ -126,6 +182,61 @@ def test_server_requires_bearer_token(tool_stub):
         assert exc.value.code == 401
     finally:
         srv.stop()
+
+
+# --- fixed port + persisted token (Phase 7) ---------------------------------
+
+def test_bind_port_prefers_stable_port_when_free():
+    import socket as socket_mod
+    from classes.agent_mcp_server import _bind_port
+
+    # Use a high, unlikely-to-collide port rather than the real PREFERRED_PORT
+    # (7434) so this test never fights a real running app instance for it.
+    s = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    free_port = s.getsockname()[1]
+    s.close()
+
+    assert _bind_port("127.0.0.1", free_port) == free_port
+
+
+def test_bind_port_falls_back_when_taken():
+    import socket as socket_mod
+    from classes.agent_mcp_server import _bind_port
+
+    holder = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    taken_port = holder.getsockname()[1]
+    try:
+        result = _bind_port("127.0.0.1", taken_port)
+        assert result != taken_port
+        assert 0 < result < 65536
+    finally:
+        holder.close()
+
+
+def test_load_or_create_token_persists_across_calls(monkeypatch, tmp_path):
+    import classes.agent_mcp_server as srv_mod
+
+    token_file = str(tmp_path / "mcp_token")
+    monkeypatch.setattr(srv_mod, "_token_path", lambda: token_file)
+
+    first = srv_mod._load_or_create_token()
+    assert first
+    assert os.path.exists(token_file)
+
+    second = srv_mod._load_or_create_token()
+    assert second == first
+
+
+def test_load_or_create_token_generates_when_missing(monkeypatch, tmp_path):
+    import classes.agent_mcp_server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_token_path", lambda: str(tmp_path / "nested" / "mcp_token"))
+    token = srv_mod._load_or_create_token()
+    assert token
+    assert os.path.exists(tmp_path / "nested" / "mcp_token")
 
 
 # --- optional: drive the real claude CLI against the server ----------------
