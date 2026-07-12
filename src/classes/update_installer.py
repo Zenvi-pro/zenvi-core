@@ -341,7 +341,7 @@ def _apply_macos(filepath, filename):
             shutil.rmtree(dest)
 
         _log(f"Copying {app_bundle} → {dest}")
-        shutil.copytree(app_bundle, dest)
+        shutil.copytree(app_bundle, dest, symlinks=True)
 
         _log("macOS update installed")
         _relaunch(["open", "-n", dest])

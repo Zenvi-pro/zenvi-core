@@ -56,6 +56,7 @@ from PyQt5.QtWidgets import (
 
 from classes import exceptions, info, qt_types, sentry, ui_util, updates
 from classes.auto_updater import AutoUpdater
+from classes.update_installer import is_version_newer
 from classes.app import get_app
 from classes.exporters.edl import export_edl
 from classes.exporters.final_cut_pro import export_xml
@@ -2101,6 +2102,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 # Remove clip
                 c.delete()
 
+        # A deleted clip may still be referenced by the preview widget's
+        # transform state (e.g. it was the selected/transforming clip) —
+        # its native object is gone, so clear the cached reference before
+        # the next mouseMoveEvent/paintEvent can dereference it.
+        self.videoPreview.clearTransformState()
+
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()
 
@@ -2149,6 +2156,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     self.ripple_delete_gap(start_position, t.data["layer"], duration)
 
         finally:
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; its native object is gone, so clear the
+            # cached reference before the next mouseMoveEvent/paintEvent can
+            # dereference it.
+            self.videoPreview.clearTransformState()
+
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
 
@@ -3320,8 +3333,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         """Handle the callback for detecting the current version on openshot.org"""
         _ = get_app()._tr
 
-        # Compare versions (alphabetical compare of version strings should work fine)
-        if info.VERSION < version:
+        # Compare versions numerically (string compare breaks e.g. "1.0.179" < "1.0.18")
+        if is_version_newer(version, info.VERSION):
             # Update text for QAction
             self.actionUpdate.setVisible(True)
             self.actionUpdate.setText(_("Update Available"))
@@ -3356,7 +3369,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         The update will be applied automatically on the next app launch."""
         _ = get_app()._tr
 
-        if info.VERSION >= version:
+        if not is_version_newer(version, info.VERSION):
             return
 
         # Update the toolbar button text to reflect that the update is ready
@@ -4102,9 +4115,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
 
-        # Background auto-updater (stable version + optional download)
-        self._auto_updater = AutoUpdater()
-        self._auto_updater.start()
+        # Background auto-updater (stable version + optional download).
+        # Only for packaged/frozen builds — a dev running from source has no
+        # install directory to update into, and staging a real release build
+        # in the background just gets swapped in on the next source launch.
+        self._auto_updater = None
+        if getattr(sys, "frozen", False):
+            self._auto_updater = AutoUpdater()
+            self._auto_updater.start()
 
         # Initialize and start the thumbnail HTTP server
         try:
