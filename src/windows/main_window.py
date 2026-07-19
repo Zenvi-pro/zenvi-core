@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import uuid
 import webbrowser
 from time import sleep, time
@@ -85,6 +86,11 @@ from windows.views.timeline_backend.enums import MenuCopy, MenuSlice
 from windows.views.transitions_listview import TransitionsListView
 from windows.views.transitions_treeview import TransitionsTreeView
 from windows.views.tutorial import TutorialManager
+
+# Shipped Simple View / default window_state_v2 blob (must match _default.settings).
+_DEFAULT_WINDOW_STATE = (
+    "AAAA/wAAAAD9AAAAAwAAAAAAAAEnAAAC3/wCAAAAA/wAAAJeAAAApwAAAAAA////+gAAAAACAAAAAfsAAAAYAGQAbwBjAGsASwBlAHkAZgByAGEAbQBlAAAAAAD/////AAAAAAAAAAD7AAAAHABkAG8AYwBrAFAAcgBvAHAAZQByAHQAaQBlAHMAAAAAJwAAAt8AAAChAP////sAAAAYAGQAbwBjAGsAVAB1AHQAbwByAGkAYQBsAgAABUQAAAF6AAABYAAAANwAAAABAAABHAAAAUD8AgAAAAH7AAAAGABkAG8AYwBrAEsAZQB5AGYAcgBhAG0AZQEAAAFYAAAAFQAAAAAAAAAAAAAAAgAABEYAAALC/AEAAAAC/AAAAAAAAARGAAAA+gD////8AgAAAAL8AAAAPQAAAa4AAACvAP////wBAAAAAvwAAAAAAAABwQAAAJcA////+gAAAAACAAAABPsAAAASAGQAbwBjAGsARgBpAGwAZQBzAQAAAAD/////AAAAkgD////7AAAAHgBkAG8AYwBrAFQAcgBhAG4AcwBpAHQAaQBvAG4AcwEAAAAA/////wAAAJIA////+wAAABYAZABvAGMAawBFAGYAZgBlAGMAdABzAQAAAAD/////AAAAkgD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAAD/////AAAAkgD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAHHAAACfwAAAEcA////+wAAABgAZABvAGMAawBUAGkAbQBlAGwAaQBuAGUBAAAB8QAAAQ4AAACWAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQB0AG8AcgAAAANtAAAA2QAAAFgA////AAAERgAAAAEAAAABAAAAAgAAAAEAAAAC/AAAAAEAAAACAAAAAQAAAA4AdABvAG8AbABCAGEAcgEAAAAA/////wAAAAAAAAAA"
+)
 
 
 class MainWindow(updates.UpdateWatcher, QMainWindow):
@@ -165,6 +171,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 if self.tutorial_manager:
                     self.tutorial_manager.re_show_dialog()
                 # User canceled prompt - don't quit
+                self._restart_for_update = False
                 event.ignore()
                 return
 
@@ -237,6 +244,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Destroy lock file
         self.destroy_lock_file()
 
+        # If this shutdown was triggered by "Restart to Apply Update", spawn a
+        # new instance now (after the lock file is gone, so the fresh process
+        # doesn't mistake the clean exit for a crash) — it will apply the
+        # staged update at startup, before this old process has fully exited.
+        if getattr(self, "_restart_for_update", False):
+            self._relaunch_for_update()
+
     def recover_backup(self):
         """Recover the backup file (if any)"""
         log.info("recover_backup")
@@ -298,6 +312,36 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             except OSError:
                 log.debug('Failed to destroy lock file (attempt: %s)' % attempt, exc_info=1)
                 sleep(0.25)
+
+    def _relaunch_for_update(self):
+        """Spawn a new instance of the app so the update staged by AutoUpdater
+        gets applied (launch.py applies pending updates at startup, before
+        this old process needs to have fully exited)."""
+        import subprocess
+
+        try:
+            if getattr(sys, "frozen", False):
+                # Frozen build: re-launch via the bundle's real entry point when
+                # we can find one (macOS .app), otherwise fall back to the
+                # frozen executable itself.
+                bundle = None
+                path = os.path.abspath(sys.executable)
+                while path and path != os.path.dirname(path):
+                    if path.endswith(".app"):
+                        bundle = path
+                        break
+                    path = os.path.dirname(path)
+
+                if bundle and sys.platform == "darwin":
+                    subprocess.Popen(["open", "-n", bundle])
+                else:
+                    subprocess.Popen([sys.executable])
+            else:
+                # Running from source (e.g. via run.sh)
+                subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+            log.info("Spawned new Zenvi instance to apply staged update")
+        except Exception:
+            log.error("Failed to relaunch Zenvi for update", exc_info=True)
 
     def actionNew_trigger(self):
 
@@ -1109,6 +1153,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionUpdate_trigger(self, checked=True):
+        _ = get_app()._tr
+
+        from classes.auto_updater import has_pending_update
+        if has_pending_update():
+            # A newer version has already been downloaded and staged in the
+            # background — restart now to apply it instead of sending the
+            # user off to manually download it again.
+            reply = QMessageBox.question(
+                self,
+                _("Restart to Update"),
+                _("Zenvi has downloaded an update. Restart now to apply it?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._restart_for_update = True
+                self.close()
+            return
+
         url = "https://zenvi.pro/download"
         try:
             webbrowser.open(url, new=1)
@@ -2465,6 +2528,18 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         else:
             self.toolBar.setMovable(not frozen)
 
+    # Docks hidden from the View > Docks menu (by objectName). These remain
+    # functional and are shown programmatically (e.g. when directors run), but
+    # are not user-toggleable from the menu.
+    HIDDEN_DOCK_OBJECT_NAMES = {
+        "director_panel_dock",       # Directors
+        "director_plan_review_dock", # Director Plan Review
+        "thinkingDock",              # Director Thinking
+        "dockPlanGraph",             # Plan Graph
+        "PexelsDock",                # Pexels Stock Videos
+        "FreesoundDock",             # Freesound Music & SFX
+    }
+
     def addViewDocksMenu(self):
         """ Insert a Docks submenu into the View menu """
         _ = get_app()._tr
@@ -2474,6 +2549,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             if (dock.features() & QDockWidget.DockWidgetClosable
                != QDockWidget.DockWidgetClosable):
                 # Skip non-closable docs
+                continue
+            if dock.objectName() in self.HIDDEN_DOCK_OBJECT_NAMES:
+                # Skip docks hidden from the Docks menu
                 continue
             self.docks_menu.addAction(dock.toggleViewAction())
 
@@ -2488,7 +2566,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.dockEffects,
             self.dockEmojis,
             self.dockVideo,
-            self.dockAIChat,
             ], Qt.TopDockWidgetArea)
 
         self.floatDocks(False)
@@ -2502,14 +2579,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             self.dockEmojis,
             self.dockVideo,
         ])
-        # Keep AI Chat dock hidden but accessible via menu
-        self.dockAIChat.hide()
 
-        # Set initial size of docks
-        simple_state = "".join([
-            "AAAA/wAAAAD9AAAAAwAAAAAAAAEnAAAC3/wCAAAAA/wAAAJeAAAApwAAAAAA////+gAAAAACAAAAAfsAAAAYAGQAbwBjAGsASwBlAHkAZgByAGEAbQBlAAAAAAD/////AAAAAAAAAAD7AAAAHABkAG8AYwBrAFAAcgBvAHAAZQByAHQAaQBlAHMAAAAAJwAAAt8AAAChAP////sAAAAYAGQAbwBjAGsAVAB1AHQAbwByAGkAYQBsAgAABUQAAAF6AAABYAAAANwAAAABAAABHAAAAUD8AgAAAAH7AAAAGABkAG8AYwBrAEsAZQB5AGYAcgBhAG0AZQEAAAFYAAAAFQAAAAAAAAAAAAAAAgAABEYAAALC/AEAAAAC/AAAAAAAAARGAAAA+gD////8AgAAAAL8AAAAPQAAAa4AAACvAP////wBAAAAAvwAAAAAAAABwQAAAJcA////+gAAAAACAAAABPsAAAASAGQAbwBjAGsARgBpAGwAZQBzAQAAAAD/////AAAAkgD////7AAAAHgBkAG8AYwBrAFQAcgBhAG4AcwBpAHQAaQBvAG4AcwEAAAAA/////wAAAJIA////+wAAABYAZABvAGMAawBFAGYAZgBlAGMAdABzAQAAAAD/////AAAAkgD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAAD/////AAAAkgD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAHHAAACfwAAAEcA////+wAAABgAZABvAGMAawBUAGkAbQBlAGwAaQBuAGUBAAAB8QAAAQ4AAACWAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQB0AG8AcgAAAANtAAAA2QAAAFgA////AAAERgAAAAEAAAABAAAAAgAAAAEAAAAC/AAAAAEAAAACAAAAAQAAAA4AdABvAG8AbABCAGEAcgEAAAAA/////wAAAAAAAAAA"
-        ])
-        self.restoreState(qt_types.str_to_bytes(simple_state))
+        self.restoreState(qt_types.str_to_bytes(_DEFAULT_WINDOW_STATE))
+        self._apply_default_ai_chat_dock()
         QCoreApplication.processEvents()
 
     def actionAdvanced_View_trigger(self):
@@ -3413,11 +3485,27 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if self.saved_state:
             self._restore_state_and_timeline()
 
+    def _is_default_window_state(self):
+        """True when the saved layout matches the shipped Simple View blob."""
+        if not self.saved_state:
+            return True
+        return self.saved_state == qt_types.str_to_bytes(_DEFAULT_WINDOW_STATE)
+
+    def _apply_default_ai_chat_dock(self):
+        """Show Zenvi Assistant docked on the right (default layout)."""
+        if not getattr(self, "dockAIChat", None):
+            return
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        self.dockAIChat.show()
+        self.resizeDocks([self.dockAIChat], [360], Qt.Horizontal)
+
     def _restore_state_and_timeline(self):
         """Restore saved dock state and then apply timeline height."""
         if self.saved_state:
             self.restoreState(self.saved_state)
         self._apply_saved_timeline_height()
+        if self._is_first_launch or self._is_default_window_state():
+            self._apply_default_ai_chat_dock()
 
     def _apply_saved_timeline_height(self):
         """Apply the saved timeline dock height without a visible two-pass resize."""
@@ -4018,6 +4106,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         super().__init__(*args)
         self.initialized = False
         self.shutting_down = False
+        self._restart_for_update = False
         self.lock = threading.Lock()
         self.installEventFilter(self)
 
@@ -4040,7 +4129,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         track_metric_session()  # start session
 
         # Set unique install id (if blank)
-        if not s.get("unique_install_id"):
+        self._is_first_launch = not s.get("unique_install_id")
+        if self._is_first_launch:
             # This is assumed to be the 1st launch
             s.set("unique_install_id", str(uuid4()))
 
@@ -4269,8 +4359,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self._timeline_height_restored = False
         self.load_settings()
         
-        # Hide AI Chat dock by default (ensure it stays hidden even after restore state)
-        self.dockAIChat.hide()
+        # Hide AI Chat dock unless using the default layout (shown after restore).
+        if not self._is_first_launch and not self._is_default_window_state():
+            self.dockAIChat.hide()
 
         # Setup Cache settings
         self.cache_object = None
