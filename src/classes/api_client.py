@@ -48,6 +48,7 @@ class ZenviBackendClient:
         self._session = None
         self._active_wss = set()  # active WebSockets during parallel chat requests
         self._ws_lock = threading.Lock()
+        self._shutting_down = False
         # Disable SSL verification for non-production backends (self-signed certs)
         self._ssl_verify = (self.base_url.rstrip("/") == _DEFAULT_BACKEND_URL.rstrip("/"))
 
@@ -302,6 +303,21 @@ class ZenviBackendClient:
             log.error("Get history failed: %s", e)
             return {"messages": [], "session_info": {}}
 
+    def get_session_trace(self, session_id: str, limit: int = 200) -> Dict[str, Any]:
+        """Fetch agent/tool telemetry events for diagnosing loops and bottlenecks."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/chat/sessions/{session_id}/trace",
+                params={"limit": max(1, min(int(limit or 200), 1000))},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {"events": []}
+        except Exception as e:
+            log.error("Get session trace failed: %s", e)
+            return {"session_id": session_id, "events": [], "error": str(e)}
+
     def clear_chat_session(self, session_id: str) -> bool:
         """Clear a chat session."""
         try:
@@ -324,6 +340,10 @@ class ZenviBackendClient:
         on_token: Optional[Callable] = None,
         on_tool_progress: Optional[Callable] = None,
         auth_token: Optional[str] = None,
+        agent_mode: Optional[str] = None,
+        action: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        on_plan_event: Optional[Callable] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -343,6 +363,7 @@ class ZenviBackendClient:
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
+        self._shutting_down = False
         ws = None
         try:
             sslopt = {} if self._ssl_verify else {"cert_reqs": 0}  # 0 = ssl.CERT_NONE
@@ -368,6 +389,12 @@ class ZenviBackendClient:
                 "session_id": session_id,
                 "auth_token": token,
             }
+            if agent_mode in ("planning", "agent"):
+                payload_data["agent_mode"] = agent_mode
+            if action in ("chat", "execute_plan", "cancel_execution"):
+                payload_data["action"] = action
+            if plan_id:
+                payload_data["plan_id"] = plan_id
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them
@@ -498,6 +525,12 @@ class ZenviBackendClient:
                         final_response = data.get("response", "")
                         if on_response:
                             on_response(final_response, data.get("session_id", ""))
+                    elif msg_type in ("plan_ready", "plan_updated", "plan_step_status", "plan_execution_done", "plan_questions", "mode_changed"):
+                        if on_plan_event:
+                            try:
+                                on_plan_event(msg_type, data)
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_plan_event error: %s", exc)
                     elif msg_type == "error":
                         if on_error:
                             on_error(data.get("message", "Unknown error"))
@@ -513,8 +546,17 @@ class ZenviBackendClient:
                 # emit get sent before we close the WS.
                 with tool_workers_lock:
                     pending = list(tool_workers)
-                for t in pending:
-                    t.join(timeout=120)
+                if self._shutting_down:
+                    import time as _time
+                    deadline = _time.time() + 1.0
+                    for t in pending:
+                        remaining = deadline - _time.time()
+                        if remaining <= 0:
+                            break
+                        t.join(timeout=remaining)
+                else:
+                    for t in pending:
+                        t.join(timeout=120)
 
             try:
                 ws.close()
@@ -546,6 +588,7 @@ class ZenviBackendClient:
         Safe to call from any thread. Used during app shutdown to allow the
         chat worker thread to exit cleanly instead of blocking QThread::~QThread().
         """
+        self._shutting_down = True
         with self._ws_lock:
             websockets = list(self._active_wss)
             self._active_wss.clear()
@@ -815,10 +858,13 @@ class ZenviBackendClient:
         }
         try:
             s = session or self.session
+            import os as _os
+            env_timeout = int(_os.environ.get("ZENVI_TAGGING_HTTP_TIMEOUT", "300"))
+            timeout = max(120, min(600, max(env_timeout, 60 + len(frames) * 15)))
             r = s.post(
                 f"{self.api_url}/tags/analyze-frames",
                 json=payload,
-                timeout=120,
+                timeout=timeout,
             )
             r.raise_for_status()
             data = r.json()
@@ -945,18 +991,6 @@ class ZenviBackendClient:
         """Download a Freesound preview MP3 from the CDN URL to the local machine."""
         hint = filename or f"freesound_{sound_id}"
         return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
-
-    def list_directors(self) -> List[Dict[str, Any]]:
-        try:
-            r = self.session.get(f"{self.api_url}/directors", timeout=15)
-            r.raise_for_status()
-            payload = r.json()
-            if isinstance(payload, list):
-                return payload
-            return payload.get("directors", [])
-        except Exception as exc:
-            log.error("list_directors failed: %s", exc)
-            return []
 
 
 # Singleton

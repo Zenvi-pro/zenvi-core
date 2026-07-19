@@ -200,9 +200,38 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
-        # Stop AI chat thread early so its 1-second wait overlaps with the rest of shutdown
+        # Stop AI chat thread early so its wait overlaps with the rest of shutdown
         if getattr(self, "dockAIChat", None):
             self.dockAIChat._stop_all_threads()
+
+        # Stop stock-media search/download threads
+        if getattr(self, "dockPexels", None):
+            try:
+                self.dockPexels._cleanup_threads()
+            except Exception:
+                pass
+        if getattr(self, "dockFreesound", None):
+            try:
+                self.dockFreesound._cleanup_threads()
+            except Exception:
+                pass
+
+        # Stop background file tagging workers
+        if getattr(self, "files_model", None):
+            try:
+                self.files_model._stop_active_taggers()
+            except Exception:
+                pass
+
+        # Stop minimap geometry worker (closeEvent may not run on app exit)
+        if getattr(self, "sliderZoomWidget", None):
+            try:
+                worker = getattr(self.sliderZoomWidget, "_minimap_worker", None)
+                if worker is not None:
+                    worker.stop()
+                    worker.wait(1000)
+            except Exception:
+                pass
 
         # Stop threads
         self.StopSignal.emit()
@@ -233,6 +262,11 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 self.videoPreview.deleteLater()
                 self.videoPreview = None
             self.preview_parent.Stop()
+            bg = getattr(self.preview_parent, "background", None)
+            if bg is not None and bg.isRunning():
+                log.warning("Preview thread still running after Stop(); terminating")
+                bg.terminate()
+                bg.wait(1000)
 
         # Clean-up Timeline
         if self.timeline_sync and hasattr(self.timeline_sync, 'timeline'):
@@ -3425,23 +3459,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Notify properties dialog
         self.propertyTableView.select_frame(frame)
 
-    def on_plan_approved(self, plan_id):
-        """Handle director plan approval — send approval to backend via chat."""
-        log.info(f"Plan approved: {plan_id}")
+    def _on_plan_execute_requested(self, plan_id):
+        """Execute plan from Plan dock."""
+        log.info("Plan execute requested: %s", plan_id)
         try:
-            # Send the approval to the backend via the AI chat
             if hasattr(self, 'dockAIChat'):
-                self.dockAIChat.send_message(f"Execute approved plan: {plan_id}")
-            if hasattr(self, 'dockPlanReview'):
-                self.dockPlanReview.hide()
+                model_id = ""
+                if hasattr(self.dockAIChat, 'model_combo') and self.dockAIChat.model_combo:
+                    model_id = self.dockAIChat.model_combo.currentData() or ""
+                self.dockAIChat._execute_plan(plan_id, model_id)
         except Exception as e:
-            log.error(f"Plan approval handling failed: {e}", exc_info=True)
+            log.error("Plan execute handling failed: %s", e, exc_info=True)
 
-    def on_plan_rejected(self, plan_id):
-        """Handle director plan rejection."""
-        log.info(f"Plan rejected: {plan_id}")
-        if hasattr(self, 'dockPlanReview'):
-            self.dockPlanReview.hide()
+    def _on_plan_edit_requested(self):
+        """Open Plan mode to revise a blocked plan."""
+        try:
+            if hasattr(self, 'dockAIChat'):
+                self.dockAIChat._edit_plan_in_planning_mode()
+        except Exception as e:
+            log.error("Plan edit handling failed: %s", e, exc_info=True)
 
     def moveEvent(self, event):
         """ Move tutorial dialogs also (if any)"""
@@ -4245,45 +4281,16 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIMedia)
         self.dockAIMedia.setVisible(False)  # Hidden by default
 
-        # Setup Director Panel (must be before addViewDocksMenu)
+        # Plan dock (Cursor-style edit plan with todos)
         try:
-            from windows.director_panel_ui import get_director_panel_dock
-            self.dockDirectorPanel = get_director_panel_dock(self)
-            self.addDockWidget(Qt.RightDockWidgetArea, self.dockDirectorPanel)
-            self.dockDirectorPanel.setVisible(False)  # Hidden by default
+            from windows.plan_dock_ui import PlanDock
+            self.dockPlan = PlanDock(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.dockPlan)
+            self.dockPlan.setVisible(False)
+            self.dockPlan.execute_requested.connect(self._on_plan_execute_requested)
+            self.dockPlan.edit_plan_requested.connect(self._on_plan_edit_requested)
         except Exception as e:
-            log.error(f"Failed to initialize Director Panel: {e}", exc_info=True)
-
-        # Setup Plan Review Panel (must be before addViewDocksMenu)
-        try:
-            from windows.director_plan_review_ui import get_plan_review_dock
-            self.dockPlanReview = get_plan_review_dock(self)
-            self.addDockWidget(Qt.BottomDockWidgetArea, self.dockPlanReview)
-            self.dockPlanReview.setVisible(False)  # Hidden by default
-
-            # Connect plan approval/rejection handlers
-            self.dockPlanReview.plan_approved.connect(self.on_plan_approved)
-            self.dockPlanReview.plan_rejected.connect(self.on_plan_rejected)
-        except Exception as e:
-            log.error(f"Failed to initialize Plan Review: {e}", exc_info=True)
-
-        # Plan Graph dock (edit plan hierarchy)
-        try:
-            from classes.plan_graph import PlanGraphDock
-            self.plan_graph_dock = PlanGraphDock(self)
-            self.addDockWidget(Qt.RightDockWidgetArea, self.plan_graph_dock)
-            self.plan_graph_dock.setVisible(False)
-        except Exception as e:
-            log.error(f"Failed to initialize Plan Graph: {e}", exc_info=True)
-
-        # Thinking dock (director communication window)
-        try:
-            from windows.thinking_dock import ThinkingDockWidget
-            self.thinking_dock = ThinkingDockWidget(self)
-            self.addDockWidget(Qt.RightDockWidgetArea, self.thinking_dock)
-            self.thinking_dock.setVisible(False)  # Hidden by default, shown when directors run
-        except Exception as e:
-            log.error(f"Failed to initialize Thinking Dock: {e}", exc_info=True)
+            log.error(f"Failed to initialize Plan dock: {e}", exc_info=True)
 
         # Pexels stock-video search dock
         try:
