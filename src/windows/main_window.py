@@ -333,7 +333,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     path = os.path.dirname(path)
 
                 if bundle and sys.platform == "darwin":
-                    subprocess.Popen(["open", "-n", bundle])
+                    subprocess.Popen(["/usr/bin/open", "-n", bundle])
                 else:
                     subprocess.Popen([sys.executable])
             else:

@@ -168,14 +168,16 @@ def _show_update_notice(system, version):
         if system == "darwin":
             safe = message.replace("\\", "\\\\").replace('"', '\\"')
             subprocess.Popen(
-                ["osascript", "-e", f'display notification "{safe}" with title "Zenvi"'],
+                ["/usr/bin/osascript", "-e", f'display notification "{safe}" with title "Zenvi"'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         elif system == "linux":
-            subprocess.Popen(
-                ["notify-send", "Zenvi", message],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            notify_send_path = shutil.which("notify-send")
+            if notify_send_path:
+                subprocess.Popen(
+                    [notify_send_path, "Zenvi", message],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
     except Exception:
         pass
 
@@ -344,7 +346,7 @@ def _apply_macos(filepath, filename):
         shutil.copytree(app_bundle, dest)
 
         _log("macOS update installed")
-        _relaunch(["open", "-n", dest])
+        _relaunch(["/usr/bin/open", "-n", dest])
         return True
 
     except Exception as exc:
