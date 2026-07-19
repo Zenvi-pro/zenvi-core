@@ -13,6 +13,19 @@ from classes.track_display import normalize_track_or_layer_arg
 
 MIN_CONFIDENCE = 0.15
 AMBIGUITY_GAP = 0.08
+AUDIO_HEAVY_MIN_CONFIDENCE = 0.08
+
+
+def _effective_min_confidence(contexts: List[TimelineClipContext]) -> float:
+    try:
+        from classes.tl_search_strategy import infer_tl_search_hint
+        for ctx in contexts:
+            ai = ctx.effective_metadata or {}
+            if infer_tl_search_hint(ai, ctx.file_name or "") == "prefer_audio_and_visual":
+                return AUDIO_HEAVY_MIN_CONFIDENCE
+    except Exception:
+        pass
+    return MIN_CONFIDENCE
 
 
 @dataclass
@@ -136,6 +149,94 @@ def _score_context_against_query(
             score += max(0.0, 0.08 - dist * 0.01)
 
     return min(score, 1.0)
+
+
+def _twelvelabs_project_candidates(
+    query: str,
+    contexts: List[TimelineClipContext],
+) -> List[ClipCandidate]:
+    """Rank timeline placements via project-wide TwelveLabs search when tags fail."""
+    try:
+        from classes.api_client import get_backend_client
+        from classes.project_tl_index import collect_project_twelvelabs_index
+
+        client = get_backend_client()
+        if not client.is_indexing_configured():
+            return []
+
+        # Prefer the project's shared index_id (zenvi-{project_id}), never a global default.
+        info = collect_project_twelvelabs_index()
+        index_id = str(info.get("index_id") or "").strip()
+        if not index_id:
+            # Fallback: majority vote from timeline contexts already loaded
+            from collections import Counter
+
+            index_ids = []
+            for ctx in contexts:
+                ai = ctx.effective_metadata or {}
+                tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+                if str(tl.get("status") or "").lower() != "ready":
+                    continue
+                iid = str(tl.get("index_id") or "").strip()
+                if iid:
+                    index_ids.append(iid)
+            if not index_ids:
+                return []
+            index_id = Counter(index_ids).most_common(1)[0][0]
+
+        resp = client.search(query, top_k=10, page_limit=30, index_id=index_id)
+        if resp.get("error"):
+            log.debug("twelvelabs project search error: %s", resp.get("error"))
+            return []
+        items = resp.get("results") or resp.get("items") or []
+        if not items:
+            return []
+    except Exception as exc:
+        log.debug("twelvelabs project search failed: %s", exc)
+        return []
+
+    vid_to_ctxs: dict = {}
+    for ctx in contexts:
+        ai = ctx.effective_metadata or {}
+        tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+        if str(tl.get("status") or "").lower() != "ready":
+            continue
+        vid = str(tl.get("video_id") or "").strip()
+        if vid:
+            vid_to_ctxs.setdefault(vid, []).append(ctx)
+
+    out: List[ClipCandidate] = []
+    seen_ids: set = set()
+    for rank, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        vid = str(
+            item.get("video_id") or item.get("twelvelabs_video_id") or ""
+        ).strip()
+        for ctx in vid_to_ctxs.get(vid, []):
+            cid = ctx.timeline_clip_id
+            if cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+            score = 0.35 + max(0.0, (10 - rank) * 0.04)
+            out.append(
+                ClipCandidate(
+                    timeline_clip_id=cid,
+                    title=ctx.title,
+                    layer=ctx.layer,
+                    position=ctx.timeline_position,
+                    file_id=ctx.file_id,
+                    file_name=ctx.file_name,
+                    score=score,
+                    parent_file_id=ctx.parent_file_id or ctx.file_id,
+                    source_start=ctx.source_start,
+                    source_end=ctx.source_end,
+                    ui_track=ctx.ui_track,
+                    tags_preview=ctx.tags_preview,
+                )
+            )
+    out.sort(key=lambda c: (-c.score, int(c.layer or 0), c.position))
+    return out
 
 
 def _score_clip_against_query(
@@ -436,15 +537,21 @@ def resolve_timeline_clip(
                     )
             else:
                 best = scored[0]
-                if best.score < MIN_CONFIDENCE:
-                    return ResolveResult(
-                        ok=False,
-                        window=win,
-                        candidates=scored[:3],
-                        error=_format_candidates_error(
-                            scored, f"No confident match for clip_query {q!r}."
-                        ),
-                    )
+                min_conf = _effective_min_confidence(contexts)
+                if best.score < min_conf:
+                    tl_scored = _twelvelabs_project_candidates(q, contexts)
+                    if tl_scored:
+                        best = tl_scored[0]
+                        scored = tl_scored
+                    else:
+                        return ResolveResult(
+                            ok=False,
+                            window=win,
+                            candidates=scored[:3],
+                            error=_format_candidates_error(
+                                scored, f"No confident match for clip_query {q!r}."
+                            ),
+                        )
                 amb = _check_ambiguity(
                     scored,
                     track_filter=layer_filter,
@@ -471,16 +578,21 @@ def resolve_timeline_clip(
                 )
                 return ResolveResult(ok=True, clip=clip_obj, window=win, candidates=scored[:3])
 
+        tl_fallback = _twelvelabs_project_candidates(q, contexts)
         return ResolveResult(
             ok=False,
             window=win,
-            candidates=scored[:3] if scored else [],
+            candidates=scored[:3] if scored else tl_fallback[:3],
             error=(
                 _format_candidates_error(scored, f"No confident match for clip_query {q!r}.")
                 if scored
                 else (
-                    f"Error: No timeline clip matched clip_query {q!r}. "
-                    "Use list_clips_tool or get_timeline_placements_metadata_tool."
+                    _format_candidates_error(tl_fallback, f"No timeline clip matched clip_query {q!r}.")
+                    if tl_fallback
+                    else (
+                        f"Error: No timeline clip matched clip_query {q!r}. "
+                        "Use list_clips_tool or get_timeline_placements_metadata_tool."
+                    )
                 )
             ),
         )
