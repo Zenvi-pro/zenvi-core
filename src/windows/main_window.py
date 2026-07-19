@@ -2528,6 +2528,18 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         else:
             self.toolBar.setMovable(not frozen)
 
+    # Docks hidden from the View > Docks menu (by objectName). These remain
+    # functional and are shown programmatically (e.g. when directors run), but
+    # are not user-toggleable from the menu.
+    HIDDEN_DOCK_OBJECT_NAMES = {
+        "director_panel_dock",       # Directors
+        "director_plan_review_dock", # Director Plan Review
+        "thinkingDock",              # Director Thinking
+        "dockPlanGraph",             # Plan Graph
+        "PexelsDock",                # Pexels Stock Videos
+        "FreesoundDock",             # Freesound Music & SFX
+    }
+
     def addViewDocksMenu(self):
         """ Insert a Docks submenu into the View menu """
         _ = get_app()._tr
@@ -2537,6 +2549,9 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             if (dock.features() & QDockWidget.DockWidgetClosable
                != QDockWidget.DockWidgetClosable):
                 # Skip non-closable docs
+                continue
+            if dock.objectName() in self.HIDDEN_DOCK_OBJECT_NAMES:
+                # Skip docks hidden from the Docks menu
                 continue
             self.docks_menu.addAction(dock.toggleViewAction())
 
