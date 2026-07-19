@@ -303,6 +303,21 @@ class ZenviBackendClient:
             log.error("Get history failed: %s", e)
             return {"messages": [], "session_info": {}}
 
+    def get_session_trace(self, session_id: str, limit: int = 200) -> Dict[str, Any]:
+        """Fetch agent/tool telemetry events for diagnosing loops and bottlenecks."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/chat/sessions/{session_id}/trace",
+                params={"limit": max(1, min(int(limit or 200), 1000))},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {"events": []}
+        except Exception as e:
+            log.error("Get session trace failed: %s", e)
+            return {"session_id": session_id, "events": [], "error": str(e)}
+
     def clear_chat_session(self, session_id: str) -> bool:
         """Clear a chat session."""
         try:

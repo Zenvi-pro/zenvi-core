@@ -502,10 +502,20 @@
     min-width: 0;
 }
 
-/* The result summary / command detail is intentionally hidden — tool steps
-   show only a tick mark and a heading. */
+/* The command/summary stays available for failed tools (inspectable). */
 .chat-tool-cmd {
     display: none;
+    font-size: 10px;
+    color: var(--chat-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 40%;
+}
+
+.chat-tool-block.error .chat-tool-cmd {
+    display: inline;
+    color: #ef4444;
 }
 
 .chat-tool-block.done .chat-tool-title {
@@ -519,10 +529,12 @@
     padding: 8px 10px;
     max-height: 220px;
     overflow-y: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 11px;
     line-height: 1.55;
     color: var(--chat-text);
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .chat-tool-line {

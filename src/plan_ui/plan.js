@@ -100,13 +100,37 @@
             stepsEl.innerHTML = html;
         }
         if (actionsEl && execBtn) {
-            var canExec = status === 'ready' || status === 'blocked' || status === 'draft';
-            actionsEl.hidden = !canExec;
-            execBtn.disabled = status !== 'ready' && status !== 'blocked';
-            execBtn.textContent = status === 'blocked' ? 'Retry execution' : 'Execute Plan';
+            var steps = plan.steps || [];
+            var unfinished = Array.isArray(plan.unfinished_step_ids)
+                ? plan.unfinished_step_ids
+                : null;
+            if (unfinished === null) {
+                unfinished = [];
+                for (var ui = 0; ui < steps.length; ui++) {
+                    var ust = (steps[ui].status || 'pending').toLowerCase();
+                    var uerr = (steps[ui].last_error || '').trim();
+                    if (ust === 'completed') continue;
+                    if (ust === 'skipped' && !uerr) continue;
+                    unfinished.push(steps[ui].step_id || String(ui));
+                }
+            }
+            var allSucceeded = plan.all_steps_succeeded === true ||
+                (status === 'completed' && unfinished.length === 0 && steps.length > 0);
+            // Fully successful completed plan: hide Execute / Re-run unfinished.
+            if (status === 'completed' && allSucceeded) {
+                actionsEl.hidden = true;
+                execBtn.disabled = true;
+            } else {
+                var canExec = status === 'ready' || status === 'completed' || status === 'draft';
+                actionsEl.hidden = !canExec;
+                execBtn.disabled = status !== 'ready' && status !== 'completed';
+                execBtn.textContent = (status === 'completed' && unfinished.length > 0)
+                    ? 'Re-run unfinished'
+                    : 'Execute Plan';
+            }
         }
         if (editBtn) {
-            editBtn.hidden = status !== 'blocked';
+            editBtn.hidden = true;
         }
     }
 
@@ -143,10 +167,6 @@
                     if (error) currentPlan.steps[i].last_error = error;
                     break;
                 }
-            }
-            if (currentPlan.status !== 'blocked' && (st === 'failed' || st === 'blocked')) {
-                currentPlan.status = 'blocked';
-                renderPlan(currentPlan);
             }
         }
     };

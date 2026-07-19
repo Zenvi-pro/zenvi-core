@@ -158,10 +158,36 @@ def _twelvelabs_project_candidates(
     """Rank timeline placements via project-wide TwelveLabs search when tags fail."""
     try:
         from classes.api_client import get_backend_client
+        from classes.project_tl_index import collect_project_twelvelabs_index
+
         client = get_backend_client()
         if not client.is_indexing_configured():
             return []
-        resp = client.search(query, top_k=10, page_limit=30)
+
+        # Prefer the project's shared index_id (zenvi-{project_id}), never a global default.
+        info = collect_project_twelvelabs_index()
+        index_id = str(info.get("index_id") or "").strip()
+        if not index_id:
+            # Fallback: majority vote from timeline contexts already loaded
+            from collections import Counter
+
+            index_ids = []
+            for ctx in contexts:
+                ai = ctx.effective_metadata or {}
+                tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+                if str(tl.get("status") or "").lower() != "ready":
+                    continue
+                iid = str(tl.get("index_id") or "").strip()
+                if iid:
+                    index_ids.append(iid)
+            if not index_ids:
+                return []
+            index_id = Counter(index_ids).most_common(1)[0][0]
+
+        resp = client.search(query, top_k=10, page_limit=30, index_id=index_id)
+        if resp.get("error"):
+            log.debug("twelvelabs project search error: %s", resp.get("error"))
+            return []
         items = resp.get("results") or resp.get("items") or []
         if not items:
             return []

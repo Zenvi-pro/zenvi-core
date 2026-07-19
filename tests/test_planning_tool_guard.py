@@ -7,7 +7,9 @@ _PLANNING_SAFE_TOOLS = frozenset({
     "get_clips_with_full_metadata_tool", "get_timeline_placements_metadata_tool",
     "search_clip_scenes_tool", "search_clips_tool", "search_pexels_videos_tool",
     "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
-    "save_edit_plan_tool", "update_edit_plan_step_tool", "finalize_edit_plan_tool",
+    "save_edit_plan_tool", "save_planning_research_brief_tool",
+    "update_edit_plan_step_tool", "finalize_edit_plan_tool",
+    "present_planning_questions_tool",
     "save_edit_checkpoint_tool", "watch_clip_tool",
 })
 
@@ -25,6 +27,9 @@ def is_planning_tool_allowed(tool_name: str) -> bool:
 class PlanningToolGuardTests(unittest.TestCase):
     def test_blocks_timeline_mutations(self):
         self.assertFalse(is_planning_tool_allowed("add_clip_to_timeline_tool"))
+
+    def test_allows_research_brief_tool(self):
+        self.assertTrue(is_planning_tool_allowed("save_planning_research_brief_tool"))
 
     def test_allows_plan_crud(self):
         self.assertTrue(is_planning_tool_allowed("update_edit_plan_step_tool"))

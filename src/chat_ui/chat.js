@@ -42,6 +42,7 @@
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
+    const traceBtn = document.getElementById('chat-trace-btn');
     const modePlanBtn = document.getElementById('chat-mode-plan');
     const modeAgentBtn = document.getElementById('chat-mode-agent');
     var currentAgentMode = 'agent';
@@ -378,11 +379,23 @@
         return s;
     }
 
+    function sanitizeStreamText(text) {
+        if (!text) return '';
+        var s = String(text);
+        s = s.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+        s = s.replace(/<think(?:ing)?>[\s\S]*$/gi, '');
+        s = s.replace(/^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*\n+/im, '');
+        s = s.replace(/^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*/im, '');
+        s = s.replace(/^\s*Thinking(?:…|\.\.\.)?\s*\n+/im, '');
+        return s;
+    }
+
     function flushStreamingBuffer() {
         streamFlushScheduled = false;
         if (!streamingMessageEl) return;
         var body = streamingMessageEl.querySelector('.chat-message-body');
         if (!body) return;
+        streamingBuffer = sanitizeStreamText(streamingBuffer);
         if (!streamMdEl) {
             body.innerHTML = '<div class="stream-md"></div>';
             streamMdEl = body.querySelector('.stream-md');
@@ -399,10 +412,28 @@
         streamingBuffer = '';
         streamMdEl = null;
         streamFlushScheduled = false;
+        streamingSuppressed = false;
+    };
+
+    var streamingSuppressed = false;
+    window.suppressStreamingMessage = function () {
+        streamingSuppressed = true;
+        if (streamingMessageEl && streamingMessageEl.parentNode) {
+            streamingMessageEl.remove();
+        }
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
     };
 
     window.appendOrUpdateStreamingMessage = function (text) {
-        if (!text) return;
+        if (!text || streamingSuppressed) return;
+        // Don't paint answer text while tools are still running — that is usually
+        // pre-tool monologue and belongs in the thinking block, not the reply.
+        if (typeof runningToolCount === 'function' && runningToolCount() > 0) {
+            return;
+        }
         removePlaceholder();
         if (!firstAnswerTokenReceived) {
             firstAnswerTokenReceived = true;
@@ -425,7 +456,23 @@
         }
     };
 
+    window.reopenThinkingForTools = function () {
+        // Pre-tool tokens collapsed thinking early — reopen while tools run.
+        firstAnswerTokenReceived = false;
+        streamingSuppressed = false;
+        if (thinkingBlockEl) {
+            thinkingBlockCollapsed = false;
+            thinkingBlockEl.classList.add('expanded');
+            if (thinkingBlockBody) thinkingBlockBody.style.display = 'block';
+            var title = thinkingBlockHeader && thinkingBlockHeader.querySelector('.chat-thinking-title');
+            if (title) title.textContent = 'Thinking…';
+        } else if (typeof openThinkingBlock === 'function') {
+            openThinkingBlock();
+        }
+    };
+
     window.finalizeStreamingMessage = function () {
+        streamingSuppressed = false;
         if (streamFlushScheduled) {
             flushStreamingBuffer();
         }
@@ -551,6 +598,7 @@
         var callId = data.call_id || ('tool_' + Date.now());
         var title = data.title || 'Running tool';
         var cmd = data.cmd || '';
+        var argsDetail = data.args_detail || '';
 
         // A tool is starting — dismiss the live reasoning placeholder.
         clearReasoningStep();
@@ -572,6 +620,9 @@
             if (cmd) {
                 var exCmd = existing.header.querySelector('.chat-tool-cmd');
                 if (exCmd) exCmd.textContent = cmd;
+            }
+            if (argsDetail && existing.lines.length === 0) {
+                window.appendToolLog(callId, 'ARGS:\n' + argsDetail);
             }
             scrollToBottomIfPinned();
             return;
@@ -596,8 +647,7 @@
 
         header.addEventListener('click', function () {
             var block = toolBlocks[callId];
-            // Only blocks that streamed log lines are expandable; the rest are
-            // just a tick + heading and have nothing to reveal.
+            // Expand when we have args/result logs.
             if (!block || block.lines.length === 0) return;
             var nowExpanded = !el.classList.contains('expanded');
             setToolBlockExpanded(block, nowExpanded);
@@ -608,6 +658,9 @@
         activityContainer.appendChild(el);
 
         toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
+        if (argsDetail) {
+            window.appendToolLog(callId, 'ARGS:\n' + argsDetail);
+        }
         scrollToBottomIfPinned();
     };
 
@@ -616,8 +669,8 @@
         if (!toolBlocks[callId]) {
             window.addToolBlock(JSON.stringify({
                 call_id: callId,
-                title: 'Rendering',
-                cmd: 'product demo'
+                title: 'Tool',
+                cmd: ''
             }));
         }
         var block = toolBlocks[callId];
@@ -636,24 +689,24 @@
     window.completeToolBlock = function (callId, ok, summary) {
         var block = toolBlocks[callId];
         if (block && block.el) {
+            block.el.classList.remove('running');
             if (!ok) {
-                // Failed tool calls are transient noise — the agent retries and
-                // usually succeeds. Drop them so only successful steps remain.
-                if (block.el.parentNode) block.el.remove();
-                delete toolBlocks[callId];
+                // Keep failed tools visible so args/results can be inspected.
+                block.el.classList.add('error', 'has-logs');
+                var errIcon = block.header.querySelector('.chat-tool-icon');
+                if (errIcon) errIcon.innerHTML = ACTIVITY_X_SVG;
+                if (summary) {
+                    var errCmd = block.header.querySelector('.chat-tool-cmd');
+                    if (errCmd) errCmd.textContent = summary;
+                }
+                setToolBlockExpanded(block, false);
             } else {
-                block.el.classList.remove('running');
                 block.el.classList.add('done');
-
                 var iconEl = block.header.querySelector('.chat-tool-icon');
                 if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
-
-                // Header is just the tick + heading; the summary/detail and the
-                // chevron (unless logs streamed) are hidden via CSS.
                 setToolBlockExpanded(block, false);
             }
         }
-        // Unknown call_id: nothing to stop — fall through.
 
         scrollToBottomIfPinned();
     };
@@ -1154,18 +1207,34 @@
         }
         var progress = steps.length ? (done + '/' + steps.length + ' done') : '';
         if (failed > 0) progress += ' (' + failed + ' failed)';
+        var unfinished = Array.isArray(plan.unfinished_step_ids)
+            ? plan.unfinished_step_ids
+            : null;
+        if (unfinished === null) {
+            unfinished = [];
+            for (var j = 0; j < steps.length; j++) {
+                var ust = (steps[j].status || '').toLowerCase();
+                var uerr = (steps[j].last_error || '').trim();
+                if (ust === 'completed') continue;
+                if (ust === 'skipped' && !uerr) continue;
+                if (ust === 'skipped' && uerr) unfinished.push(steps[j].step_id || String(j));
+                else if (ust === 'failed' || ust === 'blocked' || ust === 'pending' || ust === 'in_progress') {
+                    unfinished.push(steps[j].step_id || String(j));
+                }
+            }
+        }
+        var allSucceeded = plan.all_steps_succeeded === true ||
+            (status === 'COMPLETED' && unfinished.length === 0 && steps.length > 0);
         var html = '<div class="chat-plan-chip-inner">' +
             '<span class="chat-plan-chip-title">' + escapeHtml(plan.title || 'Edit plan') + '</span>' +
             '<span class="chat-plan-chip-badge chat-plan-chip-badge-' + escapeHtml(status.toLowerCase()) + '">' + escapeHtml(status) + '</span>' +
             (progress ? '<span class="chat-plan-chip-progress" id="chat-plan-chip-progress">' + escapeHtml(progress) + '</span>' : '') +
             '<div class="chat-plan-chip-actions">' +
             '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>';
-        if (status === 'READY' || status === 'BLOCKED') {
-            var execLabel = status === 'BLOCKED' ? 'Retry execution' : 'Execute';
-            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">' + execLabel + '</button>';
-        }
-        if (status === 'BLOCKED') {
-            html += '<button type="button" class="chat-plan-chip-edit" id="chat-plan-chip-edit">Edit in Plan mode</button>';
+        if (status === 'READY') {
+            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Execute</button>';
+        } else if (status === 'COMPLETED' && unfinished.length > 0 && !allSucceeded) {
+            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Re-run unfinished</button>';
         }
         html += '</div></div>';
         root.innerHTML = html;
@@ -1239,106 +1308,154 @@
         var root = document.createElement('div');
         root.id = 'chat-plan-questions';
         root.className = 'chat-plan-questions';
+
         var requiredIds = [];
-        var html = '<div class="chat-plan-questions-header">A few questions before I finalize the plan</div>';
+        var answers = {};
+        var parts = [];
+        parts.push('<div class="chat-plan-questions-header">A few questions before I finalize the plan</div>');
         for (var i = 0; i < questions.length; i++) {
             var q = questions[i];
             var qid = String(q.id || ('q' + (i + 1)));
             requiredIds.push(qid);
-            html += '<div class="chat-plan-question" data-qid="' + escapeAttr(qid) + '">';
-            html += '<label class="chat-plan-question-prompt">' + escapeHtml(q.prompt || '') + '</label>';
+            answers[qid] = '';
+            parts.push('<div class="chat-plan-question" data-qid="' + escapeAttr(qid) + '">');
+            parts.push('<label class="chat-plan-question-prompt">' + escapeHtml(q.prompt || '') + '</label>');
             if (q.options && q.options.length) {
-                html += '<div class="chat-plan-question-options">';
+                parts.push('<div class="chat-plan-question-options">');
                 for (var j = 0; j < q.options.length; j++) {
-                    var opt = q.options[j];
-                    html += '<button type="button" class="chat-plan-option-btn" data-qid="' + escapeAttr(qid) + '" data-value="' + escapeAttr(opt) + '">' + escapeHtml(opt) + '</button>';
+                    var opt = String(q.options[j]);
+                    parts.push(
+                        '<button type="button" class="chat-plan-option-btn" data-qid="' +
+                        escapeAttr(qid) + '" data-value="' + escapeAttr(opt) + '">' +
+                        escapeHtml(opt) + '</button>'
+                    );
                 }
-                html += '</div>';
+                parts.push('</div>');
             }
-            html += '<input type="text" class="chat-plan-question-input" data-qid="' + escapeAttr(qid) + '" placeholder="Your answer…" />';
-            html += '</div>';
+            parts.push(
+                '<input type="text" class="chat-plan-question-input" data-qid="' +
+                escapeAttr(qid) + '" placeholder="Your answer…" />'
+            );
+            parts.push('</div>');
         }
-        root.dataset.requiredIds = JSON.stringify(requiredIds);
-        html += '<textarea class="chat-plan-questions-notes" placeholder="Anything else? (optional)" rows="2"></textarea>';
-        html += '<div class="chat-plan-questions-actions">';
-        html += '<button type="button" class="chat-plan-questions-submit" id="chat-plan-questions-submit" disabled>Submit answers</button>';
-        html += '<button type="button" class="chat-plan-questions-skip" id="chat-plan-questions-skip">Skip — use your judgment</button>';
-        html += '</div>';
-        root.innerHTML = html;
+        parts.push('<textarea class="chat-plan-questions-notes" placeholder="Anything else? (optional)" rows="2"></textarea>');
+        parts.push('<div class="chat-plan-questions-actions">');
+        parts.push('<button type="button" class="chat-plan-questions-submit" disabled>Submit answers</button>');
+        parts.push('<button type="button" class="chat-plan-questions-skip">Skip — use your judgment</button>');
+        parts.push('</div>');
+        root.innerHTML = parts.join('');
+
         var messages = document.getElementById('chat-messages');
         if (messages) messages.appendChild(root);
 
+        var submitBtn = root.querySelector('.chat-plan-questions-submit');
+        var skipBtn = root.querySelector('.chat-plan-questions-skip');
+        var notesEl = root.querySelector('.chat-plan-questions-notes');
+
         function allAnswered() {
-            var ids;
-            try {
-                ids = JSON.parse(root.dataset.requiredIds || '[]');
-            } catch (e) {
-                ids = requiredIds;
+            for (var k = 0; k < requiredIds.length; k++) {
+                if (!String(answers[requiredIds[k]] || '').trim()) return false;
             }
-            for (var k = 0; k < ids.length; k++) {
-                var input = root.querySelector('.chat-plan-question-input[data-qid="' + ids[k] + '"]');
-                if (!input || !input.value.trim()) return false;
-            }
-            return ids.length > 0;
+            return requiredIds.length > 0;
         }
 
         function updateSubmitState() {
-            var submitBtn = document.getElementById('chat-plan-questions-submit');
             if (submitBtn) submitBtn.disabled = !allAnswered();
         }
 
-        root.querySelectorAll('.chat-plan-option-btn').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var qid = btn.getAttribute('data-qid');
-                var input = root.querySelector('.chat-plan-question-input[data-qid="' + qid + '"]');
-                if (input) input.value = btn.getAttribute('data-value') || '';
-                root.querySelectorAll('.chat-plan-option-btn[data-qid="' + qid + '"]').forEach(function (b) {
-                    b.classList.toggle('selected', b === btn);
-                });
-                updateSubmitState();
-            });
+        function setAnswer(qid, value) {
+            answers[qid] = value;
+            var input = null;
+            var inputs = root.querySelectorAll('.chat-plan-question-input');
+            for (var i = 0; i < inputs.length; i++) {
+                if (inputs[i].getAttribute('data-qid') === qid) {
+                    input = inputs[i];
+                    break;
+                }
+            }
+            if (input && input.value !== value) input.value = value;
+            updateSubmitState();
+        }
+
+        root.addEventListener('click', function (e) {
+            var btn = e.target;
+            if (!btn || !btn.classList || !btn.classList.contains('chat-plan-option-btn')) {
+                // Walk up in case text node / nested (unlikely)
+                var t = e.target;
+                while (t && t !== root) {
+                    if (t.classList && t.classList.contains('chat-plan-option-btn')) {
+                        btn = t;
+                        break;
+                    }
+                    t = t.parentNode;
+                }
+            }
+            if (!btn || !btn.classList || !btn.classList.contains('chat-plan-option-btn')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var qid = btn.getAttribute('data-qid') || '';
+            var value = btn.getAttribute('data-value') || '';
+            setAnswer(qid, value);
+            var optionBtns = root.querySelectorAll('.chat-plan-option-btn');
+            for (var i = 0; i < optionBtns.length; i++) {
+                if (optionBtns[i].getAttribute('data-qid') === qid) {
+                    if (optionBtns[i] === btn) optionBtns[i].classList.add('selected');
+                    else optionBtns[i].classList.remove('selected');
+                }
+            }
         });
 
-        root.querySelectorAll('.chat-plan-question-input').forEach(function (input) {
-            input.addEventListener('input', updateSubmitState);
+        root.addEventListener('input', function (e) {
+            var t = e.target;
+            if (!t || !t.classList || !t.classList.contains('chat-plan-question-input')) return;
+            setAnswer(t.getAttribute('data-qid') || '', t.value || '');
         });
 
-        var submitBtn = document.getElementById('chat-plan-questions-submit');
-        if (submitBtn) {
-            submitBtn.onclick = function () {
-                if (!allAnswered()) return;
-                var answers = {};
-                root.querySelectorAll('.chat-plan-question-input').forEach(function (input) {
-                    var qid = input.getAttribute('data-qid');
-                    if (qid && input.value.trim()) answers[qid] = input.value.trim();
-                });
-                var notesEl = root.querySelector('.chat-plan-questions-notes');
-                var payload = { answers: answers, notes: notesEl ? notesEl.value.trim() : '' };
-                getBridge(function (bridge) {
-                    if (bridge && bridge.submitPlanAnswers) {
+        function sendAnswers(payload) {
+            getBridge(function (bridge) {
+                if (bridge && bridge.submitPlanAnswers) {
+                    try {
                         bridge.submitPlanAnswers(JSON.stringify(payload));
-                    } else {
-                        console.warn('submitPlanAnswers bridge method missing');
+                    } catch (err) {
+                        console.warn('submitPlanAnswers failed', err);
                     }
-                });
-                window.clearPlanQuestions();
-            };
+                } else {
+                    console.warn('submitPlanAnswers bridge method missing');
+                }
+            });
+            window.clearPlanQuestions();
         }
-        var skipBtn = document.getElementById('chat-plan-questions-skip');
+
+        if (submitBtn) {
+            submitBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!allAnswered()) return;
+                var out = {};
+                for (var k = 0; k < requiredIds.length; k++) {
+                    var id = requiredIds[k];
+                    var val = String(answers[id] || '').trim();
+                    if (val) out[id] = val;
+                }
+                sendAnswers({
+                    answers: out,
+                    notes: notesEl ? String(notesEl.value || '').trim() : ''
+                });
+            });
+        }
         if (skipBtn) {
-            skipBtn.onclick = function () {
-                getBridge(function (bridge) {
-                    if (bridge && bridge.submitPlanAnswers) {
-                        bridge.submitPlanAnswers(JSON.stringify({ skip: true }));
-                    } else {
-                        console.warn('submitPlanAnswers bridge method missing');
-                    }
-                });
-                window.clearPlanQuestions();
-            };
+            skipBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                sendAnswers({ skip: true });
+            });
         }
+
+        updateSubmitState();
         scrollToBottomIfPinned();
-        root.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        try {
+            root.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } catch (err) {}
     };
 
     window.setChatInput = function (text) {
@@ -1382,10 +1499,21 @@
         });
     }
 
+    function openAgentTrace() {
+        getBridge(function (bridge) {
+            if (bridge && bridge.openAgentTrace) {
+                bridge.openAgentTrace();
+            }
+        });
+    }
+
     sendBtn.addEventListener('click', sendMessage);
 
     cancelBtn.addEventListener('click', cancelRequest);
     clearBtn.addEventListener('click', clearChat);
+    if (traceBtn) {
+        traceBtn.addEventListener('click', openAgentTrace);
+    }
 
     inputEl.addEventListener('keydown', function (e) {
         if (commandPaletteOpen) {

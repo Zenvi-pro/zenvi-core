@@ -96,9 +96,9 @@ class BackendTaggingWorker(QThread):
                     return
 
                 filename = _os.path.basename(file_path)
-                index_name = (
-                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                )
+                from classes.project_tl_index import build_project_index_name
+
+                index_name = build_project_index_name(self.project_id)
                 indexing_configured = client.is_indexing_configured()
 
                 from classes.frame_extractor import extract_tagging_frames
