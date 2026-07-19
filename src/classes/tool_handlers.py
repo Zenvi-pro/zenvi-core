@@ -2969,12 +2969,21 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     if not video_url:
         return "Error: video_url is required."
 
+    url_path = video_url.split("?")[0].rstrip("/")
+    lower_path = url_path.lower()
+    _audio_exts = (".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma")
+    if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
+        return (
+            "Error: import_video_url_and_add_to_timeline_tool is for video URLs only. "
+            "For Freesound / music / SFX use stock_music(query=..., track=...)."
+        )
+
     try:
         # Derive a clean .mp4 filename from the URL path.
-        url_path = video_url.split("?")[0].rstrip("/")
         raw_name = url_path.split("/")[-1] or "video.mp4"
-        if not raw_name.lower().endswith(".mp4"):
-            raw_name += ".mp4"
+        root, ext = os.path.splitext(raw_name)
+        if ext.lower() not in (".mp4", ".mov", ".webm", ".mkv", ".avi"):
+            raw_name = f"{root or 'video'}.mp4"
 
         tmp_dir = tempfile.mkdtemp(prefix="zenvi_url_import_")
         dest_path = os.path.join(tmp_dir, raw_name)
@@ -3137,7 +3146,12 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             finally:
                 _resume_player(was_playing)
             if not msg or str(msg).lower().startswith("error"):
-                return f"Error: Video imported but timeline placement failed: {msg or 'unknown'}"
+                return (
+                    f"Error: Video imported (file_id={f.id}) but timeline placement failed: "
+                    f"{msg or 'unknown'}. "
+                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
+                    f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                )
             return msg
         except Exception as e:
             return f"Error: {e}"
@@ -4313,7 +4327,45 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         app = _get_app()
         files_model = app.window.files_model
         from classes.query import File
-        existing = File.get(path=local_path)
+
+        def _resolve_imported_file(path: str):
+            """Match project File after add_files (path keys often differ on Windows)."""
+            variants = []
+            for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
+                if candidate and candidate not in variants:
+                    variants.append(candidate)
+            for p in variants:
+                f = File.get(path=p)
+                if f:
+                    return f
+            base = os.path.basename(path).lower()
+            best = None
+            for candidate in File.filter():
+                try:
+                    cpath = candidate.data.get("path") or ""
+                    abs_path = ""
+                    try:
+                        abs_path = candidate.absolute_path() or ""
+                    except Exception:
+                        abs_path = ""
+                    names = {
+                        os.path.basename(cpath).lower(),
+                        os.path.basename(abs_path).lower(),
+                    }
+                    if base not in names:
+                        continue
+                    # Prefer exact absolute-path match when several share a basename.
+                    if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
+                        os.path.normcase(os.path.normpath(v)) for v in variants
+                    }:
+                        return candidate
+                    if best is None:
+                        best = candidate
+                except Exception:
+                    continue
+            return best
+
+        existing = _resolve_imported_file(local_path)
         if existing:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = existing.id
@@ -4329,21 +4381,7 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
 
         _run_on_main_thread(_do_add, timeout=30)
 
-        # Look up the File object so we can return the file_id to the agent
-        f = File.get(path=local_path)
-        if not f:
-            f = File.get(path=os.path.normpath(local_path))
-        if not f:
-            f = File.get(path=os.path.realpath(local_path))
-        if not f:
-            for candidate in File.filter():
-                try:
-                    if getattr(candidate, "absolute_path", None) and candidate.absolute_path() == local_path:
-                        f = candidate
-                        break
-                except Exception:
-                    continue
-
+        f = _resolve_imported_file(local_path)
         if f:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = f.id
@@ -4353,10 +4391,10 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
                 f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
                 f"(or empty file_id to use this just-imported file) to place it on the timeline."
             )
-        log.info("Stock media added to project: %s (id not yet available)", local_path)
+        log.error("Stock media import produced no File record: %s", local_path)
         return (
-            f"Added to project: {local_path}. "
-            f"Use list_files_tool to find the file_id, then call add_clip_to_timeline_tool."
+            f"Error: Failed to import into project files (no file_id): {local_path}. "
+            f"The download may be corrupt or unsupported by the media engine."
         )
     except Exception as e:
         log.error("add_stock_media_to_project: %s", e, exc_info=True)

@@ -79,8 +79,9 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
 
     Accepts (in order):
       1) exact layer_number
-      2) exact label / name (case-insensitive; unique) — labels may be numeric
-      3) ui_track index 1..N counted from the BOTTOM of the stack
+      2) exact track_id (e.g. L4 from TRACK_STACK_JSON)
+      3) exact label / name (case-insensitive; unique) — labels may be numeric
+      4) ui_track index 1..N counted from the BOTTOM of the stack
 
     Labels are never used for z-order — only to find which layer the user meant.
     """
@@ -103,7 +104,17 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     if n is not None and n in numbers:
         return n, None
 
-    # 2) Label / name (including numeric labels like "1" / "5")
+    # 2) track_id from TRACK_STACK_JSON (agents often pass track_id=L4)
+    tid_query = raw.strip()
+    tid_hits = [
+        e for e in stack
+        if (e.get("track_id") or "").strip()
+        and (e.get("track_id") or "").strip().lower() == tid_query.lower()
+    ]
+    if len(tid_hits) == 1:
+        return int(tid_hits[0]["layer_number"]), None
+
+    # 3) Label / name (including numeric labels like "1" / "5")
     low = raw.lower()
     m = re.match(r"^(?:ui\s*)?track\s*[#:]?\s*(.+)$", low, re.I)
     label_query = (m.group(1).strip() if m else low).strip()
@@ -128,15 +139,15 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     if len(contains) == 1:
         return int(contains[0]["layer_number"]), None
 
-    # 3) ui_track from bottom
+    # 4) ui_track from bottom
     if n is not None and layers and 1 <= n <= len(stack):
         return int(stack[n - 1]["layer_number"]), None
 
     return (
         None,
         f"Error: Unknown track or layer {raw!r}. "
-        "Call list_layers_tool and use layer_number (z-order) or the exact label. "
-        "Do not assume label text equals stack position.",
+        "Call list_layers_tool and use layer_number (preferred), track_id, "
+        "ui_track (1=bottom), or the exact label.",
     )
 
 
