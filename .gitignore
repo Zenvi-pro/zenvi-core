@@ -10,10 +10,14 @@ idea/*
 agent-log.md
 AGENTS.md
 CLAUDE.md
-.cursor/
+.cursor/**
 .claude/
 # Local packaged installers (do not commit)
 *.deb
+
+# Keep graphify Cursor rule tracked
+!.cursor/rules/
+!.cursor/rules/graphify.mdc
 
 # Exclude results of the build process
 doc/_build
