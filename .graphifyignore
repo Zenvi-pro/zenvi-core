@@ -1,0 +1,33 @@
+# Same syntax as .gitignore. Merged with .gitignore; these patterns only exclude more.
+# https://github.com/Graphify-Labs/graphify#ignoring-files
+
+node_modules/
+dist/
+*.generated.py
+
+# Local / generated noise (already often gitignored; keep graphify lean)
+.venv/
+__pycache__/
+build/
+openshot_qt.egg-info/
+protobuf_data/
+google-cloud-sdk/
+
+# only index src/, ignore everything else
+*
+!src/
+!src/**
+
+# Asset blobs — bloated detect (5k+ images); code/docs are enough for the graph
+src/images/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+*.ico
+*.mp4
+*.mp3
+*.wav
+*.deb
