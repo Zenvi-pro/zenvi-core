@@ -47,7 +47,7 @@ def _make_context(
         title=title,
         file_name=file_name or f"{title}.mp4",
         effective_metadata=eff,
-        tags_preview="dog" if "dog" in str(eff) else "",
+        summary_preview="dog" if "dog" in str(eff) else "",
     )
 
 

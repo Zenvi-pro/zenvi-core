@@ -37,7 +37,7 @@ def _clip_row(clip_id, *, position=0.0, start=0.0, end=30.0, layer=1000000):
     return c
 
 
-def test_list_clips_includes_source_window_and_tags_preview():
+def test_list_clips_includes_source_window_and_summary_preview():
     file_data = {
         "name": "match.mp4",
         "path": "/tmp/match.mp4",
@@ -61,7 +61,7 @@ def test_list_clips_includes_source_window_and_tags_preview():
             out = tool_handlers.list_clips()
     assert "source_start=" in out
     assert "source_end=" in out
-    assert "tags_preview=" in out
+    assert "summary_preview=" in out
 
 
 def test_get_timeline_placements_metadata_rows():
@@ -77,7 +77,7 @@ def test_get_timeline_placements_metadata_rows():
     ctx.source_start = 0.0
     ctx.source_end = 30.0
     ctx.index_status = "ready"
-    ctx.tags_preview = "tennis, court"
+    ctx.summary_preview = "tennis, court"
     ctx.effective_metadata = {"scene_descriptions": [{"time": 5.0, "description": "serve"}]}
 
     with patch(
@@ -127,7 +127,7 @@ def test_search_clip_scenes_uses_parent_twelvelabs():
 
 
 if __name__ == "__main__":
-    test_list_clips_includes_source_window_and_tags_preview()
+    test_list_clips_includes_source_window_and_summary_preview()
     test_get_timeline_placements_metadata_rows()
     test_search_clip_scenes_uses_parent_twelvelabs()
     print("test_tool_handlers_timeline_search: ok")
