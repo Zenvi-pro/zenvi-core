@@ -3190,20 +3190,17 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def setup_toolbars(self):
         _ = get_app()._tr  # Get translation function
 
-        # Logout button — icon-only, pinned to the top-right of the menu bar
+        # Logout action — icon-only, lives on the main toolbar beside Save/Export.
+        # Themes pick this up by name (see themes/*/theme.py toolbar settings).
         from classes.ui_util import get_icon
         _logout_icon = get_icon("system-log-out")
         if not _logout_icon or _logout_icon.isNull():
             # Fallback: bundled icon (works on Linux, macOS, Windows)
             _logout_icon = QIcon(os.path.join(info.IMAGES_PATH, "logout.svg"))
-        self._logout_btn = QToolButton(self.menubar)
-        self._logout_btn.setObjectName("logout-btn")
-        self._logout_btn.setIcon(_logout_icon)
-        self._logout_btn.setToolTip("Log Out")
-        self._logout_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-        self._logout_btn.setAutoRaise(True)
-        self._logout_btn.clicked.connect(self.logout_clicked)
-        self.menubar.setCornerWidget(self._logout_btn, Qt.TopRightCorner)
+        self.actionLogout = QAction(_logout_icon, _("Log Out"), self)
+        self.actionLogout.setObjectName("actionLogout")
+        self.actionLogout.setToolTip(_("Log Out"))
+        self.actionLogout.triggered.connect(self.logout_clicked)
 
         # Start undo and redo actions disabled
         self.actionUndo.setEnabled(False)
@@ -3332,7 +3329,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Add timeline toolbar to web frame
         self.frameWeb.addWidget(self.timelineToolbar)
 
-    def logout_clicked(self):
+    def logout_clicked(self, checked=False):
         """Sign the current user out of their Zenvi account."""
         reply = QMessageBox.question(
             self,

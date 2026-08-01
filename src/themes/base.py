@@ -245,6 +245,7 @@ class BaseTheme:
             {"action": self.app.window.actionFullscreen, "style": Qt.ToolButtonIconOnly},
             {"divide": True},
             {"action": self.app.window.actionExportVideo, "style": Qt.ToolButtonIconOnly},
+            {"action": self.app.window.actionLogout, "style": Qt.ToolButtonIconOnly},
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=24, settings=toolbar_buttons)
 
