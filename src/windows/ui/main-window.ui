@@ -178,6 +178,7 @@
      <addaction name="actionUn_Freeze_View"/>
      <addaction name="separator"/>
      <addaction name="actionShow_All"/>
+     <addaction name="actionDock_All"/>
     </widget>
     <addaction name="actionView_Toolbar"/>
     <addaction name="actionFullscreen"/>
@@ -1280,6 +1281,17 @@
    </property>
    <property name="text">
     <string>Show All</string>
+   </property>
+  </action>
+  <action name="actionDock_All">
+   <property name="icon">
+    <iconset theme="view-restore"/>
+   </property>
+   <property name="text">
+    <string>Dock All Panels</string>
+   </property>
+   <property name="toolTip">
+    <string>Dock all floating panels back into the main window</string>
    </property>
   </action>
   <action name="actionRecoveryProjects">

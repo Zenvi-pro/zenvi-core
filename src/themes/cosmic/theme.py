@@ -299,6 +299,13 @@ QLabel#dock-title-handle {
     qproperty-pixmap: url({PATH}themes/cosmic/images/dock-move.svg);
 }
 
+/* Custom (Qt-drawn) dock title bar — also used by floating panels, where it
+   is the drag handle that lets them be docked back in */
+QWidget#dock-title-bar {
+    background-color: #0d0d0d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 /* ── Dock widgets ─────────────────────────────────────────── */
 QDockWidget {
     background-color: #0d0d0d;
