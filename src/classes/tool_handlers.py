@@ -522,19 +522,33 @@ def list_files(**_kw) -> str:
     try:
         import os
         from classes.query import File
+        from classes.twelvelabs_match import twelvelabs_is_indexed
+
         files = File.filter()
         if not files:
             return "No files in project."
         lines = []
+        visible = 0
         for f in files:
             d = f.data if isinstance(f.data, dict) else {}
+            if d.get("zenvi_subclip"):
+                continue
+            visible += 1
             name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
             dur = float(d.get("duration", 0) or 0)
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            analyzed = bool(ai.get("analyzed"))
+            indexed = twelvelabs_is_indexed(ai.get("twelvelabs") or {})
+            preview = _summary_preview_for_file_data(d)
             lines.append(
                 f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
+                f"analyzed={analyzed} indexed={indexed} "
+                f"summary_preview={preview!r} "
                 f"path={os.path.basename(d.get('path', ''))}"
             )
-        return f"Media bin files ({len(files)}):\n" + "\n".join(lines)
+        if not lines:
+            return "No files in project."
+        return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
@@ -542,14 +556,14 @@ def list_files(**_kw) -> str:
 _TAGS_PREVIEW_MAX = 80
 
 
-def _tags_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
+def _summary_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
     """Top objects/scenes from effective metadata for compact clip listing."""
-    from classes.ai_metadata_utils import build_tags_preview, get_effective_ai_metadata
+    from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata
 
     if not isinstance(file_data, dict):
         return ""
     effective = get_effective_ai_metadata(file_data, clip_data=clip_data, rebased=True)
-    return build_tags_preview(effective)
+    return build_summary_preview(effective)
 
 
 def _file_is_analyzed(file_data: dict) -> bool:
@@ -611,7 +625,7 @@ def list_clips(layer="", **_kw) -> str:
             title = d.get("title") or d.get("label") or ""
             fid = d.get("file_id", "")
             fname = ""
-            tags_preview = ""
+            summary_preview = ""
             parent_file_id = ""
             source_start = d.get("start", 0)
             source_end = d.get("end", 0)
@@ -630,14 +644,14 @@ def list_clips(layer="", **_kw) -> str:
                             or os.path.basename(str(fdata.get("path") or ""))
                         )
                         ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
-                        tags_preview = ctx.tags_preview
+                        summary_preview = ctx.summary_preview
                         parent_file_id = ctx.parent_file_id
                         source_start = ctx.source_start
                         source_end = ctx.source_end
                         timeline_end = ctx.timeline_end
                 except Exception:
                     pass
-            tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
+            summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
             occ_hint = ""
             dup_key = f"{fid}:{lid_int}"
             dupes = file_dupes.get(dup_key, [])
@@ -650,7 +664,7 @@ def list_clips(layer="", **_kw) -> str:
             parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
             lines.append(
                 f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
-                f"title={title!r} file={fname!r}{tag_part}{occ_hint} "
+                f"title={title!r} file={fname!r}{summary_part}{occ_hint} "
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
                 f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
                 f"source_start={source_start} source_end={source_end}"
@@ -1414,7 +1428,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
         if info.get("error") and not info.get("index_id"):
             return (
                 f"Error: {info['error']} "
-                "Index/tag project videos first, then search again."
+                "Index/summarize project videos first, then search again."
             )
         index_id = str(info.get("index_id") or "").strip()
         if not index_id:
@@ -1646,7 +1660,7 @@ def search_clip_scenes(
                                 lines.append(f"- timestamp {_fmt_mmss(rel_cut)} (project search)")
                             return "\n".join(lines)
 
-        # Local scene descriptions fallback
+        # Local chapter / description fallback (Pegasus chapters or legacy scenes)
         local_ai = per_clip_ai
         if local_ai is None:
             local_ai = get_effective_ai_metadata(
@@ -1655,15 +1669,38 @@ def search_clip_scenes(
                 rebased=True,
             )
 
-        # Simple local search over cached paths/tags (no LLM)
-        scenes = (local_ai or {}).get("scene_descriptions", [])
-        if not scenes:
+        candidates = []
+        for ch in (local_ai or {}).get("chapters") or []:
+            if not isinstance(ch, dict):
+                continue
+            summary = (ch.get("summary") or ch.get("title") or "").strip()
+            if not summary:
+                continue
+            candidates.append({
+                "time": float(ch.get("start", 0.0) or 0.0),
+                "description": summary,
+            })
+        for s in (local_ai or {}).get("scene_descriptions") or []:
+            if not isinstance(s, dict):
+                continue
+            desc = (s.get("description") or "").strip()
+            if not desc:
+                continue
+            candidates.append({
+                "time": float(s.get("time", 0.0) or 0.0),
+                "description": desc,
+            })
+        # Also score transcript / sounds as whole-clip hints (time=0)
+        for key in ("transcript", "sounds", "description", "short_summary"):
+            text = str((local_ai or {}).get(key) or "").strip()
+            if text:
+                candidates.append({"time": float(clip_start or 0.0), "description": text[:500]})
+
+        if not candidates:
             return "No matches found."
         scored = []
         q_lower = query.lower()
-        for s in scenes:
-            if not isinstance(s, dict):
-                continue
+        for s in candidates:
             desc = (s.get("description") or "").strip()
             if not desc:
                 continue
@@ -1682,9 +1719,9 @@ def search_clip_scenes(
         results = scored[:k]
         if not results:
             return "No matches found."
-        lines = [f"Scene-description matches in '{clip_name}':"]
+        lines = [f"Description matches in '{clip_name}':"]
         for r in results:
-            lines.append(f"- [{_fmt_mmss(r['time'])}] score={r['score']:.3f}: {r['description']}")
+            lines.append(f"- [{_fmt_mmss(r['time'])}] score={r['score']:.3f}: {r['description'][:200]}")
         return "\n".join(lines)
     except Exception as e:
         log.error("search_clip_scenes: %s", e, exc_info=True)
@@ -1763,20 +1800,34 @@ def _scene_description_cut_source(
     occurrence: int,
     per_clip_ai=None,
 ):
-    """Return a source-file cut time from scene descriptions, or None."""
+    """Return a source-file cut time from Pegasus chapters or legacy scenes, or None."""
     from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
 
     local_ai = per_clip_ai
     if local_ai is None and source_ai is not None:
         local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
-    scenes = (local_ai or {}).get("scene_descriptions", [])
-    if not scenes:
+
+    candidates = []
+    for ch in (local_ai or {}).get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        summary = (ch.get("summary") or ch.get("title") or "").strip()
+        if not summary:
+            continue
+        candidates.append({"time": float(ch.get("start", 0.0) or 0.0), "description": summary})
+    for s in (local_ai or {}).get("scene_descriptions") or []:
+        if not isinstance(s, dict):
+            continue
+        desc = (s.get("description") or "").strip()
+        if not desc:
+            continue
+        candidates.append({"time": float(s.get("time", 0.0) or 0.0), "description": desc})
+
+    if not candidates:
         return None
     q_lower = (query or "").lower()
     scored = []
-    for s in scenes:
-        if not isinstance(s, dict):
-            continue
+    for s in candidates:
         desc = (s.get("description") or "").strip()
         if not desc:
             continue
@@ -1798,9 +1849,9 @@ def _scene_description_cut_source(
             scored.append((t, score))
     if not scored:
         return None
-    scored.sort(key=lambda x: (-x[1], x[0]))
-    if occurrence > 0:
-        idx = min(occurrence - 1, len(scored) - 1)
+    scored.sort(key=lambda x: x[1], reverse=True)
+    if occurrence and occurrence > 0:
+        idx = min(occurrence, len(scored)) - 1
         return scored[idx][0]
     return scored[0][0]
 
@@ -2739,7 +2790,7 @@ def _import_generated_video(video_path):
     """Import a generated video into the project with clean metadata.
 
     Re-encodes the video first to a permanent location (via
-    _output_path_for_generated_video), then adds it using skip_tagging=True
+    _output_path_for_generated_video), then adds it using skip_indexing=True
     to avoid nested event loops and metadata corruption.
 
     Returns (File object, None) on success, (None, error_string) on failure.
@@ -2758,7 +2809,7 @@ def _import_generated_video(video_path):
 
     # Import into project on the main thread
     def _do_import():
-        _get_app().window.files_model.add_files([final_path], skip_tagging=True)
+        _get_app().window.files_model.add_files([final_path], skip_indexing=True)
     _run_on_main_thread(_do_import, timeout=30)
 
     # Look up the File object
@@ -4192,7 +4243,7 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
 
 
 # ---------------------------------------------------------------------------
-# Stock media / retag / reindex / planning handlers
+# Stock media / resummarize / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
 def import_stock_media(
@@ -4401,13 +4452,10 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def retag_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run AI tagging for an existing project file.
+def resummarize_project_file(file_id: str = "", **kwargs) -> str:
+    """Re-run Pegasus audiovisual summary for an already-indexed project file.
 
-    Runs on a worker thread.  The only Qt-touching step (reading the
-    project File and scheduling the tagging worker) is briefly marshalled
-    onto the main thread; the rest stays off the GUI thread so the UI
-    never stalls.
+    Requires an existing TwelveLabs video_id. Runs on a worker thread.
     """
     try:
         if not file_id:
@@ -4415,12 +4463,17 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
 
         def _read_file_meta():
             from classes.query import File
+            from classes.twelvelabs_match import twelvelabs_is_indexed
             f = File.get(id=file_id)
             if not f:
                 return None
+            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
+                "indexed": twelvelabs_is_indexed(tl),
+                "video_id": tl.get("video_id") or "",
             }
 
         meta = _run_on_main_thread(_read_file_meta, timeout=10)
@@ -4431,30 +4484,35 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
         if meta["duration"] > MAX_SECONDS:
             return (
                 f"Error: Clip is {meta['duration'] / 60:.1f} min — exceeds the "
-                f"30-minute re-tagging limit."
+                f"30-minute summarize limit."
+            )
+        if not meta.get("indexed") or not meta.get("video_id"):
+            return (
+                f"Error: File {file_id} is not indexed yet. "
+                "Call reindex_project_file_tool first, then resummarize."
             )
 
-        def _kick_off_tagging():
+        def _kick_off_summarize():
             try:
                 files_model = _get_app().window.files_model
-                files_model._tag_file_async(file_id, tag_only=True)
+                files_model._index_file_async(file_id, summarize_only=True)
             except Exception as exc:
-                log.warning("retag_project_file: failed to start tagging: %s", exc)
+                log.warning("resummarize_project_file: failed to start summarize: %s", exc)
 
-        # Fire-and-forget: marshal the call onto the GUI thread without
-        # waiting for it to complete (the actual tagging runs on a Qt worker
-        # spawned inside ``_tag_file_async``).
         try:
             dispatcher = _get_dispatcher()
             dispatcher._dispatch.emit(
-                (_kick_off_tagging, (), [None], [None], threading.Event())
+                (_kick_off_summarize, (), [None], [None], threading.Event())
             )
         except Exception:
-            _kick_off_tagging()
+            _kick_off_summarize()
 
-        return f"Re-tagging started for file {file_id} ({meta['path']})."
+        return (
+            f"Pegasus summarize started for file {file_id} "
+            f"(video_id={meta.get('video_id')}, {meta['path']})."
+        )
     except Exception as e:
-        log.error("retag_project_file: %s", e, exc_info=True)
+        log.error("resummarize_project_file: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -4567,9 +4625,47 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                 f.save()
 
             _run_on_main_thread(_persist_twelvelabs_metadata, timeout=10)
+
+            video_id = str(result.get("video_id") or "")
+            summarize_note = ""
+            if video_id:
+                summarized = client.summarize_indexed_video(
+                    video_id,
+                    file_id=file_id,
+                    index_id=str(result.get("index_id") or ""),
+                    index_name=index_name,
+                )
+                if isinstance(summarized, dict) and summarized.get("analyzed"):
+                    def _persist_summary():
+                        from classes.query import File
+                        f = File.get(id=file_id)
+                        if not f:
+                            return
+                        tl = {
+                            "status": "ready",
+                            "index_id": result.get("index_id", ""),
+                            "video_id": video_id,
+                            "index_name": index_name,
+                        }
+                        summarized["twelvelabs"] = {
+                            **(summarized.get("twelvelabs") or {}),
+                            **tl,
+                        }
+                        f.data["ai_metadata"] = summarized
+                        f.save()
+
+                    _run_on_main_thread(_persist_summary, timeout=10)
+                    summarize_note = " Pegasus summary updated."
+                else:
+                    summarize_note = (
+                        f" Summarize failed: "
+                        f"{(summarized or {}).get('error', 'unknown')}"
+                    )
+
             return (
                 f"Re-indexing complete for file {file_id}. "
-                f"index_id={result.get('index_id', '')}  video_id={result.get('video_id', '')}"
+                f"index_id={result.get('index_id', '')}  video_id={video_id}."
+                f"{summarize_note}"
             )
         return f"Re-indexing failed: {result.get('error', result.get('message', 'unknown'))}"
     except Exception as e:
@@ -4597,7 +4693,6 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             media_type = d.get("media_type", "?")
             name = d.get("name") or d.get("path", "?").split("/")[-1]
             ai = d.get("ai_metadata") or {}
-            tags = ai.get("tags", {})
             analyzed = ai.get("analyzed", False)
             tl = ai.get("twelvelabs", {}) or {}
             from classes.twelvelabs_match import twelvelabs_is_indexed
@@ -4605,10 +4700,11 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             indexed = twelvelabs_is_indexed(tl)
             hint = infer_tl_search_hint(ai, name)
             scene_count = len(ai.get("scene_descriptions") or [])
-            objects = ", ".join((tags.get("objects") or [])[:5])
-            scenes = ", ".join((tags.get("scenes") or [])[:3])
-            activities = ", ".join((tags.get("activities") or [])[:3])
-            desc = (ai.get("description") or "")[:120]
+            chapter_count = len(ai.get("chapters") or [])
+            short = (ai.get("short_summary") or "")[:160]
+            desc = (ai.get("description") or "")[:400]
+            sounds = (ai.get("sounds") or "")[:160]
+            transcript = (ai.get("transcript") or "")[:200]
             parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
             alias_part = ""
             if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
@@ -4617,18 +4713,52 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
                 f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
                 f"duration={m}:{s:02d}\n"
                 f"{alias_part}"
-                f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
+                f"    analyzed={analyzed}  indexed={indexed}  "
+                f"chapter_count={chapter_count}  scene_count={scene_count}\n"
                 f"    tl_search_hint={hint}\n"
                 f"    twelvelabs_index_id={tl.get('index_id', '')}\n"
                 f"    twelvelabs_index_name={tl.get('index_name', '')}\n"
                 f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
-                f"    objects=[{objects}]\n"
-                f"    scenes=[{scenes}]\n"
-                f"    activities=[{activities}]\n"
+                f"    short_summary={short}\n"
                 f"    description={desc}"
             )
+            # Pre-Pegasus projects (or failed summarize) may only have Gemini tags.
+            if not short and not desc:
+                tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
+                legacy_bits = []
+                for key in ("objects", "scenes", "activities", "mood"):
+                    vals = tags.get(key) or []
+                    if isinstance(vals, list) and vals:
+                        legacy_bits.append(
+                            f"{key}=[{', '.join(str(v) for v in vals[:8] if v)}]"
+                        )
+                if legacy_bits:
+                    lines.append(f"    legacy_tags={' '.join(legacy_bits)}")
+                elif sounds or transcript:
+                    if sounds:
+                        lines.append(f"    sounds={sounds}")
+                    if transcript:
+                        lines.append(f"    transcript={transcript}")
+            if level == "full":
+                if sounds:
+                    lines.append(f"    sounds={sounds}")
+                if transcript:
+                    lines.append(f"    transcript={transcript}")
+            chapters = ai.get("chapters") or []
+            if chapters:
+                limit = len(chapters) if level == "full" else min(3, len(chapters))
+                lines.append("    chapter_snippets:")
+                for ch in chapters[:limit]:
+                    if isinstance(ch, dict) and (ch.get("summary") or ch.get("title")):
+                        t0 = float(ch.get("start", 0) or 0)
+                        t1 = float(ch.get("end", t0) or t0)
+                        title = str(ch.get("title") or "")
+                        summary = str(ch.get("summary") or "")[:160]
+                        lines.append(
+                            f"      [{_fmt_mmss(t0)}-{_fmt_mmss(t1)}] {title}: {summary}"
+                        )
             snippets = ai.get("scene_descriptions") or []
-            if snippets:
+            if snippets and not chapters:
                 limit = len(snippets) if level == "full" else min(3, len(snippets))
                 lines.append("    scene_snippets:")
                 for sc in snippets[:limit]:
@@ -4678,7 +4808,7 @@ def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
                 f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
                 f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
                 f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
-                f"    tags_preview={ctx.tags_preview!r}"
+                f"    summary_preview={ctx.summary_preview!r}"
             )
             if scenes and scene_limit:
                 lines.append("    effective_scenes:")
@@ -4780,7 +4910,7 @@ def get_timeline_state(**_kw) -> str:
                         except Exception:
                             clip_dur = 0
                     clip_end = d.get("position", 0) + clip_dur
-                    tags_preview = ""
+                    summary_preview = ""
                     analyzed_part = ""
                     source_part = ""
                     try:
@@ -4793,7 +4923,7 @@ def get_timeline_state(**_kw) -> str:
                                 or d.get("file_id", "?")
                             )
                             ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
-                            tags_preview = ctx.tags_preview
+                            summary_preview = ctx.summary_preview
                             source_part = (
                                 f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
                             )
@@ -4803,11 +4933,11 @@ def get_timeline_state(**_kw) -> str:
                             fname = d.get("file_id", "?")
                     except Exception:
                         fname = d.get("file_id", "?")
-                    tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
+                    summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
                     lines.append(
                         f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                         f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                        f"{tag_part}{analyzed_part}{source_part}"
+                        f"{summary_part}{analyzed_part}{source_part}"
                         f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                     )
         else:
@@ -4854,16 +4984,56 @@ def get_timeline_state(**_kw) -> str:
         return f"Error: {e}"
 
 
-def build_editor_snapshot_for_chat(max_chars: int = 4500) -> str:
-    """Compact timeline + file count for LLM grounding. Call from Qt GUI thread."""
+def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
+    """Compact media-bin + timeline for LLM grounding. Call from Qt GUI thread.
+
+    Empty timeline must NOT look like an empty project — always list media-bin
+    files (with summary_preview when available) so the agent can plan from them.
+    """
     try:
+        import os
         from classes.query import File
+        from classes.twelvelabs_match import twelvelabs_is_indexed
+
+        files = File.filter() or []
+        media_lines: list[str] = []
+        for f in files:
+            d = f.data if isinstance(getattr(f, "data", None), dict) else {}
+            if d.get("zenvi_subclip"):
+                continue
+            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
+            dur = float(d.get("duration", 0) or 0)
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            analyzed = bool(ai.get("analyzed"))
+            indexed = twelvelabs_is_indexed(ai.get("twelvelabs") or {})
+            preview = _summary_preview_for_file_data(d)
+            media_lines.append(
+                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
+                f"analyzed={analyzed} indexed={indexed} "
+                f"summary_preview={preview!r}"
+            )
+
+        n_visible = len(media_lines)
+        head = (
+            f"[Editor snapshot]\n"
+            f"Project files count: {n_visible}\n"
+            f"NOTE: media-bin files exist independently of the timeline; "
+            f"an empty timeline does NOT mean no project files.\n"
+        )
+        if media_lines:
+            # Cap listing so snapshot stays within max_chars with timeline.
+            shown = media_lines[:20]
+            head += "MEDIA_BIN:\n" + "\n".join(shown)
+            if n_visible > len(shown):
+                head += f"\n  ... and {n_visible - len(shown)} more (use list_files_tool / get_clips_with_full_metadata_tool)\n"
+            else:
+                head += "\n"
+        else:
+            head += "MEDIA_BIN: (empty)\n"
 
         tl = get_timeline_state()
-        nfiles = len(File.filter() or [])
-        head = f"[Editor snapshot]\nProject files count: {nfiles}\n"
-        body = tl.strip()
-        out = f"{head}{body}\n" if body else f"{head}(timeline state unavailable)\n"
+        body = (tl or "").strip()
+        out = f"{head}TIMELINE:\n{body}\n" if body else f"{head}TIMELINE: (empty or unavailable)\n"
         if len(out) > max_chars:
             out = out[: max(0, max_chars - 24)].rstrip() + "\n... (truncated)\n"
         return out + "[/Editor snapshot]\n"
@@ -4927,7 +5097,7 @@ AGENT_TOOL_HANDLERS = {
     "generate_tts_and_add_to_timeline_tool": generate_tts_and_add_to_timeline,
     # Stock / planning
     "import_stock_media_tool": import_stock_media,
-    "retag_project_file_tool": retag_project_file,
+    "resummarize_project_file_tool": resummarize_project_file,
     "reindex_project_file_tool": reindex_project_file,
     "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
     "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
@@ -4980,7 +5150,7 @@ TOOL_DISPLAY_LABELS = {
     "apply_transition_tool": "Apply transition",
     "generate_tts_and_add_to_timeline_tool": "Add narration (TTS)",
     "import_stock_media_tool": "Import stock media",
-    "retag_project_file_tool": "Retag file",
+    "resummarize_project_file_tool": "Resummarize file",
     "reindex_project_file_tool": "Reindex file",
     "get_clips_with_full_metadata_tool": "Read clips metadata",
     "get_timeline_placements_metadata_tool": "Read timeline placements",
@@ -5028,7 +5198,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # Downloads + re-encodes off the GUI thread; its timeline mutations
     # marshal to the main thread internally.
     "import_video_url_and_add_to_timeline_tool",
-    "retag_project_file_tool",
+    "resummarize_project_file_tool",
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",

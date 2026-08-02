@@ -216,10 +216,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             except Exception:
                 pass
 
-        # Stop background file tagging workers
+        # Stop background file indexing workers
         if getattr(self, "files_model", None):
             try:
-                self.files_model._stop_active_taggers()
+                self.files_model._stop_active_indexers()
             except Exception:
                 pass
 

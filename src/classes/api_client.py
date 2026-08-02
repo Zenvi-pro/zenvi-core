@@ -634,7 +634,7 @@ class ZenviBackendClient:
     # Indexing
     # ------------------------------------------------------------------
     def _new_http_session(self):
-        """Thread-safe session for parallel upload + tagging requests."""
+        """Thread-safe session for parallel upload + indexing requests."""
         import requests
         s = requests.Session()
         s.headers.update({"Content-Type": "application/json"})
@@ -831,54 +831,43 @@ class ZenviBackendClient:
             return {"error": str(e)}
 
     # ------------------------------------------------------------------
-    # Tagging & Indexing (for files_model)
+    # Indexing & Pegasus summarize (for files_model)
     # ------------------------------------------------------------------
-    def tag_video_frames(
+    def summarize_indexed_video(
         self,
-        file_id: str,
-        duration_seconds: float,
-        frames: List[Tuple[float, bytes]],
-        filename: str = "",
+        video_id: str,
+        *,
+        file_id: str = "",
+        index_id: str = "",
+        index_name: str = "",
         session=None,
     ) -> Dict[str, Any]:
-        """Send pre-extracted JPEG frames for AI tagging (no video upload)."""
-        import base64
-        if not frames:
-            meta = self._empty_ai_metadata()
-            meta["error"] = "No frames to analyze"
-            return meta
+        """Generate Pegasus audiovisual summary for an indexed TwelveLabs video_id."""
         payload = {
-            "file_id": file_id,
-            "duration_seconds": duration_seconds,
-            "filename": filename,
-            "frames": [
-                {"timestamp": ts, "data": base64.b64encode(jpeg).decode("ascii")}
-                for ts, jpeg in frames
-            ],
+            "video_id": str(video_id or "").strip(),
+            "file_id": str(file_id or ""),
+            "index_id": str(index_id or "") or None,
+            "index_name": str(index_name or ""),
         }
         try:
             s = session or self.session
-            import os as _os
-            env_timeout = int(_os.environ.get("ZENVI_TAGGING_HTTP_TIMEOUT", "300"))
-            timeout = max(120, min(600, max(env_timeout, 60 + len(frames) * 15)))
             r = s.post(
-                f"{self.api_url}/tags/analyze-frames",
+                f"{self.api_url}/indexing/summarize",
                 json=payload,
-                timeout=timeout,
+                timeout=300,
             )
             r.raise_for_status()
-            data = r.json()
-            if data.get("error"):
-                meta = self._empty_ai_metadata()
-                meta["error"] = data["error"]
+            data = r.json() if isinstance(r.json(), dict) else {}
+            meta = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else None
+            if meta and (meta.get("analyzed") or data.get("success")):
                 return meta
-            if data.get("analyzed"):
-                return data
-            meta = self._empty_ai_metadata()
-            meta["error"] = data.get("error", "Frame tagging did not complete")
-            return meta
+            out = self._empty_ai_metadata()
+            out["error"] = data.get("error") or (meta or {}).get("error") or "Summarize did not complete"
+            if meta and isinstance(meta.get("twelvelabs"), dict):
+                out["twelvelabs"] = meta["twelvelabs"]
+            return out
         except Exception as exc:
-            log.error("Frame tagging failed: %s", exc)
+            log.error("Pegasus summarize failed: %s", exc)
             meta = self._empty_ai_metadata()
             meta["error"] = str(exc)
             return meta
@@ -893,20 +882,18 @@ class ZenviBackendClient:
 
     @staticmethod
     def _empty_ai_metadata() -> Dict[str, Any]:
-        """Return a default empty ai_metadata dict (mirrors old GeminiVideoTagger.empty_metadata)."""
-        from datetime import datetime
+        """Return a default empty ai_metadata dict (Pegasus summary shape)."""
         return {
             "analyzed": False,
-            "analysis_version": "2.0",
-            "analysis_date": datetime.now().isoformat(),
-            "provider": "backend",
-            "scene_descriptions": [],
-            "tags": {"objects": [], "scenes": [], "activities": [], "mood": [], "quality": {}},
-            "faces": [],
-            "colors": {},
-            "audio_analysis": {},
+            "provider": "twelvelabs-pegasus",
+            "short_summary": "",
             "description": "",
-            "confidence": 0.0,
+            "sounds": "",
+            "transcript": "",
+            "chapters": [],
+            "scene_descriptions": [],
+            "tags": {},
+            "twelvelabs": {},
         }
 
     # ------------------------------------------------------------------

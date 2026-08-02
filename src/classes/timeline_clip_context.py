@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from classes.ai_metadata_utils import (
-    build_tags_preview,
+    build_summary_preview,
     get_effective_ai_metadata,
     get_source_window,
 )
@@ -43,7 +43,7 @@ class TimelineClipContext:
     title: str
     file_name: str
     effective_metadata: Dict[str, Any] = field(default_factory=dict)
-    tags_preview: str = ""
+    summary_preview: str = ""
     index_status: str = ""
     score: float = 0.0
 
@@ -60,7 +60,7 @@ class TimelineClipContext:
             "source_start": self.source_start,
             "source_end": self.source_end,
             "ui_track": self.ui_track,
-            "tags_preview": self.tags_preview,
+            "summary_preview": self.summary_preview,
         }
 
 
@@ -225,7 +225,7 @@ def build_timeline_clip_context(
         title=title,
         file_name=fname,
         effective_metadata=effective,
-        tags_preview=build_tags_preview(effective),
+        summary_preview=build_summary_preview(effective),
         index_status=index_status,
     )
 

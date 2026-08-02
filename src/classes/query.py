@@ -43,7 +43,7 @@ class QueryObject:
     _cache_version = None
     _cache = {}
     # Guards _cache / _cache_version: the cache is shared across the main thread and
-    # worker threads (preview, thumbnails, AI tagging), so concurrent reads must not
+    # worker threads (preview, thumbnails, AI indexing), so concurrent reads must not
     # race on cache invalidation or population.
     _cache_lock = threading.RLock()
 
@@ -302,14 +302,18 @@ class File(QueryObject):
         return ai_meta.get('analyzed', False)
     
     def get_ai_tags(self) -> dict:
-        """Get AI-generated tags"""
+        """Get AI-generated tags (legacy; prefer description / short_summary)."""
         ai_meta = self.get_ai_metadata()
-        return ai_meta.get('tags', {})
-    
+        return ai_meta.get('tags', {}) or {}
+
     def get_ai_description(self) -> str:
-        """Get AI-generated description"""
+        """Get AI-generated audiovisual description (Pegasus)."""
         ai_meta = self.get_ai_metadata()
-        return ai_meta.get('description', '')
+        desc = (ai_meta.get('description') or '').strip()
+        if desc:
+            return desc
+        short = (ai_meta.get('short_summary') or '').strip()
+        return short
     
     def profile(self):
         """ Get the profile of the file """

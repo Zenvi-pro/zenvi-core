@@ -543,7 +543,7 @@ class PexelsDock(QDockWidget):
         if card:
             card.set_done()
 
-        # Add to Project Files and trigger tagging/indexing.
+        # Add to Project Files and trigger indexing/summarize.
         try:
             from classes.app import get_app
             from classes.query import File
@@ -552,15 +552,15 @@ class PexelsDock(QDockWidget):
                 files_model = app.window.files_model
                 existing = File.get(path=local_path)
                 if existing:
-                    # File already in project — re-trigger tagging if it was
+                    # File already in project — re-trigger indexing if it was
                     # never successfully analyzed (e.g., backend was down during
                     # the first import).
                     if not (existing.data.get("ai_metadata") or {}).get("analyzed"):
                         log.info(
                             "Pexels video already in project but untagged, "
-                            "re-triggering tagging: %s", local_path,
+                            "re-triggering indexing: %s", local_path,
                         )
-                        files_model._tag_file_async(existing.id)
+                        files_model._index_file_async(existing.id)
                 else:
                     files_model.add_files([local_path])
                     log.info("Pexels video added to Project Files: %s", local_path)
