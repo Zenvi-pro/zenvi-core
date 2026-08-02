@@ -1702,11 +1702,22 @@ class AIChatWindow(QDockWidget):
         models = []
         try:
             client = get_backend_client()
-            api_models = client.list_models()  # returns List[{model_id, display_name}]
+            api_models = client.list_models()
             default_id = client.get_default_model_id()
             for m in api_models:
                 mid = m.get("model_id", "")
-                models.append({"id": mid, "name": m.get("display_name", mid), "default": mid == default_id})
+                # Pass the picker metadata straight through. The JS side
+                # defaults anything missing, so an older backend still works.
+                models.append({
+                    "id": mid,
+                    "name": m.get("display_name", mid),
+                    "default": mid == default_id,
+                    "provider": m.get("provider", ""),
+                    "featured": m.get("featured", True),
+                    "rank": m.get("rank", 500),
+                    "tags": m.get("tags", []),
+                    "available": m.get("available", True),
+                })
         except Exception:
             log.debug(
                 "Zenvi Assistant: model list unavailable during web UI init; using empty list"
@@ -2143,7 +2154,11 @@ class AIChatWindow(QDockWidget):
             default_id = client.get_default_model_id()
             for m in api_models:
                 mid = m.get("model_id", "")
-                models.append((mid, m.get("display_name", mid)))
+                models.append((
+                    mid,
+                    m.get("display_name", mid),
+                    m.get("provider", "") or (mid.split("/", 1)[0] if "/" in mid else ""),
+                ))
         except Exception:
             log.debug(
                 "Zenvi Assistant: model list unavailable for widget UI; combo left empty until backend is up"
@@ -2151,7 +2166,23 @@ class AIChatWindow(QDockWidget):
         if not models:
             self.model_combo.addItem("No AI providers loaded", "")
             return
-        for model_id, display_name in models:
+
+        # This is only the no-web-view fallback, so keep it simple: group by
+        # provider with a disabled separator row so a long catalog stays
+        # navigable in a plain combo box.
+        provider_labels = {
+            "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google",
+            "xai": "xAI", "ollama": "Ollama",
+        }
+        current_provider = None
+        for model_id, display_name, provider in models:
+            if provider != current_provider:
+                current_provider = provider
+                label = provider_labels.get(provider, provider or "Other")
+                self.model_combo.addItem("── %s ──" % label, "")
+                sep_idx = self.model_combo.count() - 1
+                # Separator rows must not be selectable.
+                self.model_combo.model().item(sep_idx).setEnabled(False)
             self.model_combo.addItem(display_name, model_id)
         idx = self.model_combo.findData(default_id)
         if idx >= 0:
