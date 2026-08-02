@@ -8,7 +8,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from classes.ai_metadata_utils import (  # noqa: E402
-    build_tags_preview,
+    build_summary_preview,
     collect_scene_descriptions_for_baked_segment,
     get_effective_ai_metadata,
 )
@@ -73,14 +73,14 @@ def test_resolve_parent_file_subclip():
     assert resolve_parent_file_id(subclip, file_id="sub-1") == "root-file"
 
 
-def test_build_tags_preview_windowed():
+def test_build_summary_preview_windowed():
     file_data = {"ai_metadata": _sample_ai(), "start": 0.0, "end": 120.0}
     eff = get_effective_ai_metadata(
         file_data,
         clip_data={"start": 0.0, "end": 10.0},
         rebased=True,
     )
-    preview = build_tags_preview(eff)
+    preview = build_summary_preview(eff)
     assert "cat" in preview.lower() or "beach" in preview.lower()
     assert "car" not in preview.lower()
 
@@ -96,6 +96,6 @@ if __name__ == "__main__":
     test_get_effective_metadata_preserves_twelvelabs()
     test_get_effective_metadata_filters_scenes()
     test_resolve_parent_file_subclip()
-    test_build_tags_preview_windowed()
+    test_build_summary_preview_windowed()
     test_collect_baked_segment_offsets()
     print("test_timeline_clip_context: ok")

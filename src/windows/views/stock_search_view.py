@@ -398,7 +398,7 @@ class StockSearchView(QWidget):
                 existing = File.get(path=local_path)
                 if existing:
                     if not (existing.data.get("ai_metadata") or {}).get("analyzed"):
-                        files_model._tag_file_async(existing.id)
+                        files_model._index_file_async(existing.id)
                 else:
                     files_model.add_files([local_path])
                     log.info("Stock media added to Project Files: %s", local_path)

@@ -1,4 +1,4 @@
-"""Resolve timeline clips from tags, metadata, and natural-language queries."""
+"""Resolve timeline clips from summaries, metadata, and natural-language queries."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class ClipCandidate:
     source_start: float = 0.0
     source_end: float = 0.0
     ui_track: Optional[int] = None
-    tags_preview: str = ""
+    summary_preview: str = ""
 
 
 @dataclass
@@ -65,17 +65,25 @@ def _metadata_corpus(ai: dict, *, max_scenes: int = 8) -> str:
     if not isinstance(ai, dict):
         return ""
     parts: List[str] = []
+    for key in ("short_summary", "description", "sounds", "transcript"):
+        val = ai.get(key)
+        if val:
+            parts.append(str(val))
+    for ch in (ai.get("chapters") or [])[:max_scenes]:
+        if isinstance(ch, dict):
+            if ch.get("title"):
+                parts.append(str(ch["title"]))
+            if ch.get("summary"):
+                parts.append(str(ch["summary"]))
+    for sc in (ai.get("scene_descriptions") or [])[:max_scenes]:
+        if isinstance(sc, dict) and sc.get("description"):
+            parts.append(str(sc["description"]))
+    # Legacy Gemini tags (old projects)
     tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
     for key in ("objects", "scenes", "activities", "mood"):
         vals = tags.get(key)
         if isinstance(vals, list):
             parts.extend(str(v) for v in vals if v)
-    desc = ai.get("description")
-    if desc:
-        parts.append(str(desc))
-    for sc in (ai.get("scene_descriptions") or [])[:max_scenes]:
-        if isinstance(sc, dict) and sc.get("description"):
-            parts.append(str(sc["description"]))
     return " ".join(parts)
 
 
@@ -108,7 +116,7 @@ def _score_context_against_query(
     corpus_parts = [
         ctx.title,
         ctx.file_name,
-        ctx.tags_preview,
+        ctx.summary_preview,
         str(ctx.file_id or ""),
         os.path.basename(ctx.source_path or ""),
     ]
@@ -123,12 +131,15 @@ def _score_context_against_query(
         return 0.0
 
     if ai and ai.get("analyzed"):
-        scenes = ai.get("scene_descriptions") or []
-        tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
-        tag_vals = []
-        for key in ("objects", "scenes", "activities"):
-            tag_vals.extend(tags.get(key) or [])
-        if not scenes and not tag_vals and not any(t in corpus for t in q_tokens):
+        has_text = bool(
+            (ai.get("short_summary") or "").strip()
+            or (ai.get("description") or "").strip()
+            or (ai.get("sounds") or "").strip()
+            or (ai.get("transcript") or "").strip()
+            or (ai.get("chapters") or [])
+            or (ai.get("scene_descriptions") or [])
+        )
+        if not has_text and not any(t in corpus for t in q_tokens):
             return 0.0
 
     score = 0.0
@@ -155,7 +166,7 @@ def _twelvelabs_project_candidates(
     query: str,
     contexts: List[TimelineClipContext],
 ) -> List[ClipCandidate]:
-    """Rank timeline placements via project-wide TwelveLabs search when tags fail."""
+    """Rank timeline placements via project-wide TwelveLabs search when summary scoring fails."""
     try:
         from classes.api_client import get_backend_client
         from classes.project_tl_index import collect_project_twelvelabs_index
@@ -232,7 +243,7 @@ def _twelvelabs_project_candidates(
                     source_start=ctx.source_start,
                     source_end=ctx.source_end,
                     ui_track=ctx.ui_track,
-                    tags_preview=ctx.tags_preview,
+                    summary_preview=ctx.summary_preview,
                 )
             )
     out.sort(key=lambda c: (-c.score, int(c.layer or 0), c.position))
@@ -249,7 +260,7 @@ def _score_clip_against_query(
     prefer_position_near: float = 0.0,
 ) -> float:
     """Backward-compatible scoring wrapper for unit tests."""
-    from classes.ai_metadata_utils import build_tags_preview, get_effective_ai_metadata, get_source_window
+    from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata, get_source_window
 
     fid = str(clip_data.get("file_id") or "")
     base_file = dict(file_data) if isinstance(file_data, dict) else {}
@@ -278,7 +289,7 @@ def _score_clip_against_query(
         title=str(clip_data.get("title") or clip_data.get("label") or fname or "Clip"),
         file_name=fname,
         effective_metadata=effective or {},
-        tags_preview=build_tags_preview(effective),
+        summary_preview=build_summary_preview(effective),
     )
     return _score_context_against_query(ctx, query, prefer_position_near=prefer_position_near)
 
@@ -296,7 +307,7 @@ def _candidate_from_context(ctx: TimelineClipContext) -> ClipCandidate:
         source_start=ctx.source_start,
         source_end=ctx.source_end,
         ui_track=ctx.ui_track,
-        tags_preview=ctx.tags_preview,
+        summary_preview=ctx.summary_preview,
     )
 
 
@@ -452,7 +463,7 @@ def resolve_timeline_clip(
     position_near: Optional[float] = None,
     occurrence: int = 0,
 ) -> ResolveResult:
-    """Resolve a timeline clip by explicit id, tag/query scoring, or single-clip shortcut."""
+    """Resolve a timeline clip by explicit id, summary/query scoring, or single-clip shortcut."""
     from classes.query import Clip
 
     try:
