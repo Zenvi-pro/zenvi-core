@@ -671,6 +671,13 @@ class ZenviBackendClient:
         mt = (media_type or "video").strip().lower() or "video"
         if mt not in ("video", "image", "audio"):
             mt = "video"
+        # Guard mislabeled imports (libopenshot often sets has_video on MP3).
+        _audio_exts = (
+            ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma",
+            ".opus", ".aiff", ".aif", ".oga",
+        )
+        if mt != "audio" and os.path.splitext(file_path or "")[1].lower() in _audio_exts:
+            mt = "audio"
         name = filename or os.path.basename(file_path) or file_id or "media"
         fid = file_id or uuid.uuid4().hex
         s = session or self._new_http_session()

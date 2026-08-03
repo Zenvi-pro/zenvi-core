@@ -75,10 +75,17 @@ class BackendIndexingWorker(QThread):
         metadata = client._empty_ai_metadata()
         error = None
         try:
-            media_type = str(self.file_data.get("media_type") or "video").strip().lower()
+            file_path = self.file_data.get("path", "")
+            file_id = self.file_data.get("id", "")
+            # Re-resolve type from path: libopenshot often marks MP3 as has_video.
+            from classes.image_types import get_media_type, is_audio_path
+            media_type = str(self.file_data.get("media_type") or "").strip().lower()
+            if is_audio_path(file_path):
+                media_type = "audio"
+                self.file_data["media_type"] = "audio"
+            elif media_type not in ("video", "image", "audio"):
+                media_type = get_media_type(self.file_data) if self.file_data else "video"
             if media_type in ("video", "image", "audio"):
-                file_path = self.file_data.get("path", "")
-                file_id = self.file_data.get("id", "")
 
                 duration = float(self.file_data.get("duration") or 0)
                 if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
