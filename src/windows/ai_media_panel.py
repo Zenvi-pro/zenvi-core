@@ -97,11 +97,13 @@ class AIMediaPanel(QDockWidget):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
 
-        self._create_description_tab()
-
-        self.update_timer = QTimer()
+        # Timer must exist before _create_description_tab() — that path calls
+        # refresh_tags() → update_selected_clip_description() → _stop_progress_timer().
+        self.update_timer = QTimer(self)
         self.update_timer.setInterval(2000)
         self.update_timer.timeout.connect(self._on_progress_timer)
+
+        self._create_description_tab()
 
         self._wire_selection_signals()
         self.update_selected_clip_description()
@@ -239,12 +241,14 @@ class AIMediaPanel(QDockWidget):
         self.update_selected_clip_description()
 
     def _start_progress_timer(self):
-        if not self.update_timer.isActive():
-            self.update_timer.start()
+        timer = getattr(self, "update_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start()
 
     def _stop_progress_timer(self):
-        if self.update_timer.isActive():
-            self.update_timer.stop()
+        timer = getattr(self, "update_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
 
     def _resolve_display_target(self, prefer_files=None):
         from classes.query import Clip, File

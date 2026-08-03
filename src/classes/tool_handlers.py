@@ -522,7 +522,7 @@ def list_files(**_kw) -> str:
     try:
         import os
         from classes.query import File
-        from classes.twelvelabs_match import twelvelabs_is_indexed
+        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
 
         files = File.filter()
         if not files:
@@ -538,7 +538,7 @@ def list_files(**_kw) -> str:
             dur = float(d.get("duration", 0) or 0)
             ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
             analyzed = bool(ai.get("analyzed"))
-            indexed = twelvelabs_is_indexed(ai.get("twelvelabs") or {})
+            indexed = twelvelabs_is_indexed(get_index_block(ai))
             preview = _summary_preview_for_file_data(d)
             lines.append(
                 f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
@@ -1380,8 +1380,46 @@ def slice_clip_at_playhead(**_kw) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search (project-wide TwelveLabs index + in-clip scenes)
+# Search (project-wide video index + in-clip scenes)
 # ---------------------------------------------------------------------------
+
+def get_project_catalog(**_kw) -> str:
+    """Orientation pass: list short summaries for all indexed project media."""
+    try:
+        from classes.api_client import get_backend_client
+        from classes.app import get_app
+
+        project_id = ""
+        try:
+            project_id = str(get_app().project.get("id") or "")
+        except Exception:
+            pass
+        if not project_id:
+            return "Error: project_id unavailable."
+        client = get_backend_client()
+        data = client.get_project_catalog(project_id)
+        if data.get("error"):
+            return f"Error: {data['error']}"
+        items = data.get("items") or []
+        if not items:
+            return (
+                "Catalog is empty — index/summarize project videos, images, and audio first, "
+                "then call get_project_catalog_tool again."
+            )
+        lines = [f"Project catalog ({len(items)} media items):"]
+        for it in items:
+            name = it.get("filename") or it.get("file_id") or it.get("video_id")
+            summary = (it.get("short_summary") or "").strip() or "(no summary)"
+            mt = str(it.get("media_type") or "video")
+            dur = it.get("duration_sec")
+            dur_s = f" [{dur:.1f}s]" if isinstance(dur, (int, float)) and mt != "image" else ""
+            lines.append(
+                f"- [{mt}] {name}{dur_s} file_id={it.get('file_id')}: {summary}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
+
 
 _ORDINAL_MAP = {
     "first": 1, "1st": 1,
@@ -1401,7 +1439,7 @@ def _detect_ordinal(query: str) -> int:
 
 
 def search_clips(query="", top_k="5", **_kw) -> str:
-    """Project-wide TwelveLabs search on this project's shared index.
+    """Project-wide video index search on this project's shared index.
 
     Returns media_bin_file_id + timestamp (deeper than Gemini tags).
     """
@@ -1433,13 +1471,13 @@ def search_clips(query="", top_k="5", **_kw) -> str:
         index_id = str(info.get("index_id") or "").strip()
         if not index_id:
             return (
-                "Error: No TwelveLabs index_id on project files. "
+                "Error: No project video index_id on project files. "
                 "Reindex clips so they share the project index, then retry."
             )
         video_map = info.get("video_map") or {}
         client = get_backend_client()
         if not client.is_indexing_configured():
-            return "Error: TwelveLabs is not configured on the backend."
+            return "Error: Video indexing is not configured on the backend."
 
         page_limit = max(30, k * 10)
         resp = client.search(
@@ -1453,9 +1491,9 @@ def search_clips(query="", top_k="5", **_kw) -> str:
         results = resp.get("results") or []
         if not results:
             return (
-                f"No TwelveLabs matches for '{q}' in this project's index "
+                f"No index matches for '{q}' in this project's index "
                 f"({info.get('index_name') or index_id}, "
-                f"{info.get('indexed_count', 0)} indexed video(s)). "
+                f"{info.get('indexed_count', 0)} indexed media item(s)). "
                 "Try a more specific description, or check indexing finished."
             )
 
@@ -1470,7 +1508,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             grouped[key].append({**r, "_file_id": fid, "_fname": fname, "_vid": vid})
 
         lines = [
-            f"Found {len(results)} match(es) across {len(grouped)} project video(s) "
+            f"Found {len(results)} match(es) across {len(grouped)} project media item(s) "
             f"(index_id={index_id}, index_name={info.get('index_name') or ''}):",
         ]
         shown = 0
@@ -1480,8 +1518,10 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             fid = hits[0].get("_file_id") or ""
             fname = hits[0].get("_fname") or key
             vid = hits[0].get("_vid") or ""
+            mt = str(hits[0].get("media_type") or "video")
             id_part = f" media_bin_file_id={fid}" if fid else " media_bin_file_id=(unmapped)"
             vid_part = f" twelvelabs_video_id={vid}" if vid else ""
+            type_part = f" media_type={mt}"
 
             hits_sorted = sorted(hits, key=lambda x: float(x.get("start") or 0))
             if len(hits_sorted) == 1 and requested_nth == 0:
@@ -1492,7 +1532,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                     mode="start",
                 )
                 lines.append(
-                    f"  • {fname}{id_part}{vid_part} — timestamp {_fmt_mmss(cut)} "
+                    f"  • {fname}{id_part}{vid_part}{type_part} — timestamp {_fmt_mmss(cut)} "
                     f"(segment {_fmt_mmss(float(r.get('start') or 0))}-"
                     f"{_fmt_mmss(float(r.get('end') or 0))}, rank={r.get('rank')})"
                 )
@@ -1564,7 +1604,7 @@ def search_clip_scenes(
         from classes.ai_metadata_utils import get_effective_ai_metadata
         from classes.api_client import get_backend_client
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
-        from classes.twelvelabs_match import select_hits_for_display
+        from classes.twelvelabs_match import select_hits_for_display, get_index_block
 
         resolved = _resolve_timeline_clip_for_tool(
             clip_query=clip_query,
@@ -1594,7 +1634,7 @@ def search_clip_scenes(
 
         # TwelveLabs search (parent index + trim window)
         if client.is_indexing_configured():
-            tw = (source_ai or {}).get("twelvelabs") if isinstance((source_ai or {}).get("twelvelabs"), dict) else {}
+            tw = get_index_block(source_ai or {})
             status = (tw.get("status") or "").lower()
             index_id = tw.get("index_id") or ""
             video_id = tw.get("video_id") or ""
@@ -1614,7 +1654,7 @@ def search_clip_scenes(
                     )
                     if matches:
                         lines = [
-                            f"TwelveLabs matches in '{clip_name}' "
+                            f"Index matches in '{clip_name}' "
                             f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
                         ]
                         for m in matches:
@@ -1652,7 +1692,7 @@ def search_clip_scenes(
                         )
                         if matches:
                             lines = [
-                                f"TwelveLabs matches in '{clip_name}' "
+                                f"Index matches in '{clip_name}' "
                                 f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
                             ]
                             for m in matches:
@@ -2131,7 +2171,7 @@ def slice_clip_at_best_match(
                     else None
                 )
                 # Extract TwelveLabs info (may be absent for old imports)
-                tw = (sa or {}).get("twelvelabs") if isinstance((sa or {}).get("twelvelabs"), dict) else {}
+                tw = get_index_block(sa or {})
                 tw_status = (tw.get("status") or "").lower()
                 iid = tw.get("index_id") or ""
                 vid = tw.get("video_id") or ""
@@ -4436,9 +4476,36 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         if f:
             chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
             _last_split_file_id_by_chat_session[chat_session_id] = f.id
+            # Stock imports must finish Gemini indexing before the agent continues.
+            wait_err = _wait_for_file_indexing(f.id, files_model, timeout_sec=1800)
+            summary = ""
+            try:
+                ai = f.data.get("ai_metadata") if isinstance(f.data, dict) else {}
+                if isinstance(ai, dict):
+                    summary = str(ai.get("short_summary") or "").strip()
+                    # Reload file in case worker updated metadata during wait
+                    refreshed = File.get(id=f.id)
+                    if refreshed and isinstance(refreshed.data, dict):
+                        ai2 = refreshed.data.get("ai_metadata") or {}
+                        if isinstance(ai2, dict) and ai2.get("short_summary"):
+                            summary = str(ai2.get("short_summary") or "").strip()
+                            f = refreshed
+            except Exception:
+                pass
+            if wait_err:
+                log.warning("Stock media indexing wait: %s", wait_err)
+                return (
+                    f"Added to project: {local_path} (file_id={f.id}) but indexing "
+                    f"did not finish: {wait_err}. "
+                    f"Call reindex_project_file_tool before relying on search. "
+                    f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
+                    f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                )
             log.info("Stock media added to project: %s (id=%s)", local_path, f.id)
+            summary_bit = f" Summary: {summary}" if summary else ""
             return (
-                f"Added to project: {local_path} (file_id={f.id}). "
+                f"Added to project and indexed: {local_path} (file_id={f.id})."
+                f"{summary_bit} "
                 f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
                 f"(or empty file_id to use this just-imported file) to place it on the timeline."
             )
@@ -4452,6 +4519,58 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
+def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) -> str:
+    """Block until Gemini indexing for file_id finishes. Returns error string or ''."""
+    import time
+    from classes.query import File
+    from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+
+    fid = str(file_id or "")
+    if not fid:
+        return "missing file_id"
+    deadline = time.time() + max(30, int(timeout_sec))
+    # Give the queue a moment to start the worker
+    time.sleep(0.5)
+    while time.time() < deadline:
+        try:
+            if hasattr(files_model, "is_file_indexing") and files_model.is_file_indexing(fid):
+                time.sleep(1.0)
+                continue
+            f = File.get(id=fid)
+            if not f or not isinstance(f.data, dict):
+                time.sleep(0.5)
+                continue
+            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+            idx = get_index_block(ai)
+            if twelvelabs_is_indexed(idx):
+                return ""
+            status = str((idx or {}).get("status") or "").lower()
+            if status in ("failed", "skipped"):
+                return str((idx or {}).get("error") or status)
+            if status in ("", "ready") and ai.get("analyzed"):
+                return ""
+            # Still queued / not started — keep waiting while queue may drain
+            if hasattr(files_model, "_indexing_queue"):
+                queued = any(str(qid) == fid for qid, _ in (files_model._indexing_queue or []))
+                active = any(
+                    str(getattr(w, "file_data", {}).get("id", "")) == fid
+                    for w in (getattr(files_model, "_active_indexers", None) or [])
+                )
+                if not queued and not active and status not in ("indexing", "uploading"):
+                    # No worker and not ready — treat as finished-or-never-started
+                    if twelvelabs_is_indexed(idx) or ai.get("analyzed"):
+                        return ""
+                    if status in ("failed", "skipped"):
+                        return str((idx or {}).get("error") or status)
+                    # Media type may not have been queued yet; small grace then fail soft
+                    time.sleep(1.0)
+                    continue
+        except Exception as exc:
+            log.debug("wait indexing poll: %s", exc)
+        time.sleep(1.0)
+    return f"timed out after {timeout_sec}s"
+
+
 def resummarize_project_file(file_id: str = "", **kwargs) -> str:
     """Re-run Pegasus audiovisual summary for an already-indexed project file.
 
@@ -4463,7 +4582,7 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
 
         def _read_file_meta():
             from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
             f = File.get(id=file_id)
             if not f:
                 return None
@@ -4534,7 +4653,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
         def _read_project_state():
             from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
             f = File.get(id=file_id)
             if not f:
                 return None
@@ -4695,7 +4814,7 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             ai = d.get("ai_metadata") or {}
             analyzed = ai.get("analyzed", False)
             tl = ai.get("twelvelabs", {}) or {}
-            from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
             from classes.tl_search_strategy import infer_tl_search_hint
             indexed = twelvelabs_is_indexed(tl)
             hint = infer_tl_search_hint(ai, name)
@@ -4993,7 +5112,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
     try:
         import os
         from classes.query import File
-        from classes.twelvelabs_match import twelvelabs_is_indexed
+        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
 
         files = File.filter() or []
         media_lines: list[str] = []
@@ -5005,7 +5124,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
             dur = float(d.get("duration", 0) or 0)
             ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
             analyzed = bool(ai.get("analyzed"))
-            indexed = twelvelabs_is_indexed(ai.get("twelvelabs") or {})
+            indexed = twelvelabs_is_indexed(get_index_block(ai))
             preview = _summary_preview_for_file_data(d)
             media_lines.append(
                 f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
@@ -5082,6 +5201,7 @@ AGENT_TOOL_HANDLERS = {
     # Search / slice / modify (tag-query resolved)
     "search_clips_tool": search_clips,
     "search_clip_scenes_tool": search_clip_scenes,
+    "get_project_catalog_tool": get_project_catalog,
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
     # Remotion
     "fetch_remotion_video_from_supabase_tool": fetch_remotion_video_from_supabase,
@@ -5138,8 +5258,9 @@ TOOL_DISPLAY_LABELS = {
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
-    "search_clips_tool": "Search project index (TwelveLabs)",
+    "search_clips_tool": "Search project index",
     "search_clip_scenes_tool": "Search clip scenes",
+    "get_project_catalog_tool": "Read project catalog",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
     "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
