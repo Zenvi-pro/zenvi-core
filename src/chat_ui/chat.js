@@ -31,6 +31,9 @@
     const modelTrigger = document.getElementById('chat-model-trigger');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
+    const modelSearch = document.getElementById('chat-model-search');
+    const modelList = document.getElementById('chat-model-list');
+    const modelFooter = document.getElementById('chat-model-footer');
     // Move menu to <body> so it escapes any CSS transform on ancestor elements
     // (transform creates a new containing block that breaks position:fixed)
     document.body.appendChild(modelMenu);
@@ -842,6 +845,10 @@
             '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">' +
             '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/>' +
             '<circle cx="12" cy="12" r="4" fill="currentColor"/></svg>',
+        xai:
+            '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">' +
+            '<path d="M3 21L12.5 11.5M21 3l-7.5 7.5M9.5 3H5l10.5 18H20L9.5 3z" ' +
+            'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         default:
             '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">' +
             '<path d="M8 1a3 3 0 00-3 3v1H4a2 2 0 00-2 2v6a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-1V4a3 3 0 00-3-3zm0 1.5A1.5 1.5 0 019.5 4v1h-3V4A1.5 1.5 0 018 2.5zM6 9a1 1 0 112 0 1 1 0 01-2 0zm4 0a1 1 0 112 0 1 1 0 01-2 0z" fill="currentColor"/></svg>'
@@ -849,6 +856,10 @@
 
     function detectProvider(modelId) {
         var id = (modelId || '').toLowerCase();
+        // xAI first: 'grok-4.20-...' contains no 'gpt', but the openai test
+        // below also matches a bare 'o1'/'o3' substring, so keep the explicit
+        // provider checks ahead of the loose ones.
+        if (id.indexOf('xai') === 0 || id.indexOf('grok') !== -1) return 'xai';
         if (id.indexOf('openai') === 0 || id.indexOf('gpt') !== -1 || id.indexOf('o1') !== -1 || id.indexOf('o3') !== -1) return 'openai';
         if (id.indexOf('anthropic') !== -1 || id.indexOf('claude') !== -1) return 'anthropic';
         if (id.indexOf('ollama') !== -1 || id.indexOf('llama') !== -1 || id.indexOf('local') !== -1) return 'ollama';
@@ -869,24 +880,129 @@
             '<path d="M3 7.5l2.5 2.5L11 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     }
 
-    function renderMenu() {
-        modelMenu.innerHTML = '';
-        modelItems.forEach(function (item) {
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'chat-model-option' + (item.id === selectedModelId ? ' selected' : '');
-            btn.setAttribute('role', 'option');
-            btn.setAttribute('aria-selected', item.id === selectedModelId ? 'true' : 'false');
-            btn.innerHTML = getModelIcon(item.id) +
-                '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
-                getCheckIcon();
-            btn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                selectModel(item.id, item.name);
-                closeMenu();
-            });
-            modelMenu.appendChild(btn);
+    var PROVIDER_LABELS = {
+        openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
+        xai: 'xAI', ollama: 'Ollama', meta: 'Meta', mistral: 'Mistral',
+        cohere: 'Cohere', default: 'Other'
+    };
+
+    function providerLabel(slug) {
+        return PROVIDER_LABELS[slug] || slug;
+    }
+
+    function matchesQuery(item, q) {
+        return item.id.toLowerCase().indexOf(q) !== -1 ||
+               item.name.toLowerCase().indexOf(q) !== -1;
+    }
+
+    function buildOption(item) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-model-option' +
+            (item.id === selectedModelId ? ' selected' : '') +
+            (item.available === false ? ' unavailable' : '');
+        btn.setAttribute('role', 'option');
+        btn.setAttribute('data-model-id', item.id);
+        btn.setAttribute('aria-selected', item.id === selectedModelId ? 'true' : 'false');
+        var badges = (item.tags || []).map(function (t) {
+            return '<span class="chat-model-badge">' + escapeHtml(t) + '</span>';
+        }).join('');
+        btn.innerHTML = getModelIcon(item.id) +
+            '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
+            badges + getCheckIcon();
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            selectModel(item.id, item.name);
+            closeMenu();
         });
+        return btn;
+    }
+
+    /* Two render states:
+         empty query  -> flat list of featured models (the default view)
+         search       -> the whole catalog, grouped under provider headers
+       Searching is what reaches the long tail, so grouping only appears where
+       a query can return dozens of matches. */
+    function renderMenu() {
+        if (!modelList) return;
+        modelList.innerHTML = '';
+        activeIndex = -1;
+
+        var q = (modelSearch && modelSearch.value || '').trim().toLowerCase();
+
+        if (!q) {
+            var featured = modelItems.filter(function (i) { return i.featured; });
+            // An older backend sends no `featured` flag at all — fall back to
+            // showing everything rather than an empty menu.
+            if (!featured.length) featured = modelItems;
+            featured.forEach(function (item) {
+                modelList.appendChild(buildOption(item));
+            });
+            var hidden = modelItems.length - featured.length;
+            if (modelFooter) {
+                modelFooter.textContent = hidden > 0
+                    ? 'Search ' + hidden + ' more model' + (hidden === 1 ? '' : 's') + '…'
+                    : '';
+                modelFooter.style.display = hidden > 0 ? '' : 'none';
+            }
+            return;
+        }
+
+        var matches = modelItems.filter(function (i) { return matchesQuery(i, q); });
+        if (!matches.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-model-empty';
+            empty.textContent = 'No models match “' + q + '”';
+            modelList.appendChild(empty);
+            if (modelFooter) modelFooter.style.display = 'none';
+            return;
+        }
+
+        // Group by provider, preserving the order providers first appear in
+        // the (rank-sorted) list so the best models lead.
+        var order = [];
+        var groups = {};
+        matches.forEach(function (item) {
+            var p = item.provider || detectProvider(item.id);
+            if (!groups[p]) { groups[p] = []; order.push(p); }
+            groups[p].push(item);
+        });
+        order.forEach(function (p) {
+            var header = document.createElement('div');
+            header.className = 'chat-model-group-label';
+            header.textContent = providerLabel(p);
+            modelList.appendChild(header);
+            groups[p].forEach(function (item) {
+                modelList.appendChild(buildOption(item));
+            });
+        });
+        if (modelFooter) {
+            modelFooter.textContent = matches.length + ' of ' + modelItems.length + ' models';
+            modelFooter.style.display = '';
+        }
+    }
+
+    // ── Keyboard navigation over whatever is currently rendered ──────────
+    var activeIndex = -1;
+
+    function optionEls() {
+        return modelList ? Array.prototype.slice.call(
+            modelList.querySelectorAll('.chat-model-option')) : [];
+    }
+
+    function setActive(idx) {
+        var els = optionEls();
+        if (!els.length) return;
+        // wrap around
+        if (idx < 0) idx = els.length - 1;
+        if (idx >= els.length) idx = 0;
+        els.forEach(function (el) { el.classList.remove('active'); });
+        activeIndex = idx;
+        els[idx].classList.add('active');
+        // keep the cursor inside the scroll viewport
+        if (els[idx].scrollIntoView) {
+            els[idx].scrollIntoView({ block: 'nearest' });
+        }
     }
 
     function updateTriggerIcon(modelId) {
@@ -955,8 +1071,16 @@
             modelMenu.style.top = 'auto';
             modelMenu.style.maxHeight = Math.min(menuMax, spaceAbove) + 'px';
         }
-        modelMenu.style.display = 'block';
+        // 'flex', not 'block': .chat-model-menu is a flex column so the search
+        // row and footer stay pinned while only the list scrolls. An inline
+        // display:block would override that and collapse the layout.
+        modelMenu.style.display = 'flex';
         modelTrigger.classList.add('active');
+        if (modelSearch) {
+            // Focus after the menu is displayed — focusing a hidden input is a
+            // no-op in Qt WebKit.
+            try { modelSearch.focus(); modelSearch.select(); } catch (e) {}
+        }
     }
 
     function closeMenu() {
@@ -967,6 +1091,12 @@
         modelMenu.style.bottom = '';
         modelMenu.style.maxHeight = '';
         modelTrigger.classList.remove('active');
+        // Reset the query so the menu always reopens on the featured view.
+        if (modelSearch && modelSearch.value) {
+            modelSearch.value = '';
+            renderMenu();
+        }
+        activeIndex = -1;
     }
 
     function toggleMenu(e) {
@@ -985,6 +1115,33 @@
         if (e.key === 'Escape' && menuOpen) closeMenu();
     });
 
+    if (modelSearch) {
+        modelSearch.addEventListener('input', function () {
+            renderMenu();
+        });
+        // Keep typing inside the box from bubbling out to the composer.
+        modelSearch.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive(activeIndex + 1);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive(activeIndex - 1);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                var els = optionEls();
+                // With no explicit cursor, Enter takes the first match — the
+                // usual expectation after typing a query.
+                var el = els[activeIndex >= 0 ? activeIndex : 0];
+                if (el) el.click();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeMenu();
+            }
+            e.stopPropagation();
+        });
+    }
+
     window.setModels = function (modelListJson) {
         var list = [];
         try {
@@ -992,8 +1149,25 @@
         } catch (e) {
             list = [];
         }
+        /* Read the picker metadata tolerantly: an older backend sends only
+           id/name, in which case every model is treated as featured so the
+           menu still lists something, ranks tie, and no badges render. */
         modelItems = list.map(function (item) {
-            return { id: item.id || item.name || '', name: item.name || item.id || '', isDefault: !!item.default };
+            var id = item.id || item.name || '';
+            return {
+                id: id,
+                name: item.name || item.id || '',
+                isDefault: !!item.default,
+                provider: item.provider || detectProvider(id),
+                featured: item.featured === undefined ? true : !!item.featured,
+                rank: typeof item.rank === 'number' ? item.rank : 500,
+                tags: Array.isArray(item.tags) ? item.tags : [],
+                available: item.available === undefined ? true : !!item.available
+            };
+        });
+        modelItems.sort(function (a, b) {
+            if (a.rank !== b.rank) return a.rank - b.rank;
+            return a.name.localeCompare(b.name);
         });
         // Keep hidden select in sync
         var currentValue = modelSelect.value;
