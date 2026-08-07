@@ -71,7 +71,7 @@ graphify hook install
 
 **Team workflow** ([Graphify team setup](https://github.com/Graphify-Labs/graphify#team-setup)):
 
-1. One person runs `/graphify .` in Cursor (or `graphify extract .`) and commits `graphify-out/` — including `cache/` for faster incremental builds. Keep `graphify-out/cost.json` local (gitignored).
+1. One person runs `/graphify .` in Cursor (or `graphify extract .`) and commits `graphify-out/` (keep `cache/` and `cost.json` local — gitignored).
 2. Everyone else pulls and their assistant can query the graph immediately (`graphify query`, `path`, `explain`).
 3. After docs change, run `/graphify --update` (or `graphify update .`) to refresh those nodes.
 

@@ -65,7 +65,8 @@ def collect_project_twelvelabs_index(
             # Prefer parent indexed assets; subclips share parent TL ids
             continue
         ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
-        tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+        from classes.twelvelabs_match import get_index_block
+        tl = get_index_block(ai)
         if not twelvelabs_is_indexed(tl):
             continue
         vid = str(tl.get("video_id") or "").strip()

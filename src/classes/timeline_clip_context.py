@@ -204,7 +204,23 @@ def build_timeline_clip_context(
         or ""
     ).strip()
     title = str(clip_data.get("title") or clip_data.get("label") or fname or "Clip").strip()
-    tl_meta = (parent_data or {}).get("twelvelabs") or (file_data or {}).get("twelvelabs") or {}
+    tl_meta = {}
+    try:
+        from classes.twelvelabs_match import get_index_block
+        tl_meta = get_index_block(parent_data or {}) or get_index_block(file_data or {}) or {}
+        # parent_data/file_data here are already ai_metadata-ish in some paths;
+        # also try nested ai_metadata.
+        if not tl_meta and isinstance(parent_data, dict):
+            tl_meta = get_index_block(parent_data.get("ai_metadata") or {})
+        if not tl_meta and isinstance(file_data, dict):
+            tl_meta = get_index_block(file_data.get("ai_metadata") or {})
+        # Legacy direct twelvelabs on file row
+        if not tl_meta:
+            raw = (parent_data or {}).get("twelvelabs") or (file_data or {}).get("twelvelabs") or {}
+            if isinstance(raw, dict):
+                tl_meta = raw
+    except Exception:
+        tl_meta = (parent_data or {}).get("twelvelabs") or (file_data or {}).get("twelvelabs") or {}
     if not isinstance(tl_meta, dict):
         tl_meta = {}
     index_status = str(tl_meta.get("status") or "")
