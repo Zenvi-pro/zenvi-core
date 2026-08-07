@@ -238,8 +238,6 @@
   "236": "Windows Preferences 3",
   "237": "Windows Views 66",
   "238": "Windows Views 67",
-  "239": ".btnBrowseProfiles_clicked",
-  "240": "StreamFilter",
   "241": "Classes Zenvi Brand Rc",
   "242": "Language Openshot Lang",
   "243": "Timeline App",
@@ -251,7 +249,6 @@
   "249": "Timeline Media 17",
   "250": "Classes Auto Updater 3",
   "251": "Classes Auto Updater 4",
-  "252": ".set",
   "253": "Classes Tool Handlers 5",
   "254": "Classes Tool Handlers 6",
   "255": "Classes Update Installer 3",
@@ -280,13 +277,5 @@
   "278": "Timeline 11",
   "279": "Windows Init",
   "280": "Windows Models 14",
-  "281": "Windows Views 70",
-  "282": "._invalidate_clip_cache_for_clip",
-  "283": ".reindex_video",
-  "284": "._add_slot_if_valid",
-  "285": ".setSnappingMode",
-  "286": ".setRazorMode",
-  "287": ".get_html",
-  "288": ".closeEvent",
-  "289": ".update_playback_cache"
+  "281": "Windows Views 70"
 }

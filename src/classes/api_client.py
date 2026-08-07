@@ -609,6 +609,7 @@ class ZenviBackendClient:
         index_id: Optional[str] = None,
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
+        media_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search for clips matching a query."""
         try:
@@ -623,6 +624,8 @@ class ZenviBackendClient:
                 payload["video_id"] = video_id
             if page_limit:
                 payload["page_limit"] = page_limit
+            if media_type:
+                payload["media_type"] = media_type
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
@@ -653,74 +656,149 @@ class ZenviBackendClient:
         existing_index_id: Optional[str] = None,
         session=None,
         progress_callback: Optional[Callable[[str, int], None]] = None,
+        project_id: str = "",
+        duration_sec: float = 0.0,
+        force: bool = False,
+        media_type: str = "video",
     ) -> Dict[str, Any]:
-        """Index via presigned TwelveLabs upload (proxy encoded locally)."""
-        from classes.index_proxy import create_index_proxy
-        from classes.direct_index_upload import upload_file_via_presigned_urls
+        """Index via editor-side chunks + Gemini Files direct upload (no backend media store)."""
+        from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
+        from classes.gemini_direct_upload import upload_file_to_gemini_resumable
 
-        proxy_path, is_temp, proxy_size, proxy_err = create_index_proxy(file_path)
-        if proxy_err:
-            log.warning("Index proxy failed, using source file: %s", proxy_err)
-            proxy_path = file_path
-            is_temp = False
-            try:
-                proxy_size = os.path.getsize(file_path)
-            except OSError as exc:
-                return {"success": False, "error": str(exc)}
+        if not file_path or not os.path.isfile(file_path):
+            return {"success": False, "error": f"File not found: {file_path}"}
 
-        name = filename or os.path.basename(file_path) or file_id or "video.mp4"
+        mt = (media_type or "video").strip().lower() or "video"
+        if mt not in ("video", "image", "audio"):
+            mt = "video"
+        # Guard mislabeled imports (libopenshot often sets has_video on MP3).
+        _audio_exts = (
+            ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma",
+            ".opus", ".aiff", ".aif", ".oga",
+        )
+        if mt != "audio" and os.path.splitext(file_path or "")[1].lower() in _audio_exts:
+            mt = "audio"
+        name = filename or os.path.basename(file_path) or file_id or "media"
         fid = file_id or uuid.uuid4().hex
         s = session or self._new_http_session()
+        work_dir = ""
+
+        pid = (project_id or "").strip()
+        if not pid and str(index_name or "").startswith("zenvi-"):
+            pid = str(index_name)[len("zenvi-"):]
 
         try:
-            payload: Dict[str, Any] = {
-                "file_id": fid,
-                "index_name": index_name,
-                "filename": name,
-                "total_size": int(proxy_size),
-            }
-            if existing_index_id:
-                payload["existing_index_id"] = existing_index_id
+            if progress_callback:
+                progress_callback("planning", 0)
 
-            r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
-            r.raise_for_status()
-            session_data = r.json()
-            if session_data.get("error"):
-                return {"success": False, "error": session_data["error"]}
+            duration = float(duration_sec or 0)
+            if mt == "image":
+                duration = 0.0
+            elif duration <= 0:
+                try:
+                    import subprocess
+                    proc = subprocess.run(
+                        [
+                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                    duration = float((proc.stdout or "0").strip() or 0)
+                except Exception:
+                    duration = 0.0
+            if mt != "image" and duration <= 0:
+                return {"success": False, "error": f"Could not determine {mt} duration"}
 
-            job_id = session_data.get("job_id")
-            upload_id = session_data.get("upload_id")
-            chunk_size = int(session_data.get("chunk_size") or 0)
-            if not job_id or not upload_id or chunk_size <= 0:
-                return {"success": False, "error": "Invalid upload-session response"}
-
-            def _fetch_more(start: int, count: int):
-                rr = s.post(
-                    f"{self.api_url}/indexing/upload-session/{upload_id}/urls",
-                    json={"start": start, "count": count},
-                    timeout=30,
-                )
-                rr.raise_for_status()
-                return rr.json().get("presigned_urls") or []
-
-            def _on_chunk_uploaded(done: int, total: int):
-                if progress_callback and total > 0:
-                    progress_callback("uploading", int(done * 100 / total))
-
-            parts, up_err = upload_file_via_presigned_urls(
-                proxy_path,
-                chunk_size=chunk_size,
-                presigned_urls=session_data.get("presigned_urls") or [],
-                fetch_more_urls=_fetch_more,
-                upload_headers=session_data.get("upload_headers") or {},
-                on_chunk_uploaded=_on_chunk_uploaded,
+            pr = s.post(
+                f"{self.api_url}/indexing/plan-chunks",
+                json={"duration_sec": duration, "media_type": mt},
+                timeout=30,
             )
-            if up_err:
-                return {"success": False, "error": up_err}
+            pr.raise_for_status()
+            plan_data = pr.json()
+            if plan_data.get("error"):
+                return {"success": False, "error": plan_data["error"]}
+            plan = plan_data.get("chunks") or []
+            if not plan:
+                return {"success": False, "error": "Empty chunk plan from backend"}
+
+            if progress_callback:
+                progress_callback("chunking", 5)
+            chunk_infos, work_dir, chunk_err = extract_chunks(
+                file_path, plan, media_type=mt,
+            )
+            if chunk_err:
+                return {"success": False, "error": chunk_err}
+
+            job_id = ""
+            uploaded_chunks = []
+            total = len(chunk_infos)
+            for i, info in enumerate(chunk_infos):
+                mime = str(info.get("mime_type") or guess_mime(info["path"], mt))
+                payload: Dict[str, Any] = {
+                    "file_id": fid,
+                    "project_id": pid,
+                    "index_name": index_name,
+                    "filename": name,
+                    "total_size": int(info["size"]),
+                    "mime_type": mime,
+                    "media_type": mt,
+                    "chunk_index": int(info["chunk_index"]),
+                    "start_ts": float(info["start"]),
+                    "end_ts": float(info["end"]),
+                }
+                if job_id:
+                    payload["job_id"] = job_id
+                if existing_index_id:
+                    payload["existing_index_id"] = existing_index_id
+
+                r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
+                r.raise_for_status()
+                session_data = r.json()
+                if session_data.get("error"):
+                    return {"success": False, "error": session_data["error"]}
+                job_id = str(session_data.get("job_id") or job_id)
+                upload_url = str(session_data.get("upload_url") or "")
+                if not upload_url:
+                    urls = session_data.get("presigned_urls") or []
+                    if urls:
+                        upload_url = str(urls[0].get("url") or "")
+                if not job_id or not upload_url:
+                    return {"success": False, "error": "Invalid upload-session response"}
+
+                file_info, up_err = upload_file_to_gemini_resumable(
+                    info["path"],
+                    upload_url,
+                    mime_type=mime,
+                )
+                if up_err:
+                    return {"success": False, "error": up_err}
+
+                uploaded_chunks.append({
+                    "chunk_index": int(info["chunk_index"]),
+                    "gemini_file_name": str(file_info.get("name") or ""),
+                    "gemini_file_uri": str(file_info.get("uri") or ""),
+                    "start_ts": float(info["start"]),
+                    "end_ts": float(info["end"]),
+                    "size": int(info["size"]),
+                    "mime_type": mime,
+                    "media_type": mt,
+                })
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int((i + 1) * 80 / total))
 
             cr = s.post(
                 f"{self.api_url}/indexing/upload-complete",
-                json={"job_id": job_id, "upload_id": upload_id, "parts": parts},
+                json={
+                    "job_id": job_id,
+                    "chunks": uploaded_chunks,
+                    "force": bool(force),
+                    "media_type": mt,
+                },
                 timeout=60,
             )
             cr.raise_for_status()
@@ -730,16 +808,17 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("indexing", -1)
-            return self._poll_indexing_job(job_id, progress_callback=progress_callback)
+            result = self._poll_indexing_job(job_id, progress_callback=progress_callback)
+            if isinstance(result, dict) and result.get("video_id") and not result.get("error"):
+                result.setdefault("status", "ready")
+                result["success"] = True
+            return result
         except Exception as exc:
-            log.error("Direct indexing failed: %s", exc)
+            log.error("Gemini indexing failed: %s", exc)
             return {"success": False, "error": str(exc)}
         finally:
-            if is_temp and proxy_path:
-                try:
-                    os.unlink(proxy_path)
-                except OSError:
-                    pass
+            if work_dir:
+                cleanup_chunk_dir(work_dir)
 
     def _poll_indexing_job(
         self,
@@ -882,10 +961,10 @@ class ZenviBackendClient:
 
     @staticmethod
     def _empty_ai_metadata() -> Dict[str, Any]:
-        """Return a default empty ai_metadata dict (Pegasus summary shape)."""
+        """Return a default empty ai_metadata dict (Gemini Flash summary shape)."""
         return {
             "analyzed": False,
-            "provider": "twelvelabs-pegasus",
+            "provider": "gemini-flash",
             "short_summary": "",
             "description": "",
             "sounds": "",
@@ -893,8 +972,23 @@ class ZenviBackendClient:
             "chapters": [],
             "scene_descriptions": [],
             "tags": {},
+            "index": {},
             "twelvelabs": {},
         }
+
+    def get_project_catalog(self, project_id: str) -> Dict[str, Any]:
+        """Orientation catalog for a project (no vector search)."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/indexing/catalog",
+                params={"project_id": project_id},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.error("Catalog fetch failed: %s", e)
+            return {"items": [], "error": str(e)}
 
     # ------------------------------------------------------------------
     # Pexels stock video

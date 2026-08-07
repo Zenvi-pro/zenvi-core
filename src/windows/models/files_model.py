@@ -54,7 +54,7 @@ import openshot
 
 
 class BackendIndexingWorker(QThread):
-    """Background worker: TwelveLabs index + Pegasus audiovisual summary."""
+    """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
     progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
     intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
@@ -75,12 +75,20 @@ class BackendIndexingWorker(QThread):
         metadata = client._empty_ai_metadata()
         error = None
         try:
-            if self.file_data.get("media_type") == "video":
-                file_path = self.file_data.get("path", "")
-                file_id = self.file_data.get("id", "")
+            file_path = self.file_data.get("path", "")
+            file_id = self.file_data.get("id", "")
+            # Re-resolve type from path: libopenshot often marks MP3 as has_video.
+            from classes.image_types import get_media_type, is_audio_path
+            media_type = str(self.file_data.get("media_type") or "").strip().lower()
+            if is_audio_path(file_path):
+                media_type = "audio"
+                self.file_data["media_type"] = "audio"
+            elif media_type not in ("video", "image", "audio"):
+                media_type = get_media_type(self.file_data) if self.file_data else "video"
+            if media_type in ("video", "image", "audio"):
 
                 duration = float(self.file_data.get("duration") or 0)
-                if duration > self._MAX_INDEXING_SECONDS:
+                if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
                     log.warning(
                         "Skipping indexing+summarize for %s: duration %.0fs > 30-minute limit.",
                         file_path, duration,
@@ -94,176 +102,180 @@ class BackendIndexingWorker(QThread):
 
                 filename = _os.path.basename(file_path)
                 from classes.project_tl_index import build_project_index_name
-                from classes.twelvelabs_match import twelvelabs_is_indexed
+                from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
 
                 index_name = build_project_index_name(self.project_id)
                 indexing_configured = client.is_indexing_configured()
 
-                existing_tl = (self.file_data.get("ai_metadata") or {}).get("twelvelabs")
-                already_indexed = twelvelabs_is_indexed(existing_tl)
+                existing_ai = self.file_data.get("ai_metadata") or {}
+                existing_idx = get_index_block(existing_ai)
+                already_indexed = twelvelabs_is_indexed(existing_idx)
 
-                run_indexing = False
-                if already_indexed:
-                    metadata["twelvelabs"] = dict(existing_tl)
-                elif self.summarize_only:
+                if already_indexed and self.summarize_only:
+                    metadata = dict(existing_ai) if isinstance(existing_ai, dict) else metadata
+                    metadata["index"] = dict(existing_idx)
+                    metadata["twelvelabs"] = dict(existing_idx)
                     metadata["error"] = (
-                        "Cannot summarize: clip is not indexed yet. Reindex first."
+                        "Summarize-only is not supported for Gemini indexing. "
+                        "Reindex the clip to refresh descriptions."
                     )
                     self.completed.emit(self.file_data, metadata, None)
                     return
-                elif indexing_configured:
-                    try:
-                        from classes.credits_client import check_operation
 
-                        _, balance, blocked = check_operation(
-                            "indexing_per_minute",
-                            "video indexing",
-                            duration_seconds=duration,
-                        )
-                        if blocked:
-                            metadata["twelvelabs"] = {
-                                "status": "skipped",
-                                "error": blocked,
-                                "index_name": index_name,
-                            }
-                        else:
-                            run_indexing = True
-                    except Exception as cred_exc:
-                        log.warning("Indexing credits check failed: %s", cred_exc)
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": str(cred_exc),
-                            "index_name": index_name,
-                        }
-                else:
-                    metadata["error"] = "TwelveLabs is not configured on the backend."
+                if already_indexed and not self.summarize_only:
+                    metadata = dict(existing_ai) if isinstance(existing_ai, dict) else metadata
+                    metadata["index"] = dict(existing_idx)
+                    metadata["twelvelabs"] = dict(existing_idx)
+                    metadata["analyzed"] = bool(metadata.get("analyzed"))
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                video_id = ""
-                index_id = ""
+                if not indexing_configured:
+                    metadata["error"] = "Gemini indexing is not configured on the backend (GOOGLE_API_KEY)."
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
 
-                if run_indexing:
-                    def _progress_cb(phase, percent):
-                        self.progress.emit(file_id, phase, percent)
+                try:
+                    from classes.credits_client import check_operation
 
-                    self.progress.emit(file_id, "uploading", 0)
-                    s = client._new_http_session()
-                    try:
-                        idx_result = client.start_direct_indexing_job(
-                            file_path,
-                            index_name,
-                            file_id=file_id,
-                            filename=filename,
-                            session=s,
-                            progress_callback=_progress_cb,
-                        )
-                    except Exception as idx_exc:
-                        log.warning("TwelveLabs indexing failed: %s", idx_exc)
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": str(idx_exc),
-                            "index_name": index_name,
-                        }
-                        self.completed.emit(self.file_data, metadata, None)
-                        return
-
-                    if isinstance(idx_result, dict) and idx_result.get("index_id"):
-                        from classes.credits_client import charge_operation_on_success
-                        charge_operation_on_success(
-                            True,
-                            "indexing_per_minute",
-                            provider="twelvelabs",
-                            note=f"import {file_id}",
-                            duration_seconds=duration,
-                        )
-                        index_id = str(idx_result.get("index_id") or "")
-                        video_id = str(idx_result.get("video_id") or "")
-                        metadata["twelvelabs"] = {
-                            "status": idx_result.get("status", "ready"),
-                            "index_id": index_id,
-                            "video_id": video_id,
-                            "index_name": index_name,
-                        }
-                        log.info(
-                            "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
-                            index_name, index_id, video_id,
-                        )
-                        partial = client._empty_ai_metadata()
-                        partial["twelvelabs"] = {
-                            "status": "indexing",
-                            "index_id": index_id,
-                            "video_id": video_id,
-                            "index_name": index_name,
-                        }
-                        self.intermediate_save.emit(file_id, partial)
-                    elif isinstance(idx_result, dict) and idx_result.get("error"):
-                        log.warning(
-                            "TwelveLabs indexing returned error: %s",
-                            idx_result["error"],
-                        )
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": idx_result["error"],
-                            "index_name": index_name,
-                        }
-                        self.completed.emit(self.file_data, metadata, None)
-                        return
-                    else:
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": "Indexing returned no index_id",
-                            "index_name": index_name,
-                        }
-                        self.completed.emit(self.file_data, metadata, None)
-                        return
-                else:
-                    tl = metadata.get("twelvelabs") or {}
-                    video_id = str(tl.get("video_id") or "")
-                    index_id = str(tl.get("index_id") or "")
-
-                if not video_id:
-                    metadata["error"] = (
-                        metadata.get("error")
-                        or "Missing TwelveLabs video_id for summarize"
+                    credit_duration = duration if media_type != "image" else 60.0
+                    _, balance, blocked = check_operation(
+                        "indexing_per_minute",
+                        f"{media_type} indexing",
+                        duration_seconds=credit_duration,
                     )
-                    if not isinstance(metadata.get("twelvelabs"), dict):
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
+                    if blocked:
+                        skip_block = {
+                            "status": "skipped",
+                            "error": blocked,
                             "index_name": index_name,
+                            "provider": "gemini",
+                            "media_type": media_type,
                         }
+                        metadata["index"] = skip_block
+                        metadata["twelvelabs"] = skip_block
+                        self.completed.emit(self.file_data, metadata, None)
+                        return
+                except Exception as cred_exc:
+                    log.warning("Indexing credits check failed: %s", cred_exc)
+                    fail_block = {
+                        "status": "failed",
+                        "error": str(cred_exc),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                self.progress.emit(file_id, "summarizing", -1)
+                def _progress_cb(phase, percent):
+                    self.progress.emit(file_id, phase, percent)
+
+                self.progress.emit(file_id, "uploading", 0)
+                partial = client._empty_ai_metadata()
+                partial["media_type"] = media_type
+                partial["index"] = {
+                    "status": "indexing",
+                    "index_name": index_name,
+                    "video_id": file_id,
+                    "provider": "gemini",
+                    "media_type": media_type,
+                }
+                partial["twelvelabs"] = dict(partial["index"])
+                self.intermediate_save.emit(file_id, partial)
+
                 s = client._new_http_session()
-                summarized = client.summarize_indexed_video(
-                    video_id,
-                    file_id=file_id,
-                    index_id=index_id,
-                    index_name=index_name,
-                    session=s,
-                )
-                if isinstance(summarized, dict):
-                    tl_block = dict(metadata.get("twelvelabs") or {})
-                    if isinstance(summarized.get("twelvelabs"), dict):
-                        tl_block.update(summarized["twelvelabs"])
-                    tl_block.setdefault("video_id", video_id)
-                    tl_block.setdefault("index_id", index_id)
-                    tl_block.setdefault("index_name", index_name)
-                    if summarized.get("analyzed"):
-                        tl_block["status"] = "ready"
-                    metadata = summarized
-                    metadata["twelvelabs"] = tl_block
+                try:
+                    idx_result = client.start_direct_indexing_job(
+                        file_path,
+                        index_name,
+                        file_id=file_id,
+                        filename=filename,
+                        session=s,
+                        progress_callback=_progress_cb,
+                        project_id=self.project_id,
+                        duration_sec=duration,
+                        force=bool(self.summarize_only),
+                        media_type=media_type,
+                    )
+                except Exception as idx_exc:
+                    log.warning("Gemini indexing failed: %s", idx_exc)
+                    fail_block = {
+                        "status": "failed",
+                        "error": str(idx_exc),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
+
+                if isinstance(idx_result, dict) and idx_result.get("error") and not idx_result.get("ai_metadata"):
+                    log.warning("Gemini indexing returned error: %s", idx_result.get("error"))
+                    fail_block = {
+                        "status": "failed",
+                        "error": idx_result.get("error"),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
+                    metadata["error"] = idx_result.get("error")
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
+
+                if isinstance(idx_result, dict) and (idx_result.get("index_id") or idx_result.get("ai_metadata")):
+                    from classes.credits_client import charge_operation_on_success
+                    charge_operation_on_success(
+                        True,
+                        "indexing_per_minute",
+                        provider="gemini",
+                        note=f"import {file_id}",
+                        duration_seconds=duration if media_type != "image" else 60.0,
+                    )
+                    ai_meta = idx_result.get("ai_metadata")
+                    if isinstance(ai_meta, dict) and ai_meta:
+                        metadata = ai_meta
+                    index_id = str(idx_result.get("index_id") or index_name)
+                    video_id = str(idx_result.get("video_id") or file_id)
+                    index_block = {
+                        "status": "ready",
+                        "index_id": index_id,
+                        "video_id": video_id,
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    if isinstance(metadata.get("index"), dict):
+                        index_block.update(metadata["index"])
+                        index_block["status"] = "ready"
+                        index_block["media_type"] = media_type
+                    metadata["index"] = index_block
+                    metadata["twelvelabs"] = dict(index_block)
+                    metadata["provider"] = "gemini-flash"
+                    metadata["media_type"] = media_type
                     if metadata.get("analyzed"):
                         self.progress.emit(file_id, "done", 100)
-                    else:
-                        log.warning(
-                            "Pegasus summarize did not complete for %s: %s",
-                            file_path, metadata.get("error"),
-                        )
+                    log.info(
+                        "Gemini indexing complete: index=%s index_id=%s video_id=%s media=%s analyzed=%s",
+                        index_name, index_id, video_id, media_type, metadata.get("analyzed"),
+                    )
                 else:
-                    metadata["error"] = "Summarize returned invalid response"
+                    metadata["error"] = "Indexing returned no index_id"
+                    fail_block = {
+                        "status": "failed",
+                        "error": metadata["error"],
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
         except Exception as exc:
             error = exc
             log.error(f"Backend indexing/summarize worker failed: {exc}")
@@ -533,8 +545,12 @@ class FilesModel(QObject, updates.UpdateInterface):
             merged = dict(prev)
             if ai_metadata.get("error"):
                 merged["error"] = ai_metadata["error"]
+            if ai_metadata.get("index"):
+                merged["index"] = ai_metadata["index"]
             if ai_metadata.get("twelvelabs"):
                 merged["twelvelabs"] = ai_metadata["twelvelabs"]
+            elif ai_metadata.get("index"):
+                merged["twelvelabs"] = ai_metadata["index"]
             file_obj.data["ai_metadata"] = merged
             return
 
@@ -582,7 +598,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         file_obj = _File.get(id=file_id)
         if not file_obj or not isinstance(file_obj.data, dict):
             return
-        if file_obj.data.get("media_type") != "video":
+        if file_obj.data.get("media_type") not in ("video", "image", "audio"):
             return
         if self.is_file_indexing(file_id):
             return
@@ -758,7 +774,9 @@ class FilesModel(QObject, updates.UpdateInterface):
 
                 # Queue this video for background indexing (started after add_files
                 # returns to avoid reentrancy with processEvents below).
-                if not skip_indexing and new_file.data.get("media_type") == "video":
+                if not skip_indexing and new_file.data.get("media_type") in (
+                    "video", "image", "audio",
+                ):
                     _deferred_index_ids.append(new_file.id)
 
                 if start_count > 15:
