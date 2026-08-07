@@ -559,14 +559,83 @@
     to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Flex column so the search row and footer are pinned by layout and only the
+   list scrolls. Making the menu itself the scroll container and pinning those
+   two with position:sticky instead leaves the footer overlaying the last row. */
 .chat-model-menu {
-    min-width: 200px;
-    max-width: 260px;
+    min-width: 260px;
+    max-width: 320px;
     max-height: 280px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     background: var(--chat-surface);
     border-color: var(--chat-border) !important;
     box-shadow: 0 6px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.25);
     animation: chat-menu-enter 0.15s ease;
+}
+
+.chat-model-list {
+    flex: 1 1 auto;
+    min-height: 0;   /* lets the flex child actually shrink and scroll */
+    overflow-y: auto;
+}
+
+.chat-model-search-wrap {
+    flex-shrink: 0;
+    padding: 6px 8px;
+    background: var(--chat-surface);
+    border-bottom: 1px solid var(--chat-border);
+}
+.chat-model-search {
+    width: 100%;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--chat-text);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--chat-border);
+    border-radius: 6px;
+    outline: none;
+}
+.chat-model-search::placeholder { color: var(--chat-text); opacity: 0.4; }
+.chat-model-search:focus { border-color: var(--chat-accent); }
+
+/* Provider group header, shown only in search results. */
+.chat-model-group-label {
+    padding: 6px 12px 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--chat-text);
+    opacity: 0.4;
+}
+
+/* Metadata badges beside the model name (reasoning depth / speed / Local). */
+.chat-model-badge {
+    flex-shrink: 0;
+    font-size: 10px;
+    color: var(--chat-text);
+    opacity: 0.45;
+}
+
+/* Footer hint: how many more models search can reach. */
+.chat-model-footer {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    font-size: 11px;
+    color: var(--chat-text);
+    opacity: 0.45;
+    background: var(--chat-surface);
+    border-top: 1px solid var(--chat-border);
+}
+
+.chat-model-empty {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--chat-text);
+    opacity: 0.5;
 }
 
 .chat-model-option {
@@ -586,6 +655,10 @@
 }
 .chat-model-option:hover      { background: rgba(255,255,255,0.05); }
 .chat-model-option.selected   { font-weight: 600; }
+/* Keyboard cursor — must be visually distinct from :hover so arrow-key
+   navigation is followable while the mouse sits elsewhere in the menu. */
+.chat-model-option.active     { background: rgba(255,255,255,0.09); }
+.chat-model-option.unavailable .chat-model-option-name { opacity: 0.45; }
 
 .chat-model-option-icon  { flex-shrink: 0; width: 16px; height: 16px; opacity: 0.55; }
 .chat-model-option-name  { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

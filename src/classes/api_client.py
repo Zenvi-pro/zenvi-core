@@ -273,10 +273,19 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Models
     # ------------------------------------------------------------------
-    def list_models(self) -> List[Dict[str, str]]:
-        """List all available LLM models."""
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List all known LLM models.
+
+        Rows carry model_id/display_name plus picker metadata (provider,
+        featured, rank, tags, available) — hence Dict[str, Any], the values are
+        no longer all strings. Unknown keys pass through untouched.
+
+        The timeout allows for the backend's live provider discovery on a cold
+        cache; it fetches providers concurrently and degrades to the curated
+        catalog, so this should not actually block for long.
+        """
         try:
-            r = self.session.get(f"{self.api_url}/models", timeout=10)
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
             r.raise_for_status()
             data = r.json()
             return data.get("models", [])

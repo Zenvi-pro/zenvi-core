@@ -116,10 +116,21 @@
                                 </svg>
                             </button>
 
-                            <!-- Model dropdown menu -->
+                            <!-- Model dropdown menu. Search row and footer are
+                                 static; #chat-model-list is re-rendered. -->
                             <div id="chat-model-menu"
-                                 class="chat-model-menu absolute z-[100] py-1 rounded-[10px] border overflow-y-auto"
-                                 role="listbox" aria-label="AI model" style="display: none;"></div>
+                                 class="chat-model-menu absolute z-[100] rounded-[10px] border"
+                                 role="listbox" aria-label="AI model" style="display: none;">
+                                <div class="chat-model-search-wrap">
+                                    <input type="text" id="chat-model-search"
+                                           class="chat-model-search"
+                                           placeholder="Search models"
+                                           autocomplete="off" spellcheck="false"
+                                           aria-label="Search models">
+                                </div>
+                                <div id="chat-model-list" class="chat-model-list py-1"></div>
+                                <div id="chat-model-footer" class="chat-model-footer"></div>
+                            </div>
 
                             <!-- Agent Trace -->
                             <button type="button" id="chat-trace-btn"
