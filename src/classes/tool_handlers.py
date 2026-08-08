@@ -2994,7 +2994,13 @@ def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
             out.write(chunk)
 
     size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+    size_bytes = os.path.getsize(dest_path)
+    if size_bytes <= 0:
+        raise ValueError(f"Downloaded file is empty (0 bytes): {dest_path}")
+    if size_mb < 0.1:
+        log.info("Download complete: %s (%.0f KB)", dest_path, size_bytes / 1024.0)
+    else:
+        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
     return dest_path, size_mb
 
 
@@ -3002,7 +3008,10 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
     """Agent-facing metadata only — does not enqueue Gemini indexing."""
     if not file_obj:
         return
-    summary = (label or "").strip() or "HyperFrames motion graphic"
+    summary = (label or "").strip()
+    if not summary:
+        log.warning("MG stamp refused empty summary — using generic placeholder")
+        summary = "HyperFrames motion graphic"
     try:
         tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
         if isinstance(tags, str):
@@ -3033,6 +3042,8 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
             short_title = summary.split("(")[0].strip()
             if short_title and len(short_title) <= 120:
                 file_obj.data["name"] = short_title[:120]
+        elif not file_obj.data.get("name"):
+            file_obj.data["name"] = "HyperFrames motion graphic"
         file_obj.save()
         try:
             _get_app().window.FileUpdated.emit(str(file_obj.id))
@@ -3043,10 +3054,13 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
 
 
 def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
-    """When the agent omits label=, recover summary from HyperFrames job status."""
+    """When the agent omits label=, recover summary from HyperFrames job status.
+
+    Returns (label, job_meta_dict).
+    """
     job_id = (render_job_id or "").strip()
     if not job_id:
-        return (fallback or "").strip()
+        return (fallback or "").strip(), {}
     import json
     import urllib.request
 
@@ -3064,7 +3078,7 @@ def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
                 data = json.loads(resp.read().decode() or "{}")
             summary = str(data.get("summary") or "").strip()
             if summary:
-                return summary
+                return summary, data
             titles = data.get("segment_titles") or []
             block_id = data.get("block_id") or ""
             if titles or block_id:
@@ -3079,10 +3093,12 @@ def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
                     bits.append(str(title0))
                 if transparent:
                     bits.append("transparent overlay")
-                return ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
+                label = ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
+                return label, data
+            return (fallback or "").strip(), data
         except Exception as exc:
             log.debug("MG label lookup %s/%s failed: %s", kind, job_id, exc)
-    return (fallback or "").strip()
+    return (fallback or "").strip(), {}
 
 
 def _download_and_import_one(url, label=""):
@@ -3165,11 +3181,29 @@ def fetch_motion_graphics_video(
     import json
     import re
 
+    job_meta = {}
     stamp_label = (label or "").strip()
     if not stamp_label:
-        stamp_label = _resolve_motion_graphics_label_from_job(render_job_id)
+        stamp_label, job_meta = _resolve_motion_graphics_label_from_job(render_job_id)
+    elif render_job_id:
+        # Still load job meta for format/transparent recovery even when label is set
+        _lbl, job_meta = _resolve_motion_graphics_label_from_job(render_job_id, fallback=stamp_label)
+        if not stamp_label:
+            stamp_label = _lbl
     if not stamp_label:
         stamp_label = "HyperFrames motion graphic"
+
+    generic = stamp_label.strip().lower() in (
+        "hyperframes motion graphic",
+        "motion graphic",
+        "motion",
+    )
+    generic_warn = ""
+    if generic:
+        generic_warn = (
+            " ⚠️ short_summary is generic — pass label= from compose suggested_label "
+            "(or ensure render_job_id is set so job.summary can be recovered)."
+        )
 
     # The LLM may pass segment_urls as a JSON-encoded string.
     if isinstance(segment_urls, str):
@@ -3178,6 +3212,22 @@ def fetch_motion_graphics_video(
         except Exception:
             segment_urls = [segment_urls]
     segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
+
+    # Prefer WebM when job is transparent but URLs still point at .mp4
+    if job_meta.get("transparent") and segment_urls:
+        fixed = []
+        for u in segment_urls:
+            if u.split("?")[0].lower().endswith(".mp4"):
+                webm = re.sub(r"\.mp4(\?|$)", r".webm\1", u, count=1, flags=re.I)
+                log.warning(
+                    "Job %s is transparent but URL is MP4 — trying WebM: %s",
+                    render_job_id,
+                    webm,
+                )
+                fixed.append(webm)
+            else:
+                fixed.append(u)
+        segment_urls = fixed
 
     # ---- Multi-segment import (preferred) ----
     if segment_urls:
@@ -3193,9 +3243,19 @@ def fetch_motion_graphics_video(
         file_ids = []
         failures = []  # (original_index, url, error)
         total_mb = 0.0
-        any_transparent = False
+        any_transparent = bool(job_meta.get("transparent"))
         for orig_i, url in ordered:
             file_id, size_mb, err, is_transparent = _download_and_import_one(url, label=stamp_label)
+            if err and job_meta.get("transparent") and url.lower().split("?")[0].endswith(".webm"):
+                # WebM missing — fall back to original mp4 path once
+                mp4 = re.sub(r"\.webm(\?|$)", r".mp4\1", url, count=1, flags=re.I)
+                log.warning("WebM fetch failed (%s); falling back to %s", err, mp4)
+                file_id, size_mb, err, is_transparent = _download_and_import_one(mp4, label=stamp_label)
+                if not err:
+                    log.warning(
+                        "Imported opaque MP4 for transparent job %s — re-compose recommended",
+                        render_job_id,
+                    )
             if err:
                 failures.append((orig_i, url, err))
                 log.warning("Segment %d import failed: %s", orig_i, err)
@@ -3211,7 +3271,7 @@ def fetch_motion_graphics_video(
             return (
                 f"⚠️ Imported {len(file_ids)}/{n} motion segments; {len(failures)} failed. "
                 f"Storage was NOT cleaned up so you can retry the failed ones. "
-                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}"
+                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}{generic_warn}"
             )
 
         # All segments imported — clean up Supabase storage once.
@@ -3227,6 +3287,7 @@ def fetch_motion_graphics_video(
             f"Indexing skipped (motion_graphics tag). {alpha_note}\n"
             "MUST call add_clip_to_timeline_tool for each file_id "
             "(transparent overlays: layer_number 3000000+; opaque title cards: standalone cut / mid layer)."
+            f"{generic_warn}"
         )
 
     # ---- Legacy single-video import (back-compat) ----
@@ -3234,19 +3295,23 @@ def fetch_motion_graphics_video(
     if not supabase_url:
         return "Error: segment_urls or supabase_url is required."
 
+    if job_meta.get("transparent") and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
+
     file_id, size_mb, err, is_transparent = _download_and_import_one(supabase_url, label=stamp_label)
     if err:
-        return f"Error importing video: {err}"
+        return f"Error importing video: {err}{generic_warn}"
     _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
     alpha_note = (
         "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
-        if is_transparent
+        if is_transparent or job_meta.get("transparent")
         else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
     )
     return (
         f"✅ HyperFrames motion graphic imported into project files (file_id: {file_id}, "
         f"size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). {alpha_note}\n"
         "MUST call add_clip_to_timeline_tool(file_id=...) with the placement mode above."
+        f"{generic_warn}"
     )
 
 

@@ -76,7 +76,7 @@ def test_fetch_resolves_label_from_job_when_empty():
     with patch.object(
         th,
         "_resolve_motion_graphics_label_from_job",
-        return_value="HyperFrames hw-title: HOLD.",
+        return_value=("HyperFrames hw-title: HOLD.", {"transparent": False}),
     ) as resolve, patch.object(
         th,
         "_download_and_import_one",
@@ -92,9 +92,63 @@ def test_fetch_resolves_label_from_job_when_empty():
     assert download.call_args.kwargs.get("label") == "HyperFrames hw-title: HOLD."
 
 
-def test_looks_like_alpha_video_webm():
-    assert th._looks_like_alpha_video("/tmp/output.webm") is True
-    assert th._looks_like_alpha_video("/tmp/output.mp4") is False
+def test_download_rejects_empty_file(tmp_path, monkeypatch):
+    class _Resp:
+        def read(self, n):
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch("urllib.request.urlopen", return_value=_Resp()), patch(
+        "tempfile.mkdtemp", return_value=str(tmp_path)
+    ):
+        try:
+            th._download_motion_graphics_file("https://x/output.mp4")
+            assert False, "expected empty-file ValueError"
+        except ValueError as e:
+            assert "empty" in str(e).lower()
+
+
+def test_fetch_rewrites_mp4_to_webm_when_job_transparent():
+    with patch.object(
+        th,
+        "_resolve_motion_graphics_label_from_job",
+        return_value=("HyperFrames lt-clean-bar: Alex (transparent overlay)", {"transparent": True}),
+    ), patch.object(
+        th,
+        "_download_and_import_one",
+        return_value=("F1", 0.2, None, True),
+    ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
+        msg = th.fetch_motion_graphics_video(
+            segment_urls=["https://x/motion/j1/output.mp4"],
+            render_job_id="j1",
+            label="",
+        )
+    assert "F1" in msg
+    called_url = download.call_args.args[0] if download.call_args.args else download.call_args[0][0]
+    assert called_url.endswith(".webm")
+
+
+def test_fetch_warns_when_summary_generic():
+    with patch.object(
+        th,
+        "_resolve_motion_graphics_label_from_job",
+        return_value=("HyperFrames motion graphic", {}),
+    ), patch.object(
+        th,
+        "_download_and_import_one",
+        return_value=("F2", 1.0, None, False),
+    ), patch.object(th, "_motion_graphics_cleanup_storage"):
+        msg = th.fetch_motion_graphics_video(
+            segment_urls=["https://x/output.mp4"],
+            render_job_id="j2",
+            label="",
+        )
+    assert "short_summary is generic" in msg
 
 
 def test_download_motion_graphics_preserves_webm_ext():
