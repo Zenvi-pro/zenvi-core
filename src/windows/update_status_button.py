@@ -125,6 +125,14 @@ class UpdateStatusButton(QToolButton):
     # State
     # ------------------------------------------------------------------
 
+    @property
+    def is_active(self):
+        """True once there is an update worth telling the user about.
+
+        Themes read this when rebuilding the toolbar so a mid-download theme
+        switch doesn't hide a pill that should still be showing."""
+        return self.state != STATE_HIDDEN
+
     def set_available(self, version):
         """A newer version exists but has not been downloaded."""
         self.version = version or self.version
