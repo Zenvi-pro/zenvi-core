@@ -2505,27 +2505,151 @@ def _ffprobe_pix_fmt(path) -> str:
         return ""
 
 
+def _ffprobe_alpha_mode(path) -> str:
+    """Return stream alpha_mode / ALPHA_MODE tag (HyperFrames VP9 WebM) or empty."""
+    try:
+        p = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        for line in (p.stdout or "").splitlines():
+            val = line.strip().lower()
+            if val:
+                return val
+        return ""
+    except Exception:
+        return ""
+
+
 def _ffprobe_has_alpha(path) -> bool:
-    """True when the primary video stream has an alpha-capable pixel format."""
+    """True when stream has alpha pix_fmt OR VP9 WebM ALPHA_MODE=1 (sidecar alpha)."""
     pix = _ffprobe_pix_fmt(path)
-    if not pix:
-        return False
-    # yuva*, rgba, gbra*, argb, etc.
-    return (
+    if pix and (
         ("yuva" in pix)
         or pix.startswith("rgba")
         or pix.startswith("bgra")
         or pix.startswith("argb")
         or pix.startswith("abgr")
         or pix.startswith("gbra")
-    )
+    ):
+        return True
+    # HyperFrames / libvpx WebM: ffprobe often reports yuv420p + ALPHA_MODE=1
+    mode = _ffprobe_alpha_mode(path)
+    return mode in ("1", "true", "yes")
+
+
+def _ffprobe_has_explicit_yuva(path) -> bool:
+    """True when primary pix_fmt is already yuva* (rare for libvpx WebM)."""
+    pix = _ffprobe_pix_fmt(path)
+    return bool(pix and "yuva" in pix)
+
+
+def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
+    """Decode one frame and confirm some pixels are actually transparent.
+
+    VP9 WebM: must force libvpx before -i (native VP9 decode drops alpha → solid
+    black). qtrle/png/prores MOV: native decode preserves alpha — match OpenShot.
+    Fail closed on ffmpeg errors or fully opaque frames.
+    """
+    import tempfile
+
+    if not path or not os.path.isfile(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if force_libvpx is None:
+        force_libvpx = ext in (".webm", ".mkv")
+    tmp_png = None
+    try:
+        fd, tmp_png = tempfile.mkstemp(suffix=".png", prefix="zenvi_alpha_")
+        os.close(fd)
+        cmd = ["ffmpeg", "-y"]
+        if force_libvpx:
+            cmd += ["-c:v", "libvpx-vp9"]
+        cmd += [
+            "-i", path,
+            "-frames:v", "1",
+            "-update", "1",
+            "-pix_fmt", "rgba",
+            tmp_png,
+        ]
+        ok, _err = _ffmpeg_run(cmd)
+        if not ok or not os.path.isfile(tmp_png) or os.path.getsize(tmp_png) < 32:
+            return False
+        try:
+            from PIL import Image
+
+            im = Image.open(tmp_png).convert("RGBA")
+            w, h = im.size
+            if w < 1 or h < 1:
+                return False
+            samples = [
+                im.getpixel((0, 0)),
+                im.getpixel((w - 1, 0)),
+                im.getpixel((0, h - 1)),
+                im.getpixel((w - 1, h - 1)),
+                im.getpixel((w // 2, h // 2)),
+            ]
+            return any(len(px) >= 4 and px[3] < 250 for px in samples)
+        except Exception:
+            try:
+                from PyQt5.QtGui import QImage
+
+                img = QImage(tmp_png)
+                if img.isNull():
+                    return False
+                img = img.convertToFormat(QImage.Format_RGBA8888)
+                w, h = img.width(), img.height()
+                if w < 1 or h < 1:
+                    return False
+                pts = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, h // 2)]
+                for x, y in pts:
+                    c = img.pixelColor(x, y)
+                    if c.alpha() < 250:
+                        return True
+                return False
+            except Exception:
+                return False
+    finally:
+        if tmp_png and os.path.isfile(tmp_png):
+            try:
+                os.remove(tmp_png)
+            except OSError:
+                pass
+
+
+def _openshot_transparent_ok(path) -> bool:
+    """True when OpenShot's native decoder will composite with real alpha.
+
+    Requires alpha in the container pix_fmt (argb/rgba/yuva*) — typically qtrle
+    MOV from `_reencode_alpha_for_openshot`. VP9 WebM with ALPHA_MODE=1 alone is
+    NOT ok: libopenshot uses native VP9 which drops alpha to opaque black.
+    """
+    if not path:
+        return False
+    pix = _ffprobe_pix_fmt(path)
+    if not pix:
+        return False
+    if not (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    ):
+        return False
+    # Native decode path OpenShot uses — do not force libvpx
+    return _verify_decoded_alpha_pixels(path, force_libvpx=False)
 
 
 def _looks_like_alpha_video(path) -> bool:
     """HyperFrames transparent overlays are WebM (VP9+alpha); confirm others via ffprobe."""
     ext = os.path.splitext(path or "")[1].lower()
     if ext == ".webm":
-        # Prefer probe when possible — extension alone is not proof of alpha.
         probed = _ffprobe_has_alpha(path)
         if probed:
             return True
@@ -2535,32 +2659,45 @@ def _looks_like_alpha_video(path) -> bool:
 
 
 def _reencode_alpha_for_openshot(input_path, output_path=None, width=1920, height=1080):
-    """Re-encode preserving alpha (VP9 yuva420p WebM). Never use yuv420p.
+    """Re-encode HyperFrames VP9 WebM into qtrle MOV so OpenShot keeps alpha.
+
+    Must decode with libvpx-vp9 BEFORE -i (native VP9 drops alpha → solid black).
+    Encode QuickTime Animation (qtrle + argb): OpenShot/libopenshot native decode
+    preserves alpha. Do NOT leave as VP9 WebM — that looks transparent to libvpx
+    probes but composites as opaque black in the editor.
 
     Returns (output_path, None) on success, (None, error) on failure.
     """
     if output_path is None:
         base, _ = os.path.splitext(input_path)
-        output_path = f"{base}_alpha.webm"
-    if not str(output_path).lower().endswith(".webm"):
-        output_path = os.path.splitext(output_path)[0] + ".webm"
+        output_path = f"{base}_alpha.mov"
+    # Always deliver .mov for OpenShot alpha overlays
+    if not str(output_path).lower().endswith(".mov"):
+        output_path = os.path.splitext(output_path)[0] + ".mov"
 
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setsar=1,format=yuva420p"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setsar=1,format=rgba"
     )
+    # libvpx-vp9 before -i = VP9+alpha decoder; qtrle = OpenShot-safe alpha encoder
     cmd = [
-        "ffmpeg", "-y", "-i", input_path,
+        "ffmpeg", "-y",
+        "-c:v", "libvpx-vp9",
+        "-i", input_path,
         "-vf", vf,
-        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-        "-metadata:s:v:0", "alpha_mode=1",
-        "-auto-alt-ref", "0", "-cpu-used", "4", "-b:v", "0", "-crf", "30",
+        "-c:v", "qtrle", "-pix_fmt", "argb",
         "-an",
         output_path,
     ]
     ok, err = _ffmpeg_run(cmd)
     if not ok:
         return None, f"Alpha re-encode failed: {err}"
+    # Verify with NATIVE decode (what OpenShot does) — not libvpx
+    if not _verify_decoded_alpha_pixels(output_path, force_libvpx=False):
+        return None, (
+            "Alpha re-encode produced opaque plate "
+            "(no transparent pixels after native decode)"
+        )
     return output_path, None
 
 
@@ -2911,9 +3048,10 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     _output_path_for_generated_video), then adds it using skip_indexing=True
     to avoid nested event loops and metadata corruption.
 
-    When preserve_alpha is True (or auto-detected for WebM), uses VP9+yuva
-    instead of libx264/yuv420p so transparent overlays stay transparent.
-    Alpha failure is fail-closed — never silent yuv420p fallback for MG overlays.
+    When preserve_alpha is True (or auto-detected for WebM), re-encodes to
+    qtrle MOV (argb) so OpenShot's native decoder keeps transparency.
+    VP9 WebM is never imported as-is — native VP9 drops alpha to solid black.
+    Alpha failure is fail-closed — never silent yuv420p/MP4 fallback for overlays.
 
     Returns (File object, None) on success, (None, error_string) on failure.
     """
@@ -2922,23 +3060,12 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     want_alpha = bool(preserve_alpha) if preserve_alpha is not None else _looks_like_alpha_video(video_path)
 
     if want_alpha:
-        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".webm"))
-        # Prefer copying/keeping the alpha WebM when already yuva; else re-encode preserving alpha.
-        if os.path.splitext(video_path)[1].lower() == ".webm" and _ffprobe_has_alpha(video_path):
-            try:
-                import shutil
-                shutil.copy2(video_path, perm_path)
-                clean_path, err = perm_path, None
-            except Exception as copy_err:
-                clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
-                if err:
-                    return None, (
-                        f"alpha import failed (no opaque fallback): copy={copy_err}; reencode={err}"
-                    )
-        else:
-            clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
-            if err:
-                return None, f"alpha import failed (no opaque fallback): {err}"
+        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mov"))
+        # Always re-encode through libvpx→qtrle. Even "good" WebM composites black
+        # in OpenShot because FFmpegReader uses the native VP9 decoder.
+        clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
+        if err:
+            return None, f"alpha import failed (no opaque fallback): {err}"
     else:
         perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mp4"))
         clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
@@ -3157,16 +3284,20 @@ def _download_and_import_one(url, label="", job_transparent=None):
             imported_path = f.data.get("path")
 
         pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
-        transparent_ok = bool(imported_path and _ffprobe_has_alpha(imported_path))
+        alpha_mode = _ffprobe_alpha_mode(imported_path) if imported_path else ""
+        # libvpx VP9 WebM probes as yuv420p + ALPHA_MODE=1 (never yuva*). Accept that
+        # when decoded pixels actually have transparency.
+        transparent_ok = bool(imported_path and _openshot_transparent_ok(imported_path))
         stamp_transparent = (
             bool(job_transparent) if job_transparent is not None else transparent_ok
         )
+        probe_note = f"pix_fmt={pix_fmt or 'unknown'} alpha_mode={alpha_mode or 'none'}"
         if job_transparent and not transparent_ok:
             return (
                 "",
                 size_mb,
                 (
-                    f"transparent job imported without alpha pix_fmt={pix_fmt or 'unknown'} "
+                    f"transparent job imported without usable VP9 alpha ({probe_note}) "
                     "— re-compose as WebM; refusing solid plate"
                 ),
                 False,
@@ -3174,7 +3305,11 @@ def _download_and_import_one(url, label="", job_transparent=None):
             )
 
         _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
-        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, pix_fmt
+        # Encode probe bits into pix_fmt field for fetch messaging: "yuva420p;alpha_mode=1"
+        probe_field = pix_fmt or "unknown"
+        if alpha_mode:
+            probe_field = f"{probe_field};alpha_mode={alpha_mode}"
+        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, probe_field
     except Exception as e:
         log.error("download/import failed for %s: %s", url, e, exc_info=True)
         return "", 0.0, str(e), False, ""
@@ -5276,10 +5411,11 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
 
 
 def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
-    """Suggest opaque vs transparent MG beat placements from timeline metadata + chapter heuristics.
+    """Suggest MG beat placements from timeline clip/scene metadata.
 
-    Uses Gemini/chapter text when available (close-up / face / talking-head = avoid for overlays;
-    wide / establishing / b-roll = prefer). Gaps between clips are preferred for opaque standalone cards.
+    Anchors beats across open→end of the timeline, snaps to safe scene windows,
+    and prefers transparent overlays when footage is continuous (no late dump past
+    timeline_end). Returns JSON with block_query / title hints for workflows.
     """
     import json
     import re
@@ -5289,18 +5425,8 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     except Exception:
         n = 4
     n = max(1, min(8, n))
-    brief_l = (brief or "").lower()
-
-    # Default trailer package roles
-    default_roles = [
-        ("opaque_title", "standalone", False),
-        ("transparent_overlay", "overlay", True),
-        ("transition", "overlay", True),
-        ("opaque_title", "standalone", False),
-    ]
-    while len(default_roles) < n:
-        default_roles.append(("transparent_overlay", "overlay", True))
-    roles = default_roles[:n]
+    brief_text = (brief or "").strip()
+    brief_l = brief_text.lower()
 
     try:
         from classes.timeline_clip_context import enumerate_timeline_contexts
@@ -5310,7 +5436,6 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
         log.warning("suggest_motion_graphics_placements: timeline read failed: %s", exc)
         contexts = []
 
-    # Collect layer stack for track hints
     overlay_layer = 3000000
     mid_layer = 2000000
     try:
@@ -5325,38 +5450,95 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
 
     AVOID_RE = re.compile(
         r"\b(close[- ]?up|closeup|face|faces|talking[- ]?head|portrait|hero action|"
-        r"fight|impact|explosion|interview)\b",
+        r"fight|impact|explosion|interview|dialogue)\b",
         re.I,
     )
     PREFER_RE = re.compile(
         r"\b(wide|establishing|b[- ]?roll|landscape|exterior|insert|cutaway|empty|"
-        r"drone|aerial|crowd wide)\b",
+        r"drone|aerial|crowd wide|skyline|cityscape)\b",
         re.I,
     )
 
-    # Timeline segments with scores
+    def _score_blob(blob: str) -> tuple:
+        avoid = bool(AVOID_RE.search(blob or ""))
+        prefer = bool(PREFER_RE.search(blob or ""))
+        score = 0
+        if prefer:
+            score += 3
+        if avoid:
+            score -= 4
+        return score, avoid, prefer
+
     segments = []
+    windows = []  # candidate overlay times with scores
     timeline_end = 0.0
     for ctx in contexts:
         pos = float(ctx.timeline_position or 0)
         end = float(ctx.timeline_end or (pos + 1.0))
         timeline_end = max(timeline_end, end)
         ai = ctx.effective_metadata or {}
+        src_start = float(getattr(ctx, "source_start", 0) or 0)
+        clip_dur = max(0.1, end - pos)
+
         text_bits = [
             str(ctx.summary_preview or ""),
             str(ai.get("short_summary") or ""),
             str(ai.get("description") or ""),
         ]
         for ch in ai.get("chapters") or []:
-            if isinstance(ch, dict):
-                text_bits.append(str(ch.get("title") or ""))
-                text_bits.append(str(ch.get("summary") or ""))
-        for sc in ai.get("scene_descriptions") or []:
-            if isinstance(sc, dict):
-                text_bits.append(str(sc.get("description") or ""))
+            if not isinstance(ch, dict):
+                continue
+            text_bits.append(str(ch.get("title") or ""))
+            text_bits.append(str(ch.get("summary") or ""))
+            # Map chapter start into timeline when present
+            ch_start = ch.get("start")
+            try:
+                if ch_start is not None:
+                    local = float(ch_start) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = _score_blob(
+                            f"{ch.get('title') or ''} {ch.get('summary') or ''}"
+                        )
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc,
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": str(ch.get("title") or ch.get("summary") or "")[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+        for scn in ai.get("scene_descriptions") or []:
+            if not isinstance(scn, dict):
+                continue
+            desc = str(scn.get("description") or "")
+            text_bits.append(desc)
+            try:
+                st = scn.get("time")
+                if st is None:
+                    st = scn.get("start")
+                if st is not None:
+                    local = float(st) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = _score_blob(desc)
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc + 1,  # scene timestamps preferred
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": desc[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+
         blob = " ".join(text_bits)
-        avoid = bool(AVOID_RE.search(blob))
-        prefer = bool(PREFER_RE.search(blob))
+        sc, avoid, prefer = _score_blob(blob)
         segments.append(
             {
                 "position": pos,
@@ -5364,96 +5546,200 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
                 "mid": (pos + end) / 2.0,
                 "avoid": avoid,
                 "prefer": prefer,
+                "score": sc,
                 "title": ctx.title or "",
                 "layer": int(ctx.layer or 0),
                 "file_id": ctx.file_id,
+                "blob": blob,
             }
         )
+        # Clip thirds as fallback windows
+        for frac, bonus in ((0.08, 0), (0.5, 0), (0.88, 0)):
+            t = pos + clip_dur * frac
+            windows.append(
+                {
+                    "t": t,
+                    "score": sc + bonus,
+                    "avoid": avoid,
+                    "prefer": prefer,
+                    "label": (ctx.title or blob)[:80],
+                }
+            )
+
     segments.sort(key=lambda s: s["position"])
 
-    # Gaps between clips → good for opaque standalone inserts
+    # Gaps between clips → only place for opaque standalone
     gaps = []
     if segments:
         if segments[0]["position"] > 0.4:
             gaps.append(max(0.0, segments[0]["position"] * 0.15))
         for a, b in zip(segments, segments[1:]):
-            if b["position"] - a["end"] >= 0.25:
+            if b["position"] - a["end"] >= 0.4:
                 gaps.append((a["end"] + b["position"]) / 2.0)
-        gaps.append(max(timeline_end, segments[-1]["end"]) + 0.1)
+                # Boost windows near cuts
+                windows.append(
+                    {
+                        "t": a["end"] - 0.15,
+                        "score": 2,
+                        "avoid": False,
+                        "prefer": True,
+                        "label": "near cut",
+                    }
+                )
     else:
-        # Empty timeline — spread beats across a nominal 24s trailer
-        gaps = [0.0, 4.0, 9.0, 15.0, 20.0]
+        # Empty timeline — synthetic trailer length
+        timeline_end = 24.0
+        for t in (0.0, 6.0, 12.0, 18.0, 22.0):
+            windows.append({"t": t, "score": 1, "avoid": False, "prefer": True, "label": ""})
+
+    if timeline_end <= 0:
         timeline_end = 24.0
 
-    prefer_mids = [s["mid"] for s in segments if s["prefer"] and not s["avoid"]]
-    safe_mids = [s["mid"] for s in segments if not s["avoid"]]
-    avoid_mids = [s["mid"] for s in segments if s["avoid"]]
+    has_footage = bool(segments)
+    # Package-over-footage: mostly transparent overlays; opaque only if real gap
+    package_roles = []
+    for i in range(n):
+        if not has_footage:
+            # Pure title package on empty timeline
+            if i == 0 or i == n - 1:
+                package_roles.append(("opaque_title", "standalone", False, "title card"))
+            elif i == n // 2 and n > 3:
+                package_roles.append(("transition", "overlay", True, "transition FX"))
+            else:
+                package_roles.append(("transparent_overlay", "overlay", True, "lower-third name plate"))
+        else:
+            # Footage package: transparent-first
+            if i == 0:
+                package_roles.append(("transparent_overlay", "overlay", True, "lower-third open"))
+            elif i == n - 1:
+                package_roles.append(("transparent_overlay", "overlay", True, "lower-third end card"))
+            elif i == max(1, n // 2) and gaps:
+                package_roles.append(("opaque_title", "standalone", False, "kinetic title"))
+            elif i == max(1, (n * 2) // 3):
+                package_roles.append(("transition", "overlay", True, "transition FX"))
+            else:
+                package_roles.append(("transparent_overlay", "overlay", True, "callout overlay"))
 
-    def _pick_overlay_pos(used):
-        for cand in prefer_mids + safe_mids:
-            if all(abs(cand - u) >= 1.5 for u in used):
-                return cand, "prefer wide/establishing or non-face window"
-        # Fall back to evenly spaced over timeline
-        t = (len(used) + 1) * max(2.0, timeline_end / (n + 1))
-        return t, "spread across timeline (no strong embedding preference)"
+    # Quantile anchors open→end
+    if n == 1:
+        anchors = [0.0 if timeline_end < 1 else min(1.0, timeline_end * 0.1)]
+    else:
+        anchors = [timeline_end * (i / (n - 1)) for i in range(n)]
 
-    def _pick_standalone_pos(used):
-        for cand in gaps:
-            if all(abs(cand - u) >= 1.0 for u in used):
-                return cand, "insert at cut/gap — opaque card not stacked over hero peak"
-        t = max(0.0, timeline_end) + 0.5 * len(used)
-        return t, "append after current timeline as standalone beat"
+    def _snap(target, used, prefer_overlay=True):
+        """Snap target to nearest safe window; never past timeline_end."""
+        target = max(0.0, min(float(timeline_end), float(target)))
+        cands = sorted(windows, key=lambda w: (abs(w["t"] - target), -w["score"]))
+        for w in cands:
+            t = max(0.0, min(timeline_end, float(w["t"])))
+            if w.get("avoid") and prefer_overlay and w["score"] < 0:
+                continue
+            if all(abs(t - u) >= 1.2 for u in used):
+                conf = "high" if w.get("prefer") or w["score"] >= 2 else (
+                    "low" if w.get("avoid") else "medium"
+                )
+                return t, w.get("label") or "", conf, w["score"]
+        # Quantile itself if nothing else (still clamped)
+        return target, "", "medium", 0
+
+    def _pick_gap(used):
+        for g in gaps:
+            g = max(0.0, min(timeline_end, float(g)))
+            if all(abs(g - u) >= 1.0 for u in used):
+                return g, "insert at cut/gap — opaque card not stacked over footage"
+        return None, ""
+
+    # Brief → title hints
+    brief_lines = [ln.strip() for ln in brief_text.splitlines() if ln.strip()]
+    brief_title = (brief_lines[0] if brief_lines else brief_text)[:80]
+
+    ROLE_QUERIES = {
+        "opaque_title": "kinetic title card",
+        "transparent_overlay": "lower-third name plate overlay",
+        "transition": "transition light-leak glitch",
+    }
 
     used_positions = []
     beats = []
-    for i, (role, mode, transparent) in enumerate(roles):
-        # Brief keyword nudges
-        if "lower" in brief_l or "overlay" in brief_l:
-            if i == 1:
+    for i, (role, mode, transparent, block_q) in enumerate(package_roles):
+        # Brief nudges
+        if "lower" in brief_l or "overlay" in brief_l or "name plate" in brief_l:
+            if role == "opaque_title" and has_footage and not gaps:
                 role, mode, transparent = "transparent_overlay", "overlay", True
-        if role == "transition":
-            pos, reason = _pick_overlay_pos(used_positions)
-            # Prefer near a cut (end of a segment)
-            if segments:
-                cut = segments[min(i, len(segments) - 1)]["end"] - 0.15
-                if cut > 0:
-                    pos, reason = cut, "transition flash near cut point"
-            track_hint = overlay_layer
-            avoid_note = "Keep short; may flash over action"
-        elif mode == "standalone" or not transparent:
-            pos, reason = _pick_standalone_pos(used_positions)
-            track_hint = mid_layer
-            avoid_note = "Do not place over talking-head / close-up peaks"
-            if avoid_mids and any(abs(pos - a) < 1.0 for a in avoid_mids):
-                # Nudge away from avoid mid
-                pos, reason = _pick_standalone_pos(used_positions + avoid_mids)
-        else:
-            pos, reason = _pick_overlay_pos(used_positions)
-            track_hint = overlay_layer
-            avoid_note = "Avoid stacking over face/close-up chapters when possible"
+                block_q = "lower-third name plate overlay"
 
+        if mode == "standalone" and not transparent:
+            gap_pos, gap_reason = _pick_gap(used_positions)
+            if gap_pos is not None:
+                pos, reason = gap_pos, gap_reason
+                conf = "high"
+                near_label = ""
+                track_hint = mid_layer
+            else:
+                # Convert to transparent overlay — never dump past timeline_end
+                role, mode, transparent = "transparent_overlay", "overlay", True
+                block_q = "lower-third name plate overlay"
+                pos, near_label, conf, _sc = _snap(anchors[i], used_positions, prefer_overlay=True)
+                reason = "no gap for opaque card — transparent overlay on safe window"
+                track_hint = overlay_layer
+        else:
+            pos, near_label, conf, _sc = _snap(anchors[i], used_positions, prefer_overlay=True)
+            if role == "transition":
+                reason = "transition near open/mid/end anchor (snapped to safe window)"
+            else:
+                reason = "transparent overlay snapped to safe scene/clip window"
+            track_hint = overlay_layer
+
+        # Clamp hard
+        pos = round(max(0.0, min(timeline_end, float(pos))), 2)
         used_positions.append(pos)
+
+        title_hint = brief_title
+        if near_label and len(near_label) > 3 and near_label.lower() not in ("near cut",):
+            # Prefer short scene label for lower-thirds when brief is long
+            if role == "transparent_overlay" and len(near_label) <= 40:
+                title_hint = near_label[:80]
+        subtitle_hint = ""
+        if role == "transparent_overlay":
+            subtitle_hint = " "  # keep key present; agent/workflow may fill
+            subtitle_hint = subtitle_hint.strip()
+            if "—" in brief_title:
+                parts = [p.strip() for p in brief_title.split("—", 1)]
+                if len(parts) == 2:
+                    title_hint, subtitle_hint = parts[0][:80], parts[1][:80]
+
+        duration_hint = 2.0 if role == "transition" else (5.0 if transparent else 6.0)
         beats.append(
             {
                 "role": role,
                 "mode": mode,
                 "transparent": bool(transparent),
-                "position_seconds": round(float(pos), 2),
+                "position_seconds": pos,
                 "track_hint": int(track_hint),
+                "duration_hint_s": duration_hint,
+                "block_query": block_q or ROLE_QUERIES.get(role, "motion graphic"),
+                "title_hint": (title_hint or "TITLE")[:80],
+                "subtitle_hint": (subtitle_hint or "")[:80],
                 "reason": reason,
-                "avoid_note": avoid_note,
+                "confidence": conf,
+                "avoid_note": (
+                    "Higher layer_number is Z-order (drawn on top), NOT chroma/green-screen. "
+                    "Transparent WebM overlays go above footage; opaque plates only as standalone cuts."
+                ),
             }
         )
 
     payload = {
-        "brief": (brief or "")[:240],
+        "brief": brief_text[:240],
         "timeline_end": round(timeline_end, 2),
         "clip_count": len(segments),
         "beats": beats,
         "guidance": (
-            "opaque/standalone → insert as own beat (mid layer); "
-            "transparent/overlay → higher layer_number than footage; "
-            "compose distinct catalog blocks per beat then fetch+place at position_seconds."
+            "Honor position_seconds (open→end span). "
+            "transparent/overlay → higher layer_number than footage (Z-order, not chroma key). "
+            "opaque/standalone → only in real gaps or empty timeline — never stack solid plates over hero. "
+            "Search catalog with block_query; compose with title_hint; fetch+place at position_seconds. "
+            "Vary block_id across beats."
         ),
     }
     return json.dumps(payload, indent=2)
