@@ -134,6 +134,8 @@ def apply_pending_update():
     filepath = manifest.get("filepath", "")
     filename = manifest.get("filename", "")
 
+    _show_update_notice(system, manifest.get("version", ""))
+
     try:
         if system == "linux":
             ok = _apply_linux(filepath, filename)
@@ -155,6 +157,39 @@ def apply_pending_update():
         _log("Update could not be applied — keeping staged files for retry")
 
     return ok
+
+
+def _show_update_notice(system, version):
+    """Post a plain native OS notification while the update applies. This
+    runs before PyQt is loaded, so it's the system notification center —
+    no custom window, no dependencies, nothing to build or theme."""
+    message = f"Updating to version {version}…" if version else "Installing update…"
+    try:
+        if system == "darwin":
+            safe = message.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen(
+                ["osascript", "-e", f'display notification "{safe}" with title "Zenvi"'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif system == "linux":
+            subprocess.Popen(
+                ["notify-send", "Zenvi", message],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except Exception:
+        pass
+
+
+def _relaunch(cmd):
+    """Best-effort launch of the freshly-installed app so the user isn't left
+    staring at nothing after the update silently applies and this process
+    exits. Never raises — a failure here just means the user has to open the
+    app again themselves, same as before this helper existed."""
+    try:
+        subprocess.Popen(cmd)
+        _log(f"Relaunched: {' '.join(cmd)}")
+    except Exception as exc:
+        _log(f"Failed to relaunch after update: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +232,7 @@ def _apply_appimage(filepath):
             os.unlink(backup)
 
         _log("AppImage replaced successfully")
+        _relaunch([current])
         return True
 
     except Exception as exc:
@@ -305,9 +341,10 @@ def _apply_macos(filepath, filename):
             shutil.rmtree(dest)
 
         _log(f"Copying {app_bundle} → {dest}")
-        shutil.copytree(app_bundle, dest)
+        shutil.copytree(app_bundle, dest, symlinks=True)
 
         _log("macOS update installed")
+        _relaunch(["open", "-n", dest])
         return True
 
     except Exception as exc:

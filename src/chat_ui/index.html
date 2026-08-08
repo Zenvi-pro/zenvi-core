@@ -23,15 +23,52 @@
 
         <!-- ── Agent backend selector (top of panel) ─────────────────── -->
         <div id="chat-backend-bar"
-             class="flex-shrink-0 flex items-center gap-2 px-2.5 py-1.5"
-             style="background: var(--chat-bg); border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.07));">
-            <span class="text-[11px] uppercase tracking-wide"
-                  style="color: var(--chat-muted, rgba(255,255,255,0.45));">Agent</span>
-            <select id="chat-backend-select"
-                    aria-label="Agent backend"
-                    class="text-[12px] rounded-md px-2 py-1 focus:outline-none"
-                    style="background: var(--chat-input-bg, #171717); color: var(--chat-text);
-                           border: 1px solid var(--chat-border, rgba(255,255,255,0.12));"></select>
+             class="chat-agent-bar flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5">
+            <span class="chat-agent-label">Agent</span>
+
+            <!-- Hidden native select (QWebChannel reads/sets its value) -->
+            <select id="chat-backend-select" class="hidden" aria-hidden="true"></select>
+
+            <!-- Agent trigger pill (same visual language as the Model pill below) -->
+            <button type="button" id="chat-agent-trigger"
+                    class="chat-model-trigger inline-flex items-center gap-1.5
+                           rounded-full px-2 py-[3px] text-[11px] border transition-colors cursor-pointer"
+                    style="background: var(--chat-surface); border-color: var(--chat-border); color: var(--chat-text);"
+                    aria-label="Select agent" aria-haspopup="listbox">
+                <span id="chat-agent-label-text"
+                      class="overflow-hidden text-ellipsis whitespace-nowrap max-w-[140px]">Zenvi Assistant</span>
+                <svg class="chat-model-chevron flex-shrink-0 opacity-50 transition-transform duration-200"
+                     width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2.5 6.5L5 4l2.5 2.5" stroke="currentColor" stroke-width="1.2"
+                          stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
+
+            <!-- Agent dropdown menu -->
+            <div id="chat-agent-menu"
+                 class="chat-model-menu absolute z-[100] py-1 rounded-[10px] border overflow-y-auto"
+                 role="listbox" aria-label="Agent backend" style="display: none;"></div>
+
+            <!-- Tool-gap log (silent capability gaps — see the agent spec, Part B) -->
+            <button type="button" id="chat-gap-log-btn"
+                    class="chat-gap-log-btn ml-auto flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md"
+                    style="background: transparent; border: none; cursor: pointer;"
+                    title="Tool gaps log" aria-label="Tool gaps log">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M3 4h10M3 8h10M3 12h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- ── Tool-gap log panel (opened via the list icon above) ───────── -->
+        <div id="chat-gap-log-overlay" class="chat-gap-log-overlay" style="display:none;">
+            <div id="chat-gap-log-panel" class="chat-gap-log-panel" role="dialog" aria-label="Tool gaps log">
+                <div class="chat-gap-log-header">
+                    <span class="chat-gap-log-title">Tool Gaps</span>
+                    <button type="button" id="chat-gap-log-close" class="chat-gap-log-close" aria-label="Close">&times;</button>
+                </div>
+                <div id="chat-gap-log-list" class="chat-gap-log-list"></div>
+            </div>
         </div>
 
         <!-- ── Tab bar (hidden until tabs are populated) ─────────────── -->
@@ -42,7 +79,7 @@
             <button type="button" id="chat-tab-add"
                     class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md ml-auto
                            text-[16px] leading-none transition-colors"
-                    style="background: transparent; border: none; color: rgba(255,255,255,0.35); cursor: pointer;"
+                    style="background: transparent; border: none; cursor: pointer;"
                     title="New chat" aria-label="New chat">+</button>
         </div>
 
@@ -53,9 +90,15 @@
                 <div id="chat-preamble-label"
                      class="text-[13px] leading-relaxed"
                      style="color: var(--chat-text);"></div>
+                <div id="chat-live-badge"
+                     class="chat-live-badge flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
+                     style="display:none;"
+                     title="This tab is a read-only view of an external terminal session">
+                    <span class="chat-live-dot"></span>Live from terminal
+                </div>
                 <div id="chat-credits-badge"
                      class="flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                     style="display:none; background: rgba(124,111,247,0.12); color: rgba(124,111,247,0.9); border: 1px solid rgba(124,111,247,0.2);"
+                     style="display:none; background: rgba(77,156,246,0.12); color: rgba(77,156,246,0.95); border: 1px solid rgba(77,156,246,0.25);"
                      title="AI credits remaining"></div>
             </div>
             <div id="chat-preamble-status"
@@ -69,6 +112,12 @@
              role="log" aria-live="polite"
              style="background: #0d0d0d;">
         </div>
+
+        <!-- ── CLI empty state (shown instead of messages when the selected
+             external agent's CLI isn't installed) ──────────────────────── -->
+        <div id="chat-cli-empty-state"
+             class="flex-1 min-h-0 mx-2.5 mb-2 flex flex-col items-center justify-center text-center px-6"
+             style="display:none; background: #0d0d0d; color: var(--chat-muted); font-size: 12px; line-height: 1.6;"></div>
 
         <!-- ── Input row ───────────────────────────────────────────────── -->
         <div class="chat-input-row flex-shrink-0 flex flex-col mx-2.5 mb-2.5" id="chat-input-row">

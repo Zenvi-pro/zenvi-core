@@ -10,22 +10,34 @@ schema registry to maintain. Tool calls are dispatched through
 :func:`classes.tool_handlers.execute_tool`, which already marshals mutating operations
 onto the Qt main thread, so no new thread-safety machinery is required here.
 
-Security: the server binds to ``127.0.0.1`` on an ephemeral port and requires a
-per-launch bearer token, so only the CLIs we configure (with that token) can reach it.
+Security: the server binds to ``127.0.0.1`` and requires a bearer token (persisted
+across restarts, see ``_load_or_create_token``), so only the CLIs we configure
+(with that token) can reach it.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import os
 import secrets
 import socket
 import threading
+import uuid
 
 log = logging.getLogger(__name__)
 
 # Name the external CLIs see; their tools are namespaced as ``mcp__zenvi-editor__<tool>``.
 SERVER_NAME = "zenvi-editor"
+
+# Preferred port: stable across restarts so a CLI registered once (e.g.
+# ``claude mcp add zenvi --transport http http://127.0.0.1:7434/mcp``) keeps
+# working. Falls back to an ephemeral port if taken — only the terminal-attach
+# path degrades in that case (it needs a known port to register against);
+# Zenvi-driven runners still work since they read the live port from this
+# same server instance.
+PREFERRED_PORT = 7434
 
 # Handler params that should never be exposed to the agent.
 _HIDDEN_PARAMS = {"self", "chat_session_id"}
@@ -108,6 +120,86 @@ def _free_port(host: str) -> int:
         s.close()
 
 
+def _bind_port(host: str, preferred: int) -> int:
+    """Prefer *preferred* (stable across restarts); fall back to an ephemeral
+    port if it's already taken."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, preferred))
+        return preferred
+    except OSError:
+        log.warning(
+            "Port %d unavailable, falling back to an ephemeral port "
+            "(the terminal-attach path will need reconnecting; Zenvi-driven "
+            "agents still work)", preferred,
+        )
+        return _free_port(host)
+    finally:
+        s.close()
+
+
+def _token_path() -> str:
+    from classes import info
+    return os.path.join(info.USER_PATH, "mcp_token")
+
+
+def _load_or_create_token() -> str:
+    """Persist the bearer token across restarts so a CLI registered once
+    keeps working after Zenvi restarts, instead of needing to re-register
+    every launch."""
+    path = _token_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            token = fh.read().strip()
+        if token:
+            return token
+    except Exception:
+        pass
+    token = secrets.token_urlsafe(24)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(token)
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+    except Exception:
+        log.debug("Failed to persist MCP token", exc_info=True)
+    return token
+
+
+_broadcaster = None
+_broadcaster_lock = threading.Lock()
+
+
+def get_tool_call_broadcaster():
+    """Lazily create the process-wide tool-call broadcaster (a QObject with
+    two signals, emitted from ``_call_tool`` below for *every* MCP tool call
+    — regardless of whether it came from Zenvi's own spawned CLI runner or a
+    genuine external terminal session; the MCP layer can't tell those apart.
+    ``AIChatWindow`` connects to these to render a read-only "Live from
+    terminal" view (see its ``_external_target_sid``/``_on_external_tool_*``
+    for how it decides whether a given event should render there).
+
+    PyQt5 import is deferred (matching ``_connect_shutdown_hook`` below) so
+    this module stays importable — and its schema-only tests runnable —
+    without requiring a QApplication.
+    """
+    global _broadcaster
+    with _broadcaster_lock:
+        if _broadcaster is None:
+            from PyQt5.QtCore import QObject, pyqtSignal
+
+            class _ToolCallBroadcaster(QObject):
+                tool_call_started = pyqtSignal(str, str, str)    # call_id, tool_name, args_json
+                tool_call_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
+
+            _broadcaster = _ToolCallBroadcaster()
+        return _broadcaster
+
+
 class _BearerAuthMiddleware:
     """Reject any HTTP request lacking ``Authorization: Bearer <token>``."""
 
@@ -147,13 +239,19 @@ class ZenviMcpServer:
         with self._lock:
             if self._started:
                 return self
-            self.port = _free_port(self.host)
-            self.token = secrets.token_urlsafe(24)
+            self.port = _bind_port(self.host, PREFERRED_PORT)
+            self.token = _load_or_create_token()
             app = self._build_app()
 
             import uvicorn
+            # log_config=None: don't let uvicorn reconfigure global logging —
+            # the app already has its own setup, and reconfiguring collides
+            # with it under some startup timings (e.g. "Unable to configure
+            # formatter 'default'"). Standard guidance for embedding uvicorn
+            # inside a larger app.
             config = uvicorn.Config(app, host=self.host, port=self.port,
-                                    log_level="warning", loop="asyncio")
+                                    log_level="warning", loop="asyncio",
+                                    log_config=None)
             self._uvicorn = uvicorn.Server(config)
             self._thread = threading.Thread(target=self._uvicorn.run,
                                             name="zenvi-mcp", daemon=True)
@@ -194,9 +292,24 @@ class ZenviMcpServer:
         async def _call_tool(name: str, arguments: dict):
             from classes.tool_handlers import execute_tool
             args = dict(arguments or {})
+
+            call_id = uuid.uuid4().hex
+            try:
+                broadcaster = get_tool_call_broadcaster()
+                broadcaster.tool_call_started.emit(call_id, name, json.dumps(args, default=str))
+            except Exception:
+                log.debug("tool-call broadcast (started) failed", exc_info=True)
+
             result = await anyio.to_thread.run_sync(lambda: execute_tool(name, args))
-            return [types.TextContent(type="text",
-                                      text="" if result is None else str(result))]
+            text = "" if result is None else str(result)
+
+            try:
+                ok = bool(text) and not text.startswith("Error")
+                broadcaster.tool_call_completed.emit(call_id, ok, text)
+            except Exception:
+                log.debug("tool-call broadcast (completed) failed", exc_info=True)
+
+            return [types.TextContent(type="text", text=text)]
 
         app = fm.streamable_http_app()
         app.add_middleware(_BearerAuthMiddleware, token=self.token)

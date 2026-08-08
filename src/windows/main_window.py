@@ -32,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import uuid
 import webbrowser
 from time import sleep, time
@@ -55,6 +56,7 @@ from PyQt5.QtWidgets import (
 
 from classes import exceptions, info, qt_types, sentry, ui_util, updates
 from classes.auto_updater import AutoUpdater
+from classes.update_installer import is_version_newer
 from classes.app import get_app
 from classes.exporters.edl import export_edl
 from classes.exporters.final_cut_pro import export_xml
@@ -163,6 +165,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 # Show tutorial again, if any
                 self.tutorial_manager.re_show_dialog()
                 # User canceled prompt - don't quit
+                self._restart_for_update = False
                 event.ignore()
                 return
 
@@ -235,6 +238,13 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         # Destroy lock file
         self.destroy_lock_file()
 
+        # If this shutdown was triggered by "Restart to Apply Update", spawn a
+        # new instance now (after the lock file is gone, so the fresh process
+        # doesn't mistake the clean exit for a crash) — it will apply the
+        # staged update at startup, before this old process has fully exited.
+        if getattr(self, "_restart_for_update", False):
+            self._relaunch_for_update()
+
     def recover_backup(self):
         """Recover the backup file (if any)"""
         log.info("recover_backup")
@@ -296,6 +306,36 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             except OSError:
                 log.debug('Failed to destroy lock file (attempt: %s)' % attempt, exc_info=1)
                 sleep(0.25)
+
+    def _relaunch_for_update(self):
+        """Spawn a new instance of the app so the update staged by AutoUpdater
+        gets applied (launch.py applies pending updates at startup, before
+        this old process needs to have fully exited)."""
+        import subprocess
+
+        try:
+            if getattr(sys, "frozen", False):
+                # Frozen build: re-launch via the bundle's real entry point when
+                # we can find one (macOS .app), otherwise fall back to the
+                # frozen executable itself.
+                bundle = None
+                path = os.path.abspath(sys.executable)
+                while path and path != os.path.dirname(path):
+                    if path.endswith(".app"):
+                        bundle = path
+                        break
+                    path = os.path.dirname(path)
+
+                if bundle and sys.platform == "darwin":
+                    subprocess.Popen(["open", "-n", bundle])
+                else:
+                    subprocess.Popen([sys.executable])
+            else:
+                # Running from source (e.g. via run.sh)
+                subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+            log.info("Spawned new Zenvi instance to apply staged update")
+        except Exception:
+            log.error("Failed to relaunch Zenvi for update", exc_info=True)
 
     def actionNew_trigger(self):
 
@@ -1107,6 +1147,25 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionUpdate_trigger(self, checked=True):
+        _ = get_app()._tr
+
+        from classes.auto_updater import has_pending_update
+        if has_pending_update():
+            # A newer version has already been downloaded and staged in the
+            # background — restart now to apply it instead of sending the
+            # user off to manually download it again.
+            reply = QMessageBox.question(
+                self,
+                _("Restart to Update"),
+                _("Zenvi has downloaded an update. Restart now to apply it?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                self._restart_for_update = True
+                self.close()
+            return
+
         url = "https://zenvi.pro/download"
         try:
             webbrowser.open(url, new=1)
@@ -2043,6 +2102,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                 # Remove clip
                 c.delete()
 
+        # A deleted clip may still be referenced by the preview widget's
+        # transform state (e.g. it was the selected/transforming clip) —
+        # its native object is gone, so clear the cached reference before
+        # the next mouseMoveEvent/paintEvent can dereference it.
+        self.videoPreview.clearTransformState()
+
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()
 
@@ -2091,6 +2156,12 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
                     self.ripple_delete_gap(start_position, t.data["layer"], duration)
 
         finally:
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; its native object is gone, so clear the
+            # cached reference before the next mouseMoveEvent/paintEvent can
+            # dereference it.
+            self.videoPreview.clearTransformState()
+
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
 
@@ -3262,8 +3333,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         """Handle the callback for detecting the current version on openshot.org"""
         _ = get_app()._tr
 
-        # Compare versions (alphabetical compare of version strings should work fine)
-        if info.VERSION < version:
+        # Compare versions numerically (string compare breaks e.g. "1.0.179" < "1.0.18")
+        if is_version_newer(version, info.VERSION):
             # Update text for QAction
             self.actionUpdate.setVisible(True)
             self.actionUpdate.setText(_("Update Available"))
@@ -3298,7 +3369,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         The update will be applied automatically on the next app launch."""
         _ = get_app()._tr
 
-        if info.VERSION >= version:
+        if not is_version_newer(version, info.VERSION):
             return
 
         # Update the toolbar button text to reflect that the update is ready
@@ -3965,6 +4036,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         super().__init__(*args)
         self.initialized = False
         self.shutting_down = False
+        self._restart_for_update = False
         self.lock = threading.Lock()
         self.installEventFilter(self)
 
@@ -4043,9 +4115,14 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
 
-        # Background auto-updater (stable version + optional download)
-        self._auto_updater = AutoUpdater()
-        self._auto_updater.start()
+        # Background auto-updater (stable version + optional download).
+        # Only for packaged/frozen builds — a dev running from source has no
+        # install directory to update into, and staging a real release build
+        # in the background just gets swapped in on the next source launch.
+        self._auto_updater = None
+        if getattr(sys, "frozen", False):
+            self._auto_updater = AutoUpdater()
+            self._auto_updater.start()
 
         # Initialize and start the thumbnail HTTP server
         try:
@@ -4090,6 +4167,16 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+
+        # Start the in-app MCP server now (instead of waiting for the first
+        # Zenvi-driven CLI request) so an external `claude`/`codex` session run
+        # in a terminal can connect as soon as the app is up.
+        try:
+            from classes.agent_mcp_server import get_mcp_server
+            get_mcp_server().start()
+        except Exception as e:
+            log.warning("Failed to start in-app MCP server: %s", e)
+
         # Re-bind chat sessions whenever the active project changes.
         try:
             self.projectChanged.connect(self.dockAIChat.reload_for_project)

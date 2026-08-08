@@ -4120,7 +4120,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Clear new clip
         self.new_item = False
         self.item_type = None
-        self.item_ids = None
+        self.item_ids = []
 
     def redraw_audio_onTimeout(self):
         """Timer is ready to redraw audio (if any)"""
