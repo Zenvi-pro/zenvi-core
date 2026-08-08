@@ -54,6 +54,8 @@ class DockingMixin:
         "dockEmojis": Qt.TopDockWidgetArea,
         "dockProperties": Qt.LeftDockWidgetArea,
         "dockCaptionEditor": Qt.BottomDockWidgetArea,
+        # Zenvi Assistant — same side _apply_default_ai_chat_dock() puts it on
+        "AIChatWindow": Qt.RightDockWidgetArea,
     }
 
     # Last dock area of each dock widget, by objectName

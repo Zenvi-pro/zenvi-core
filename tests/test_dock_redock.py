@@ -202,3 +202,23 @@ def test_fallback_area_respects_allowed_areas(window):
 
     dock.setAllowedAreas(Qt.BottomDockWidgetArea)
     assert window.fallback_dock_area(dock) == Qt.BottomDockWidgetArea
+
+
+def test_assistant_docks_back_to_the_right(window):
+    """Zenvi Assistant returns to the side _apply_default_ai_chat_dock() uses.
+
+    It's built in code rather than the .ui file, so a session that has only
+    ever seen it floating has no remembered area for it.
+    """
+    dock = QDockWidget("Zenvi Assistant", window)
+    dock.setObjectName("AIChatWindow")
+    window.addDockWidget(Qt.RightDockWidgetArea, dock)
+    dock.setFloating(True)
+    window.last_dock_areas.pop("AIChatWindow", None)
+
+    assert window.fallback_dock_area(dock) == Qt.RightDockWidgetArea
+
+    window.redock_widget(dock)
+
+    assert not dock.isFloating()
+    assert window.dockWidgetArea(dock) == Qt.RightDockWidgetArea
