@@ -2489,8 +2489,8 @@ def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080
     return output_path, None
 
 
-def _ffprobe_has_alpha(path) -> bool:
-    """True when the primary video stream has an alpha-capable pixel format."""
+def _ffprobe_pix_fmt(path) -> str:
+    """Return primary video pix_fmt or empty string."""
     try:
         p = subprocess.run(
             [
@@ -2500,22 +2500,37 @@ def _ffprobe_has_alpha(path) -> bool:
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
-        pix = (p.stdout or "").strip().lower()
-        if not pix:
-            return False
-        # yuva*, rgba, gbra*, argb, etc.
-        return ("yuva" in pix) or pix.startswith("rgba") or pix.startswith("bgra") or pix.startswith("argb") or pix.startswith("abgr") or pix.startswith("gbra")
+        return (p.stdout or "").strip().lower()
     except Exception:
+        return ""
+
+
+def _ffprobe_has_alpha(path) -> bool:
+    """True when the primary video stream has an alpha-capable pixel format."""
+    pix = _ffprobe_pix_fmt(path)
+    if not pix:
         return False
+    # yuva*, rgba, gbra*, argb, etc.
+    return (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    )
 
 
 def _looks_like_alpha_video(path) -> bool:
     """HyperFrames transparent overlays are WebM (VP9+alpha); confirm others via ffprobe."""
     ext = os.path.splitext(path or "")[1].lower()
     if ext == ".webm":
+        # Prefer probe when possible — extension alone is not proof of alpha.
+        probed = _ffprobe_has_alpha(path)
+        if probed:
+            return True
+        # If probe fails (ffprobe missing), still treat .webm as alpha-intent for MG.
         return True
-    if ext in (".mov",):
-        return _ffprobe_has_alpha(path)
     return _ffprobe_has_alpha(path)
 
 
@@ -2898,6 +2913,7 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
 
     When preserve_alpha is True (or auto-detected for WebM), uses VP9+yuva
     instead of libx264/yuv420p so transparent overlays stay transparent.
+    Alpha failure is fail-closed — never silent yuv420p fallback for MG overlays.
 
     Returns (File object, None) on success, (None, error_string) on failure.
     """
@@ -2916,21 +2932,19 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
             except Exception as copy_err:
                 clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
                 if err:
-                    log.warning("Alpha copy+reencode failed, falling back: %s / %s", copy_err, err)
+                    return None, (
+                        f"alpha import failed (no opaque fallback): copy={copy_err}; reencode={err}"
+                    )
         else:
             clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
             if err:
-                log.warning("Alpha re-encode failed, trying opaque path: %s", err)
-                want_alpha = False
-                perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mp4"))
-                clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
+                return None, f"alpha import failed (no opaque fallback): {err}"
     else:
         perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mp4"))
         clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
-
-    if err:
-        log.warning("Re-encode failed, using original: %s", err)
-        clean_path = video_path
+        if err:
+            log.warning("Re-encode failed, using original: %s", err)
+            clean_path = video_path
 
     final_path = _canonical_media_path(clean_path)
 
@@ -3032,7 +3046,9 @@ def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
         ai["short_summary"] = summary
         # Mirror AI-gen style: description carries the same human text for panels/search
         ai["description"] = summary
-        ai["analyzed"] = False
+        # Must be True so get_effective_ai_metadata / Scene panel show the summary
+        # (skip_indexing still avoids Gemini — agent authored this text).
+        ai["analyzed"] = True
         ai["source"] = "hyperframes_motion_graphics"
         if transparent is not None:
             ai["transparent"] = bool(transparent)
@@ -3101,10 +3117,11 @@ def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
     return (fallback or "").strip(), {}
 
 
-def _download_and_import_one(url, label=""):
+def _download_and_import_one(url, label="", job_transparent=None):
     """Download one Supabase video and import it as a project file (skip_indexing).
 
-    Returns (file_id, size_mb, error, transparent). One retry on transient download failure.
+    Returns (file_id, size_mb, error, transparent_ok, pix_fmt).
+    job_transparent: when True, force alpha-preserving import and fail closed (no opaque MP4).
     """
     try:
         last_err = None
@@ -3118,18 +3135,49 @@ def _download_and_import_one(url, label=""):
                 last_err = e
                 log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
         if dest_path is None:
-            return "", 0.0, f"download failed: {last_err}", False
+            return "", 0.0, f"download failed: {last_err}", False, ""
 
-        preserve_alpha = _looks_like_alpha_video(dest_path)
-        # Import into project files (re-encodes for libopenshot compatibility).
+        if job_transparent is True:
+            preserve_alpha = True
+        elif job_transparent is False:
+            preserve_alpha = False
+        else:
+            preserve_alpha = _looks_like_alpha_video(dest_path)
+
         f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
         if err:
-            return "", size_mb, f"import failed: {err}", preserve_alpha
-        _stamp_motion_graphics_file_metadata(f, label=label, transparent=preserve_alpha)
-        return (f.id if f else ""), size_mb, None, preserve_alpha
+            return "", size_mb, f"import failed: {err}", False, ""
+
+        imported_path = None
+        try:
+            imported_path = f.absolute_path() if f and hasattr(f, "absolute_path") else None
+        except Exception:
+            imported_path = None
+        if not imported_path and f and isinstance(getattr(f, "data", None), dict):
+            imported_path = f.data.get("path")
+
+        pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
+        transparent_ok = bool(imported_path and _ffprobe_has_alpha(imported_path))
+        stamp_transparent = (
+            bool(job_transparent) if job_transparent is not None else transparent_ok
+        )
+        if job_transparent and not transparent_ok:
+            return (
+                "",
+                size_mb,
+                (
+                    f"transparent job imported without alpha pix_fmt={pix_fmt or 'unknown'} "
+                    "— re-compose as WebM; refusing solid plate"
+                ),
+                False,
+                pix_fmt,
+            )
+
+        _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
+        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, pix_fmt
     except Exception as e:
         log.error("download/import failed for %s: %s", url, e, exc_info=True)
-        return "", 0.0, str(e), False
+        return "", 0.0, str(e), False, ""
 
 
 def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
@@ -3181,29 +3229,48 @@ def fetch_motion_graphics_video(
     import json
     import re
 
-    job_meta = {}
-    stamp_label = (label or "").strip()
-    if not stamp_label:
-        stamp_label, job_meta = _resolve_motion_graphics_label_from_job(render_job_id)
-    elif render_job_id:
-        # Still load job meta for format/transparent recovery even when label is set
-        _lbl, job_meta = _resolve_motion_graphics_label_from_job(render_job_id, fallback=stamp_label)
-        if not stamp_label:
-            stamp_label = _lbl
-    if not stamp_label:
-        stamp_label = "HyperFrames motion graphic"
-
-    generic = stamp_label.strip().lower() in (
+    _GENERIC_LABELS = (
         "hyperframes motion graphic",
         "motion graphic",
         "motion",
     )
+
+    def _is_generic(text: str) -> bool:
+        return (text or "").strip().lower() in _GENERIC_LABELS
+
+    job_meta = {}
+    stamp_label = (label or "").strip()
+    recovered = ""
+    if render_job_id:
+        recovered, job_meta = _resolve_motion_graphics_label_from_job(
+            render_job_id, fallback=stamp_label
+        )
+        # Prefer explicit agent label; else job.summary; never keep generic when job has better text
+        if not stamp_label:
+            stamp_label = recovered
+        elif _is_generic(stamp_label) and recovered and not _is_generic(recovered):
+            stamp_label = recovered
+    if not stamp_label:
+        stamp_label = "HyperFrames motion graphic"
+
+    job_transparent = job_meta.get("transparent")
+    if job_transparent is not None:
+        job_transparent = bool(job_transparent)
+
+    generic = _is_generic(stamp_label)
     generic_warn = ""
     if generic:
-        generic_warn = (
-            " ⚠️ short_summary is generic — pass label= from compose suggested_label "
-            "(or ensure render_job_id is set so job.summary can be recovered)."
-        )
+        if render_job_id and job_meta.get("summary"):
+            # Job had summary but we somehow still stamped generic — surface loudly
+            generic_warn = (
+                " ⚠️ short_summary is still generic despite job.summary — "
+                "pass label= from compose suggested_label."
+            )
+        else:
+            generic_warn = (
+                " ⚠️ short_summary is generic — pass label= from compose suggested_label "
+                "(or ensure render_job_id is set so job.summary can be recovered)."
+            )
 
     # The LLM may pass segment_urls as a JSON-encoded string.
     if isinstance(segment_urls, str):
@@ -3214,7 +3281,7 @@ def fetch_motion_graphics_video(
     segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
 
     # Prefer WebM when job is transparent but URLs still point at .mp4
-    if job_meta.get("transparent") and segment_urls:
+    if job_transparent and segment_urls:
         fixed = []
         for u in segment_urls:
             if u.split("?")[0].lower().endswith(".mp4"):
@@ -3243,26 +3310,44 @@ def fetch_motion_graphics_video(
         file_ids = []
         failures = []  # (original_index, url, error)
         total_mb = 0.0
-        any_transparent = bool(job_meta.get("transparent"))
+        any_transparent_ok = False
+        last_pix_fmt = ""
         for orig_i, url in ordered:
-            file_id, size_mb, err, is_transparent = _download_and_import_one(url, label=stamp_label)
-            if err and job_meta.get("transparent") and url.lower().split("?")[0].endswith(".webm"):
-                # WebM missing — fall back to original mp4 path once
-                mp4 = re.sub(r"\.webm(\?|$)", r".mp4\1", url, count=1, flags=re.I)
-                log.warning("WebM fetch failed (%s); falling back to %s", err, mp4)
-                file_id, size_mb, err, is_transparent = _download_and_import_one(mp4, label=stamp_label)
-                if not err:
-                    log.warning(
-                        "Imported opaque MP4 for transparent job %s — re-compose recommended",
-                        render_job_id,
+            path_base = url.lower().split("?")[0]
+            if job_transparent and path_base.endswith(".mp4"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        "transparent job URL is .mp4 and WebM rewrite failed — "
+                        "re-compose as WebM; refusing opaque MP4 import",
                     )
+                )
+                continue
+
+            file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+                url, label=stamp_label, job_transparent=job_transparent
+            )
+            # Fail-closed: never import opaque MP4 as success for transparent jobs
+            if err and job_transparent and path_base.endswith(".webm"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        f"{err} — re-compose WebM (no opaque MP4 fallback)",
+                    )
+                )
+                log.warning("Segment %d transparent WebM import failed (no MP4 fallback): %s", orig_i, err)
+                continue
             if err:
                 failures.append((orig_i, url, err))
                 log.warning("Segment %d import failed: %s", orig_i, err)
             else:
                 file_ids.append(file_id)
                 total_mb += size_mb
-                any_transparent = any_transparent or bool(is_transparent)
+                any_transparent_ok = any_transparent_ok or bool(transparent_ok)
+                if pix_fmt:
+                    last_pix_fmt = pix_fmt
 
         n = len(segment_urls)
         if failures:
@@ -3278,13 +3363,17 @@ def fetch_motion_graphics_video(
         _motion_graphics_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
         alpha_note = (
             "Transparent WebM alpha preserved — place as overlay on a HIGHER track than footage."
-            if any_transparent
+            if any_transparent_ok or job_transparent
             else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
+        )
+        probe_bits = (
+            f" transparent_ok={str(any_transparent_ok).lower()}"
+            f" pix_fmt={last_pix_fmt or 'unknown'}"
         )
         return (
             f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
             f"(file_ids: {file_ids}, total {total_mb:.1f} MB). "
-            f"Indexing skipped (motion_graphics tag). {alpha_note}\n"
+            f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
             "MUST call add_clip_to_timeline_tool for each file_id "
             "(transparent overlays: layer_number 3000000+; opaque title cards: standalone cut / mid layer)."
             f"{generic_warn}"
@@ -3295,21 +3384,32 @@ def fetch_motion_graphics_video(
     if not supabase_url:
         return "Error: segment_urls or supabase_url is required."
 
-    if job_meta.get("transparent") and supabase_url.split("?")[0].lower().endswith(".mp4"):
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
         supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
 
-    file_id, size_mb, err, is_transparent = _download_and_import_one(supabase_url, label=stamp_label)
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        return (
+            "Error: transparent job URL is still .mp4 after WebM rewrite — "
+            "re-compose as WebM; refusing opaque MP4 import."
+            f"{generic_warn}"
+        )
+
+    file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+        supabase_url, label=stamp_label, job_transparent=job_transparent
+    )
     if err:
         return f"Error importing video: {err}{generic_warn}"
     _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
     alpha_note = (
         "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
-        if is_transparent or job_meta.get("transparent")
+        if transparent_ok or job_transparent
         else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
     )
     return (
         f"✅ HyperFrames motion graphic imported into project files (file_id: {file_id}, "
-        f"size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). {alpha_note}\n"
+        f"size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
+        f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
+        f"{alpha_note}\n"
         "MUST call add_clip_to_timeline_tool(file_id=...) with the placement mode above."
         f"{generic_warn}"
     )

@@ -53,6 +53,22 @@ def test_import_generated_video_calls_add_files_with_skip_indexing():
     assert kwargs.get("skip_indexing") is True
 
 
+def test_import_generated_video_alpha_fail_closed_no_yuv420p():
+    """Transparent MG must not silently fall back to opaque yuv420p."""
+    with patch.object(th, "_output_path_for_generated_video", return_value="/tmp/out.webm"), patch.object(
+        th, "_canonical_media_path", side_effect=lambda p: p
+    ), patch.object(th, "_looks_like_alpha_video", return_value=True), patch.object(
+        th, "_ffprobe_has_alpha", return_value=False
+    ), patch.object(
+        th, "_reencode_alpha_for_openshot", return_value=(None, "vp9 alpha failed")
+    ), patch.object(th, "_reencode_for_openshot") as opaque:
+        f, err = th._import_generated_video("/tmp/src.webm", preserve_alpha=True)
+    assert f is None
+    assert err is not None
+    assert "no opaque fallback" in err.lower() or "alpha import failed" in err.lower()
+    opaque.assert_not_called()
+
+
 def test_stamp_motion_graphics_file_metadata():
     f = SimpleNamespace(data={}, id="FILE1", save=MagicMock())
     with patch("classes.tool_handlers._get_app") as app:
@@ -65,7 +81,7 @@ def test_stamp_motion_graphics_file_metadata():
     assert "transparent_overlay" in f.data["tags"]
     assert f.data["ai_metadata"]["short_summary"].startswith("HyperFrames lt-clean-bar")
     assert f.data["ai_metadata"]["description"] == f.data["ai_metadata"]["short_summary"]
-    assert f.data["ai_metadata"]["analyzed"] is False
+    assert f.data["ai_metadata"]["analyzed"] is True
     assert f.data["ai_metadata"]["source"] == "hyperframes_motion_graphics"
     assert f.data["ai_metadata"]["transparent"] is True
     assert "Alex" in f.data.get("name", "")
@@ -80,16 +96,19 @@ def test_fetch_resolves_label_from_job_when_empty():
     ) as resolve, patch.object(
         th,
         "_download_and_import_one",
-        return_value=("F99", 1.2, None, False),
+        return_value=("F99", 1.2, None, False, "yuv420p"),
     ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
         msg = th.fetch_motion_graphics_video(
             segment_urls=["https://x/output.mp4"],
             render_job_id="job-99",
             label="",
         )
-    resolve.assert_called_once_with("job-99")
+    resolve.assert_called_once_with("job-99", fallback="")
     assert "F99" in msg
     assert download.call_args.kwargs.get("label") == "HyperFrames hw-title: HOLD."
+    assert download.call_args.kwargs.get("job_transparent") is False
+    assert "transparent_ok=false" in msg
+    assert "pix_fmt=yuv420p" in msg
 
 
 def test_download_rejects_empty_file(tmp_path, monkeypatch):
@@ -121,7 +140,7 @@ def test_fetch_rewrites_mp4_to_webm_when_job_transparent():
     ), patch.object(
         th,
         "_download_and_import_one",
-        return_value=("F1", 0.2, None, True),
+        return_value=("F1", 0.2, None, True, "yuva420p"),
     ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
         msg = th.fetch_motion_graphics_video(
             segment_urls=["https://x/motion/j1/output.mp4"],
@@ -131,6 +150,30 @@ def test_fetch_rewrites_mp4_to_webm_when_job_transparent():
     assert "F1" in msg
     called_url = download.call_args.args[0] if download.call_args.args else download.call_args[0][0]
     assert called_url.endswith(".webm")
+    assert download.call_args.kwargs.get("job_transparent") is True
+    assert "transparent_ok=true" in msg
+    assert "pix_fmt=yuva420p" in msg
+
+
+def test_fetch_transparent_webm_fail_no_mp4_fallback():
+    with patch.object(
+        th,
+        "_resolve_motion_graphics_label_from_job",
+        return_value=("HyperFrames lt-clean-bar: Title", {"transparent": True}),
+    ), patch.object(
+        th,
+        "_download_and_import_one",
+        return_value=("", 0.0, "alpha import failed (no opaque fallback): boom", False, ""),
+    ) as download, patch.object(th, "_motion_graphics_cleanup_storage") as cleanup:
+        msg = th.fetch_motion_graphics_video(
+            segment_urls=["https://x/motion/j1/output.webm"],
+            render_job_id="j1",
+            label="HyperFrames lt-clean-bar: Title",
+        )
+    assert "failed" in msg.lower()
+    assert "no opaque mp4 fallback" in msg.lower() or "re-compose" in msg.lower()
+    assert download.call_count == 1
+    cleanup.assert_not_called()
 
 
 def test_fetch_warns_when_summary_generic():
@@ -141,7 +184,7 @@ def test_fetch_warns_when_summary_generic():
     ), patch.object(
         th,
         "_download_and_import_one",
-        return_value=("F2", 1.0, None, False),
+        return_value=("F2", 1.0, None, False, "yuv420p"),
     ), patch.object(th, "_motion_graphics_cleanup_storage"):
         msg = th.fetch_motion_graphics_video(
             segment_urls=["https://x/output.mp4"],
