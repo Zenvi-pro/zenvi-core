@@ -67,7 +67,7 @@ from classes.query import File, Clip, Transition, Marker, Track, Effect
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
-from classes.title_bar import HiddenTitleBar
+from classes.docking import DockingMixin
 from themes.manager import ThemeName
 from windows.models.effects_model import EffectsModel
 from windows.models.emoji_model import EmojisModel
@@ -93,7 +93,7 @@ _DEFAULT_WINDOW_STATE = (
 )
 
 
-class MainWindow(updates.UpdateWatcher, QMainWindow):
+class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     """ This class contains the logic for the main window widget """
 
     # Path to ui file
@@ -2504,10 +2504,6 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         if self.filesView == self.filesTreeView:
             self.filesTreeView.resize_contents()
 
-    def getDocks(self):
-        """ Get a list of all dockable widgets """
-        return self.findChildren(QDockWidget)
-
     def removeDocks(self):
         """ Remove all dockable widgets on main screen """
         for dock in self.getDocks():
@@ -2684,6 +2680,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
     def actionShow_All_trigger(self):
         """ Show all dockable widgets """
         self.showDocks(self.getDocks())
+
+    def actionDock_All_trigger(self):
+        """ Dock all floating panels back into the main window """
+        self.redock_all_widgets()
 
     def actionTutorial_trigger(self):
         """ Show tutorial again """
@@ -3539,6 +3539,8 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self._apply_saved_timeline_height()
         if self._is_first_launch or self._is_default_window_state():
             self._apply_default_ai_chat_dock()
+        # Panels restored as floating need their dockable title bar back
+        self.style_dock_widgets()
 
     def _apply_saved_timeline_height(self):
         """Apply the saved timeline dock height without a visible two-pass resize."""
@@ -4083,32 +4085,18 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.ignore_updates = ignore
 
     def style_dock_widgets(self):
-        """Check if any dock widget is part of a tabbed group and hide the title text if tabbed."""
+        """Apply the title bar each dock widget should have for its current state.
+
+        Docked panels follow the theme. Floating panels get a Qt-drawn title bar
+        on Windows/Linux, so they can be dragged (or double-clicked) back into
+        the main window — see classes/docking.py.
+        """
         theme = None
         if get_app().theme_manager:
             theme = get_app().theme_manager.get_current_theme()
+        is_cosmic = bool(theme and theme.name == ThemeName.COSMIC.value)
 
-        for dock_widget in self.getDocks():
-            # Check if dock is tabbed with other widgets
-            tabified_widgets = self.tabifiedDockWidgets(dock_widget)
-
-            if dock_widget.objectName() == "dockTimeline":
-                # Hide title bar for timeline widget (ALL themes)
-                dock_widget.setTitleBarWidget(QWidget())
-
-            elif theme and theme.name == ThemeName.COSMIC.value:
-                # handle COSMIC theme dock widgets
-                if dock_widget.isFloating():
-                    # Use standard system title bar for floating docks
-                    dock_widget.setTitleBarWidget(None)
-                else:
-                    # Keep mandatory float/close actions visible for docked widgets.
-                    dock_widget.setTitleBarWidget(HiddenTitleBar(dock_widget, show_buttons=True))
-
-            else:
-                # for ALL other themes, regardless of floating or tabbed
-                # Use standard system title bar (minimize, maximize, close)
-                dock_widget.setTitleBarWidget(None)
+        self.apply_dock_titlebars(is_cosmic)
 
         # Set tab drawBase property
         self.set_tab_drawbase()
@@ -4152,6 +4140,10 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.http_server_thread = None
         self.preview_thread = None
         self.timeline_sync = None
+
+        # Last dock area of each dock widget (by objectName), so a floating
+        # panel can be docked back where it came from
+        self.last_dock_areas = {}
 
         # Load user settings for window
         s = app.get_settings()
@@ -4479,8 +4471,7 @@ class MainWindow(updates.UpdateWatcher, QMainWindow):
         self.ThemeChangedSignal.connect(self.style_dock_widgets)
 
         # Connect the signals for each dock widget from self.getDocks()
-        for dock_widget in self.getDocks():
-            dock_widget.dockLocationChanged.connect(self.style_dock_widgets)
+        self.connect_dock_signals()
 
         # Ensure toolbar is movable when floated (even with docks frozen)
         self.toolBar.topLevelChanged.connect(

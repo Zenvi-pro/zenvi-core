@@ -165,6 +165,18 @@ scale = max(1.0, min(3.0, scale))
 if scale != 1.0:
     os.environ["QT_SCALE_FACTOR"] = str(scale)
 
+# Prefer XWayland on Wayland sessions: Qt 5's Wayland plugin can't drag a
+# floating panel back into the main window (see classes/qt_platform.py).
+# Must happen before QApplication is constructed, which is when Qt reads this.
+try:
+    from classes.qt_platform import select_qt_platform
+
+    if select_qt_platform(os.environ):
+        logger.info("Wayland session detected: using the xcb (XWayland) Qt platform "
+                    "so dock panels stay draggable. Set QT_QPA_PLATFORM to override.")
+except Exception as exc:
+    logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
