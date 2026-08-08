@@ -8,7 +8,7 @@
  @section LICENSE
 
  Copyright (c) 2008-2026 Zenvi.
- This file is part of Zenvi Video Editor (https://zenvi.org).
+ This file is part of Zenvi Video Editor (https://zenvi.pro).
 
  Zenvi is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

@@ -1146,7 +1146,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         win.exec_()
 
     def actionHelpContents_trigger(self, checked=True):
-        url = "https://zenvi.org/docs/"
+        url = "https://zenvi.pro/docs"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1155,7 +1155,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionReportBug_trigger(self, checked=True):
-        url = "https://zenvi.org/support/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Bug%20Report"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1164,7 +1164,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionAskQuestion_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Question"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1173,7 +1173,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionDiscord_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "https://zenvi.pro/docs"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1182,7 +1182,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionTranslate_trigger(self, checked=True):
-        url = "https://zenvi.org/contribute/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Translations"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1191,7 +1191,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionDonate_trigger(self, checked=True):
-        url = "https://zenvi.org/donate/"
+        url = "https://zenvi.pro/pricing"
         try:
             webbrowser.open(url, new=1)
         except Exception:
