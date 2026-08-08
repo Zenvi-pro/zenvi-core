@@ -1,11 +1,11 @@
 # Graph Report - zenvi-core  (2026-08-07)
 
 ## Corpus Check
-- 233 files · ~1,200,918 words
+- 233 files · ~1,200,892 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 4937 nodes · 9637 edges · 283 communities (245 shown, 38 thin omitted)
+- 4937 nodes · 9637 edges · 284 communities (247 shown, 37 thin omitted)
 - Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 1629 edges (avg confidence: 0.69)
 - Token cost: 0 input · 0 output
 
@@ -258,6 +258,7 @@
 - Timeline App
 - Timeline 6
 - Timeline 7
+- Timeline Media 14
 - Timeline Media 15
 - Timeline Media 16
 - Timeline Media 17
@@ -291,8 +292,6 @@
 10. `KeyframePanelMixin` - 53 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `te()` --indirect_call--> `e()`  [INFERRED]
-  src/timeline/media/js/angular.min.js → src/timeline/media/js/ui-bootstrap-tpls-1.3.3.min.js
 - `winnow()` --indirect_call--> `i()`  [INFERRED]
   src/timeline/media/js/jquery.js → src/timeline/media/js/ui-bootstrap-tpls-1.3.3.min.js
 - `buildOption()` --indirect_call--> `t()`  [INFERRED]
@@ -301,6 +300,8 @@
   src/chat_ui/chat.js → src/timeline/media/js/ui-bootstrap-tpls-1.3.3.min.js
 - `_score_clip_against_query()` --calls--> `get_source_window()`  [INFERRED]
   src/classes/clip_resolver.py → src/classes/ai_metadata_utils.py
+- `build_timeline_clip_context()` --calls--> `get_source_window()`  [INFERRED]
+  src/classes/timeline_clip_context.py → src/classes/ai_metadata_utils.py
 
 ## Import Cycles
 - None detected.
@@ -310,7 +311,7 @@
 - **Plan Mode Chat to Execute Flow** — src_chat_ui_index_plan_mode, src_plan_ui_plan_plan_ui, src_plan_ui_plan_execute_plan [EXTRACTED 1.00]
 - **Timeline Editing Surface** — src_timeline_index_clip_directive, src_timeline_index_track_directive, src_timeline_index_transition_directive, src_timeline_index_playhead_directive, src_timeline_index_keyframe_directive [EXTRACTED 1.00]
 
-## Communities (283 total, 38 thin omitted)
+## Communities (284 total, 37 thin omitted)
 
 ### Community 0 - "Windows Views"
 Cohesion: 0.04
@@ -326,7 +327,7 @@ Nodes (39): QMainWindow, MainWindow, Preview the selected media file, Enable / D
 
 ### Community 3 - "Timeline Media"
 Cohesion: 0.04
-Nodes (80): Fa(), Aa(), ad(), Af(), ag(), Bf(), Ca(), cb() (+72 more)
+Nodes (88): Fa(), Aa(), ad(), Af(), ag(), Bf(), Ca(), cb() (+80 more)
 
 ### Community 4 - "Windows Main Window 2"
 Cohesion: 0.03
@@ -381,8 +382,8 @@ Cohesion: 0.09
 Nodes (44): _candidate_from_context(), _check_ambiguity(), ClipCandidate, _enumerate_timeline_clips(), _fmt_position_mmss(), _format_candidates_error(), _metadata_corpus(), _normalize_text() (+36 more)
 
 ### Community 17 - "Timeline Media 3"
-Cohesion: 0.10
-Nodes (32): ab(), B(), bb(), $d(), Eb(), $f(), fa(), Ff() (+24 more)
+Cohesion: 0.15
+Nodes (24): ab(), B(), bb(), Eb(), ed(), $f(), fa(), Ff() (+16 more)
 
 ### Community 18 - "Windows Title Editor"
 Cohesion: 0.20
@@ -446,7 +447,7 @@ Nodes (23): get_icon(), Get either the current theme icon or fallback to default
 
 ### Community 33 - "Timeline Media 6"
 Cohesion: 0.08
-Nodes (18): $a(), ac(), cd(), Da(), Ec(), Ef(), Gd(), Hf() (+10 more)
+Nodes (18): $a(), ac(), cd(), $d(), Da(), Ec(), Ef(), Gd() (+10 more)
 
 ### Community 34 - "Windows Ai Chat Ui 2"
 Cohesion: 0.07
@@ -505,8 +506,8 @@ Cohesion: 0.11
 Nodes (27): delete_clips_on_track(), _file_is_analyzed(), get_timeline_state(), list_clips(), list_layers(), Return a structured snapshot of the current timeline: tracks, clips with positio, Delete all clips on a UI track (Track 1..N bottom=1) or storage layer_number., build_track_stack() (+19 more)
 
 ### Community 50 - "Timeline Media 7"
-Cohesion: 0.31
-Nodes (29): $c(), ob(), ue(), a(), b(), C(), d(), e() (+21 more)
+Cohesion: 0.26
+Nodes (32): $c(), H(), ka(), Md(), te(), ue(), a(), b() (+24 more)
 
 ### Community 51 - "Windows Login Window"
 Cohesion: 0.12
@@ -561,8 +562,8 @@ Cohesion: 0.20
 Nodes (22): cancelKeyframePreviewRender(), clearKeyframePreviewTransform(), ensureKeyframePreviewContainer(), getMaxClipEndSeconds(), getMaxDurationSeconds(), getMaxResizeWidthPx(), getReaderDurationSeconds(), getRetimedDurationSeconds() (+14 more)
 
 ### Community 64 - "Timeline Media 8"
-Cohesion: 0.20
-Nodes (17): Ba(), db(), Df(), g(), Ia(), Jc(), jg(), Kc() (+9 more)
+Cohesion: 0.24
+Nodes (14): Ba(), db(), Df(), g(), Ia(), jg(), Mc(), nc() (+6 more)
 
 ### Community 65 - "Windows Export"
 Cohesion: 0.11
@@ -646,7 +647,7 @@ Nodes (8): AgentTraceDialog, Any, QDialog, QThread, Agent Trace dialog — inspe
 
 ### Community 86 - "Windows Views 28"
 Cohesion: 0.12
-Nodes (7): Callback for resize event timer (to delay the resize event, and prevent lots of, Emit a pending zoom factor change after gesture bursts settle., Persist the current zoom factor and broadcast timeline signals., Set the current zoom factor, Consume the current scroll bar positions from the webview timeline, Apply an intermediate zoom value during animation (no emit)., Persist final zoom and sync slider after animation.
+Nodes (6): Callback for resize event timer (to delay the resize event, and prevent lots of, Set the current zoom factor, Consume the current scroll bar positions from the webview timeline, Apply an intermediate zoom value during animation (no emit)., Apply CSS theme to this widget., Clear stale visual overrides/caches after batch timeline mutations (e.g. slice).
 
 ### Community 87 - "Windows Ai Chat Ui 4"
 Cohesion: 0.16
@@ -749,7 +750,7 @@ Cohesion: 0.16
 Nodes (7): BaseTheme, Set content margins on dock widgets with an optional objectName filter., Iterate through toolbar button settings, and apply them to each button., Toggle the play icon from play to pause and back, Create Dynamic High DPI icons, Return a QColor from a stylesheet class and property., Return an int from a stylesheet class and property.
 
 ### Community 112 - "Windows Models 4"
-Cohesion: 0.18
+Cohesion: 0.16
 Nodes (9): QLabel, QPushButton, Return a flat section-header label that replaces QGroupBox titles., _section_header(), QFrame, QWidget, Zenvi logo + wordmark for login pages., RegionButton (+1 more)
 
 ### Community 113 - "Windows Preferences 2"
@@ -793,8 +794,8 @@ Cohesion: 0.22
 Nodes (5): Append an UpdateAction to the pending queue and schedule processing., Presents the same interface as UpdateManager. When from_agent is True,     inse, UpdatesRouter, A data structure representing a single update manager action,     including any, UpdateAction
 
 ### Community 123 - "Timeline Media 10"
-Cohesion: 0.13
-Nodes (17): boxModelAdjustment(), buildFragment(), buildParams(), cloneCopyEvent(), curCSS(), disableScript(), DOMEval(), domManip() (+9 more)
+Cohesion: 0.16
+Nodes (14): buildFragment(), buildParams(), cloneCopyEvent(), disableScript(), DOMEval(), domManip(), getAll(), isArrayLike() (+6 more)
 
 ### Community 124 - "Windows Views 35"
 Cohesion: 0.15
@@ -937,7 +938,7 @@ Cohesion: 0.27
 Nodes (4): HumanityDarkTheme, @file  @brief This file contains a theme's colors and UI dimensions  @author Jon, Retro, Apply a new UI theme. Expects a ThemeName ENUM as the arg.
 
 ### Community 160 - "Windows Main Window 8"
-Cohesion: 0.18
+Cohesion: 0.19
 Nodes (4): Rect select button clicked, QDialog, Update the playhead position, SelectRegion
 
 ### Community 161 - "Windows Models 5"
@@ -1084,6 +1085,10 @@ Nodes (3): Load JSON settings from a file, Convert all paths to absolute using r
 Cohesion: 0.29
 Nodes (4): QFrame, Fetch /chat/history/{session_id} for all open sessions., Build classic Qt widget chat UI., Populate model combo from the backend API.
 
+### Community 198 - "Windows Models 10"
+Cohesion: 0.33
+Nodes (3): Emit a pending zoom factor change after gesture bursts settle., Persist the current zoom factor and broadcast timeline signals., Persist final zoom and sync slider after animation.
+
 ### Community 199 - "Windows Models 11"
 Cohesion: 0.18
 Nodes (5): FileFilterProxyModel, QSortFilterProxyModel, Proxy class used for sorting and filtering model data, Get a list of file IDs for all selected files, Get a list of File objects representing the current selection
@@ -1192,6 +1197,10 @@ Nodes (3): EmojiStandardItemModel, QStandardItemModel, @file  @brief This file c
 Cohesion: 0.13
 Nodes (7): Callback for nudging clips/transitions by a specified number of frames., Callback for alignment context menus, Callback for reversing a transition, Delete an invalid timeline item (clip or transitions) if the basic            d, Scale the X values of keyframe points, Reverse keyframe positions, swapping handles, Create an updateAction and send it to the update manager.         Transaction I
 
+### Community 246 - "Timeline Media 14"
+Cohesion: 0.67
+Nodes (3): boxModelAdjustment(), curCSS(), getWidthOrHeight()
+
 ### Community 247 - "Timeline Media 15"
 Cohesion: 0.67
 Nodes (3): camelCase(), fcamelCase(), propFilter()
@@ -1211,7 +1220,7 @@ Nodes (5): Re-index via direct TwelveLabs presigned upload., Thread-safe session
 ## Knowledge Gaps
 - **23 isolated node(s):** `App`, `chat.js`, `chat.css`, `tailwind.min.css`, `Agent Mode` (+18 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **38 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **37 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
