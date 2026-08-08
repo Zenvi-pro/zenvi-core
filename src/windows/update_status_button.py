@@ -154,10 +154,16 @@ class UpdateStatusButton(QToolButton):
 
         self._set_state(STATE_DOWNLOADING, text, tooltip, COLOR_ACCENT)
 
-    def set_ready(self, version):
-        """The update is downloaded, verified and staged for the next launch."""
+    def set_ready(self, version, size=0):
+        """The update is downloaded, verified and staged for the next launch.
+
+        *size* comes from the update manifest, so a session that finds an
+        already-staged update can still report how large it is."""
         self.version = version or self.version
         self.percent = 100
+        if size:
+            self.total = size
+            self.downloaded = size
         self._set_state(
             STATE_READY,
             self._tr("Update Ready"),
