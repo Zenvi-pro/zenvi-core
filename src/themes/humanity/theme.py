@@ -59,6 +59,31 @@ QWidget#videoPreview {
     background-color: #191919;
 }
 
+/* Qt-drawn dock title bar (used by floating panels, so they stay dockable) */
+QWidget#dock-title-bar {
+    background-color: #2a2a2a;
+    border-bottom: 1px solid #191919;
+}
+QLabel#dock-title-label {
+    color: #ffffff;
+    font-weight: 500;
+    padding: 0 6px;
+}
+QPushButton#dock-float-button,
+QPushButton#dock-close-button {
+    background: transparent;
+    border: none;
+    color: #cccccc;
+}
+QPushButton#dock-float-button:hover {
+    background-color: #404040;
+    color: #ffffff;
+}
+QPushButton#dock-close-button:hover {
+    background-color: #c0392b;
+    color: #ffffff;
+}
+
 /* Zenvi Assistant chat: match Humanity dark #191919, #ffffff, #2a82da */
 QDockWidget#AIChatWindow QWidget#AIChatWindowContents {
     background-color: #191919;
