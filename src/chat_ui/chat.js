@@ -602,6 +602,10 @@
         var title = data.title || 'Running tool';
         var cmd = data.cmd || '';
         var argsDetail = data.args_detail || '';
+        var toolName = (data.tool_name || '').toLowerCase();
+        var isMg = /motion-graphics|hyperframes|publish motion|lint draft|product demo/.test(
+            (title + ' ' + toolName).toLowerCase()
+        );
 
         // A tool is starting — dismiss the live reasoning placeholder.
         clearReasoningStep();
@@ -614,6 +618,7 @@
         if (existing && existing.el && existing.el.parentNode) {
             existing.el.classList.remove('done', 'error');
             existing.el.classList.add('running');
+            if (isMg) existing.el.classList.add('chat-tool-block--mg');
             var exIcon = existing.header.querySelector('.chat-tool-icon');
             if (exIcon) exIcon.innerHTML = ACTIVITY_SPINNER_SVG;
             if (title) {
@@ -633,6 +638,7 @@
 
         var el = document.createElement('div');
         el.className = 'chat-tool-block running expanded chat-message-enter';
+        if (isMg) el.classList.add('chat-tool-block--mg');
         el.setAttribute('data-call-id', callId);
         staggerEntrance(el);
 

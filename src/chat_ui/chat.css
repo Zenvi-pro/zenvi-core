@@ -491,6 +491,14 @@
     color: #ef4444;
 }
 
+.chat-tool-block--mg.running .chat-tool-icon svg {
+    color: #38bdf8;
+}
+
+.chat-tool-block--mg .chat-tool-title {
+    letter-spacing: 0.01em;
+}
+
 .chat-tool-title {
     font-size: 11px;
     font-weight: 500;

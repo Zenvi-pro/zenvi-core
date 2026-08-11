@@ -314,7 +314,7 @@ def test_download_motion_graphics_preserves_webm_ext():
 
     with patch("urllib.request.urlopen", return_value=_Resp()):
         path, size = th._download_motion_graphics_file(
-            "https://x.supabase.co/storage/v1/object/public/product_demo/motion/j1/output.webm"
+            "https://x.supabase.co/storage/v1/object/public/motion/clips/j1/output.webm"
         )
     assert path.endswith(".webm")
     assert size > 0

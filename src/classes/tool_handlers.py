@@ -5444,14 +5444,92 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) -> str:
-    """Propose safe timeline windows for MG overlays (geometry only — no copy/block picks).
+def _overlay_index_boosts(contexts) -> list:
+    """Optional TwelveLabs search boosts mapped onto timeline times.
 
-    Returns JSON with windows[{t, score, avoid, prefer, scene_label, track_hint, confidence}]
-    spanning open→end. Agent invents short titles + catalog queries separately.
+    Falls back to [] when indexing is unavailable (lexical scoring still applies).
+    """
+    boosts = []
+    try:
+        from classes.api_client import get_backend_client
+        from classes.project_tl_index import (
+            collect_project_twelvelabs_index,
+            map_search_hit_to_file,
+        )
+        from classes.mg_placement import AVOID_QUERY, PREFER_QUERY
+
+        info = collect_project_twelvelabs_index()
+        index_id = str((info or {}).get("index_id") or "").strip()
+        if not index_id:
+            return []
+        client = get_backend_client()
+        if not client.is_indexing_configured():
+            return []
+        video_map = (info or {}).get("video_map") or {}
+        queries = (
+            (AVOID_QUERY, -3, True, False),
+            (PREFER_QUERY, 3, False, True),
+        )
+        by_file = {}
+        for ctx in contexts or []:
+            fid = str(getattr(ctx, "file_id", "") or "")
+            pfid = str(getattr(ctx, "parent_file_id", "") or "")
+            for key in {fid, pfid}:
+                if key:
+                    by_file.setdefault(key, []).append(ctx)
+
+        for query, delta, is_avoid, is_prefer in queries:
+            resp = client.search(query, top_k=12, index_id=index_id, page_limit=24)
+            if resp.get("error"):
+                continue
+            for r in resp.get("results") or []:
+                if not isinstance(r, dict):
+                    continue
+                fid, _fname = map_search_hit_to_file(r, video_map)
+                fid = str(fid or "").strip()
+                if not fid or fid not in by_file:
+                    continue
+                try:
+                    hit_start = float(r.get("start") or 0)
+                except (TypeError, ValueError):
+                    continue
+                for ctx in by_file[fid]:
+                    pos = float(getattr(ctx, "timeline_position", 0) or 0)
+                    end = float(getattr(ctx, "timeline_end", pos + 1) or (pos + 1))
+                    src_start = float(getattr(ctx, "source_start", 0) or 0)
+                    clip_dur = max(0.1, end - pos)
+                    local = hit_start - src_start
+                    if 0 <= local <= clip_dur:
+                        boosts.append(
+                            {
+                                "t": pos + local,
+                                "score_delta": delta,
+                                "avoid": is_avoid,
+                                "prefer": is_prefer,
+                            }
+                        )
+    except Exception as exc:
+        log.debug("propose_overlay_windows: index boost skipped: %s", exc)
+    return boosts
+
+
+def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) -> str:
+    """Propose safe timeline windows for MG overlays/plates.
+
+    Uses scene metadata + lexical/embedding-index scoring. Returns JSON with
+    windows[{t, score, avoid, prefer, scene_label, track_hint, confidence,
+    suggest_transparent, layout_region}].
+
+    Agent must: bake layout_region into session/draft.html; publish with matching
+    transparent flag; place via place_motion_graphic_tool (overlay|gap|cut_in).
     """
     import json
-    import re
+
+    from classes.mg_placement import (
+        apply_embedding_time_boosts,
+        layout_region_for,
+        score_scene_blob,
+    )
 
     try:
         n = int(float(str(beat_count or "4").strip() or "4"))
@@ -5480,27 +5558,6 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
     except Exception:
         pass
 
-    AVOID_RE = re.compile(
-        r"\b(close[- ]?up|closeup|face|faces|talking[- ]?head|portrait|hero action|"
-        r"fight|impact|explosion|interview|dialogue)\b",
-        re.I,
-    )
-    PREFER_RE = re.compile(
-        r"\b(wide|establishing|b[- ]?roll|landscape|exterior|insert|cutaway|empty|"
-        r"drone|aerial|crowd wide|skyline|cityscape)\b",
-        re.I,
-    )
-
-    def _score_blob(blob: str) -> tuple:
-        avoid = bool(AVOID_RE.search(blob or ""))
-        prefer = bool(PREFER_RE.search(blob or ""))
-        score = 0
-        if prefer:
-            score += 3
-        if avoid:
-            score -= 4
-        return score, avoid, prefer
-
     segments = []
     windows = []
     timeline_end = 0.0
@@ -5528,7 +5585,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                     local = float(ch_start) - src_start
                     if 0 <= local <= clip_dur:
                         t = pos + local
-                        sc, avoid, prefer = _score_blob(
+                        sc, avoid, prefer = score_scene_blob(
                             f"{ch.get('title') or ''} {ch.get('summary') or ''}"
                         )
                         windows.append(
@@ -5555,7 +5612,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                     local = float(st) - src_start
                     if 0 <= local <= clip_dur:
                         t = pos + local
-                        sc, avoid, prefer = _score_blob(desc)
+                        sc, avoid, prefer = score_scene_blob(desc)
                         windows.append(
                             {
                                 "t": t,
@@ -5569,7 +5626,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                 pass
 
         blob = " ".join(text_bits)
-        sc, avoid, prefer = _score_blob(blob)
+        sc, avoid, prefer = score_scene_blob(blob)
         segments.append(
             {
                 "position": pos,
@@ -5590,6 +5647,9 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                     "label": (ctx.title or blob)[:80],
                 }
             )
+
+    # Index / embedding search boosts (best-effort)
+    apply_embedding_time_boosts(windows, _overlay_index_boosts(contexts))
 
     segments.sort(key=lambda s: s["position"])
     gaps = []
@@ -5634,13 +5694,19 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                     if w.get("prefer") or w["score"] >= 2
                     else ("low" if w.get("avoid") else "medium")
                 )
-                return t, w.get("label") or "", conf, bool(w.get("avoid")), bool(w.get("prefer")), w["score"]
+                return (
+                    t,
+                    w.get("label") or "",
+                    conf,
+                    bool(w.get("avoid")),
+                    bool(w.get("prefer")),
+                    int(w["score"]),
+                )
         return target, "", "medium", False, False, 0
 
     used_positions = []
     out_windows = []
     for i in range(n):
-        # Mid beat may use a gap for opaque standalone if available
         use_gap = (not prefer_tr) or (i == max(1, n // 2) and gaps)
         pos = None
         scene_label = ""
@@ -5649,6 +5715,7 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
         prefer = False
         score = 0
         track_hint = overlay_layer
+        is_gap = False
         if use_gap and gaps:
             for g in gaps:
                 g = max(0.0, min(timeline_end, float(g)))
@@ -5657,12 +5724,19 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                     scene_label = "gap — opaque plate candidate"
                     conf = "high"
                     track_hint = mid_layer
+                    is_gap = True
+                    prefer = True
                     break
         if pos is None:
             pos, scene_label, conf, avoid, prefer, score = _snap(anchors[i], used_positions)
             track_hint = overlay_layer
+            is_gap = False
         pos = round(max(0.0, min(timeline_end, float(pos))), 2)
         used_positions.append(pos)
+        region = layout_region_for(
+            avoid=avoid, prefer=prefer, is_gap=is_gap, score=score
+        )
+        suggest_tr = bool(prefer_tr and track_hint == overlay_layer and not is_gap)
         out_windows.append(
             {
                 "t": pos,
@@ -5672,7 +5746,11 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
                 "scene_label": scene_label[:80],
                 "track_hint": int(track_hint),
                 "confidence": conf,
-                "suggest_transparent": bool(prefer_tr and track_hint == overlay_layer),
+                "suggest_transparent": suggest_tr,
+                "layout_region": region,
+                "place_mode": (
+                    "gap" if is_gap else ("overlay" if suggest_tr else "cut_in")
+                ),
             }
         )
 
@@ -5681,15 +5759,190 @@ def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) ->
         "clip_count": len(segments),
         "windows": out_windows,
         "guidance": (
-            "Timing only — invent SHORT on-screen titles and role-sized block_query yourself. "
-            "Never put the user brief into title. "
-            "search_motion_blocks_tool → sandbox_compose_motion_tool → "
-            "motion_graphics_package(beats_json=[...]). "
-            "Transparent overlays use higher track_hint; opaque only at gap windows. "
-            "Vary block_id across beats."
+            "For each beat: decide transparent vs opaque first. "
+            "layout_region → bake into session/draft.html "
+            "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
+            "mid_plate = opaque plate). "
+            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
+            "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
+            "plates over hero footage with add_clip on the top overlay track."
         ),
     }
     return json.dumps(payload, indent=2)
+
+
+def place_motion_graphic(
+    file_id="",
+    position_seconds="",
+    duration_seconds="",
+    mode="overlay",
+    track="",
+    layout_region="",
+    **_kw,
+) -> str:
+    """Place a HyperFrames render with overlay/gap/cut_in enforcement.
+
+    mode=overlay → transparent file on a HIGH layer (refuses opaque).
+    mode=gap → opaque only when primary track is clear at [t,t+dur).
+    mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
+    """
+    from classes.mg_placement import (
+        file_looks_transparent,
+        primary_track_overlaps,
+        ripple_positions,
+    )
+    from classes.query import Clip, File
+    from classes.track_display import (
+        format_track_label_for_llm,
+        normalize_track_or_layer_arg,
+    )
+
+    try:
+        fid = str(file_id or "").strip()
+        if not fid:
+            return "Error: file_id is required for place_motion_graphic_tool"
+        f = File.get(id=fid)
+        if not f:
+            return f"Error: File not found for id={fid}."
+        file_data = dict(f.data or {})
+        is_transparent = file_looks_transparent(file_data)
+        mode_s = str(mode or "overlay").strip().lower() or "overlay"
+        if mode_s not in ("overlay", "gap", "cut_in"):
+            return "Error: mode must be overlay|gap|cut_in"
+
+        try:
+            t = float(str(position_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            return "Error: position_seconds must be a number"
+        t = max(0.0, t)
+        try:
+            dur = float(str(duration_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0:
+            try:
+                dur = float(file_data.get("duration") or 0) or float(
+                    (file_data.get("reader") or {}).get("duration") or 0
+                )
+            except (TypeError, ValueError):
+                dur = 3.0
+        dur = max(0.5, min(dur, 60.0))
+
+        app = _get_app()
+        layers = app.project.get("layers") or []
+        nums = sorted(
+            int(L.get("number", 0))
+            for L in layers
+            if isinstance(L, dict) and L.get("number") is not None
+        )
+        if not nums:
+            nums = [1000000, 2000000, 3000000]
+        primary_layer = nums[0]
+        mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
+        overlay_layer = nums[-1]
+
+        if str(track or "").strip():
+            resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
+            if err:
+                return err
+            track_num = int(resolved)
+        elif mode_s == "overlay":
+            track_num = int(overlay_layer)
+        elif mode_s == "gap":
+            track_num = int(mid_layer)
+        else:
+            track_num = int(primary_layer)
+
+        clips_raw = [
+            dict(c.data or {})
+            for c in Clip.filter()
+            if isinstance(getattr(c, "data", None), dict)
+        ]
+
+        if mode_s == "overlay":
+            if not is_transparent:
+                return (
+                    "Error: mode=overlay requires a transparent HyperFrames import "
+                    "(ai_metadata.transparent / transparent_overlay tag / webm). "
+                    "Use mode=gap or mode=cut_in for opaque plates — never stack opaque "
+                    "over hero footage."
+                )
+            if track_num < mid_layer:
+                track_num = int(overlay_layer)
+        else:
+            # gap / cut_in → opaque path
+            if is_transparent:
+                return (
+                    "Error: mode=%s is for opaque plates. Transparent overlays must use "
+                    "mode=overlay on a high track." % mode_s
+                )
+            if mode_s == "gap":
+                if primary_track_overlaps(
+                    clips_raw, layer=int(primary_layer), t0=t, t1=t + dur
+                ):
+                    return (
+                        "Error: gap mode refused — primary track has footage overlapping "
+                        f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
+                        "pick a true gap from propose_overlay_windows_tool."
+                    )
+
+        region = str(layout_region or "").strip()
+
+        def _ripple_and_stamp():
+            if mode_s == "cut_in":
+                shifts = ripple_positions(
+                    clips_raw, layer=int(primary_layer), t=t, delta=dur
+                )
+                for cid, new_pos in shifts:
+                    app.updates.update(
+                        ["clips", {"id": cid}],
+                        {"position": float(new_pos)},
+                    )
+            try:
+                ai = dict(file_data.get("ai_metadata") or {})
+                ai["mg_placement"] = {
+                    "mode": mode_s,
+                    "layout_region": region,
+                    "transparent": bool(is_transparent),
+                    "position_seconds": t,
+                    "duration_seconds": dur,
+                    "track": track_num,
+                }
+                if not is_transparent:
+                    ai["transparent"] = False
+                f.data["ai_metadata"] = ai
+                if hasattr(f, "save"):
+                    f.save()
+                else:
+                    app.updates.update(
+                        ["files", {"id": fid}],
+                        {"ai_metadata": ai},
+                    )
+            except Exception as stamp_exc:
+                log.debug("mg_placement stamp failed: %s", stamp_exc)
+            return True
+
+        _run_on_main_thread(_ripple_and_stamp)
+        # add_clip marshals Qt mutations itself
+        result = add_clip_to_timeline(
+            file_id=fid,
+            position_seconds=str(t),
+            track=str(track_num),
+            duration_seconds=str(dur),
+            chat_session_id=_kw.get("chat_session_id", ""),
+        )
+
+        track_lbl = format_track_label_for_llm(int(track_num), layers)
+        if isinstance(result, str) and result.startswith("Error"):
+            return result
+        return (
+            f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
+            f"transparent={is_transparent} track={track_lbl}]. "
+            "NEXT: get_timeline_state_tool once to verify, then continue next beat."
+        )
+    except Exception as e:
+        log.error("place_motion_graphic: %s", e, exc_info=True)
+        return f"Error: {e}"
 
 
 def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
@@ -6018,6 +6271,7 @@ AGENT_TOOL_HANDLERS = {
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
     "propose_overlay_windows_tool": propose_overlay_windows,
+    "place_motion_graphic_tool": place_motion_graphic,
     # Remotion / HyperFrames
     "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
     "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
@@ -6080,6 +6334,7 @@ TOOL_DISPLAY_LABELS = {
     "slice_clip_at_best_match_tool": "Slice clip at best match",
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
+    "place_motion_graphic_tool": "Place motion graphic",
     "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
     "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
@@ -6101,11 +6356,26 @@ assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
 )
 
+# Server-side / subagent names that never hit AGENT_TOOL_HANDLERS but still
+# appear as tool_started titles over the WebSocket.
+_EXTRA_TOOL_DISPLAY_LABELS = {
+    "motion-graphics-agent": "Motion graphics",
+    "publish_session_draft_tool": "Publish motion graphic",
+    "lint_session_draft_tool": "Lint draft",
+    "product_demo": "Product demo",
+    "plan_product_demo_tool": "Plan product demo",
+    "render_product_demo_tool": "Render product demo",
+    "check_motion_graphics_health_tool": "Motion graphics health",
+    "get_motion_graphics_job_status_tool": "Motion job status",
+}
+
 
 def humanize_tool_name(tool_name: str) -> str:
     """Return a short human-readable title for a tool name."""
     if tool_name in TOOL_DISPLAY_LABELS:
         return TOOL_DISPLAY_LABELS[tool_name]
+    if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
@@ -6167,6 +6437,7 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         if tool_name not in (
             "split_file_add_clip_tool",
             "add_clip_to_timeline_tool",
+            "place_motion_graphic_tool",
             "import_stock_media_tool",
         ):
             tool_args = dict(tool_args)

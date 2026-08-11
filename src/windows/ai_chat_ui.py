@@ -556,6 +556,10 @@ class AIChatWorker(QObject):
                         bits.append(str(detail["phase"]))
                     if detail.get("title"):
                         bits.append(str(detail["title"])[:40])
+                    if detail.get("label"):
+                        bits.append(str(detail["label"])[:40])
+                    if detail.get("tool"):
+                        bits.append(str(detail["tool"])[:40])
                     if detail.get("block_id"):
                         bits.append(str(detail["block_id"]))
                     if detail.get("query") and not detail.get("block_id"):
@@ -2365,6 +2369,7 @@ class AIChatWindow(QDockWidget):
                 "title": title,
                 "cmd": cmd,
                 "args_detail": args_pretty,
+                "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
                          % json.dumps(json.dumps(payload)))
