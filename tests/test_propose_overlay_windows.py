@@ -1,4 +1,4 @@
-"""Unit tests for suggest_motion_graphics_placements (no Qt)."""
+"""Unit tests for propose_overlay_windows (no Qt)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _layers_patch():
     return patch.object(th, "_get_app")
 
 
-def test_suggest_motion_graphics_placements_json_shape():
+def test_propose_overlay_windows_no_copy_fields():
     ctx = SimpleNamespace(
         timeline_position=0.0,
         timeline_end=5.0,
@@ -70,28 +70,35 @@ def test_suggest_motion_graphics_placements_json_shape():
             {"number": 2000000},
             {"number": 3000000},
         ]
-        out = th.suggest_motion_graphics_placements(
-            brief="SHE SAW IT FIRST — trailer package",
-            beat_count="4",
-        )
+        out = th.propose_overlay_windows(beat_count="4")
 
     data = json.loads(out)
-    assert "beats" in data
-    assert len(data["beats"]) == 4
-    for beat in data["beats"]:
-        assert beat["mode"] in ("standalone", "overlay")
-        assert "position_seconds" in beat
-        assert "track_hint" in beat
-        assert "transparent" in beat
-        assert "block_query" in beat
-        assert "title_hint" in beat
-        assert beat["position_seconds"] <= data["timeline_end"] + 0.01
-    assert any(b["mode"] == "overlay" and b["transparent"] for b in data["beats"])
-    assert "chroma" in data["guidance"].lower() or "Z-order" in data["guidance"]
+    assert "windows" in data
+    assert len(data["windows"]) == 4
+    assert "title_hint" not in data
+    assert "block_query" not in data
+    assert "beats" not in data
+    for w in data["windows"]:
+        assert "t" in w
+        assert "track_hint" in w
+        assert "title_hint" not in w
+        assert "block_query" not in w
+    assert "beats_json" in data["guidance"] or "propose_overlay" in data["guidance"].lower() or "invent" in data["guidance"].lower()
 
 
-def test_suggest_continuous_footage_no_late_dump():
-    """Continuous clips with no gaps must not place beats past timeline_end."""
+def test_suggest_motion_graphics_placements_deprecated():
+    out = th.suggest_motion_graphics_placements(brief="trailer", beat_count="4")
+    assert out.startswith("Error:")
+    assert "propose_overlay_windows" in out
+
+
+def test_fetch_in_background_safe():
+    assert "fetch_motion_graphics_video_tool" in th.BACKGROUND_SAFE_TOOLS
+    assert "propose_overlay_windows_tool" in th.BACKGROUND_SAFE_TOOLS
+    assert "propose_overlay_windows_tool" in th.READ_ONLY_TOOLS
+
+
+def test_propose_continuous_footage_no_late_dump():
     ctx = SimpleNamespace(
         timeline_position=0.0,
         timeline_end=8.0,
@@ -118,24 +125,19 @@ def test_suggest_continuous_footage_no_late_dump():
 
     with _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}, {"number": 3000000}]
-        data = json.loads(
-            th.suggest_motion_graphics_placements(brief="graphics package", beat_count="4")
-        )
+        data = json.loads(th.propose_overlay_windows(beat_count="4"))
 
     end = data["timeline_end"]
     assert end == 16.0
-    for beat in data["beats"]:
-        assert beat["position_seconds"] <= end + 0.01, beat
-        assert beat["position_seconds"] >= 0.0
-    # Footage package: mostly transparent overlays
-    assert sum(1 for b in data["beats"] if b["transparent"]) >= 3
-    # Positions should span open→end (first near start, last near end)
-    positions = [b["position_seconds"] for b in data["beats"]]
+    for w in data["windows"]:
+        assert w["t"] <= end + 0.01
+        assert w["t"] >= 0.0
+    positions = [w["t"] for w in data["windows"]]
     assert min(positions) <= end * 0.35
     assert max(positions) >= end * 0.6
 
 
-def test_suggest_prefers_wide_over_face_window():
+def test_propose_prefers_wide_over_face_window():
     ctx_wide = SimpleNamespace(
         timeline_position=0.0,
         timeline_end=10.0,
@@ -159,29 +161,23 @@ def test_suggest_prefers_wide_over_face_window():
 
     with _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}, {"number": 3000000}]
-        data = json.loads(
-            th.suggest_motion_graphics_placements(brief="name plate overlays", beat_count="2")
-        )
+        data = json.loads(th.propose_overlay_windows(beat_count="2"))
 
-    overlay_pos = [b["position_seconds"] for b in data["beats"] if b["transparent"]]
-    assert overlay_pos
-    # At least one overlay should land closer to the wide window (~7s) than the face (~1s)
-    assert any(abs(p - 7.0) < abs(p - 1.0) for p in overlay_pos)
+    positions = [w["t"] for w in data["windows"]]
+    assert positions
+    assert any(abs(p - 7.0) < abs(p - 1.0) for p in positions)
 
 
-def test_suggest_empty_timeline_spaced():
+def test_propose_empty_timeline_spaced():
     fake_mod = MagicMock()
     fake_mod.enumerate_timeline_contexts.return_value = []
     sys.modules["classes.timeline_clip_context"] = fake_mod
 
     with _layers_patch() as app:
         app.return_value.project.get.return_value = [{"number": 1000000}]
-        data = json.loads(
-            th.suggest_motion_graphics_placements(brief="title package", beat_count="3")
-        )
+        data = json.loads(th.propose_overlay_windows(beat_count="3"))
 
-    assert len(data["beats"]) == 3
+    assert len(data["windows"]) == 3
     assert data["clip_count"] == 0
-    positions = [b["position_seconds"] for b in data["beats"]]
+    positions = [w["t"] for w in data["windows"]]
     assert positions == sorted(positions)
-    assert all("block_query" in b and "title_hint" in b for b in data["beats"])

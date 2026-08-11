@@ -3345,6 +3345,10 @@ def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
         log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
 
 
+# Session-scoped URL → file_id so package/hand re-fetch is idempotent.
+_MG_IMPORTED_URLS: dict = {}
+
+
 def fetch_motion_graphics_video(
     segment_urls=None,
     supabase_url="",
@@ -3364,11 +3368,30 @@ def fetch_motion_graphics_video(
     import json
     import re
 
+    global _MG_IMPORTED_URLS
+
     _GENERIC_LABELS = (
         "hyperframes motion graphic",
         "motion graphic",
         "motion",
     )
+
+    def _norm_url(u: str) -> str:
+        return (u or "").strip().split("?")[0].rstrip("/")
+
+    def _already_imported(urls: list):
+        ids = []
+        for u in urls:
+            fid = _MG_IMPORTED_URLS.get(_norm_url(u))
+            if not fid:
+                return None
+            ids.append(fid)
+        if not ids:
+            return None
+        return (
+            f"Already imported file_id={ids[0]} (file_ids: {ids}) — "
+            "place only if missing. Do NOT re-download these URLs."
+        )
 
     def _is_generic(text: str) -> bool:
         return (text or "").strip().lower() in _GENERIC_LABELS
@@ -3431,6 +3454,11 @@ def fetch_motion_graphics_video(
                 fixed.append(u)
         segment_urls = fixed
 
+    if segment_urls:
+        cached = _already_imported(segment_urls)
+        if cached:
+            return cached
+
     # ---- Multi-segment import (preferred) ----
     if segment_urls:
         # Deterministic timeline order: sort by the numeric index in segment_NN.mp4,
@@ -3483,6 +3511,7 @@ def fetch_motion_graphics_video(
                 any_transparent_ok = any_transparent_ok or bool(transparent_ok)
                 if pix_fmt:
                     last_pix_fmt = pix_fmt
+                _MG_IMPORTED_URLS[_norm_url(url)] = file_id
 
         n = len(segment_urls)
         if failures:
@@ -3507,7 +3536,7 @@ def fetch_motion_graphics_video(
         )
         return (
             f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
-            f"(file_ids: {file_ids}, total {total_mb:.1f} MB). "
+            f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
             f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
             "MUST call add_clip_to_timeline_tool for each file_id "
             "(transparent overlays: layer_number 3000000+; opaque title cards: standalone cut / mid layer)."
@@ -3529,11 +3558,16 @@ def fetch_motion_graphics_video(
             f"{generic_warn}"
         )
 
+    cached_one = _already_imported([supabase_url])
+    if cached_one:
+        return cached_one
+
     file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
         supabase_url, label=stamp_label, job_transparent=job_transparent
     )
     if err:
         return f"Error importing video: {err}{generic_warn}"
+    _MG_IMPORTED_URLS[_norm_url(supabase_url)] = file_id
     _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
     alpha_note = (
         "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
@@ -3541,8 +3575,8 @@ def fetch_motion_graphics_video(
         else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
     )
     return (
-        f"✅ HyperFrames motion graphic imported into project files (file_id: {file_id}, "
-        f"size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
+        f"✅ HyperFrames motion graphic imported into project files "
+        f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
         f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
         f"{alpha_note}\n"
         "MUST call add_clip_to_timeline_tool(file_id=...) with the placement mode above."
@@ -5410,12 +5444,11 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
-    """Suggest MG beat placements from timeline clip/scene metadata.
+def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) -> str:
+    """Propose safe timeline windows for MG overlays (geometry only — no copy/block picks).
 
-    Anchors beats across open→end of the timeline, snaps to safe scene windows,
-    and prefers transparent overlays when footage is continuous (no late dump past
-    timeline_end). Returns JSON with block_query / title hints for workflows.
+    Returns JSON with windows[{t, score, avoid, prefer, scene_label, track_hint, confidence}]
+    spanning open→end. Agent invents short titles + catalog queries separately.
     """
     import json
     import re
@@ -5425,15 +5458,14 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     except Exception:
         n = 4
     n = max(1, min(8, n))
-    brief_text = (brief or "").strip()
-    brief_l = brief_text.lower()
+    prefer_tr = str(prefer_transparent or "true").strip().lower() not in ("false", "0", "no")
 
     try:
         from classes.timeline_clip_context import enumerate_timeline_contexts
 
         contexts = enumerate_timeline_contexts() or []
     except Exception as exc:
-        log.warning("suggest_motion_graphics_placements: timeline read failed: %s", exc)
+        log.warning("propose_overlay_windows: timeline read failed: %s", exc)
         contexts = []
 
     overlay_layer = 3000000
@@ -5470,7 +5502,7 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
         return score, avoid, prefer
 
     segments = []
-    windows = []  # candidate overlay times with scores
+    windows = []
     timeline_end = 0.0
     for ctx in contexts:
         pos = float(ctx.timeline_position or 0)
@@ -5490,7 +5522,6 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
                 continue
             text_bits.append(str(ch.get("title") or ""))
             text_bits.append(str(ch.get("summary") or ""))
-            # Map chapter start into timeline when present
             ch_start = ch.get("start")
             try:
                 if ch_start is not None:
@@ -5528,7 +5559,7 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
                         windows.append(
                             {
                                 "t": t,
-                                "score": sc + 1,  # scene timestamps preferred
+                                "score": sc + 1,
                                 "avoid": avoid,
                                 "prefer": prefer,
                                 "label": desc[:80],
@@ -5543,17 +5574,11 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
             {
                 "position": pos,
                 "end": end,
-                "mid": (pos + end) / 2.0,
                 "avoid": avoid,
                 "prefer": prefer,
                 "score": sc,
-                "title": ctx.title or "",
-                "layer": int(ctx.layer or 0),
-                "file_id": ctx.file_id,
-                "blob": blob,
             }
         )
-        # Clip thirds as fallback windows
         for frac, bonus in ((0.08, 0), (0.5, 0), (0.88, 0)):
             t = pos + clip_dur * frac
             windows.append(
@@ -5567,8 +5592,6 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
             )
 
     segments.sort(key=lambda s: s["position"])
-
-    # Gaps between clips → only place for opaque standalone
     gaps = []
     if segments:
         if segments[0]["position"] > 0.4:
@@ -5576,7 +5599,6 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
         for a, b in zip(segments, segments[1:]):
             if b["position"] - a["end"] >= 0.4:
                 gaps.append((a["end"] + b["position"]) / 2.0)
-                # Boost windows near cuts
                 windows.append(
                     {
                         "t": a["end"] - 0.15,
@@ -5587,7 +5609,6 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
                     }
                 )
     else:
-        # Empty timeline — synthetic trailer length
         timeline_end = 24.0
         for t in (0.0, 6.0, 12.0, 18.0, 22.0):
             windows.append({"t": t, "score": 1, "avoid": False, "prefer": True, "label": ""})
@@ -5595,154 +5616,91 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     if timeline_end <= 0:
         timeline_end = 24.0
 
-    has_footage = bool(segments)
-    # Package-over-footage: mostly transparent overlays; opaque only if real gap
-    package_roles = []
-    for i in range(n):
-        if not has_footage:
-            # Pure title package on empty timeline
-            if i == 0 or i == n - 1:
-                package_roles.append(("opaque_title", "standalone", False, "title card"))
-            elif i == n // 2 and n > 3:
-                package_roles.append(("transition", "overlay", True, "transition FX"))
-            else:
-                package_roles.append(("transparent_overlay", "overlay", True, "lower-third name plate"))
-        else:
-            # Footage package: transparent-first
-            if i == 0:
-                package_roles.append(("transparent_overlay", "overlay", True, "lower-third open"))
-            elif i == n - 1:
-                package_roles.append(("transparent_overlay", "overlay", True, "lower-third end card"))
-            elif i == max(1, n // 2) and gaps:
-                package_roles.append(("opaque_title", "standalone", False, "kinetic title"))
-            elif i == max(1, (n * 2) // 3):
-                package_roles.append(("transition", "overlay", True, "transition FX"))
-            else:
-                package_roles.append(("transparent_overlay", "overlay", True, "callout overlay"))
-
-    # Quantile anchors open→end
     if n == 1:
         anchors = [0.0 if timeline_end < 1 else min(1.0, timeline_end * 0.1)]
     else:
         anchors = [timeline_end * (i / (n - 1)) for i in range(n)]
 
-    def _snap(target, used, prefer_overlay=True):
-        """Snap target to nearest safe window; never past timeline_end."""
+    def _snap(target, used):
         target = max(0.0, min(float(timeline_end), float(target)))
         cands = sorted(windows, key=lambda w: (abs(w["t"] - target), -w["score"]))
         for w in cands:
             t = max(0.0, min(timeline_end, float(w["t"])))
-            if w.get("avoid") and prefer_overlay and w["score"] < 0:
+            if prefer_tr and w.get("avoid") and w["score"] < 0:
                 continue
             if all(abs(t - u) >= 1.2 for u in used):
-                conf = "high" if w.get("prefer") or w["score"] >= 2 else (
-                    "low" if w.get("avoid") else "medium"
+                conf = (
+                    "high"
+                    if w.get("prefer") or w["score"] >= 2
+                    else ("low" if w.get("avoid") else "medium")
                 )
-                return t, w.get("label") or "", conf, w["score"]
-        # Quantile itself if nothing else (still clamped)
-        return target, "", "medium", 0
-
-    def _pick_gap(used):
-        for g in gaps:
-            g = max(0.0, min(timeline_end, float(g)))
-            if all(abs(g - u) >= 1.0 for u in used):
-                return g, "insert at cut/gap — opaque card not stacked over footage"
-        return None, ""
-
-    # Brief → title hints
-    brief_lines = [ln.strip() for ln in brief_text.splitlines() if ln.strip()]
-    brief_title = (brief_lines[0] if brief_lines else brief_text)[:80]
-
-    ROLE_QUERIES = {
-        "opaque_title": "kinetic title card",
-        "transparent_overlay": "lower-third name plate overlay",
-        "transition": "transition light-leak glitch",
-    }
+                return t, w.get("label") or "", conf, bool(w.get("avoid")), bool(w.get("prefer")), w["score"]
+        return target, "", "medium", False, False, 0
 
     used_positions = []
-    beats = []
-    for i, (role, mode, transparent, block_q) in enumerate(package_roles):
-        # Brief nudges
-        if "lower" in brief_l or "overlay" in brief_l or "name plate" in brief_l:
-            if role == "opaque_title" and has_footage and not gaps:
-                role, mode, transparent = "transparent_overlay", "overlay", True
-                block_q = "lower-third name plate overlay"
-
-        if mode == "standalone" and not transparent:
-            gap_pos, gap_reason = _pick_gap(used_positions)
-            if gap_pos is not None:
-                pos, reason = gap_pos, gap_reason
-                conf = "high"
-                near_label = ""
-                track_hint = mid_layer
-            else:
-                # Convert to transparent overlay — never dump past timeline_end
-                role, mode, transparent = "transparent_overlay", "overlay", True
-                block_q = "lower-third name plate overlay"
-                pos, near_label, conf, _sc = _snap(anchors[i], used_positions, prefer_overlay=True)
-                reason = "no gap for opaque card — transparent overlay on safe window"
-                track_hint = overlay_layer
-        else:
-            pos, near_label, conf, _sc = _snap(anchors[i], used_positions, prefer_overlay=True)
-            if role == "transition":
-                reason = "transition near open/mid/end anchor (snapped to safe window)"
-            else:
-                reason = "transparent overlay snapped to safe scene/clip window"
+    out_windows = []
+    for i in range(n):
+        # Mid beat may use a gap for opaque standalone if available
+        use_gap = (not prefer_tr) or (i == max(1, n // 2) and gaps)
+        pos = None
+        scene_label = ""
+        conf = "medium"
+        avoid = False
+        prefer = False
+        score = 0
+        track_hint = overlay_layer
+        if use_gap and gaps:
+            for g in gaps:
+                g = max(0.0, min(timeline_end, float(g)))
+                if all(abs(g - u) >= 1.0 for u in used_positions):
+                    pos = g
+                    scene_label = "gap — opaque plate candidate"
+                    conf = "high"
+                    track_hint = mid_layer
+                    break
+        if pos is None:
+            pos, scene_label, conf, avoid, prefer, score = _snap(anchors[i], used_positions)
             track_hint = overlay_layer
-
-        # Clamp hard
         pos = round(max(0.0, min(timeline_end, float(pos))), 2)
         used_positions.append(pos)
-
-        title_hint = brief_title
-        if near_label and len(near_label) > 3 and near_label.lower() not in ("near cut",):
-            # Prefer short scene label for lower-thirds when brief is long
-            if role == "transparent_overlay" and len(near_label) <= 40:
-                title_hint = near_label[:80]
-        subtitle_hint = ""
-        if role == "transparent_overlay":
-            subtitle_hint = " "  # keep key present; agent/workflow may fill
-            subtitle_hint = subtitle_hint.strip()
-            if "—" in brief_title:
-                parts = [p.strip() for p in brief_title.split("—", 1)]
-                if len(parts) == 2:
-                    title_hint, subtitle_hint = parts[0][:80], parts[1][:80]
-
-        duration_hint = 2.0 if role == "transition" else (5.0 if transparent else 6.0)
-        beats.append(
+        out_windows.append(
             {
-                "role": role,
-                "mode": mode,
-                "transparent": bool(transparent),
-                "position_seconds": pos,
+                "t": pos,
+                "score": score,
+                "avoid": avoid,
+                "prefer": prefer,
+                "scene_label": scene_label[:80],
                 "track_hint": int(track_hint),
-                "duration_hint_s": duration_hint,
-                "block_query": block_q or ROLE_QUERIES.get(role, "motion graphic"),
-                "title_hint": (title_hint or "TITLE")[:80],
-                "subtitle_hint": (subtitle_hint or "")[:80],
-                "reason": reason,
                 "confidence": conf,
-                "avoid_note": (
-                    "Higher layer_number is Z-order (drawn on top), NOT chroma/green-screen. "
-                    "Transparent WebM overlays go above footage; opaque plates only as standalone cuts."
-                ),
+                "suggest_transparent": bool(prefer_tr and track_hint == overlay_layer),
             }
         )
 
     payload = {
-        "brief": brief_text[:240],
         "timeline_end": round(timeline_end, 2),
         "clip_count": len(segments),
-        "beats": beats,
+        "windows": out_windows,
         "guidance": (
-            "Honor position_seconds (open→end span). "
-            "transparent/overlay → higher layer_number than footage (Z-order, not chroma key). "
-            "opaque/standalone → only in real gaps or empty timeline — never stack solid plates over hero. "
-            "Search catalog with block_query; compose with title_hint; fetch+place at position_seconds. "
+            "Timing only — invent SHORT on-screen titles and role-sized block_query yourself. "
+            "Never put the user brief into title. "
+            "search_motion_blocks_tool → sandbox_compose_motion_tool → "
+            "motion_graphics_package(beats_json=[...]). "
+            "Transparent overlays use higher track_hint; opaque only at gap windows. "
             "Vary block_id across beats."
         ),
     }
     return json.dumps(payload, indent=2)
+
+
+def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
+    """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
+    return (
+        "Error: suggest_motion_graphics_placements_tool is removed. "
+        "Call propose_overlay_windows_tool(beat_count=...) for timing only, then "
+        "search_motion_blocks_tool / sandbox_compose_motion_tool, and "
+        "motion_graphics_package(beats_json=[{title, block_query|block_id, position_seconds, ...}]). "
+        "Never put the creative brief into title=."
+    )
 
 
 def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
@@ -6059,6 +6017,7 @@ AGENT_TOOL_HANDLERS = {
     "get_project_catalog_tool": get_project_catalog,
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
+    "propose_overlay_windows_tool": propose_overlay_windows,
     # Remotion / HyperFrames
     "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
     "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
@@ -6119,7 +6078,8 @@ TOOL_DISPLAY_LABELS = {
     "search_clip_scenes_tool": "Search clip scenes",
     "get_project_catalog_tool": "Read project catalog",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
-    "suggest_motion_graphics_placements_tool": "Suggest MG placements",
+    "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
+    "propose_overlay_windows_tool": "Propose overlay windows",
     "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
     "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
@@ -6166,7 +6126,7 @@ READ_ONLY_TOOLS = frozenset({
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
     "get_timeline_placements_metadata_tool",
-    "suggest_motion_graphics_placements_tool",
+    "propose_overlay_windows_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -6188,7 +6148,10 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # Network search against project TwelveLabs index (File reads are read-only).
     "search_clips_tool",
     "search_clip_scenes_tool",
-    "suggest_motion_graphics_placements_tool",
+    "propose_overlay_windows_tool",
+    # HyperFrames download + alpha re-encode can take a while.
+    "fetch_motion_graphics_video_tool",
+    "fetch_remotion_video_from_supabase_tool",
 })
 
 

@@ -439,3 +439,31 @@ def test_download_and_import_transparent_refuses_opaque_plate(tmp_path):
     assert err is not None
     assert "usable VP9 alpha" in err or "refusing solid plate" in err
     stamp.assert_not_called()
+
+
+def test_fetch_idempotent_same_url():
+    th._MG_IMPORTED_URLS.clear()
+    with patch.object(
+        th,
+        "_resolve_motion_graphics_label_from_job",
+        return_value=("HyperFrames x", {"transparent": False}),
+    ), patch.object(
+        th,
+        "_download_and_import_one",
+        return_value=("F77", 0.5, None, False, "yuv420p"),
+    ) as download, patch.object(th, "_motion_graphics_cleanup_storage"):
+        first = th.fetch_motion_graphics_video(
+            segment_urls=["https://x/out.webm"],
+            render_job_id="j-idem",
+            label="L",
+        )
+        second = th.fetch_motion_graphics_video(
+            segment_urls=["https://x/out.webm"],
+            render_job_id="j-idem",
+            label="L",
+        )
+    assert "F77" in first
+    assert "Already imported" in second
+    assert "file_id=F77" in second
+    assert download.call_count == 1
+    th._MG_IMPORTED_URLS.clear()
