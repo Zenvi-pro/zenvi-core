@@ -81,9 +81,26 @@ def test_propose_overlay_windows_no_copy_fields():
     for w in data["windows"]:
         assert "t" in w
         assert "track_hint" in w
+        assert "layout_region" in w
+        assert w["layout_region"] in (
+            "lower_third",
+            "corner_br",
+            "corner_tr",
+            "full_frame",
+            "mid_plate",
+        )
+        assert "place_mode" in w
+        assert w["place_mode"] in ("overlay", "gap", "cut_in")
+        assert "suggest_transparent" in w
         assert "title_hint" not in w
         assert "block_query" not in w
-    assert "beats_json" in data["guidance"] or "propose_overlay" in data["guidance"].lower() or "invent" in data["guidance"].lower()
+    assert (
+        "beats_json" in data["guidance"]
+        or "propose_overlay" in data["guidance"].lower()
+        or "invent" in data["guidance"].lower()
+        or "place_motion_graphic" in data["guidance"].lower()
+        or "layout_region" in data["guidance"].lower()
+    )
 
 
 def test_suggest_motion_graphics_placements_deprecated():

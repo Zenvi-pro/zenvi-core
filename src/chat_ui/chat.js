@@ -603,7 +603,7 @@
         var cmd = data.cmd || '';
         var argsDetail = data.args_detail || '';
         var toolName = (data.tool_name || '').toLowerCase();
-        var isMg = /motion-graphics|hyperframes|publish motion|lint draft|product demo/.test(
+        var isMg = /motion-graphics|hyperframes|publish motion|lint draft|product demo|place motion graphic|propose overlay/.test(
             (title + ' ' + toolName).toLowerCase()
         );
 

@@ -3538,8 +3538,9 @@ def fetch_motion_graphics_video(
             f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
             f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
             f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
-            "MUST call add_clip_to_timeline_tool for each file_id "
-            "(transparent overlays: layer_number 3000000+; opaque title cards: standalone cut / mid layer)."
+            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
+            "Do not use add_clip_to_timeline_tool for MG renders."
             f"{generic_warn}"
         )
 
@@ -3579,7 +3580,8 @@ def fetch_motion_graphics_video(
         f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
         f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
         f"{alpha_note}\n"
-        "MUST call add_clip_to_timeline_tool(file_id=...) with the placement mode above."
+        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
         f"{generic_warn}"
     )
 
@@ -5949,10 +5951,10 @@ def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
     """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
     return (
         "Error: suggest_motion_graphics_placements_tool is removed. "
-        "Call propose_overlay_windows_tool(beat_count=...) for timing only, then "
-        "search_motion_blocks_tool / sandbox_compose_motion_tool, and "
-        "motion_graphics_package(beats_json=[{title, block_query|block_id, position_seconds, ...}]). "
-        "Never put the creative brief into title=."
+        "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
+        "edit session/draft.html (lint optional), publish_session_draft_tool, "
+        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "Never put the creative brief into on-screen title text."
     )
 
 
