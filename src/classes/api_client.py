@@ -506,7 +506,10 @@ class ZenviBackendClient:
                                     "progress",
                                     data.get("call_id", ""),
                                     data.get("tool_name", ""),
-                                    data.get("line", ""),
+                                    {
+                                        "line": data.get("line", ""),
+                                        "detail": data.get("detail") or {},
+                                    },
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 log.debug("on_tool_progress error: %s", exc)

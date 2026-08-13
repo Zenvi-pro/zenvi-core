@@ -356,25 +356,28 @@ def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_i
         return [], str(e)
 
 
-def _output_path_for_generated_video():
-    """Return an absolute path for a new generated MP4 (preview-safe)."""
+def _output_path_for_generated_video(ext=".mp4"):
+    """Return an absolute path for a new generated video (preview-safe)."""
+    ext = ext if str(ext).startswith(".") else f".{ext}"
+    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv"):
+        ext = ".mp4"
     app = _get_app()
     project_path = getattr(app.project, "current_filepath", None) or ""
     if project_path and os.path.isabs(os.path.expanduser(str(project_path))):
         out_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(project_path))), "Generated")
         try:
             os.makedirs(out_dir, exist_ok=True)
-            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}.mp4")
+            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
         except OSError:
             pass
     try:
         from classes import info
         out_dir = os.path.join(info.USER_PATH, "Generated")
         os.makedirs(out_dir, exist_ok=True)
-        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}.mp4")
+        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
     except Exception:
         pass
-    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}.mp4")
+    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}{ext}")
 
 
 def _canonical_media_path(path):
@@ -2486,6 +2489,218 @@ def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080
     return output_path, None
 
 
+def _ffprobe_pix_fmt(path) -> str:
+    """Return primary video pix_fmt or empty string."""
+    try:
+        p = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=pix_fmt",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        return (p.stdout or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _ffprobe_alpha_mode(path) -> str:
+    """Return stream alpha_mode / ALPHA_MODE tag (HyperFrames VP9 WebM) or empty."""
+    try:
+        p = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        for line in (p.stdout or "").splitlines():
+            val = line.strip().lower()
+            if val:
+                return val
+        return ""
+    except Exception:
+        return ""
+
+
+def _ffprobe_has_alpha(path) -> bool:
+    """True when stream has alpha pix_fmt OR VP9 WebM ALPHA_MODE=1 (sidecar alpha)."""
+    pix = _ffprobe_pix_fmt(path)
+    if pix and (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    ):
+        return True
+    # HyperFrames / libvpx WebM: ffprobe often reports yuv420p + ALPHA_MODE=1
+    mode = _ffprobe_alpha_mode(path)
+    return mode in ("1", "true", "yes")
+
+
+def _ffprobe_has_explicit_yuva(path) -> bool:
+    """True when primary pix_fmt is already yuva* (rare for libvpx WebM)."""
+    pix = _ffprobe_pix_fmt(path)
+    return bool(pix and "yuva" in pix)
+
+
+def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
+    """Decode one frame and confirm some pixels are actually transparent.
+
+    VP9 WebM: must force libvpx before -i (native VP9 decode drops alpha → solid
+    black). qtrle/png/prores MOV: native decode preserves alpha — match OpenShot.
+    Fail closed on ffmpeg errors or fully opaque frames.
+    """
+    import tempfile
+
+    if not path or not os.path.isfile(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if force_libvpx is None:
+        force_libvpx = ext in (".webm", ".mkv")
+    tmp_png = None
+    try:
+        fd, tmp_png = tempfile.mkstemp(suffix=".png", prefix="zenvi_alpha_")
+        os.close(fd)
+        cmd = ["ffmpeg", "-y"]
+        if force_libvpx:
+            cmd += ["-c:v", "libvpx-vp9"]
+        cmd += [
+            "-i", path,
+            "-frames:v", "1",
+            "-update", "1",
+            "-pix_fmt", "rgba",
+            tmp_png,
+        ]
+        ok, _err = _ffmpeg_run(cmd)
+        if not ok or not os.path.isfile(tmp_png) or os.path.getsize(tmp_png) < 32:
+            return False
+        try:
+            from PIL import Image
+
+            im = Image.open(tmp_png).convert("RGBA")
+            w, h = im.size
+            if w < 1 or h < 1:
+                return False
+            samples = [
+                im.getpixel((0, 0)),
+                im.getpixel((w - 1, 0)),
+                im.getpixel((0, h - 1)),
+                im.getpixel((w - 1, h - 1)),
+                im.getpixel((w // 2, h // 2)),
+            ]
+            return any(len(px) >= 4 and px[3] < 250 for px in samples)
+        except Exception:
+            try:
+                from PyQt5.QtGui import QImage
+
+                img = QImage(tmp_png)
+                if img.isNull():
+                    return False
+                img = img.convertToFormat(QImage.Format_RGBA8888)
+                w, h = img.width(), img.height()
+                if w < 1 or h < 1:
+                    return False
+                pts = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, h // 2)]
+                for x, y in pts:
+                    c = img.pixelColor(x, y)
+                    if c.alpha() < 250:
+                        return True
+                return False
+            except Exception:
+                return False
+    finally:
+        if tmp_png and os.path.isfile(tmp_png):
+            try:
+                os.remove(tmp_png)
+            except OSError:
+                pass
+
+
+def _openshot_transparent_ok(path) -> bool:
+    """True when OpenShot's native decoder will composite with real alpha.
+
+    Requires alpha in the container pix_fmt (argb/rgba/yuva*) — typically qtrle
+    MOV from `_reencode_alpha_for_openshot`. VP9 WebM with ALPHA_MODE=1 alone is
+    NOT ok: libopenshot uses native VP9 which drops alpha to opaque black.
+    """
+    if not path:
+        return False
+    pix = _ffprobe_pix_fmt(path)
+    if not pix:
+        return False
+    if not (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    ):
+        return False
+    # Native decode path OpenShot uses — do not force libvpx
+    return _verify_decoded_alpha_pixels(path, force_libvpx=False)
+
+
+def _looks_like_alpha_video(path) -> bool:
+    """HyperFrames transparent overlays are WebM (VP9+alpha); confirm others via ffprobe."""
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext == ".webm":
+        probed = _ffprobe_has_alpha(path)
+        if probed:
+            return True
+        # If probe fails (ffprobe missing), still treat .webm as alpha-intent for MG.
+        return True
+    return _ffprobe_has_alpha(path)
+
+
+def _reencode_alpha_for_openshot(input_path, output_path=None, width=1920, height=1080):
+    """Re-encode HyperFrames VP9 WebM into qtrle MOV so OpenShot keeps alpha.
+
+    Must decode with libvpx-vp9 BEFORE -i (native VP9 drops alpha → solid black).
+    Encode QuickTime Animation (qtrle + argb): OpenShot/libopenshot native decode
+    preserves alpha. Do NOT leave as VP9 WebM — that looks transparent to libvpx
+    probes but composites as opaque black in the editor.
+
+    Returns (output_path, None) on success, (None, error) on failure.
+    """
+    if output_path is None:
+        base, _ = os.path.splitext(input_path)
+        output_path = f"{base}_alpha.mov"
+    # Always deliver .mov for OpenShot alpha overlays
+    if not str(output_path).lower().endswith(".mov"):
+        output_path = os.path.splitext(output_path)[0] + ".mov"
+
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setsar=1,format=rgba"
+    )
+    # libvpx-vp9 before -i = VP9+alpha decoder; qtrle = OpenShot-safe alpha encoder
+    cmd = [
+        "ffmpeg", "-y",
+        "-c:v", "libvpx-vp9",
+        "-i", input_path,
+        "-vf", vf,
+        "-c:v", "qtrle", "-pix_fmt", "argb",
+        "-an",
+        output_path,
+    ]
+    ok, err = _ffmpeg_run(cmd)
+    if not ok:
+        return None, f"Alpha re-encode failed: {err}"
+    # Verify with NATIVE decode (what OpenShot does) — not libvpx
+    if not _verify_decoded_alpha_pixels(output_path, force_libvpx=False):
+        return None, (
+            "Alpha re-encode produced opaque plate "
+            "(no transparent pixels after native decode)"
+        )
+    return output_path, None
+
+
 def _normalize_imported_file_path(file_obj, final_path):
     """Store an absolute path on imported File metadata (panel + thumbnails)."""
     if not file_obj:
@@ -2826,24 +3041,37 @@ def _replace_timeline_clip_with_baked(clip_id, baked_file_id, position, layer):
     _run_on_main_thread(_do, timeout=30)
 
 
-def _import_generated_video(video_path):
+def _import_generated_video(video_path, *, preserve_alpha=None):
     """Import a generated video into the project with clean metadata.
 
     Re-encodes the video first to a permanent location (via
     _output_path_for_generated_video), then adds it using skip_indexing=True
     to avoid nested event loops and metadata corruption.
 
+    When preserve_alpha is True (or auto-detected for WebM), re-encodes to
+    qtrle MOV (argb) so OpenShot's native decoder keeps transparency.
+    VP9 WebM is never imported as-is — native VP9 drops alpha to solid black.
+    Alpha failure is fail-closed — never silent yuv420p/MP4 fallback for overlays.
+
     Returns (File object, None) on success, (None, error_string) on failure.
     """
     from classes.query import File
 
-    # Re-encode for libopenshot compatibility, writing to a permanent path
-    # so the file survives tmpdir cleanup after the caller returns.
-    perm_path = _canonical_media_path(_output_path_for_generated_video())
-    clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
-    if err:
-        log.warning("Re-encode failed, using original: %s", err)
-        clean_path = video_path
+    want_alpha = bool(preserve_alpha) if preserve_alpha is not None else _looks_like_alpha_video(video_path)
+
+    if want_alpha:
+        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mov"))
+        # Always re-encode through libvpx→qtrle. Even "good" WebM composites black
+        # in OpenShot because FFmpegReader uses the native VP9 decoder.
+        clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
+        if err:
+            return None, f"alpha import failed (no opaque fallback): {err}"
+    else:
+        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mp4"))
+        clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
+        if err:
+            log.warning("Re-encode failed, using original: %s", err)
+            clean_path = video_path
 
     final_path = _canonical_media_path(clean_path)
 
@@ -2876,20 +3104,28 @@ def _import_generated_video(video_path):
     return f, None
 
 
-def _download_remotion_file(url, default_name="remotion_segment.mp4"):
-    """Download a Supabase mp4 to a fresh temp path. Returns (dest_path, size_mb)."""
+def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
+    """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
     import tempfile
     import urllib.request
+    from urllib.parse import unquote
 
     url_path = url.split("?")[0].rstrip("/")
-    raw_name = url_path.split("/")[-1] or default_name
-    if not raw_name.lower().endswith(".mp4"):
-        raw_name += ".mp4"
+    raw_name = unquote(url_path.split("/")[-1] or default_name)
+    root, ext = os.path.splitext(raw_name)
+    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".avi"):
+        # Infer from URL path fragments
+        lower = url_path.lower()
+        if lower.endswith(".webm") or "/output.webm" in lower:
+            ext = ".webm"
+        else:
+            ext = ".mp4"
+        raw_name = f"{root or 'motion_segment'}{ext}"
 
-    tmp_dir = tempfile.mkdtemp(prefix="zenvi_remotion_")
+    tmp_dir = tempfile.mkdtemp(prefix="zenvi_hyperframes_")
     dest_path = os.path.join(tmp_dir, raw_name)
 
-    log.info("Downloading Remotion video from Supabase: %s → %s", url, dest_path)
+    log.info("Downloading HyperFrames video from Supabase: %s → %s", url, dest_path)
     req = urllib.request.Request(url, headers={"User-Agent": "ZenviApp/1.0"})
     with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
         while True:
@@ -2899,14 +3135,120 @@ def _download_remotion_file(url, default_name="remotion_segment.mp4"):
             out.write(chunk)
 
     size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+    size_bytes = os.path.getsize(dest_path)
+    if size_bytes <= 0:
+        raise ValueError(f"Downloaded file is empty (0 bytes): {dest_path}")
+    if size_mb < 0.1:
+        log.info("Download complete: %s (%.0f KB)", dest_path, size_bytes / 1024.0)
+    else:
+        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
     return dest_path, size_mb
 
 
-def _download_and_import_one(url):
-    """Download one Supabase mp4 and import it as a project file.
+def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
+    """Agent-facing metadata only — does not enqueue Gemini indexing."""
+    if not file_obj:
+        return
+    summary = (label or "").strip()
+    if not summary:
+        log.warning("MG stamp refused empty summary — using generic placeholder")
+        summary = "HyperFrames motion graphic"
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "motion_graphics" not in tag_list:
+            tag_list.append("motion_graphics")
+        if transparent and "transparent_overlay" not in tag_list:
+            tag_list.append("transparent_overlay")
+        file_obj.data["tags"] = ", ".join(tag_list)
 
-    Returns (file_id, size_mb, error). One retry on transient download failure.
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary
+        # Mirror AI-gen style: description carries the same human text for panels/search
+        ai["description"] = summary
+        # Must be True so get_effective_ai_metadata / Scene panel show the summary
+        # (skip_indexing still avoids Gemini — agent authored this text).
+        ai["analyzed"] = True
+        ai["source"] = "hyperframes_motion_graphics"
+        if transparent is not None:
+            ai["transparent"] = bool(transparent)
+        file_obj.data["ai_metadata"] = ai
+        # Prefer a readable title in the media bin (like generated clips)
+        if summary and summary != "HyperFrames motion graphic":
+            short_title = summary.split("(")[0].strip()
+            if short_title and len(short_title) <= 120:
+                file_obj.data["name"] = short_title[:120]
+        elif not file_obj.data.get("name"):
+            file_obj.data["name"] = "HyperFrames motion graphic"
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("Could not stamp motion-graphics metadata: %s", exc)
+
+
+def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
+    """When the agent omits label=, recover summary from HyperFrames job status.
+
+    Returns (label, job_meta_dict).
+    """
+    job_id = (render_job_id or "").strip()
+    if not job_id:
+        return (fallback or "").strip(), {}
+    import json
+    import urllib.request
+
+    api = os.environ.get(
+        "HYPERFRAMES_URL",
+        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
+    ).rstrip("/")
+    for kind in ("motion", "demo"):
+        try:
+            req = urllib.request.Request(
+                f"{api}/{kind}/jobs/{job_id}",
+                headers={"User-Agent": "ZenviApp/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode() or "{}")
+            summary = str(data.get("summary") or "").strip()
+            if summary:
+                return summary, data
+            titles = data.get("segment_titles") or []
+            block_id = data.get("block_id") or ""
+            if titles or block_id:
+                title0 = titles[0] if titles else ""
+                transparent = data.get("transparent")
+                bits = []
+                if block_id:
+                    bits.append(f"HyperFrames {block_id}")
+                else:
+                    bits.append("HyperFrames motion graphic")
+                if title0 and title0 not in ("motion", block_id):
+                    bits.append(str(title0))
+                if transparent:
+                    bits.append("transparent overlay")
+                label = ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
+                return label, data
+            return (fallback or "").strip(), data
+        except Exception as exc:
+            log.debug("MG label lookup %s/%s failed: %s", kind, job_id, exc)
+    return (fallback or "").strip(), {}
+
+
+def _download_and_import_one(url, label="", job_transparent=None):
+    """Download one Supabase video and import it as a project file (skip_indexing).
+
+    Returns (file_id, size_mb, error, transparent_ok, pix_fmt).
+    job_transparent: when True, force alpha-preserving import and fail closed (no opaque MP4).
     """
     try:
         last_err = None
@@ -2914,32 +3256,76 @@ def _download_and_import_one(url):
         size_mb = 0.0
         for attempt in (1, 2):
             try:
-                dest_path, size_mb = _download_remotion_file(url)
+                dest_path, size_mb = _download_motion_graphics_file(url)
                 break
             except Exception as e:
                 last_err = e
                 log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
         if dest_path is None:
-            return "", 0.0, f"download failed: {last_err}"
+            return "", 0.0, f"download failed: {last_err}", False, ""
 
-        # Import into project files (re-encodes for libopenshot compatibility).
-        f, err = _import_generated_video(dest_path)
+        if job_transparent is True:
+            preserve_alpha = True
+        elif job_transparent is False:
+            preserve_alpha = False
+        else:
+            preserve_alpha = _looks_like_alpha_video(dest_path)
+
+        f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
         if err:
-            return "", size_mb, f"import failed: {err}"
-        return (f.id if f else ""), size_mb, None
+            return "", size_mb, f"import failed: {err}", False, ""
+
+        imported_path = None
+        try:
+            imported_path = f.absolute_path() if f and hasattr(f, "absolute_path") else None
+        except Exception:
+            imported_path = None
+        if not imported_path and f and isinstance(getattr(f, "data", None), dict):
+            imported_path = f.data.get("path")
+
+        pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
+        alpha_mode = _ffprobe_alpha_mode(imported_path) if imported_path else ""
+        # libvpx VP9 WebM probes as yuv420p + ALPHA_MODE=1 (never yuva*). Accept that
+        # when decoded pixels actually have transparency.
+        transparent_ok = bool(imported_path and _openshot_transparent_ok(imported_path))
+        stamp_transparent = (
+            bool(job_transparent) if job_transparent is not None else transparent_ok
+        )
+        probe_note = f"pix_fmt={pix_fmt or 'unknown'} alpha_mode={alpha_mode or 'none'}"
+        if job_transparent and not transparent_ok:
+            return (
+                "",
+                size_mb,
+                (
+                    f"transparent job imported without usable VP9 alpha ({probe_note}) "
+                    "— re-compose as WebM; refusing solid plate"
+                ),
+                False,
+                pix_fmt,
+            )
+
+        _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
+        # Encode probe bits into pix_fmt field for fetch messaging: "yuva420p;alpha_mode=1"
+        probe_field = pix_fmt or "unknown"
+        if alpha_mode:
+            probe_field = f"{probe_field};alpha_mode={alpha_mode}"
+        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, probe_field
     except Exception as e:
         log.error("download/import failed for %s: %s", url, e, exc_info=True)
-        return "", 0.0, str(e)
+        return "", 0.0, str(e), False, ""
 
 
-def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
-    """Best-effort DELETE {REMOTION_URL}/cleanup. Non-critical — failures are logged only."""
+def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
+    """Best-effort DELETE {HYPERFRAMES_URL}/cleanup. Non-critical — failures are logged only."""
     import json
     import urllib.request
 
     if not (supabase_path or render_job_id):
         return
-    remotion_api = os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1").rstrip("/")
+    api = os.environ.get(
+        "HYPERFRAMES_URL",
+        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
+    ).rstrip("/")
     try:
         payload = {}
         if supabase_path:
@@ -2948,7 +3334,7 @@ def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
             payload["job_id"] = render_job_id
         body = json.dumps(payload).encode()
         cleanup_req = urllib.request.Request(
-            f"{remotion_api}/cleanup",
+            f"{api}/cleanup",
             data=body,
             method="DELETE",
             headers={"Content-Type": "application/json"},
@@ -2959,25 +3345,90 @@ def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
         log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
 
 
-def fetch_remotion_video_from_supabase(
+# Session-scoped URL → file_id so package/hand re-fetch is idempotent.
+_MG_IMPORTED_URLS: dict = {}
+
+
+def fetch_motion_graphics_video(
     segment_urls=None,
     supabase_url="",
     supabase_path="",
     render_job_id="",
+    label="",
     **_kw,
 ) -> str:
-    """Import a rendered product demo into the project files panel.
+    """Import rendered HyperFrames motion/demo segments into the project files panel.
 
-    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs from
-    render_product_demo_tool. Each segment is imported as its own clip and the Supabase
-    storage is cleaned up ONCE, only after every segment imported successfully.
+    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs.
+    Each segment is imported as its own clip; storage is cleaned up once after success.
+    Imports use skip_indexing=True (no Gemini summarize). Optional label stamps short_summary.
 
-    Legacy: pass a single supabase_url to import one stitched video.
-
-    Called by the agent after render_product_demo_tool succeeds.
+    Legacy: pass a single supabase_url to import one video.
     """
     import json
     import re
+
+    global _MG_IMPORTED_URLS
+
+    _GENERIC_LABELS = (
+        "hyperframes motion graphic",
+        "motion graphic",
+        "motion",
+    )
+
+    def _norm_url(u: str) -> str:
+        return (u or "").strip().split("?")[0].rstrip("/")
+
+    def _already_imported(urls: list):
+        ids = []
+        for u in urls:
+            fid = _MG_IMPORTED_URLS.get(_norm_url(u))
+            if not fid:
+                return None
+            ids.append(fid)
+        if not ids:
+            return None
+        return (
+            f"Already imported file_id={ids[0]} (file_ids: {ids}) — "
+            "place only if missing. Do NOT re-download these URLs."
+        )
+
+    def _is_generic(text: str) -> bool:
+        return (text or "").strip().lower() in _GENERIC_LABELS
+
+    job_meta = {}
+    stamp_label = (label or "").strip()
+    recovered = ""
+    if render_job_id:
+        recovered, job_meta = _resolve_motion_graphics_label_from_job(
+            render_job_id, fallback=stamp_label
+        )
+        # Prefer explicit agent label; else job.summary; never keep generic when job has better text
+        if not stamp_label:
+            stamp_label = recovered
+        elif _is_generic(stamp_label) and recovered and not _is_generic(recovered):
+            stamp_label = recovered
+    if not stamp_label:
+        stamp_label = "HyperFrames motion graphic"
+
+    job_transparent = job_meta.get("transparent")
+    if job_transparent is not None:
+        job_transparent = bool(job_transparent)
+
+    generic = _is_generic(stamp_label)
+    generic_warn = ""
+    if generic:
+        if render_job_id and job_meta.get("summary"):
+            # Job had summary but we somehow still stamped generic — surface loudly
+            generic_warn = (
+                " ⚠️ short_summary is still generic despite job.summary — "
+                "pass label= from compose suggested_label."
+            )
+        else:
+            generic_warn = (
+                " ⚠️ short_summary is generic — pass label= from compose suggested_label "
+                "(or ensure render_job_id is set so job.summary can be recovered)."
+            )
 
     # The LLM may pass segment_urls as a JSON-encoded string.
     if isinstance(segment_urls, str):
@@ -2986,6 +3437,27 @@ def fetch_remotion_video_from_supabase(
         except Exception:
             segment_urls = [segment_urls]
     segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
+
+    # Prefer WebM when job is transparent but URLs still point at .mp4
+    if job_transparent and segment_urls:
+        fixed = []
+        for u in segment_urls:
+            if u.split("?")[0].lower().endswith(".mp4"):
+                webm = re.sub(r"\.mp4(\?|$)", r".webm\1", u, count=1, flags=re.I)
+                log.warning(
+                    "Job %s is transparent but URL is MP4 — trying WebM: %s",
+                    render_job_id,
+                    webm,
+                )
+                fixed.append(webm)
+            else:
+                fixed.append(u)
+        segment_urls = fixed
+
+    if segment_urls:
+        cached = _already_imported(segment_urls)
+        if cached:
+            return cached
 
     # ---- Multi-segment import (preferred) ----
     if segment_urls:
@@ -3001,31 +3473,75 @@ def fetch_remotion_video_from_supabase(
         file_ids = []
         failures = []  # (original_index, url, error)
         total_mb = 0.0
+        any_transparent_ok = False
+        last_pix_fmt = ""
         for orig_i, url in ordered:
-            file_id, size_mb, err = _download_and_import_one(url)
+            path_base = url.lower().split("?")[0]
+            if job_transparent and path_base.endswith(".mp4"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        "transparent job URL is .mp4 and WebM rewrite failed — "
+                        "re-compose as WebM; refusing opaque MP4 import",
+                    )
+                )
+                continue
+
+            file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+                url, label=stamp_label, job_transparent=job_transparent
+            )
+            # Fail-closed: never import opaque MP4 as success for transparent jobs
+            if err and job_transparent and path_base.endswith(".webm"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        f"{err} — re-compose WebM (no opaque MP4 fallback)",
+                    )
+                )
+                log.warning("Segment %d transparent WebM import failed (no MP4 fallback): %s", orig_i, err)
+                continue
             if err:
                 failures.append((orig_i, url, err))
                 log.warning("Segment %d import failed: %s", orig_i, err)
             else:
                 file_ids.append(file_id)
                 total_mb += size_mb
+                any_transparent_ok = any_transparent_ok or bool(transparent_ok)
+                if pix_fmt:
+                    last_pix_fmt = pix_fmt
+                _MG_IMPORTED_URLS[_norm_url(url)] = file_id
 
         n = len(segment_urls)
         if failures:
             # Leave storage intact so the failed segments can be re-fetched without a re-render.
             failed_lines = "\n".join(f"  [{i}] {u} ({e})" for i, u, e in failures)
             return (
-                f"⚠️ Imported {len(file_ids)}/{n} demo segments; {len(failures)} failed. "
+                f"⚠️ Imported {len(file_ids)}/{n} motion segments; {len(failures)} failed. "
                 f"Storage was NOT cleaned up so you can retry the failed ones. "
-                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}"
+                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}{generic_warn}"
             )
 
         # All segments imported — clean up Supabase storage once.
-        _remotion_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
+        _motion_graphics_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
+        alpha_note = (
+            "Transparent WebM alpha preserved — place as overlay on a HIGHER track than footage."
+            if any_transparent_ok or job_transparent
+            else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
+        )
+        probe_bits = (
+            f" transparent_ok={str(any_transparent_ok).lower()}"
+            f" pix_fmt={last_pix_fmt or 'unknown'}"
+        )
         return (
-            f"✅ Imported {len(file_ids)}/{n} demo segments as separate clips "
-            f"(file_ids: {file_ids}, total {total_mb:.1f} MB).\n"
-            "Use add_clip_to_timeline_tool to add them to the timeline."
+            f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
+            f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
+            f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
+            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
+            "Do not use add_clip_to_timeline_tool for MG renders."
+            f"{generic_warn}"
         )
 
     # ---- Legacy single-video import (back-compat) ----
@@ -3033,15 +3549,47 @@ def fetch_remotion_video_from_supabase(
     if not supabase_url:
         return "Error: segment_urls or supabase_url is required."
 
-    file_id, size_mb, err = _download_and_import_one(supabase_url)
-    if err:
-        return f"Error importing video: {err}"
-    _remotion_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
-    return (
-        f"✅ Remotion product-demo video imported into project files (file_id: {file_id}, "
-        f"size: {size_mb:.1f} MB).\n"
-        "Use add_clip_to_timeline_tool to add it to the timeline."
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
+
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        return (
+            "Error: transparent job URL is still .mp4 after WebM rewrite — "
+            "re-compose as WebM; refusing opaque MP4 import."
+            f"{generic_warn}"
+        )
+
+    cached_one = _already_imported([supabase_url])
+    if cached_one:
+        return cached_one
+
+    file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+        supabase_url, label=stamp_label, job_transparent=job_transparent
     )
+    if err:
+        return f"Error importing video: {err}{generic_warn}"
+    _MG_IMPORTED_URLS[_norm_url(supabase_url)] = file_id
+    _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
+    alpha_note = (
+        "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
+        if transparent_ok or job_transparent
+        else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
+    )
+    return (
+        f"✅ HyperFrames motion graphic imported into project files "
+        f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
+        f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
+        f"{alpha_note}\n"
+        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
+        f"{generic_warn}"
+    )
+
+
+# Hard-cut alias kept only so any stale backend tool name still resolves during one deploy.
+fetch_remotion_video_from_supabase = fetch_motion_graphics_video
+_download_remotion_file = _download_motion_graphics_file
+_remotion_cleanup_storage = _motion_graphics_cleanup_storage
 
 
 _KLING_O1_DEFAULT_T2V_DURATION = 5
@@ -4697,7 +5245,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
         client = get_backend_client()
         if not client.is_indexing_configured():
-            return "TwelveLabs is not configured — re-indexing unavailable."
+            return "Gemini indexing is not configured — re-indexing unavailable."
 
         duration = float(state["duration"])
         _, _, blocked = check_operation(
@@ -4723,27 +5271,30 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             charge_operation_on_success(
                 True,
                 "indexing_per_minute",
-                provider="twelvelabs",
+                provider="gemini",
                 note=f"reindex {file_id}",
                 duration_seconds=duration,
             )
 
-            def _persist_twelvelabs_metadata():
+            def _persist_index_metadata():
                 from classes.query import File
                 f = File.get(id=file_id)
                 if not f:
                     return
                 ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-                ai["twelvelabs"] = {
+                index_block = {
                     "status": "ready",
                     "index_id": result.get("index_id", ""),
                     "video_id": result.get("video_id", ""),
                     "index_name": index_name,
+                    "provider": "gemini",
                 }
+                ai["index"] = index_block
+                ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
                 f.data["ai_metadata"] = ai
                 f.save()
 
-            _run_on_main_thread(_persist_twelvelabs_metadata, timeout=10)
+            _run_on_main_thread(_persist_index_metadata, timeout=10)
 
             video_id = str(result.get("video_id") or "")
             summarize_note = ""
@@ -4765,6 +5316,11 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                             "index_id": result.get("index_id", ""),
                             "video_id": video_id,
                             "index_name": index_name,
+                            "provider": "gemini",
+                        }
+                        summarized["index"] = {
+                            **(summarized.get("index") or {}),
+                            **tl,
                         }
                         summarized["twelvelabs"] = {
                             **(summarized.get("twelvelabs") or {}),
@@ -4774,7 +5330,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
                         f.save()
 
                     _run_on_main_thread(_persist_summary, timeout=10)
-                    summarize_note = " Pegasus summary updated."
+                    summarize_note = " Gemini Flash summary updated."
                 else:
                     summarize_note = (
                         f" Summarize failed: "
@@ -4888,6 +5444,518 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
     except Exception as e:
         log.error("get_clips_with_full_metadata: %s", e, exc_info=True)
         return f"Error: {e}"
+
+
+def _overlay_index_boosts(contexts) -> list:
+    """Optional TwelveLabs search boosts mapped onto timeline times.
+
+    Falls back to [] when indexing is unavailable (lexical scoring still applies).
+    """
+    boosts = []
+    try:
+        from classes.api_client import get_backend_client
+        from classes.project_tl_index import (
+            collect_project_twelvelabs_index,
+            map_search_hit_to_file,
+        )
+        from classes.mg_placement import AVOID_QUERY, PREFER_QUERY
+
+        info = collect_project_twelvelabs_index()
+        index_id = str((info or {}).get("index_id") or "").strip()
+        if not index_id:
+            return []
+        client = get_backend_client()
+        if not client.is_indexing_configured():
+            return []
+        video_map = (info or {}).get("video_map") or {}
+        queries = (
+            (AVOID_QUERY, -3, True, False),
+            (PREFER_QUERY, 3, False, True),
+        )
+        by_file = {}
+        for ctx in contexts or []:
+            fid = str(getattr(ctx, "file_id", "") or "")
+            pfid = str(getattr(ctx, "parent_file_id", "") or "")
+            for key in {fid, pfid}:
+                if key:
+                    by_file.setdefault(key, []).append(ctx)
+
+        for query, delta, is_avoid, is_prefer in queries:
+            resp = client.search(query, top_k=12, index_id=index_id, page_limit=24)
+            if resp.get("error"):
+                continue
+            for r in resp.get("results") or []:
+                if not isinstance(r, dict):
+                    continue
+                fid, _fname = map_search_hit_to_file(r, video_map)
+                fid = str(fid or "").strip()
+                if not fid or fid not in by_file:
+                    continue
+                try:
+                    hit_start = float(r.get("start") or 0)
+                except (TypeError, ValueError):
+                    continue
+                for ctx in by_file[fid]:
+                    pos = float(getattr(ctx, "timeline_position", 0) or 0)
+                    end = float(getattr(ctx, "timeline_end", pos + 1) or (pos + 1))
+                    src_start = float(getattr(ctx, "source_start", 0) or 0)
+                    clip_dur = max(0.1, end - pos)
+                    local = hit_start - src_start
+                    if 0 <= local <= clip_dur:
+                        boosts.append(
+                            {
+                                "t": pos + local,
+                                "score_delta": delta,
+                                "avoid": is_avoid,
+                                "prefer": is_prefer,
+                            }
+                        )
+    except Exception as exc:
+        log.debug("propose_overlay_windows: index boost skipped: %s", exc)
+    return boosts
+
+
+def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) -> str:
+    """Propose safe timeline windows for MG overlays/plates.
+
+    Uses scene metadata + lexical/embedding-index scoring. Returns JSON with
+    windows[{t, score, avoid, prefer, scene_label, track_hint, confidence,
+    suggest_transparent, layout_region}].
+
+    Agent must: bake layout_region into session/draft.html; publish with matching
+    transparent flag; place via place_motion_graphic_tool (overlay|gap|cut_in).
+    """
+    import json
+
+    from classes.mg_placement import (
+        apply_embedding_time_boosts,
+        layout_region_for,
+        score_scene_blob,
+    )
+
+    try:
+        n = int(float(str(beat_count or "4").strip() or "4"))
+    except Exception:
+        n = 4
+    n = max(1, min(8, n))
+    prefer_tr = str(prefer_transparent or "true").strip().lower() not in ("false", "0", "no")
+
+    try:
+        from classes.timeline_clip_context import enumerate_timeline_contexts
+
+        contexts = enumerate_timeline_contexts() or []
+    except Exception as exc:
+        log.warning("propose_overlay_windows: timeline read failed: %s", exc)
+        contexts = []
+
+    overlay_layer = 3000000
+    mid_layer = 2000000
+    try:
+        app = _get_app()
+        layers = app.project.get("layers") or []
+        nums = sorted(int(L.get("number", 0)) for L in layers if isinstance(L, dict))
+        if nums:
+            overlay_layer = nums[-1] + 1000000 if nums[-1] < 9000000 else nums[-1]
+            mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
+    except Exception:
+        pass
+
+    segments = []
+    windows = []
+    timeline_end = 0.0
+    for ctx in contexts:
+        pos = float(ctx.timeline_position or 0)
+        end = float(ctx.timeline_end or (pos + 1.0))
+        timeline_end = max(timeline_end, end)
+        ai = ctx.effective_metadata or {}
+        src_start = float(getattr(ctx, "source_start", 0) or 0)
+        clip_dur = max(0.1, end - pos)
+
+        text_bits = [
+            str(ctx.summary_preview or ""),
+            str(ai.get("short_summary") or ""),
+            str(ai.get("description") or ""),
+        ]
+        for ch in ai.get("chapters") or []:
+            if not isinstance(ch, dict):
+                continue
+            text_bits.append(str(ch.get("title") or ""))
+            text_bits.append(str(ch.get("summary") or ""))
+            ch_start = ch.get("start")
+            try:
+                if ch_start is not None:
+                    local = float(ch_start) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = score_scene_blob(
+                            f"{ch.get('title') or ''} {ch.get('summary') or ''}"
+                        )
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc,
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": str(ch.get("title") or ch.get("summary") or "")[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+        for scn in ai.get("scene_descriptions") or []:
+            if not isinstance(scn, dict):
+                continue
+            desc = str(scn.get("description") or "")
+            text_bits.append(desc)
+            try:
+                st = scn.get("time")
+                if st is None:
+                    st = scn.get("start")
+                if st is not None:
+                    local = float(st) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = score_scene_blob(desc)
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc + 1,
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": desc[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+
+        blob = " ".join(text_bits)
+        sc, avoid, prefer = score_scene_blob(blob)
+        segments.append(
+            {
+                "position": pos,
+                "end": end,
+                "avoid": avoid,
+                "prefer": prefer,
+                "score": sc,
+            }
+        )
+        for frac, bonus in ((0.08, 0), (0.5, 0), (0.88, 0)):
+            t = pos + clip_dur * frac
+            windows.append(
+                {
+                    "t": t,
+                    "score": sc + bonus,
+                    "avoid": avoid,
+                    "prefer": prefer,
+                    "label": (ctx.title or blob)[:80],
+                }
+            )
+
+    # Index / embedding search boosts (best-effort)
+    apply_embedding_time_boosts(windows, _overlay_index_boosts(contexts))
+
+    segments.sort(key=lambda s: s["position"])
+    gaps = []
+    if segments:
+        if segments[0]["position"] > 0.4:
+            gaps.append(max(0.0, segments[0]["position"] * 0.15))
+        for a, b in zip(segments, segments[1:]):
+            if b["position"] - a["end"] >= 0.4:
+                gaps.append((a["end"] + b["position"]) / 2.0)
+                windows.append(
+                    {
+                        "t": a["end"] - 0.15,
+                        "score": 2,
+                        "avoid": False,
+                        "prefer": True,
+                        "label": "near cut",
+                    }
+                )
+    else:
+        timeline_end = 24.0
+        for t in (0.0, 6.0, 12.0, 18.0, 22.0):
+            windows.append({"t": t, "score": 1, "avoid": False, "prefer": True, "label": ""})
+
+    if timeline_end <= 0:
+        timeline_end = 24.0
+
+    if n == 1:
+        anchors = [0.0 if timeline_end < 1 else min(1.0, timeline_end * 0.1)]
+    else:
+        anchors = [timeline_end * (i / (n - 1)) for i in range(n)]
+
+    def _snap(target, used):
+        target = max(0.0, min(float(timeline_end), float(target)))
+        cands = sorted(windows, key=lambda w: (abs(w["t"] - target), -w["score"]))
+        for w in cands:
+            t = max(0.0, min(timeline_end, float(w["t"])))
+            if prefer_tr and w.get("avoid") and w["score"] < 0:
+                continue
+            if all(abs(t - u) >= 1.2 for u in used):
+                conf = (
+                    "high"
+                    if w.get("prefer") or w["score"] >= 2
+                    else ("low" if w.get("avoid") else "medium")
+                )
+                return (
+                    t,
+                    w.get("label") or "",
+                    conf,
+                    bool(w.get("avoid")),
+                    bool(w.get("prefer")),
+                    int(w["score"]),
+                )
+        return target, "", "medium", False, False, 0
+
+    used_positions = []
+    out_windows = []
+    for i in range(n):
+        use_gap = (not prefer_tr) or (i == max(1, n // 2) and gaps)
+        pos = None
+        scene_label = ""
+        conf = "medium"
+        avoid = False
+        prefer = False
+        score = 0
+        track_hint = overlay_layer
+        is_gap = False
+        if use_gap and gaps:
+            for g in gaps:
+                g = max(0.0, min(timeline_end, float(g)))
+                if all(abs(g - u) >= 1.0 for u in used_positions):
+                    pos = g
+                    scene_label = "gap — opaque plate candidate"
+                    conf = "high"
+                    track_hint = mid_layer
+                    is_gap = True
+                    prefer = True
+                    break
+        if pos is None:
+            pos, scene_label, conf, avoid, prefer, score = _snap(anchors[i], used_positions)
+            track_hint = overlay_layer
+            is_gap = False
+        pos = round(max(0.0, min(timeline_end, float(pos))), 2)
+        used_positions.append(pos)
+        region = layout_region_for(
+            avoid=avoid, prefer=prefer, is_gap=is_gap, score=score
+        )
+        suggest_tr = bool(prefer_tr and track_hint == overlay_layer and not is_gap)
+        out_windows.append(
+            {
+                "t": pos,
+                "score": score,
+                "avoid": avoid,
+                "prefer": prefer,
+                "scene_label": scene_label[:80],
+                "track_hint": int(track_hint),
+                "confidence": conf,
+                "suggest_transparent": suggest_tr,
+                "layout_region": region,
+                "place_mode": (
+                    "gap" if is_gap else ("overlay" if suggest_tr else "cut_in")
+                ),
+            }
+        )
+
+    payload = {
+        "timeline_end": round(timeline_end, 2),
+        "clip_count": len(segments),
+        "windows": out_windows,
+        "guidance": (
+            "For each beat: decide transparent vs opaque first. "
+            "layout_region → bake into session/draft.html "
+            "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
+            "mid_plate = opaque plate). "
+            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
+            "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
+            "plates over hero footage with add_clip on the top overlay track."
+        ),
+    }
+    return json.dumps(payload, indent=2)
+
+
+def place_motion_graphic(
+    file_id="",
+    position_seconds="",
+    duration_seconds="",
+    mode="overlay",
+    track="",
+    layout_region="",
+    **_kw,
+) -> str:
+    """Place a HyperFrames render with overlay/gap/cut_in enforcement.
+
+    mode=overlay → transparent file on a HIGH layer (refuses opaque).
+    mode=gap → opaque only when primary track is clear at [t,t+dur).
+    mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
+    """
+    from classes.mg_placement import (
+        file_looks_transparent,
+        primary_track_overlaps,
+        ripple_positions,
+    )
+    from classes.query import Clip, File
+    from classes.track_display import (
+        format_track_label_for_llm,
+        normalize_track_or_layer_arg,
+    )
+
+    try:
+        fid = str(file_id or "").strip()
+        if not fid:
+            return "Error: file_id is required for place_motion_graphic_tool"
+        f = File.get(id=fid)
+        if not f:
+            return f"Error: File not found for id={fid}."
+        file_data = dict(f.data or {})
+        is_transparent = file_looks_transparent(file_data)
+        mode_s = str(mode or "overlay").strip().lower() or "overlay"
+        if mode_s not in ("overlay", "gap", "cut_in"):
+            return "Error: mode must be overlay|gap|cut_in"
+
+        try:
+            t = float(str(position_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            return "Error: position_seconds must be a number"
+        t = max(0.0, t)
+        try:
+            dur = float(str(duration_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0:
+            try:
+                dur = float(file_data.get("duration") or 0) or float(
+                    (file_data.get("reader") or {}).get("duration") or 0
+                )
+            except (TypeError, ValueError):
+                dur = 3.0
+        dur = max(0.5, min(dur, 60.0))
+
+        app = _get_app()
+        layers = app.project.get("layers") or []
+        nums = sorted(
+            int(L.get("number", 0))
+            for L in layers
+            if isinstance(L, dict) and L.get("number") is not None
+        )
+        if not nums:
+            nums = [1000000, 2000000, 3000000]
+        primary_layer = nums[0]
+        mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
+        overlay_layer = nums[-1]
+
+        if str(track or "").strip():
+            resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
+            if err:
+                return err
+            track_num = int(resolved)
+        elif mode_s == "overlay":
+            track_num = int(overlay_layer)
+        elif mode_s == "gap":
+            track_num = int(mid_layer)
+        else:
+            track_num = int(primary_layer)
+
+        clips_raw = [
+            dict(c.data or {})
+            for c in Clip.filter()
+            if isinstance(getattr(c, "data", None), dict)
+        ]
+
+        if mode_s == "overlay":
+            if not is_transparent:
+                return (
+                    "Error: mode=overlay requires a transparent HyperFrames import "
+                    "(ai_metadata.transparent / transparent_overlay tag / webm). "
+                    "Use mode=gap or mode=cut_in for opaque plates — never stack opaque "
+                    "over hero footage."
+                )
+            if track_num < mid_layer:
+                track_num = int(overlay_layer)
+        else:
+            # gap / cut_in → opaque path
+            if is_transparent:
+                return (
+                    "Error: mode=%s is for opaque plates. Transparent overlays must use "
+                    "mode=overlay on a high track." % mode_s
+                )
+            if mode_s == "gap":
+                if primary_track_overlaps(
+                    clips_raw, layer=int(primary_layer), t0=t, t1=t + dur
+                ):
+                    return (
+                        "Error: gap mode refused — primary track has footage overlapping "
+                        f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
+                        "pick a true gap from propose_overlay_windows_tool."
+                    )
+
+        region = str(layout_region or "").strip()
+
+        def _ripple_and_stamp():
+            if mode_s == "cut_in":
+                shifts = ripple_positions(
+                    clips_raw, layer=int(primary_layer), t=t, delta=dur
+                )
+                for cid, new_pos in shifts:
+                    app.updates.update(
+                        ["clips", {"id": cid}],
+                        {"position": float(new_pos)},
+                    )
+            try:
+                ai = dict(file_data.get("ai_metadata") or {})
+                ai["mg_placement"] = {
+                    "mode": mode_s,
+                    "layout_region": region,
+                    "transparent": bool(is_transparent),
+                    "position_seconds": t,
+                    "duration_seconds": dur,
+                    "track": track_num,
+                }
+                if not is_transparent:
+                    ai["transparent"] = False
+                f.data["ai_metadata"] = ai
+                if hasattr(f, "save"):
+                    f.save()
+                else:
+                    app.updates.update(
+                        ["files", {"id": fid}],
+                        {"ai_metadata": ai},
+                    )
+            except Exception as stamp_exc:
+                log.debug("mg_placement stamp failed: %s", stamp_exc)
+            return True
+
+        _run_on_main_thread(_ripple_and_stamp)
+        # add_clip marshals Qt mutations itself
+        result = add_clip_to_timeline(
+            file_id=fid,
+            position_seconds=str(t),
+            track=str(track_num),
+            duration_seconds=str(dur),
+            chat_session_id=_kw.get("chat_session_id", ""),
+        )
+
+        track_lbl = format_track_label_for_llm(int(track_num), layers)
+        if isinstance(result, str) and result.startswith("Error"):
+            return result
+        return (
+            f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
+            f"transparent={is_transparent} track={track_lbl}]. "
+            "NEXT: get_timeline_state_tool once to verify, then continue next beat."
+        )
+    except Exception as e:
+        log.error("place_motion_graphic: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
+def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
+    """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
+    return (
+        "Error: suggest_motion_graphics_placements_tool is removed. "
+        "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
+        "edit session/draft.html (lint optional), publish_session_draft_tool, "
+        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "Never put the creative brief into on-screen title text."
+    )
 
 
 def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
@@ -5203,8 +6271,12 @@ AGENT_TOOL_HANDLERS = {
     "search_clip_scenes_tool": search_clip_scenes,
     "get_project_catalog_tool": get_project_catalog,
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
-    # Remotion
-    "fetch_remotion_video_from_supabase_tool": fetch_remotion_video_from_supabase,
+    "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
+    "propose_overlay_windows_tool": propose_overlay_windows,
+    "place_motion_graphic_tool": place_motion_graphic,
+    # Remotion / HyperFrames
+    "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
+    "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
     "modify_clip_tool": modify_clip,
@@ -5262,7 +6334,11 @@ TOOL_DISPLAY_LABELS = {
     "search_clip_scenes_tool": "Search clip scenes",
     "get_project_catalog_tool": "Read project catalog",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
-    "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
+    "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
+    "propose_overlay_windows_tool": "Propose overlay windows",
+    "place_motion_graphic_tool": "Place motion graphic",
+    "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
+    "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
@@ -5282,11 +6358,26 @@ assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
 )
 
+# Server-side / subagent names that never hit AGENT_TOOL_HANDLERS but still
+# appear as tool_started titles over the WebSocket.
+_EXTRA_TOOL_DISPLAY_LABELS = {
+    "motion-graphics-agent": "Motion graphics",
+    "publish_session_draft_tool": "Publish motion graphic",
+    "lint_session_draft_tool": "Lint draft",
+    "product_demo": "Product demo",
+    "plan_product_demo_tool": "Plan product demo",
+    "render_product_demo_tool": "Render product demo",
+    "check_motion_graphics_health_tool": "Motion graphics health",
+    "get_motion_graphics_job_status_tool": "Motion job status",
+}
+
 
 def humanize_tool_name(tool_name: str) -> str:
     """Return a short human-readable title for a tool name."""
     if tool_name in TOOL_DISPLAY_LABELS:
         return TOOL_DISPLAY_LABELS[tool_name]
+    if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
@@ -5307,6 +6398,7 @@ READ_ONLY_TOOLS = frozenset({
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
     "get_timeline_placements_metadata_tool",
+    "propose_overlay_windows_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -5328,6 +6420,10 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # Network search against project TwelveLabs index (File reads are read-only).
     "search_clips_tool",
     "search_clip_scenes_tool",
+    "propose_overlay_windows_tool",
+    # HyperFrames download + alpha re-encode can take a while.
+    "fetch_motion_graphics_video_tool",
+    "fetch_remotion_video_from_supabase_tool",
 })
 
 
@@ -5343,6 +6439,7 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         if tool_name not in (
             "split_file_add_clip_tool",
             "add_clip_to_timeline_tool",
+            "place_motion_graphic_tool",
             "import_stock_media_tool",
         ):
             tool_args = dict(tool_args)
