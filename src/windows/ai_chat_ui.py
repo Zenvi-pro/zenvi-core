@@ -542,7 +542,33 @@ class AIChatWorker(QObject):
                     except Exception:
                         pass
                     return
-                line = str(payload or "")
+                # progress: payload may be a plain line or {line, detail}
+                line = ""
+                detail = {}
+                if isinstance(payload, dict):
+                    line = str(payload.get("line") or "")
+                    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+                else:
+                    line = str(payload or "")
+                if detail:
+                    bits = []
+                    if detail.get("phase"):
+                        bits.append(str(detail["phase"]))
+                    if detail.get("title"):
+                        bits.append(str(detail["title"])[:40])
+                    if detail.get("label"):
+                        bits.append(str(detail["label"])[:40])
+                    if detail.get("tool"):
+                        bits.append(str(detail["tool"])[:40])
+                    if detail.get("block_id"):
+                        bits.append(str(detail["block_id"]))
+                    if detail.get("query") and not detail.get("block_id"):
+                        bits.append(str(detail["query"])[:40])
+                    if detail.get("file_id"):
+                        bits.append(f"file={detail['file_id']}")
+                    if bits:
+                        base = line or "beat"
+                        line = f"{base} · " + " · ".join(bits)
                 if line:
                     try:
                         self.tool_log.emit(call_id or "", line)
@@ -2343,6 +2369,7 @@ class AIChatWindow(QDockWidget):
                 "title": title,
                 "cmd": cmd,
                 "args_detail": args_pretty,
+                "tool_name": tool_name or "",
             }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
                          % json.dumps(json.dumps(payload)))

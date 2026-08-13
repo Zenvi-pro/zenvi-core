@@ -43,9 +43,8 @@ google-cloud-sdk/
 # notes
 notes.txt
 
-# graphify — commit graphify-out/ for the team; cache/cost/local sidecars stay local
-# https://github.com/Graphify-Labs/graphify#team-setup
-graphify-out/cache/
-graphify-out/cost.json
-graphify-out/.graphify_python
-graphify-out/.graphify_root
+# graphify — each developer keeps their own local graph; do not commit outputs
+# https://github.com/Graphify-Labs/graphify
+graphify-out/
+graphify_out/
+graphify_output/
