@@ -53,174 +53,232 @@ from classes.api_client import get_backend_client
 import openshot
 
 
-class BackendTaggingWorker(QThread):
-    """Background worker that calls the zenvi-backend tagging API."""
+class BackendIndexingWorker(QThread):
+    """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
     progress = pyqtSignal(str, str, int)  # file_id, phase, percent (-1 = indeterminate)
     intermediate_save = pyqtSignal(str, object)  # file_id, metadata dict
 
-    def __init__(self, file_data, project_id="", parent=None):
+    def __init__(self, file_data, project_id="", summarize_only=False, parent=None):
         super().__init__(parent)
         self.file_data = file_data
         self.project_id = project_id or ""
+        self.summarize_only = bool(summarize_only)
 
-    # Hard limit: clips longer than 30 minutes are not tagged or indexed.
-    _MAX_TAGGING_SECONDS = 30 * 60
+    # Hard limit: clips longer than 30 minutes are not indexed or summarized.
+    _MAX_INDEXING_SECONDS = 30 * 60
 
     def run(self):
         import os as _os
-        from concurrent.futures import ThreadPoolExecutor
 
         client = get_backend_client()
         metadata = client._empty_ai_metadata()
         error = None
         try:
-            if self.file_data.get("media_type") == "video":
-                file_path = self.file_data.get("path", "")
-                file_id = self.file_data.get("id", "")
+            file_path = self.file_data.get("path", "")
+            file_id = self.file_data.get("id", "")
+            # Re-resolve type from path: libopenshot often marks MP3 as has_video.
+            from classes.image_types import get_media_type, is_audio_path
+            media_type = str(self.file_data.get("media_type") or "").strip().lower()
+            if is_audio_path(file_path):
+                media_type = "audio"
+                self.file_data["media_type"] = "audio"
+            elif media_type not in ("video", "image", "audio"):
+                media_type = get_media_type(self.file_data) if self.file_data else "video"
+            if media_type in ("video", "image", "audio"):
 
-                # ── Duration guard ──────────────────────────────────────
-                # Reject clips > 30 min before touching any AI API.
                 duration = float(self.file_data.get("duration") or 0)
-                if duration > self._MAX_TAGGING_SECONDS:
+                if media_type != "image" and duration > self._MAX_INDEXING_SECONDS:
                     log.warning(
-                        "Skipping tagging+indexing for %s: duration %.0fs > 30-minute limit.",
+                        "Skipping indexing+summarize for %s: duration %.0fs > 30-minute limit.",
                         file_path, duration,
                     )
                     metadata["skip_reason"] = (
                         f"Clip duration {duration / 60:.1f} min exceeds the 30-minute limit. "
-                        "Tagging and indexing were skipped."
+                        "Indexing and description generation were skipped."
                     )
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
                 filename = _os.path.basename(file_path)
-                index_name = (
-                    f"zenvi-{self.project_id}" if self.project_id else "zenvi-videos"
-                )
+                from classes.project_tl_index import build_project_index_name
+                from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+
+                index_name = build_project_index_name(self.project_id)
                 indexing_configured = client.is_indexing_configured()
 
-                from classes.frame_extractor import extract_tagging_frames
+                existing_ai = self.file_data.get("ai_metadata") or {}
+                existing_idx = get_index_block(existing_ai)
+                already_indexed = twelvelabs_is_indexed(existing_idx)
 
-                run_indexing = False
-                if indexing_configured:
-                    try:
-                        from classes.credits_client import check_operation
-
-                        _, balance, blocked = check_operation(
-                            "indexing_per_minute",
-                            "video indexing",
-                            duration_seconds=duration,
-                        )
-                        if blocked:
-                            metadata["twelvelabs"] = {
-                                "status": "skipped",
-                                "error": blocked,
-                                "index_name": index_name,
-                            }
-                        else:
-                            run_indexing = True
-                    except Exception as cred_exc:
-                        log.warning("Indexing credits check failed: %s", cred_exc)
-                        metadata["twelvelabs"] = {
-                            "status": "failed",
-                            "error": str(cred_exc),
-                            "index_name": index_name,
-                        }
-
-                def _local_extract_frames():
-                    return extract_tagging_frames(file_path, duration)
-
-                def _tag_frames(frames):
-                    s = client._new_http_session()
-                    return client.tag_video_frames(
-                        file_id, duration, frames, filename=filename, session=s,
+                if already_indexed and self.summarize_only:
+                    metadata = dict(existing_ai) if isinstance(existing_ai, dict) else metadata
+                    metadata["index"] = dict(existing_idx)
+                    metadata["twelvelabs"] = dict(existing_idx)
+                    metadata["error"] = (
+                        "Summarize-only is not supported for Gemini indexing. "
+                        "Reindex the clip to refresh descriptions."
                     )
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
 
-                def _direct_index():
-                    def _progress_cb(phase, percent):
-                        self.progress.emit(file_id, phase, percent)
+                if already_indexed and not self.summarize_only:
+                    metadata = dict(existing_ai) if isinstance(existing_ai, dict) else metadata
+                    metadata["index"] = dict(existing_idx)
+                    metadata["twelvelabs"] = dict(existing_idx)
+                    metadata["analyzed"] = bool(metadata.get("analyzed"))
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
 
-                    s = client._new_http_session()
-                    return client.start_direct_indexing_job(
+                if not indexing_configured:
+                    metadata["error"] = "Gemini indexing is not configured on the backend (GOOGLE_API_KEY)."
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
+
+                try:
+                    from classes.credits_client import check_operation
+
+                    credit_duration = duration if media_type != "image" else 60.0
+                    _, balance, blocked = check_operation(
+                        "indexing_per_minute",
+                        f"{media_type} indexing",
+                        duration_seconds=credit_duration,
+                    )
+                    if blocked:
+                        skip_block = {
+                            "status": "skipped",
+                            "error": blocked,
+                            "index_name": index_name,
+                            "provider": "gemini",
+                            "media_type": media_type,
+                        }
+                        metadata["index"] = skip_block
+                        metadata["twelvelabs"] = skip_block
+                        self.completed.emit(self.file_data, metadata, None)
+                        return
+                except Exception as cred_exc:
+                    log.warning("Indexing credits check failed: %s", cred_exc)
+                    fail_block = {
+                        "status": "failed",
+                        "error": str(cred_exc),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
+
+                def _progress_cb(phase, percent):
+                    self.progress.emit(file_id, phase, percent)
+
+                self.progress.emit(file_id, "uploading", 0)
+                partial = client._empty_ai_metadata()
+                partial["media_type"] = media_type
+                partial["index"] = {
+                    "status": "indexing",
+                    "index_name": index_name,
+                    "video_id": file_id,
+                    "provider": "gemini",
+                    "media_type": media_type,
+                }
+                partial["twelvelabs"] = dict(partial["index"])
+                self.intermediate_save.emit(file_id, partial)
+
+                s = client._new_http_session()
+                try:
+                    idx_result = client.start_direct_indexing_job(
                         file_path,
                         index_name,
                         file_id=file_id,
                         filename=filename,
                         session=s,
                         progress_callback=_progress_cb,
+                        project_id=self.project_id,
+                        duration_sec=duration,
+                        force=bool(self.summarize_only),
+                        media_type=media_type,
                     )
+                except Exception as idx_exc:
+                    log.warning("Gemini indexing failed: %s", idx_exc)
+                    fail_block = {
+                        "status": "failed",
+                        "error": str(idx_exc),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
 
-                self.progress.emit(file_id, "extracting", -1)
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    frames_future = pool.submit(_local_extract_frames)
-                    index_future = pool.submit(_direct_index) if run_indexing else None
+                if isinstance(idx_result, dict) and idx_result.get("error") and not idx_result.get("ai_metadata"):
+                    log.warning("Gemini indexing returned error: %s", idx_result.get("error"))
+                    fail_block = {
+                        "status": "failed",
+                        "error": idx_result.get("error"),
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
+                    metadata["error"] = idx_result.get("error")
+                    self.completed.emit(self.file_data, metadata, None)
+                    return
 
-                    frames, frame_err = frames_future.result()
-                    if frame_err:
-                        metadata["error"] = frame_err
-                    else:
-                        self.progress.emit(file_id, "tagging", -1)
-                        metadata = _tag_frames(frames)
-                        if run_indexing and metadata.get("analyzed"):
-                            partial = dict(metadata)
-                            partial["twelvelabs"] = {
-                                "status": "indexing",
-                                "index_name": index_name,
-                            }
-                            self.intermediate_save.emit(file_id, partial)
-
-                    if index_future is not None:
-                        try:
-                            idx_result = index_future.result()
-                            if isinstance(idx_result, dict) and idx_result.get("index_id"):
-                                from classes.credits_client import charge_operation_on_success
-                                charge_operation_on_success(
-                                    True,
-                                    "indexing_per_minute",
-                                    provider="twelvelabs",
-                                    note=f"import {file_id}",
-                                    duration_seconds=duration,
-                                )
-                                metadata["twelvelabs"] = {
-                                    "status": idx_result.get("status", "ready"),
-                                    "index_id": idx_result["index_id"],
-                                    "video_id": idx_result.get("video_id", ""),
-                                    "index_name": index_name,
-                                }
-                                log.info(
-                                    "TwelveLabs indexing complete: index=%s index_id=%s video_id=%s",
-                                    index_name,
-                                    idx_result.get("index_id"),
-                                    idx_result.get("video_id"),
-                                )
-                            elif isinstance(idx_result, dict) and idx_result.get("error"):
-                                log.warning(
-                                    "TwelveLabs indexing returned error: %s",
-                                    idx_result["error"],
-                                )
-                                metadata["twelvelabs"] = {
-                                    "status": "failed",
-                                    "error": idx_result["error"],
-                                    "index_name": index_name,
-                                }
-                        except Exception as idx_exc:
-                            log.warning("TwelveLabs indexing failed: %s", idx_exc)
-                            metadata["twelvelabs"] = {
-                                "status": "failed",
-                                "error": str(idx_exc),
-                                "index_name": index_name,
-                            }
-
-                if metadata.get("error"):
-                    log.warning("Tagging failed for %s: %s", file_path, metadata["error"])
-                elif not metadata.get("analyzed"):
-                    log.warning("Tagging did not complete for %s", file_path)
+                if isinstance(idx_result, dict) and (idx_result.get("index_id") or idx_result.get("ai_metadata")):
+                    from classes.credits_client import charge_operation_on_success
+                    charge_operation_on_success(
+                        True,
+                        "indexing_per_minute",
+                        provider="gemini",
+                        note=f"import {file_id}",
+                        duration_seconds=duration if media_type != "image" else 60.0,
+                    )
+                    ai_meta = idx_result.get("ai_metadata")
+                    if isinstance(ai_meta, dict) and ai_meta:
+                        metadata = ai_meta
+                    index_id = str(idx_result.get("index_id") or index_name)
+                    video_id = str(idx_result.get("video_id") or file_id)
+                    index_block = {
+                        "status": "ready",
+                        "index_id": index_id,
+                        "video_id": video_id,
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    if isinstance(metadata.get("index"), dict):
+                        index_block.update(metadata["index"])
+                        index_block["status"] = "ready"
+                        index_block["media_type"] = media_type
+                    metadata["index"] = index_block
+                    metadata["twelvelabs"] = dict(index_block)
+                    metadata["provider"] = "gemini-flash"
+                    metadata["media_type"] = media_type
+                    if metadata.get("analyzed"):
+                        self.progress.emit(file_id, "done", 100)
+                    log.info(
+                        "Gemini indexing complete: index=%s index_id=%s video_id=%s media=%s analyzed=%s",
+                        index_name, index_id, video_id, media_type, metadata.get("analyzed"),
+                    )
                 else:
-                    self.progress.emit(file_id, "done", 100)
+                    metadata["error"] = "Indexing returned no index_id"
+                    fail_block = {
+                        "status": "failed",
+                        "error": metadata["error"],
+                        "index_name": index_name,
+                        "provider": "gemini",
+                        "media_type": media_type,
+                    }
+                    metadata["index"] = fail_block
+                    metadata["twelvelabs"] = fail_block
         except Exception as exc:
             error = exc
-            log.error(f"Backend tagging worker failed: {exc}")
+            log.error(f"Backend indexing/summarize worker failed: {exc}")
         self.completed.emit(self.file_data, metadata, error)
 
     def interrupt(self):
@@ -232,6 +290,7 @@ class BackendTaggingWorker(QThread):
                 client._session = None
         except Exception:
             pass
+
 
 
 class FileFilterProxyModel(QSortFilterProxyModel):
@@ -296,7 +355,7 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
-    taggingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
+    indexingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -457,16 +516,19 @@ class FilesModel(QObject, updates.UpdateInterface):
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
 
-    def _stop_active_taggers(self):
+    _MAX_INDEXING_WORKERS = 2
+
+    def _stop_active_indexers(self):
         """Called at app quit — interrupt any pending HTTP requests, then wait briefly."""
-        for worker in list(self._active_taggers):
+        self._indexing_queue.clear()
+        for worker in list(self._active_indexers):
             try:
                 worker.interrupt()  # close session to unblock requests.post()
                 worker.quit()
                 worker.wait(3000)
             except Exception:
                 pass
-        self._active_taggers.clear()
+        self._active_indexers.clear()
 
     def _apply_ai_metadata(self, file_obj, ai_metadata):
         """Attach AI metadata to a file object (does not save)."""
@@ -483,37 +545,62 @@ class FilesModel(QObject, updates.UpdateInterface):
             merged = dict(prev)
             if ai_metadata.get("error"):
                 merged["error"] = ai_metadata["error"]
+            if ai_metadata.get("index"):
+                merged["index"] = ai_metadata["index"]
             if ai_metadata.get("twelvelabs"):
                 merged["twelvelabs"] = ai_metadata["twelvelabs"]
+            elif ai_metadata.get("index"):
+                merged["twelvelabs"] = ai_metadata["index"]
             file_obj.data["ai_metadata"] = merged
             return
 
         file_obj.data["ai_metadata"] = ai_metadata
-        tags = ai_metadata.get("tags", {}) if isinstance(ai_metadata, dict) else {}
-        top_objects = tags.get("objects", []) if isinstance(tags, dict) else []
-        if top_objects and not file_obj.data.get("tags"):
-            file_obj.data["tags"] = ", ".join(top_objects[:5])
+        # Do not auto-fill legacy file.data["tags"] from AI analysis.
 
-    def _set_tagging_progress(self, file_id, phase, percent):
-        self._tagging_progress[str(file_id)] = {"phase": phase, "percent": percent}
-        self.taggingProgress.emit(str(file_id), phase, percent)
+    def _set_indexing_progress(self, file_id, phase, percent):
+        self._indexing_progress[str(file_id)] = {"phase": phase, "percent": percent}
+        self.indexingProgress.emit(str(file_id), phase, percent)
 
-    def is_file_tagging(self, file_id):
+    def is_file_indexing(self, file_id):
         fid = str(file_id or "")
         return any(
-            str(w.file_data.get("id", "")) == fid for w in self._active_taggers
+            str(w.file_data.get("id", "")) == fid for w in self._active_indexers
         )
 
-    def get_tagging_progress(self, file_id):
-        return self._tagging_progress.get(str(file_id or ""))
+    def get_indexing_progress(self, file_id):
+        return self._indexing_progress.get(str(file_id or ""))
 
-    def _tag_file_async(self, file_id):
-        """Fire-and-forget background AI tagging for an already-saved file."""
+    def _enqueue_index(self, file_id, summarize_only=False):
+        """Queue a file for background indexing/summarize with bounded concurrency."""
+        fid = str(file_id or "")
+        if not fid:
+            return
+        if self.is_file_indexing(fid):
+            return
+        if any(qid == fid for qid, _ in self._indexing_queue):
+            return
+        self._indexing_queue.append((fid, bool(summarize_only)))
+        self._drain_indexing_queue()
+
+    def _drain_indexing_queue(self):
+        while len(self._active_indexers) < self._MAX_INDEXING_WORKERS and self._indexing_queue:
+            file_id, summarize_only = self._indexing_queue.pop(0)
+            if self.is_file_indexing(file_id):
+                continue
+            self._start_indexing_worker(file_id, summarize_only=summarize_only)
+
+    def _index_file_async(self, file_id, summarize_only=False):
+        """Fire-and-forget background indexing/summarize for an already-saved file."""
+        self._enqueue_index(file_id, summarize_only=summarize_only)
+
+    def _start_indexing_worker(self, file_id, summarize_only=False):
         from classes.query import File as _File
         file_obj = _File.get(id=file_id)
         if not file_obj or not isinstance(file_obj.data, dict):
             return
-        if file_obj.data.get("media_type") != "video":
+        if file_obj.data.get("media_type") not in ("video", "image", "audio"):
+            return
+        if self.is_file_indexing(file_id):
             return
 
         # Pass project ID so the worker can build a per-project index name.
@@ -522,19 +609,22 @@ class FilesModel(QObject, updates.UpdateInterface):
             project_id = get_app().project.get("id") or ""
         except Exception:
             pass
-        worker = BackendTaggingWorker(dict(file_obj.data), project_id=project_id)
-        self._active_taggers.append(worker)
-        self._set_tagging_progress(file_id, "extracting", -1)
+        worker = BackendIndexingWorker(
+            dict(file_obj.data), project_id=project_id, summarize_only=summarize_only,
+        )
+        self._active_indexers.append(worker)
+        self._set_indexing_progress(file_id, "uploading", -1)
 
         def _on_finished():
             try:
-                self._active_taggers.remove(worker)
+                self._active_indexers.remove(worker)
             except ValueError:
                 pass
-            self._tagging_progress.pop(str(file_id), None)
+            self._indexing_progress.pop(str(file_id), None)
+            self._drain_indexing_queue()
 
         def _on_progress(fid, phase, percent):
-            self._set_tagging_progress(fid, phase, percent)
+            self._set_indexing_progress(fid, phase, percent)
 
         def _on_intermediate(fid, metadata):
             try:
@@ -547,12 +637,12 @@ class FilesModel(QObject, updates.UpdateInterface):
                 f.save()
                 get_app().window.FileUpdated.emit(str(fid))
             except Exception as exc:
-                log.warning(f"Failed to apply intermediate tagging result: {exc}")
+                log.warning(f"Failed to apply intermediate indexing result: {exc}")
 
         def _on_complete(_file_data, metadata, error):
             try:
                 if error:
-                    log.warning(f"Background tagging failed for {file_id}: {error}")
+                    log.warning(f"Background indexing failed for {file_id}: {error}")
                     return
                 if not metadata or not isinstance(metadata, dict):
                     return
@@ -563,7 +653,7 @@ class FilesModel(QObject, updates.UpdateInterface):
                 f.save()
                 get_app().window.FileUpdated.emit(str(file_id))
             except Exception as exc:
-                log.warning(f"Failed to apply background tagging result: {exc}")
+                log.warning(f"Failed to apply background indexing result: {exc}")
 
         worker.progress.connect(_on_progress)
         worker.intermediate_save.connect(_on_intermediate)
@@ -573,7 +663,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def add_files(self, files, image_seq_details=None, quiet=False,
                   prevent_image_seq=False, prevent_recent_folder=False,
-                  skip_tagging=False):
+                  skip_indexing=False):
         # Access translations
         app = get_app()
         settings = app.get_settings()
@@ -583,11 +673,11 @@ class FilesModel(QObject, updates.UpdateInterface):
         if not isinstance(files, (list, tuple)):
             files = [files]
         scroll_to_files = []
-        # Collect IDs of video files that need background tagging.  We start
+        # Collect IDs of video files that need background indexing.  We start
         # the workers *after* add_files returns (via QTimer.singleShot) so that
         # any rapid worker completion doesn't deliver signals back into the model
         # while we're still updating it (reentrancy → model corruption / crash).
-        _deferred_tag_ids: list = []
+        _deferred_index_ids: list = []
 
         start_count = len(files)
         for count, filepath in enumerate(files):
@@ -682,10 +772,12 @@ class FilesModel(QObject, updates.UpdateInterface):
                 new_file.save()
                 scroll_to_files.append(new_file)
 
-                # Queue this video for background tagging (started after add_files
+                # Queue this video for background indexing (started after add_files
                 # returns to avoid reentrancy with processEvents below).
-                if not skip_tagging and new_file.data.get("media_type") == "video":
-                    _deferred_tag_ids.append(new_file.id)
+                if not skip_indexing and new_file.data.get("media_type") in (
+                    "video", "image", "audio",
+                ):
+                    _deferred_index_ids.append(new_file.id)
 
                 if start_count > 15:
                     message = _("Importing %(count)d / %(total)d") % {
@@ -724,15 +816,15 @@ class FilesModel(QObject, updates.UpdateInterface):
         message = _("Imported %(count)d files") % {"count": len(files) - 1}
         app.window.statusBar.showMessage(message, 3000)
 
-        # Start deferred tagging workers now that add_files has fully returned
+        # Start deferred indexing workers now that add_files has fully returned
         # to a stable state.  singleShot(0) fires on the next event-loop tick,
         # well outside this call frame, so worker callbacks can't re-enter here.
-        for _fid in _deferred_tag_ids:
+        for _fid in _deferred_index_ids:
             def _start(_fid=_fid):
                 try:
-                    self._tag_file_async(_fid)
+                    self._index_file_async(_fid)
                 except Exception as _e:
-                    log.warning("Failed to start background tagging: %s", _e)
+                    log.warning("Failed to start background indexing: %s", _e)
             QTimer.singleShot(0, _start)
 
     def get_image_sequence_details(self, file_path):
@@ -946,12 +1038,13 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.model_ids = {}
         self.ignore_updates = False
         self.ignore_image_sequence_paths = []
-        self._active_taggers = []  # strong refs to keep QThreads alive until finished
-        self._tagging_progress = {}
+        self._active_indexers = []  # strong refs to keep QThreads alive until finished
+        self._indexing_queue = []  # (file_id, summarize_only) waiting for a worker slot
+        self._indexing_progress = {}
 
-        # Stop any running tagging threads cleanly when the app quits
+        # Stop any running indexing threads cleanly when the app quits
         try:
-            get_app().aboutToQuit.connect(self._stop_active_taggers)
+            get_app().aboutToQuit.connect(self._stop_active_indexers)
         except Exception:
             pass
 

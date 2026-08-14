@@ -42,3 +42,9 @@ google-cloud-sdk/
 
 # notes
 notes.txt
+
+# graphify — each developer keeps their own local graph; do not commit outputs
+# https://github.com/Graphify-Labs/graphify
+graphify-out/
+graphify_out/
+graphify_output/

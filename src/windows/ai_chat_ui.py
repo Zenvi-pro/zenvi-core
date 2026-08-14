@@ -156,7 +156,8 @@ def _markdown_to_html(text: str) -> str:
     try:
         import markdown
         body = markdown.markdown(text, extensions=["extra"])
-    except Exception:
+    except Exception as exc:
+        log.warning("_markdown_to_html: markdown render failed: %s", exc)
         body = html.escape(text).replace("\n", "<br/>")
     # Wrap in a div and style code blocks so they don't override theme colors
     # Use 'currentColor' so code inherits the widget's text color
@@ -212,6 +213,29 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
 
 REQUEST_TIMEOUT_SECONDS = 120
 
+# Mirrors backend PLANNING_ALLOWLIST — tools safe to run in Plan mode.
+_PLANNING_SAFE_TOOLS = frozenset({
+    "get_project_info_tool", "list_files_tool", "list_clips_tool", "list_layers_tool",
+    "get_timeline_state_tool", "list_markers_tool", "get_file_info_tool",
+    "get_clips_with_full_metadata_tool", "get_timeline_placements_metadata_tool",
+    "search_clip_scenes_tool", "search_clips_tool", "search_pexels_videos_tool",
+    "search_freesound_music_tool", "list_transitions_tool", "search_transitions_tool",
+    "save_edit_plan_tool", "save_planning_research_brief_tool",
+    "update_edit_plan_step_tool", "finalize_edit_plan_tool",
+    "present_planning_questions_tool",
+    "save_edit_checkpoint_tool", "watch_clip_tool",
+})
+
+
+def _is_planning_tool_allowed(tool_name: str) -> bool:
+    if not tool_name:
+        return False
+    if tool_name in _PLANNING_SAFE_TOOLS:
+        return True
+    if tool_name.startswith("research_") or tool_name.startswith("web_search"):
+        return True
+    return False
+
 
 def _format_tool_command(tool_name: str, args: dict) -> str:
     """Build a `$`-style preview line summarising the tool invocation."""
@@ -266,7 +290,7 @@ class WidgetToolBlock(QFrame):
         self._body = QTextEdit()
         self._body.setObjectName("chatToolBody")
         self._body.setReadOnly(True)
-        self._body.setMaximumHeight(100)
+        self._body.setMaximumHeight(180)
         self._body.setLineWrapMode(QTextEdit.NoWrap)
         mono = self._body.font()
         mono.setFamily("Consolas")
@@ -412,15 +436,17 @@ class AIChatWorker(QObject):
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
+    plan_event = pyqtSignal(str, str)          # event_type, payload_json
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._backend_session_id = None
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
 
-    @pyqtSlot(str, str)
-    def run_request(self, text: str, model_id: str):
+    @pyqtSlot(str, str, str, str, str)
+    def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
+        self._agent_mode = agent_mode or "agent"
         try:
             from classes.tool_handlers import execute_tool
 
@@ -431,6 +457,11 @@ class AIChatWorker(QObject):
             def on_tool_call(tool_name, tool_args, call_id):
                 """Execute a tool locally and return the result."""
                 nonlocal last_tool_result
+                if getattr(self, "_agent_mode", "agent") == "planning" and not _is_planning_tool_allowed(tool_name):
+                    return (
+                        "Error: Planning mode — this tool is blocked. "
+                        "Add it as a plan step instead."
+                    )
                 log.info("Tool delegated from backend: %s", tool_name)
                 args = dict(tool_args or {})
                 # Args displayed to the user shouldn't leak the chat session id.
@@ -511,12 +542,46 @@ class AIChatWorker(QObject):
                     except Exception:
                         pass
                     return
-                line = str(payload or "")
+                # progress: payload may be a plain line or {line, detail}
+                line = ""
+                detail = {}
+                if isinstance(payload, dict):
+                    line = str(payload.get("line") or "")
+                    detail = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+                else:
+                    line = str(payload or "")
+                if detail:
+                    bits = []
+                    if detail.get("phase"):
+                        bits.append(str(detail["phase"]))
+                    if detail.get("title"):
+                        bits.append(str(detail["title"])[:40])
+                    if detail.get("label"):
+                        bits.append(str(detail["label"])[:40])
+                    if detail.get("tool"):
+                        bits.append(str(detail["tool"])[:40])
+                    if detail.get("block_id"):
+                        bits.append(str(detail["block_id"]))
+                    if detail.get("query") and not detail.get("block_id"):
+                        bits.append(str(detail["query"])[:40])
+                    if detail.get("file_id"):
+                        bits.append(f"file={detail['file_id']}")
+                    if bits:
+                        base = line or "beat"
+                        line = f"{base} · " + " · ".join(bits)
                 if line:
                     try:
                         self.tool_log.emit(call_id or "", line)
                     except Exception:
                         pass
+
+            def on_plan_event(event_type, payload):
+                if self._stopping:
+                    return
+                try:
+                    self.plan_event.emit(event_type, json.dumps(payload or {}, default=str))
+                except Exception:
+                    pass
 
             result = client.send_message_ws(
                 message=text,
@@ -528,6 +593,10 @@ class AIChatWorker(QObject):
                 on_token=on_token,
                 on_tool_progress=on_tool_progress,
                 auth_token=client.auth_token(),
+                agent_mode=agent_mode or "agent",
+                action=action or "chat",
+                plan_id=plan_id or None,
+                on_plan_event=on_plan_event,
             )
 
             if final_error:
@@ -583,10 +652,87 @@ class ChatBridge(QObject):
         super().__init__(parent)
         self.window = window
 
-    @pyqtSlot(str, str)
-    def sendMessage(self, text: str, model_id: str):
+    @pyqtSlot(str, str, str)
+    def sendMessage(self, text: str, model_id: str, agent_mode: str = ""):
         if self.window:
-            self.window._handle_web_send_message(text.strip(), model_id or "")
+            mode = agent_mode if agent_mode in ("planning", "agent") else None
+            self.window._handle_web_send_message(text.strip(), model_id or "", mode)
+
+    @pyqtSlot(str, str)
+    def executePlan(self, plan_id: str, model_id: str):
+        if self.window:
+            self.window._execute_plan(plan_id or "", model_id or "")
+
+    @pyqtSlot()
+    def executePlanNoArgs(self):
+        if self.window:
+            self.window._execute_plan("", "")
+
+    @pyqtSlot()
+    def editPlanInPlanningMode(self):
+        if self.window:
+            self.window._edit_plan_in_planning_mode()
+
+    @pyqtSlot()
+    def openPlanDock(self):
+        if not self.window:
+            return
+        main_win = self.window.parent()
+        dock = getattr(main_win, "dockPlan", None)
+        if dock:
+            sess = self.window._active_session()
+            plan = (sess or {}).get("current_plan")
+            if plan:
+                try:
+                    dock.load_plan(plan)
+                except Exception:
+                    pass
+            dock.show()
+            dock.raise_()
+
+    @pyqtSlot()
+    def openAgentTrace(self):
+        if self.window:
+            self.window.open_agent_trace()
+
+    @pyqtSlot(str)
+    def submitPlanAnswers(self, answers_json: str):
+        if not self.window:
+            return
+        try:
+            data = json.loads(answers_json) if answers_json else {}
+        except Exception:
+            data = {}
+        if data.get("skip"):
+            text = "[Plan answers] skip — use your best judgment from the clips."
+        else:
+            lines = ["[Plan answers]"]
+            answers = data.get("answers") or {}
+            if isinstance(answers, dict):
+                for key, val in answers.items():
+                    if val:
+                        lines.append(f"- {key}: {val}")
+            extra = str(data.get("notes") or "").strip()
+            if extra:
+                lines.append(f"- notes: {extra}")
+            text = "\n".join(lines) if len(lines) > 1 else "[Plan answers] (no changes)"
+        model_id = ""
+        if hasattr(self.window, "model_combo") and self.window.model_combo:
+            model_id = self.window.model_combo.currentData() or ""
+        # Always treat as answering pending questions so the processing gate cannot block Skip/Submit.
+        sess = self.window._active_session()
+        if sess is not None:
+            sess["pending_plan_questions"] = sess.get("pending_plan_questions") or [{"id": "_"}]
+            sess["awaiting_plan_answers"] = False
+        # If a prior planning turn is still winding down, force-clear processing so answers can send.
+        if self.window.is_processing:
+            self.window._set_processing_ui(False)
+        self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+
+    @pyqtSlot(str)
+    def setAgentMode(self, agent_mode: str):
+        if self.window:
+            self.window._set_agent_mode(agent_mode or "agent")
 
     @pyqtSlot()
     def cancelRequest(self):
@@ -641,6 +787,8 @@ class AIChatWindow(QDockWidget):
         self._first_prompt_summary = None  # mirrors active session's first_prompt_summary
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
+        self._token_buffer = []
+        self._token_flush_scheduled = False
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -685,6 +833,8 @@ class AIChatWindow(QDockWidget):
                     "processing": False,
                     "unread": False,
                     "first_prompt_summary": title,
+                    "agent_mode": entry.get("agent_mode", "agent"),
+                    "current_plan": None,
                 }
 
             active_from_store = store.get("active_session_id") if isinstance(store, dict) else None
@@ -734,6 +884,7 @@ class AIChatWindow(QDockWidget):
         worker.tool_started.connect(self._on_tool_started)
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
+        worker.plan_event.connect(self._on_plan_event)
         thread.start()
         return worker, thread
 
@@ -749,6 +900,8 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "agent_mode": "agent",
+            "current_plan": None,
         }
         self._active_sid = sid
 
@@ -765,6 +918,8 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "agent_mode": "agent",
+            "current_plan": None,
         }
         self._active_sid = sid
         self._first_prompt_summary = None
@@ -799,6 +954,16 @@ class AIChatWindow(QDockWidget):
                 ))
             self._push_tabs_to_js()
             self._run_js("setProcessing(%s);" % ("true" if self.is_processing else "false"))
+            plan = sess.get("current_plan")
+            if plan:
+                self._run_js(
+                    "if(window.setPlanChip) window.setPlanChip(%s);"
+                    % json.dumps(plan)
+                )
+            else:
+                self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
+            mode = sess.get("agent_mode", "agent")
+            self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(mode))
         self._update_preamble()
         self._save_chat_sessions_store()
         if not self._use_web_ui:
@@ -814,13 +979,12 @@ class AIChatWindow(QDockWidget):
         if session_id not in self._sessions:
             return
         sess = self._sessions.pop(session_id)
+        worker = sess.get("worker")
+        thread = sess.get("thread")
+        self._shutdown_worker(worker, thread, wait_ms=2000)
         # Clear backend session in background
-        QMetaObject.invokeMethod(sess["worker"], "clear_session", Qt.QueuedConnection)
-        # Stop the worker thread
-        thread = sess["thread"]
-        if thread.isRunning():
-            thread.quit()
-            thread.wait(1000)
+        if worker:
+            QMetaObject.invokeMethod(worker, "clear_session", Qt.QueuedConnection)
         # If we just closed the active session, switch to the first remaining one
         if self._active_sid == session_id:
             self._active_sid = next(iter(self._sessions))
@@ -873,22 +1037,13 @@ class AIChatWindow(QDockWidget):
             # 2. Tear down existing worker threads (do NOT clear backend
             #    memory — we want to be able to come back to these chats
             #    when the user reopens the previous project).
+            try:
+                from classes.api_client import get_backend_client
+                get_backend_client().cancel_current_request()
+            except Exception:
+                pass
             for sess in list(self._sessions.values()):
-                worker = sess.get("worker")
-                if worker is not None:
-                    try:
-                        worker._stopping = True
-                    except Exception:
-                        pass
-                thread = sess.get("thread")
-                if thread is not None and thread.isRunning():
-                    thread.quit()
-                    if not thread.wait(1500):
-                        try:
-                            thread.terminate()
-                            thread.wait(500)
-                        except Exception:
-                            pass
+                self._shutdown_worker(sess.get("worker"), sess.get("thread"), wait_ms=1500)
             self._sessions.clear()
             self._active_sid = ""
             self._first_prompt_summary = None
@@ -918,6 +1073,8 @@ class AIChatWindow(QDockWidget):
                         "processing": False,
                         "unread": False,
                         "first_prompt_summary": title,
+                        "agent_mode": entry.get("agent_mode", "agent"),
+                        "current_plan": None,
                     }
                 active_from_store = (
                     store.get("active_session_id") if isinstance(store, dict) else None
@@ -1041,7 +1198,11 @@ class AIChatWindow(QDockWidget):
             sessions_payload = []
             for sid, sess in self._sessions.items():
                 title = sess.get("first_prompt_summary") or sess.get("title", "New Chat")
-                sessions_payload.append({"session_id": sid, "title": title})
+                sessions_payload.append({
+                    "session_id": sid,
+                    "title": title,
+                    "agent_mode": sess.get("agent_mode", "agent"),
+                })
 
             payload = {
                 "version": 1,
@@ -1352,9 +1513,14 @@ class AIChatWindow(QDockWidget):
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setObjectName("clearBtn")
         self.clear_btn.clicked.connect(self.clear_chat)
+        self.trace_btn = QPushButton("Trace")
+        self.trace_btn.setObjectName("traceBtn")
+        self.trace_btn.setToolTip("Inspect agent tool args/results for this session")
+        self.trace_btn.clicked.connect(self.open_agent_trace)
         btn_h.addStretch()
         btn_h.addWidget(self.send_btn)
         btn_h.addWidget(self.cancel_btn)
+        btn_h.addWidget(self.trace_btn)
         btn_h.addWidget(self.clear_btn)
         layout.addLayout(btn_h)
 
@@ -1362,6 +1528,23 @@ class AIChatWindow(QDockWidget):
         self._add_system_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
+
+    def open_agent_trace(self):
+        """Open the Agent Trace dialog for the active session."""
+        try:
+            from windows.agent_trace_dialog import AgentTraceDialog
+        except Exception:
+            try:
+                from src.windows.agent_trace_dialog import AgentTraceDialog
+            except Exception as e:
+                log.error("AgentTraceDialog import failed: %s", e)
+                return
+        sid = self._active_sid or ""
+        dlg = AgentTraceDialog(sid, parent=self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _prepend_editor_snapshot(self, text: str) -> str:
         """Ground the model with a bounded timeline snapshot (main thread)."""
@@ -1545,11 +1728,22 @@ class AIChatWindow(QDockWidget):
         models = []
         try:
             client = get_backend_client()
-            api_models = client.list_models()  # returns List[{model_id, display_name}]
+            api_models = client.list_models()
             default_id = client.get_default_model_id()
             for m in api_models:
                 mid = m.get("model_id", "")
-                models.append({"id": mid, "name": m.get("display_name", mid), "default": mid == default_id})
+                # Pass the picker metadata straight through. The JS side
+                # defaults anything missing, so an older backend still works.
+                models.append({
+                    "id": mid,
+                    "name": m.get("display_name", mid),
+                    "default": mid == default_id,
+                    "provider": m.get("provider", ""),
+                    "featured": m.get("featured", True),
+                    "rank": m.get("rank", 500),
+                    "tags": m.get("tags", []),
+                    "available": m.get("available", True),
+                })
         except Exception:
             log.debug(
                 "Zenvi Assistant: model list unavailable during web UI init; using empty list"
@@ -1663,59 +1857,293 @@ class AIChatWindow(QDockWidget):
         if getattr(self, "_widget_tool_scroll", None):
             self._widget_tool_scroll.setVisible(False)
 
-    def _dispatch_user_message(self, text: str, model_id: str):
+    def _resolve_agent_mode(self, agent_mode: str = None) -> str:
+        if agent_mode in ("planning", "agent"):
+            return agent_mode
+        sess = self._active_session() or {}
+        return sess.get("agent_mode", "agent")
+
+    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = ""):
         """Shared send pipeline for web and widget chat UIs."""
         self._user_cancelled = False
-        worker = self._active_session().get("worker")
+        sess = self._active_session()
+        worker = sess.get("worker")
         if worker is None:
             return
-        self._clear_widget_tool_blocks()
-        self._add_user_msg(text)
-        if self._try_local_command(text):
+        if self.is_processing and action == "chat" and not sess.get("pending_plan_questions"):
+            if text:
+                self._run_js("alert('Processing previous message...');")
             return
-        self._request_preamble_summary(text)
-        augmented_text = self._prepend_editor_snapshot(text)
+        mode = self._resolve_agent_mode(agent_mode)
+        sess["agent_mode"] = mode
+        if sess.get("pending_plan_questions") and action == "chat" and text:
+            sess.pop("pending_plan_questions", None)
+            if self._use_web_ui:
+                self._run_js("if(window.clearPlanQuestions) window.clearPlanQuestions();")
+        self._clear_widget_tool_blocks()
+        if action == "chat" and text:
+            self._add_user_msg(text)
+        if action == "chat" and text and self._try_local_command(text):
+            return
+        if action == "chat" and text:
+            self._request_preamble_summary(text)
+        augmented_text = self._prepend_editor_snapshot(text) if text else text
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
             "run_request",
             Qt.QueuedConnection,
-            Q_ARG(str, augmented_text),
+            Q_ARG(str, augmented_text or ""),
             Q_ARG(str, model_id or ""),
+            Q_ARG(str, mode),
+            Q_ARG(str, action or "chat"),
+            Q_ARG(str, plan_id or ""),
         )
+        self._save_chat_sessions_store()
 
-    def _handle_web_send_message(self, text: str, model_id: str):
+    def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None):
         """Handle send from CEP UI (same logic as send_message but with args)."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
         if not text:
             return
-        self._dispatch_user_message(text, model_id)
+        self._dispatch_user_message(text, model_id, agent_mode=agent_mode)
 
-    def _stop_all_threads(self):
-        """Cleanly stop all session worker threads. Safe to call more than once."""
-        # Mark all workers as stopping FIRST so that when cancel_current_request()
-        # closes the WebSocket, the worker's run_request slot sees _stopping=True
-        # and returns silently instead of trying to fall back to REST or emit signals
-        # into a Qt stack that is already being torn down.
-        for sess in list(self._sessions.values()):
-            worker = sess.get("worker")
-            if worker:
-                worker._stopping = True
+    def _set_agent_mode(self, agent_mode: str):
+        sess = self._active_session()
+        sess["agent_mode"] = agent_mode if agent_mode in ("planning", "agent") else "agent"
+        if self._use_web_ui:
+            self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(sess["agent_mode"]))
+        self._save_chat_sessions_store()
+
+    def _execute_plan(self, plan_id: str, model_id: str):
+        """Run deterministic plan executor via backend."""
+        if self.is_processing:
+            self._run_js("alert('Processing previous message...');")
+            return
+        sess = self._active_session()
+        worker = sess.get("worker")
+        if worker is None or not getattr(worker, "_backend_session_id", None):
+            self._run_js("alert('Start planning in this chat tab first so the plan is linked to a session.');")
+            return
+        plan = sess.get("current_plan") or {}
+        status = (plan.get("status") or "").lower()
+        if status not in ("ready", "blocked", "completed", "executing"):
+            self._run_js("alert('Plan is not ready to execute yet.');")
+            return
+        if status in ("blocked", "completed", "executing"):
+            for step in plan.get("steps") or []:
+                st = (step.get("status") or "").lower()
+                if st in ("failed", "blocked") or (st == "skipped" and step.get("last_error")):
+                    step["status"] = "pending"
+                    step["last_error"] = ""
+            plan["status"] = "ready"
+            sess["current_plan"] = plan
+            if self._use_web_ui:
+                self._run_js("if(window.setPlanChip) window.setPlanChip(%s);" % json.dumps(plan))
+            main_win = self.parent()
+            if hasattr(main_win, "dockPlan") and main_win.dockPlan:
+                try:
+                    main_win.dockPlan.load_plan(plan)
+                except Exception:
+                    pass
+        self._add_assistant_msg("Executing plan…")
+        sess["agent_mode"] = "agent"
+        if self._use_web_ui:
+            self._run_js("if(window.setAgentModeUI) window.setAgentModeUI('agent');")
+        self._dispatch_user_message(
+            "",
+            model_id,
+            agent_mode="agent",
+            action="execute_plan",
+            plan_id=plan_id or plan.get("plan_id", ""),
+        )
+
+    def _edit_plan_in_planning_mode(self):
+        """Switch to Plan mode and prefill chat to revise a failed step."""
+        sess = self._active_session()
+        plan = (sess or {}).get("current_plan") or {}
+        failed_id = ""
+        err = ""
+        for step in plan.get("steps") or []:
+            if (step.get("status") or "").lower() == "failed":
+                failed_id = step.get("step_id") or ""
+                err = (step.get("last_error") or "")[:240]
+                break
+        if not failed_id:
+            failed_id = plan.get("current_step_id") or ""
+        text = f"Revise step {failed_id}"
+        if err:
+            text += f": execution failed with — {err}"
+        self._set_agent_mode("planning")
+        if self._use_web_ui:
+            self._run_js("if(window.setChatInput) window.setChatInput(%s);" % json.dumps(text))
+        else:
+            self._add_user_msg(text)
+
+    def _on_plan_event(self, event_type: str, payload_json: str):
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except Exception:
+            payload = {}
+        if sid in self._sessions:
+            if event_type == "plan_ready":
+                self._sessions[sid]["current_plan"] = payload
+            elif event_type == "plan_updated":
+                self._sessions[sid]["current_plan"] = payload
+                if sid == self._active_sid:
+                    main_win = self.parent()
+                    if hasattr(main_win, "dockPlan") and main_win.dockPlan:
+                        try:
+                            main_win.dockPlan.load_plan(payload)
+                        except Exception:
+                            pass
+                    if self._use_web_ui:
+                        self._run_js(
+                            "if(window.setPlanChip) window.setPlanChip(%s);"
+                            % json.dumps(payload)
+                        )
+            elif event_type == "plan_questions":
+                self._sessions[sid]["pending_plan_questions"] = payload.get("questions") or []
+                self._sessions[sid]["awaiting_plan_answers"] = True
+            elif event_type == "plan_step_status":
+                plan = self._sessions[sid].get("current_plan") or {}
+                step_id = payload.get("step_id", "")
+                for step in plan.get("steps") or []:
+                    if step.get("step_id") == step_id:
+                        step["status"] = payload.get("status", step.get("status"))
+                        if payload.get("error"):
+                            step["last_error"] = payload.get("error")
+                        break
+                self._sessions[sid]["current_plan"] = plan
+            if event_type == "plan_execution_done":
+                if payload.get("plan"):
+                    self._sessions[sid]["current_plan"] = payload["plan"]
+                else:
+                    plan = self._sessions[sid].get("current_plan") or {}
+                    if plan:
+                        plan["status"] = payload.get("status", plan.get("status"))
+                        self._sessions[sid]["current_plan"] = plan
+        if sid != self._active_sid:
+            return
+        main_win = self.parent()
+        if event_type == "plan_ready":
+            steps = payload.get("steps") or []
+            if payload.get("status", "").lower() != "ready" or not steps:
+                return
+            if hasattr(main_win, "dockPlan") and main_win.dockPlan:
+                try:
+                    main_win.dockPlan.load_plan(payload)
+                except Exception as e:
+                    log.warning("Failed to show plan dock: %s", e)
+            if self._use_web_ui:
+                self._run_js(
+                    "if(window.setPlanChip) window.setPlanChip(%s);"
+                    % json.dumps(payload)
+                )
+                self._run_js("if(window.clearPlanQuestions) window.clearPlanQuestions();")
+        elif event_type == "plan_questions":
+            if sid in self._sessions:
+                self._sessions[sid]["pending_plan_questions"] = payload.get("questions") or []
+                self._sessions[sid]["awaiting_plan_answers"] = True
+            self._set_processing_ui(False)
+            if self._use_web_ui:
+                self._run_js("if(window.setProcessing) window.setProcessing(false);")
+                self._run_js(
+                    "if(window.setPlanQuestions) window.setPlanQuestions(%s);"
+                    % json.dumps(payload.get("questions") or [])
+                )
+                # Stop showing further streamed prose for this turn (questions live in the panel).
+                self._run_js("if(window.suppressStreamingMessage) window.suppressStreamingMessage();")
+                self._token_buffer.clear()
+                self._token_flush_scheduled = False
+        if event_type == "plan_step_status":
+            if hasattr(main_win, "dockPlan") and main_win.dockPlan:
+                try:
+                    main_win.dockPlan.show()
+                    main_win.dockPlan.update_step_status(
+                        payload.get("step_id", ""),
+                        payload.get("status", ""),
+                        payload.get("error", ""),
+                    )
+                except Exception as e:
+                    log.debug("plan dock step update: %s", e)
+            if self._use_web_ui:
+                self._run_js(
+                    "if(window.updatePlanChipProgress) window.updatePlanChipProgress(%s, %s, %s);"
+                    % (
+                        json.dumps(payload.get("step_id", "")),
+                        json.dumps(payload.get("status", "")),
+                        json.dumps(payload.get("error", "")),
+                    )
+                )
+        if event_type == "plan_execution_done":
+            plan = self._sessions.get(sid, {}).get("current_plan")
+            if plan and hasattr(main_win, "dockPlan") and main_win.dockPlan:
+                try:
+                    main_win.dockPlan.load_plan(plan)
+                except Exception:
+                    pass
+            if self._use_web_ui:
+                plan = self._sessions.get(sid, {}).get("current_plan")
+                if plan:
+                    self._run_js(
+                        "if(window.setPlanChip) window.setPlanChip(%s);"
+                        % json.dumps(plan)
+                    )
+                else:
+                    self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
+            if sid == self._active_sid:
+                completed = payload.get("completed", 0)
+                skipped = payload.get("skipped", 0)
+                repaired = payload.get("repaired", 0)
+                if skipped:
+                    self._add_assistant_msg(
+                        f"Plan finished — {completed} step(s) done"
+                        + (f", {repaired} auto-repaired" if repaired else "")
+                        + f", {skipped} auto-skipped after self-heal."
+                    )
+                elif repaired:
+                    self._add_assistant_msg(
+                        f"Plan completed — {completed} step(s), {repaired} auto-repaired in-run."
+                    )
+        if event_type == "mode_changed":
+            mode = payload.get("agent_mode")
+            if mode in ("planning", "agent"):
+                self._set_agent_mode(mode)
+
+    def _shutdown_worker(self, worker, thread, wait_ms=3000):
+        """Stop one chat worker thread (cancel WS, quit, wait, terminate)."""
+        if worker:
+            worker._stopping = True
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        if thread and thread.isRunning():
+            thread.quit()
+            if not thread.wait(wait_ms):
+                log.warning("AI chat thread did not stop within %d ms; terminating", wait_ms)
+                thread.terminate()
+                thread.wait(1000)
+
+    def _stop_all_threads(self):
+        """Cleanly stop all session worker threads. Safe to call more than once."""
+        try:
+            from classes.api_client import get_backend_client
+            get_backend_client().cancel_current_request()
+        except Exception:
+            pass
+        if getattr(self, "_credits_timer", None):
+            try:
+                self._credits_timer.stop()
+            except Exception:
+                pass
         for sess in list(self._sessions.values()):
-            thread = sess.get("thread")
-            if thread and thread.isRunning():
-                thread.quit()
-                if not thread.wait(2000):
-                    log.warning("AI chat thread did not stop within 2 s; terminating")
-                    thread.terminate()
-                    thread.wait(500)
+            self._shutdown_worker(sess.get("worker"), sess.get("thread"))
 
     def closeEvent(self, event):
         """Stop all AI worker threads when the dock is explicitly closed."""
@@ -1752,7 +2180,11 @@ class AIChatWindow(QDockWidget):
             default_id = client.get_default_model_id()
             for m in api_models:
                 mid = m.get("model_id", "")
-                models.append((mid, m.get("display_name", mid)))
+                models.append((
+                    mid,
+                    m.get("display_name", mid),
+                    m.get("provider", "") or (mid.split("/", 1)[0] if "/" in mid else ""),
+                ))
         except Exception:
             log.debug(
                 "Zenvi Assistant: model list unavailable for widget UI; combo left empty until backend is up"
@@ -1760,7 +2192,23 @@ class AIChatWindow(QDockWidget):
         if not models:
             self.model_combo.addItem("No AI providers loaded", "")
             return
-        for model_id, display_name in models:
+
+        # This is only the no-web-view fallback, so keep it simple: group by
+        # provider with a disabled separator row so a long catalog stays
+        # navigable in a plain combo box.
+        provider_labels = {
+            "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google",
+            "xai": "xAI", "ollama": "Ollama",
+        }
+        current_provider = None
+        for model_id, display_name, provider in models:
+            if provider != current_provider:
+                current_provider = provider
+                label = provider_labels.get(provider, provider or "Other")
+                self.model_combo.addItem("── %s ──" % label, "")
+                sep_idx = self.model_combo.count() - 1
+                # Separator rows must not be selectable.
+                self.model_combo.model().item(sep_idx).setEnabled(False)
             self.model_combo.addItem(display_name, model_id)
         idx = self.model_combo.findData(default_id)
         if idx >= 0:
@@ -1836,12 +2284,35 @@ class AIChatWindow(QDockWidget):
     def cancel_request(self):
         """Stop the in-flight request and reset the chat UI."""
         self._user_cancelled = True
+        self._token_buffer.clear()
+        self._token_flush_scheduled = False
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        if self._use_web_ui:
+            self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
         self._set_processing_ui(False)
+
+    def _schedule_token_flush(self):
+        if self._token_flush_scheduled:
+            return
+        self._token_flush_scheduled = True
+        QTimer.singleShot(24, self._flush_token_buffer)
+
+    def _flush_token_buffer(self):
+        self._token_flush_scheduled = False
+        if not self._token_buffer:
+            return
+        chunk = "".join(self._token_buffer)
+        self._token_buffer.clear()
+        if not chunk or self._user_cancelled:
+            return
+        self._run_js(
+            "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
+            % json.dumps(chunk)
+        )
 
     @pyqtSlot(str)
     def _on_token(self, text: str):
@@ -1849,13 +2320,13 @@ class AIChatWindow(QDockWidget):
         if not text or self._user_cancelled:
             return
         sid = getattr(self.sender(), "_session_id", self._active_sid)
-        # Only stream into the visible session; background tabs get the
-        # full assistant_response when their turn finishes.
         if sid != self._active_sid:
             return
+        if (self._sessions.get(sid) or {}).get("awaiting_plan_answers"):
+            return
         if self._use_web_ui:
-            self._run_js("if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
-                         % json.dumps(text))
+            self._token_buffer.append(text)
+            self._schedule_token_flush()
 
     def _tool_result_summary(self, result: str) -> str:
         if not result:
@@ -1871,14 +2342,35 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
+        # Drop any pre-tool "thinking" that already streamed into the answer bubble.
+        self._token_buffer.clear()
+        self._token_flush_scheduled = False
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.resetStreamingMessage) window.resetStreamingMessage();"
+                "if(window.reopenThinkingForTools) window.reopenThinkingForTools();"
+            )
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
             args = {}
         title = humanize_tool_name(tool_name)
         cmd = _format_tool_command(tool_name, args)
+        # Full args for expand/inspect (bounded)
+        try:
+            args_pretty = json.dumps(args, indent=2, ensure_ascii=False, default=str)
+        except Exception:
+            args_pretty = str(args)
+        if len(args_pretty) > 4000:
+            args_pretty = args_pretty[:4000] + "\n…"
         if self._use_web_ui:
-            payload = {"call_id": call_id, "title": title, "cmd": cmd}
+            payload = {
+                "call_id": call_id,
+                "title": title,
+                "cmd": cmd,
+                "args_detail": args_pretty,
+                "tool_name": tool_name or "",
+            }
             self._run_js("if(window.addToolBlock) window.addToolBlock(%s);"
                          % json.dumps(json.dumps(payload)))
             return
@@ -1886,6 +2378,8 @@ class AIChatWindow(QDockWidget):
             return
         block_id = call_id or tool_name or ("tool_%s" % time.time())
         block = WidgetToolBlock(block_id, title, cmd, parent=self._widget_tool_blocks_host)
+        if args_pretty:
+            block.append_log("ARGS:\n" + args_pretty)
         insert_at = max(0, self._widget_tool_container.count() - 1)
         self._widget_tool_container.insertWidget(insert_at, block)
         self._widget_tool_blocks[block_id] = block
@@ -1907,12 +2401,20 @@ class AIChatWindow(QDockWidget):
 
     @pyqtSlot(str, bool, str)
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
-        """Mark a tool block as done/error and auto-collapse it."""
+        """Mark a tool block as done/error and keep result text for inspection."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
         summary = self._tool_result_summary(result)
+        detail = (result or "").strip()
+        if len(detail) > 6000:
+            detail = detail[:6000] + "\n…"
         if self._use_web_ui:
+            if detail:
+                self._run_js(
+                    "if(window.appendToolLog) window.appendToolLog(%s, %s);"
+                    % (json.dumps(call_id), json.dumps("RESULT:\n" + detail))
+                )
             self._run_js(
                 "if(window.completeToolBlock) window.completeToolBlock(%s, %s, %s);"
                 % (json.dumps(call_id), "true" if ok else "false", json.dumps(summary))
@@ -1920,6 +2422,8 @@ class AIChatWindow(QDockWidget):
             return
         block = self._widget_tool_blocks.get(call_id)
         if block:
+            if detail:
+                block.append_log("RESULT:\n" + detail)
             block.complete(ok, summary)
 
     @pyqtSlot(str)
@@ -1937,13 +2441,39 @@ class AIChatWindow(QDockWidget):
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
+                self._token_buffer.clear()
+                self._token_flush_scheduled = False
+                if self._use_web_ui:
+                    self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
                 self._set_processing_ui(False)
                 return
+            self._flush_token_buffer()
             # If we streamed tokens, replace the streaming bubble with the
             # finalised markdown-rendered message instead of appending a new one.
             if self._use_web_ui:
                 self._run_js("if(window.finalizeStreamingMessage) window.finalizeStreamingMessage();")
-            self._add_assistant_msg(text)
+            awaiting = bool((self._sessions.get(sid) or {}).get("awaiting_plan_answers"))
+            pending_q = (self._sessions.get(sid) or {}).get("pending_plan_questions")
+            if awaiting and pending_q:
+                # Only suppress prose while the question panel is still active.
+                self._sessions[sid]["awaiting_plan_answers"] = False
+                short = (text or "").strip()
+                if short and "question" in short.lower() and len(short) < 400:
+                    self._add_assistant_msg(short)
+                else:
+                    self._add_assistant_msg(
+                        "Answer the questions in the panel above (or Skip) so I can finalize the plan."
+                    )
+            else:
+                if sid in self._sessions:
+                    self._sessions[sid]["awaiting_plan_answers"] = False
+                body = (text or "").strip()
+                if not body or body == "Done.":
+                    body = (
+                        "Still working on the plan — say \"continue the plan\" "
+                        "if nothing appears in the Plan dock."
+                    )
+                self._add_assistant_msg(body)
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
@@ -1967,8 +2497,16 @@ class AIChatWindow(QDockWidget):
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
+                self._token_buffer.clear()
+                self._token_flush_scheduled = False
+                if self._use_web_ui:
+                    self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
                 return
+            self._token_buffer.clear()
+            self._token_flush_scheduled = False
             log.debug("ai_chat_ui _on_error: %s", text[:80] if text else "")
+            if self._use_web_ui:
+                self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._add_system_msg("Error: %s" % text)
             self._set_processing_ui(False)
 
@@ -2002,6 +2540,19 @@ class AIChatWindow(QDockWidget):
         self._add_msg(text, "user", is_assistant=False, is_system=False)
 
     def _add_assistant_msg(self, text):
+        # Strip leaked thinking headers that sometimes prefix the final reply.
+        text = re.sub(
+            r"(?im)^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*\n+",
+            "",
+            text or "",
+        )
+        text = re.sub(r"(?im)^\s*Thinking(?:…|\.\.\.)?\s*\n+", "", text).strip()
+        text = re.sub(
+            r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
         self._add_msg(text, "assistant", is_assistant=True, is_system=False)
 
     def _add_system_msg(self, text):

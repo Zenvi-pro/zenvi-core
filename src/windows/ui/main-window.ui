@@ -178,6 +178,7 @@
      <addaction name="actionUn_Freeze_View"/>
      <addaction name="separator"/>
      <addaction name="actionShow_All"/>
+     <addaction name="actionDock_All"/>
     </widget>
     <addaction name="actionView_Toolbar"/>
     <addaction name="actionFullscreen"/>
@@ -1282,6 +1283,17 @@
     <string>Show All</string>
    </property>
   </action>
+  <action name="actionDock_All">
+   <property name="icon">
+    <iconset theme="view-restore"/>
+   </property>
+   <property name="text">
+    <string>Dock All Panels</string>
+   </property>
+   <property name="toolTip">
+    <string>Dock all floating panels back into the main window</string>
+   </property>
+  </action>
   <action name="actionRecoveryProjects">
    <property name="checkable">
     <bool>false</bool>
@@ -1484,10 +1496,9 @@
    </property>
   </action>
   <action name="actionUpdate">
-   <property name="icon">
-    <iconset theme="package-upgrade" resource="../../../images/openshot.qrc">
-     <normaloff>:/icons/Humanity/actions/16/package-upgrade.svg</normaloff>:/icons/Humanity/actions/16/package-upgrade.svg</iconset>
-   </property>
+   <!-- Icon is set at runtime by UpdateStatusButton, which swaps it per update
+        state. The old iconset pointed at images/openshot.qrc, which no longer
+        exists, so it never resolved outside the Cosmic theme. -->
    <property name="text">
     <string>Update Available</string>
    </property>

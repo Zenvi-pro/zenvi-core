@@ -86,6 +86,14 @@
                         <!-- Left: model selector + icon buttons -->
                         <div class="chat-bottom-left relative flex items-center gap-1">
 
+                            <!-- Mode toggle: Plan / Agent -->
+                            <div id="chat-mode-toggle" class="chat-mode-toggle flex items-center gap-0.5 rounded-full p-0.5 border"
+                                 style="border-color: var(--chat-border); background: var(--chat-surface);"
+                                 role="group" aria-label="Agent mode">
+                                <button type="button" id="chat-mode-plan" class="chat-mode-btn" data-mode="planning">Plan</button>
+                                <button type="button" id="chat-mode-agent" class="chat-mode-btn active" data-mode="agent">Agent</button>
+                            </div>
+
                             <!-- Hidden native select (QWebChannel reads its value) -->
                             <select id="chat-model-select" class="hidden" aria-hidden="true"></select>
 
@@ -108,10 +116,33 @@
                                 </svg>
                             </button>
 
-                            <!-- Model dropdown menu -->
+                            <!-- Model dropdown menu. Search row and footer are
+                                 static; #chat-model-list is re-rendered. -->
                             <div id="chat-model-menu"
-                                 class="chat-model-menu absolute z-[100] py-1 rounded-[10px] border overflow-y-auto"
-                                 role="listbox" aria-label="AI model" style="display: none;"></div>
+                                 class="chat-model-menu absolute z-[100] rounded-[10px] border"
+                                 role="listbox" aria-label="AI model" style="display: none;">
+                                <div class="chat-model-search-wrap">
+                                    <input type="text" id="chat-model-search"
+                                           class="chat-model-search"
+                                           placeholder="Search models"
+                                           autocomplete="off" spellcheck="false"
+                                           aria-label="Search models">
+                                </div>
+                                <div id="chat-model-list" class="chat-model-list py-1"></div>
+                                <div id="chat-model-footer" class="chat-model-footer"></div>
+                            </div>
+
+                            <!-- Agent Trace -->
+                            <button type="button" id="chat-trace-btn"
+                                    class="chat-bottom-icon" title="Agent Trace (tool args/results)"
+                                    aria-label="Open agent trace">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <path d="M2 3.5h12M2 8h8M2 12.5h10"
+                                          stroke="currentColor" stroke-width="1.2"
+                                          stroke-linecap="round"/>
+                                    <circle cx="13" cy="8" r="1.5" fill="currentColor"/>
+                                </svg>
+                            </button>
 
                             <!-- Clear chat -->
                             <button type="button" id="chat-clear-btn"

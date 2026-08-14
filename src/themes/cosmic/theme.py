@@ -299,6 +299,13 @@ QLabel#dock-title-handle {
     qproperty-pixmap: url({PATH}themes/cosmic/images/dock-move.svg);
 }
 
+/* Custom (Qt-drawn) dock title bar — also used by floating panels, where it
+   is the drag handle that lets them be docked back in */
+QWidget#dock-title-bar {
+    background-color: #0d0d0d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 /* ── Dock widgets ─────────────────────────────────────────── */
 QDockWidget {
     background-color: #0d0d0d;
@@ -346,23 +353,6 @@ QPushButton#dock-float-button:hover {
 QPushButton#dock-close-button:hover {
     background: rgba(239,68,68,0.15);
     color: #ef4444;
-}
-
-/* Menu-bar logout button (top-right corner widget) */
-QToolButton#logout-btn {
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    padding: 3px 6px;
-    margin: 1px 4px;
-    color: #8a8a8a;
-}
-QToolButton#logout-btn:hover {
-    background: rgba(239,68,68,0.15);
-    color: #ef4444;
-}
-QToolButton#logout-btn:pressed {
-    background: rgba(239,68,68,0.25);
 }
 
 QDockWidget QWidget { border: none; }
@@ -1221,11 +1211,20 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 ),
             },
             {
-                "action": self.app.window.actionUpdate,
-                "icon": "themes/cosmic/images/warning.svg",
-                "visible": False,
+                "action": self.app.window.actionLogout,
+                "icon": "themes/cosmic/images/tool-logout.svg",
                 "style": Qt.ToolButtonIconOnly,
-                "stylesheet": "QToolButton { background-color: #252525; color: #f59e0b; }",
+                "stylesheet": (
+                    "QToolButton { background: transparent; border: none; border-radius: 6px; padding: 8px 10px; } "
+                    "QToolButton:hover { background-color: rgba(239,68,68,0.15); } "
+                    "QToolButton:pressed { background-color: rgba(239,68,68,0.25); }"
+                ),
+            },
+            {
+                # The update pill styles itself per state and paints its own
+                # download progress, so it carries no stylesheet here
+                "widget": self.app.window.update_status_button,
+                "visible": self.app.window.update_status_button.is_active,
             },
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)

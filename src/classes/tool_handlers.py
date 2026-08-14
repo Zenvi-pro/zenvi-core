@@ -23,6 +23,7 @@ import uuid as uuid_module
 from typing import Optional
 
 from classes.logger import log
+from classes.clip_placement import compute_clip_trim_bounds, default_underlay_layer_number
 from classes.track_display import (
     format_track_label_for_llm,
     layer_number_to_display_index,
@@ -355,25 +356,28 @@ def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_i
         return [], str(e)
 
 
-def _output_path_for_generated_video():
-    """Return an absolute path for a new generated MP4 (preview-safe)."""
+def _output_path_for_generated_video(ext=".mp4"):
+    """Return an absolute path for a new generated video (preview-safe)."""
+    ext = ext if str(ext).startswith(".") else f".{ext}"
+    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv"):
+        ext = ".mp4"
     app = _get_app()
     project_path = getattr(app.project, "current_filepath", None) or ""
     if project_path and os.path.isabs(os.path.expanduser(str(project_path))):
         out_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(project_path))), "Generated")
         try:
             os.makedirs(out_dir, exist_ok=True)
-            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}.mp4")
+            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
         except OSError:
             pass
     try:
         from classes import info
         out_dir = os.path.join(info.USER_PATH, "Generated")
         os.makedirs(out_dir, exist_ok=True)
-        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}.mp4")
+        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
     except Exception:
         pass
-    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}.mp4")
+    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}{ext}")
 
 
 def _canonical_media_path(path):
@@ -521,19 +525,33 @@ def list_files(**_kw) -> str:
     try:
         import os
         from classes.query import File
+        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+
         files = File.filter()
         if not files:
             return "No files in project."
         lines = []
+        visible = 0
         for f in files:
             d = f.data if isinstance(f.data, dict) else {}
+            if d.get("zenvi_subclip"):
+                continue
+            visible += 1
             name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
             dur = float(d.get("duration", 0) or 0)
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            analyzed = bool(ai.get("analyzed"))
+            indexed = twelvelabs_is_indexed(get_index_block(ai))
+            preview = _summary_preview_for_file_data(d)
             lines.append(
                 f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
+                f"analyzed={analyzed} indexed={indexed} "
+                f"summary_preview={preview!r} "
                 f"path={os.path.basename(d.get('path', ''))}"
             )
-        return f"Media bin files ({len(files)}):\n" + "\n".join(lines)
+        if not lines:
+            return "No files in project."
+        return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
@@ -541,14 +559,14 @@ def list_files(**_kw) -> str:
 _TAGS_PREVIEW_MAX = 80
 
 
-def _tags_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
+def _summary_preview_for_file_data(file_data: dict, clip_data: dict | None = None) -> str:
     """Top objects/scenes from effective metadata for compact clip listing."""
-    from classes.ai_metadata_utils import build_tags_preview, get_effective_ai_metadata
+    from classes.ai_metadata_utils import build_summary_preview, get_effective_ai_metadata
 
     if not isinstance(file_data, dict):
         return ""
     effective = get_effective_ai_metadata(file_data, clip_data=clip_data, rebased=True)
-    return build_tags_preview(effective)
+    return build_summary_preview(effective)
 
 
 def _file_is_analyzed(file_data: dict) -> bool:
@@ -610,7 +628,7 @@ def list_clips(layer="", **_kw) -> str:
             title = d.get("title") or d.get("label") or ""
             fid = d.get("file_id", "")
             fname = ""
-            tags_preview = ""
+            summary_preview = ""
             parent_file_id = ""
             source_start = d.get("start", 0)
             source_end = d.get("end", 0)
@@ -629,14 +647,14 @@ def list_clips(layer="", **_kw) -> str:
                             or os.path.basename(str(fdata.get("path") or ""))
                         )
                         ctx = build_timeline_clip_context(c, d, fdata, layers=layers_raw)
-                        tags_preview = ctx.tags_preview
+                        summary_preview = ctx.summary_preview
                         parent_file_id = ctx.parent_file_id
                         source_start = ctx.source_start
                         source_end = ctx.source_end
                         timeline_end = ctx.timeline_end
                 except Exception:
                     pass
-            tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
+            summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
             occ_hint = ""
             dup_key = f"{fid}:{lid_int}"
             dupes = file_dupes.get(dup_key, [])
@@ -649,7 +667,7 @@ def list_clips(layer="", **_kw) -> str:
             parent_part = f" parent_file_id={parent_file_id}" if parent_file_id and parent_file_id != str(fid) else ""
             lines.append(
                 f"  timeline_clip_id={c.id} media_bin_file_id={fid}{parent_part} "
-                f"title={title!r} file={fname!r}{tag_part}{occ_hint} "
+                f"title={title!r} file={fname!r}{summary_part}{occ_hint} "
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
                 f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
                 f"source_start={source_start} source_end={source_end}"
@@ -661,18 +679,36 @@ def list_clips(layer="", **_kw) -> str:
 
 def list_layers(**_kw) -> str:
     try:
+        from classes.track_display import build_track_stack, track_stack_json
+
         layers = _get_app().project.get("layers") or []
         if not layers:
             return "No layers in project."
-        asc = layers_sorted_by_number(layers)
-        lines = []
-        for ui_track, L in enumerate(asc, start=1):
-            label = (L.get("label") or L.get("name") or "").strip()
+        stack = build_track_stack(layers)
+        lock_by_num = {
+            int(L.get("number") or 0): bool(L.get("lock", False)) for L in layers
+        }
+        n = len(stack)
+        bottom = stack[0] if stack else {}
+        top = stack[-1] if stack else {}
+        lines = [
+            f"Layers ({n}). Z-ORDER uses layer_number only (higher covers lower). "
+            "Track labels/names are cosmetic — they can be anything and do NOT imply priority.",
+            f"BOTTOM (drawn under): layer_number={bottom.get('layer_number')} "
+            f"label={bottom.get('label')!r}",
+            f"TOP (covers all below): layer_number={top.get('layer_number')} "
+            f"label={top.get('label')!r}",
+            "Stack bottom→top:",
+        ]
+        for e in stack:
             lines.append(
-                f"  id={L.get('id','')} number={L.get('number','')} ui_track={ui_track} "
-                f"label={label!r} lock={L.get('lock', False)}"
+                f"  layer_number={e['layer_number']} ui_track={e['ui_track']} "
+                f"z_from_bottom={e['z_from_bottom']} label={e.get('label')!r} "
+                f"track_id={e.get('track_id')!r} "
+                f"lock={lock_by_num.get(e['layer_number'], False)}"
             )
-        return f"Layers ({len(layers)}):\n" + "\n".join(lines)
+        lines.append(f"TRACK_STACK_JSON={track_stack_json(layers)}")
+        return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
@@ -1151,16 +1187,28 @@ def split_file_add_clip(file_id="", start_frame=0, end_frame=0, name="", **_kw) 
         return f"Error: {e}"
 
 
-def add_clip_to_timeline(file_id="", position_seconds="", track="", **_kw) -> str:
+def add_clip_to_timeline(
+    file_id="",
+    position_seconds="",
+    track="",
+    duration_seconds="",
+    start_seconds="",
+    **_kw,
+) -> str:
     try:
-        from classes.query import File, Track
+        from classes.query import File, Track, Clip
 
         chat_session_id = str(_kw.get("chat_session_id", "") or "default")
 
         if not file_id or (isinstance(file_id, str) and not file_id.strip()):
             file_id = _last_split_file_id_by_chat_session.get(chat_session_id)
             if not file_id:
-                return "Error: No clip was just created."
+                return (
+                    "Error: No clip was just created. "
+                    "Pass tool_args.file_id with a media_bin file id, or run "
+                    "split_file_add_clip_tool / import_stock_media_tool immediately before this "
+                    "step (empty file_id only works right after those tools in the same session)."
+                )
         else:
             file_id = str(file_id).strip()
         f = File.get(id=file_id)
@@ -1181,20 +1229,34 @@ def add_clip_to_timeline(file_id="", position_seconds="", track="", **_kw) -> st
             or (not file_data.get("has_video", True) and file_data.get("has_audio", False))
         )
 
+        # Optional trim window (stock / beat placement)
+        trim_dur = None
+        trim_start = 0.0
+        if str(start_seconds or "").strip():
+            try:
+                trim_start = max(0.0, float(start_seconds))
+            except (TypeError, ValueError):
+                trim_start = 0.0
+        if str(duration_seconds or "").strip():
+            try:
+                trim_dur = max(0.0, float(duration_seconds))
+            except (TypeError, ValueError):
+                trim_dur = None
+
         # Determine track FIRST so we can compute position relative to that layer
         if not track or (isinstance(track, str) and not track.strip()):
             layers = app.project.get("layers") or []
             if _is_audio_only:
-                # Audio: use the lowest-numbered layer (bottom track)
-                track_num = int(min(layers, key=lambda l: l.get("number", 0)).get("number", 1)) if layers else 1
+                track_num = default_underlay_layer_number(layers, audio=True)
             else:
                 selected = getattr(win, "selected_tracks", []) or []
                 if selected:
                     t = Track.get(id=selected[0])
                     track_num = int(t.data.get("number", 1)) if t else 1
                 else:
-                    # Video: use the highest-numbered layer (top track)
-                    track_num = int(max(layers, key=lambda l: l.get("number", 0)).get("number", 1)) if layers else 1
+                    # Video underlay default: lowest layer (bottom) so stock/B-roll
+                    # does not cover main footage on higher layers.
+                    track_num = default_underlay_layer_number(layers)
         else:
             layers_for_track = app.project.get("layers") or []
             resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers_for_track)
@@ -1208,8 +1270,7 @@ def add_clip_to_timeline(file_id="", position_seconds="", track="", **_kw) -> st
                 pos_sec = 0.0
             else:
                 # Video: append after the last clip on THIS SAME LAYER to avoid cross-track interference
-                from classes.query import Clip as _Clip
-                same_layer = [c for c in _Clip.filter() if c.data.get("layer", 0) == track_num]
+                same_layer = [c for c in Clip.filter() if c.data.get("layer", 0) == track_num]
                 # 1-frame buffer to prevent adjacent clips from touching (snap-to-grid rounding
                 # can otherwise cause the new clip to slightly overlap the previous one)
                 _one_frame = 1.0 / max(fps_float, 1.0)
@@ -1230,15 +1291,63 @@ def add_clip_to_timeline(file_id="", position_seconds="", track="", **_kw) -> st
         else:
             pos = QPointF(pos_sec, 0.0)
 
+        result_box = [None]
+
         def _do_add():
-            win.timeline.addClip(file_id, pos, track_num)
+            new_clip = win.timeline.addClip(file_id, pos, track_num)
+            if new_clip and trim_dur is not None and trim_dur > 0:
+                # Clamp trim to source length
+                try:
+                    from classes.ai_metadata_utils import get_source_window
+                    src_start, src_end = get_source_window({}, file_data)
+                    source_len = max(0.0, float(src_end) - float(src_start))
+                except Exception:
+                    try:
+                        source_len = float(file_data.get("duration") or 0)
+                    except (TypeError, ValueError):
+                        source_len = 0.0
+                if source_len <= 0:
+                    try:
+                        source_len = float((file_data.get("reader") or {}).get("duration") or 0)
+                    except (TypeError, ValueError):
+                        source_len = 0.0
+
+                file_start = float(file_data.get("start") or 0.0)
+                start_sec, end_sec = compute_clip_trim_bounds(
+                    source_len,
+                    trim_start=trim_start,
+                    trim_dur=trim_dur,
+                    file_start=file_start,
+                    min_duration=1.0 / max(fps_float, 1.0),
+                )
+
+                new_clip["start"] = start_sec
+                new_clip["end"] = end_sec
+                new_clip["duration"] = max(0.0, end_sec - start_sec)
+                win.timeline.update_clip_data(
+                    new_clip, only_basic_props=False, ignore_refresh=False
+                )
+            result_box[0] = new_clip
 
         _run_on_main_thread(_do_add)
 
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
-        return f"Added clip to timeline at position {pos_sec}s on track {track_lbl}."
+        placed = result_box[0] or {}
+        eff_dur = None
+        try:
+            if placed:
+                eff_dur = float(placed.get("end", 0)) - float(placed.get("start", 0))
+        except (TypeError, ValueError):
+            eff_dur = None
+        dur_part = f" duration={eff_dur:.2f}s" if eff_dur is not None and eff_dur > 0 else ""
+        clip_id = placed.get("id", "") if isinstance(placed, dict) else ""
+        id_part = f" timeline_clip_id={clip_id}" if clip_id else ""
+        return (
+            f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
+            f"{dur_part}{id_part}."
+        )
     except Exception as e:
         return f"Error: {e}"
 
@@ -1274,8 +1383,213 @@ def slice_clip_at_playhead(**_kw) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Search (timeline clip scenes — tag/query resolved)
+# Search (project-wide video index + in-clip scenes)
 # ---------------------------------------------------------------------------
+
+def get_project_catalog(**_kw) -> str:
+    """Orientation pass: list short summaries for all indexed project media."""
+    try:
+        from classes.api_client import get_backend_client
+        from classes.app import get_app
+
+        project_id = ""
+        try:
+            project_id = str(get_app().project.get("id") or "")
+        except Exception:
+            pass
+        if not project_id:
+            return "Error: project_id unavailable."
+        client = get_backend_client()
+        data = client.get_project_catalog(project_id)
+        if data.get("error"):
+            return f"Error: {data['error']}"
+        items = data.get("items") or []
+        if not items:
+            return (
+                "Catalog is empty — index/summarize project videos, images, and audio first, "
+                "then call get_project_catalog_tool again."
+            )
+        lines = [f"Project catalog ({len(items)} media items):"]
+        for it in items:
+            name = it.get("filename") or it.get("file_id") or it.get("video_id")
+            summary = (it.get("short_summary") or "").strip() or "(no summary)"
+            mt = str(it.get("media_type") or "video")
+            dur = it.get("duration_sec")
+            dur_s = f" [{dur:.1f}s]" if isinstance(dur, (int, float)) and mt != "image" else ""
+            lines.append(
+                f"- [{mt}] {name}{dur_s} file_id={it.get('file_id')}: {summary}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+_ORDINAL_MAP = {
+    "first": 1, "1st": 1,
+    "second": 2, "2nd": 2,
+    "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4,
+    "fifth": 5, "5th": 5,
+}
+
+
+def _detect_ordinal(query: str) -> int:
+    words = (query or "").lower().split()
+    for word in words:
+        if word in _ORDINAL_MAP:
+            return _ORDINAL_MAP[word]
+    return 0
+
+
+def search_clips(query="", top_k="5", **_kw) -> str:
+    """Project-wide video index search on this project's shared index.
+
+    Returns media_bin_file_id + timestamp (deeper than Gemini tags).
+    """
+    q = str(query or "").strip()
+    if not q:
+        return "Error: query is required."
+    try:
+        k = int(float(top_k)) if str(top_k).strip() else 5
+    except Exception:
+        k = 5
+    k = max(1, min(k, 20))
+
+    try:
+        from collections import defaultdict
+
+        from classes.api_client import get_backend_client
+        from classes.project_tl_index import (
+            collect_project_twelvelabs_index,
+            map_search_hit_to_file,
+        )
+        from classes.twelvelabs_match import compute_cut_timestamp
+
+        info = collect_project_twelvelabs_index()
+        if info.get("error") and not info.get("index_id"):
+            return (
+                f"Error: {info['error']} "
+                "Index/summarize project videos first, then search again."
+            )
+        index_id = str(info.get("index_id") or "").strip()
+        if not index_id:
+            return (
+                "Error: No project video index_id on project files. "
+                "Reindex clips so they share the project index, then retry."
+            )
+        video_map = info.get("video_map") or {}
+        client = get_backend_client()
+        if not client.is_indexing_configured():
+            return "Error: Video indexing is not configured on the backend."
+
+        page_limit = max(30, k * 10)
+        resp = client.search(
+            q,
+            top_k=page_limit,
+            index_id=index_id,
+            page_limit=page_limit,
+        )
+        if resp.get("error"):
+            return f"Error: {resp['error']}"
+        results = resp.get("results") or []
+        if not results:
+            return (
+                f"No index matches for '{q}' in this project's index "
+                f"({info.get('index_name') or index_id}, "
+                f"{info.get('indexed_count', 0)} indexed media item(s)). "
+                "Try a more specific description, or check indexing finished."
+            )
+
+        requested_nth = _detect_ordinal(q)
+        grouped: dict = defaultdict(list)
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            vid = str(r.get("video_id") or "").strip()
+            fid, fname = map_search_hit_to_file(r, video_map)
+            key = fid or vid or fname or "unknown"
+            grouped[key].append({**r, "_file_id": fid, "_fname": fname, "_vid": vid})
+
+        lines = [
+            f"Found {len(results)} match(es) across {len(grouped)} project media item(s) "
+            f"(index_id={index_id}, index_name={info.get('index_name') or ''}):",
+        ]
+        shown = 0
+        for key, hits in grouped.items():
+            if shown >= k and requested_nth == 0:
+                break
+            fid = hits[0].get("_file_id") or ""
+            fname = hits[0].get("_fname") or key
+            vid = hits[0].get("_vid") or ""
+            mt = str(hits[0].get("media_type") or "video")
+            id_part = f" media_bin_file_id={fid}" if fid else " media_bin_file_id=(unmapped)"
+            vid_part = f" twelvelabs_video_id={vid}" if vid else ""
+            type_part = f" media_type={mt}"
+
+            hits_sorted = sorted(hits, key=lambda x: float(x.get("start") or 0))
+            if len(hits_sorted) == 1 and requested_nth == 0:
+                r = hits_sorted[0]
+                cut = compute_cut_timestamp(
+                    float(r.get("start") or 0),
+                    float(r.get("end") or 0),
+                    mode="start",
+                )
+                lines.append(
+                    f"  • {fname}{id_part}{vid_part}{type_part} — timestamp {_fmt_mmss(cut)} "
+                    f"(segment {_fmt_mmss(float(r.get('start') or 0))}-"
+                    f"{_fmt_mmss(float(r.get('end') or 0))}, rank={r.get('rank')})"
+                )
+                shown += 1
+                continue
+
+            if requested_nth > 0:
+                idx = min(requested_nth - 1, len(hits_sorted) - 1)
+                r = hits_sorted[idx]
+                cut = compute_cut_timestamp(
+                    float(r.get("start") or 0),
+                    float(r.get("end") or 0),
+                    mode="start",
+                )
+                lines.append(
+                    f"  • {fname}{id_part}{vid_part} — occurrence #{requested_nth} "
+                    f"at timestamp {_fmt_mmss(cut)} "
+                    f"(segment {_fmt_mmss(float(r.get('start') or 0))}-"
+                    f"{_fmt_mmss(float(r.get('end') or 0))})"
+                )
+                shown += 1
+            else:
+                lines.append(
+                    f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
+                )
+                for i, r in enumerate(hits_sorted[:8], 1):
+                    cut = compute_cut_timestamp(
+                        float(r.get("start") or 0),
+                        float(r.get("end") or 0),
+                        mode="start",
+                    )
+                    lines.append(
+                        f"      {i}. timestamp {_fmt_mmss(cut)} "
+                        f"(segment {_fmt_mmss(float(r.get('start') or 0))}-"
+                        f"{_fmt_mmss(float(r.get('end') or 0))}, rank={r.get('rank')})"
+                    )
+                if len(hits_sorted) > 1:
+                    lines.append(
+                        "      Multiple matches — specify which occurrence "
+                        "(e.g. 'the 1st time', 'the 2nd time')."
+                    )
+                shown += 1
+
+        unmapped = sum(1 for hits in grouped.values() if not hits[0].get("_file_id"))
+        if unmapped:
+            lines.append(
+                f"Note: {unmapped} hit group(s) had no media_bin_file_id mapping — "
+                "reindex those files into this project index."
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        log.error("search_clips: %s", e, exc_info=True)
+        return f"Error: {e}"
+
 
 def search_clip_scenes(
     query="",
@@ -1293,7 +1607,7 @@ def search_clip_scenes(
         from classes.ai_metadata_utils import get_effective_ai_metadata
         from classes.api_client import get_backend_client
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
-        from classes.twelvelabs_match import select_hits_for_display
+        from classes.twelvelabs_match import select_hits_for_display, get_index_block
 
         resolved = _resolve_timeline_clip_for_tool(
             clip_query=clip_query,
@@ -1323,14 +1637,14 @@ def search_clip_scenes(
 
         # TwelveLabs search (parent index + trim window)
         if client.is_indexing_configured():
-            tw = (source_ai or {}).get("twelvelabs") if isinstance((source_ai or {}).get("twelvelabs"), dict) else {}
+            tw = get_index_block(source_ai or {})
             status = (tw.get("status") or "").lower()
             index_id = tw.get("index_id") or ""
             video_id = tw.get("video_id") or ""
 
             if status == "ready" and index_id and video_id:
                 search_query = _semantic_search_query(query)
-                items, err = _twelvelabs_search_in_window(
+                items, err = _tl_search_items_in_window(
                     str(index_id), search_query, page_limit=max(30, k * 10), video_id=str(video_id),
                 )
                 if not err and items:
@@ -1343,7 +1657,7 @@ def search_clip_scenes(
                     )
                     if matches:
                         lines = [
-                            f"TwelveLabs matches in '{clip_name}' "
+                            f"Index matches in '{clip_name}' "
                             f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
                         ]
                         for m in matches:
@@ -1361,7 +1675,35 @@ def search_clip_scenes(
                                 )
                         return "\n".join(lines)
 
-        # Local scene descriptions fallback
+                # Broader project search filtered to this video before tag fallback
+                search_query = _semantic_search_query(query)
+                broad_items, broad_err = _tl_search_items_in_window(
+                    str(index_id), search_query, page_limit=max(50, k * 15), video_id="",
+                )
+                if not broad_err and broad_items:
+                    filtered = [
+                        it for it in broad_items
+                        if str(it.get("video_id") or it.get("twelvelabs_video_id") or "") == str(video_id)
+                    ]
+                    if filtered:
+                        matches = select_hits_for_display(
+                            filtered,
+                            clip_start=clip_start,
+                            clip_end=clip_end,
+                            occurrence=nth,
+                            top_k=k,
+                        )
+                        if matches:
+                            lines = [
+                                f"Index matches in '{clip_name}' "
+                                f"({_fmt_mmss(clip_start)} - {_fmt_mmss(clip_end)}):"
+                            ]
+                            for m in matches:
+                                rel_cut = m["cut_source"] - clip_start
+                                lines.append(f"- timestamp {_fmt_mmss(rel_cut)} (project search)")
+                            return "\n".join(lines)
+
+        # Local chapter / description fallback (Pegasus chapters or legacy scenes)
         local_ai = per_clip_ai
         if local_ai is None:
             local_ai = get_effective_ai_metadata(
@@ -1370,15 +1712,38 @@ def search_clip_scenes(
                 rebased=True,
             )
 
-        # Simple local search over cached paths/tags (no LLM)
-        scenes = (local_ai or {}).get("scene_descriptions", [])
-        if not scenes:
+        candidates = []
+        for ch in (local_ai or {}).get("chapters") or []:
+            if not isinstance(ch, dict):
+                continue
+            summary = (ch.get("summary") or ch.get("title") or "").strip()
+            if not summary:
+                continue
+            candidates.append({
+                "time": float(ch.get("start", 0.0) or 0.0),
+                "description": summary,
+            })
+        for s in (local_ai or {}).get("scene_descriptions") or []:
+            if not isinstance(s, dict):
+                continue
+            desc = (s.get("description") or "").strip()
+            if not desc:
+                continue
+            candidates.append({
+                "time": float(s.get("time", 0.0) or 0.0),
+                "description": desc,
+            })
+        # Also score transcript / sounds as whole-clip hints (time=0)
+        for key in ("transcript", "sounds", "description", "short_summary"):
+            text = str((local_ai or {}).get(key) or "").strip()
+            if text:
+                candidates.append({"time": float(clip_start or 0.0), "description": text[:500]})
+
+        if not candidates:
             return "No matches found."
         scored = []
         q_lower = query.lower()
-        for s in scenes:
-            if not isinstance(s, dict):
-                continue
+        for s in candidates:
             desc = (s.get("description") or "").strip()
             if not desc:
                 continue
@@ -1397,9 +1762,9 @@ def search_clip_scenes(
         results = scored[:k]
         if not results:
             return "No matches found."
-        lines = [f"Scene-description matches in '{clip_name}':"]
+        lines = [f"Description matches in '{clip_name}':"]
         for r in results:
-            lines.append(f"- [{_fmt_mmss(r['time'])}] score={r['score']:.3f}: {r['description']}")
+            lines.append(f"- [{_fmt_mmss(r['time'])}] score={r['score']:.3f}: {r['description'][:200]}")
         return "\n".join(lines)
     except Exception as e:
         log.error("search_clip_scenes: %s", e, exc_info=True)
@@ -1444,6 +1809,32 @@ def _semantic_search_query(query: str) -> str:
     return cleaned if cleaned else str(query).strip()
 
 
+def _audio_biased_tl_query(query: str, source_ai=None) -> str:
+    """Build an audio/dialogue-oriented TwelveLabs query."""
+    q = _semantic_search_query(query)
+    if not q:
+        return "spoken dialogue"
+    import re
+    if re.search(r"[^\x00-\x7F]", q):
+        return f"spoken words: {q}"
+    return f"spoken dialogue about {q}"
+
+
+def _tl_search_items_in_window(index_id, query_text, *, page_limit=30, video_id=""):
+    """Run TL search; on zero hits retry with audio-biased query."""
+    items, err = _twelvelabs_search_in_window(
+        index_id, query_text, page_limit=page_limit, video_id=video_id,
+    )
+    if err or items:
+        return items, err
+    audio_q = _audio_biased_tl_query(query_text)
+    if audio_q != query_text:
+        return _twelvelabs_search_in_window(
+            index_id, audio_q, page_limit=page_limit, video_id=video_id,
+        )
+    return items, err
+
+
 def _scene_description_cut_source(
     clip_start: float,
     clip_end: float,
@@ -1452,20 +1843,34 @@ def _scene_description_cut_source(
     occurrence: int,
     per_clip_ai=None,
 ):
-    """Return a source-file cut time from scene descriptions, or None."""
+    """Return a source-file cut time from Pegasus chapters or legacy scenes, or None."""
     from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
 
     local_ai = per_clip_ai
     if local_ai is None and source_ai is not None:
         local_ai = adjust_scene_descriptions_for_subclip(source_ai, clip_start, clip_end)
-    scenes = (local_ai or {}).get("scene_descriptions", [])
-    if not scenes:
+
+    candidates = []
+    for ch in (local_ai or {}).get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        summary = (ch.get("summary") or ch.get("title") or "").strip()
+        if not summary:
+            continue
+        candidates.append({"time": float(ch.get("start", 0.0) or 0.0), "description": summary})
+    for s in (local_ai or {}).get("scene_descriptions") or []:
+        if not isinstance(s, dict):
+            continue
+        desc = (s.get("description") or "").strip()
+        if not desc:
+            continue
+        candidates.append({"time": float(s.get("time", 0.0) or 0.0), "description": desc})
+
+    if not candidates:
         return None
     q_lower = (query or "").lower()
     scored = []
-    for s in scenes:
-        if not isinstance(s, dict):
-            continue
+    for s in candidates:
         desc = (s.get("description") or "").strip()
         if not desc:
             continue
@@ -1487,9 +1892,9 @@ def _scene_description_cut_source(
             scored.append((t, score))
     if not scored:
         return None
-    scored.sort(key=lambda x: (-x[1], x[0]))
-    if occurrence > 0:
-        idx = min(occurrence - 1, len(scored) - 1)
+    scored.sort(key=lambda x: x[1], reverse=True)
+    if occurrence and occurrence > 0:
+        idx = min(occurrence, len(scored)) - 1
         return scored[idx][0]
     return scored[0][0]
 
@@ -1769,7 +2174,7 @@ def slice_clip_at_best_match(
                     else None
                 )
                 # Extract TwelveLabs info (may be absent for old imports)
-                tw = (sa or {}).get("twelvelabs") if isinstance((sa or {}).get("twelvelabs"), dict) else {}
+                tw = get_index_block(sa or {})
                 tw_status = (tw.get("status") or "").lower()
                 iid = tw.get("index_id") or ""
                 vid = tw.get("video_id") or ""
@@ -2081,6 +2486,218 @@ def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080
         ok, err = _ffmpeg_run(cmd_no_audio)
         if not ok:
             return None, f"Re-encode failed: {err}"
+    return output_path, None
+
+
+def _ffprobe_pix_fmt(path) -> str:
+    """Return primary video pix_fmt or empty string."""
+    try:
+        p = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=pix_fmt",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        return (p.stdout or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _ffprobe_alpha_mode(path) -> str:
+    """Return stream alpha_mode / ALPHA_MODE tag (HyperFrames VP9 WebM) or empty."""
+    try:
+        p = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
+                "-of", "default=noprint_wrappers=1:nokey=1", path,
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        for line in (p.stdout or "").splitlines():
+            val = line.strip().lower()
+            if val:
+                return val
+        return ""
+    except Exception:
+        return ""
+
+
+def _ffprobe_has_alpha(path) -> bool:
+    """True when stream has alpha pix_fmt OR VP9 WebM ALPHA_MODE=1 (sidecar alpha)."""
+    pix = _ffprobe_pix_fmt(path)
+    if pix and (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    ):
+        return True
+    # HyperFrames / libvpx WebM: ffprobe often reports yuv420p + ALPHA_MODE=1
+    mode = _ffprobe_alpha_mode(path)
+    return mode in ("1", "true", "yes")
+
+
+def _ffprobe_has_explicit_yuva(path) -> bool:
+    """True when primary pix_fmt is already yuva* (rare for libvpx WebM)."""
+    pix = _ffprobe_pix_fmt(path)
+    return bool(pix and "yuva" in pix)
+
+
+def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
+    """Decode one frame and confirm some pixels are actually transparent.
+
+    VP9 WebM: must force libvpx before -i (native VP9 decode drops alpha → solid
+    black). qtrle/png/prores MOV: native decode preserves alpha — match OpenShot.
+    Fail closed on ffmpeg errors or fully opaque frames.
+    """
+    import tempfile
+
+    if not path or not os.path.isfile(path):
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if force_libvpx is None:
+        force_libvpx = ext in (".webm", ".mkv")
+    tmp_png = None
+    try:
+        fd, tmp_png = tempfile.mkstemp(suffix=".png", prefix="zenvi_alpha_")
+        os.close(fd)
+        cmd = ["ffmpeg", "-y"]
+        if force_libvpx:
+            cmd += ["-c:v", "libvpx-vp9"]
+        cmd += [
+            "-i", path,
+            "-frames:v", "1",
+            "-update", "1",
+            "-pix_fmt", "rgba",
+            tmp_png,
+        ]
+        ok, _err = _ffmpeg_run(cmd)
+        if not ok or not os.path.isfile(tmp_png) or os.path.getsize(tmp_png) < 32:
+            return False
+        try:
+            from PIL import Image
+
+            im = Image.open(tmp_png).convert("RGBA")
+            w, h = im.size
+            if w < 1 or h < 1:
+                return False
+            samples = [
+                im.getpixel((0, 0)),
+                im.getpixel((w - 1, 0)),
+                im.getpixel((0, h - 1)),
+                im.getpixel((w - 1, h - 1)),
+                im.getpixel((w // 2, h // 2)),
+            ]
+            return any(len(px) >= 4 and px[3] < 250 for px in samples)
+        except Exception:
+            try:
+                from PyQt5.QtGui import QImage
+
+                img = QImage(tmp_png)
+                if img.isNull():
+                    return False
+                img = img.convertToFormat(QImage.Format_RGBA8888)
+                w, h = img.width(), img.height()
+                if w < 1 or h < 1:
+                    return False
+                pts = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1), (w // 2, h // 2)]
+                for x, y in pts:
+                    c = img.pixelColor(x, y)
+                    if c.alpha() < 250:
+                        return True
+                return False
+            except Exception:
+                return False
+    finally:
+        if tmp_png and os.path.isfile(tmp_png):
+            try:
+                os.remove(tmp_png)
+            except OSError:
+                pass
+
+
+def _openshot_transparent_ok(path) -> bool:
+    """True when OpenShot's native decoder will composite with real alpha.
+
+    Requires alpha in the container pix_fmt (argb/rgba/yuva*) — typically qtrle
+    MOV from `_reencode_alpha_for_openshot`. VP9 WebM with ALPHA_MODE=1 alone is
+    NOT ok: libopenshot uses native VP9 which drops alpha to opaque black.
+    """
+    if not path:
+        return False
+    pix = _ffprobe_pix_fmt(path)
+    if not pix:
+        return False
+    if not (
+        ("yuva" in pix)
+        or pix.startswith("rgba")
+        or pix.startswith("bgra")
+        or pix.startswith("argb")
+        or pix.startswith("abgr")
+        or pix.startswith("gbra")
+    ):
+        return False
+    # Native decode path OpenShot uses — do not force libvpx
+    return _verify_decoded_alpha_pixels(path, force_libvpx=False)
+
+
+def _looks_like_alpha_video(path) -> bool:
+    """HyperFrames transparent overlays are WebM (VP9+alpha); confirm others via ffprobe."""
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext == ".webm":
+        probed = _ffprobe_has_alpha(path)
+        if probed:
+            return True
+        # If probe fails (ffprobe missing), still treat .webm as alpha-intent for MG.
+        return True
+    return _ffprobe_has_alpha(path)
+
+
+def _reencode_alpha_for_openshot(input_path, output_path=None, width=1920, height=1080):
+    """Re-encode HyperFrames VP9 WebM into qtrle MOV so OpenShot keeps alpha.
+
+    Must decode with libvpx-vp9 BEFORE -i (native VP9 drops alpha → solid black).
+    Encode QuickTime Animation (qtrle + argb): OpenShot/libopenshot native decode
+    preserves alpha. Do NOT leave as VP9 WebM — that looks transparent to libvpx
+    probes but composites as opaque black in the editor.
+
+    Returns (output_path, None) on success, (None, error) on failure.
+    """
+    if output_path is None:
+        base, _ = os.path.splitext(input_path)
+        output_path = f"{base}_alpha.mov"
+    # Always deliver .mov for OpenShot alpha overlays
+    if not str(output_path).lower().endswith(".mov"):
+        output_path = os.path.splitext(output_path)[0] + ".mov"
+
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setsar=1,format=rgba"
+    )
+    # libvpx-vp9 before -i = VP9+alpha decoder; qtrle = OpenShot-safe alpha encoder
+    cmd = [
+        "ffmpeg", "-y",
+        "-c:v", "libvpx-vp9",
+        "-i", input_path,
+        "-vf", vf,
+        "-c:v", "qtrle", "-pix_fmt", "argb",
+        "-an",
+        output_path,
+    ]
+    ok, err = _ffmpeg_run(cmd)
+    if not ok:
+        return None, f"Alpha re-encode failed: {err}"
+    # Verify with NATIVE decode (what OpenShot does) — not libvpx
+    if not _verify_decoded_alpha_pixels(output_path, force_libvpx=False):
+        return None, (
+            "Alpha re-encode produced opaque plate "
+            "(no transparent pixels after native decode)"
+        )
     return output_path, None
 
 
@@ -2404,30 +3021,63 @@ def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, posi
     _run_on_main_thread(_do, timeout=30)
 
 
-def _import_generated_video(video_path):
+def _replace_timeline_clip_with_baked(clip_id, baked_file_id, position, layer):
+    """Remove one source clip and place the baked replacement on the timeline."""
+    from classes.query import Clip
+    from PyQt5.QtCore import QPointF
+
+    def _do():
+        app = _get_app()
+        win = app.window
+        layer_num = int(layer) if layer is not None else 0
+        if clip_id and Clip.get(id=clip_id):
+            if hasattr(win, "removeSelection"):
+                try:
+                    win.removeSelection(clip_id, "clip")
+                except Exception as exc:
+                    log.warning("Could not remove clip %s: %s", clip_id, exc)
+        win.timeline.addClip(baked_file_id, QPointF(float(position), 0.0), layer_num)
+
+    _run_on_main_thread(_do, timeout=30)
+
+
+def _import_generated_video(video_path, *, preserve_alpha=None):
     """Import a generated video into the project with clean metadata.
 
     Re-encodes the video first to a permanent location (via
-    _output_path_for_generated_video), then adds it using skip_tagging=True
+    _output_path_for_generated_video), then adds it using skip_indexing=True
     to avoid nested event loops and metadata corruption.
+
+    When preserve_alpha is True (or auto-detected for WebM), re-encodes to
+    qtrle MOV (argb) so OpenShot's native decoder keeps transparency.
+    VP9 WebM is never imported as-is — native VP9 drops alpha to solid black.
+    Alpha failure is fail-closed — never silent yuv420p/MP4 fallback for overlays.
 
     Returns (File object, None) on success, (None, error_string) on failure.
     """
     from classes.query import File
 
-    # Re-encode for libopenshot compatibility, writing to a permanent path
-    # so the file survives tmpdir cleanup after the caller returns.
-    perm_path = _canonical_media_path(_output_path_for_generated_video())
-    clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
-    if err:
-        log.warning("Re-encode failed, using original: %s", err)
-        clean_path = video_path
+    want_alpha = bool(preserve_alpha) if preserve_alpha is not None else _looks_like_alpha_video(video_path)
+
+    if want_alpha:
+        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mov"))
+        # Always re-encode through libvpx→qtrle. Even "good" WebM composites black
+        # in OpenShot because FFmpegReader uses the native VP9 decoder.
+        clean_path, err = _reencode_alpha_for_openshot(video_path, output_path=perm_path)
+        if err:
+            return None, f"alpha import failed (no opaque fallback): {err}"
+    else:
+        perm_path = _canonical_media_path(_output_path_for_generated_video(ext=".mp4"))
+        clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
+        if err:
+            log.warning("Re-encode failed, using original: %s", err)
+            clean_path = video_path
 
     final_path = _canonical_media_path(clean_path)
 
     # Import into project on the main thread
     def _do_import():
-        _get_app().window.files_model.add_files([final_path], skip_tagging=True)
+        _get_app().window.files_model.add_files([final_path], skip_indexing=True)
     _run_on_main_thread(_do_import, timeout=30)
 
     # Look up the File object
@@ -2454,20 +3104,28 @@ def _import_generated_video(video_path):
     return f, None
 
 
-def _download_remotion_file(url, default_name="remotion_segment.mp4"):
-    """Download a Supabase mp4 to a fresh temp path. Returns (dest_path, size_mb)."""
+def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
+    """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
     import tempfile
     import urllib.request
+    from urllib.parse import unquote
 
     url_path = url.split("?")[0].rstrip("/")
-    raw_name = url_path.split("/")[-1] or default_name
-    if not raw_name.lower().endswith(".mp4"):
-        raw_name += ".mp4"
+    raw_name = unquote(url_path.split("/")[-1] or default_name)
+    root, ext = os.path.splitext(raw_name)
+    if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv", ".avi"):
+        # Infer from URL path fragments
+        lower = url_path.lower()
+        if lower.endswith(".webm") or "/output.webm" in lower:
+            ext = ".webm"
+        else:
+            ext = ".mp4"
+        raw_name = f"{root or 'motion_segment'}{ext}"
 
-    tmp_dir = tempfile.mkdtemp(prefix="zenvi_remotion_")
+    tmp_dir = tempfile.mkdtemp(prefix="zenvi_hyperframes_")
     dest_path = os.path.join(tmp_dir, raw_name)
 
-    log.info("Downloading Remotion video from Supabase: %s → %s", url, dest_path)
+    log.info("Downloading HyperFrames video from Supabase: %s → %s", url, dest_path)
     req = urllib.request.Request(url, headers={"User-Agent": "ZenviApp/1.0"})
     with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
         while True:
@@ -2477,14 +3135,120 @@ def _download_remotion_file(url, default_name="remotion_segment.mp4"):
             out.write(chunk)
 
     size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-    log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+    size_bytes = os.path.getsize(dest_path)
+    if size_bytes <= 0:
+        raise ValueError(f"Downloaded file is empty (0 bytes): {dest_path}")
+    if size_mb < 0.1:
+        log.info("Download complete: %s (%.0f KB)", dest_path, size_bytes / 1024.0)
+    else:
+        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
     return dest_path, size_mb
 
 
-def _download_and_import_one(url):
-    """Download one Supabase mp4 and import it as a project file.
+def _stamp_motion_graphics_file_metadata(file_obj, label="", transparent=None):
+    """Agent-facing metadata only — does not enqueue Gemini indexing."""
+    if not file_obj:
+        return
+    summary = (label or "").strip()
+    if not summary:
+        log.warning("MG stamp refused empty summary — using generic placeholder")
+        summary = "HyperFrames motion graphic"
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "motion_graphics" not in tag_list:
+            tag_list.append("motion_graphics")
+        if transparent and "transparent_overlay" not in tag_list:
+            tag_list.append("transparent_overlay")
+        file_obj.data["tags"] = ", ".join(tag_list)
 
-    Returns (file_id, size_mb, error). One retry on transient download failure.
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary
+        # Mirror AI-gen style: description carries the same human text for panels/search
+        ai["description"] = summary
+        # Must be True so get_effective_ai_metadata / Scene panel show the summary
+        # (skip_indexing still avoids Gemini — agent authored this text).
+        ai["analyzed"] = True
+        ai["source"] = "hyperframes_motion_graphics"
+        if transparent is not None:
+            ai["transparent"] = bool(transparent)
+        file_obj.data["ai_metadata"] = ai
+        # Prefer a readable title in the media bin (like generated clips)
+        if summary and summary != "HyperFrames motion graphic":
+            short_title = summary.split("(")[0].strip()
+            if short_title and len(short_title) <= 120:
+                file_obj.data["name"] = short_title[:120]
+        elif not file_obj.data.get("name"):
+            file_obj.data["name"] = "HyperFrames motion graphic"
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("Could not stamp motion-graphics metadata: %s", exc)
+
+
+def _resolve_motion_graphics_label_from_job(render_job_id="", fallback=""):
+    """When the agent omits label=, recover summary from HyperFrames job status.
+
+    Returns (label, job_meta_dict).
+    """
+    job_id = (render_job_id or "").strip()
+    if not job_id:
+        return (fallback or "").strip(), {}
+    import json
+    import urllib.request
+
+    api = os.environ.get(
+        "HYPERFRAMES_URL",
+        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
+    ).rstrip("/")
+    for kind in ("motion", "demo"):
+        try:
+            req = urllib.request.Request(
+                f"{api}/{kind}/jobs/{job_id}",
+                headers={"User-Agent": "ZenviApp/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode() or "{}")
+            summary = str(data.get("summary") or "").strip()
+            if summary:
+                return summary, data
+            titles = data.get("segment_titles") or []
+            block_id = data.get("block_id") or ""
+            if titles or block_id:
+                title0 = titles[0] if titles else ""
+                transparent = data.get("transparent")
+                bits = []
+                if block_id:
+                    bits.append(f"HyperFrames {block_id}")
+                else:
+                    bits.append("HyperFrames motion graphic")
+                if title0 and title0 not in ("motion", block_id):
+                    bits.append(str(title0))
+                if transparent:
+                    bits.append("transparent overlay")
+                label = ": ".join(bits[:2]) + (f" ({bits[2]})" if len(bits) > 2 else "")
+                return label, data
+            return (fallback or "").strip(), data
+        except Exception as exc:
+            log.debug("MG label lookup %s/%s failed: %s", kind, job_id, exc)
+    return (fallback or "").strip(), {}
+
+
+def _download_and_import_one(url, label="", job_transparent=None):
+    """Download one Supabase video and import it as a project file (skip_indexing).
+
+    Returns (file_id, size_mb, error, transparent_ok, pix_fmt).
+    job_transparent: when True, force alpha-preserving import and fail closed (no opaque MP4).
     """
     try:
         last_err = None
@@ -2492,32 +3256,76 @@ def _download_and_import_one(url):
         size_mb = 0.0
         for attempt in (1, 2):
             try:
-                dest_path, size_mb = _download_remotion_file(url)
+                dest_path, size_mb = _download_motion_graphics_file(url)
                 break
             except Exception as e:
                 last_err = e
                 log.warning("Download attempt %d failed for %s: %s", attempt, url, e)
         if dest_path is None:
-            return "", 0.0, f"download failed: {last_err}"
+            return "", 0.0, f"download failed: {last_err}", False, ""
 
-        # Import into project files (re-encodes for libopenshot compatibility).
-        f, err = _import_generated_video(dest_path)
+        if job_transparent is True:
+            preserve_alpha = True
+        elif job_transparent is False:
+            preserve_alpha = False
+        else:
+            preserve_alpha = _looks_like_alpha_video(dest_path)
+
+        f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
         if err:
-            return "", size_mb, f"import failed: {err}"
-        return (f.id if f else ""), size_mb, None
+            return "", size_mb, f"import failed: {err}", False, ""
+
+        imported_path = None
+        try:
+            imported_path = f.absolute_path() if f and hasattr(f, "absolute_path") else None
+        except Exception:
+            imported_path = None
+        if not imported_path and f and isinstance(getattr(f, "data", None), dict):
+            imported_path = f.data.get("path")
+
+        pix_fmt = _ffprobe_pix_fmt(imported_path) if imported_path else ""
+        alpha_mode = _ffprobe_alpha_mode(imported_path) if imported_path else ""
+        # libvpx VP9 WebM probes as yuv420p + ALPHA_MODE=1 (never yuva*). Accept that
+        # when decoded pixels actually have transparency.
+        transparent_ok = bool(imported_path and _openshot_transparent_ok(imported_path))
+        stamp_transparent = (
+            bool(job_transparent) if job_transparent is not None else transparent_ok
+        )
+        probe_note = f"pix_fmt={pix_fmt or 'unknown'} alpha_mode={alpha_mode or 'none'}"
+        if job_transparent and not transparent_ok:
+            return (
+                "",
+                size_mb,
+                (
+                    f"transparent job imported without usable VP9 alpha ({probe_note}) "
+                    "— re-compose as WebM; refusing solid plate"
+                ),
+                False,
+                pix_fmt,
+            )
+
+        _stamp_motion_graphics_file_metadata(f, label=label, transparent=stamp_transparent)
+        # Encode probe bits into pix_fmt field for fetch messaging: "yuva420p;alpha_mode=1"
+        probe_field = pix_fmt or "unknown"
+        if alpha_mode:
+            probe_field = f"{probe_field};alpha_mode={alpha_mode}"
+        return (f.id if f else ""), size_mb, None, transparent_ok or stamp_transparent, probe_field
     except Exception as e:
         log.error("download/import failed for %s: %s", url, e, exc_info=True)
-        return "", 0.0, str(e)
+        return "", 0.0, str(e), False, ""
 
 
-def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
-    """Best-effort DELETE {REMOTION_URL}/cleanup. Non-critical — failures are logged only."""
+def _motion_graphics_cleanup_storage(supabase_path="", render_job_id=""):
+    """Best-effort DELETE {HYPERFRAMES_URL}/cleanup. Non-critical — failures are logged only."""
     import json
     import urllib.request
 
     if not (supabase_path or render_job_id):
         return
-    remotion_api = os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1").rstrip("/")
+    api = os.environ.get(
+        "HYPERFRAMES_URL",
+        os.environ.get("REMOTION_URL", "http://localhost:4500/api/v1"),
+    ).rstrip("/")
     try:
         payload = {}
         if supabase_path:
@@ -2526,7 +3334,7 @@ def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
             payload["job_id"] = render_job_id
         body = json.dumps(payload).encode()
         cleanup_req = urllib.request.Request(
-            f"{remotion_api}/cleanup",
+            f"{api}/cleanup",
             data=body,
             method="DELETE",
             headers={"Content-Type": "application/json"},
@@ -2537,25 +3345,90 @@ def _remotion_cleanup_storage(supabase_path="", render_job_id=""):
         log.warning("Supabase cleanup failed (non-critical): %s", cleanup_err)
 
 
-def fetch_remotion_video_from_supabase(
+# Session-scoped URL → file_id so package/hand re-fetch is idempotent.
+_MG_IMPORTED_URLS: dict = {}
+
+
+def fetch_motion_graphics_video(
     segment_urls=None,
     supabase_url="",
     supabase_path="",
     render_job_id="",
+    label="",
     **_kw,
 ) -> str:
-    """Import a rendered product demo into the project files panel.
+    """Import rendered HyperFrames motion/demo segments into the project files panel.
 
-    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs from
-    render_product_demo_tool. Each segment is imported as its own clip and the Supabase
-    storage is cleaned up ONCE, only after every segment imported successfully.
+    Preferred: pass segment_urls — the ordered list of per-segment Supabase URLs.
+    Each segment is imported as its own clip; storage is cleaned up once after success.
+    Imports use skip_indexing=True (no Gemini summarize). Optional label stamps short_summary.
 
-    Legacy: pass a single supabase_url to import one stitched video.
-
-    Called by the agent after render_product_demo_tool succeeds.
+    Legacy: pass a single supabase_url to import one video.
     """
     import json
     import re
+
+    global _MG_IMPORTED_URLS
+
+    _GENERIC_LABELS = (
+        "hyperframes motion graphic",
+        "motion graphic",
+        "motion",
+    )
+
+    def _norm_url(u: str) -> str:
+        return (u or "").strip().split("?")[0].rstrip("/")
+
+    def _already_imported(urls: list):
+        ids = []
+        for u in urls:
+            fid = _MG_IMPORTED_URLS.get(_norm_url(u))
+            if not fid:
+                return None
+            ids.append(fid)
+        if not ids:
+            return None
+        return (
+            f"Already imported file_id={ids[0]} (file_ids: {ids}) — "
+            "place only if missing. Do NOT re-download these URLs."
+        )
+
+    def _is_generic(text: str) -> bool:
+        return (text or "").strip().lower() in _GENERIC_LABELS
+
+    job_meta = {}
+    stamp_label = (label or "").strip()
+    recovered = ""
+    if render_job_id:
+        recovered, job_meta = _resolve_motion_graphics_label_from_job(
+            render_job_id, fallback=stamp_label
+        )
+        # Prefer explicit agent label; else job.summary; never keep generic when job has better text
+        if not stamp_label:
+            stamp_label = recovered
+        elif _is_generic(stamp_label) and recovered and not _is_generic(recovered):
+            stamp_label = recovered
+    if not stamp_label:
+        stamp_label = "HyperFrames motion graphic"
+
+    job_transparent = job_meta.get("transparent")
+    if job_transparent is not None:
+        job_transparent = bool(job_transparent)
+
+    generic = _is_generic(stamp_label)
+    generic_warn = ""
+    if generic:
+        if render_job_id and job_meta.get("summary"):
+            # Job had summary but we somehow still stamped generic — surface loudly
+            generic_warn = (
+                " ⚠️ short_summary is still generic despite job.summary — "
+                "pass label= from compose suggested_label."
+            )
+        else:
+            generic_warn = (
+                " ⚠️ short_summary is generic — pass label= from compose suggested_label "
+                "(or ensure render_job_id is set so job.summary can be recovered)."
+            )
 
     # The LLM may pass segment_urls as a JSON-encoded string.
     if isinstance(segment_urls, str):
@@ -2564,6 +3437,27 @@ def fetch_remotion_video_from_supabase(
         except Exception:
             segment_urls = [segment_urls]
     segment_urls = [u.strip() for u in (segment_urls or []) if isinstance(u, str) and u.strip()]
+
+    # Prefer WebM when job is transparent but URLs still point at .mp4
+    if job_transparent and segment_urls:
+        fixed = []
+        for u in segment_urls:
+            if u.split("?")[0].lower().endswith(".mp4"):
+                webm = re.sub(r"\.mp4(\?|$)", r".webm\1", u, count=1, flags=re.I)
+                log.warning(
+                    "Job %s is transparent but URL is MP4 — trying WebM: %s",
+                    render_job_id,
+                    webm,
+                )
+                fixed.append(webm)
+            else:
+                fixed.append(u)
+        segment_urls = fixed
+
+    if segment_urls:
+        cached = _already_imported(segment_urls)
+        if cached:
+            return cached
 
     # ---- Multi-segment import (preferred) ----
     if segment_urls:
@@ -2579,31 +3473,75 @@ def fetch_remotion_video_from_supabase(
         file_ids = []
         failures = []  # (original_index, url, error)
         total_mb = 0.0
+        any_transparent_ok = False
+        last_pix_fmt = ""
         for orig_i, url in ordered:
-            file_id, size_mb, err = _download_and_import_one(url)
+            path_base = url.lower().split("?")[0]
+            if job_transparent and path_base.endswith(".mp4"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        "transparent job URL is .mp4 and WebM rewrite failed — "
+                        "re-compose as WebM; refusing opaque MP4 import",
+                    )
+                )
+                continue
+
+            file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+                url, label=stamp_label, job_transparent=job_transparent
+            )
+            # Fail-closed: never import opaque MP4 as success for transparent jobs
+            if err and job_transparent and path_base.endswith(".webm"):
+                failures.append(
+                    (
+                        orig_i,
+                        url,
+                        f"{err} — re-compose WebM (no opaque MP4 fallback)",
+                    )
+                )
+                log.warning("Segment %d transparent WebM import failed (no MP4 fallback): %s", orig_i, err)
+                continue
             if err:
                 failures.append((orig_i, url, err))
                 log.warning("Segment %d import failed: %s", orig_i, err)
             else:
                 file_ids.append(file_id)
                 total_mb += size_mb
+                any_transparent_ok = any_transparent_ok or bool(transparent_ok)
+                if pix_fmt:
+                    last_pix_fmt = pix_fmt
+                _MG_IMPORTED_URLS[_norm_url(url)] = file_id
 
         n = len(segment_urls)
         if failures:
             # Leave storage intact so the failed segments can be re-fetched without a re-render.
             failed_lines = "\n".join(f"  [{i}] {u} ({e})" for i, u, e in failures)
             return (
-                f"⚠️ Imported {len(file_ids)}/{n} demo segments; {len(failures)} failed. "
+                f"⚠️ Imported {len(file_ids)}/{n} motion segments; {len(failures)} failed. "
                 f"Storage was NOT cleaned up so you can retry the failed ones. "
-                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}"
+                f"file_ids: {file_ids}\nFailed segments:\n{failed_lines}{generic_warn}"
             )
 
         # All segments imported — clean up Supabase storage once.
-        _remotion_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
+        _motion_graphics_cleanup_storage(render_job_id=render_job_id, supabase_path=supabase_path)
+        alpha_note = (
+            "Transparent WebM alpha preserved — place as overlay on a HIGHER track than footage."
+            if any_transparent_ok or job_transparent
+            else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
+        )
+        probe_bits = (
+            f" transparent_ok={str(any_transparent_ok).lower()}"
+            f" pix_fmt={last_pix_fmt or 'unknown'}"
+        )
         return (
-            f"✅ Imported {len(file_ids)}/{n} demo segments as separate clips "
-            f"(file_ids: {file_ids}, total {total_mb:.1f} MB).\n"
-            "Use add_clip_to_timeline_tool to add them to the timeline."
+            f"✅ Imported {len(file_ids)}/{n} HyperFrames segments as separate clips "
+            f"(file_id={file_ids[0]}, file_ids: {file_ids}, total {total_mb:.1f} MB). "
+            f"Indexing skipped (motion_graphics tag).{probe_bits}. {alpha_note}\n"
+            "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+            "for each file_id (transparent → mode=overlay high track; opaque → mode=gap or cut_in). "
+            "Do not use add_clip_to_timeline_tool for MG renders."
+            f"{generic_warn}"
         )
 
     # ---- Legacy single-video import (back-compat) ----
@@ -2611,15 +3549,47 @@ def fetch_remotion_video_from_supabase(
     if not supabase_url:
         return "Error: segment_urls or supabase_url is required."
 
-    file_id, size_mb, err = _download_and_import_one(supabase_url)
-    if err:
-        return f"Error importing video: {err}"
-    _remotion_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
-    return (
-        f"✅ Remotion product-demo video imported into project files (file_id: {file_id}, "
-        f"size: {size_mb:.1f} MB).\n"
-        "Use add_clip_to_timeline_tool to add it to the timeline."
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        supabase_url = re.sub(r"\.mp4(\?|$)", r".webm\1", supabase_url, count=1, flags=re.I)
+
+    if job_transparent and supabase_url.split("?")[0].lower().endswith(".mp4"):
+        return (
+            "Error: transparent job URL is still .mp4 after WebM rewrite — "
+            "re-compose as WebM; refusing opaque MP4 import."
+            f"{generic_warn}"
+        )
+
+    cached_one = _already_imported([supabase_url])
+    if cached_one:
+        return cached_one
+
+    file_id, size_mb, err, transparent_ok, pix_fmt = _download_and_import_one(
+        supabase_url, label=stamp_label, job_transparent=job_transparent
     )
+    if err:
+        return f"Error importing video: {err}{generic_warn}"
+    _MG_IMPORTED_URLS[_norm_url(supabase_url)] = file_id
+    _motion_graphics_cleanup_storage(supabase_path=supabase_path, render_job_id=render_job_id)
+    alpha_note = (
+        "Transparent WebM alpha preserved — overlay on a HIGHER track than footage."
+        if transparent_ok or job_transparent
+        else "Opaque MP4 — prefer standalone/mid-layer placement away from hero peaks."
+    )
+    return (
+        f"✅ HyperFrames motion graphic imported into project files "
+        f"(file_id={file_id}, size: {size_mb:.1f} MB). Indexing skipped (motion_graphics tag). "
+        f"transparent_ok={str(bool(transparent_ok)).lower()} pix_fmt={pix_fmt or 'unknown'}. "
+        f"{alpha_note}\n"
+        "MUST call place_motion_graphic_tool(file_id=..., mode=overlay|gap|cut_in) "
+        "with the placement mode above. Do not use add_clip_to_timeline_tool for MG renders."
+        f"{generic_warn}"
+    )
+
+
+# Hard-cut alias kept only so any stale backend tool name still resolves during one deploy.
+fetch_remotion_video_from_supabase = fetch_motion_graphics_video
+_download_remotion_file = _download_motion_graphics_file
+_remotion_cleanup_storage = _motion_graphics_cleanup_storage
 
 
 _KLING_O1_DEFAULT_T2V_DURATION = 5
@@ -2638,12 +3608,21 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     if not video_url:
         return "Error: video_url is required."
 
+    url_path = video_url.split("?")[0].rstrip("/")
+    lower_path = url_path.lower()
+    _audio_exts = (".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma")
+    if "freesound.org" in lower_path or any(lower_path.endswith(ext) for ext in _audio_exts):
+        return (
+            "Error: import_video_url_and_add_to_timeline_tool is for video URLs only. "
+            "For Freesound / music / SFX use stock_music(query=..., track=...)."
+        )
+
     try:
         # Derive a clean .mp4 filename from the URL path.
-        url_path = video_url.split("?")[0].rstrip("/")
         raw_name = url_path.split("/")[-1] or "video.mp4"
-        if not raw_name.lower().endswith(".mp4"):
-            raw_name += ".mp4"
+        root, ext = os.path.splitext(raw_name)
+        if ext.lower() not in (".mp4", ".mov", ".webm", ".mkv", ".avi"):
+            raw_name = f"{root or 'video'}.mp4"
 
         tmp_dir = tempfile.mkdtemp(prefix="zenvi_url_import_")
         dest_path = os.path.join(tmp_dir, raw_name)
@@ -2741,7 +3720,10 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         try:
             f, import_err = _import_generated_video(output_path)
             if not f:
-                return "Video generated and added to project files."
+                return (
+                    "Error: Video generated but failed to import into project files"
+                    + (f": {import_err}" if import_err else ".")
+                )
 
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
@@ -2802,6 +3784,13 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                 msg = add_clip_to_timeline(file_id=f.id, position_seconds=position_seconds or "", track=track or "")
             finally:
                 _resume_player(was_playing)
+            if not msg or str(msg).lower().startswith("error"):
+                return (
+                    f"Error: Video imported (file_id={f.id}) but timeline placement failed: "
+                    f"{msg or 'unknown'}. "
+                    f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
+                    f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                )
             return msg
         except Exception as e:
             return f"Error: {e}"
@@ -3045,15 +4034,21 @@ def insert_v2v_into_clip(
                 note=f"v2v insert: {query[:60]}",
             )
 
-            # ---- Step 5: Import the baked clip ----
+            # ---- Step 5: Import the baked clip and place on timeline ----
             f, import_err = _import_generated_video(output_path)
             if not f:
-                log.warning("insert_v2v: File.get failed but add_files succeeded")
+                return (
+                    "Error: Failed to import baked clip into project files"
+                    + (f": {import_err}" if import_err else ".")
+                )
+            clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+            clip_pos = float(clip_data.get("position", 0.0) or 0.0)
+            clip_layer = clip_data.get("layer", 0)
+            _replace_timeline_clip_with_baked(clip_obj.id, f.id, clip_pos, clip_layer)
             return (
                 f"The combined clip (with a {insert_dur:.1f}s AI insert at "
                 f"{_fmt_mmss(best_mid - clip_start)}, baked with {int(fade * 1000)}ms "
-                f"crossfades) has been added to the imported clips section. "
-                "The original clip on the timeline was left unchanged."
+                f"crossfades) replaced the original clip on the timeline at {clip_pos:.2f}s."
             )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -3177,13 +4172,18 @@ def replace_object_in_clip(
             if gen_duration < 0.5:
                 gen_duration = extract_dur
 
-            f, _import_err = _import_generated_video(output_path)
+            f, import_err = _import_generated_video(output_path)
             if not f:
-                log.warning("replace_object: File.get failed but add_files succeeded")
+                return (
+                    "Error: Failed to import generated video into project files"
+                    + (f": {import_err}" if import_err else ".")
+                )
+            clip_pos = float(clip_data.get("position", 0.0) or 0.0)
+            clip_layer = clip_data.get("layer", 0)
+            _replace_timeline_clip_with_baked(clip_obj.id, f.id, clip_pos, clip_layer)
             return (
                 f"Object replacement complete. A {gen_duration:.1f}s AI video with '{description}' "
-                "applied has been added to the imported clips panel. "
-                "Drag it to the timeline to replace the original clip."
+                f"applied replaced the original clip on the timeline at {clip_pos:.2f}s."
             )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -3831,173 +4831,7 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
 
 
 # ---------------------------------------------------------------------------
-# Director analysis tools (frontend-delegated: read project state for directors)
-# ---------------------------------------------------------------------------
-
-
-def analyze_timeline_structure(**kwargs) -> str:
-    """Get overview of timeline structure: tracks, clips, transitions."""
-    try:
-        from classes.query import Clip, Track
-        app = _get_app()
-        proj = app.project
-        clips = Clip.filter()
-        layers = {}
-        for clip in clips:
-            layer = clip.data.get("layer", 0)
-            layers.setdefault(layer, []).append(clip)
-        lines = [f"Timeline Structure:"]
-        lines.append(f"  Total clips: {len(clips)}")
-        lines.append(f"  Total layers: {len(layers)}")
-        for layer_num in sorted(layers.keys()):
-            lines.append(f"  Layer {layer_num}: {len(layers[layer_num])} clips")
-        transitions = proj.get("transitions") or []
-        lines.append(f"  Total transitions: {len(transitions)}")
-        effects = proj.get("effects") or []
-        lines.append(f"  Total effects: {len(effects)}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_timeline_structure: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_pacing(**kwargs) -> str:
-    """Analyze video pacing: cut frequency, scene durations, rhythm."""
-    try:
-        from classes.query import Clip
-        app = _get_app()
-        proj = app.project
-        clips = Clip.filter()
-        if not clips:
-            return "No clips to analyze"
-        fps = proj.get("fps", {})
-        fps_num = fps.get("num", 30)
-        fps_den = fps.get("den", 1)
-        fps_value = fps_num / fps_den if fps_den else 30
-        durations = []
-        for clip in clips:
-            start = clip.data.get("start", 0)
-            end = clip.data.get("end", 0)
-            duration_seconds = (end - start) / fps_value
-            durations.append(duration_seconds)
-        if not durations:
-            return "No clip durations available"
-        avg_dur = sum(durations) / len(durations)
-        if avg_dur < 2: cat = "Very fast-paced"
-        elif avg_dur < 4: cat = "Fast-paced"
-        elif avg_dur < 6: cat = "Moderate"
-        elif avg_dur < 10: cat = "Slow-paced"
-        else: cat = "Very slow-paced"
-        lines = [
-            f"Pacing Analysis:",
-            f"  Total clips: {len(clips)}",
-            f"  Average clip duration: {avg_dur:.2f}s",
-            f"  Shortest: {min(durations):.2f}s",
-            f"  Longest: {max(durations):.2f}s",
-            f"  Pacing: {cat}",
-            f"  Cuts/min: {60/avg_dur:.1f}" if avg_dur > 0 else "  Cuts/min: N/A",
-        ]
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_pacing: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_audio_levels(**kwargs) -> str:
-    """Analyze audio levels."""
-    try:
-        from classes.query import Clip
-        clips = Clip.filter()
-        audio_clips = [c for c in clips if c.data.get("reader", {}).get("has_audio", False)]
-        return f"Audio Analysis:\n  Total audio clips: {len(audio_clips)}\n  Detailed audio analysis requires libopenshot integration."
-    except Exception as e:
-        log.error("analyze_audio_levels: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_transitions_structure(**kwargs) -> str:
-    """Analyze transitions: types, timing, effectiveness."""
-    try:
-        app = _get_app()
-        proj = app.project
-        transitions = proj.get("transitions") or []
-        if not transitions:
-            return "No transitions in project"
-        types = {}
-        for t in transitions:
-            tt = t.get("type", "unknown")
-            types[tt] = types.get(tt, 0) + 1
-        lines = [f"Transition Analysis:", f"  Total: {len(transitions)}", "  Types:"]
-        for tt, count in types.items():
-            lines.append(f"    {tt}: {count}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_transitions_structure: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_clip_content(**kwargs) -> str:
-    """Analyze visual content of clips using metadata."""
-    try:
-        from classes.query import File
-        files = File.filter()
-        files_with_meta = sum(1 for f in files if f.data.get("ai_metadata"))
-        return f"Content Analysis:\n  Total files: {len(files)}\n  Files with AI analysis: {files_with_meta}"
-    except Exception as e:
-        log.error("analyze_clip_content: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_music_sync(**kwargs) -> str:
-    """Analyze music beat alignment with cuts."""
-    return "Music Sync Analysis:\n  Music sync analysis not yet implemented.\n  Requires beat detection and cut timing correlation."
-
-
-def get_project_metadata_info(**kwargs) -> str:
-    """Get project metadata: duration, resolution, fps, format."""
-    try:
-        app = _get_app()
-        proj = app.project
-        profile = proj.get("profile") or "unknown"
-        fps = proj.get("fps") or {}
-        fps_str = f"{fps.get('num', '')}/{fps.get('den', 1)}" if fps else "unknown"
-        return (
-            f"Project Metadata:\n"
-            f"  Profile: {profile}\n"
-            f"  Resolution: {proj.get('width', 0)}x{proj.get('height', 0)}\n"
-            f"  FPS: {fps_str}\n"
-            f"  Duration: {proj.get('duration', 0)} seconds"
-        )
-    except Exception as e:
-        log.error("get_project_metadata_info: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def analyze_clip_visual_content(clip_id=None, **kwargs) -> str:
-    """Analyze visual content using AI vision models."""
-    try:
-        from classes.query import Clip
-        clips = [Clip.get(id=clip_id)] if clip_id else Clip.filter()
-        clips = [c for c in clips if c]
-        if not clips:
-            return "No clips found to analyze"
-        lines = [f"Visual Content Analysis:", f"  Total clips: {len(clips)}"]
-        for clip in clips:
-            meta = clip.data.get("ai_metadata", {})
-            if meta:
-                desc = meta.get("description", "N/A")
-                if len(desc) > 100:
-                    desc = desc[:97] + "..."
-                lines.append(f"\n  Clip {clip.id}:")
-                lines.append(f"    Description: {desc}")
-        return "\n".join(lines)
-    except Exception as e:
-        log.error("analyze_clip_visual_content: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-# ---------------------------------------------------------------------------
-# Stock media / retag / reindex / planning handlers
+# Stock media / resummarize / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
 def import_stock_media(
@@ -4132,9 +4966,53 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         app = _get_app()
         files_model = app.window.files_model
         from classes.query import File
-        existing = File.get(path=local_path)
+
+        def _resolve_imported_file(path: str):
+            """Match project File after add_files (path keys often differ on Windows)."""
+            variants = []
+            for candidate in (path, os.path.normpath(path), os.path.realpath(path)):
+                if candidate and candidate not in variants:
+                    variants.append(candidate)
+            for p in variants:
+                f = File.get(path=p)
+                if f:
+                    return f
+            base = os.path.basename(path).lower()
+            best = None
+            for candidate in File.filter():
+                try:
+                    cpath = candidate.data.get("path") or ""
+                    abs_path = ""
+                    try:
+                        abs_path = candidate.absolute_path() or ""
+                    except Exception:
+                        abs_path = ""
+                    names = {
+                        os.path.basename(cpath).lower(),
+                        os.path.basename(abs_path).lower(),
+                    }
+                    if base not in names:
+                        continue
+                    # Prefer exact absolute-path match when several share a basename.
+                    if abs_path and os.path.normcase(os.path.normpath(abs_path)) in {
+                        os.path.normcase(os.path.normpath(v)) for v in variants
+                    }:
+                        return candidate
+                    if best is None:
+                        best = candidate
+                except Exception:
+                    continue
+            return best
+
+        existing = _resolve_imported_file(local_path)
         if existing:
-            return f"File already in project (id={existing.id}): {local_path}"
+            chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
+            _last_split_file_id_by_chat_session[chat_session_id] = existing.id
+            return (
+                f"File already in project (file_id={existing.id}): {local_path}. "
+                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{existing.id}' "
+                f"(or empty file_id to use this just-imported file) to place it on the timeline."
+            )
 
         # MUST run on main thread — files_model.add_files touches Qt objects
         def _do_add():
@@ -4142,44 +5020,109 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
 
         _run_on_main_thread(_do_add, timeout=30)
 
-        # Look up the File object so we can return the file_id to the agent
-        f = File.get(path=local_path)
-        if not f:
-            f = File.get(path=os.path.normpath(local_path))
-        if not f:
-            f = File.get(path=os.path.realpath(local_path))
-        if not f:
-            for candidate in File.filter():
-                try:
-                    if getattr(candidate, "absolute_path", None) and candidate.absolute_path() == local_path:
-                        f = candidate
-                        break
-                except Exception:
-                    continue
-
+        f = _resolve_imported_file(local_path)
         if f:
+            chat_session_id = str(kwargs.get("chat_session_id", "") or "default")
+            _last_split_file_id_by_chat_session[chat_session_id] = f.id
+            # Stock imports must finish Gemini indexing before the agent continues.
+            wait_err = _wait_for_file_indexing(f.id, files_model, timeout_sec=1800)
+            summary = ""
+            try:
+                ai = f.data.get("ai_metadata") if isinstance(f.data, dict) else {}
+                if isinstance(ai, dict):
+                    summary = str(ai.get("short_summary") or "").strip()
+                    # Reload file in case worker updated metadata during wait
+                    refreshed = File.get(id=f.id)
+                    if refreshed and isinstance(refreshed.data, dict):
+                        ai2 = refreshed.data.get("ai_metadata") or {}
+                        if isinstance(ai2, dict) and ai2.get("short_summary"):
+                            summary = str(ai2.get("short_summary") or "").strip()
+                            f = refreshed
+            except Exception:
+                pass
+            if wait_err:
+                log.warning("Stock media indexing wait: %s", wait_err)
+                return (
+                    f"Added to project: {local_path} (file_id={f.id}) but indexing "
+                    f"did not finish: {wait_err}. "
+                    f"Call reindex_project_file_tool before relying on search. "
+                    f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
+                    f"(or empty file_id to use this just-imported file) to place it on the timeline."
+                )
             log.info("Stock media added to project: %s (id=%s)", local_path, f.id)
+            summary_bit = f" Summary: {summary}" if summary else ""
             return (
-                f"Added to project: {local_path} (file_id={f.id}). "
-                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' to place it on the timeline."
+                f"Added to project and indexed: {local_path} (file_id={f.id})."
+                f"{summary_bit} "
+                f"IMPORTANT: Call add_clip_to_timeline_tool with file_id='{f.id}' "
+                f"(or empty file_id to use this just-imported file) to place it on the timeline."
             )
-        log.info("Stock media added to project: %s (id not yet available)", local_path)
+        log.error("Stock media import produced no File record: %s", local_path)
         return (
-            f"Added to project: {local_path}. "
-            f"Use list_files_tool to find the file_id, then call add_clip_to_timeline_tool."
+            f"Error: Failed to import into project files (no file_id): {local_path}. "
+            f"The download may be corrupt or unsupported by the media engine."
         )
     except Exception as e:
         log.error("add_stock_media_to_project: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
-def retag_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run AI tagging for an existing project file.
+def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) -> str:
+    """Block until Gemini indexing for file_id finishes. Returns error string or ''."""
+    import time
+    from classes.query import File
+    from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
 
-    Runs on a worker thread.  The only Qt-touching step (reading the
-    project File and scheduling the tagging worker) is briefly marshalled
-    onto the main thread; the rest stays off the GUI thread so the UI
-    never stalls.
+    fid = str(file_id or "")
+    if not fid:
+        return "missing file_id"
+    deadline = time.time() + max(30, int(timeout_sec))
+    # Give the queue a moment to start the worker
+    time.sleep(0.5)
+    while time.time() < deadline:
+        try:
+            if hasattr(files_model, "is_file_indexing") and files_model.is_file_indexing(fid):
+                time.sleep(1.0)
+                continue
+            f = File.get(id=fid)
+            if not f or not isinstance(f.data, dict):
+                time.sleep(0.5)
+                continue
+            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+            idx = get_index_block(ai)
+            if twelvelabs_is_indexed(idx):
+                return ""
+            status = str((idx or {}).get("status") or "").lower()
+            if status in ("failed", "skipped"):
+                return str((idx or {}).get("error") or status)
+            if status in ("", "ready") and ai.get("analyzed"):
+                return ""
+            # Still queued / not started — keep waiting while queue may drain
+            if hasattr(files_model, "_indexing_queue"):
+                queued = any(str(qid) == fid for qid, _ in (files_model._indexing_queue or []))
+                active = any(
+                    str(getattr(w, "file_data", {}).get("id", "")) == fid
+                    for w in (getattr(files_model, "_active_indexers", None) or [])
+                )
+                if not queued and not active and status not in ("indexing", "uploading"):
+                    # No worker and not ready — treat as finished-or-never-started
+                    if twelvelabs_is_indexed(idx) or ai.get("analyzed"):
+                        return ""
+                    if status in ("failed", "skipped"):
+                        return str((idx or {}).get("error") or status)
+                    # Media type may not have been queued yet; small grace then fail soft
+                    time.sleep(1.0)
+                    continue
+        except Exception as exc:
+            log.debug("wait indexing poll: %s", exc)
+        time.sleep(1.0)
+    return f"timed out after {timeout_sec}s"
+
+
+def resummarize_project_file(file_id: str = "", **kwargs) -> str:
+    """Re-run Pegasus audiovisual summary for an already-indexed project file.
+
+    Requires an existing TwelveLabs video_id. Runs on a worker thread.
     """
     try:
         if not file_id:
@@ -4187,12 +5130,17 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
 
         def _read_file_meta():
             from classes.query import File
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
             f = File.get(id=file_id)
             if not f:
                 return None
+            ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
+            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
+                "indexed": twelvelabs_is_indexed(tl),
+                "video_id": tl.get("video_id") or "",
             }
 
         meta = _run_on_main_thread(_read_file_meta, timeout=10)
@@ -4203,30 +5151,35 @@ def retag_project_file(file_id: str = "", **kwargs) -> str:
         if meta["duration"] > MAX_SECONDS:
             return (
                 f"Error: Clip is {meta['duration'] / 60:.1f} min — exceeds the "
-                f"30-minute re-tagging limit."
+                f"30-minute summarize limit."
+            )
+        if not meta.get("indexed") or not meta.get("video_id"):
+            return (
+                f"Error: File {file_id} is not indexed yet. "
+                "Call reindex_project_file_tool first, then resummarize."
             )
 
-        def _kick_off_tagging():
+        def _kick_off_summarize():
             try:
                 files_model = _get_app().window.files_model
-                files_model._tag_file_async(file_id)
+                files_model._index_file_async(file_id, summarize_only=True)
             except Exception as exc:
-                log.warning("retag_project_file: failed to start tagging: %s", exc)
+                log.warning("resummarize_project_file: failed to start summarize: %s", exc)
 
-        # Fire-and-forget: marshal the call onto the GUI thread without
-        # waiting for it to complete (the actual tagging runs on a Qt worker
-        # spawned inside ``_tag_file_async``).
         try:
             dispatcher = _get_dispatcher()
             dispatcher._dispatch.emit(
-                (_kick_off_tagging, (), [None], [None], threading.Event())
+                (_kick_off_summarize, (), [None], [None], threading.Event())
             )
         except Exception:
-            _kick_off_tagging()
+            _kick_off_summarize()
 
-        return f"Re-tagging started for file {file_id} ({meta['path']})."
+        return (
+            f"Pegasus summarize started for file {file_id} "
+            f"(video_id={meta.get('video_id')}, {meta['path']})."
+        )
     except Exception as e:
-        log.error("retag_project_file: %s", e, exc_info=True)
+        log.error("resummarize_project_file: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
@@ -4248,7 +5201,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
         def _read_project_state():
             from classes.query import File
-            from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
             f = File.get(id=file_id)
             if not f:
                 return None
@@ -4292,7 +5245,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
 
         client = get_backend_client()
         if not client.is_indexing_configured():
-            return "TwelveLabs is not configured — re-indexing unavailable."
+            return "Gemini indexing is not configured — re-indexing unavailable."
 
         duration = float(state["duration"])
         _, _, blocked = check_operation(
@@ -4303,9 +5256,9 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
         if blocked:
             return blocked
 
-        index_name = (
-            f"zenvi-{state['project_id']}" if state["project_id"] else "zenvi-videos"
-        )
+        from classes.project_tl_index import build_project_index_name
+
+        index_name = build_project_index_name(state["project_id"])
 
         result = client.reindex_video(
             file_id,
@@ -4318,30 +5271,76 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             charge_operation_on_success(
                 True,
                 "indexing_per_minute",
-                provider="twelvelabs",
+                provider="gemini",
                 note=f"reindex {file_id}",
                 duration_seconds=duration,
             )
 
-            def _persist_twelvelabs_metadata():
+            def _persist_index_metadata():
                 from classes.query import File
                 f = File.get(id=file_id)
                 if not f:
                     return
                 ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-                ai["twelvelabs"] = {
+                index_block = {
                     "status": "ready",
                     "index_id": result.get("index_id", ""),
                     "video_id": result.get("video_id", ""),
                     "index_name": index_name,
+                    "provider": "gemini",
                 }
+                ai["index"] = index_block
+                ai["twelvelabs"] = dict(index_block)  # legacy key for older readers
                 f.data["ai_metadata"] = ai
                 f.save()
 
-            _run_on_main_thread(_persist_twelvelabs_metadata, timeout=10)
+            _run_on_main_thread(_persist_index_metadata, timeout=10)
+
+            video_id = str(result.get("video_id") or "")
+            summarize_note = ""
+            if video_id:
+                summarized = client.summarize_indexed_video(
+                    video_id,
+                    file_id=file_id,
+                    index_id=str(result.get("index_id") or ""),
+                    index_name=index_name,
+                )
+                if isinstance(summarized, dict) and summarized.get("analyzed"):
+                    def _persist_summary():
+                        from classes.query import File
+                        f = File.get(id=file_id)
+                        if not f:
+                            return
+                        tl = {
+                            "status": "ready",
+                            "index_id": result.get("index_id", ""),
+                            "video_id": video_id,
+                            "index_name": index_name,
+                            "provider": "gemini",
+                        }
+                        summarized["index"] = {
+                            **(summarized.get("index") or {}),
+                            **tl,
+                        }
+                        summarized["twelvelabs"] = {
+                            **(summarized.get("twelvelabs") or {}),
+                            **tl,
+                        }
+                        f.data["ai_metadata"] = summarized
+                        f.save()
+
+                    _run_on_main_thread(_persist_summary, timeout=10)
+                    summarize_note = " Gemini Flash summary updated."
+                else:
+                    summarize_note = (
+                        f" Summarize failed: "
+                        f"{(summarized or {}).get('error', 'unknown')}"
+                    )
+
             return (
                 f"Re-indexing complete for file {file_id}. "
-                f"index_id={result.get('index_id', '')}  video_id={result.get('video_id', '')}"
+                f"index_id={result.get('index_id', '')}  video_id={video_id}."
+                f"{summarize_note}"
             )
         return f"Re-indexing failed: {result.get('error', result.get('message', 'unknown'))}"
     except Exception as e:
@@ -4369,16 +5368,18 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
             media_type = d.get("media_type", "?")
             name = d.get("name") or d.get("path", "?").split("/")[-1]
             ai = d.get("ai_metadata") or {}
-            tags = ai.get("tags", {})
             analyzed = ai.get("analyzed", False)
             tl = ai.get("twelvelabs", {}) or {}
-            from classes.twelvelabs_match import twelvelabs_is_indexed
+            from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+            from classes.tl_search_strategy import infer_tl_search_hint
             indexed = twelvelabs_is_indexed(tl)
+            hint = infer_tl_search_hint(ai, name)
             scene_count = len(ai.get("scene_descriptions") or [])
-            objects = ", ".join((tags.get("objects") or [])[:5])
-            scenes = ", ".join((tags.get("scenes") or [])[:3])
-            activities = ", ".join((tags.get("activities") or [])[:3])
-            desc = (ai.get("description") or "")[:120]
+            chapter_count = len(ai.get("chapters") or [])
+            short = (ai.get("short_summary") or "")[:160]
+            desc = (ai.get("description") or "")[:400]
+            sounds = (ai.get("sounds") or "")[:160]
+            transcript = (ai.get("transcript") or "")[:200]
             parent_id = resolve_parent_file_id(d, file_id=str(f.id or ""))
             alias_part = ""
             if d.get("zenvi_subclip") and parent_id and parent_id != str(f.id):
@@ -4387,15 +5388,52 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
                 f"\n  media_bin_file_id={f.id}  name={name}  type={media_type}  "
                 f"duration={m}:{s:02d}\n"
                 f"{alias_part}"
-                f"    analyzed={analyzed}  indexed={indexed}  scene_count={scene_count}\n"
+                f"    analyzed={analyzed}  indexed={indexed}  "
+                f"chapter_count={chapter_count}  scene_count={scene_count}\n"
+                f"    tl_search_hint={hint}\n"
+                f"    twelvelabs_index_id={tl.get('index_id', '')}\n"
+                f"    twelvelabs_index_name={tl.get('index_name', '')}\n"
                 f"    twelvelabs_video_id={tl.get('video_id', '')}\n"
-                f"    objects=[{objects}]\n"
-                f"    scenes=[{scenes}]\n"
-                f"    activities=[{activities}]\n"
+                f"    short_summary={short}\n"
                 f"    description={desc}"
             )
+            # Pre-Pegasus projects (or failed summarize) may only have Gemini tags.
+            if not short and not desc:
+                tags = ai.get("tags") if isinstance(ai.get("tags"), dict) else {}
+                legacy_bits = []
+                for key in ("objects", "scenes", "activities", "mood"):
+                    vals = tags.get(key) or []
+                    if isinstance(vals, list) and vals:
+                        legacy_bits.append(
+                            f"{key}=[{', '.join(str(v) for v in vals[:8] if v)}]"
+                        )
+                if legacy_bits:
+                    lines.append(f"    legacy_tags={' '.join(legacy_bits)}")
+                elif sounds or transcript:
+                    if sounds:
+                        lines.append(f"    sounds={sounds}")
+                    if transcript:
+                        lines.append(f"    transcript={transcript}")
+            if level == "full":
+                if sounds:
+                    lines.append(f"    sounds={sounds}")
+                if transcript:
+                    lines.append(f"    transcript={transcript}")
+            chapters = ai.get("chapters") or []
+            if chapters:
+                limit = len(chapters) if level == "full" else min(3, len(chapters))
+                lines.append("    chapter_snippets:")
+                for ch in chapters[:limit]:
+                    if isinstance(ch, dict) and (ch.get("summary") or ch.get("title")):
+                        t0 = float(ch.get("start", 0) or 0)
+                        t1 = float(ch.get("end", t0) or t0)
+                        title = str(ch.get("title") or "")
+                        summary = str(ch.get("summary") or "")[:160]
+                        lines.append(
+                            f"      [{_fmt_mmss(t0)}-{_fmt_mmss(t1)}] {title}: {summary}"
+                        )
             snippets = ai.get("scene_descriptions") or []
-            if snippets:
+            if snippets and not chapters:
                 limit = len(snippets) if level == "full" else min(3, len(snippets))
                 lines.append("    scene_snippets:")
                 for sc in snippets[:limit]:
@@ -4406,6 +5444,518 @@ def get_clips_with_full_metadata(detail_level="summary", **kwargs) -> str:
     except Exception as e:
         log.error("get_clips_with_full_metadata: %s", e, exc_info=True)
         return f"Error: {e}"
+
+
+def _overlay_index_boosts(contexts) -> list:
+    """Optional TwelveLabs search boosts mapped onto timeline times.
+
+    Falls back to [] when indexing is unavailable (lexical scoring still applies).
+    """
+    boosts = []
+    try:
+        from classes.api_client import get_backend_client
+        from classes.project_tl_index import (
+            collect_project_twelvelabs_index,
+            map_search_hit_to_file,
+        )
+        from classes.mg_placement import AVOID_QUERY, PREFER_QUERY
+
+        info = collect_project_twelvelabs_index()
+        index_id = str((info or {}).get("index_id") or "").strip()
+        if not index_id:
+            return []
+        client = get_backend_client()
+        if not client.is_indexing_configured():
+            return []
+        video_map = (info or {}).get("video_map") or {}
+        queries = (
+            (AVOID_QUERY, -3, True, False),
+            (PREFER_QUERY, 3, False, True),
+        )
+        by_file = {}
+        for ctx in contexts or []:
+            fid = str(getattr(ctx, "file_id", "") or "")
+            pfid = str(getattr(ctx, "parent_file_id", "") or "")
+            for key in {fid, pfid}:
+                if key:
+                    by_file.setdefault(key, []).append(ctx)
+
+        for query, delta, is_avoid, is_prefer in queries:
+            resp = client.search(query, top_k=12, index_id=index_id, page_limit=24)
+            if resp.get("error"):
+                continue
+            for r in resp.get("results") or []:
+                if not isinstance(r, dict):
+                    continue
+                fid, _fname = map_search_hit_to_file(r, video_map)
+                fid = str(fid or "").strip()
+                if not fid or fid not in by_file:
+                    continue
+                try:
+                    hit_start = float(r.get("start") or 0)
+                except (TypeError, ValueError):
+                    continue
+                for ctx in by_file[fid]:
+                    pos = float(getattr(ctx, "timeline_position", 0) or 0)
+                    end = float(getattr(ctx, "timeline_end", pos + 1) or (pos + 1))
+                    src_start = float(getattr(ctx, "source_start", 0) or 0)
+                    clip_dur = max(0.1, end - pos)
+                    local = hit_start - src_start
+                    if 0 <= local <= clip_dur:
+                        boosts.append(
+                            {
+                                "t": pos + local,
+                                "score_delta": delta,
+                                "avoid": is_avoid,
+                                "prefer": is_prefer,
+                            }
+                        )
+    except Exception as exc:
+        log.debug("propose_overlay_windows: index boost skipped: %s", exc)
+    return boosts
+
+
+def propose_overlay_windows(beat_count="4", prefer_transparent="true", **_kw) -> str:
+    """Propose safe timeline windows for MG overlays/plates.
+
+    Uses scene metadata + lexical/embedding-index scoring. Returns JSON with
+    windows[{t, score, avoid, prefer, scene_label, track_hint, confidence,
+    suggest_transparent, layout_region}].
+
+    Agent must: bake layout_region into session/draft.html; publish with matching
+    transparent flag; place via place_motion_graphic_tool (overlay|gap|cut_in).
+    """
+    import json
+
+    from classes.mg_placement import (
+        apply_embedding_time_boosts,
+        layout_region_for,
+        score_scene_blob,
+    )
+
+    try:
+        n = int(float(str(beat_count or "4").strip() or "4"))
+    except Exception:
+        n = 4
+    n = max(1, min(8, n))
+    prefer_tr = str(prefer_transparent or "true").strip().lower() not in ("false", "0", "no")
+
+    try:
+        from classes.timeline_clip_context import enumerate_timeline_contexts
+
+        contexts = enumerate_timeline_contexts() or []
+    except Exception as exc:
+        log.warning("propose_overlay_windows: timeline read failed: %s", exc)
+        contexts = []
+
+    overlay_layer = 3000000
+    mid_layer = 2000000
+    try:
+        app = _get_app()
+        layers = app.project.get("layers") or []
+        nums = sorted(int(L.get("number", 0)) for L in layers if isinstance(L, dict))
+        if nums:
+            overlay_layer = nums[-1] + 1000000 if nums[-1] < 9000000 else nums[-1]
+            mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
+    except Exception:
+        pass
+
+    segments = []
+    windows = []
+    timeline_end = 0.0
+    for ctx in contexts:
+        pos = float(ctx.timeline_position or 0)
+        end = float(ctx.timeline_end or (pos + 1.0))
+        timeline_end = max(timeline_end, end)
+        ai = ctx.effective_metadata or {}
+        src_start = float(getattr(ctx, "source_start", 0) or 0)
+        clip_dur = max(0.1, end - pos)
+
+        text_bits = [
+            str(ctx.summary_preview or ""),
+            str(ai.get("short_summary") or ""),
+            str(ai.get("description") or ""),
+        ]
+        for ch in ai.get("chapters") or []:
+            if not isinstance(ch, dict):
+                continue
+            text_bits.append(str(ch.get("title") or ""))
+            text_bits.append(str(ch.get("summary") or ""))
+            ch_start = ch.get("start")
+            try:
+                if ch_start is not None:
+                    local = float(ch_start) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = score_scene_blob(
+                            f"{ch.get('title') or ''} {ch.get('summary') or ''}"
+                        )
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc,
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": str(ch.get("title") or ch.get("summary") or "")[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+        for scn in ai.get("scene_descriptions") or []:
+            if not isinstance(scn, dict):
+                continue
+            desc = str(scn.get("description") or "")
+            text_bits.append(desc)
+            try:
+                st = scn.get("time")
+                if st is None:
+                    st = scn.get("start")
+                if st is not None:
+                    local = float(st) - src_start
+                    if 0 <= local <= clip_dur:
+                        t = pos + local
+                        sc, avoid, prefer = score_scene_blob(desc)
+                        windows.append(
+                            {
+                                "t": t,
+                                "score": sc + 1,
+                                "avoid": avoid,
+                                "prefer": prefer,
+                                "label": desc[:80],
+                            }
+                        )
+            except (TypeError, ValueError):
+                pass
+
+        blob = " ".join(text_bits)
+        sc, avoid, prefer = score_scene_blob(blob)
+        segments.append(
+            {
+                "position": pos,
+                "end": end,
+                "avoid": avoid,
+                "prefer": prefer,
+                "score": sc,
+            }
+        )
+        for frac, bonus in ((0.08, 0), (0.5, 0), (0.88, 0)):
+            t = pos + clip_dur * frac
+            windows.append(
+                {
+                    "t": t,
+                    "score": sc + bonus,
+                    "avoid": avoid,
+                    "prefer": prefer,
+                    "label": (ctx.title or blob)[:80],
+                }
+            )
+
+    # Index / embedding search boosts (best-effort)
+    apply_embedding_time_boosts(windows, _overlay_index_boosts(contexts))
+
+    segments.sort(key=lambda s: s["position"])
+    gaps = []
+    if segments:
+        if segments[0]["position"] > 0.4:
+            gaps.append(max(0.0, segments[0]["position"] * 0.15))
+        for a, b in zip(segments, segments[1:]):
+            if b["position"] - a["end"] >= 0.4:
+                gaps.append((a["end"] + b["position"]) / 2.0)
+                windows.append(
+                    {
+                        "t": a["end"] - 0.15,
+                        "score": 2,
+                        "avoid": False,
+                        "prefer": True,
+                        "label": "near cut",
+                    }
+                )
+    else:
+        timeline_end = 24.0
+        for t in (0.0, 6.0, 12.0, 18.0, 22.0):
+            windows.append({"t": t, "score": 1, "avoid": False, "prefer": True, "label": ""})
+
+    if timeline_end <= 0:
+        timeline_end = 24.0
+
+    if n == 1:
+        anchors = [0.0 if timeline_end < 1 else min(1.0, timeline_end * 0.1)]
+    else:
+        anchors = [timeline_end * (i / (n - 1)) for i in range(n)]
+
+    def _snap(target, used):
+        target = max(0.0, min(float(timeline_end), float(target)))
+        cands = sorted(windows, key=lambda w: (abs(w["t"] - target), -w["score"]))
+        for w in cands:
+            t = max(0.0, min(timeline_end, float(w["t"])))
+            if prefer_tr and w.get("avoid") and w["score"] < 0:
+                continue
+            if all(abs(t - u) >= 1.2 for u in used):
+                conf = (
+                    "high"
+                    if w.get("prefer") or w["score"] >= 2
+                    else ("low" if w.get("avoid") else "medium")
+                )
+                return (
+                    t,
+                    w.get("label") or "",
+                    conf,
+                    bool(w.get("avoid")),
+                    bool(w.get("prefer")),
+                    int(w["score"]),
+                )
+        return target, "", "medium", False, False, 0
+
+    used_positions = []
+    out_windows = []
+    for i in range(n):
+        use_gap = (not prefer_tr) or (i == max(1, n // 2) and gaps)
+        pos = None
+        scene_label = ""
+        conf = "medium"
+        avoid = False
+        prefer = False
+        score = 0
+        track_hint = overlay_layer
+        is_gap = False
+        if use_gap and gaps:
+            for g in gaps:
+                g = max(0.0, min(timeline_end, float(g)))
+                if all(abs(g - u) >= 1.0 for u in used_positions):
+                    pos = g
+                    scene_label = "gap — opaque plate candidate"
+                    conf = "high"
+                    track_hint = mid_layer
+                    is_gap = True
+                    prefer = True
+                    break
+        if pos is None:
+            pos, scene_label, conf, avoid, prefer, score = _snap(anchors[i], used_positions)
+            track_hint = overlay_layer
+            is_gap = False
+        pos = round(max(0.0, min(timeline_end, float(pos))), 2)
+        used_positions.append(pos)
+        region = layout_region_for(
+            avoid=avoid, prefer=prefer, is_gap=is_gap, score=score
+        )
+        suggest_tr = bool(prefer_tr and track_hint == overlay_layer and not is_gap)
+        out_windows.append(
+            {
+                "t": pos,
+                "score": score,
+                "avoid": avoid,
+                "prefer": prefer,
+                "scene_label": scene_label[:80],
+                "track_hint": int(track_hint),
+                "confidence": conf,
+                "suggest_transparent": suggest_tr,
+                "layout_region": region,
+                "place_mode": (
+                    "gap" if is_gap else ("overlay" if suggest_tr else "cut_in")
+                ),
+            }
+        )
+
+    payload = {
+        "timeline_end": round(timeline_end, 2),
+        "clip_count": len(segments),
+        "windows": out_windows,
+        "guidance": (
+            "For each beat: decide transparent vs opaque first. "
+            "layout_region → bake into session/draft.html "
+            "(lower_third/corner_* = non-blocking overlay HTML; full_frame = sting; "
+            "mid_plate = opaque plate). "
+            "publish_session_draft_tool(transparent=true|false) matching suggest_transparent. "
+            "Then place_motion_graphic_tool(mode=overlay|gap|cut_in) — never stack opaque "
+            "plates over hero footage with add_clip on the top overlay track."
+        ),
+    }
+    return json.dumps(payload, indent=2)
+
+
+def place_motion_graphic(
+    file_id="",
+    position_seconds="",
+    duration_seconds="",
+    mode="overlay",
+    track="",
+    layout_region="",
+    **_kw,
+) -> str:
+    """Place a HyperFrames render with overlay/gap/cut_in enforcement.
+
+    mode=overlay → transparent file on a HIGH layer (refuses opaque).
+    mode=gap → opaque only when primary track is clear at [t,t+dur).
+    mode=cut_in → opaque: ripple primary-track clips at/after t, then place as a cut.
+    """
+    from classes.mg_placement import (
+        file_looks_transparent,
+        primary_track_overlaps,
+        ripple_positions,
+    )
+    from classes.query import Clip, File
+    from classes.track_display import (
+        format_track_label_for_llm,
+        normalize_track_or_layer_arg,
+    )
+
+    try:
+        fid = str(file_id or "").strip()
+        if not fid:
+            return "Error: file_id is required for place_motion_graphic_tool"
+        f = File.get(id=fid)
+        if not f:
+            return f"Error: File not found for id={fid}."
+        file_data = dict(f.data or {})
+        is_transparent = file_looks_transparent(file_data)
+        mode_s = str(mode or "overlay").strip().lower() or "overlay"
+        if mode_s not in ("overlay", "gap", "cut_in"):
+            return "Error: mode must be overlay|gap|cut_in"
+
+        try:
+            t = float(str(position_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            return "Error: position_seconds must be a number"
+        t = max(0.0, t)
+        try:
+            dur = float(str(duration_seconds).strip() or "0")
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0:
+            try:
+                dur = float(file_data.get("duration") or 0) or float(
+                    (file_data.get("reader") or {}).get("duration") or 0
+                )
+            except (TypeError, ValueError):
+                dur = 3.0
+        dur = max(0.5, min(dur, 60.0))
+
+        app = _get_app()
+        layers = app.project.get("layers") or []
+        nums = sorted(
+            int(L.get("number", 0))
+            for L in layers
+            if isinstance(L, dict) and L.get("number") is not None
+        )
+        if not nums:
+            nums = [1000000, 2000000, 3000000]
+        primary_layer = nums[0]
+        mid_layer = nums[len(nums) // 2] if len(nums) > 1 else nums[0]
+        overlay_layer = nums[-1]
+
+        if str(track or "").strip():
+            resolved, err = normalize_track_or_layer_arg(str(track).strip(), layers)
+            if err:
+                return err
+            track_num = int(resolved)
+        elif mode_s == "overlay":
+            track_num = int(overlay_layer)
+        elif mode_s == "gap":
+            track_num = int(mid_layer)
+        else:
+            track_num = int(primary_layer)
+
+        clips_raw = [
+            dict(c.data or {})
+            for c in Clip.filter()
+            if isinstance(getattr(c, "data", None), dict)
+        ]
+
+        if mode_s == "overlay":
+            if not is_transparent:
+                return (
+                    "Error: mode=overlay requires a transparent HyperFrames import "
+                    "(ai_metadata.transparent / transparent_overlay tag / webm). "
+                    "Use mode=gap or mode=cut_in for opaque plates — never stack opaque "
+                    "over hero footage."
+                )
+            if track_num < mid_layer:
+                track_num = int(overlay_layer)
+        else:
+            # gap / cut_in → opaque path
+            if is_transparent:
+                return (
+                    "Error: mode=%s is for opaque plates. Transparent overlays must use "
+                    "mode=overlay on a high track." % mode_s
+                )
+            if mode_s == "gap":
+                if primary_track_overlaps(
+                    clips_raw, layer=int(primary_layer), t0=t, t1=t + dur
+                ):
+                    return (
+                        "Error: gap mode refused — primary track has footage overlapping "
+                        f"[{t:.2f}, {t + dur:.2f}). Use mode=cut_in to ripple clips, or "
+                        "pick a true gap from propose_overlay_windows_tool."
+                    )
+
+        region = str(layout_region or "").strip()
+
+        def _ripple_and_stamp():
+            if mode_s == "cut_in":
+                shifts = ripple_positions(
+                    clips_raw, layer=int(primary_layer), t=t, delta=dur
+                )
+                for cid, new_pos in shifts:
+                    app.updates.update(
+                        ["clips", {"id": cid}],
+                        {"position": float(new_pos)},
+                    )
+            try:
+                ai = dict(file_data.get("ai_metadata") or {})
+                ai["mg_placement"] = {
+                    "mode": mode_s,
+                    "layout_region": region,
+                    "transparent": bool(is_transparent),
+                    "position_seconds": t,
+                    "duration_seconds": dur,
+                    "track": track_num,
+                }
+                if not is_transparent:
+                    ai["transparent"] = False
+                f.data["ai_metadata"] = ai
+                if hasattr(f, "save"):
+                    f.save()
+                else:
+                    app.updates.update(
+                        ["files", {"id": fid}],
+                        {"ai_metadata": ai},
+                    )
+            except Exception as stamp_exc:
+                log.debug("mg_placement stamp failed: %s", stamp_exc)
+            return True
+
+        _run_on_main_thread(_ripple_and_stamp)
+        # add_clip marshals Qt mutations itself
+        result = add_clip_to_timeline(
+            file_id=fid,
+            position_seconds=str(t),
+            track=str(track_num),
+            duration_seconds=str(dur),
+            chat_session_id=_kw.get("chat_session_id", ""),
+        )
+
+        track_lbl = format_track_label_for_llm(int(track_num), layers)
+        if isinstance(result, str) and result.startswith("Error"):
+            return result
+        return (
+            f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
+            f"transparent={is_transparent} track={track_lbl}]. "
+            "NEXT: get_timeline_state_tool once to verify, then continue next beat."
+        )
+    except Exception as e:
+        log.error("place_motion_graphic: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
+def suggest_motion_graphics_placements(brief="", beat_count="4", **_kw) -> str:
+    """Deprecated — use propose_overlay_windows_tool (timing) + agent-authored beats_json."""
+    return (
+        "Error: suggest_motion_graphics_placements_tool is removed. "
+        "Call propose_overlay_windows_tool(beat_count=...) for timing/layout_region, "
+        "edit session/draft.html (lint optional), publish_session_draft_tool, "
+        "fetch_motion_graphics_video_tool, then place_motion_graphic_tool(mode=overlay|gap|cut_in). "
+        "Never put the creative brief into on-screen title text."
+    )
 
 
 def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
@@ -4445,7 +5995,7 @@ def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
                 f"position={ctx.timeline_position:.2f}s timeline_end={ctx.timeline_end:.2f}s\n"
                 f"    source_window={ctx.source_start:.2f}-{ctx.source_end:.2f}s "
                 f"index_status={ctx.index_status!r} duplicate_group={group_id!r}\n"
-                f"    tags_preview={ctx.tags_preview!r}"
+                f"    summary_preview={ctx.summary_preview!r}"
             )
             if scenes and scene_limit:
                 lines.append("    effective_scenes:")
@@ -4464,7 +6014,11 @@ def get_timeline_placements_metadata(detail_level="summary", **_kw) -> str:
 # ---------------------------------------------------------------------------
 
 def get_timeline_state(**_kw) -> str:
-    """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects."""
+    """Return a structured snapshot of the current timeline: tracks, clips with positions, and effects.
+
+    Always lists every project layer (including empty tracks) so planners can pick ui_track values
+    even when the timeline has no clips yet.
+    """
     try:
         from classes.query import Clip
         from classes.timeline_clip_context import build_timeline_clip_context
@@ -4476,9 +6030,6 @@ def get_timeline_state(**_kw) -> str:
         clips = Clip.filter()
         effects_raw = app.project.get("effects") or []
 
-        if not clips and not effects_raw:
-            return "Timeline is empty — no clips or effects have been added yet."
-
         # Group clips by layer (store tuple of clip object and data)
         by_layer = {}
         for c in clips:
@@ -4486,70 +6037,110 @@ def get_timeline_state(**_kw) -> str:
             layer = d.get("layer", 0)
             by_layer.setdefault(layer, []).append((c, d))
 
-        def _track_heading(layer_num):
+        def _track_heading(layer_num, layer_obj=None):
             ui = layer_number_to_display_index(int(layer_num), layers)
             tid = ""
             label = ""
-            for L in layers:
-                if int(L.get("number") or 0) == int(layer_num):
-                    tid = str(L.get("id", ""))
-                    label = (L.get("label") or "").strip()
-                    break
-            parts = []
+            if layer_obj is not None:
+                tid = str(layer_obj.get("id", ""))
+                label = (layer_obj.get("label") or layer_obj.get("name") or "").strip()
+            else:
+                for L in layers:
+                    if int(L.get("number") or 0) == int(layer_num):
+                        tid = str(L.get("id", ""))
+                        label = (L.get("label") or L.get("name") or "").strip()
+                        break
+            z_from_bottom = (ui - 1) if ui is not None else "?"
+            parts = [f"layer_number={layer_num}", f"z_from_bottom={z_from_bottom}"]
             if ui is not None:
-                parts.append(f"UI Track {ui}")
-            parts.append(f"layer_number={layer_num}")
+                parts.append(f"ui_track={ui}")
             if tid:
                 parts.append(f"track_id={tid}")
             if label:
                 parts.append(f"label={label!r}")
-            return " | ".join(parts) if parts else f"layer_number={layer_num}"
+            return " | ".join(parts)
 
-        # Sort each layer by position (high layer number first matches top-of-stack feel)
         lines = ["=== TIMELINE STATE ==="]
+        lines.append(
+            "Z-ORDER: higher layer_number covers lower. "
+            "Track labels are cosmetic names only — never infer priority from the label text. "
+            "Call list_layers_tool for TRACK_STACK_JSON before multi-track placement. "
+            "Hero/foreground → highest layer_number; backgrounds → lowest."
+        )
+        if not clips and not effects_raw:
+            lines.append("Timeline is empty — no clips or effects have been added yet.")
+
+        # Always emit every project track (high layer number first = top of stack).
+        from classes.track_display import track_stack_json
+
+        asc = layers_sorted_by_number(layers)
+        emitted_layer_nums = set()
+        if asc:
+            for L in reversed(asc):
+                layer_num = int(L.get("number") or 0)
+                emitted_layer_nums.add(layer_num)
+                lines.append(f"\n{_track_heading(layer_num, L)}:")
+                layer_clips = by_layer.get(layer_num) or []
+                if not layer_clips:
+                    lines.append("  (empty)")
+                    continue
+                for c, d in sorted(layer_clips, key=lambda x: x[1].get("position", 0)):
+                    clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
+                    if clip_dur <= 0:
+                        try:
+                            from classes.query import File as _FileDur
+                            _fo = _FileDur.get(id=d.get("file_id", ""))
+                            if _fo:
+                                from classes.ai_metadata_utils import get_source_window
+                                ss, se = get_source_window(d, _fo.data)
+                                clip_dur = se - ss
+                        except Exception:
+                            clip_dur = 0
+                    clip_end = d.get("position", 0) + clip_dur
+                    summary_preview = ""
+                    analyzed_part = ""
+                    source_part = ""
+                    try:
+                        from classes.query import File as _File
+                        fobj = _File.get(id=d.get("file_id", ""))
+                        if fobj and isinstance(fobj.data, dict):
+                            fname = (
+                                fobj.data.get("name")
+                                or os.path.basename(str(fobj.data.get("path") or ""))
+                                or d.get("file_id", "?")
+                            )
+                            ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
+                            summary_preview = ctx.summary_preview
+                            source_part = (
+                                f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
+                            )
+                            if not _file_is_analyzed(fobj.data):
+                                analyzed_part = " analyzed=False"
+                        else:
+                            fname = d.get("file_id", "?")
+                    except Exception:
+                        fname = d.get("file_id", "?")
+                    summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
+                    lines.append(
+                        f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
+                        f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
+                        f"{summary_part}{analyzed_part}{source_part}"
+                        f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
+                    )
+        else:
+            lines.append("\n(No layers/tracks in project.)")
+
+        # Orphan clips on layer numbers not in project.layers
         for layer_num in sorted(by_layer.keys(), reverse=True):
+            if int(layer_num) in emitted_layer_nums:
+                continue
             lines.append(f"\n{_track_heading(layer_num)}:")
             for c, d in sorted(by_layer[layer_num], key=lambda x: x[1].get("position", 0)):
                 clip_dur = float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
-                if clip_dur <= 0:
-                    try:
-                        from classes.query import File as _FileDur
-                        _fo = _FileDur.get(id=d.get("file_id", ""))
-                        if _fo:
-                            from classes.ai_metadata_utils import get_source_window
-                            ss, se = get_source_window(d, _fo.data)
-                            clip_dur = se - ss
-                    except Exception:
-                        clip_dur = 0
                 clip_end = d.get("position", 0) + clip_dur
-                tags_preview = ""
-                analyzed_part = ""
-                source_part = ""
-                try:
-                    from classes.query import File as _File
-                    fobj = _File.get(id=d.get("file_id", ""))
-                    if fobj and isinstance(fobj.data, dict):
-                        fname = (
-                            fobj.data.get("name")
-                            or os.path.basename(str(fobj.data.get("path") or ""))
-                            or d.get("file_id", "?")
-                        )
-                        ctx = build_timeline_clip_context(c, d, fobj.data, layers=layers)
-                        tags_preview = ctx.tags_preview
-                        source_part = (
-                            f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
-                        )
-                        if not _file_is_analyzed(fobj.data):
-                            analyzed_part = " analyzed=False"
-                    else:
-                        fname = d.get("file_id", "?")
-                except Exception:
-                    fname = d.get("file_id", "?")
-                tag_part = f" tags_preview={tags_preview!r}" if tags_preview else ""
                 lines.append(
                     f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
-                    f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                    f"{tag_part}{analyzed_part}{source_part}"
+                    f"file={d.get('file_id','')!r} title={(d.get('title') or d.get('label') or '')!r}"
                     f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                 )
 
@@ -4563,29 +6154,73 @@ def get_timeline_state(**_kw) -> str:
                 )
 
         # Total timeline duration
-        all_ends = [
-            d.get("position", 0) + (d.get("end", 0) - d.get("start", 0))
-            for c in clips for d in [c.data]
-        ]
-        if all_ends:
-            lines.append(f"\nTotal timeline duration: {max(all_ends):.2f}s")
+        if not clips:
+            lines.append("\nTotal timeline duration: 0.00s")
+        else:
+            all_ends = [
+                d.get("position", 0) + (d.get("end", 0) - d.get("start", 0))
+                for c in clips for d in [c.data]
+            ]
+            if all_ends:
+                lines.append(f"\nTotal timeline duration: {max(all_ends):.2f}s")
 
+        lines.append(f"\nTRACK_STACK_JSON={track_stack_json(layers)}")
         return "\n".join(lines)
     except Exception as e:
         log.error("get_timeline_state: %s", e, exc_info=True)
         return f"Error: {e}"
 
 
-def build_editor_snapshot_for_chat(max_chars: int = 4500) -> str:
-    """Compact timeline + file count for LLM grounding. Call from Qt GUI thread."""
+def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
+    """Compact media-bin + timeline for LLM grounding. Call from Qt GUI thread.
+
+    Empty timeline must NOT look like an empty project — always list media-bin
+    files (with summary_preview when available) so the agent can plan from them.
+    """
     try:
+        import os
         from classes.query import File
+        from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
+
+        files = File.filter() or []
+        media_lines: list[str] = []
+        for f in files:
+            d = f.data if isinstance(getattr(f, "data", None), dict) else {}
+            if d.get("zenvi_subclip"):
+                continue
+            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
+            dur = float(d.get("duration", 0) or 0)
+            ai = d.get("ai_metadata") if isinstance(d.get("ai_metadata"), dict) else {}
+            analyzed = bool(ai.get("analyzed"))
+            indexed = twelvelabs_is_indexed(get_index_block(ai))
+            preview = _summary_preview_for_file_data(d)
+            media_lines.append(
+                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s "
+                f"analyzed={analyzed} indexed={indexed} "
+                f"summary_preview={preview!r}"
+            )
+
+        n_visible = len(media_lines)
+        head = (
+            f"[Editor snapshot]\n"
+            f"Project files count: {n_visible}\n"
+            f"NOTE: media-bin files exist independently of the timeline; "
+            f"an empty timeline does NOT mean no project files.\n"
+        )
+        if media_lines:
+            # Cap listing so snapshot stays within max_chars with timeline.
+            shown = media_lines[:20]
+            head += "MEDIA_BIN:\n" + "\n".join(shown)
+            if n_visible > len(shown):
+                head += f"\n  ... and {n_visible - len(shown)} more (use list_files_tool / get_clips_with_full_metadata_tool)\n"
+            else:
+                head += "\n"
+        else:
+            head += "MEDIA_BIN: (empty)\n"
 
         tl = get_timeline_state()
-        nfiles = len(File.filter() or [])
-        head = f"[Editor snapshot]\nProject files count: {nfiles}\n"
-        body = tl.strip()
-        out = f"{head}{body}\n" if body else f"{head}(timeline state unavailable)\n"
+        body = (tl or "").strip()
+        out = f"{head}TIMELINE:\n{body}\n" if body else f"{head}TIMELINE: (empty or unavailable)\n"
         if len(out) > max_chars:
             out = out[: max(0, max_chars - 24)].rstrip() + "\n... (truncated)\n"
         return out + "[/Editor snapshot]\n"
@@ -4594,7 +6229,7 @@ def build_editor_snapshot_for_chat(max_chars: int = 4500) -> str:
         return ""
 
 
-# Tools exposed to the main chat / video / transitions agents (not director-only).
+# Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
     "get_project_info_tool": get_project_info,
@@ -4632,10 +6267,16 @@ AGENT_TOOL_HANDLERS = {
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
     # Search / slice / modify (tag-query resolved)
+    "search_clips_tool": search_clips,
     "search_clip_scenes_tool": search_clip_scenes,
+    "get_project_catalog_tool": get_project_catalog,
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
-    # Remotion
-    "fetch_remotion_video_from_supabase_tool": fetch_remotion_video_from_supabase,
+    "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
+    "propose_overlay_windows_tool": propose_overlay_windows,
+    "place_motion_graphic_tool": place_motion_graphic,
+    # Remotion / HyperFrames
+    "fetch_motion_graphics_video_tool": fetch_motion_graphics_video,
+    "fetch_remotion_video_from_supabase_tool": fetch_motion_graphics_video,
     # Video generation / AI edit
     "generate_video_and_add_to_timeline_tool": generate_video_and_add_to_timeline,
     "modify_clip_tool": modify_clip,
@@ -4648,29 +6289,14 @@ AGENT_TOOL_HANDLERS = {
     "generate_tts_and_add_to_timeline_tool": generate_tts_and_add_to_timeline,
     # Stock / planning
     "import_stock_media_tool": import_stock_media,
-    "retag_project_file_tool": retag_project_file,
+    "resummarize_project_file_tool": resummarize_project_file,
     "reindex_project_file_tool": reindex_project_file,
     "get_clips_with_full_metadata_tool": get_clips_with_full_metadata,
     "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
 
-# Director orchestrator only — not registered on the root chat agent.
-DIRECTOR_TOOL_HANDLERS = {
-    "analyze_timeline_structure_tool": analyze_timeline_structure,
-    "analyze_pacing_tool": analyze_pacing,
-    "analyze_audio_levels_tool": analyze_audio_levels,
-    "analyze_transitions_tool": analyze_transitions_structure,
-    "analyze_clip_content_tool": analyze_clip_content,
-    "analyze_music_sync_tool": analyze_music_sync,
-    "get_project_metadata_tool": get_project_metadata_info,
-    "analyze_clip_visual_content_tool": analyze_clip_visual_content,
-}
-
-TOOL_HANDLERS = {
-    **AGENT_TOOL_HANDLERS,
-    **DIRECTOR_TOOL_HANDLERS,
-}
+TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
@@ -4704,9 +6330,15 @@ TOOL_DISPLAY_LABELS = {
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
+    "search_clips_tool": "Search project index",
     "search_clip_scenes_tool": "Search clip scenes",
+    "get_project_catalog_tool": "Read project catalog",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
-    "fetch_remotion_video_from_supabase_tool": "Fetch Remotion video",
+    "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
+    "propose_overlay_windows_tool": "Propose overlay windows",
+    "place_motion_graphic_tool": "Place motion graphic",
+    "fetch_motion_graphics_video_tool": "Fetch HyperFrames video",
+    "fetch_remotion_video_from_supabase_tool": "Fetch HyperFrames video",
     "generate_video_and_add_to_timeline_tool": "Generate video",
     "modify_clip_tool": "AI edit clip",
     "generate_transition_clip_tool": "Bake A + morph + B",
@@ -4715,7 +6347,7 @@ TOOL_DISPLAY_LABELS = {
     "apply_transition_tool": "Apply transition",
     "generate_tts_and_add_to_timeline_tool": "Add narration (TTS)",
     "import_stock_media_tool": "Import stock media",
-    "retag_project_file_tool": "Retag file",
+    "resummarize_project_file_tool": "Resummarize file",
     "reindex_project_file_tool": "Reindex file",
     "get_clips_with_full_metadata_tool": "Read clips metadata",
     "get_timeline_placements_metadata_tool": "Read timeline placements",
@@ -4726,11 +6358,26 @@ assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
 )
 
+# Server-side / subagent names that never hit AGENT_TOOL_HANDLERS but still
+# appear as tool_started titles over the WebSocket.
+_EXTRA_TOOL_DISPLAY_LABELS = {
+    "motion-graphics-agent": "Motion graphics",
+    "publish_session_draft_tool": "Publish motion graphic",
+    "lint_session_draft_tool": "Lint draft",
+    "product_demo": "Product demo",
+    "plan_product_demo_tool": "Plan product demo",
+    "render_product_demo_tool": "Render product demo",
+    "check_motion_graphics_health_tool": "Motion graphics health",
+    "get_motion_graphics_job_status_tool": "Motion job status",
+}
+
 
 def humanize_tool_name(tool_name: str) -> str:
     """Return a short human-readable title for a tool name."""
     if tool_name in TOOL_DISPLAY_LABELS:
         return TOOL_DISPLAY_LABELS[tool_name]
+    if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
@@ -4751,6 +6398,7 @@ READ_ONLY_TOOLS = frozenset({
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
     "get_timeline_placements_metadata_tool",
+    "propose_overlay_windows_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -4763,12 +6411,19 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # Downloads + re-encodes off the GUI thread; its timeline mutations
     # marshal to the main thread internally.
     "import_video_url_and_add_to_timeline_tool",
-    "retag_project_file_tool",
+    "resummarize_project_file_tool",
     "import_stock_media_tool",
     # Long-running Runware/ffmpeg work; Qt timeline touches are marshalled internally.
     "generate_video_and_add_to_timeline_tool",
     "modify_clip_tool",
     "generate_transition_clip_tool",
+    # Network search against project TwelveLabs index (File reads are read-only).
+    "search_clips_tool",
+    "search_clip_scenes_tool",
+    "propose_overlay_windows_tool",
+    # HyperFrames download + alpha re-encode can take a while.
+    "fetch_motion_graphics_video_tool",
+    "fetch_remotion_video_from_supabase_tool",
 })
 
 
@@ -4778,10 +6433,15 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
     if not handler:
         return f"Error: Unknown tool '{tool_name}'."
 
-    # chat_session_id is used for tool state isolation (e.g. split/add clip chains).
+    # chat_session_id is used for tool state isolation (e.g. split/import → add clip chains).
     # Only pass it through to the relevant handlers.
     if isinstance(tool_args, dict) and "chat_session_id" in tool_args:
-        if tool_name not in ("split_file_add_clip_tool", "add_clip_to_timeline_tool"):
+        if tool_name not in (
+            "split_file_add_clip_tool",
+            "add_clip_to_timeline_tool",
+            "place_motion_graphic_tool",
+            "import_stock_media_tool",
+        ):
             tool_args = dict(tool_args)
             tool_args.pop("chat_session_id", None)
 

@@ -191,17 +191,48 @@ def materialize_clip_ai_metadata(
         filtered_scenes,
     )
 
+    # Filter Pegasus chapters that overlap the trim window
+    filtered_chapters = []
+    for ch in root_ai.get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        try:
+            c0 = float(ch.get("start", 0) or 0)
+            c1 = float(ch.get("end", c0) or c0)
+        except Exception:
+            continue
+        if c1 < source_start - 1e-3 or c0 > source_end + 1e-3:
+            continue
+        entry = dict(ch)
+        if rebased:
+            entry["start"] = max(0.0, c0 - source_start)
+            entry["end"] = max(entry["start"], c1 - source_start)
+        filtered_chapters.append(entry)
+
+    short = str(root_ai.get("short_summary") or "").strip()
+    description = str(root_ai.get("description") or "").strip()
+    sounds = str(root_ai.get("sounds") or "").strip()
+    transcript = str(root_ai.get("transcript") or "").strip()
+    if not description and filtered_scenes:
+        description = " ".join(
+            s["description"] for s in filtered_scenes if s.get("description")
+        )
+
     return {
         "analyzed": True,
         "analysis_version": root_ai.get("analysis_version", "2.0"),
         "analysis_date": root_ai.get("analysis_date", ""),
-        "provider": root_ai.get("provider", "gemini"),
+        "provider": root_ai.get("provider", "twelvelabs-pegasus"),
+        "short_summary": short,
+        "description": description,
+        "sounds": sounds,
+        "transcript": transcript,
+        "chapters": filtered_chapters,
         "scene_descriptions": filtered_scenes,
         "tags": tags,
         "faces": root_ai.get("faces", []) if rebased else copy.deepcopy(root_ai.get("faces", [])),
         "colors": copy.deepcopy(root_ai.get("colors", {})),
         "audio_analysis": copy.deepcopy(root_ai.get("audio_analysis", {})),
-        "description": " ".join(s["description"] for s in filtered_scenes if s.get("description")),
         "confidence": root_ai.get("confidence", 0.0),
         "twelvelabs": copy.deepcopy(root_ai.get("twelvelabs", {})),
         "source_window": {"start": source_start, "end": source_end},
@@ -257,24 +288,42 @@ def get_effective_ai_metadata(
     )
 
 
-def build_tags_preview(effective_metadata: Optional[dict], max_items: int = 5) -> str:
-    """Compact tag string from effective metadata for agent listings."""
+def build_summary_preview(effective_metadata: Optional[dict], max_items: int = 5) -> str:
+    """Compact summary string from effective metadata for agent listings."""
     if not isinstance(effective_metadata, dict):
         return ""
-    tags = effective_metadata.get("tags") if isinstance(effective_metadata.get("tags"), dict) else {}
     parts = []
-    for key in ("objects", "scenes", "activities"):
-        vals = tags.get(key) or []
-        if isinstance(vals, list):
-            parts.extend(str(v).strip() for v in vals[:max_items] if v)
-    if not parts:
-        for sc in (effective_metadata.get("scene_descriptions") or [])[:2]:
-            if isinstance(sc, dict) and sc.get("description"):
-                parts.append(str(sc["description"])[:40])
+    short = str(effective_metadata.get("short_summary") or "").strip()
+    if short:
+        parts.append(short[:80])
     if not parts:
         desc = str(effective_metadata.get("description") or "").strip()
         if desc:
-            parts.append(desc[:60])
+            # Prefer first non-heading line
+            for line in desc.splitlines():
+                line = line.strip()
+                if line and not line.endswith(":") and line.lower() not in ("scene:", "sounds:", "transcript:"):
+                    parts.append(line[:80])
+                    break
+            if not parts:
+                parts.append(desc[:80])
+    if not parts:
+        for ch in (effective_metadata.get("chapters") or [])[:2]:
+            if isinstance(ch, dict) and ch.get("summary"):
+                parts.append(str(ch["summary"])[:40])
+    if not parts:
+        for key in ("transcript", "sounds"):
+            val = str(effective_metadata.get(key) or "").strip()
+            if val:
+                parts.append(val[:60])
+                break
+    if not parts:
+        # Legacy Gemini tags (old projects only)
+        tags = effective_metadata.get("tags") if isinstance(effective_metadata.get("tags"), dict) else {}
+        for key in ("objects", "scenes", "activities"):
+            vals = tags.get(key) or []
+            if isinstance(vals, list):
+                parts.extend(str(v).strip() for v in vals[:max_items] if v)
     preview = ", ".join(parts[:max_items])
     if len(preview) > 80:
         preview = preview[:79].rstrip() + "…"
@@ -284,8 +333,8 @@ def build_tags_preview(effective_metadata: Optional[dict], max_items: int = 5) -
 def filter_tags_string_for_window(tags_str: str, effective_metadata: dict) -> str:
     """Filter comma-separated tags to those relevant to effective window."""
     if not tags_str:
-        return build_tags_preview(effective_metadata)
-    corpus = build_tags_preview(effective_metadata).lower()
+        return build_summary_preview(effective_metadata)
+    corpus = build_summary_preview(effective_metadata).lower()
     if not corpus:
         return tags_str
     kept = []
@@ -295,24 +344,26 @@ def filter_tags_string_for_window(tags_str: str, effective_metadata: dict) -> st
             continue
         if token.lower() in corpus or any(w in corpus for w in token.lower().split() if len(w) > 2):
             kept.append(token)
-    return ", ".join(kept) if kept else build_tags_preview(effective_metadata)
+    return ", ".join(kept) if kept else build_summary_preview(effective_metadata)
 
 
 def is_ai_metadata_usable(ai_metadata: Dict[str, Any]) -> bool:
-    """Return True when ai_metadata actually contains usable analysis content.
-
-    The backend used to report ``analyzed=True`` even when the vision model
-    failed, leaving empty objects/scenes/description/scene_descriptions. Such a
-    result is worthless for the tags tab and chat, so we treat "analyzed but
-    empty" as NOT usable — it should be re-tagged rather than trusted.
-    """
+    """Return True when ai_metadata actually contains usable analysis content."""
     if not ai_metadata or not isinstance(ai_metadata, dict):
         return False
     if not ai_metadata.get("analyzed"):
         return False
-    if ai_metadata.get("scene_descriptions"):
+    if (ai_metadata.get("short_summary") or "").strip():
         return True
     if (ai_metadata.get("description") or "").strip():
+        return True
+    if (ai_metadata.get("sounds") or "").strip():
+        return True
+    if (ai_metadata.get("transcript") or "").strip():
+        return True
+    if ai_metadata.get("chapters"):
+        return True
+    if ai_metadata.get("scene_descriptions"):
         return True
     tags = ai_metadata.get("tags") or {}
     if isinstance(tags, dict):
