@@ -44,28 +44,9 @@ find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
     sed -i 's/ avresample//g' "$f"
   done || true
 
-python3 -c "
-import glob, os, re
-root = os.environ['LOS']
-for f in glob.glob(os.path.join(root, '**', '*.cpp'), recursive=True):
-    try:
-        t = open(f, encoding='utf-8', errors='surrogateescape').read()
-    except OSError:
-        continue
-    o = t
-    if 'FF_PROFILE_' in t:
-        t = (t.replace('FF_PROFILE_H264_BASELINE', 'AV_PROFILE_H264_BASELINE')
-             .replace('FF_PROFILE_H264_CONSTRAINED', 'AV_PROFILE_H264_CONSTRAINED')
-             .replace('FF_PROFILE_H264_MAIN', 'AV_PROFILE_H264_MAIN')
-             .replace('FF_PROFILE_H264_HIGH', 'AV_PROFILE_H264_HIGH'))
-    if 'av_stream_add_side_data' in t:
-        t = re.sub(r'av_stream_add_side_data\([^;]*\);', '(void)0; /* removed FFmpeg7+ */', t)
-    if '->nb_side_data' in t:
-        t = (t.replace('->nb_side_data', '->codecpar->nb_coded_side_data')
-             .replace('->side_data[', '->codecpar->coded_side_data['))
-    if t != o:
-        open(f, 'w', encoding='utf-8', errors='surrogateescape').write(t)
-"
+# FFmpeg 7/8: FF_PROFILE_*, side-data, and FFmpeg 8 AVCodec field removal
+# (supported_samplerates / ch_layouts / sample_fmts / pix_fmts).
+python3 "${GITHUB_WORKSPACE}/installer/patch-libopenshot-ffmpeg.py" "${LOS}"
 
 cmake -S "${LOS}" -B "${LOS}/build" \
   -G "MSYS Makefiles" \

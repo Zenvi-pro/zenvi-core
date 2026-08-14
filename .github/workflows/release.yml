@@ -268,7 +268,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v3
+          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v4
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -317,13 +317,8 @@ jobs:
             xargs grep -l "avresample" 2>/dev/null | \
             xargs sed -i '' 's/ avresample//g' || true
 
-          # 2. FFmpeg 7/8 compat patches in libopenshot .cpp source files:
-          #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE").replace("FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED").replace("FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN").replace("FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "FF_PROFILE_" in (t:=open(f).read())]'
-          #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op.
-          python3 -c 'import re,glob; [open(f,"w").write(re.sub(r"av_stream_add_side_data\([^;]*\);","(void)0; /* removed FFmpeg7+ */",t)) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "av_stream_add_side_data" in (t:=open(f).read())]'
-          #    c. AVStream::nb_side_data / side_data moved to codecpar->{nb_coded_side_data,coded_side_data} in FFmpeg 7+.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("->nb_side_data","->codecpar->nb_coded_side_data").replace("->side_data[","->codecpar->coded_side_data[")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "nb_side_data" in (t:=open(f).read())]'
+          # 2. FFmpeg 7/8 compat (FF_PROFILE_*, side-data, AVCodec config lists).
+          python3 "$GITHUB_WORKSPACE/installer/patch-libopenshot-ffmpeg.py" /tmp/libopenshot
           # Note: SWR channel layout (the FFmpeg 8 av_opt_set_chlayout fix) is
           # included in libopenshot v0.7.0 upstream — no local patch needed.
 
@@ -1036,7 +1031,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/patch-libopenshot-ffmpeg.py') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
