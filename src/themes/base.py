@@ -170,10 +170,12 @@ class BaseTheme:
                 continue
 
             if widget:
-                widget.setVisible(True)
+                widget.setVisible(button_visible)
                 if button_stylesheet:
                     widget.setStyleSheet(button_stylesheet)
-                toolbar.addWidget(widget)
+                # addWidget() wraps the widget in a QWidgetAction that owns its
+                # visibility, so hiding the widget alone is not enough
+                toolbar.addWidget(widget).setVisible(button_visible)
                 continue
 
             # Create button from action

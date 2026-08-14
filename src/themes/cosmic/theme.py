@@ -1221,11 +1221,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 ),
             },
             {
-                "action": self.app.window.actionUpdate,
-                "icon": "themes/cosmic/images/warning.svg",
-                "visible": False,
-                "style": Qt.ToolButtonIconOnly,
-                "stylesheet": "QToolButton { background-color: #252525; color: #f59e0b; }",
+                # The update pill styles itself per state and paints its own
+                # download progress, so it carries no stylesheet here
+                "widget": self.app.window.update_status_button,
+                "visible": self.app.window.update_status_button.is_active,
             },
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)
