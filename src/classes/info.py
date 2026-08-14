@@ -29,10 +29,10 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.0.181"
+VERSION = "1.0.182"
 # 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
 MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
-DATE = "20260718000000"
+DATE = "20260813000000"
 NAME = "zenvi"
 PRODUCT_NAME = "Zenvi"
 GPL_VERSION = "3"
