@@ -49,13 +49,14 @@ from PyQt5.QtGui import QIcon, QCursor, QKeySequence, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDockWidget,
     QMessageBox, QDialog, QFileDialog, QInputDialog,
-    QAction, QActionGroup, QSizePolicy,
+    QAction, QActionGroup, QSizePolicy, QWidgetAction,
     QStatusBar, QToolBar, QToolButton,
     QLineEdit, QComboBox, QTextEdit, QShortcut, QTabBar
 )
 
 from classes import exceptions, info, qt_types, sentry, ui_util, updates
-from classes.auto_updater import AutoUpdater
+from classes.auto_updater import AutoUpdater, get_update_manifest
+from classes.update_installer import is_version_newer
 from classes.app import get_app
 from classes.exporters.edl import export_edl
 from classes.exporters.final_cut_pro import export_xml
@@ -74,6 +75,10 @@ from windows.models.emoji_model import EmojisModel
 from windows.models.files_model import FilesModel
 from windows.models.transition_model import TransitionsModel
 from windows.preview_thread import PreviewParent
+from windows.update_panel import UpdatePanel
+from windows.update_status_button import (
+    UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
+)
 from windows.video_widget import VideoWidget
 from windows.views.effects_listview import EffectsListView
 from windows.views.effects_treeview import EffectsTreeView
@@ -116,6 +121,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     RecoverBackup = pyqtSignal()
     FoundVersionSignal = pyqtSignal(str)
     UpdateReadySignal = pyqtSignal(str)
+    # version, percent (-1 = size unknown), bytes downloaded, total bytes
+    UpdateProgressSignal = pyqtSignal(str, int, int, int)
+    UpdateFailedSignal = pyqtSignal(str, str)
     TransformSignal = pyqtSignal(list)
     KeyFrameTransformSignal = pyqtSignal(str, str)
     SelectRegionSignal = pyqtSignal(str)
@@ -185,6 +193,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
+
+        # Stop the background updater so a download in flight aborts cleanly
+        # instead of writing into a .part file we are about to orphan
+        if getattr(self, "_auto_updater", None):
+            self._auto_updater.stop()
 
         if self.tutorial_manager:
             # Close any tutorial dialogs (if any)
@@ -1133,7 +1146,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         win.exec_()
 
     def actionHelpContents_trigger(self, checked=True):
-        url = "https://zenvi.org/docs/"
+        url = "https://zenvi.pro/docs"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1142,7 +1155,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionReportBug_trigger(self, checked=True):
-        url = "https://zenvi.org/support/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Bug%20Report"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1151,7 +1164,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionAskQuestion_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Question"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1160,7 +1173,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionDiscord_trigger(self, checked=True):
-        url = "https://zenvi.org/community/"
+        url = "https://zenvi.pro/docs"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1169,7 +1182,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionTranslate_trigger(self, checked=True):
-        url = "https://zenvi.org/contribute/"
+        url = "mailto:support@zenvi.pro?subject=Zenvi%20Translations"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1178,7 +1191,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.error(error_msg, exc_info=1)
 
     def actionDonate_trigger(self, checked=True):
-        url = "https://zenvi.org/donate/"
+        url = "https://zenvi.pro/pricing"
         try:
             webbrowser.open(url, new=1)
         except Exception:
@@ -1189,21 +1202,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionUpdate_trigger(self, checked=True):
         _ = get_app()._tr
 
-        from classes.auto_updater import has_pending_update
-        if has_pending_update():
-            # A newer version has already been downloaded and staged in the
-            # background — restart now to apply it instead of sending the
-            # user off to manually download it again.
-            reply = QMessageBox.question(
-                self,
-                _("Restart to Update"),
-                _("Zenvi has downloaded an update. Restart now to apply it?"),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if reply == QMessageBox.Yes:
-                self._restart_for_update = True
-                self.close()
+        if self.update_status_button.state in (STATE_DOWNLOADING, STATE_READY):
+            # There is something to show: live progress, or a staged update that
+            # only needs a restart. The popup covers both.
+            if self._update_panel is None:
+                self._update_panel = UpdatePanel(self)
+            self._update_panel.sync_from_button(self.update_status_button)
+            self._update_panel.show_under(self.update_status_button)
             return
 
         url = "https://zenvi.pro/download"
@@ -3384,72 +3389,71 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             elif sel["type"] == "effect" and not Effect.get(id=sel["id"]):
                 self.removeSelection(sel["id"], "effect")
 
+    def _ensure_update_button(self):
+        """Place the update pill on the main toolbar exactly once.
+
+        The Cosmic theme adds this same widget instance declaratively via
+        set_toolbar_buttons(); other themes never rebuild the toolbar, so it is
+        added here instead. Calling this repeatedly — or after a theme switch
+        has cleared the toolbar — is safe."""
+        button = self.update_status_button
+
+        for action in self.toolBar.actions():
+            if isinstance(action, QWidgetAction) and action.defaultWidget() is button:
+                action.setVisible(True)
+                button.setVisible(True)
+                return
+
+        # Not on the toolbar yet — push it to the far right behind a spacer
+        spacer = QWidget(self)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.toolBar.addWidget(spacer)
+        self.toolBar.addWidget(button).setVisible(True)
+        button.setVisible(True)
+
+    def _sync_update_panel(self):
+        """Keep an open update popup in step with the toolbar pill."""
+        if self._update_panel and self._update_panel.isVisible():
+            self._update_panel.sync_from_button(self.update_status_button)
+
     def foundCurrentVersion(self, version):
-        """Handle the callback for detecting the current version on openshot.org"""
-        _ = get_app()._tr
-
-        # Compare versions (alphabetical compare of version strings should work fine)
-        if info.VERSION < version:
-            # Update text for QAction
-            self.actionUpdate.setVisible(True)
-            self.actionUpdate.setText(_("Update Available"))
-            self.actionUpdate.setToolTip(_("Update Available: <b>%s</b>") % version)
-
-            # Add toolbar button for non-cosmic dusk themes
-            # Cosmic dusk has a hidden toolbar button which is made visible
-            # by the setVisible() call above this
-            if get_app().theme_manager:
-                from themes.manager import ThemeName
-                theme = get_app().theme_manager.get_current_theme()
-                if theme and theme.name != ThemeName.COSMIC.value:
-                    # Add spacer and 'New Version Available' toolbar button (default hidden)
-                    spacer = QWidget(self)
-                    spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                    self.toolBar.addWidget(spacer)
-
-                    # Add update available button (with icon and text)
-                    updateButton = QToolButton(self)
-                    updateButton.setDefaultAction(self.actionUpdate)
-                    updateButton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                    self.toolBar.addWidget(updateButton)
-            else:
-                log.warning("No ThemeManager loaded yet. Skip update available button.")
+        """Handle the callback for detecting the latest released version."""
+        if version and is_version_newer(version, info.VERSION):
+            # A download already running (or finished) is further along than
+            # "available" — never regress the pill to an earlier state
+            if self.update_status_button.state not in (STATE_DOWNLOADING, STATE_READY):
+                self.update_status_button.set_available(version)
+                self._ensure_update_button()
 
         # Initialize sentry exception tracing (now that we know the current version)
         from classes import sentry
         sentry.init_tracing()
 
+    def updateDownloadProgress(self, version, percent, downloaded, total):
+        """Handle live download progress from the background auto-updater."""
+        self.update_status_button.set_downloading(version, percent, downloaded, total)
+        self._ensure_update_button()
+        self._sync_update_panel()
+
     def updateDownloaded(self, version):
         """Handle the callback when a new version has been downloaded and staged.
         The update will be applied automatically on the next app launch."""
-        _ = get_app()._tr
-
-        if info.VERSION >= version:
+        if not version or not is_version_newer(version, info.VERSION):
             return
 
-        # Update the toolbar button text to reflect that the update is ready
-        self.actionUpdate.setVisible(True)
-        self.actionUpdate.setText(_("Update Ready — Restart to Apply"))
-        self.actionUpdate.setToolTip(
-            _("Version <b>%s</b> has been downloaded and will be "
-              "installed automatically when you restart Zenvi.") % version
-        )
+        # The manifest carries the size, so a session that finds an update
+        # staged by a previous run can still report how large it is
+        manifest = get_update_manifest() or {}
+        self.update_status_button.set_ready(version, manifest.get("size", 0))
+        self._ensure_update_button()
+        self._sync_update_panel()
 
-        # Add toolbar button for non-cosmic dusk themes
-        if get_app().theme_manager:
-            from themes.manager import ThemeName
-            theme = get_app().theme_manager.get_current_theme()
-            if theme and theme.name != ThemeName.COSMIC.value:
-                spacer = QWidget(self)
-                spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-                self.toolBar.addWidget(spacer)
-
-                updateButton = QToolButton(self)
-                updateButton.setDefaultAction(self.actionUpdate)
-                updateButton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                self.toolBar.addWidget(updateButton)
-        else:
-            log.warning("No ThemeManager loaded yet. Skip update-ready button.")
+    def updateFailed(self, version, reason):
+        """Handle a failed background download — offer a manual download instead."""
+        log.warning("Auto-update download failed for %s: %s", version, reason)
+        self.update_status_button.set_failed(version, reason)
+        self._ensure_update_button()
+        self._sync_update_panel()
 
     def handleSeek(self, frame):
         """ Always update the property view when we seek to a new position """
@@ -4208,8 +4212,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)
 
+        # Update status pill — created before the theme is applied, since the
+        # Cosmic theme places this exact instance on its toolbar
+        self.update_status_button = UpdateStatusButton(self)
+        self._update_panel = None
+
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
+        self.UpdateProgressSignal.connect(self.updateDownloadProgress)
+        self.UpdateFailedSignal.connect(self.updateFailed)
 
         # Background auto-updater (stable version + optional download)
         self._auto_updater = AutoUpdater()
