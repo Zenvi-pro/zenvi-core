@@ -811,6 +811,11 @@ class ZenviBackendClient:
                     "chunks": uploaded_chunks,
                     "force": bool(force),
                     "media_type": mt,
+                    # Self-contained so multi-worker backends don't need sticky pending RAM.
+                    "file_id": fid,
+                    "project_id": pid,
+                    "filename": name,
+                    "index_name": index_name,
                 },
                 timeout=60,
             )
@@ -821,8 +826,29 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("indexing", -1)
-            result = self._poll_indexing_job(job_id, progress_callback=progress_callback)
-            if isinstance(result, dict) and result.get("video_id") and not result.get("error"):
+            result = self._poll_indexing_job(
+                job_id,
+                progress_callback=progress_callback,
+                session=s,
+            )
+            if not isinstance(result, dict):
+                return {"success": False, "error": "Invalid indexing job response"}
+            err = result.get("error") or result.get("message")
+            if err and not result.get("ai_metadata") and not result.get("index_id"):
+                return {"success": False, "error": err, "message": err}
+            if result.get("video_id") and not result.get("error"):
+                result.setdefault("status", "ready")
+                result.setdefault(
+                    "index_id",
+                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
+                )
+                result["success"] = True
+            elif result.get("ai_metadata") and not result.get("error"):
+                result.setdefault(
+                    "index_id",
+                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
+                )
+                result.setdefault("video_id", fid)
                 result.setdefault("status", "ready")
                 result["success"] = True
             return result
@@ -839,30 +865,55 @@ class ZenviBackendClient:
         max_wait: int = 1800,
         poll_interval: int = 10,
         progress_callback: Optional[Callable[[str, int], None]] = None,
+        session=None,
     ) -> Dict[str, Any]:
-        """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
+        """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass.
+
+        Always uses a dedicated HTTP session — the shared client session is not
+        safe for concurrent QThread indexing workers.
+        """
         import time
+        s = session or self._new_http_session()
         deadline = time.time() + max_wait
         while time.time() < deadline:
             if progress_callback:
                 progress_callback("indexing", -1)
             try:
-                r = self.session.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
+                r = s.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()
                 data = r.json()
                 status = data.get("status", "running")
                 if status == "done":
-                    return data.get("result") or {"success": True}
+                    result = data.get("result")
+                    if isinstance(result, dict) and result:
+                        return result
+                    return {
+                        "success": False,
+                        "error": "Indexing finished but returned an empty result",
+                        "message": "Indexing finished but returned an empty result",
+                    }
                 if status == "failed":
                     result = data.get("result") or {}
-                    err = result.get("error", "Indexing failed") if isinstance(result, dict) else "Indexing failed"
+                    err = (
+                        result.get("error", "Indexing failed")
+                        if isinstance(result, dict)
+                        else "Indexing failed"
+                    )
                     return {"success": False, "error": err, "message": err}
                 if status == "not_found":
-                    return {"success": False, "message": f"Job {job_id} not found on backend"}
+                    return {
+                        "success": False,
+                        "error": f"Job {job_id} not found on backend",
+                        "message": f"Job {job_id} not found on backend",
+                    }
             except Exception as e:
                 log.warning("Indexing poll error (will retry): %s", e)
             time.sleep(poll_interval)
-        return {"success": False, "message": f"Indexing job {job_id} timed out after {max_wait}s"}
+        return {
+            "success": False,
+            "error": f"Indexing job {job_id} timed out after {max_wait}s",
+            "message": f"Indexing job {job_id} timed out after {max_wait}s",
+        }
 
     # ------------------------------------------------------------------
     # Video Generation
