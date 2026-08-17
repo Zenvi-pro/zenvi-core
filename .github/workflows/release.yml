@@ -1015,11 +1015,19 @@ jobs:
             sed -i 's|^Server = https://ftp2.osuosl.org|# &|' "$f"
           done
 
-      - name: Update MSYS2 (pass 1, runtime may restart)
+      - name: Update MSYS2 (pass 1, runtime may kill this shell)
+        # msys2-runtime upgrade terminates the shell; || true never runs when
+        # the process is killed. Allow failure so the next step can finish.
+        continue-on-error: true
         shell: msys2 {0}
-        run: pacman -Syuu --noconfirm --disable-download-timeout || true
+        run: pacman -Syuu --noconfirm --disable-download-timeout
 
-      - name: Update MSYS2 and install packages
+      - name: Update MSYS2 (pass 2, after runtime restart)
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Install MSYS2 packages
         shell: msys2 {0}
         run: |
           set -euo pipefail
