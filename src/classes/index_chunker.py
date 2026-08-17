@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from classes.ffmpeg_cli import resolve_ffmpeg_args
+
 
 def _short_ffmpeg_error(raw: str, *, limit: int = 400) -> str:
     """Keep user-facing ffmpeg errors short (no version banners)."""
@@ -36,7 +38,7 @@ def _short_ffmpeg_error(raw: str, *, limit: int = 400) -> str:
 def _ffmpeg_run(args: list) -> Tuple[bool, str]:
     try:
         proc = subprocess.run(
-            args,
+            resolve_ffmpeg_args(args),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -87,12 +89,12 @@ def guess_mime(path: str, media_type: str = "video") -> str:
 def _probe_duration(path: str) -> float:
     try:
         proc = subprocess.run(
-            [
+            resolve_ffmpeg_args([
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 path,
-            ],
+            ]),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
