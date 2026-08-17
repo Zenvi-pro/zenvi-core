@@ -108,6 +108,12 @@ if _launch_dir not in sys.path:
     sys.path.insert(0, _launch_dir)
 
 try:
+    from classes.ffmpeg_cli import ensure_ffmpeg_on_path
+    ensure_ffmpeg_on_path()
+except Exception:
+    pass
+
+try:
     from classes.zenvi_env import load_zenvi_dotenv
     load_zenvi_dotenv()
 except Exception:

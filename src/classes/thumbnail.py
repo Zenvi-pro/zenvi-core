@@ -35,6 +35,7 @@ import subprocess
 from requests import get
 from threading import Thread
 from classes import info
+from classes.ffmpeg_cli import resolve_ffmpeg_args
 from classes.query import File
 from classes.logger import log
 from classes.app import get_app
@@ -85,12 +86,12 @@ def _thumbnail_timestamp(file_path, thumbnail_frame):
         return 0.0
     try:
         proc = subprocess.run(
-            [
+            resolve_ffmpeg_args([
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream=r_frame_rate",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 file_path,
-            ],
+            ]),
             capture_output=True,
             text=True,
             check=False,
@@ -130,7 +131,7 @@ def _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, he
         tmp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, check=False)
+        proc = subprocess.run(resolve_ffmpeg_args(cmd), capture_output=True, check=False)
         if proc.returncode != 0 or not os.path.isfile(tmp_path):
             return False
         shutil.move(tmp_path, thumb_path)

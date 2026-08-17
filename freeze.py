@@ -771,6 +771,45 @@ for frozen_path in os.listdir(build_path):
                 log.info("Post-build openshot copy: %s -> %s" % (_src, _dst))
                 shutil.copy2(_src, _dst)
 
+# Frozen Windows: Gemini indexing shells out to ffmpeg.exe (libav* DLLs are not enough).
+if sys.platform == "win32":
+    _ff_names = ("ffmpeg.exe", "ffprobe.exe")
+    _ff_src_dirs = []
+    _which_ff = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if _which_ff:
+        _ff_src_dirs.append(os.path.dirname(_which_ff))
+    for _env_dir in (
+        os.environ.get("ZENVI_OPENSHOT_PYROOT", ""),
+        os.environ.get("ZENVI_OPENSHOT_BINDDIR", ""),
+        os.environ.get("FFMPEG_BIN_DIR", ""),
+    ):
+        if _env_dir:
+            _ff_src_dirs.append(_env_dir)
+    _ff_src_dirs.extend([
+        r"C:\msys64\ucrt64\bin",
+        r"C:\msys64\mingw64\bin",
+        "/ucrt64/bin",
+        "/mingw64/bin",
+    ])
+    for frozen_path in os.listdir(build_path):
+        if not frozen_path.startswith("exe"):
+            continue
+        lib_dir = os.path.join(build_path, frozen_path, "lib")
+        if not os.path.isdir(lib_dir):
+            continue
+        for _name in _ff_names:
+            _dst = os.path.join(lib_dir, _name)
+            if os.path.isfile(_dst):
+                continue
+            for _src_dir in _ff_src_dirs:
+                _src = os.path.join(_src_dir, _name)
+                if os.path.isfile(_src):
+                    log.info("Post-build ffmpeg CLI copy: %s -> %s" % (_src, _dst))
+                    shutil.copy2(_src, _dst)
+                    break
+            else:
+                log.warning("WARNING: %s not found — Gemini indexing will fail in the frozen build" % _name)
+
 # Post-build: bundle shared library dependencies of _openshot and libopenshot.
 # cx_Freeze's include_files silently drops many .so files, so we use ldd to
 # find ALL deps of the bundled native libraries and copy them ourselves.
