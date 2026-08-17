@@ -996,11 +996,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Install the MSYS2 shell first, then pacman with retries. A single
+      # setup-msys2 update+install often dies on ftp2.osuosl.org .sig files
+      # ("Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds").
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
-          install: >-
+          update: false
+
+      - name: Harden pacman downloads (timeout + skip stalled OSUOSL mirror)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          grep -q '^DisableDownloadTimeout' /etc/pacman.conf \
+            || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
+          for f in /etc/pacman.d/mirrorlist.*; do
+            [[ -f "$f" ]] || continue
+            sed -i 's|^Server = https://ftp2.osuosl.org|# &|' "$f"
+          done
+
+      - name: Update MSYS2 (pass 1, runtime may restart)
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout || true
+
+      - name: Update MSYS2 and install packages
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          pkgs=(
             base-devel
             git
             mingw-w64-ucrt-x86_64-toolchain
@@ -1025,6 +1048,22 @@ jobs:
             mingw-w64-ucrt-x86_64-babl
             mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
+          )
+          attempt=1
+          max=6
+          while true; do
+            if pacman -Syuu --noconfirm --disable-download-timeout \
+              && pacman -S --needed --noconfirm --overwrite '*' --disable-download-timeout "${pkgs[@]}"; then
+              break
+            fi
+            if (( attempt >= max )); then
+              echo "::error::pacman install failed after ${max} attempts (slow/stalled MSYS2 mirrors)"
+              exit 1
+            fi
+            echo "pacman failed (attempt ${attempt}/${max}), retrying..."
+            sleep $(( attempt * 20 ))
+            attempt=$((attempt + 1))
+          done
 
       - name: Cache libopenshot bundle (MSYS2 UCRT64)
         id: cache-libopenshot-win
