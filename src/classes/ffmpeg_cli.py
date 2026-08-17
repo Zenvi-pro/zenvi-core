@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from functools import lru_cache
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
+
+# ffmpeg.exe is a console subsystem binary. A Win32GUI frozen app must hide that
+# console or Windows flashes a terminal on every import/index probe.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 def _exe_name(name: str) -> str:
@@ -84,3 +89,14 @@ def resolve_ffmpeg_args(args: Sequence[str]) -> List[str]:
         if found:
             out[0] = found
     return out
+
+
+def run_ffmpeg(args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """subprocess.run for ffmpeg/ffprobe without flashing a Windows console."""
+    if sys.platform == "win32":
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | _CREATE_NO_WINDOW
+        startupinfo = kwargs.get("startupinfo") or subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return subprocess.run(resolve_ffmpeg_args(args), **kwargs)

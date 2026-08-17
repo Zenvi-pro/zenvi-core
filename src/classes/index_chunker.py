@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from classes.ffmpeg_cli import resolve_ffmpeg_args
+from classes.ffmpeg_cli import run_ffmpeg
 
 
 def _short_ffmpeg_error(raw: str, *, limit: int = 400) -> str:
@@ -37,8 +37,8 @@ def _short_ffmpeg_error(raw: str, *, limit: int = 400) -> str:
 
 def _ffmpeg_run(args: list) -> Tuple[bool, str]:
     try:
-        proc = subprocess.run(
-            resolve_ffmpeg_args(args),
+        proc = run_ffmpeg(
+            args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -88,13 +88,13 @@ def guess_mime(path: str, media_type: str = "video") -> str:
 
 def _probe_duration(path: str) -> float:
     try:
-        proc = subprocess.run(
-            resolve_ffmpeg_args([
+        proc = run_ffmpeg(
+            [
                 "ffprobe", "-v", "error",
                 "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1",
                 path,
-            ]),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

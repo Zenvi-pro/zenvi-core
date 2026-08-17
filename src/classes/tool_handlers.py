@@ -22,7 +22,7 @@ import threading
 import uuid as uuid_module
 from typing import Optional
 
-from classes.ffmpeg_cli import resolve_ffmpeg_args
+from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import compute_clip_trim_bounds, default_underlay_layer_number
 from classes.track_display import (
@@ -262,8 +262,8 @@ def _fmt_mmss(seconds: float) -> str:
 
 def _ffmpeg_run(args):
     try:
-        p = subprocess.run(
-            resolve_ffmpeg_args(args),
+        p = run_ffmpeg(
+            args,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         if p.returncode != 0:
@@ -278,23 +278,19 @@ def _ffmpeg_run(args):
 def _ffprobe_video_duration(path) -> float:
     """Return the video duration in seconds, or 0.0 on error."""
     try:
-        p = subprocess.run(
-            resolve_ffmpeg_args(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                 "-show_entries", "stream=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", path]
-            ),
+        p = run_ffmpeg(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         val = (p.stdout or "").strip()
         if val and val != "N/A":
             return float(val)
         # Fallback: use format duration
-        p2 = subprocess.run(
-            resolve_ffmpeg_args(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", path]
-            ),
+        p2 = run_ffmpeg(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         val2 = (p2.stdout or "").strip()
@@ -305,11 +301,9 @@ def _ffprobe_video_duration(path) -> float:
 
 def _ffprobe_has_audio(path):
     try:
-        p = subprocess.run(
-            resolve_ffmpeg_args(
-                ["ffprobe", "-v", "error", "-select_streams", "a",
-                 "-show_entries", "stream=index", "-of", "csv=p=0", path]
-            ),
+        p = run_ffmpeg(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         return bool((p.stdout or "").strip())
@@ -2502,12 +2496,12 @@ def _reencode_for_openshot(input_path, output_path=None, width=1920, height=1080
 def _ffprobe_pix_fmt(path) -> str:
     """Return primary video pix_fmt or empty string."""
     try:
-        p = subprocess.run(
-            resolve_ffmpeg_args([
+        p = run_ffmpeg(
+            [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream=pix_fmt",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
-            ]),
+            ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         return (p.stdout or "").strip().lower()
@@ -2518,12 +2512,12 @@ def _ffprobe_pix_fmt(path) -> str:
 def _ffprobe_alpha_mode(path) -> str:
     """Return stream alpha_mode / ALPHA_MODE tag (HyperFrames VP9 WebM) or empty."""
     try:
-        p = subprocess.run(
-            resolve_ffmpeg_args([
+        p = run_ffmpeg(
+            [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream_tags=alpha_mode,ALPHA_MODE",
                 "-of", "default=noprint_wrappers=1:nokey=1", path,
-            ]),
+            ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
         )
         for line in (p.stdout or "").splitlines():
