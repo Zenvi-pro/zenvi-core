@@ -13,8 +13,10 @@ CONTRACT_PATH = _HERE / "alpha_probe_contract.json"
 
 _FFMPEG_CANDIDATE_DIRS = [
     os.environ.get("FFMPEG_BIN_DIR"),
+    r"C:\msys64\ucrt64\bin",
     r"C:\msys64\mingw64\bin",
     r"C:\msys64\usr\bin",
+    "/ucrt64/bin",
     "/usr/bin",
     "/usr/local/bin",
 ]

@@ -116,6 +116,11 @@ done
 [[ -e /ucrt64/bin/zlib1.dll ]] && cp -v /ucrt64/bin/zlib1.dll "${BUNDLE}/" || true
 [[ -e /ucrt64/bin/libsamplerate-0.dll ]] && cp -v /ucrt64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
 
+# Gemini indexing / thumbnails / tool handlers spawn the FFmpeg CLI (not just libav*).
+for f in /ucrt64/bin/ffmpeg.exe /ucrt64/bin/ffprobe.exe; do
+  [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
+done
+
 # avcodec loads many codec DLLs at runtime; copy the full PE dependency closure from
 # /ucrt64/bin (and JUCE audio from /usr/bin) so libopenshot.dll loads on a clean PC.
 bundle_transitive_pe_deps() {
@@ -123,7 +128,7 @@ bundle_transitive_pe_deps() {
   while (( iter < max_iter )); do
     added=0
     shopt -s nullglob
-    for f in "${BUNDLE}"/*.dll; do
+    for f in "${BUNDLE}"/*.dll "${BUNDLE}"/*.exe; do
       [[ -f "$f" ]] || continue
       while IFS= read -r dllname; do
         [[ -z "$dllname" ]] && continue
@@ -169,6 +174,11 @@ _jcpp=( "${BUNDLE}"/libjsoncpp-*.dll )
 shopt -u nullglob
 if [[ ${#_jcpp[@]} -eq 0 ]]; then
   echo "::error::OpenShot bundle has no libjsoncpp DLL — install mingw-w64-ucrt-x86_64-jsoncpp and ensure /ucrt64/bin/libjsoncpp-*.dll exists."
+  exit 1
+fi
+
+if [[ ! -f "${BUNDLE}/ffmpeg.exe" ]]; then
+  echo "::error::OpenShot bundle has no ffmpeg.exe — Gemini indexing needs the FFmpeg CLI from /ucrt64/bin."
   exit 1
 fi
 
