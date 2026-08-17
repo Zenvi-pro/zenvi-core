@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from typing import Tuple
 
-from classes.ffmpeg_cli import resolve_ffmpeg_args
+from classes.ffmpeg_cli import run_ffmpeg
 
 _MAX_LONG_EDGE = 720
 _CRF = 28
@@ -15,12 +15,12 @@ _PRESET = "veryfast"
 
 def _ffprobe_dimensions(path: str) -> Tuple[int, int]:
     try:
-        proc = subprocess.run(
-            resolve_ffmpeg_args([
+        proc = run_ffmpeg(
+            [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream=width,height",
                 "-of", "csv=p=0:s=x", path,
-            ]),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -39,11 +39,9 @@ def _ffprobe_dimensions(path: str) -> Tuple[int, int]:
 
 def _ffprobe_has_audio(path: str) -> bool:
     try:
-        proc = subprocess.run(
-            resolve_ffmpeg_args(
-                ["ffprobe", "-v", "error", "-select_streams", "a",
-                 "-show_entries", "stream=index", "-of", "csv=p=0", path]
-            ),
+        proc = run_ffmpeg(
+            ["ffprobe", "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", path],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -56,8 +54,8 @@ def _ffprobe_has_audio(path: str) -> bool:
 
 def _ffmpeg_run(args: list) -> Tuple[bool, str]:
     try:
-        proc = subprocess.run(
-            resolve_ffmpeg_args(args),
+        proc = run_ffmpeg(
+            args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,

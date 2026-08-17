@@ -709,12 +709,12 @@ class ZenviBackendClient:
             elif duration <= 0:
                 try:
                     import subprocess
-                    from classes.ffmpeg_cli import resolve_ffmpeg_args
-                    proc = subprocess.run(
-                        resolve_ffmpeg_args([
+                    from classes.ffmpeg_cli import run_ffmpeg
+                    proc = run_ffmpeg(
+                        [
                             "ffprobe", "-v", "error", "-show_entries", "format=duration",
                             "-of", "default=noprint_wrappers=1:nokey=1", file_path,
-                        ]),
+                        ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
