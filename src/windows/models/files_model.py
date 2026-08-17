@@ -229,7 +229,12 @@ class BackendIndexingWorker(QThread):
                     self.completed.emit(self.file_data, metadata, None)
                     return
 
-                if isinstance(idx_result, dict) and (idx_result.get("index_id") or idx_result.get("ai_metadata")):
+                has_payload = isinstance(idx_result, dict) and (
+                    idx_result.get("index_id")
+                    or idx_result.get("ai_metadata")
+                    or (idx_result.get("video_id") and not idx_result.get("error"))
+                )
+                if has_payload:
                     from classes.credits_client import charge_operation_on_success
                     charge_operation_on_success(
                         True,
@@ -255,6 +260,7 @@ class BackendIndexingWorker(QThread):
                         index_block.update(metadata["index"])
                         index_block["status"] = "ready"
                         index_block["media_type"] = media_type
+                        index_block["index_id"] = index_id or index_block.get("index_id") or index_name
                     metadata["index"] = index_block
                     metadata["twelvelabs"] = dict(index_block)
                     metadata["provider"] = "gemini-flash"
@@ -266,7 +272,14 @@ class BackendIndexingWorker(QThread):
                         index_name, index_id, video_id, media_type, metadata.get("analyzed"),
                     )
                 else:
-                    metadata["error"] = "Indexing returned no index_id"
+                    err = ""
+                    if isinstance(idx_result, dict):
+                        err = str(
+                            idx_result.get("error")
+                            or idx_result.get("message")
+                            or ""
+                        ).strip()
+                    metadata["error"] = err or "Indexing returned no index_id"
                     fail_block = {
                         "status": "failed",
                         "error": metadata["error"],
@@ -276,6 +289,11 @@ class BackendIndexingWorker(QThread):
                     }
                     metadata["index"] = fail_block
                     metadata["twelvelabs"] = fail_block
+                    log.warning(
+                        "Gemini indexing missing payload for %s: %s",
+                        file_id,
+                        idx_result,
+                    )
         except Exception as exc:
             error = exc
             log.error(f"Backend indexing/summarize worker failed: {exc}")
