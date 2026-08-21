@@ -24,4 +24,6 @@ jobs:
         pip3 install cx_Freeze==7.0.0 distro defusedxml requests certifi chardet urllib3
 
     - name: Test
-      run: python3 ./src/tests/query_tests.py -platform minimal
+      run: |
+        python3 ./src/tests/query_tests.py -platform minimal
+        python3 ./src/tests/update_installer_tests.py -v

@@ -57,6 +57,11 @@ SignedUninstaller=no
 ; SignedUninstallerDir=..\build\
 PrivilegesRequiredOverridesAllowed=commandline
 AllowNoIcons=yes
+; Lets /CLOSEAPPLICATIONS (passed by classes/update_installer.py's silent
+; auto-update install) actually find and close running Zenvi processes via
+; Restart Manager. Without this, /CLOSEAPPLICATIONS is a documented no-op.
+; Must match classes/win_singleton.py's MUTEX_NAME / GLOBAL_MUTEX_NAME.
+AppMutex=ZenviAppMutex,Global\ZenviAppMutex
 
 [Languages]
 ; CI builds use the default Inno Setup installation which may not include all

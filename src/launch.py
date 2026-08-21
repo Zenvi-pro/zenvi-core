@@ -129,6 +129,21 @@ try:
 except Exception:
     pass
 
+# Windows only, and deliberately AFTER the update-apply block above: this
+# bootstrap path briefly re-executes zenvi.exe itself to drive a staged
+# silent install (see update_installer._apply_windows). If that one-shot
+# process also held the identifying mutex, Inno's Restart Manager could
+# legitimately try to close it mid-install — killing the very process
+# that's waiting to verify success and relaunch. Restart Manager finds
+# file-lockers by open file handles regardless of mutex ownership, so the
+# real GUI app (below) is the only process that needs to hold this.
+if sys.platform == "win32":
+    try:
+        from classes import win_singleton
+        win_singleton.acquire()
+    except Exception:
+        pass
+
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:
     import faulthandler

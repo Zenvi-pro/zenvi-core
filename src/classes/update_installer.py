@@ -370,35 +370,82 @@ def _apply_macos(filepath, filename):
 # Windows
 # ---------------------------------------------------------------------------
 
+# Generous for a silent install of a large frozen build; this call runs in the
+# pre-QApplication bootstrap process (see launch.py) so blocking here is
+# invisible — no GUI exists yet to freeze.
+_INNO_TIMEOUT_SECS = 120
+
+
+def _run_and_wait(cmd, timeout):
+    """Launch *cmd*, block until it exits or *timeout* elapses.
+
+    Returns (ok, returncode): ok is True only for a confirmed zero exit code.
+    Factored out of _apply_windows so the wait/timeout/returncode logic is
+    testable with any stub executable — no real Inno installer required.
+    """
+    try:
+        proc = subprocess.Popen(cmd)
+    except Exception as exc:
+        _log(f"Failed to launch {cmd[0]}: {exc}")
+        return False, None
+
+    try:
+        rc = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _log(f"Process did not finish within {timeout}s (pid={proc.pid}) — "
+             f"leaving it running in the background")
+        return False, None
+
+    return (rc == 0), rc
+
+
 def _apply_windows(filepath, filename):
-    """Run an Inno-Setup .exe installer in fully silent mode."""
+    """Run the staged Inno Setup installer in fully silent mode, BLOCKING
+    until it finishes, and verify it actually succeeded before reporting
+    success. Only reports success on a confirmed zero exit code; relaunches
+    the app itself afterward, since Inno's own postinstall launch is skipped
+    in silent mode (windows-installer.iss [Run] has Flags: ... skipifsilent).
+    """
     if not filename.endswith(".exe"):
         _log(f"Unknown Windows package type: {filename}")
         return False
 
     _log(f"Launching silent installer: {filepath}")
-    try:
-        # Inno Setup silent flags:
-        #   /VERYSILENT       — no user prompts at all
-        #   /SUPPRESSMSGBOXES — suppress any message boxes
-        #   /NORESTART        — don't auto-reboot the machine
-        #   /CLOSEAPPLICATIONS — close running Zenvi instances
-        #   /SP-              — disable "This will install..." prompt
-        subprocess.Popen(
-            [filepath,
-             "/VERYSILENT",
-             "/SUPPRESSMSGBOXES",
-             "/NORESTART",
-             "/CLOSEAPPLICATIONS",
-             "/CURRENTUSER",
-             "/SP-"],
-        )
-        _log("Windows silent installer launched — it will complete in the background")
-        return True
-
-    except Exception as exc:
-        _log(f"Windows install error: {exc}")
+    # Inno Setup silent flags:
+    #   /VERYSILENT           — no user prompts at all
+    #   /SUPPRESSMSGBOXES     — suppress any message boxes
+    #   /NORESTART            — don't auto-reboot the machine
+    #   /CLOSEAPPLICATIONS    — close running Zenvi instances (requires the
+    #                           AppMutex directive in windows-installer.iss;
+    #                           otherwise this flag is a documented no-op)
+    #   /NORESTARTAPPLICATIONS — don't let Inno relaunch whatever it closed;
+    #                           we do our own relaunch below, and letting both
+    #                           happen races two instances against each other
+    #   /SP-                  — disable "This will install..." prompt
+    ok, rc = _run_and_wait(
+        [filepath,
+         "/VERYSILENT",
+         "/SUPPRESSMSGBOXES",
+         "/NORESTART",
+         "/CLOSEAPPLICATIONS",
+         "/NORESTARTAPPLICATIONS",
+         "/CURRENTUSER",
+         "/SP-"],
+        timeout=_INNO_TIMEOUT_SECS,
+    )
+    if not ok:
+        _log(f"Windows installer did not succeed (exit code={rc}) — "
+             f"keeping staged files for retry")
         return False
+
+    _log("Windows installer completed successfully (exit code 0)")
+
+    if getattr(sys, "frozen", False) and os.path.isfile(sys.executable):
+        _relaunch([sys.executable])
+    else:
+        _log("Not a frozen build (or exe missing) — skipping post-install relaunch")
+
+    return True
 
 
 # ---------------------------------------------------------------------------
