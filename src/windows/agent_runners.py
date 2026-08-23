@@ -2,7 +2,7 @@
 
 Each runner is a ``QObject`` worker (moved onto a ``QThread`` by
 ``AIChatWindow._make_worker``) that exposes the *same* six signals and the
-``run_request(text, model_id)`` / ``clear_session()`` slots as the built-in
+``run_request(...)`` / ``clear_session()`` slots as the built-in
 ``AIChatWorker`` — so the existing chat rendering works unchanged regardless of
 which backend produced the events.
 
@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import uuid
 
@@ -31,6 +32,23 @@ log = logging.getLogger(__name__)
 # Backend identifiers (kept in sync with ai_chat_ui constants).
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+
+
+# Models offered in the chat model picker per backend, in menu order. ``id`` is
+# passed straight through to the CLI's ``--model`` flag; Claude Code accepts a
+# full model name or a latest-alias ("opus", "sonnet"), and we use full names so
+# the picker keeps meaning the same model after a new release ships.
+#
+# A backend with an empty list hides the model pill and lets the CLI use
+# whatever its own config selects — that is the case for Codex, whose model
+# lineup we do not track here.
+def models_for_backend(backend: str) -> list:
+    """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
+    if backend == BACKEND_CLAUDE:
+        return [dict(m) for m in ClaudeCodeRunner.MODELS]
+    if backend == BACKEND_CODEX:
+        return [dict(m) for m in CodexRunner.MODELS]
+    return []
 
 
 def _agent_mcp_dir() -> str:
@@ -265,6 +283,7 @@ class BaseAgentRunner(QObject):
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
+    MODELS: list = []    # model-picker entries; empty = use the CLI's own default
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -273,7 +292,12 @@ class BaseAgentRunner(QObject):
         self._cli_session_id = ""      # CLI-side conversation id (for resume)
         self._cli_started = False
         self._stopping = False         # shutdown flag (mirrors AIChatWorker)
+        # User pressed Stop. Distinct from _stopping, which means the whole app
+        # (or this tab) is going away and must stay latched: a cancelled tab has
+        # to accept the next message, so this one is cleared by run_request.
+        self._cancelled = False
         self._proc = None
+        self._model_id = ""
         self._server = None
         self._responded = False
         self._final_text = ""
@@ -293,16 +317,30 @@ class BaseAgentRunner(QObject):
         Non-blocking: the worker thread's read loop hits EOF and its final
         ``wait()`` reaps the process, so we don't stall the UI here.
         """
-        self._stopping = True
+        self._cancelled = True
         proc = self._proc
         if proc and proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
+            # Signal the whole process group, not just the CLI: these agents
+            # spawn their own children (shells, language servers, MCP clients),
+            # and terminating the parent alone leaves those running — they keep
+            # driving the editor through the MCP server after the user pressed
+            # Stop. run_request starts the child in its own session so this
+            # group id is ours to kill.
+            for send in (
+                lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
+                proc.terminate,
+                proc.kill,
+            ):
                 try:
-                    proc.kill()
+                    send()
+                    return
                 except Exception:
-                    pass
+                    continue
+
+    @property
+    def _aborted(self) -> bool:
+        """True when nothing more should be emitted for the current request."""
+        return self._stopping or self._cancelled
 
     # Signature must match AIChatWorker.run_request exactly: AIChatWindow
     # dispatches through QMetaObject.invokeMethod with five Q_ARG(str, ...),
@@ -314,6 +352,8 @@ class BaseAgentRunner(QObject):
         # ``agent_mode``/``action``/``plan_id`` drive the Zenvi backend's
         # planning flow only; CLI agents plan internally, so they are accepted
         # for signature parity and otherwise ignored.
+        self._cancelled = False
+        self._model_id = self._coerce_model(model_id)
         self._responded = False
         self._final_text = ""
         self._last_error = ""
@@ -353,15 +393,18 @@ class BaseAgentRunner(QObject):
                 # U+FFFD instead of killing the whole read loop.
                 encoding="utf-8", errors="replace",
                 bufsize=1, env=self._build_env(), cwd=_project_cwd(),
+                # Own process group so cancel() can signal the CLI *and* every
+                # child it spawned (see cancel()).
+                start_new_session=True,
             )
         except Exception as e:
-            if not self._stopping:
+            if not self._aborted:
                 self._emit_error("Failed to launch %s: %s" % (self.DISPLAY_NAME, e))
             return
 
         try:
             for line in self._proc.stdout:
-                if self._stopping:
+                if self._aborted:
                     break
                 line = line.strip()
                 if not line:
@@ -380,11 +423,11 @@ class BaseAgentRunner(QObject):
                     log.debug("agent event handling failed", exc_info=True)
             self._proc.wait(timeout=5)
         except Exception as e:
-            if not self._stopping:
+            if not self._aborted:
                 self._emit_error(str(e))
             return
 
-        if self._stopping:
+        if self._aborted:
             return
         self._cli_started = True
         if self._responded:
@@ -406,12 +449,24 @@ class BaseAgentRunner(QObject):
     # -- emit helpers (respect shutdown) -----------------------------------
     def _emit_response(self, text: str):
         self._responded = True
-        if not self._stopping:
+        if not self._aborted:
             self.response_ready.emit(text or "")
 
     def _emit_error(self, text: str):
-        if not self._stopping:
+        if not self._aborted:
             self.error_occurred.emit(text or "Unknown error.")
+
+    # -- model selection ---------------------------------------------------
+    def _coerce_model(self, model_id: str) -> str:
+        """Keep *model_id* only if it is one this backend actually offers.
+
+        Tabs remember the model the picker last had, and that picker is shared
+        with the other backends — so a tab switched from Zenvi to Claude Code
+        can arrive holding a Zenvi model id, which the CLI would reject.
+        """
+        if not model_id or not self.MODELS:
+            return ""
+        return model_id if any(m["id"] == model_id for m in self.MODELS) else ""
 
     # -- subclass hooks ----------------------------------------------------
     def _ensure_ready(self):
@@ -434,6 +489,29 @@ class ClaudeCodeRunner(BaseAgentRunner):
     CLI_NAME = "claude"
     DISPLAY_NAME = "Claude Code"
 
+    # ``rank`` orders the picker, ``featured`` decides whether an entry shows
+    # before the menu's "show all" toggle — same contract as the Zenvi model
+    # list the backend serves (see setModels in chat.js).
+    MODELS = [
+        {"id": "claude-opus-5",   "name": "Opus 5",   "provider": "anthropic",
+         "rank": 10, "featured": True, "default": True,
+         "tags": ["Most capable"]},
+        {"id": "claude-sonnet-5", "name": "Sonnet 5", "provider": "anthropic",
+         "rank": 20, "featured": True, "tags": ["Balanced"]},
+        {"id": "claude-haiku-4-5", "name": "Haiku 4.5", "provider": "anthropic",
+         "rank": 30, "featured": True, "tags": ["Fastest"]},
+        {"id": "claude-fable-5",  "name": "Fable 5",  "provider": "anthropic",
+         "rank": 40, "featured": False, "tags": ["Frontier"]},
+        {"id": "claude-opus-4-8", "name": "Opus 4.8", "provider": "anthropic",
+         "rank": 50, "featured": False},
+        {"id": "claude-opus-4-7", "name": "Opus 4.7", "provider": "anthropic",
+         "rank": 60, "featured": False},
+        {"id": "claude-opus-4-6", "name": "Opus 4.6", "provider": "anthropic",
+         "rank": 70, "featured": False},
+        {"id": "claude-sonnet-4-6", "name": "Sonnet 4.6", "provider": "anthropic",
+         "rank": 80, "featured": False},
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._open_blocks: dict = {}   # stream_event block index -> {"kind","call_id"}
@@ -445,8 +523,13 @@ class ClaudeCodeRunner(BaseAgentRunner):
             self.CLI_NAME, "-p", text,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
-            "--permission-mode", "bypassPermissions",
+            # The agent is driving the editor on the user's behalf from inside
+            # the app — there is no terminal to answer a permission prompt, so
+            # a prompt would just hang the turn until it times out.
+            "--dangerously-skip-permissions",
         ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
         if self._cli_started and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
         else:
@@ -522,6 +605,9 @@ class CodexRunner(BaseAgentRunner):
 
     CLI_NAME = "codex"
     DISPLAY_NAME = "Codex"
+    # Left empty on purpose: we do not track the Codex model lineup, so the
+    # picker stays hidden and the CLI uses whatever its own config selects.
+    MODELS: list = []
 
     _TOOL_ITEM_TYPES = {
         "command_execution", "mcp_tool_call", "tool_call", "function_call",
@@ -542,6 +628,8 @@ class CodexRunner(BaseAgentRunner):
             "-c", 'mcp_servers.zenvi_editor.url="%s"' % url,
             "-c", 'mcp_servers.zenvi_editor.bearer_token_env_var="ZENVI_MCP_TOKEN"',
         ]
+        if self._model_id:
+            common += ["--model", self._model_id]
         if self._cli_started and self._cli_session_id:
             return [self.CLI_NAME, "exec", "resume", self._cli_session_id, *common, text]
         return [self.CLI_NAME, "exec", *common, text]

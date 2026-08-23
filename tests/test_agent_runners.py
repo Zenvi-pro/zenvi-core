@@ -395,3 +395,141 @@ def test_codex_missing_cli_reports_friendly_error(qapp, monkeypatch):
     runner.run_request("hello", "")
 
     assert any(e[0] == "error" and "Codex CLI not found" in e[1] for e in events)
+
+
+# ── Model selection ────────────────────────────────────────────────────────
+
+def test_claude_argv_carries_model_and_skips_permission_prompts(qapp, monkeypatch):
+    """The picked model reaches the CLI, and the agent never waits on a
+    permission prompt there is no terminal to answer."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner
+
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    runner = ClaudeCodeRunner()
+    runner._session_id = "s5"
+    runner._cli_session_id = "s5"
+    runner._model_id = runner._coerce_model("claude-sonnet-5")
+    argv = runner._build_argv("hi")
+
+    assert "--dangerously-skip-permissions" in argv
+    assert "--permission-mode" not in argv, "would conflict with the skip flag"
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+
+
+def test_runner_drops_a_model_id_from_another_backend(qapp):
+    """A tab switched over from Zenvi still holds a Zenvi model id in the
+    shared picker; passing it to the CLI would just make the CLI error out."""
+    from windows.agent_runners import ClaudeCodeRunner, CodexRunner
+
+    claude = ClaudeCodeRunner()
+    assert claude._coerce_model("claude-opus-5") == "claude-opus-5"
+    assert claude._coerce_model("gemini-2.0-flash") == ""
+    assert claude._coerce_model("") == ""
+
+    # Codex publishes no lineup, so nothing is ever forced on it.
+    assert CodexRunner()._coerce_model("gpt-5") == ""
+
+
+def test_claude_argv_omits_model_when_none_picked(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner
+
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    runner = ClaudeCodeRunner()
+    runner._session_id = "s6"
+    runner._cli_session_id = "s6"
+    assert "--model" not in runner._build_argv("hi")
+
+
+def test_models_for_backend_matches_the_picker_contract(qapp):
+    """chat.js reads id/name off every entry and marks exactly one default."""
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, models_for_backend,
+    )
+
+    claude = models_for_backend(BACKEND_CLAUDE)
+    assert claude, "Claude Code must offer a model list"
+    assert all(m["id"] and m["name"] for m in claude)
+    assert len({m["id"] for m in claude}) == len(claude), "duplicate model ids"
+    assert sum(1 for m in claude if m.get("default")) == 1
+
+    assert models_for_backend(BACKEND_CODEX) == []
+    assert models_for_backend("zenvi") == []
+
+    # Callers mutate what they get (the JS bridge tags entries), so the
+    # catalogue itself must not be handed out by reference.
+    claude[0]["name"] = "mutated"
+    assert models_for_backend(BACKEND_CLAUDE)[0]["name"] != "mutated"
+
+
+# ── Cancel ─────────────────────────────────────────────────────────────────
+
+def test_cancel_does_not_disable_the_tab_for_later_messages(qapp, monkeypatch):
+    """Stop must silence the turn in flight and nothing more — a cancelled tab
+    still has to answer the next message the user sends."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner
+
+    class _FakeServer:
+        token = "tok"
+
+        def start(self):
+            return self
+
+        def url(self):
+            return "http://127.0.0.1:1/mcp"
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
+    monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+
+    runner = ClaudeCodeRunner()
+    runner._session_id = "s7"
+    events = _collect(runner)
+
+    # A turn is cancelled: whatever the dying subprocess still emits is dropped.
+    runner._cancelled = True
+    runner._emit_response("late output")
+    runner._emit_error("late failure")
+    assert events == []
+
+    # The next message starts clean again.
+    argv = [sys.executable, "-c", "print('{\"type\":\"result\",\"result\":\"ok\"}')"]
+    monkeypatch.setattr(ClaudeCodeRunner, "_build_argv", lambda self, text: argv)
+    runner.run_request("next message", "")
+    assert [e[1] for e in events if e[0] == "response_ready"] == ["ok"]
+
+
+def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
+    """The CLI spawns children that keep driving the editor through MCP, so
+    Stop has to take down the group, not just the CLI process."""
+    import os
+    import signal
+    from windows.agent_runners import ClaudeCodeRunner
+
+    killed = {}
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            killed["terminate"] = True
+
+        def kill(self):
+            killed["kill"] = True
+
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: killed.setdefault("group", (pgid, sig)))
+
+    runner = ClaudeCodeRunner()
+    runner._proc = _Proc()
+    runner.cancel()
+
+    assert killed.get("group") == (4242, signal.SIGTERM)
+    assert "terminate" not in killed, "group kill succeeded; no need to fall back"
+    assert runner._cancelled
+    assert not runner._stopping, "cancel is not a shutdown — the tab stays usable"
