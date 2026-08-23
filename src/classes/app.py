@@ -42,20 +42,41 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+_QT_MSG_PREFIXES = {
+    QtMsgType.QtDebugMsg: "debug",
+    QtMsgType.QtInfoMsg: "info",
+    QtMsgType.QtWarningMsg: "warning",
+    QtMsgType.QtCriticalMsg: "critical",
+    QtMsgType.QtFatalMsg: "fatal",
+}
+
+
 def _qt_message_handler(msg_type, context, message):
     """Filter out known noisy Qt warnings (e.g. QWebChannel property notify signals)."""
     if "has no notify signal" in message and "value updates in HTML will be broken" in message:
         return
+    prefix = _QT_MSG_PREFIXES.get(msg_type, "debug")
+
+    # Qt aborts the process immediately after a fatal message, so make sure it
+    # reaches the log file first -- stderr is None in frozen GUI builds and this
+    # is otherwise the only record of a Qt-side abort.
+    if msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        try:
+            from classes.logger import log as _log
+
+            location = ""
+            if context is not None and getattr(context, "file", None):
+                location = " (%s:%s)" % (context.file, context.line)
+            _log.error("Qt %s: %s%s", prefix, message, location)
+        except Exception:
+            pass
+
     # Forward all other messages to stderr like Qt's default handler
-    prefixes = {
-        QtMsgType.QtDebugMsg: "debug",
-        QtMsgType.QtInfoMsg: "info",
-        QtMsgType.QtWarningMsg: "warning",
-        QtMsgType.QtCriticalMsg: "critical",
-        QtMsgType.QtFatalMsg: "fatal",
-    }
-    prefix = prefixes.get(msg_type, "debug")
-    sys.stderr.write("%s: %s\n" % (prefix, message))
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write("%s: %s\n" % (prefix, message))
+        except Exception:
+            pass
 
 # Disable sandbox support for QtWebEngine (required on some Linux distros
 # for the QtWebEngineWidgets to be rendered, otherwise no timeline is visible).
@@ -208,9 +229,26 @@ class OpenShotApp(QApplication):
                 level="error"))
             # Stop launching
             raise
-        except Exception:
-            log.error('OpenShotApp::Init Error', exc_info=1)
-            sys.exit()
+        except Exception as ex:
+            # Do NOT sys.exit() here: SystemExit bypasses launch.py's handler, so
+            # the process used to end before anything was shown -- and frozen GUI
+            # builds have no console, so the app simply vanished. Queue the
+            # traceback as a startup error and let launch.py display it.
+            tb = traceback.format_exc()
+            try:
+                log.error('OpenShotApp::Init Error', exc_info=1)
+            except Exception:
+                pass
+            self.errors.append(StartupError(
+                "Startup Error",
+                "Zenvi could not finish starting up.\n\n%(type)s: %(msg)s\n\n%(tb)s" % {
+                    "type": type(ex).__name__,
+                    "msg": ex,
+                    "tb": tb,
+                },
+                level="error"))
+            # Stop launching (launch.py catches this and calls show_errors())
+            raise
 
         self.info = info
 

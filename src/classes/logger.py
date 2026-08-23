@@ -34,10 +34,28 @@ import logging.handlers
 from classes import info
 
 
+class NullStream(object):
+    """Stand-in for a missing stdout/stderr.
+
+    Frozen GUI builds have no console (cx_Freeze base="Win32GUI" on Windows, a
+    .app bundle launched from Finder on macOS), so sys.stderr is None there.
+    Handing None to logging.StreamHandler makes every console record fail
+    silently inside handleError(), which is how startup tracebacks went missing.
+    """
+    def write(self, text):
+        return len(text) if text else 0
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
 class StreamToLogger(object):
     """Custom class to log all stdout and stderr streams (from libopenshot / and other libraries)"""
     def __init__(self, parent_stream, log_level=logging.INFO):
-        self.parent = parent_stream or sys.__stderr__
+        self.parent = parent_stream or sys.__stderr__ or NullStream()
         self.logger = logging.LoggerAdapter(
             logging.getLogger('OpenShot.stderr'), {'source': 'stream'})
         self.log_level = log_level
@@ -103,6 +121,14 @@ log.propagate = False
 # Create rotating file handler
 #
 fh = None
+try:
+    # Make sure the log file can be created even when logger is imported before
+    # info.setup_userdirs() runs -- otherwise an early startup traceback has
+    # nowhere to go in a frozen build with no console.
+    os.makedirs(info.USER_PATH, exist_ok=True)
+except Exception:
+    # Never let this break importing the logger itself.
+    pass
 if os.path.exists(info.USER_PATH):
     log_path = os.path.join(info.USER_PATH, 'openshot-qt.log')
     try:
@@ -125,7 +151,7 @@ else:
 #
 # Create typical stream handler which logs to stderr
 #
-sh = logging.StreamHandler(sys.stderr)
+sh = logging.StreamHandler(sys.stderr if sys.stderr is not None else NullStream())
 sh.setLevel(info.LOG_LEVEL_CONSOLE)
 sh.setFormatter(console_formatter)
 
@@ -140,6 +166,9 @@ def reroute_output():
     """Route stdout and stderr to logger (custom handler)"""
     if (getattr(sys, 'frozen', False)
        or sys.stdout != sys.__stdout__):
+        return
+    if sys.stdout is None or sys.stderr is None:
+        # No console to mirror to; the file handler already captures everything.
         return
     sys.stdout = StreamToLogger(sys.stdout, logging.INFO)
     sys.stderr = StreamToLogger(sys.stderr, logging.WARNING)

@@ -129,13 +129,22 @@ try:
 except Exception:
     pass
 
-# Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
+# Install the process-wide crash handlers before anything else can raise.
+# Frozen builds are GUI binaries with no stdout/stderr (cx_Freeze base="Win32GUI"
+# on Windows, a .app bundle on macOS), so without these an unhandled traceback
+# left no log entry and no dialog -- the app just vanished.
 try:
-    import faulthandler
-
-    faulthandler.enable(all_threads=True)
+    from classes import crash_handler
 except Exception:
-    pass
+    crash_handler = None
+else:
+    try:
+        # faulthandler defaults to sys.stderr, which is None in frozen GUI builds;
+        # enable_faulthandler() falls back to a file so native crashes are dumped too.
+        crash_handler.enable_faulthandler()
+        crash_handler.install()
+    except Exception:
+        pass
 
 try:
     # This needs to be imported before PyQt5
@@ -224,6 +233,25 @@ except ImportError:
 
 # Global holder for QApplication instance
 app = None
+
+
+def _report_startup_failure(context):
+    """Log + surface the exception currently being handled, then fall through.
+
+    Called from except blocks around startup and the event loop so that a
+    traceback reaches the log file (and a dialog, when a QApplication exists)
+    instead of terminating a windowless frozen build in silence.
+    """
+    exc_info = sys.exc_info()
+    if crash_handler is not None:
+        # blocking=True: we are about to sys.exit(), so a deferred dialog would
+        # never be delivered.
+        crash_handler.report(*exc_info, context=context, blocking=True)
+        return
+    try:
+        logger.error("Zenvi %s", context, exc_info=exc_info)
+    except Exception:
+        pass
 
 
 def main():
@@ -321,6 +349,11 @@ def main():
     from classes import sentry
     sentry.init_tracing()
 
+    # sentry_sdk's excepthook integration replaces sys.excepthook, so re-install
+    # ours on top of it (crash_handler chains to whatever it displaces).
+    if crash_handler is not None:
+        crash_handler.install()
+
     # Create any missing paths in the user's settings dir
     info.setup_userdirs()
 
@@ -338,8 +371,12 @@ def main():
     except Exception:
         # OpenShotApp.__init__ can fail after QApplication.__init__; the module-level app may stay None.
         inst = QApplication.instance()
+        queued = bool(getattr(inst, "errors", None))
         if inst is not None and hasattr(inst, "show_errors"):
             inst.show_errors()
+        if not queued:
+            # Nothing was queued for display, so the traceback is all we have.
+            _report_startup_failure("failed to start")
         sys.exit(1)
 
     # Setup Qt application details
@@ -353,9 +390,23 @@ def main():
     except AttributeError:
         pass
 
-    # Launch GUI and start event loop
-    if app.gui():
-        sys.exit(app.exec_())
+    # Launch GUI and start event loop.
+    # MainWindow construction and the event loop are the two largest bodies of
+    # code in the app; an exception escaping either used to end the process with
+    # nothing shown to the user, so report it explicitly here.
+    try:
+        gui_ready = app.gui()
+    except Exception:
+        _report_startup_failure("failed while building the main window")
+        sys.exit(1)
+
+    if gui_ready:
+        try:
+            exit_code = app.exec_()
+        except Exception:
+            _report_startup_failure("failed inside the main event loop")
+            exit_code = 1
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":
