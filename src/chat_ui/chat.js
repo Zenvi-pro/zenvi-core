@@ -60,6 +60,7 @@
     const traceBtn = document.getElementById('chat-trace-btn');
     const modePlanBtn = document.getElementById('chat-mode-plan');
     const modeAgentBtn = document.getElementById('chat-mode-agent');
+    const modeToggleEl = document.getElementById('chat-mode-toggle');
     var currentAgentMode = 'agent';
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
@@ -1861,7 +1862,7 @@
                 syncAgentTrigger();
                 updateCliEmptyState();
                 setLiveFromTerminal(!!tab.live);
-                if (modelTrigger) modelTrigger.style.display = (tab.backend === 'zenvi' || !tab.backend) ? '' : 'none';
+                applyBackendChrome(tab.backend);
             }
             var btn = document.createElement('button');
             btn.type = 'button';
@@ -2053,8 +2054,21 @@
             getBridge(function (bridge) {
                 if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
             });
-            if (modelTrigger) modelTrigger.style.display = (backendSelect.value === 'zenvi' || !backendSelect.value) ? '' : 'none';
+            applyBackendChrome(backendSelect.value);
         });
+    }
+
+    // Chrome that only applies to the Zenvi backend: the model picker (CLI
+    // agents pick their own model) and the Plan/Agent toggle (planning is a
+    // Zenvi-backend feature — see AIChatWindow._resolve_agent_mode).
+    function applyBackendChrome(id) {
+        var isZenvi = (id === 'zenvi' || !id);
+        if (modelTrigger) modelTrigger.style.display = isZenvi ? '' : 'none';
+        if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
+        if (!isZenvi) {
+            if (currentAgentMode !== 'agent') setAgentModeUI('agent');
+            if (window.setPlanChip) window.setPlanChip(null);
+        }
     }
 
     function statusDotHtml(id, info) {

@@ -1078,6 +1078,10 @@ class AIChatWindow(QDockWidget):
         # switching between the two CLI backends — the old runner/live view
         # is gone either way.
         sess["live_from_terminal"] = False
+        if backend != BACKEND_ZENVI:
+            # See _resolve_agent_mode: CLI backends have no planning mode.
+            sess["agent_mode"] = "agent"
+            sess["current_plan"] = None
         if session_id == self._active_sid:
             self.is_processing = False
             self._set_processing_ui(False)
@@ -1538,13 +1542,17 @@ class AIChatWindow(QDockWidget):
         # for whichever session just became active — _mark_live_from_terminal
         # only fires once per session, so switching tabs needs its own resync.
         is_live = bool(sess.get("live_from_terminal")) if sess else False
-        if self.msg_input:
-            self.msg_input.setReadOnly(is_live)
-            self.msg_input.setPlaceholderText(
+        # getattr: this also runs from _init_widget_ui while the selector is
+        # being built, before the input row below it exists.
+        msg_input = getattr(self, "msg_input", None)
+        if msg_input:
+            msg_input.setReadOnly(is_live)
+            msg_input.setPlaceholderText(
                 "Live from terminal — this is a read-only view." if is_live else ""
             )
-        if self.send_btn:
-            self.send_btn.setEnabled(not is_live)
+        send_btn = getattr(self, "send_btn", None)
+        if send_btn:
+            send_btn.setEnabled(not is_live)
 
     def _rebuild_widget_tabs(self):
         """Rebuild the widget fallback multi-chat tab bar."""
@@ -2177,9 +2185,14 @@ class AIChatWindow(QDockWidget):
             self._widget_tool_scroll.setVisible(False)
 
     def _resolve_agent_mode(self, agent_mode: str = None) -> str:
+        sess = self._active_session() or {}
+        # Planning mode is a Zenvi-backend feature (the plan events come over
+        # the WebSocket). CLI agents plan internally and never emit them, so
+        # honouring a stale "planning" here would only mislabel the turn.
+        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
+            return "agent"
         if agent_mode in ("planning", "agent"):
             return agent_mode
-        sess = self._active_session() or {}
         return sess.get("agent_mode", "agent")
 
     def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = ""):

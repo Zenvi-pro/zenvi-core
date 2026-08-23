@@ -257,6 +257,11 @@ class BaseAgentRunner(QObject):
     tool_started = pyqtSignal(str, str, str)   # call_id, tool_name, args_json
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
+    # Declared for signature parity with AIChatWorker so AIChatWindow can
+    # connect the same slots to every backend. CLI backends never emit it —
+    # planning mode is a Zenvi-backend feature, and these agents do their own
+    # planning internally.
+    plan_event = pyqtSignal(str, str)          # event_type, payload_json
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
@@ -299,8 +304,16 @@ class BaseAgentRunner(QObject):
                 except Exception:
                     pass
 
-    @pyqtSlot(str, str)
-    def run_request(self, text: str, model_id: str):
+    # Signature must match AIChatWorker.run_request exactly: AIChatWindow
+    # dispatches through QMetaObject.invokeMethod with five Q_ARG(str, ...),
+    # and Qt resolves the slot by its registered signature — a shorter one is
+    # simply never found and the request silently does nothing.
+    @pyqtSlot(str, str, str, str, str)
+    def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
+                    action: str = "chat", plan_id: str = ""):
+        # ``agent_mode``/``action``/``plan_id`` drive the Zenvi backend's
+        # planning flow only; CLI agents plan internally, so they are accepted
+        # for signature parity and otherwise ignored.
         self._responded = False
         self._final_text = ""
         self._last_error = ""
