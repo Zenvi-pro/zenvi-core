@@ -48,6 +48,7 @@ class ZenviBackendClient:
         self._session = None
         self._active_wss = set()  # active WebSockets during parallel chat requests
         self._ws_lock = threading.Lock()
+        self._shutting_down = False
         # Disable SSL verification for non-production backends (self-signed certs)
         self._ssl_verify = (self.base_url.rstrip("/") == _DEFAULT_BACKEND_URL.rstrip("/"))
 
@@ -272,10 +273,19 @@ class ZenviBackendClient:
     # ------------------------------------------------------------------
     # Models
     # ------------------------------------------------------------------
-    def list_models(self) -> List[Dict[str, str]]:
-        """List all available LLM models."""
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List all known LLM models.
+
+        Rows carry model_id/display_name plus picker metadata (provider,
+        featured, rank, tags, available) — hence Dict[str, Any], the values are
+        no longer all strings. Unknown keys pass through untouched.
+
+        The timeout allows for the backend's live provider discovery on a cold
+        cache; it fetches providers concurrently and degrades to the curated
+        catalog, so this should not actually block for long.
+        """
         try:
-            r = self.session.get(f"{self.api_url}/models", timeout=10)
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
             r.raise_for_status()
             data = r.json()
             return data.get("models", [])
@@ -302,6 +312,21 @@ class ZenviBackendClient:
             log.error("Get history failed: %s", e)
             return {"messages": [], "session_info": {}}
 
+    def get_session_trace(self, session_id: str, limit: int = 200) -> Dict[str, Any]:
+        """Fetch agent/tool telemetry events for diagnosing loops and bottlenecks."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/chat/sessions/{session_id}/trace",
+                params={"limit": max(1, min(int(limit or 200), 1000))},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {"events": []}
+        except Exception as e:
+            log.error("Get session trace failed: %s", e)
+            return {"session_id": session_id, "events": [], "error": str(e)}
+
     def clear_chat_session(self, session_id: str) -> bool:
         """Clear a chat session."""
         try:
@@ -324,6 +349,10 @@ class ZenviBackendClient:
         on_token: Optional[Callable] = None,
         on_tool_progress: Optional[Callable] = None,
         auth_token: Optional[str] = None,
+        agent_mode: Optional[str] = None,
+        action: Optional[str] = None,
+        plan_id: Optional[str] = None,
+        on_plan_event: Optional[Callable] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -343,6 +372,7 @@ class ZenviBackendClient:
         ws_url = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{ws_url}/api/v1/chat/ws"
 
+        self._shutting_down = False
         ws = None
         try:
             sslopt = {} if self._ssl_verify else {"cert_reqs": 0}  # 0 = ssl.CERT_NONE
@@ -368,6 +398,12 @@ class ZenviBackendClient:
                 "session_id": session_id,
                 "auth_token": token,
             }
+            if agent_mode in ("planning", "agent"):
+                payload_data["agent_mode"] = agent_mode
+            if action in ("chat", "execute_plan", "cancel_execution"):
+                payload_data["action"] = action
+            if plan_id:
+                payload_data["plan_id"] = plan_id
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them
@@ -470,7 +506,10 @@ class ZenviBackendClient:
                                     "progress",
                                     data.get("call_id", ""),
                                     data.get("tool_name", ""),
-                                    data.get("line", ""),
+                                    {
+                                        "line": data.get("line", ""),
+                                        "detail": data.get("detail") or {},
+                                    },
                                 )
                             except Exception as exc:  # noqa: BLE001
                                 log.debug("on_tool_progress error: %s", exc)
@@ -498,6 +537,12 @@ class ZenviBackendClient:
                         final_response = data.get("response", "")
                         if on_response:
                             on_response(final_response, data.get("session_id", ""))
+                    elif msg_type in ("plan_ready", "plan_updated", "plan_step_status", "plan_execution_done", "plan_questions", "mode_changed"):
+                        if on_plan_event:
+                            try:
+                                on_plan_event(msg_type, data)
+                            except Exception as exc:  # noqa: BLE001
+                                log.debug("on_plan_event error: %s", exc)
                     elif msg_type == "error":
                         if on_error:
                             on_error(data.get("message", "Unknown error"))
@@ -513,8 +558,17 @@ class ZenviBackendClient:
                 # emit get sent before we close the WS.
                 with tool_workers_lock:
                     pending = list(tool_workers)
-                for t in pending:
-                    t.join(timeout=120)
+                if self._shutting_down:
+                    import time as _time
+                    deadline = _time.time() + 1.0
+                    for t in pending:
+                        remaining = deadline - _time.time()
+                        if remaining <= 0:
+                            break
+                        t.join(timeout=remaining)
+                else:
+                    for t in pending:
+                        t.join(timeout=120)
 
             try:
                 ws.close()
@@ -546,6 +600,7 @@ class ZenviBackendClient:
         Safe to call from any thread. Used during app shutdown to allow the
         chat worker thread to exit cleanly instead of blocking QThread::~QThread().
         """
+        self._shutting_down = True
         with self._ws_lock:
             websockets = list(self._active_wss)
             self._active_wss.clear()
@@ -566,6 +621,7 @@ class ZenviBackendClient:
         index_id: Optional[str] = None,
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
+        media_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Search for clips matching a query."""
         try:
@@ -580,6 +636,8 @@ class ZenviBackendClient:
                 payload["video_id"] = video_id
             if page_limit:
                 payload["page_limit"] = page_limit
+            if media_type:
+                payload["media_type"] = media_type
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
@@ -591,7 +649,7 @@ class ZenviBackendClient:
     # Indexing
     # ------------------------------------------------------------------
     def _new_http_session(self):
-        """Thread-safe session for parallel upload + tagging requests."""
+        """Thread-safe session for parallel upload + indexing requests."""
         import requests
         s = requests.Session()
         s.headers.update({"Content-Type": "application/json"})
@@ -610,75 +668,155 @@ class ZenviBackendClient:
         existing_index_id: Optional[str] = None,
         session=None,
         progress_callback: Optional[Callable[[str, int], None]] = None,
+        project_id: str = "",
+        duration_sec: float = 0.0,
+        force: bool = False,
+        media_type: str = "video",
     ) -> Dict[str, Any]:
-        """Index via presigned TwelveLabs upload (proxy encoded locally)."""
-        from classes.index_proxy import create_index_proxy
-        from classes.direct_index_upload import upload_file_via_presigned_urls
+        """Index via editor-side chunks + Gemini Files direct upload (no backend media store)."""
+        from classes.index_chunker import extract_chunks, cleanup_chunk_dir, guess_mime
+        from classes.gemini_direct_upload import upload_file_to_gemini_resumable
 
-        proxy_path, is_temp, proxy_size, proxy_err = create_index_proxy(file_path)
-        if proxy_err:
-            log.warning("Index proxy failed, using source file: %s", proxy_err)
-            proxy_path = file_path
-            is_temp = False
-            try:
-                proxy_size = os.path.getsize(file_path)
-            except OSError as exc:
-                return {"success": False, "error": str(exc)}
+        if not file_path or not os.path.isfile(file_path):
+            return {"success": False, "error": f"File not found: {file_path}"}
 
-        name = filename or os.path.basename(file_path) or file_id or "video.mp4"
+        mt = (media_type or "video").strip().lower() or "video"
+        if mt not in ("video", "image", "audio"):
+            mt = "video"
+        # Guard mislabeled imports (libopenshot often sets has_video on MP3).
+        _audio_exts = (
+            ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma",
+            ".opus", ".aiff", ".aif", ".oga",
+        )
+        if mt != "audio" and os.path.splitext(file_path or "")[1].lower() in _audio_exts:
+            mt = "audio"
+        name = filename or os.path.basename(file_path) or file_id or "media"
         fid = file_id or uuid.uuid4().hex
         s = session or self._new_http_session()
+        work_dir = ""
+
+        pid = (project_id or "").strip()
+        if not pid and str(index_name or "").startswith("zenvi-"):
+            pid = str(index_name)[len("zenvi-"):]
 
         try:
-            payload: Dict[str, Any] = {
-                "file_id": fid,
-                "index_name": index_name,
-                "filename": name,
-                "total_size": int(proxy_size),
-            }
-            if existing_index_id:
-                payload["existing_index_id"] = existing_index_id
+            if progress_callback:
+                progress_callback("planning", 0)
 
-            r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
-            r.raise_for_status()
-            session_data = r.json()
-            if session_data.get("error"):
-                return {"success": False, "error": session_data["error"]}
+            duration = float(duration_sec or 0)
+            if mt == "image":
+                duration = 0.0
+            elif duration <= 0:
+                try:
+                    import subprocess
+                    from classes.ffmpeg_cli import run_ffmpeg
+                    proc = run_ffmpeg(
+                        [
+                            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", file_path,
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                    duration = float((proc.stdout or "0").strip() or 0)
+                except Exception:
+                    duration = 0.0
+            if mt != "image" and duration <= 0:
+                return {"success": False, "error": f"Could not determine {mt} duration"}
 
-            job_id = session_data.get("job_id")
-            upload_id = session_data.get("upload_id")
-            chunk_size = int(session_data.get("chunk_size") or 0)
-            if not job_id or not upload_id or chunk_size <= 0:
-                return {"success": False, "error": "Invalid upload-session response"}
-
-            def _fetch_more(start: int, count: int):
-                rr = s.post(
-                    f"{self.api_url}/indexing/upload-session/{upload_id}/urls",
-                    json={"start": start, "count": count},
-                    timeout=30,
-                )
-                rr.raise_for_status()
-                return rr.json().get("presigned_urls") or []
-
-            def _on_chunk_uploaded(done: int, total: int):
-                if progress_callback and total > 0:
-                    progress_callback("uploading", int(done * 100 / total))
-
-            parts, up_err = upload_file_via_presigned_urls(
-                proxy_path,
-                chunk_size=chunk_size,
-                presigned_urls=session_data.get("presigned_urls") or [],
-                fetch_more_urls=_fetch_more,
-                upload_headers=session_data.get("upload_headers") or {},
-                on_chunk_uploaded=_on_chunk_uploaded,
-                session=s,
+            pr = s.post(
+                f"{self.api_url}/indexing/plan-chunks",
+                json={"duration_sec": duration, "media_type": mt},
+                timeout=30,
             )
-            if up_err:
-                return {"success": False, "error": up_err}
+            pr.raise_for_status()
+            plan_data = pr.json()
+            if plan_data.get("error"):
+                return {"success": False, "error": plan_data["error"]}
+            plan = plan_data.get("chunks") or []
+            if not plan:
+                return {"success": False, "error": "Empty chunk plan from backend"}
+
+            if progress_callback:
+                progress_callback("chunking", 5)
+            chunk_infos, work_dir, chunk_err = extract_chunks(
+                file_path, plan, media_type=mt,
+            )
+            if chunk_err:
+                return {"success": False, "error": chunk_err}
+
+            job_id = ""
+            uploaded_chunks = []
+            total = len(chunk_infos)
+            for i, info in enumerate(chunk_infos):
+                mime = str(info.get("mime_type") or guess_mime(info["path"], mt))
+                payload: Dict[str, Any] = {
+                    "file_id": fid,
+                    "project_id": pid,
+                    "index_name": index_name,
+                    "filename": name,
+                    "total_size": int(info["size"]),
+                    "mime_type": mime,
+                    "media_type": mt,
+                    "chunk_index": int(info["chunk_index"]),
+                    "start_ts": float(info["start"]),
+                    "end_ts": float(info["end"]),
+                }
+                if job_id:
+                    payload["job_id"] = job_id
+                if existing_index_id:
+                    payload["existing_index_id"] = existing_index_id
+
+                r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
+                r.raise_for_status()
+                session_data = r.json()
+                if session_data.get("error"):
+                    return {"success": False, "error": session_data["error"]}
+                job_id = str(session_data.get("job_id") or job_id)
+                upload_url = str(session_data.get("upload_url") or "")
+                if not upload_url:
+                    urls = session_data.get("presigned_urls") or []
+                    if urls:
+                        upload_url = str(urls[0].get("url") or "")
+                if not job_id or not upload_url:
+                    return {"success": False, "error": "Invalid upload-session response"}
+
+                file_info, up_err = upload_file_to_gemini_resumable(
+                    info["path"],
+                    upload_url,
+                    mime_type=mime,
+                )
+                if up_err:
+                    return {"success": False, "error": up_err}
+
+                uploaded_chunks.append({
+                    "chunk_index": int(info["chunk_index"]),
+                    "gemini_file_name": str(file_info.get("name") or ""),
+                    "gemini_file_uri": str(file_info.get("uri") or ""),
+                    "start_ts": float(info["start"]),
+                    "end_ts": float(info["end"]),
+                    "size": int(info["size"]),
+                    "mime_type": mime,
+                    "media_type": mt,
+                })
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int((i + 1) * 80 / total))
 
             cr = s.post(
                 f"{self.api_url}/indexing/upload-complete",
-                json={"job_id": job_id, "upload_id": upload_id, "parts": parts},
+                json={
+                    "job_id": job_id,
+                    "chunks": uploaded_chunks,
+                    "force": bool(force),
+                    "media_type": mt,
+                    # Self-contained so multi-worker backends don't need sticky pending RAM.
+                    "file_id": fid,
+                    "project_id": pid,
+                    "filename": name,
+                    "index_name": index_name,
+                },
                 timeout=60,
             )
             cr.raise_for_status()
@@ -688,16 +826,38 @@ class ZenviBackendClient:
 
             if progress_callback:
                 progress_callback("indexing", -1)
-            return self._poll_indexing_job(job_id, progress_callback=progress_callback, session=s)
+            result = self._poll_indexing_job(
+                job_id,
+                progress_callback=progress_callback,
+                session=s,
+            )
+            if not isinstance(result, dict):
+                return {"success": False, "error": "Invalid indexing job response"}
+            err = result.get("error") or result.get("message")
+            if err and not result.get("ai_metadata") and not result.get("index_id"):
+                return {"success": False, "error": err, "message": err}
+            if result.get("video_id") and not result.get("error"):
+                result.setdefault("status", "ready")
+                result.setdefault(
+                    "index_id",
+                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
+                )
+                result["success"] = True
+            elif result.get("ai_metadata") and not result.get("error"):
+                result.setdefault(
+                    "index_id",
+                    index_name or (f"zenvi-{pid}" if pid else "zenvi-videos"),
+                )
+                result.setdefault("video_id", fid)
+                result.setdefault("status", "ready")
+                result["success"] = True
+            return result
         except Exception as exc:
-            log.error("Direct indexing failed: %s", exc)
+            log.error("Gemini indexing failed: %s", exc)
             return {"success": False, "error": str(exc)}
         finally:
-            if is_temp and proxy_path:
-                try:
-                    os.unlink(proxy_path)
-                except OSError:
-                    pass
+            if work_dir:
+                cleanup_chunk_dir(work_dir)
 
     def _poll_indexing_job(
         self,
@@ -707,9 +867,13 @@ class ZenviBackendClient:
         progress_callback: Optional[Callable[[str, int], None]] = None,
         session=None,
     ) -> Dict[str, Any]:
-        """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass."""
+        """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass.
+
+        Always uses a dedicated HTTP session — the shared client session is not
+        safe for concurrent QThread indexing workers.
+        """
         import time
-        s = session or self.session
+        s = session or self._new_http_session()
         deadline = time.time() + max_wait
         while time.time() < deadline:
             if progress_callback:
@@ -720,26 +884,45 @@ class ZenviBackendClient:
                 data = r.json()
                 status = data.get("status", "running")
                 if status == "done":
-                    return data.get("result") or {"success": True}
+                    result = data.get("result")
+                    if isinstance(result, dict) and result:
+                        return result
+                    return {
+                        "success": False,
+                        "error": "Indexing finished but returned an empty result",
+                        "message": "Indexing finished but returned an empty result",
+                    }
                 if status == "failed":
                     result = data.get("result") or {}
-                    err = result.get("error", "Indexing failed") if isinstance(result, dict) else "Indexing failed"
+                    err = (
+                        result.get("error", "Indexing failed")
+                        if isinstance(result, dict)
+                        else "Indexing failed"
+                    )
                     return {"success": False, "error": err, "message": err}
                 if status == "not_found":
-                    return {"success": False, "message": f"Job {job_id} not found on backend"}
+                    return {
+                        "success": False,
+                        "error": f"Job {job_id} not found on backend",
+                        "message": f"Job {job_id} not found on backend",
+                    }
             except Exception as e:
                 log.warning("Indexing poll error (will retry): %s", e)
             time.sleep(poll_interval)
-        return {"success": False, "message": f"Indexing job {job_id} timed out after {max_wait}s"}
+        return {
+            "success": False,
+            "error": f"Indexing job {job_id} timed out after {max_wait}s",
+            "message": f"Indexing job {job_id} timed out after {max_wait}s",
+        }
 
     # ------------------------------------------------------------------
     # Video Generation
     # ------------------------------------------------------------------
-    def generate_video(self, prompt: str, duration_seconds: int = 4, **kwargs) -> Dict[str, Any]:
-        """Generate a video from a text prompt.
+    def generate_video(self, prompt: str, duration_seconds: int = 5, **kwargs) -> Dict[str, Any]:
+        """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
-        Supported kwargs: input_image_path, seed_video, strength, frame_images,
-                          model, width, height, input_video_url.
+        Supported kwargs: mode, frame_images_paths, seed_video_file_id,
+                          keep_original_sound, width, height, input_video_url.
         """
         try:
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
@@ -791,51 +974,43 @@ class ZenviBackendClient:
             return {"error": str(e)}
 
     # ------------------------------------------------------------------
-    # Tagging & Indexing (for files_model)
+    # Indexing & Pegasus summarize (for files_model)
     # ------------------------------------------------------------------
-    def tag_video_frames(
+    def summarize_indexed_video(
         self,
-        file_id: str,
-        duration_seconds: float,
-        frames: List[Tuple[float, bytes]],
-        filename: str = "",
+        video_id: str,
+        *,
+        file_id: str = "",
+        index_id: str = "",
+        index_name: str = "",
         session=None,
     ) -> Dict[str, Any]:
-        """Send pre-extracted JPEG frames for AI tagging (no video upload)."""
-        import base64
-        if not frames:
-            meta = self._empty_ai_metadata()
-            meta["error"] = "No frames to analyze"
-            return meta
+        """Generate Pegasus audiovisual summary for an indexed TwelveLabs video_id."""
         payload = {
-            "file_id": file_id,
-            "duration_seconds": duration_seconds,
-            "filename": filename,
-            "frames": [
-                {"timestamp": ts, "data": base64.b64encode(jpeg).decode("ascii")}
-                for ts, jpeg in frames
-            ],
+            "video_id": str(video_id or "").strip(),
+            "file_id": str(file_id or ""),
+            "index_id": str(index_id or "") or None,
+            "index_name": str(index_name or ""),
         }
         try:
             s = session or self.session
             r = s.post(
-                f"{self.api_url}/tags/analyze-frames",
+                f"{self.api_url}/indexing/summarize",
                 json=payload,
-                timeout=120,
+                timeout=300,
             )
             r.raise_for_status()
-            data = r.json()
-            if data.get("error"):
-                meta = self._empty_ai_metadata()
-                meta["error"] = data["error"]
+            data = r.json() if isinstance(r.json(), dict) else {}
+            meta = data.get("ai_metadata") if isinstance(data.get("ai_metadata"), dict) else None
+            if meta and (meta.get("analyzed") or data.get("success")):
                 return meta
-            if data.get("analyzed"):
-                return data
-            meta = self._empty_ai_metadata()
-            meta["error"] = data.get("error", "Frame tagging did not complete")
-            return meta
+            out = self._empty_ai_metadata()
+            out["error"] = data.get("error") or (meta or {}).get("error") or "Summarize did not complete"
+            if meta and isinstance(meta.get("twelvelabs"), dict):
+                out["twelvelabs"] = meta["twelvelabs"]
+            return out
         except Exception as exc:
-            log.error("Frame tagging failed: %s", exc)
+            log.error("Pegasus summarize failed: %s", exc)
             meta = self._empty_ai_metadata()
             meta["error"] = str(exc)
             return meta
@@ -850,21 +1025,34 @@ class ZenviBackendClient:
 
     @staticmethod
     def _empty_ai_metadata() -> Dict[str, Any]:
-        """Return a default empty ai_metadata dict (mirrors old GeminiVideoTagger.empty_metadata)."""
-        from datetime import datetime
+        """Return a default empty ai_metadata dict (Gemini Flash summary shape)."""
         return {
             "analyzed": False,
-            "analysis_version": "2.0",
-            "analysis_date": datetime.now().isoformat(),
-            "provider": "backend",
-            "scene_descriptions": [],
-            "tags": {"objects": [], "scenes": [], "activities": [], "mood": [], "quality": {}},
-            "faces": [],
-            "colors": {},
-            "audio_analysis": {},
+            "provider": "gemini-flash",
+            "short_summary": "",
             "description": "",
-            "confidence": 0.0,
+            "sounds": "",
+            "transcript": "",
+            "chapters": [],
+            "scene_descriptions": [],
+            "tags": {},
+            "index": {},
+            "twelvelabs": {},
         }
+
+    def get_project_catalog(self, project_id: str) -> Dict[str, Any]:
+        """Orientation catalog for a project (no vector search)."""
+        try:
+            r = self.session.get(
+                f"{self.api_url}/indexing/catalog",
+                params={"project_id": project_id},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.error("Catalog fetch failed: %s", e)
+            return {"items": [], "error": str(e)}
 
     # ------------------------------------------------------------------
     # Pexels stock video
@@ -920,7 +1108,7 @@ class ZenviBackendClient:
         """Re-index via direct TwelveLabs presigned upload."""
         if isinstance(force, str):
             force = force.strip().lower() in ("true", "1", "yes", "force")
-        if not file_path:
+        if not force and not file_path:
             return {"success": False, "error": "file_path is required"}
 
         result = self.start_direct_indexing_job(
@@ -948,18 +1136,6 @@ class ZenviBackendClient:
         """Download a Freesound preview MP3 from the CDN URL to the local machine."""
         hint = filename or f"freesound_{sound_id}"
         return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
-
-    def list_directors(self) -> List[Dict[str, Any]]:
-        try:
-            r = self.session.get(f"{self.api_url}/directors", timeout=15)
-            r.raise_for_status()
-            payload = r.json()
-            if isinstance(payload, list):
-                return payload
-            return payload.get("directors", [])
-        except Exception as exc:
-            log.error("list_directors failed: %s", exc)
-            return []
 
 
 # Singleton

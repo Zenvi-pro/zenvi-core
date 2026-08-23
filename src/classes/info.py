@@ -29,10 +29,10 @@ import os
 import sys
 from time import strftime
 
-VERSION = "1.0.179"
+VERSION = "1.0.188"
 # 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
 MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
-DATE = "20260515000000"
+DATE = "20260813000000"
 NAME = "zenvi"
 PRODUCT_NAME = "Zenvi"
 GPL_VERSION = "3"
@@ -150,10 +150,17 @@ def application_qicon():
 def application_logo_pixmap(size=80):
     """Scaled Zenvi logo for login / about UI."""
     try:
-        from PyQt5.QtCore import QSize
-        from PyQt5.QtGui import QIcon
+        from PyQt5.QtCore import QSize, Qt
+        from PyQt5.QtGui import QIcon, QPixmap
     except ImportError:
         return None
+    logo_path = os.path.join(PATH, "logo", "logo_dark.png")
+    if os.path.isfile(logo_path):
+        pixmap = QPixmap(logo_path)
+        if not pixmap.isNull():
+            return pixmap.scaled(
+                QSize(size, size), Qt.KeepAspectRatio, Qt.SmoothTransformation,
+            )
     icon = application_qicon()
     if icon is None or icon.isNull():
         return None

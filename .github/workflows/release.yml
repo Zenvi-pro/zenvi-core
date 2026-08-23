@@ -268,7 +268,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v3
+          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v4
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -317,13 +317,8 @@ jobs:
             xargs grep -l "avresample" 2>/dev/null | \
             xargs sed -i '' 's/ avresample//g' || true
 
-          # 2. FFmpeg 7/8 compat patches in libopenshot .cpp source files:
-          #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE").replace("FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED").replace("FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN").replace("FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "FF_PROFILE_" in (t:=open(f).read())]'
-          #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op.
-          python3 -c 'import re,glob; [open(f,"w").write(re.sub(r"av_stream_add_side_data\([^;]*\);","(void)0; /* removed FFmpeg7+ */",t)) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "av_stream_add_side_data" in (t:=open(f).read())]'
-          #    c. AVStream::nb_side_data / side_data moved to codecpar->{nb_coded_side_data,coded_side_data} in FFmpeg 7+.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("->nb_side_data","->codecpar->nb_coded_side_data").replace("->side_data[","->codecpar->coded_side_data[")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "nb_side_data" in (t:=open(f).read())]'
+          # 2. FFmpeg 7/8 compat (FF_PROFILE_*, side-data, AVCodec config lists).
+          python3 "$GITHUB_WORKSPACE/installer/patch-libopenshot-ffmpeg.py" /tmp/libopenshot
           # Note: SWR channel layout (the FFmpeg 8 av_opt_set_chlayout fix) is
           # included in libopenshot v0.7.0 upstream — no local patch needed.
 
@@ -1001,11 +996,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Install the MSYS2 shell first, then pacman with retries. A single
+      # setup-msys2 update+install often dies on ftp2.osuosl.org .sig files
+      # ("Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds").
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
-          install: >-
+          update: false
+
+      - name: Harden pacman downloads (timeout + skip stalled OSUOSL mirror)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          grep -q '^DisableDownloadTimeout' /etc/pacman.conf \
+            || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
+          for f in /etc/pacman.d/mirrorlist.*; do
+            [[ -f "$f" ]] || continue
+            sed -i 's|^Server = https://ftp2.osuosl.org|# &|' "$f"
+          done
+
+      - name: Update MSYS2 (pass 1, runtime may kill this shell)
+        # msys2-runtime upgrade terminates the shell; || true never runs when
+        # the process is killed. Allow failure so the next step can finish.
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Update MSYS2 (pass 2, after runtime restart)
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Install MSYS2 packages
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          pkgs=(
             base-devel
             git
             mingw-w64-ucrt-x86_64-toolchain
@@ -1030,13 +1056,29 @@ jobs:
             mingw-w64-ucrt-x86_64-babl
             mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
+          )
+          attempt=1
+          max=6
+          while true; do
+            if pacman -Syuu --noconfirm --disable-download-timeout \
+              && pacman -S --needed --noconfirm --overwrite '*' --disable-download-timeout "${pkgs[@]}"; then
+              break
+            fi
+            if (( attempt >= max )); then
+              echo "::error::pacman install failed after ${max} attempts (slow/stalled MSYS2 mirrors)"
+              exit 1
+            fi
+            echo "pacman failed (attempt ${attempt}/${max}), retrying..."
+            sleep $(( attempt * 20 ))
+            attempt=$((attempt + 1))
+          done
 
       - name: Cache libopenshot bundle (MSYS2 UCRT64)
         id: cache-libopenshot-win
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/patch-libopenshot-ffmpeg.py') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'

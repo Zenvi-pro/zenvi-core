@@ -1,0 +1,19 @@
+# Code owners for zenvi-core (Zenvi desktop app)
+#
+# @jashanpratapsingh is requested on every pull request. Area owners below are
+# added from who has actually been writing that code. Only people with write
+# access can be code owners, so upstream OpenShot contributors aren't listed.
+
+*                     @jashanpratapsingh
+
+# Application code — largely written by @Harkit2004
+/src/classes/         @jashanpratapsingh @Harkit2004
+/src/windows/         @jashanpratapsingh @Harkit2004
+/src/chat_ui/         @jashanpratapsingh @Harkit2004
+/src/timeline/        @jashanpratapsingh @Harkit2004
+/src/themes/          @jashanpratapsingh @Harkit2004
+/src/settings/        @jashanpratapsingh @Harkit2004
+/tests/               @jashanpratapsingh @Harkit2004
+
+# Packaging, assets and docs are almost entirely @jashanpratapsingh,
+# so the default owner above already covers them.

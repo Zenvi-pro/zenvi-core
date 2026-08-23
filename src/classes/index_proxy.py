@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 from typing import Tuple
 
+from classes.ffmpeg_cli import run_ffmpeg
+
 _MAX_LONG_EDGE = 720
 _CRF = 28
 _SKIP_IF_MAX_BYTES = 40 * 1024 * 1024
@@ -13,7 +15,7 @@ _PRESET = "veryfast"
 
 def _ffprobe_dimensions(path: str) -> Tuple[int, int]:
     try:
-        proc = subprocess.run(
+        proc = run_ffmpeg(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
                 "-show_entries", "stream=width,height",
@@ -37,7 +39,7 @@ def _ffprobe_dimensions(path: str) -> Tuple[int, int]:
 
 def _ffprobe_has_audio(path: str) -> bool:
     try:
-        proc = subprocess.run(
+        proc = run_ffmpeg(
             ["ffprobe", "-v", "error", "-select_streams", "a",
              "-show_entries", "stream=index", "-of", "csv=p=0", path],
             stdout=subprocess.PIPE,
@@ -52,7 +54,7 @@ def _ffprobe_has_audio(path: str) -> bool:
 
 def _ffmpeg_run(args: list) -> Tuple[bool, str]:
     try:
-        proc = subprocess.run(
+        proc = run_ffmpeg(
             args,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -86,13 +88,7 @@ def create_index_proxy(video_path: str) -> Tuple[str, bool, int, str]:
     fd, out_path = tempfile.mkstemp(suffix="_index_proxy.mp4", prefix="zenvi_")
     os.close(fd)
 
-    if w and h:
-        if w >= h:
-            vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
-        else:
-            vf = f"scale=-2:'min({_MAX_LONG_EDGE},ih)',format=yuv420p"
-    else:
-        vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
+    vf = f"scale='min({_MAX_LONG_EDGE},iw)':-2,format=yuv420p"
     has_audio = _ffprobe_has_audio(video_path)
     if has_audio:
         cmd = [
