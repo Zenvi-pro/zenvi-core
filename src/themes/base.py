@@ -238,6 +238,7 @@ class BaseTheme:
             {"action": self.app.window.actionNew, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionOpen, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionSave, "style": Qt.ToolButtonIconOnly},
+            {"widget": self.app.window.agent_selector_button},
             {"divide": True},
             {"action": self.app.window.actionUndo, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionRedo, "style": Qt.ToolButtonIconOnly},

@@ -18,13 +18,11 @@ across restarts, see ``_load_or_create_token``), so only the CLIs we configure
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 import os
 import secrets
 import socket
 import threading
-import uuid
 
 log = logging.getLogger(__name__)
 
@@ -170,36 +168,6 @@ def _load_or_create_token() -> str:
     return token
 
 
-_broadcaster = None
-_broadcaster_lock = threading.Lock()
-
-
-def get_tool_call_broadcaster():
-    """Lazily create the process-wide tool-call broadcaster (a QObject with
-    two signals, emitted from ``_call_tool`` below for *every* MCP tool call
-    — regardless of whether it came from Zenvi's own spawned CLI runner or a
-    genuine external terminal session; the MCP layer can't tell those apart.
-    ``AIChatWindow`` connects to these to render a read-only "Live from
-    terminal" view (see its ``_external_target_sid``/``_on_external_tool_*``
-    for how it decides whether a given event should render there).
-
-    PyQt5 import is deferred (matching ``_connect_shutdown_hook`` below) so
-    this module stays importable — and its schema-only tests runnable —
-    without requiring a QApplication.
-    """
-    global _broadcaster
-    with _broadcaster_lock:
-        if _broadcaster is None:
-            from PyQt5.QtCore import QObject, pyqtSignal
-
-            class _ToolCallBroadcaster(QObject):
-                tool_call_started = pyqtSignal(str, str, str)    # call_id, tool_name, args_json
-                tool_call_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
-
-            _broadcaster = _ToolCallBroadcaster()
-        return _broadcaster
-
-
 class _BearerAuthMiddleware:
     """Reject any HTTP request lacking ``Authorization: Bearer <token>``."""
 
@@ -293,22 +261,8 @@ class ZenviMcpServer:
             from classes.tool_handlers import execute_tool
             args = dict(arguments or {})
 
-            call_id = uuid.uuid4().hex
-            try:
-                broadcaster = get_tool_call_broadcaster()
-                broadcaster.tool_call_started.emit(call_id, name, json.dumps(args, default=str))
-            except Exception:
-                log.debug("tool-call broadcast (started) failed", exc_info=True)
-
             result = await anyio.to_thread.run_sync(lambda: execute_tool(name, args))
             text = "" if result is None else str(result)
-
-            try:
-                ok = bool(text) and not text.startswith("Error")
-                broadcaster.tool_call_completed.emit(call_id, ok, text)
-            except Exception:
-                log.debug("tool-call broadcast (completed) failed", exc_info=True)
-
             return [types.TextContent(type="text", text=text)]
 
         app = fm.streamable_http_app()

@@ -1201,6 +1201,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             {"action": self.app.window.actionProfile,     "icon": "themes/cosmic/images/tool-profile.svg",      "style": Qt.ToolButtonIconOnly},
             {"expand": True},
             {"action": self.app.window.actionSave,        "icon": "themes/cosmic/images/tool-save-project.svg", "style": Qt.ToolButtonIconOnly},
+            {"widget": self.app.window.agent_selector_button},
             {
                 "action": self.app.window.actionExportVideo,
                 "icon": "themes/cosmic/images/tool-export.svg",

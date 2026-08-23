@@ -21,44 +21,10 @@
     <div class="chat-container relative flex flex-col h-full min-h-0"
          role="application" aria-label="Zenvi Assistant chat">
 
-        <!-- ── Agent backend selector (top of panel) ─────────────────── -->
-        <div id="chat-backend-bar"
-             class="chat-agent-bar flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5">
-            <span class="chat-agent-label">Agent</span>
-
-            <!-- Hidden native select (QWebChannel reads/sets its value) -->
-            <select id="chat-backend-select" class="hidden" aria-hidden="true"></select>
-
-            <!-- Agent trigger pill (same visual language as the Model pill below) -->
-            <button type="button" id="chat-agent-trigger"
-                    class="chat-model-trigger inline-flex items-center gap-1.5
-                           rounded-full px-2 py-[3px] text-[11px] border transition-colors cursor-pointer"
-                    style="background: var(--chat-surface); border-color: var(--chat-border); color: var(--chat-text);"
-                    aria-label="Select agent" aria-haspopup="listbox">
-                <span id="chat-agent-label-text"
-                      class="overflow-hidden text-ellipsis whitespace-nowrap max-w-[140px]">Zenvi Assistant</span>
-                <svg class="chat-model-chevron flex-shrink-0 opacity-50 transition-transform duration-200"
-                     width="10" height="10" viewBox="0 0 10 10" fill="none">
-                    <path d="M2.5 6.5L5 4l2.5 2.5" stroke="currentColor" stroke-width="1.2"
-                          stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </button>
-
-            <!-- Agent dropdown menu -->
-            <div id="chat-agent-menu"
-                 class="chat-model-menu absolute z-[100] py-1 rounded-[10px] border overflow-y-auto"
-                 role="listbox" aria-label="Agent backend" style="display: none;"></div>
-
-            <!-- Tool-gap log (silent capability gaps — see the agent spec, Part B) -->
-            <button type="button" id="chat-gap-log-btn"
-                    class="chat-gap-log-btn ml-auto flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md"
-                    style="background: transparent; border: none; cursor: pointer;"
-                    title="Tool gaps log" aria-label="Tool gaps log">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                    <path d="M3 4h10M3 8h10M3 12h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
-                </svg>
-            </button>
-        </div>
+        <!-- Agent backend mirror. The visible picker is the robot button in
+             the main window toolbar (windows/agent_selector_button.py); this
+             hidden select is just the value QWebChannel reads and writes. -->
+        <select id="chat-backend-select" class="hidden" aria-hidden="true"></select>
 
         <!-- ── Tool-gap log panel (opened via the list icon above) ───────── -->
         <div id="chat-gap-log-overlay" class="chat-gap-log-overlay" style="display:none;">
@@ -90,12 +56,6 @@
                 <div id="chat-preamble-label"
                      class="text-[13px] leading-relaxed"
                      style="color: var(--chat-text);"></div>
-                <div id="chat-live-badge"
-                     class="chat-live-badge flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                     style="display:none;"
-                     title="This tab is a read-only view of an external terminal session">
-                    <span class="chat-live-dot"></span>Live from terminal
-                </div>
                 <div id="chat-credits-badge"
                      class="flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
                      style="display:none; background: rgba(77,156,246,0.12); color: rgba(77,156,246,0.95); border: 1px solid rgba(77,156,246,0.25);"
@@ -203,6 +163,16 @@
                                           stroke="currentColor" stroke-width="1.2"
                                           stroke-linecap="round"/>
                                     <circle cx="13" cy="8" r="1.5" fill="currentColor"/>
+                                </svg>
+                            </button>
+
+                            <!-- Tool-gap log (silent capability gaps — see the agent spec, Part B) -->
+                            <button type="button" id="chat-gap-log-btn"
+                                    class="chat-bottom-icon" title="Tool gaps log"
+                                    aria-label="Tool gaps log">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <path d="M3 4h10M3 8h10M3 12h7" stroke="currentColor"
+                                          stroke-width="1.3" stroke-linecap="round"/>
                                 </svg>
                             </button>
 

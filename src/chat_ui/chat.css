@@ -674,29 +674,6 @@
 .chat-model-option-check { flex-shrink: 0; width: 14px; height: 14px; opacity: 0; }
 .chat-model-option.selected .chat-model-option-check { opacity: 1; color: var(--chat-accent); }
 
-/* Agent menu option whose CLI binary isn't installed — dimmed, tagged, still clickable
-   (picking it shows the calm "not found" empty state, not a dead end). */
-.chat-model-option.not-installed { opacity: 0.55; }
-.chat-agent-option-tag {
-    flex-shrink: 0;
-    font-size: 10px;
-    color: var(--chat-muted);
-    margin-right: 4px;
-    white-space: nowrap;
-}
-
-/* Installed-CLI status dot: amber = not connected to Zenvi yet, green = connected. */
-.chat-agent-status-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    margin-right: 8px;
-    flex-shrink: 0;
-}
-.chat-agent-status-dot.amber { background: #f59e0b; }
-.chat-agent-status-dot.connected { background: #22c55e; }
-
 /* ── Inline "Connect" flow in the CLI empty state ─────────────────────── */
 .chat-cli-connect-msg { margin-bottom: 10px; }
 
@@ -739,23 +716,6 @@
 }
 .chat-bottom-icon:hover           { background: var(--chat-button-bg); color: var(--chat-text); }
 .chat-cancel-icon:hover           { color: #ef4444 !important; }
-
-/* ── Agent backend selector bar ─────────────────────────────────────── */
-.chat-agent-bar {
-    background: var(--chat-bg);
-    border-bottom: 1px solid var(--chat-border, rgba(255,255,255,0.06));
-}
-
-.chat-agent-label {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--chat-muted);
-    opacity: 0.75;
-}
-
-/* Trigger and menu reuse .chat-model-trigger / .chat-model-menu / .chat-model-option
-   (defined above) so the Agent pill matches the Model pill's look and interaction
-   states exactly, with no duplicated CSS. */
 
 /* ── New-chat "+" button ─────────────────────────────────────────────── */
 #chat-tab-add {
@@ -1170,22 +1130,3 @@
     background: transparent;
 }
 
-/* ── "Live from terminal" badge (read-only external-session view) ────── */
-.chat-live-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    background: rgba(34,197,94,0.12);
-    color: rgba(34,197,94,0.95);
-    border: 1px solid rgba(34,197,94,0.25);
-}
-.chat-live-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #22c55e;
-    animation: chat-processing-pulse 1.1s ease-in-out infinite;
-}
-
-/* ── Read-only input state (Live from terminal mode) ──────────────────── */
-.chat-input-row.is-live-readonly { opacity: 0.6; pointer-events: none; }

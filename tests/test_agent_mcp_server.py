@@ -110,62 +110,6 @@ def test_server_lists_and_calls_tools(tool_stub):
         assert "FIXTURE_FILES" in text
     finally:
         srv.stop()
-
-
-def test_call_tool_broadcasts_started_and_completed(tool_stub):
-    """Phase 9: every MCP tool call (Zenvi-driven or a genuine external
-    terminal session — this layer can't tell those apart) must broadcast a
-    matched started/completed pair via get_tool_call_broadcaster(), which is
-    what lets AIChatWindow render a read-only "Live from terminal" view."""
-    pytest.importorskip("mcp")
-    pytest.importorskip("PyQt5.QtCore")
-    from PyQt5.QtWidgets import QApplication
-    from classes.agent_mcp_server import ZenviMcpServer, get_tool_call_broadcaster
-
-    app = QApplication.instance() or QApplication([])
-    broadcaster = get_tool_call_broadcaster()
-    started, completed = [], []
-    broadcaster.tool_call_started.connect(lambda cid, name, args: started.append((cid, name, args)))
-    broadcaster.tool_call_completed.connect(lambda cid, ok, text: completed.append((cid, ok, text)))
-
-    srv = ZenviMcpServer().start()
-    time.sleep(1.0)
-    try:
-        async def run():
-            import httpx
-            from mcp import ClientSession
-            from mcp.client.streamable_http import streamable_http_client
-            headers = {"Authorization": "Bearer %s" % srv.token}
-            async with httpx.AsyncClient(headers=headers) as http_client:
-                async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
-                    async with ClientSession(r, w) as session:
-                        await session.initialize()
-                        await session.call_tool("list_files_tool", {})
-
-        asyncio.run(run())
-
-        # The HTTP round-trip only completes after both signals were already
-        # emitted server-side; pump the (not-otherwise-running) Qt event loop
-        # briefly so the queued cross-thread deliveries land before asserting.
-        deadline = time.time() + 2.0
-        while (not started or not completed) and time.time() < deadline:
-            app.processEvents()
-            time.sleep(0.02)
-    finally:
-        srv.stop()
-
-    assert len(started) == 1
-    call_id, tool_name, args_json = started[0]
-    assert tool_name == "list_files_tool"
-    assert call_id  # non-empty
-
-    assert len(completed) == 1
-    completed_call_id, ok, text = completed[0]
-    assert completed_call_id == call_id  # started/completed pair up by call_id
-    assert ok is True
-    assert "FIXTURE_FILES" in text
-
-
 def test_server_requires_bearer_token(tool_stub):
     from classes.agent_mcp_server import ZenviMcpServer
 
@@ -260,7 +204,8 @@ def test_claude_cli_invokes_mcp_tool(tool_stub):
             ["claude", "-p", "Call the list_files_tool tool with no arguments and report the result.",
              "--output-format", "stream-json", "--verbose",
              "--mcp-config", cfg_path, "--strict-mcp-config",
-             "--permission-mode", "bypassPermissions",
+             # Same flag the app uses — see ClaudeCodeRunner._build_argv.
+             "--dangerously-skip-permissions",
              "--allowedTools", "mcp__zenvi-editor__list_files_tool"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         for line in proc.stdout:

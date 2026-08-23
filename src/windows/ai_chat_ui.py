@@ -807,13 +807,6 @@ class ChatBridge(QObject):
             self.window._close_session(session_id)
 
     @pyqtSlot()
-    def refreshCliStatus(self):
-        """Called from JS when the Agent dropdown opens — status must always be
-        real, never stale, so re-check rather than rely solely on the timer."""
-        if self.window:
-            self.window._detect_clis()
-
-    @pyqtSlot()
     def getGaps(self):
         if self.window:
             self.window._push_gap_list()
@@ -938,19 +931,8 @@ class AIChatWindow(QDockWidget):
 
         # Prefetch credits before the web UI finishes loading (avoids 0 → real flash).
         self._start_credits_refresh()
-        # Detect claude/codex CLI availability for the Agent dropdown's status dots.
+        # Detect claude/codex CLI availability for the agent selector's status dots.
         self._start_cli_detection_refresh()
-
-        # Every MCP tool call (Zenvi-driven or a genuine external terminal
-        # session — the MCP layer can't tell those apart) is broadcast here;
-        # see _external_target_sid for how we decide whether to render it.
-        try:
-            from classes.agent_mcp_server import get_tool_call_broadcaster
-            broadcaster = get_tool_call_broadcaster()
-            broadcaster.tool_call_started.connect(self._on_external_tool_started)
-            broadcaster.tool_call_completed.connect(self._on_external_tool_completed)
-        except Exception:
-            log.debug("Failed to connect tool-call broadcaster", exc_info=True)
 
     # ------------------------------------------------------------------
     # Session management
@@ -998,7 +980,6 @@ class AIChatWindow(QDockWidget):
             "unread": False,
             "first_prompt_summary": None,
             "backend": BACKEND_ZENVI,
-            "live_from_terminal": False,
             "agent_mode": "agent",
             "current_plan": None,
         }
@@ -1019,14 +1000,15 @@ class AIChatWindow(QDockWidget):
             "unread": False,
             "first_prompt_summary": None,
             "backend": backend,
-            "live_from_terminal": False,
             "agent_mode": "agent",
             "current_plan": None,
         }
         self._active_sid = sid
         self._first_prompt_summary = None
         self.is_processing = False
+        self._notify_agent_selector()
         if self._use_web_ui:
+            self._push_models_for_backend(backend)
             self._run_js("clearMessages();")
             self._push_tabs_to_js()
             self._update_preamble()
@@ -1038,6 +1020,33 @@ class AIChatWindow(QDockWidget):
             self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
         self._save_chat_sessions_store()
+
+    # ------------------------------------------------------------------
+    # Agent selector (lives in the main window toolbar, next to Save)
+    # ------------------------------------------------------------------
+
+    def active_backend(self) -> str:
+        """Backend id of the chat tab the user is currently looking at."""
+        sess = self._active_session() or {}
+        return sess.get("backend", BACKEND_ZENVI)
+
+    def cli_status(self) -> dict:
+        """``{backend_id: {installed, version, registered}}`` as last detected."""
+        try:
+            return json.loads(getattr(self, "_cli_status", "") or "{}")
+        except Exception:
+            return {}
+
+    def set_active_backend(self, backend: str):
+        """Switch the active chat tab to *backend* (called by the toolbar)."""
+        if self._active_sid:
+            self._set_session_backend(self._active_sid, backend)
+
+    def _notify_agent_selector(self):
+        """Repaint the toolbar selector after the active backend changes."""
+        button = getattr(self.parent(), "agent_selector_button", None)
+        if button is not None:
+            button.sync_from_chat()
 
     def _set_session_backend(self, session_id: str, backend: str):
         """Switch the agent backend used by *session_id*.
@@ -1074,10 +1083,6 @@ class AIChatWindow(QDockWidget):
         sess["worker"] = worker
         sess["thread"] = thread
         sess["backend"] = backend
-        # Switching backends always leaves "Live from terminal" mode, even
-        # switching between the two CLI backends — the old runner/live view
-        # is gone either way.
-        sess["live_from_terminal"] = False
         if backend != BACKEND_ZENVI:
             # See _resolve_agent_mode: CLI backends have no planning mode.
             sess["agent_mode"] = "agent"
@@ -1085,10 +1090,10 @@ class AIChatWindow(QDockWidget):
         if session_id == self._active_sid:
             self.is_processing = False
             self._set_processing_ui(False)
-            if self._use_web_ui:
-                self._run_js("if(window.setLiveFromTerminal) setLiveFromTerminal(false);")
-            else:
+            self._push_models_for_backend(backend)
+            if not self._use_web_ui:
                 self._sync_widget_backend_combo()
+        self._notify_agent_selector()
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
@@ -1119,6 +1124,9 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
             mode = sess.get("agent_mode", "agent")
             self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(mode))
+            # Tabs can run different backends, and each has its own lineup.
+            self._push_models_for_backend(sess.get("backend", BACKEND_ZENVI))
+        self._notify_agent_selector()
         self._update_preamble()
         self._save_chat_sessions_store()
         if not self._use_web_ui:
@@ -1164,7 +1172,6 @@ class AIChatWindow(QDockWidget):
                 "active": sid == self._active_sid,
                 "processing": bool(sess.get("processing", False)),
                 "backend": sess.get("backend", BACKEND_ZENVI),
-                "live": bool(sess.get("live_from_terminal", False)),
             })
         self._run_js("setTabs(%s);" % json.dumps(json.dumps(tabs)))
 
@@ -1534,25 +1541,6 @@ class AIChatWindow(QDockWidget):
             combo.blockSignals(True)
             combo.setCurrentIndex(idx)
             combo.blockSignals(False)
-        is_cli = backend in (BACKEND_CLAUDE, BACKEND_CODEX)
-        model_combo = getattr(self, "model_combo", None)
-        if model_combo is not None:
-            model_combo.setVisible(not is_cli)
-        # Re-apply (or clear) the "Live from terminal" read-only input state
-        # for whichever session just became active — _mark_live_from_terminal
-        # only fires once per session, so switching tabs needs its own resync.
-        is_live = bool(sess.get("live_from_terminal")) if sess else False
-        # getattr: this also runs from _init_widget_ui while the selector is
-        # being built, before the input row below it exists.
-        msg_input = getattr(self, "msg_input", None)
-        if msg_input:
-            msg_input.setReadOnly(is_live)
-            msg_input.setPlaceholderText(
-                "Live from terminal — this is a read-only view." if is_live else ""
-            )
-        send_btn = getattr(self, "send_btn", None)
-        if send_btn:
-            send_btn.setEnabled(not is_live)
 
     def _rebuild_widget_tabs(self):
         """Rebuild the widget fallback multi-chat tab bar."""
@@ -1943,31 +1931,7 @@ class AIChatWindow(QDockWidget):
             colors = CHAT_THEME_COLORS["Bloomberg Light"]
             self._run_js("setThemeColors(%s);" % json.dumps(json.dumps(colors)))
 
-        models = []
-        try:
-            client = get_backend_client()
-            api_models = client.list_models()
-            default_id = client.get_default_model_id()
-            for m in api_models:
-                mid = m.get("model_id", "")
-                # Pass the picker metadata straight through. The JS side
-                # defaults anything missing, so an older backend still works.
-                models.append({
-                    "id": mid,
-                    "name": m.get("display_name", mid),
-                    "default": mid == default_id,
-                    "provider": m.get("provider", ""),
-                    "featured": m.get("featured", True),
-                    "rank": m.get("rank", 500),
-                    "tags": m.get("tags", []),
-                    "available": m.get("available", True),
-                })
-        except Exception:
-            log.debug(
-                "Zenvi Assistant: model list unavailable during web UI init; using empty list"
-            )
-        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
-        self._run_js("if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS)))
+        self._push_models_for_backend()
 
         preamble = self._get_preamble_html()
         self._run_js("setPreamble(%s);" % json.dumps(preamble))
@@ -2033,6 +1997,57 @@ class AIChatWindow(QDockWidget):
             % json.dumps(balance)
         )
 
+    def _zenvi_models(self):
+        """Model-picker entries served by the Zenvi backend."""
+        models = []
+        try:
+            client = get_backend_client()
+            api_models = client.list_models()
+            default_id = client.get_default_model_id()
+            for m in api_models:
+                mid = m.get("model_id", "")
+                # Pass the picker metadata straight through. The JS side
+                # defaults anything missing, so an older backend still works.
+                models.append({
+                    "id": mid,
+                    "name": m.get("display_name", mid),
+                    "default": mid == default_id,
+                    "provider": m.get("provider", ""),
+                    "featured": m.get("featured", True),
+                    "rank": m.get("rank", 500),
+                    "tags": m.get("tags", []),
+                    "available": m.get("available", True),
+                })
+        except Exception:
+            log.debug("Zenvi Assistant: model list unavailable; using empty list")
+        return models
+
+    def _models_for_backend(self, backend: str = None):
+        """Model-picker entries for *backend* (defaults to the active session's).
+
+        Each backend owns its own lineup — the Zenvi backend serves one from the
+        API, Claude Code has a fixed catalogue of Claude models, and a backend
+        with no list at all (Codex) leaves the CLI's own default in charge.
+        """
+        if backend is None:
+            sess = self._active_session() or {}
+            backend = sess.get("backend", BACKEND_ZENVI)
+        if backend == BACKEND_ZENVI:
+            return self._zenvi_models()
+        from windows.agent_runners import models_for_backend
+        return models_for_backend(backend)
+
+    def _push_models_for_backend(self, backend: str = None):
+        """Repopulate the model picker for *backend*, and (re)send the backend
+        list the web UI needs to label its tabs."""
+        if not self._use_web_ui:
+            return
+        models = self._models_for_backend(backend)
+        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        self._run_js(
+            "if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS))
+        )
+
     def _start_cli_detection_refresh(self):
         """Detect claude/codex CLI availability once, then refresh every 60s."""
         self._detect_clis()
@@ -2065,6 +2080,7 @@ class AIChatWindow(QDockWidget):
     def _on_cli_status(self, status_json: str):
         """Push CLI availability to the Agent dropdown (called on main thread)."""
         self._cli_status = status_json
+        self._notify_agent_selector()
         if self._use_web_ui:
             self._run_js(
                 "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(status_json)
@@ -2705,13 +2721,6 @@ class AIChatWindow(QDockWidget):
                 "if(window.resetStreamingMessage) window.resetStreamingMessage();"
                 "if(window.reopenThinkingForTools) window.reopenThinkingForTools();"
             )
-        self._render_tool_started(call_id, tool_name, args_json)
-
-    def _render_tool_started(self, call_id: str, tool_name: str, args_json: str):
-        """Shared by ``_on_tool_started`` (worker-driven, this tab's own
-        request) and ``_on_external_tool_started`` (a genuine external
-        terminal session's tool call) — same rendering either way, only how
-        the target session is resolved differs."""
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
@@ -2767,11 +2776,6 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
-        self._render_tool_completed(call_id, ok, result)
-
-    def _render_tool_completed(self, call_id: str, ok: bool, result: str):
-        """Shared by ``_on_tool_completed`` and ``_on_external_tool_completed``
-        — see ``_render_tool_started`` for why this split exists."""
         summary = self._tool_result_summary(result)
         detail = (result or "").strip()
         if len(detail) > 6000:
@@ -2792,60 +2796,6 @@ class AIChatWindow(QDockWidget):
             if detail:
                 block.append_log("RESULT:\n" + detail)
             block.complete(ok, summary)
-
-    def _external_target_sid(self):
-        """Which open tab (if any) is entitled to render a genuine external
-        MCP tool call live. Tool blocks only ever render into the ACTIVE tab
-        (see the sid guards above) — so this only needs to check whether the
-        active tab qualifies: its backend must be a CLI backend, and it must
-        NOT currently be mid a Zenvi-driven request (that request's own
-        runner already renders its own tool calls through this same MCP
-        server; broadcasting here too would duplicate them — the MCP layer
-        itself can't distinguish "Zenvi's own spawned CLI" from "the user's
-        own terminal session", so this processing-flag check is how v1
-        approximates it, per the plan's noted limitation).
-        """
-        sess = self._sessions.get(self._active_sid)
-        if not sess or sess.get("backend") not in (BACKEND_CLAUDE, BACKEND_CODEX):
-            return None
-        if sess.get("processing"):
-            return None
-        return self._active_sid
-
-    @pyqtSlot(str, str, str)
-    def _on_external_tool_started(self, call_id: str, tool_name: str, args_json: str):
-        sid = self._external_target_sid()
-        if not sid:
-            return
-        self._mark_live_from_terminal(sid)
-        self._render_tool_started(call_id, tool_name, args_json)
-
-    @pyqtSlot(str, bool, str)
-    def _on_external_tool_completed(self, call_id: str, ok: bool, result: str):
-        sid = self._external_target_sid()
-        if not sid:
-            return
-        self._render_tool_completed(call_id, ok, result)
-
-    def _mark_live_from_terminal(self, sid: str):
-        """Flip a session into "Live from terminal" mode the first time a
-        genuine external tool call is observed for it: shows a badge and
-        disables the input box (this tab isn't a two-way conversation — the
-        real session is happening in the user's terminal, not here)."""
-        sess = self._sessions.get(sid)
-        if not sess or sess.get("live_from_terminal"):
-            return
-        sess["live_from_terminal"] = True
-        if sid != self._active_sid:
-            return
-        if self._use_web_ui:
-            self._run_js("if(window.setLiveFromTerminal) setLiveFromTerminal(true);")
-        else:
-            if self.msg_input:
-                self.msg_input.setReadOnly(True)
-                self.msg_input.setPlaceholderText("Live from terminal — this is a read-only view.")
-            if self.send_btn:
-                self.send_btn.setEnabled(False)
 
     @pyqtSlot(str)
     def _on_response_ready(self, text: str):

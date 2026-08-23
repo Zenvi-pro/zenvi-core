@@ -75,6 +75,7 @@ from windows.models.emoji_model import EmojisModel
 from windows.models.files_model import FilesModel
 from windows.models.transition_model import TransitionsModel
 from windows.preview_thread import PreviewParent
+from windows.agent_selector_button import AgentSelectorButton
 from windows.update_panel import UpdatePanel
 from windows.update_status_button import (
     UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
@@ -4229,6 +4230,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.update_status_button = UpdateStatusButton(self)
         self._update_panel = None
 
+        # Toolbar agent picker. Built before the themes populate the toolbar;
+        # it reads through self.dockAIChat, which does not exist yet, and
+        # renders a sensible default until the chat dock shows up.
+        self.agent_selector_button = AgentSelectorButton(self)
+
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
         self.UpdateProgressSignal.connect(self.updateDownloadProgress)
@@ -4286,6 +4292,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        self.agent_selector_button.sync_from_chat()
 
         # Start the in-app MCP server now (instead of waiting for the first
         # Zenvi-driven CLI request) so an external `claude`/`codex` session run

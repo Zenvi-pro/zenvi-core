@@ -38,10 +38,6 @@
     // Move menu to <body> so it escapes any CSS transform on ancestor elements
     // (transform creates a new containing block that breaks position:fixed)
     document.body.appendChild(modelMenu);
-    const agentTrigger = document.getElementById('chat-agent-trigger');
-    const agentLabelText = document.getElementById('chat-agent-label-text');
-    const agentMenu = document.getElementById('chat-agent-menu');
-    if (agentMenu) document.body.appendChild(agentMenu);
     const gapLogBtn = document.getElementById('chat-gap-log-btn');
     const gapLogOverlay = document.getElementById('chat-gap-log-overlay');
     const gapLogClose = document.getElementById('chat-gap-log-close');
@@ -49,7 +45,6 @@
     if (gapLogOverlay) document.body.appendChild(gapLogOverlay);
     const messagesEl = document.getElementById('chat-messages');
     const cliEmptyStateEl = document.getElementById('chat-cli-empty-state');
-    const liveBadgeEl = document.getElementById('chat-live-badge');
     const inputEl = document.getElementById('chat-input');
     const inputRow = document.getElementById('chat-input-row');
     const glowWrap = document.getElementById('chat-input-glow-wrap');
@@ -609,9 +604,8 @@
     }
 
     window.addToolBlock = function (payloadJson) {
-        // Normally opened by setProcessing(true) for a Zenvi-driven turn; a
-        // "Live from terminal" tool call has no such turn (see
-        // setLiveFromTerminal), so open the block lazily here too.
+        // Normally opened by setProcessing(true), but a tool call can also be
+        // the first thing a turn produces — open the block lazily either way.
         if (!activityContainer) openThinkingBlock();
         if (!activityContainer) return;
         var data;
@@ -1212,6 +1206,9 @@
         if (!picked && modelItems.length) picked = modelItems[0];
         if (picked) selectModel(picked.id, picked.name);
         else if (modelLabel) modelLabel.textContent = 'Model';
+        // Python pushes a new list on every backend/tab change, and whether the
+        // pill shows at all depends on that list — see applyBackendChrome.
+        if (backendSelect) applyBackendChrome(backendSelect.value);
     };
 
     window.setPreamble = function (html) {
@@ -1859,9 +1856,7 @@
             if (tab.active) {
                 activeSessionId = tab.id;
                 if (backendSelect && tab.backend) backendSelect.value = tab.backend;
-                syncAgentTrigger();
                 updateCliEmptyState();
-                setLiveFromTerminal(!!tab.live);
                 applyBackendChrome(tab.backend);
             }
             var btn = document.createElement('button');
@@ -1915,11 +1910,11 @@
     });
 
     // Populate the agent backend selector and react to changes. The hidden native
-    // <select> stays the single source of truth (read by Python via QWebChannel);
-    // the pill button + menu below are purely a presentation layer over it, mirroring
-    // the Model trigger/menu pattern so both selectors share one visual language.
+    // <select> stays the single source of truth (read by Python via QWebChannel).
+    // The visible picker lives in the main window toolbar next to Save — see
+    // windows/agent_selector_button.py — so nothing here renders a control; this
+    // is only the mirror Python reads and the CLI empty state below keys off.
     var backendItems = [];
-    var agentMenuOpen = false;
     // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
     // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
     var cliStatus = {};
@@ -1928,12 +1923,6 @@
     function findBackendName(id) {
         var item = backendItems.find(function (b) { return b.id === id; });
         return item ? item.name : (id || 'Zenvi Assistant');
-    }
-
-    function syncAgentTrigger() {
-        if (agentLabelText && backendSelect) {
-            agentLabelText.textContent = findBackendName(backendSelect.value);
-        }
     }
 
     function isCliBackend(id) {
@@ -1989,7 +1978,6 @@
 
     window.setCliStatus = function (statusJson) {
         try { cliStatus = JSON.parse(statusJson) || {}; } catch (e) { cliStatus = {}; }
-        renderAgentMenu();
         updateCliEmptyState();
     };
 
@@ -2009,20 +1997,6 @@
         // flips straight back to the normal chat view.
     };
 
-    // ── "Live from terminal" mode: a genuine external terminal session is
-    // driving this tab's MCP calls, so this tab becomes a read-only view —
-    // badge shown, input disabled. See ai_chat_ui.py's _external_target_sid
-    // for how Python decides when this applies. ──────────────────────────
-    window.setLiveFromTerminal = function (isLive) {
-        if (liveBadgeEl) liveBadgeEl.style.display = isLive ? 'inline-flex' : 'none';
-        if (inputRow) inputRow.classList.toggle('is-live-readonly', !!isLive);
-        if (inputEl) {
-            inputEl.disabled = !!isLive;
-            inputEl.placeholder = isLive ? 'Live from terminal — this is a read-only view.' : ' ';
-        }
-        if (sendBtn) sendBtn.disabled = !!isLive;
-    };
-
     window.setBackends = function (backendsJson) {
         if (!backendSelect) return;
         var list = [];
@@ -2039,17 +2013,11 @@
             backendSelect.appendChild(opt);
         });
         if (current) backendSelect.value = current;
-        syncAgentTrigger();
     };
 
     if (backendSelect) {
         backendSelect.addEventListener('change', function () {
-            syncAgentTrigger();
             updateCliEmptyState();
-            // Changing backends always leaves "Live from terminal" mode (Python
-            // resets sess["live_from_terminal"] on the same change — this is
-            // just the instant local echo, matching the model-pill toggle below).
-            setLiveFromTerminal(false);
             if (!activeSessionId) return;
             getBridge(function (bridge) {
                 if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
@@ -2058,138 +2026,19 @@
         });
     }
 
-    // Chrome that only applies to the Zenvi backend: the model picker (CLI
-    // agents pick their own model) and the Plan/Agent toggle (planning is a
-    // Zenvi-backend feature — see AIChatWindow._resolve_agent_mode).
+    // Per-backend chrome. The model pill follows whether this backend offers a
+    // lineup at all (Python pushes a fresh setModels on every backend/tab
+    // change; an empty list means "let the CLI pick"). The Plan/Agent toggle is
+    // Zenvi-only — planning is a backend feature the CLI agents don't have; see
+    // AIChatWindow._resolve_agent_mode.
     function applyBackendChrome(id) {
         var isZenvi = (id === 'zenvi' || !id);
-        if (modelTrigger) modelTrigger.style.display = isZenvi ? '' : 'none';
+        if (modelTrigger) modelTrigger.style.display = modelItems.length ? '' : 'none';
         if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
         if (!isZenvi) {
             if (currentAgentMode !== 'agent') setAgentModeUI('agent');
             if (window.setPlanChip) window.setPlanChip(null);
         }
-    }
-
-    function statusDotHtml(id, info) {
-        // Not-installed already gets the dimmed row + "not installed" tag below;
-        // the dot is reserved for the two "installed" states (amber/green).
-        if (!isCliBackend(id) || !info || info.installed === false) return '';
-        return '<span class="chat-agent-status-dot ' + (info.registered ? 'connected' : 'amber') + '"></span>';
-    }
-
-    function renderAgentMenu() {
-        if (!agentMenu) return;
-        agentMenu.innerHTML = '';
-        backendItems.forEach(function (item) {
-            var info = cliStatus[item.id];
-            var notInstalled = isCliBackend(item.id) && info && info.installed === false;
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'chat-model-option'
-                + (item.id === backendSelect.value ? ' selected' : '')
-                + (notInstalled ? ' not-installed' : '');
-            btn.setAttribute('role', 'option');
-            btn.setAttribute('aria-selected', item.id === backendSelect.value ? 'true' : 'false');
-            btn.innerHTML = statusDotHtml(item.id, info) +
-                '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
-                (notInstalled ? '<span class="chat-agent-option-tag">not installed</span>' : '') +
-                getCheckIcon();
-            btn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                selectAgent(item.id);
-                closeAgentMenu();
-            });
-            agentMenu.appendChild(btn);
-        });
-    }
-
-    function selectAgent(id) {
-        if (!backendSelect || backendSelect.value === id) return;
-        backendSelect.value = id;
-        // Real 'change' event so the listener above (setBackend + model-pill toggle)
-        // fires exactly as it would for a native <select> interaction.
-        backendSelect.dispatchEvent(new Event('change'));
-    }
-
-    function openAgentMenu() {
-        if (!agentMenu || !agentTrigger || agentMenuOpen) return;
-        agentMenuOpen = true;
-        renderAgentMenu();
-        var rect = agentTrigger.getBoundingClientRect();
-        var vh = Math.max(
-            document.documentElement ? document.documentElement.clientHeight : 0,
-            window.innerHeight || 0,
-            1
-        );
-        var vw = Math.max(
-            document.documentElement ? document.documentElement.clientWidth : 0,
-            window.innerWidth || 0,
-            1
-        );
-        var gap = 6;
-        var menuMax = 280;
-        var left = rect.left;
-        var menuW = 220;
-        if (left + menuW > vw - 4) {
-            left = Math.max(4, vw - menuW - 4);
-        }
-        agentMenu.style.position = 'fixed';
-        agentMenu.style.left = Math.round(left) + 'px';
-        agentMenu.style.right = 'auto';
-        agentMenu.style.visibility = 'visible';
-        agentMenu.style.zIndex = '2147483647';
-        var spaceBelow = Math.max(0, vh - rect.bottom - 8);
-        var spaceAbove = Math.max(0, rect.top - 8);
-        agentMenu.style.top = '';
-        agentMenu.style.bottom = '';
-        if (spaceBelow >= 120 || spaceBelow >= spaceAbove) {
-            agentMenu.style.top = Math.round(rect.bottom + gap) + 'px';
-            agentMenu.style.bottom = 'auto';
-            agentMenu.style.maxHeight = Math.min(menuMax, spaceBelow) + 'px';
-        } else {
-            agentMenu.style.bottom = Math.round(vh - rect.top + gap) + 'px';
-            agentMenu.style.top = 'auto';
-            agentMenu.style.maxHeight = Math.min(menuMax, spaceAbove) + 'px';
-        }
-        agentMenu.style.display = 'block';
-        agentTrigger.classList.add('active');
-    }
-
-    function closeAgentMenu() {
-        if (!agentMenuOpen) return;
-        agentMenuOpen = false;
-        if (agentMenu) {
-            agentMenu.style.display = 'none';
-            agentMenu.style.top = '';
-            agentMenu.style.bottom = '';
-            agentMenu.style.maxHeight = '';
-        }
-        if (agentTrigger) agentTrigger.classList.remove('active');
-    }
-
-    if (agentTrigger) {
-        agentTrigger.addEventListener('click', function (e) {
-            e.stopPropagation();
-            if (agentMenuOpen) {
-                closeAgentMenu();
-            } else {
-                openAgentMenu();
-                // Status must always be real, never stale — re-check on every open
-                // rather than relying solely on the 60s background refresh.
-                getBridge(function (bridge) {
-                    if (bridge && bridge.refreshCliStatus) bridge.refreshCliStatus();
-                });
-            }
-        });
-        document.addEventListener('click', function (e) {
-            if (agentMenuOpen && !agentMenu.contains(e.target) && !agentTrigger.contains(e.target)) {
-                closeAgentMenu();
-            }
-        });
-        document.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape' && agentMenuOpen) closeAgentMenu();
-        });
     }
 
     // ==================================================================
