@@ -1050,6 +1050,18 @@ jobs:
             mingw-w64-ucrt-x86_64-python-lief
             mingw-w64-ucrt-x86_64-python-cffi
             mingw-w64-ucrt-x86_64-python-zstandard
+            # mcp's dependency tree pulls native extensions that have no MinGW
+            # wheel on PyPI, so pip falls back to compiling them and pyo3 fails
+            # to link against MinGW Python 3.14 ("undefined reference to
+            # PyExc_OSError", maturin exit 1). Take MSYS2's prebuilt copies
+            # instead: the venv is created with --system-site-packages, so pip
+            # sees these as already satisfied and never builds them.
+            mingw-w64-ucrt-x86_64-python-cryptography
+            mingw-w64-ucrt-x86_64-python-rpds-py
+            mingw-w64-ucrt-x86_64-python-jsonschema
+            mingw-w64-ucrt-x86_64-python-pydantic
+            mingw-w64-ucrt-x86_64-python-pydantic-core
+            mingw-w64-ucrt-x86_64-python-pyjwt
             mingw-w64-ucrt-x86_64-qtwebkit
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
