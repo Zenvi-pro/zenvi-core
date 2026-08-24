@@ -1043,10 +1043,25 @@ class AIChatWindow(QDockWidget):
             self._set_session_backend(self._active_sid, backend)
 
     def _notify_agent_selector(self):
-        """Repaint the toolbar selector after the active backend changes."""
+        """Repaint the toolbar selector after the active backend changes.
+
+        The button forwards this to the agent panel when one is open, so status
+        landing mid-open repaints instead of going stale.
+        """
         button = getattr(self.parent(), "agent_selector_button", None)
         if button is not None:
             button.sync_from_chat()
+
+    def _notify_agent_connect_result(self, backend_id: str, ok: bool, message: str):
+        """Let the toolbar agent panel report a Connect outcome inline."""
+        button = getattr(self.parent(), "agent_selector_button", None)
+        notify = getattr(button, "on_connect_result", None)
+        if notify is None:
+            return
+        try:
+            notify(backend_id, ok, message)
+        except Exception:
+            log.debug("agent panel connect-result notify failed", exc_info=True)
 
     def _set_session_backend(self, session_id: str, backend: str):
         """Switch the agent backend used by *session_id*.
@@ -2145,8 +2160,9 @@ class AIChatWindow(QDockWidget):
                 "if(window.onConnectResult) onConnectResult(%s, %s, %s);"
                 % (json.dumps(backend_id), json.dumps(ok), json.dumps(message))
             )
+        self._notify_agent_connect_result(backend_id, ok, message)
         # Status must always be real, never stale — re-check right away so the
-        # dropdown/empty-state flips live instead of waiting for the 60s timer.
+        # panel/empty-state flips live instead of waiting for the 60s timer.
         self._detect_clis()
 
     def _get_preamble_html(self):

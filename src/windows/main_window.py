@@ -252,9 +252,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Stop timeline background workers (such as the thumbnail thread) before Qt
         # begins destroying child widgets, to avoid QThread warnings on shutdown.
-        timeline_widget = getattr(self, "timeline", None)
-        if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
-            timeline_widget.thumbnail_manager.shutdown()
+        # Guarded like its neighbours above: by this point Qt may already have
+        # destroyed the TimelineView's C++ half, and getattr() on a dead sip
+        # wrapper raises RuntimeError rather than returning the default. That
+        # exception used to escape closeEvent and skip everything below —
+        # thread shutdown, the lock file, and the chat dock's worker/CLI
+        # teardown — aborting the process with "QThread: Destroyed while thread
+        # is still running".
+        try:
+            timeline_widget = getattr(self, "timeline", None)
+            if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
+                timeline_widget.thumbnail_manager.shutdown()
+        except Exception:
+            log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
 
         # Stop thumbnail server thread (if any)
         if self.http_server_thread:
@@ -4234,6 +4244,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # it reads through self.dockAIChat, which does not exist yet, and
         # renders a sensible default until the chat dock shows up.
         self.agent_selector_button = AgentSelectorButton(self)
+        # Popup the button opens. Cached and parented to the window, not the
+        # button: set_toolbar_buttons() calls toolbar.clear() on every theme
+        # change, which releases and reparents the button widget.
+        self._agent_panel = None
 
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
