@@ -151,8 +151,15 @@ def apply_pending_update():
         ok = False
 
     if ok:
-        _log("Update applied successfully")
-        _cleanup(manifest)
+        if system == "windows":
+            # _apply_windows only confirms hand-off to the external updater,
+            # not that Setup itself succeeded — that process still needs the
+            # staged manifest/installer and cleans them up itself once it
+            # knows the real outcome.
+            _log("Update handed off to external updater")
+        else:
+            _log("Update applied successfully")
+            _cleanup(manifest)
     else:
         _log("Update could not be applied — keeping staged files for retry")
 
@@ -341,7 +348,7 @@ def _apply_macos(filepath, filename):
             shutil.rmtree(dest)
 
         _log(f"Copying {app_bundle} → {dest}")
-        shutil.copytree(app_bundle, dest)
+        shutil.copytree(app_bundle, dest, symlinks=True)
 
         _log("macOS update installed")
         _relaunch(["open", "-n", dest])
@@ -370,35 +377,168 @@ def _apply_macos(filepath, filename):
 # Windows
 # ---------------------------------------------------------------------------
 
+# Inno Setup silent flags:
+#   /VERYSILENT            — no user prompts at all
+#   /SUPPRESSMSGBOXES      — suppress any message boxes
+#   /NORESTART             — don't auto-reboot the machine
+#   /CLOSEAPPLICATIONS     — use Restart Manager to close processes holding
+#                            files under {app} open, so Setup can replace them
+#   /NORESTARTAPPLICATIONS — don't let Inno relaunch whatever it closed; the
+#                            external updater script does its own relaunch
+#                            below, and letting both happen races two
+#                            instances against each other
+#   /SP-                   — disable "This will install..." prompt
+#
+# Deliberately no /CURRENTUSER: forcing non-admin mode would fight an
+# existing per-machine install under {autopf} instead of updating it in
+# place. Leave install scope exactly as Setup would otherwise choose.
+_INNO_SILENT_ARGS = (
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/CLOSEAPPLICATIONS",
+    "/NORESTARTAPPLICATIONS",
+    "/SP-",
+)
+
+_UPDATE_HELPER_SCRIPT_NAME = "zenvi_update_helper.ps1"
+
+# CREATE_NO_WINDOW avoids a flashed console; CREATE_NEW_PROCESS_GROUP
+# separates the helper from this process's process group so it isn't
+# affected by however this process exits. Deliberately NOT DETACHED_PROCESS:
+# powershell.exe's console host silently fails to run anything when spawned
+# with no console at all (verified empirically) — CREATE_NO_WINDOW already
+# gives it a hidden console, which is what actually matters here.
+_HELPER_CREATIONFLAGS = 0x08000000 | 0x00000200
+
+
+def _ps_str(value):
+    """Render *value* as a single-quoted PowerShell string literal (no
+    interpolation, so paths containing $ or backticks can't be misread as
+    PowerShell syntax)."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_path):
+    """Return PowerShell source for a detached external updater.
+
+    Why this can't just run inline in this process: Setup is about to
+    overwrite {app}\\zenvi.exe (and its DLLs), and /CLOSEAPPLICATIONS uses
+    Windows Restart Manager to find and close *any* running process that
+    currently has those exact files open for execution. This process IS
+    {app}\\zenvi.exe — running from the very file Setup wants to replace —
+    so if it blocked here waiting on Setup, Restart Manager could
+    legitimately close it mid-wait, orphaning the wait and leaving nobody to
+    verify success or relaunch the app. PowerShell holds no handle to
+    anything under {app}, so it's invisible to that scan; it can safely wait
+    for Setup, then finish the job.
+    """
+    inno_arg_list = ",".join(_ps_str(a) for a in _INNO_SILENT_ARGS)
+    relaunch_block = ""
+    if relaunch_target:
+        relaunch_block = (
+            f"    if (Test-Path {_ps_str(relaunch_target)}) {{\n"
+            f"        Start-Process -FilePath {_ps_str(relaunch_target)}\n"
+            f"        Log 'Relaunched app'\n"
+            f"    }}\n"
+        )
+
+    return (
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        "function Log($msg) {\n"
+        f"    $line = ('{{0}}  [ZenviUpdater] {{1}}' -f "
+        "(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg)\n"
+        f"    Add-Content -Path {_ps_str(log_path)} -Value $line "
+        "-ErrorAction SilentlyContinue\n"
+        "}\n"
+        "\n"
+        "Log 'External updater started'\n"
+        "try {\n"
+        f"    $p = Start-Process -FilePath {_ps_str(filepath)} "
+        f"-ArgumentList {inno_arg_list} -Wait -PassThru -ErrorAction Stop\n"
+        "    $code = $p.ExitCode\n"
+        "} catch {\n"
+        "    Log \"Failed to launch installer: $_\"\n"
+        "    exit 1\n"
+        "}\n"
+        "\n"
+        "if ($code -eq 0) {\n"
+        "    Log 'Installer completed successfully (exit code 0)'\n"
+        f"    Remove-Item -Path {_ps_str(manifest_path)} -Force "
+        "-ErrorAction SilentlyContinue\n"
+        f"    Remove-Item -Path {_ps_str(filepath)} -Force "
+        "-ErrorAction SilentlyContinue\n"
+        f"{relaunch_block}"
+        "} else {\n"
+        "    Log \"Installer did not succeed (exit code=$code) - "
+        "leaving staged files for retry\"\n"
+        "}\n"
+        "\n"
+        "Remove-Item -Path $MyInvocation.MyCommand.Path -Force "
+        "-ErrorAction SilentlyContinue\n"
+    )
+
+
+def _spawn_external_updater(filepath, relaunch_target):
+    """Write the helper script to the update staging dir and launch it fully
+    detached. Returns True once the helper process has been started — at
+    that point the staged installer/manifest are no longer this process's
+    responsibility to clean up; the helper does that itself once Setup
+    actually finishes."""
+    script_path = os.path.join(UPDATE_STAGING_DIR, _UPDATE_HELPER_SCRIPT_NAME)
+    script = _build_update_helper_script(
+        filepath, UPDATE_MANIFEST, relaunch_target, UPDATE_LOG)
+
+    try:
+        os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
+        with open(script_path, "w", encoding="utf-8") as fh:
+            fh.write(script)
+    except OSError as exc:
+        _log(f"Failed to write updater helper script: {exc}")
+        return False
+
+    try:
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-NonInteractive",
+             "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+             "-File", script_path],
+            creationflags=_HELPER_CREATIONFLAGS,
+            close_fds=True,
+        )
+    except Exception as exc:
+        _log(f"Failed to launch external updater: {exc}")
+        return False
+
+    return True
+
+
 def _apply_windows(filepath, filename):
-    """Run an Inno-Setup .exe installer in fully silent mode."""
+    """Hand the staged Inno Setup installer off to a detached external
+    updater process and return immediately, so this process — itself a
+    running image of {app}\\zenvi.exe, one of the files Setup is about to
+    replace — exits cleanly under its own control instead of risking being
+    closed mid-wait by /CLOSEAPPLICATIONS. See _build_update_helper_script
+    for why the wait has to happen outside this process. The external
+    updater verifies a confirmed zero exit code before cleaning up the
+    staged files, and relaunches the app itself afterward since Inno's own
+    postinstall launch is skipped in silent mode (windows-installer.iss
+    [Run] has Flags: ... skipifsilent).
+    """
     if not filename.endswith(".exe"):
         _log(f"Unknown Windows package type: {filename}")
         return False
 
-    _log(f"Launching silent installer: {filepath}")
-    try:
-        # Inno Setup silent flags:
-        #   /VERYSILENT       — no user prompts at all
-        #   /SUPPRESSMSGBOXES — suppress any message boxes
-        #   /NORESTART        — don't auto-reboot the machine
-        #   /CLOSEAPPLICATIONS — close running Zenvi instances
-        #   /SP-              — disable "This will install..." prompt
-        subprocess.Popen(
-            [filepath,
-             "/VERYSILENT",
-             "/SUPPRESSMSGBOXES",
-             "/NORESTART",
-             "/CLOSEAPPLICATIONS",
-             "/CURRENTUSER",
-             "/SP-"],
-        )
-        _log("Windows silent installer launched — it will complete in the background")
-        return True
+    relaunch_target = None
+    if getattr(sys, "frozen", False) and os.path.isfile(sys.executable):
+        relaunch_target = sys.executable
 
-    except Exception as exc:
-        _log(f"Windows install error: {exc}")
+    _log(f"Handing off to external updater: {filepath}")
+    if not _spawn_external_updater(filepath, relaunch_target):
         return False
+
+    _log("External updater launched — exiting so /CLOSEAPPLICATIONS cannot "
+         "target this process mid-install")
+    return True
 
 
 # ---------------------------------------------------------------------------
