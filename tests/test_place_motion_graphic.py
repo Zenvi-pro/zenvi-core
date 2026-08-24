@@ -133,6 +133,7 @@ def test_gap_places_when_clear():
     assert kwargs["file_id"] == "F1"
     assert kwargs["position_seconds"] == "5.0"
     assert kwargs["track"] == "2000000"
+    assert kwargs.get("query")
 
 
 def test_cut_in_refuses_transparent():
@@ -192,3 +193,4 @@ def test_overlay_places_transparent_on_high_track():
     assert not out.startswith("Error:")
     assert "mg_place mode=overlay" in out
     assert add_clip.call_args.kwargs["track"] == "3000000"
+    assert "lower" in add_clip.call_args.kwargs["query"]

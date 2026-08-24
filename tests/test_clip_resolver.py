@@ -213,6 +213,17 @@ def test_position_near_disambiguates():
     assert result.clip.id == "b"
 
 
+def test_empty_position_near_does_not_crash():
+    ai = {"analyzed": True, "tags": {"objects": ["ball"]}, "description": "ball"}
+    contexts = [_make_context("a", "A", position=0.0, ai=ai, source_end=20.0)]
+    with _patch_contexts(contexts):
+        with _resolver_env({"a": MagicMock(id="a")}):
+            with patch("classes.clip_resolver._playhead_position", return_value=1.0):
+                result = resolve_timeline_clip(clip_query="ball", position_near="")
+    assert result.ok
+    assert result.clip.id == "a"
+
+
 def test_resolve_clip_pair_by_adjacent_queries():
     ai_beach = {"analyzed": True, "tags": {"scenes": ["beach"]}, "description": "waves on sand"}
     ai_city = {"analyzed": True, "tags": {"scenes": ["city"]}, "description": "downtown skyline"}
@@ -351,6 +362,7 @@ if __name__ == "__main__":
     test_same_file_same_track_two_placements()
     test_prefer_track_hard_filter()
     test_position_near_disambiguates()
+    test_empty_position_near_does_not_crash()
     test_resolve_clip_pair_by_adjacent_queries()
     test_pair_same_file_sequential_trims()
     test_resolve_clip_pair_by_explicit_ids()

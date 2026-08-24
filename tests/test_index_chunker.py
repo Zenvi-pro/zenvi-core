@@ -36,6 +36,19 @@ def test_extract_chunks_calls_ffmpeg(mock_size, mock_isfile, mock_ff, tmp_path):
     assert len(infos) == 1
     assert infos[0]["size"] == 123
     assert work
+    ff_args = mock_ff.call_args[0][0]
+    assert "-vf" in ff_args
+    vf = ff_args[ff_args.index("-vf") + 1]
+    assert "min(720,ih)" in vf
+    assert "720" in vf
+
+
+def test_video_scale_filter_never_upsizes_constant():
+    from classes.index_chunker import video_scale_filter
+    assert video_scale_filter(720) == "scale=-2:'min(720,ih)'"
+    assert video_scale_filter(480) == "scale=-2:'min(480,ih)'"
+    # 480p source stays 480 via min(720,ih); filter does not force 720x720 upscale.
+    assert "720,720" not in video_scale_filter(720)
 
 
 @patch("classes.gemini_direct_upload.requests.post")

@@ -645,6 +645,42 @@ class ZenviBackendClient:
             log.error("Search failed: %s", e)
             return {"results": [], "error": str(e)}
 
+    def watch_window(
+        self,
+        query: str,
+        window_start: float,
+        window_end: float,
+        frames: List[Dict[str, Any]],
+        fallback_cut: Optional[float] = None,
+        fallback_in: Optional[float] = None,
+        fallback_out: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Vision-confirm a cut time from a small JPEG set. Frames stay off chat."""
+        try:
+            payload: Dict[str, Any] = {
+                "query": query or "",
+                "window_start": float(window_start),
+                "window_end": float(window_end),
+                "frames": list(frames or []),
+            }
+            if fallback_cut is not None:
+                payload["fallback_cut"] = float(fallback_cut)
+            if fallback_in is not None:
+                payload["fallback_in"] = float(fallback_in)
+            if fallback_out is not None:
+                payload["fallback_out"] = float(fallback_out)
+            r = self.session.post(
+                f"{self.api_url}/indexing/watch-window",
+                json=payload,
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json() if isinstance(r.json(), dict) else {}
+            return data if isinstance(data, dict) else {"error": "bad watch-window response"}
+        except Exception as e:
+            log.error("watch-window failed: %s", e)
+            return {"error": str(e)}
+
     # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
@@ -738,19 +774,23 @@ class ZenviBackendClient:
             plan = plan_data.get("chunks") or []
             if not plan:
                 return {"success": False, "error": "Empty chunk plan from backend"}
+            max_height = int(plan_data.get("index_max_height") or 720)
 
             if progress_callback:
                 progress_callback("chunking", 5)
             chunk_infos, work_dir, chunk_err = extract_chunks(
-                file_path, plan, media_type=mt,
+                file_path, plan, media_type=mt, max_height=max_height,
             )
             if chunk_err:
                 return {"success": False, "error": chunk_err}
 
-            job_id = ""
+            job_id = str(uuid.uuid4())
             uploaded_chunks = []
             total = len(chunk_infos)
-            for i, info in enumerate(chunk_infos):
+            done_count = [0]
+
+            def _upload_one(info: Dict[str, Any]) -> Dict[str, Any]:
+                hs = s if total == 1 else self._new_http_session()
                 mime = str(info.get("mime_type") or guess_mime(info["path"], mt))
                 payload: Dict[str, Any] = {
                     "file_id": fid,
@@ -763,25 +803,23 @@ class ZenviBackendClient:
                     "chunk_index": int(info["chunk_index"]),
                     "start_ts": float(info["start"]),
                     "end_ts": float(info["end"]),
+                    "job_id": job_id,
                 }
-                if job_id:
-                    payload["job_id"] = job_id
                 if existing_index_id:
                     payload["existing_index_id"] = existing_index_id
 
-                r = s.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
+                r = hs.post(f"{self.api_url}/indexing/upload-session", json=payload, timeout=60)
                 r.raise_for_status()
                 session_data = r.json()
                 if session_data.get("error"):
-                    return {"success": False, "error": session_data["error"]}
-                job_id = str(session_data.get("job_id") or job_id)
+                    raise RuntimeError(session_data["error"])
                 upload_url = str(session_data.get("upload_url") or "")
                 if not upload_url:
                     urls = session_data.get("presigned_urls") or []
                     if urls:
                         upload_url = str(urls[0].get("url") or "")
-                if not job_id or not upload_url:
-                    return {"success": False, "error": "Invalid upload-session response"}
+                if not upload_url:
+                    raise RuntimeError("Invalid upload-session response")
 
                 file_info, up_err = upload_file_to_gemini_resumable(
                     info["path"],
@@ -789,9 +827,12 @@ class ZenviBackendClient:
                     mime_type=mime,
                 )
                 if up_err:
-                    return {"success": False, "error": up_err}
+                    raise RuntimeError(up_err)
 
-                uploaded_chunks.append({
+                done_count[0] += 1
+                if progress_callback and total > 0:
+                    progress_callback("uploading", int(done_count[0] * 80 / total))
+                return {
                     "chunk_index": int(info["chunk_index"]),
                     "gemini_file_name": str(file_info.get("name") or ""),
                     "gemini_file_uri": str(file_info.get("uri") or ""),
@@ -800,9 +841,15 @@ class ZenviBackendClient:
                     "size": int(info["size"]),
                     "mime_type": mime,
                     "media_type": mt,
-                })
-                if progress_callback and total > 0:
-                    progress_callback("uploading", int((i + 1) * 80 / total))
+                }
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            workers = min(8, max(1, total))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_upload_one, info) for info in chunk_infos]
+                for fut in as_completed(futs):
+                    uploaded_chunks.append(fut.result())
+            uploaded_chunks.sort(key=lambda c: int(c.get("chunk_index") or 0))
 
             cr = s.post(
                 f"{self.api_url}/indexing/upload-complete",
@@ -862,8 +909,8 @@ class ZenviBackendClient:
     def _poll_indexing_job(
         self,
         job_id: str,
-        max_wait: int = 1800,
-        poll_interval: int = 10,
+        max_wait: int = 21600,
+        poll_interval: int = 3,
         progress_callback: Optional[Callable[[str, int], None]] = None,
         session=None,
     ) -> Dict[str, Any]:
