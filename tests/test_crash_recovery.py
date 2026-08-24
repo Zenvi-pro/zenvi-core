@@ -84,7 +84,15 @@ def run_lock_probe(scenario, home):
     See _main_window_lock_probe.py for why this can't happen in-process.
     """
     env = dict(os.environ)
+    # info.HOME_PATH is expanduser("~"), and on Windows that reads USERPROFILE
+    # (then HOMEDRIVE + HOMEPATH) and ignores HOME entirely. Without these the
+    # probe would resolve to the real home directory and the shutdown scenarios
+    # would delete the developer's own ~/.openshot_qt/.lock.
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    drive, tail = os.path.splitdrive(str(home))
+    env["HOMEDRIVE"] = drive
+    env["HOMEPATH"] = tail or str(home)
     env["QT_QPA_PLATFORM"] = "offscreen"
 
     proc = subprocess.run([sys.executable, str(PROBE), scenario],
@@ -201,3 +209,53 @@ def test_close_event_is_idempotent(tmp_path):
 
     assert not result["ran"]
     assert result["lock_exists"], "the first closeEvent owns the lock file, not the second"
+
+
+# --- a failed launch has to look failed -------------------------------------
+
+
+def test_a_fatal_startup_error_exits_non_zero(settings_app):
+    """launch.py's own sys.exit(1) is unreachable for a queued fatal error:
+    StartupError.show raises SystemExit straight out through show_errors(). A
+    bare sys.exit() there reported success, so a startup that never finished
+    looked fine to the shell, to packaging smoke tests and to any supervisor."""
+    from classes.app import StartupError
+
+    shown = []
+    err = StartupError("Startup Error", "could not start", level="error")
+    err.levels = {"error": lambda parent, title, message: shown.append(title)}
+
+    with pytest.raises(SystemExit) as caught:
+        err.show()
+
+    assert caught.value.code == 1
+    assert shown == ["Startup Error"], "the user still has to see the message"
+
+
+def test_a_warning_level_startup_error_does_not_exit(settings_app):
+    from classes.app import StartupError
+
+    shown = []
+    err = StartupError("Heads up", "something minor", level="warning")
+    err.levels = {"warning": lambda parent, title, message: shown.append(title)}
+
+    err.show()
+
+    assert shown == ["Heads up"]
+
+
+def test_show_errors_ends_the_launch_with_a_failure_code(settings_app):
+    """The fatal exit has to survive the loop that displays the queue."""
+    from classes.app import OpenShotApp, StartupError
+
+    fatal = StartupError("Import Error", "no module", level="error")
+    fatal.levels = {"error": lambda parent, title, message: None}
+
+    class _Stub:
+        errors = [fatal]
+        log = None
+
+    with pytest.raises(SystemExit) as caught:
+        OpenShotApp.show_errors(_Stub())
+
+    assert caught.value.code == 1

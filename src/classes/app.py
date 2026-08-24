@@ -169,7 +169,11 @@ class StartupError:
         box_call = self.levels.get(self.level, QMessageBox.critical)
         box_call(None, self.title, self.message)
         if self.level == "error":
-            sys.exit()
+            # Non-zero on purpose: a bare sys.exit() reports success, and this
+            # SystemExit propagates out through show_errors() past launch.py's
+            # own sys.exit(1) -- so a startup that failed looked fine to the
+            # shell, to packaging smoke tests, and to any supervising process.
+            sys.exit(1)
 
 
 class OpenShotApp(QApplication):
