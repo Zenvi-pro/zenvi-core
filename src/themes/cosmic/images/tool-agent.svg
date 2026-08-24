@@ -1,0 +1,11 @@
+<svg width="20" height="20" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <!-- Robot head: antenna, rounded chassis, two eyes, mouth grille, side ears -->
+    <path d="M10 2V4.25" stroke="#91C3FF" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="10" cy="1.75" r="1" stroke="#91C3FF" stroke-width="1.2"/>
+    <rect x="3.5" y="4.75" width="13" height="10.5" rx="3" stroke="#91C3FF" stroke-width="1.2"/>
+    <path d="M1.75 8.75V11.25M18.25 8.75V11.25" stroke="#91C3FF" stroke-width="1.2" stroke-linecap="round"/>
+    <circle cx="7.5" cy="9.25" r="1.15" fill="#91C3FF"/>
+    <circle cx="12.5" cy="9.25" r="1.15" fill="#91C3FF"/>
+    <path d="M7.5 12.5H12.5" stroke="#91C3FF" stroke-width="1.2" stroke-linecap="round"/>
+    <path d="M7 17.75H13" stroke="#91C3FF" stroke-width="1.2" stroke-linecap="round"/>
+</svg>

@@ -105,6 +105,12 @@ python_packages = ["os",
                    "zmq",
                    "webbrowser",
                    "json",
+                   # In-app MCP server for external agent CLIs (Claude Code, Codex)
+                   "mcp",
+                   "uvicorn",
+                   "anyio",
+                   "starlette",
+                   "httpx",
                    ]
 
 # Conditionally include openshot — it requires native C++ bindings (libopenshot)

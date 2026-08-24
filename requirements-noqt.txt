@@ -12,6 +12,15 @@ requests>=2.31
 websocket-client>=1.7
 python-dotenv>=1.0.1
 
+# In-app MCP server exposing editor tools to external agent CLIs.
+# Floor is the version this is tested against: the server needs
+# FastMCP(stateless_http=..., json_response=...) and
+# call_tool(validate_input=False), and the transport test needs
+# mcp.client.streamable_http.streamable_http_client(url, http_client=...).
+# Capped below 2.0, which reorganises these APIs again.
+mcp>=1.28,<2
+uvicorn>=0.30
+
 # cx_Freeze / lief are only needed for freeze.py installers (not for day-to-day dev).
 # Pip can work for cx_Freeze on MinGW if /mingw64/bin is first on PATH and cmake/ninja/gcc are installed.
 # lief is heavier: pip may run a long CMake build or still fail; pacman is the reliable option on MSYS2:

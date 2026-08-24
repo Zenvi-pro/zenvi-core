@@ -421,6 +421,23 @@ class _SharedToolHandler(logging.Handler):
             pass
 
 
+# Agent backends selectable from the top of the chat panel. "zenvi" is the
+# built-in WebSocket assistant (unchanged); the others drive external agent CLIs.
+BACKEND_ZENVI = "zenvi"
+BACKEND_CLAUDE = "claude_code"
+BACKEND_CODEX = "codex"
+BACKENDS = [
+    {"id": BACKEND_ZENVI, "name": "Zenvi Assistant"},
+    {"id": BACKEND_CLAUDE, "name": "Claude Code"},
+    {"id": BACKEND_CODEX, "name": "Codex"},
+]
+_VALID_BACKENDS = {b["id"] for b in BACKENDS}
+
+
+def _coerce_backend(value) -> str:
+    return value if value in _VALID_BACKENDS else BACKEND_ZENVI
+
+
 class AIChatWorker(QObject):
     """Sends chat messages to the zenvi-backend API server in a background thread.
 
@@ -621,6 +638,7 @@ class AIChatWorker(QObject):
 
             if self._stopping:
                 return
+            self._log_tool_gap_if_any(text)
             if result is not None:
                 self.response_ready.emit(result)
             elif final_response is not None:
@@ -632,6 +650,24 @@ class AIChatWorker(QObject):
                 return  # Swallow exceptions during shutdown — Qt stack is going away
             log.error("AI chat error: %s", e, exc_info=True)
             self.error_occurred.emit(str(e))
+
+    def _log_tool_gap_if_any(self, request_text: str):
+        """Silently record a missing-capability gap, if this request needed one.
+
+        Runs on this worker's own thread (never the GUI thread), so it never
+        blocks the UI. The chat response itself is unaffected either way.
+        """
+        try:
+            from classes.agent_gap_log import classify_gap, append_gap
+            gap = classify_gap(request_text)
+            if gap:
+                append_gap({
+                    "request": request_text,
+                    "missing_capability": gap,
+                    "session_id": getattr(self, "_session_id", "") or "",
+                })
+        except Exception:
+            log.debug("tool-gap logging failed", exc_info=True)
 
     @pyqtSlot()
     def clear_session(self):
@@ -750,10 +786,15 @@ class ChatBridge(QObject):
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
 
-    @pyqtSlot(str)
-    def createSession(self, model_id: str):
+    @pyqtSlot(str, str)
+    def createSession(self, model_id: str, backend: str = ""):
         if self.window:
-            self.window._create_session(model_id)
+            self.window._create_session(model_id, backend or "zenvi")
+
+    @pyqtSlot(str, str)
+    def setBackend(self, session_id: str, backend: str):
+        if self.window:
+            self.window._set_session_backend(session_id, backend)
 
     @pyqtSlot(str)
     def switchSession(self, session_id: str):
@@ -765,12 +806,35 @@ class ChatBridge(QObject):
         if self.window:
             self.window._close_session(session_id)
 
+    @pyqtSlot()
+    def getGaps(self):
+        if self.window:
+            self.window._push_gap_list()
+
+    @pyqtSlot(str)
+    def resolveGap(self, entry_id: str):
+        if self.window:
+            self.window._resolve_gap(entry_id)
+
+    @pyqtSlot(str)
+    def deleteGap(self, entry_id: str):
+        if self.window:
+            self.window._delete_gap(entry_id)
+
+    @pyqtSlot(str)
+    def connectCli(self, backend_id: str):
+        if self.window:
+            self.window._connect_cli(backend_id)
+
 
 class AIChatWindow(QDockWidget):
     """Zenvi Assistant chat dock. Supports markdown in assistant replies and matches app theme."""
 
     def __init__(self, parent=None):
-        super().__init__("Zenvi Assistant", parent)
+        # Titled "Agents": the top selector chooses the backend (Zenvi Assistant,
+        # Claude Code, Codex). objectName is kept stable so saved dock-state /
+        # restoreState blobs continue to resolve this dock.
+        super().__init__("Agents", parent)
         self.setObjectName("AIChatWindow")
 
         self.setFeatures(
@@ -806,6 +870,12 @@ class AIChatWindow(QDockWidget):
         except Exception:
             self._current_project_path = ""
 
+        # Bucket this project's transcripts live under in the chat-history
+        # store.  Untitled projects get a throwaway draft key that is rekeyed
+        # onto the real project the first time the user saves.
+        self._draft_history_key: str = ""
+        self._history_key: str = self._resolve_history_key(self._current_project_path)
+
         # Stop all threads on app quit (covers the shutdown path where
         # closeEvent is never called on dock widgets).
         from PyQt5.QtWidgets import QApplication
@@ -815,7 +885,7 @@ class AIChatWindow(QDockWidget):
 
         # Restore previously open chat sessions (if any) before building UI.
         store = self._load_chat_sessions_store(self._current_project_path)
-        restored_sessions = store.get("sessions", []) if isinstance(store, dict) else []
+        restored_sessions = self._restorable_sessions(store)
         if isinstance(restored_sessions, list) and restored_sessions:
             for entry in restored_sessions:
                 if not isinstance(entry, dict):
@@ -824,7 +894,8 @@ class AIChatWindow(QDockWidget):
                 title = entry.get("title") or "New Chat"
                 if not sid or sid in self._sessions:
                     continue
-                worker, thread = self._make_worker(sid)
+                backend = _coerce_backend(entry.get("backend"))
+                worker, thread = self._make_worker(sid, backend, restore=entry)
                 self._sessions[sid] = {
                     "worker": worker,
                     "thread": thread,
@@ -833,9 +904,11 @@ class AIChatWindow(QDockWidget):
                     "processing": False,
                     "unread": False,
                     "first_prompt_summary": title,
+                    "backend": backend,
                     "agent_mode": entry.get("agent_mode", "agent"),
                     "current_plan": None,
                 }
+                self._persist_session(sid)
 
             active_from_store = store.get("active_session_id") if isinstance(store, dict) else None
             if active_from_store in self._sessions:
@@ -865,15 +938,32 @@ class AIChatWindow(QDockWidget):
 
         # Prefetch credits before the web UI finishes loading (avoids 0 → real flash).
         self._start_credits_refresh()
+        # Detect claude/codex CLI availability for the agent selector's status dots.
+        self._start_cli_detection_refresh()
 
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
 
-    def _make_worker(self, session_id: str):
-        """Create and start a new AIChatWorker thread pair for the given session_id."""
+    def _make_worker(self, session_id: str, backend: str = BACKEND_ZENVI, restore: dict = None):
+        """Create and start a worker thread pair for *session_id* using *backend*.
+
+        All backends expose the same signals/slots, so the connections and the
+        ``_on_*`` handlers below are identical regardless of which one is chosen.
+
+        *restore* is a stored session row; when present its CLI continuity
+        fields are seeded onto the runner so a reopened tab resumes its agent
+        conversation rather than starting a fresh one.
+        """
         thread = QThread()
-        worker = AIChatWorker()
+        if backend == BACKEND_CLAUDE:
+            from windows.agent_runners import ClaudeCodeRunner
+            worker = ClaudeCodeRunner()
+        elif backend == BACKEND_CODEX:
+            from windows.agent_runners import CodexRunner
+            worker = CodexRunner()
+        else:
+            worker = AIChatWorker()
         worker._session_id = session_id   # used by signal handlers to route responses
         # Keep backend memory namespaced by the same session id as the UI tab.
         worker._backend_session_id = session_id
@@ -885,13 +975,35 @@ class AIChatWindow(QDockWidget):
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
         worker.plan_event.connect(self._on_plan_event)
+        # CLI backends only: lets us persist the conversation id they resume from.
+        if hasattr(worker, "cli_session_changed"):
+            worker.cli_session_changed.connect(self._on_cli_session_changed)
+        if restore and hasattr(worker, "_cli_session_id"):
+            cli_sid = restore.get("cli_session_id") or ""
+            if cli_sid:
+                worker._cli_session_id = cli_sid
+                worker._cli_started = bool(restore.get("cli_started"))
+                worker._cli_cwd = restore.get("cli_cwd") or ""
+                # A stored id is always one the CLI itself reported or accepted.
+                worker._cli_id_from_cli = True
         thread.start()
         return worker, thread
+
+    @pyqtSlot(str, str, bool, str)
+    def _on_cli_session_changed(self, session_id: str, cli_session_id: str,
+                                cli_started: bool, cli_cwd: str):
+        """Persist a CLI agent's conversation id so --resume survives a restart."""
+        self._persist_session(
+            session_id,
+            cli_session_id=cli_session_id,
+            cli_started=cli_started,
+            cli_cwd=cli_cwd,
+        )
 
     def _create_initial_session(self):
         import uuid
         sid = str(uuid.uuid4())
-        worker, thread = self._make_worker(sid)
+        worker, thread = self._make_worker(sid, BACKEND_ZENVI)
         self._sessions[sid] = {
             "worker": worker,
             "thread": thread,
@@ -900,16 +1012,19 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "backend": BACKEND_ZENVI,
             "agent_mode": "agent",
             "current_plan": None,
         }
         self._active_sid = sid
+        self._persist_session(sid)
 
-    def _create_session(self, model_id: str = ""):
+    def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
         import uuid
+        backend = _coerce_backend(backend)
         sid = str(uuid.uuid4())
-        worker, thread = self._make_worker(sid)
+        worker, thread = self._make_worker(sid, backend)
         self._sessions[sid] = {
             "worker": worker,
             "thread": thread,
@@ -918,22 +1033,118 @@ class AIChatWindow(QDockWidget):
             "processing": False,
             "unread": False,
             "first_prompt_summary": None,
+            "backend": backend,
             "agent_mode": "agent",
             "current_plan": None,
         }
         self._active_sid = sid
+        self._persist_session(sid)
         self._first_prompt_summary = None
         self.is_processing = False
+        self._notify_agent_selector()
         if self._use_web_ui:
+            self._push_models_for_backend(backend)
             self._run_js("clearMessages();")
             self._push_tabs_to_js()
             self._update_preamble()
-            self._add_system_msg("New session started. Ask anything about your project.")
+            self._add_chrome_msg("New session started. Ask anything about your project.")
         else:
             self.chat_box.clear()
-            self._add_system_msg("New session started. Ask anything about your project.")
+            self._add_chrome_msg("New session started. Ask anything about your project.")
             self._update_preamble()
+            self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
+        self._save_chat_sessions_store()
+
+    # ------------------------------------------------------------------
+    # Agent selector (lives in the main window toolbar, next to Save)
+    # ------------------------------------------------------------------
+
+    def active_backend(self) -> str:
+        """Backend id of the chat tab the user is currently looking at."""
+        sess = self._active_session() or {}
+        return sess.get("backend", BACKEND_ZENVI)
+
+    def cli_status(self) -> dict:
+        """``{backend_id: {installed, version, registered}}`` as last detected."""
+        try:
+            return json.loads(getattr(self, "_cli_status", "") or "{}")
+        except Exception:
+            return {}
+
+    def set_active_backend(self, backend: str):
+        """Switch the active chat tab to *backend* (called by the toolbar)."""
+        if self._active_sid:
+            self._set_session_backend(self._active_sid, backend)
+
+    def _notify_agent_selector(self):
+        """Repaint the toolbar selector after the active backend changes.
+
+        The button forwards this to the agent panel when one is open, so status
+        landing mid-open repaints instead of going stale.
+        """
+        button = getattr(self.parent(), "agent_selector_button", None)
+        if button is not None:
+            button.sync_from_chat()
+
+    def _notify_agent_connect_result(self, backend_id: str, ok: bool, message: str):
+        """Let the toolbar agent panel report a Connect outcome inline."""
+        button = getattr(self.parent(), "agent_selector_button", None)
+        notify = getattr(button, "on_connect_result", None)
+        if notify is None:
+            return
+        try:
+            notify(backend_id, ok, message)
+        except Exception:
+            log.debug("agent panel connect-result notify failed", exc_info=True)
+
+    def _set_session_backend(self, session_id: str, backend: str):
+        """Switch the agent backend used by *session_id*.
+
+        Recreating the worker is the minimal-risk approach: each runner stays
+        unaware of any prior backend's state, and the new one is wired to the
+        same ``_on_*`` slots.
+        """
+        backend = _coerce_backend(backend)
+        sess = self._sessions.get(session_id)
+        if not sess or sess.get("backend") == backend:
+            return
+        old_worker = sess.get("worker")
+        if old_worker is not None:
+            try:
+                old_worker._stopping = True
+            except Exception:
+                pass
+            if hasattr(old_worker, "cancel"):
+                try:
+                    old_worker.cancel()
+                except Exception:
+                    pass
+        old_thread = sess.get("thread")
+        if old_thread is not None and old_thread.isRunning():
+            old_thread.quit()
+            if not old_thread.wait(1500):
+                try:
+                    old_thread.terminate()
+                    old_thread.wait(500)
+                except Exception:
+                    pass
+        worker, thread = self._make_worker(session_id, backend)
+        sess["worker"] = worker
+        sess["thread"] = thread
+        sess["backend"] = backend
+        if backend != BACKEND_ZENVI:
+            # See _resolve_agent_mode: CLI backends have no planning mode.
+            sess["agent_mode"] = "agent"
+            sess["current_plan"] = None
+        if session_id == self._active_sid:
+            self.is_processing = False
+            self._set_processing_ui(False)
+            self._push_models_for_backend(backend)
+            if not self._use_web_ui:
+                self._sync_widget_backend_combo()
+        self._notify_agent_selector()
+        self._persist_session(session_id, backend=backend)
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
@@ -964,12 +1175,16 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
             mode = sess.get("agent_mode", "agent")
             self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(mode))
+            # Tabs can run different backends, and each has its own lineup.
+            self._push_models_for_backend(sess.get("backend", BACKEND_ZENVI))
+        self._notify_agent_selector()
         self._update_preamble()
         self._save_chat_sessions_store()
         if not self._use_web_ui:
             # Widget mode: render the stored messages for the newly active session.
             sess["unread"] = False
             self._render_active_session_widget()
+            self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
 
     def _close_session(self, session_id: str):
@@ -978,6 +1193,10 @@ class AIChatWindow(QDockWidget):
             return  # never close the last session
         if session_id not in self._sessions:
             return
+        # Soft-delete first: the worker's clear_session below wipes the
+        # backend's own copy, so this row can end up the only record left.
+        from classes import chat_history
+        chat_history.mark_session_closed(session_id)
         sess = self._sessions.pop(session_id)
         worker = sess.get("worker")
         thread = sess.get("thread")
@@ -985,10 +1204,12 @@ class AIChatWindow(QDockWidget):
         # Clear backend session in background
         if worker:
             QMetaObject.invokeMethod(worker, "clear_session", Qt.QueuedConnection)
-        # If we just closed the active session, switch to the first remaining one
+        # If we just closed the active session, switch to the first remaining one.
+        # Let _switch_session assign self._active_sid itself — presetting it here
+        # would trip that method's own "already active" early-return guard and
+        # skip the tab/message/model-pill re-render entirely.
         if self._active_sid == session_id:
-            self._active_sid = next(iter(self._sessions))
-            self._switch_session(self._active_sid)
+            self._switch_session(next(iter(self._sessions)))
         else:
             if self._use_web_ui:
                 self._push_tabs_to_js()
@@ -1005,6 +1226,7 @@ class AIChatWindow(QDockWidget):
                 "title": sess.get("first_prompt_summary") or sess.get("title", "New Chat"),
                 "active": sid == self._active_sid,
                 "processing": bool(sess.get("processing", False)),
+                "backend": sess.get("backend", BACKEND_ZENVI),
             })
         self._run_js("setTabs(%s);" % json.dumps(json.dumps(tabs)))
 
@@ -1019,13 +1241,45 @@ class AIChatWindow(QDockWidget):
         remain reachable when the original project is reopened.
         """
         try:
+            from classes import chat_history
+
             new_project_path = (new_project_path or "").strip()
             prev_path = getattr(self, "_current_project_path", "") or ""
-            same_bucket = self._project_key(new_project_path) == self._project_key(prev_path)
-            if same_bucket and new_project_path:
+            prev_key = getattr(self, "_history_key", "") or ""
+            if new_project_path and prev_path and (
+                os.path.abspath(new_project_path) == os.path.abspath(prev_path)
+            ):
                 # Same saved project re-signaled — nothing to do.  An empty
                 # ``new_project_path`` (New Project / untitled) is allowed to
                 # fall through so the chat resets to a fresh session.
+                return
+
+            # Resolve the new bucket first: this is what forks a Save As and
+            # adopts a project whose id churned underneath us.
+            if not new_project_path:
+                # New Project — a fresh throwaway bucket, not the last one.
+                # Bin the outgoing draft if nothing was ever said in it.
+                if prev_key.startswith("draft:"):
+                    chat_history.discard_empty_bucket(prev_key)
+                self._draft_history_key = ""
+            new_key = self._resolve_history_key(new_project_path)
+            if new_project_path and prev_key.startswith("draft:"):
+                # First save of an untitled project: its chat comes along
+                # rather than being thrown away.
+                chat_history.rekey_project(prev_key, new_key, new_project_path)
+                self._draft_history_key = ""
+
+            live_sids = set(self._sessions.keys())
+            stored_sids = {
+                row.get("session_id") for row in chat_history.load_sessions(new_key)
+            }
+            if live_sids and (live_sids & stored_sids):
+                # The store moved our live tabs into the new bucket (a draft
+                # being saved, or a Save As fork), so the conversation simply
+                # continues — no teardown, no reload.
+                self._current_project_path = new_project_path
+                self._history_key = new_key
+                self._save_chat_sessions_store(new_project_path)
                 return
 
             # 1. Persist current sessions to the previous project's store.
@@ -1052,10 +1306,9 @@ class AIChatWindow(QDockWidget):
 
             # 3. Bind to the new project and load its store.
             self._current_project_path = new_project_path
+            self._history_key = new_key
             store = self._load_chat_sessions_store(new_project_path)
-            restored_sessions = (
-                store.get("sessions", []) if isinstance(store, dict) else []
-            )
+            restored_sessions = self._restorable_sessions(store)
             if isinstance(restored_sessions, list) and restored_sessions:
                 for entry in restored_sessions:
                     if not isinstance(entry, dict):
@@ -1064,7 +1317,8 @@ class AIChatWindow(QDockWidget):
                     title = entry.get("title") or "New Chat"
                     if not sid or sid in self._sessions:
                         continue
-                    worker, thread = self._make_worker(sid)
+                    backend = _coerce_backend(entry.get("backend"))
+                    worker, thread = self._make_worker(sid, backend, restore=entry)
                     self._sessions[sid] = {
                         "worker": worker,
                         "thread": thread,
@@ -1073,9 +1327,11 @@ class AIChatWindow(QDockWidget):
                         "processing": False,
                         "unread": False,
                         "first_prompt_summary": title,
+                        "backend": backend,
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
                     }
+                    self._persist_session(sid)
                 active_from_store = (
                     store.get("active_session_id") if isinstance(store, dict) else None
                 )
@@ -1148,6 +1404,95 @@ class AIChatWindow(QDockWidget):
             abs_path = project_path
         return hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:16]
 
+    def _project_id(self) -> str:
+        """The id stored inside the project file — stable across rename/move."""
+        try:
+            from classes.app import get_app
+            return str(get_app().project.get("id") or "")
+        except Exception:
+            return ""
+
+    def _resolve_history_key(self, project_path: str) -> str:
+        """Chat-history bucket for *project_path*, repairing the mapping if needed.
+
+        Keyed on the project's own id rather than its path, so renaming a
+        project keeps its chats.  ``resolve_project_key`` also handles the
+        Save-As fork and the legacy-id churn cases — see that docstring.
+        """
+        from classes import chat_history
+
+        path = project_path or ""
+        if not path:
+            # Untitled: one bucket per window, rekeyed on first save so an hour
+            # of chatting before hitting Save isn't thrown away.
+            if not self._draft_history_key:
+                self._draft_history_key = chat_history.new_draft_key()
+            return self._draft_history_key
+
+        key = (
+            chat_history.resolve_project_key(self._project_id(), path)
+            or chat_history.path_key(path)
+        )
+        # First sight of this project: carry over the old metadata-only store
+        # (a no-op once the bucket has rows of its own).
+        legacy = self._load_chat_sessions_store(path)
+        if isinstance(legacy, dict) and legacy.get("sessions"):
+            chat_history.import_legacy_sessions(key, path, legacy.get("sessions"))
+        return key
+
+    def _restorable_sessions(self, legacy_store: dict) -> list:
+        """Sessions to reopen for this project — local history first.
+
+        The chat-history store is authoritative.  The legacy JSON store is
+        still read as a fallback so a rollback loses nothing.
+        """
+        from classes import chat_history
+
+        rows = chat_history.load_sessions(self._history_key)
+        if rows:
+            return rows
+        legacy = legacy_store.get("sessions", []) if isinstance(legacy_store, dict) else []
+        return [e for e in legacy if isinstance(e, dict) and e.get("session_id")]
+
+    def _persist_session(self, session_id: str, **fields) -> None:
+        """Register/refresh a session row in the chat-history store."""
+        from classes import chat_history
+
+        sess = self._sessions.get(session_id) or {}
+        chat_history.upsert_session(
+            session_id,
+            self._history_key,
+            project_path=self._current_project_path or None,
+            title=fields.get("title") or sess.get("first_prompt_summary") or sess.get("title"),
+            backend=fields.get("backend") or sess.get("backend"),
+            agent_mode=fields.get("agent_mode") or sess.get("agent_mode"),
+            cli_session_id=fields.get("cli_session_id"),
+            cli_started=fields.get("cli_started"),
+            cli_cwd=fields.get("cli_cwd"),
+        )
+
+    def _record_message(self, session_id: str, role: str, text: str) -> None:
+        """Persist one final message. Never let a store failure break a turn."""
+        if not session_id or not text:
+            return
+        from classes import chat_history
+        chat_history.record_message(session_id, role, text)
+
+    def _record_tool_started(self, session_id: str, call_id: str, tool_name: str) -> None:
+        """Note that a tool ran, so a restored transcript can show the activity.
+
+        Only the name and outcome are kept — args and results stay in the
+        backend/CLI transcripts, which is what keeps this store small.
+        """
+        from classes import chat_history
+        chat_history.record_tool_event(
+            session_id, call_id, tool_name, humanize_tool_name(tool_name)
+        )
+
+    def _record_tool_completed(self, session_id: str, call_id: str, ok: bool) -> None:
+        from classes import chat_history
+        chat_history.complete_tool_event(session_id, call_id, bool(ok))
+
     def _chat_sessions_dir(self) -> str:
         from classes import info
         return os.path.join(info.USER_PATH, "chat_sessions")
@@ -1201,6 +1546,7 @@ class AIChatWindow(QDockWidget):
                 sessions_payload.append({
                     "session_id": sid,
                     "title": title,
+                    "backend": sess.get("backend", BACKEND_ZENVI),
                     "agent_mode": sess.get("agent_mode", "agent"),
                 })
 
@@ -1218,15 +1564,180 @@ class AIChatWindow(QDockWidget):
             # Non-fatal: chat can still run without local persistence.
             pass
 
+    # ------------------------------------------------------------------
+    # Restoring a transcript: local history first, backend only for gaps
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _history_norm(role: str, content: str) -> str:
+        """Comparable form of a message, so two sources can be lined up."""
+        text = content or ""
+        if role == "assistant":
+            text = AIChatWindow._strip_thinking(text)
+        return " ".join(text.split())
+
+    def _render_item(self, role: str, content: str) -> dict:
+        """Render one stored message into the shape the UI replays."""
+        if role == "assistant":
+            return {
+                "role": role,
+                "html_body": _markdown_to_html(content),
+                "is_assistant": True,
+                "content": content,
+            }
+        safe = html.escape(content or "").replace("\n", "<br/>")
+        return {
+            "role": role,
+            "html_body": "<p>" + safe + "</p>",
+            "is_assistant": False,
+            "content": content or "",
+        }
+
+    def _local_history_items(self, session_id: str) -> list:
+        from classes import chat_history
+        return [
+            self._render_item(m.get("role", ""), m.get("content", ""))
+            for m in chat_history.load_messages(session_id)
+        ]
+
+    def _restore_local_histories(self) -> None:
+        """Populate every open tab from the local store, then draw the active one.
+
+        This runs before the network fetch so a reopened project shows its
+        conversation immediately — and still shows it with the backend down.
+        """
+        for sid in list(self._sessions.keys()):
+            items = self._local_history_items(sid)
+            if not items:
+                continue
+            sess = self._sessions.get(sid)
+            if sess is None:
+                continue
+            system_parts = [m for m in sess.get("messages", []) if m and m[0] == "system"]
+            sess["messages"] = system_parts + [
+                (it["role"], it["html_body"], it["is_assistant"]) for it in items
+            ]
+            sess["local_contents"] = [(it["role"], it["content"]) for it in items]
+        if self._active_sid in self._sessions and self._sessions[self._active_sid].get("local_contents"):
+            self._render_restored_active_session()
+
+    def _render_restored_active_session(self) -> None:
+        """Replay the active tab's stored transcript, tool activity included."""
+        if not self._use_web_ui:
+            self._render_active_session_widget()
+            self._rebuild_widget_tabs()
+            return
+
+        from classes import chat_history
+        messages = chat_history.load_messages(self._active_sid)
+        by_turn = {}
+        for ev in chat_history.load_tool_events(self._active_sid):
+            by_turn.setdefault(ev.get("after_seq") or 0, []).append(ev)
+
+        self._run_js("clearMessages();")
+        for ev in by_turn.pop(0, []):
+            self._replay_tool_block(ev)
+        for msg in messages:
+            item = self._render_item(msg.get("role", ""), msg.get("content", ""))
+            self._run_js(
+                "appendMessage(%s, %s, %s);" % (
+                    json.dumps(item["role"]), json.dumps(item["html_body"]),
+                    "true" if item["is_assistant"] else "false",
+                )
+            )
+            # A turn's tool blocks sit between the message that triggered them
+            # and the reply that followed, which is where they first appeared.
+            for ev in by_turn.pop(msg.get("seq"), []):
+                self._replay_tool_block(ev)
+        for leftover in by_turn.values():
+            for ev in leftover:
+                self._replay_tool_block(ev)
+        self._push_tabs_to_js()
+
+    def _replay_tool_block(self, event: dict) -> None:
+        """Redraw one finished tool block, already collapsed."""
+        payload = {
+            "call_id": event.get("call_id") or "",
+            "title": event.get("title") or humanize_tool_name(event.get("tool_name") or ""),
+            "cmd": "",
+            "args_detail": "",
+            "tool_name": event.get("tool_name") or "",
+        }
+        self._run_js(
+            "if(window.replayToolBlock) window.replayToolBlock(%s, %s);"
+            % (json.dumps(json.dumps(payload)),
+               "true" if (event.get("status") != "error") else "false")
+        )
+
+    def _history_tail_beyond_local(self, local_pairs: list, backend_items: list) -> list:
+        """Backend messages that extend what we already hold locally.
+
+        Empty unless the backend transcript is strictly longer *and* everything
+        we have locally lines up as its prefix — otherwise the two have
+        diverged and the local copy is the one we trust.
+        """
+        if len(backend_items) <= len(local_pairs):
+            return []
+        for (l_role, l_content), item in zip(local_pairs, backend_items):
+            if l_role != item.get("role"):
+                return []
+            if self._history_norm(l_role, l_content) != self._history_norm(
+                item.get("role", ""), item.get("content", "")
+            ):
+                return []
+        return backend_items[len(local_pairs):]
+
     @pyqtSlot(str, str)
     def _on_history_restored(self, session_id: str, messages_json: str):
-        """Apply restored /chat/history data into in-memory + visible UI."""
+        """Fold /chat/history into the tab — local history stays authoritative."""
         if session_id not in self._sessions:
             return
         try:
             restored_items = json.loads(messages_json) if messages_json else []
         except Exception:
             restored_items = []
+
+        local_pairs = self._sessions[session_id].get("local_contents") or []
+        if local_pairs:
+            self._sessions[session_id]["unread"] = False
+            self._sessions[session_id]["processing"] = False
+            tail = self._history_tail_beyond_local(local_pairs, restored_items)
+            if not tail:
+                # Already rendered from the local store; nothing to add.
+                if self._use_web_ui:
+                    self._push_tabs_to_js()
+                else:
+                    self._rebuild_widget_tabs()
+                return
+            appended = [
+                (it.get("role", ""), it.get("html_body", ""), bool(it.get("is_assistant")))
+                for it in tail
+            ]
+            self._sessions[session_id]["messages"] = list(
+                self._sessions[session_id].get("messages", [])
+            ) + appended
+            self._sessions[session_id]["local_contents"] = local_pairs + [
+                (it.get("role", ""), it.get("content", "")) for it in tail
+            ]
+            if session_id == self._active_sid and self._use_web_ui:
+                # Append only, so the replayed tool blocks stay put.
+                for role, html_body, is_assistant in appended:
+                    self._run_js(
+                        "appendMessage(%s, %s, %s);" % (
+                            json.dumps(role), json.dumps(html_body),
+                            "true" if is_assistant else "false",
+                        )
+                    )
+                self._push_tabs_to_js()
+            elif session_id == self._active_sid:
+                self._render_active_session_widget()
+                self._rebuild_widget_tabs()
+            else:
+                if self._use_web_ui:
+                    self._push_tabs_to_js()
+                else:
+                    self._rebuild_widget_tabs()
+            return
 
         system_parts = [m for m in self._sessions[session_id].get("messages", []) if m and m[0] == "system"]
         restored_messages = [(m.get("role", ""), m.get("html_body", ""), bool(m.get("is_assistant", False))) for m in restored_items]
@@ -1268,6 +1779,7 @@ class AIChatWindow(QDockWidget):
         if self._history_restore_started:
             return
         self._history_restore_started = True
+        self._restore_local_histories()
 
         session_ids = list(self._sessions.keys())
 
@@ -1292,12 +1804,12 @@ class AIChatWindow(QDockWidget):
                         content = m.get("content", "") or ""
                         if role == "assistant":
                             html_body = _markdown_to_html(content)
-                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": True})
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": True, "content": content})
                         else:
                             visible = _strip_context_blocks(content) if role == "user" else content
                             safe = html.escape(visible).replace("\n", "<br/>")
                             html_body = "<p>" + safe + "</p>"
-                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": False})
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": False, "content": visible})
 
                 try:
                     QMetaObject.invokeMethod(
@@ -1353,6 +1865,25 @@ class AIChatWindow(QDockWidget):
         for role, html_body, is_assistant in sess.get("messages", []):
             self._display_stored_msg_widget(role, html_body, is_assistant)
 
+    def _on_widget_backend_changed(self, _idx):
+        combo = getattr(self, "backend_combo", None)
+        if combo is None or not self._active_sid:
+            return
+        self._set_session_backend(self._active_sid, combo.currentData() or BACKEND_ZENVI)
+
+    def _sync_widget_backend_combo(self):
+        """Reflect the active session's backend in the widget combo (no signal)."""
+        combo = getattr(self, "backend_combo", None)
+        if combo is None:
+            return
+        sess = self._active_session()
+        backend = sess.get("backend", BACKEND_ZENVI) if sess else BACKEND_ZENVI
+        idx = combo.findData(backend)
+        if idx >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+
     def _rebuild_widget_tabs(self):
         """Rebuild the widget fallback multi-chat tab bar."""
         if self._use_web_ui:
@@ -1405,7 +1936,8 @@ class AIChatWindow(QDockWidget):
         add_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
         add_btn.clicked.connect(
             lambda _=False: self._create_session(
-                self.model_combo.currentData() if getattr(self, "model_combo", None) else ""
+                self.model_combo.currentData() if getattr(self, "model_combo", None) else "",
+                self.backend_combo.currentData() if getattr(self, "backend_combo", None) else BACKEND_ZENVI,
             )
         )
         layout.addWidget(add_btn)
@@ -1432,6 +1964,22 @@ class AIChatWindow(QDockWidget):
         self._chat_fade_anim.setStartValue(0.0)
         self._chat_fade_anim.setEndValue(1.0)
         self._chat_fade_anim.finished.connect(self._on_chat_fade_finished)
+
+        # ------------------------------------------------------------------
+        # Agent backend selector (top of the panel)
+        # ------------------------------------------------------------------
+        backend_h = QHBoxLayout()
+        backend_h.setContentsMargins(8, 6, 8, 0)
+        backend_h.addWidget(QLabel("Agent:"))
+        self.backend_combo = QComboBox()
+        self.backend_combo.setObjectName("agentBackendCombo")
+        for b in BACKENDS:
+            self.backend_combo.addItem(b["name"], b["id"])
+        self._sync_widget_backend_combo()
+        self.backend_combo.currentIndexChanged.connect(self._on_widget_backend_changed)
+        backend_h.addWidget(self.backend_combo)
+        backend_h.addStretch()
+        layout.addLayout(backend_h)
 
         # ------------------------------------------------------------------
         # Widget multi-chat tab bar (fallback mode)
@@ -1525,7 +2073,7 @@ class AIChatWindow(QDockWidget):
         layout.addLayout(btn_h)
 
         self.msg_input.keyPressEvent = self._key_press
-        self._add_system_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
+        self._add_chrome_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
 
@@ -1725,30 +2273,7 @@ class AIChatWindow(QDockWidget):
             colors = CHAT_THEME_COLORS["Bloomberg Light"]
             self._run_js("setThemeColors(%s);" % json.dumps(json.dumps(colors)))
 
-        models = []
-        try:
-            client = get_backend_client()
-            api_models = client.list_models()
-            default_id = client.get_default_model_id()
-            for m in api_models:
-                mid = m.get("model_id", "")
-                # Pass the picker metadata straight through. The JS side
-                # defaults anything missing, so an older backend still works.
-                models.append({
-                    "id": mid,
-                    "name": m.get("display_name", mid),
-                    "default": mid == default_id,
-                    "provider": m.get("provider", ""),
-                    "featured": m.get("featured", True),
-                    "rank": m.get("rank", 500),
-                    "tags": m.get("tags", []),
-                    "available": m.get("available", True),
-                })
-        except Exception:
-            log.debug(
-                "Zenvi Assistant: model list unavailable during web UI init; using empty list"
-            )
-        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        self._push_models_for_backend()
 
         preamble = self._get_preamble_html()
         self._run_js("setPreamble(%s);" % json.dumps(preamble))
@@ -1757,6 +2282,14 @@ class AIChatWindow(QDockWidget):
         self._push_tabs_to_js()
         self._start_restore_chat_histories_async()
         self._chat_web_initial_sync_done = True
+
+        # Push already-detected CLI status (detection started in __init__, before
+        # this page finished loading) so the dropdown doesn't wait another 60s.
+        cached_cli_status = getattr(self, "_cli_status", None)
+        if cached_cli_status:
+            self._run_js(
+                "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(cached_cli_status)
+            )
 
         # Push prefetched balance (or loading placeholder) when the web UI is ready.
         try:
@@ -1806,6 +2339,159 @@ class AIChatWindow(QDockWidget):
             % json.dumps(balance)
         )
 
+    def _zenvi_models(self):
+        """Model-picker entries served by the Zenvi backend."""
+        models = []
+        try:
+            client = get_backend_client()
+            api_models = client.list_models()
+            default_id = client.get_default_model_id()
+            for m in api_models:
+                mid = m.get("model_id", "")
+                # Pass the picker metadata straight through. The JS side
+                # defaults anything missing, so an older backend still works.
+                models.append({
+                    "id": mid,
+                    "name": m.get("display_name", mid),
+                    "default": mid == default_id,
+                    "provider": m.get("provider", ""),
+                    "featured": m.get("featured", True),
+                    "rank": m.get("rank", 500),
+                    "tags": m.get("tags", []),
+                    "available": m.get("available", True),
+                })
+        except Exception:
+            log.debug("Zenvi Assistant: model list unavailable; using empty list")
+        return models
+
+    def _models_for_backend(self, backend: str = None):
+        """Model-picker entries for *backend* (defaults to the active session's).
+
+        Each backend owns its own lineup — the Zenvi backend serves one from the
+        API, Claude Code has a fixed catalogue of Claude models, and a backend
+        with no list at all (Codex) leaves the CLI's own default in charge.
+        """
+        if backend is None:
+            sess = self._active_session() or {}
+            backend = sess.get("backend", BACKEND_ZENVI)
+        if backend == BACKEND_ZENVI:
+            return self._zenvi_models()
+        from windows.agent_runners import models_for_backend
+        return models_for_backend(backend)
+
+    def _push_models_for_backend(self, backend: str = None):
+        """Repopulate the model picker for *backend*, and (re)send the backend
+        list the web UI needs to label its tabs."""
+        if not self._use_web_ui:
+            return
+        models = self._models_for_backend(backend)
+        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        self._run_js(
+            "if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS))
+        )
+
+    def _start_cli_detection_refresh(self):
+        """Detect claude/codex CLI availability once, then refresh every 60s."""
+        self._detect_clis()
+        if not getattr(self, "_cli_detect_timer", None):
+            self._cli_detect_timer = QTimer(self)
+            self._cli_detect_timer.timeout.connect(self._detect_clis)
+            self._cli_detect_timer.start(60_000)   # refresh every 60 seconds
+
+    def _detect_clis(self):
+        """Check claude/codex CLI availability in a background thread; push to JS."""
+        def run():
+            try:
+                from windows.agent_runners import detect_cli
+                status = {
+                    BACKEND_CLAUDE: detect_cli("claude"),
+                    BACKEND_CODEX: detect_cli("codex"),
+                }
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_cli_status",
+                    Qt.QueuedConnection,
+                    Q_ARG(str, json.dumps(status)),
+                )
+            except Exception as exc:
+                log.debug("CLI detection failed: %s", exc)
+
+        threading.Thread(target=run, daemon=True, name="cli-detect").start()
+
+    @pyqtSlot(str)
+    def _on_cli_status(self, status_json: str):
+        """Push CLI availability to the Agent dropdown (called on main thread)."""
+        self._cli_status = status_json
+        self._notify_agent_selector()
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(status_json)
+            )
+
+    def _push_gap_list(self):
+        """Push the current tool-gap log to the JS viewer (called on open)."""
+        try:
+            from classes.agent_gap_log import read_gaps
+            entries = read_gaps()
+        except Exception:
+            log.debug("read_gaps failed", exc_info=True)
+            entries = []
+        if self._use_web_ui:
+            self._run_js("if(window.setGapList) setGapList(%s);" % json.dumps(json.dumps(entries)))
+
+    def _resolve_gap(self, entry_id: str):
+        try:
+            from classes.agent_gap_log import mark_resolved
+            mark_resolved(entry_id)
+        except Exception:
+            log.debug("mark_resolved failed", exc_info=True)
+        self._push_gap_list()
+
+    def _delete_gap(self, entry_id: str):
+        try:
+            from classes.agent_gap_log import delete_gap
+            delete_gap(entry_id)
+        except Exception:
+            log.debug("delete_gap failed", exc_info=True)
+        self._push_gap_list()
+
+    def _connect_cli(self, backend_id: str):
+        """Register Zenvi's MCP server with claude/codex (Connect button in
+        the empty state) so an external terminal session can reach it."""
+        def run():
+            ok, message = False, "Unknown backend."
+            try:
+                from classes.agent_mcp_server import get_mcp_server
+                srv = get_mcp_server().start()
+                if backend_id == BACKEND_CLAUDE:
+                    from windows.agent_runners import register_claude
+                    ok, message = register_claude(srv.port, srv.token)
+                elif backend_id == BACKEND_CODEX:
+                    from windows.agent_runners import register_codex
+                    ok, message = register_codex(srv.port, srv.token)
+            except Exception as e:
+                log.debug("connect_cli failed: %s", e, exc_info=True)
+                ok, message = False, str(e)
+            QMetaObject.invokeMethod(
+                self, "_on_connect_result", Qt.QueuedConnection,
+                Q_ARG(str, backend_id), Q_ARG(bool, ok), Q_ARG(str, message),
+            )
+
+        threading.Thread(target=run, daemon=True, name="cli-connect").start()
+
+    @pyqtSlot(str, bool, str)
+    def _on_connect_result(self, backend_id: str, ok: bool, message: str):
+        """Called on the main thread once register_claude/register_codex finishes."""
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.onConnectResult) onConnectResult(%s, %s, %s);"
+                % (json.dumps(backend_id), json.dumps(ok), json.dumps(message))
+            )
+        self._notify_agent_connect_result(backend_id, ok, message)
+        # Status must always be real, never stale — re-check right away so the
+        # panel/empty-state flips live instead of waiting for the 60s timer.
+        self._detect_clis()
+
     def _get_preamble_html(self):
         """Return preamble as HTML: AI summary as heading when set, else 'Zenvi Assistant'."""
         if self._first_prompt_summary:
@@ -1842,6 +2528,7 @@ class AIChatWindow(QDockWidget):
                 self._first_prompt_summary = text
                 self._update_preamble()
             self._push_tabs_to_js()
+            self._persist_session(session_id, title=text)
             self._save_chat_sessions_store()
 
     def _clear_widget_tool_blocks(self):
@@ -1858,9 +2545,14 @@ class AIChatWindow(QDockWidget):
             self._widget_tool_scroll.setVisible(False)
 
     def _resolve_agent_mode(self, agent_mode: str = None) -> str:
+        sess = self._active_session() or {}
+        # Planning mode is a Zenvi-backend feature (the plan events come over
+        # the WebSocket). CLI agents plan internally and never emit them, so
+        # honouring a stale "planning" here would only mislabel the turn.
+        if sess.get("backend", BACKEND_ZENVI) != BACKEND_ZENVI:
+            return "agent"
         if agent_mode in ("planning", "agent"):
             return agent_mode
-        sess = self._active_session() or {}
         return sess.get("agent_mode", "agent")
 
     def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = ""):
@@ -2115,9 +2807,19 @@ class AIChatWindow(QDockWidget):
                 self._set_agent_mode(mode)
 
     def _shutdown_worker(self, worker, thread, wait_ms=3000):
-        """Stop one chat worker thread (cancel WS, quit, wait, terminate)."""
+        """Stop one chat worker thread (cancel WS/CLI, quit, wait, terminate)."""
         if worker:
+            # Mark the worker as stopping FIRST so that when
+            # cancel_current_request() closes the WebSocket, the worker's
+            # run_request slot sees _stopping=True and returns silently
+            # instead of falling back to REST or emitting signals into a Qt
+            # stack that is already being torn down.
             worker._stopping = True
+            if hasattr(worker, "cancel"):
+                try:
+                    worker.cancel()  # terminate any CLI subprocess
+                except Exception:
+                    pass
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
@@ -2142,8 +2844,32 @@ class AIChatWindow(QDockWidget):
                 self._credits_timer.stop()
             except Exception:
                 pass
+        # closeEvent leaves the dock object alive, so an armed timer keeps
+        # firing: each tick spawns a thread that shells out to the agent CLIs
+        # for --version and then posts back into a closed dock.
+        if getattr(self, "_cli_detect_timer", None):
+            try:
+                self._cli_detect_timer.stop()
+            except Exception:
+                pass
+        try:
+            from windows.agent_runners import cleanup_agent_mcp_configs
+            cleanup_agent_mcp_configs()
+        except Exception:
+            pass
+        # Neither shutdown path saved the tab list before this.
+        self._save_chat_sessions_store()
         for sess in list(self._sessions.values()):
             self._shutdown_worker(sess.get("worker"), sess.get("thread"))
+        try:
+            from classes import chat_history
+            # An untitled project that was never chatted in leaves nothing behind.
+            key = getattr(self, "_history_key", "") or ""
+            if key.startswith("draft:"):
+                chat_history.discard_empty_bucket(key)
+            chat_history.close()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         """Stop all AI worker threads when the dock is explicitly closed."""
@@ -2291,6 +3017,14 @@ class AIChatWindow(QDockWidget):
             get_backend_client().cancel_current_request()
         except Exception:
             pass
+        # CLI backends: terminate the running subprocess for the active session.
+        sess = self._active_session()
+        worker = sess.get("worker") if sess else None
+        if worker is not None and hasattr(worker, "cancel"):
+            try:
+                worker.cancel()
+            except Exception:
+                pass
         if self._use_web_ui:
             self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
         self._set_processing_ui(False)
@@ -2340,6 +3074,9 @@ class AIChatWindow(QDockWidget):
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
         """Render a Cursor-style collapsible terminal block for a tool call."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        # Recorded for every tab, not just the visible one — a background tab's
+        # activity should still be there when the user switches to it.
+        self._record_tool_started(sid, call_id, tool_name)
         if sid != self._active_sid:
             return
         # Drop any pre-tool "thinking" that already streamed into the answer bubble.
@@ -2403,6 +3140,7 @@ class AIChatWindow(QDockWidget):
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
         """Mark a tool block as done/error and keep result text for inspection."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        self._record_tool_completed(sid, call_id, ok)
         if sid != self._active_sid:
             return
         summary = self._tool_result_summary(result)
@@ -2478,8 +3216,12 @@ class AIChatWindow(QDockWidget):
         else:
             # Background session — store message and notify JS for unread badge
             if sid in self._sessions:
+                # Same normalisation the active path applies, so what we persist
+                # doesn't depend on which tab happened to be in front.
+                text = self._strip_thinking(text)
                 html_body = _markdown_to_html(text)
                 self._sessions[sid]["messages"].append(("assistant", html_body, True))
+                self._record_message(sid, "assistant", text)
                 self._run_js(
                     "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
                     % (json.dumps(sid), json.dumps(html_body))
@@ -2523,6 +3265,13 @@ class AIChatWindow(QDockWidget):
                 sess["messages"] = []
                 sess["first_prompt_summary"] = None
                 sess["unread"] = False
+                from classes import chat_history
+                chat_history.clear_session_messages(self._active_sid)
+                # The worker forgets its CLI conversation too, so drop the
+                # stored resume state or we'd try to rejoin a dead thread.
+                chat_history.update_session(
+                    self._active_sid, cli_session_id="", cli_started=False
+                )
                 worker = sess.get("worker")
                 if worker:
                     QMetaObject.invokeMethod(worker, "clear_session", Qt.QueuedConnection)
@@ -2534,31 +3283,46 @@ class AIChatWindow(QDockWidget):
                 self.chat_box.clear()
                 self._rebuild_widget_tabs()
             self._update_preamble()
-            self._add_system_msg("Chat cleared. Ask anything about your project or editing.")
+            self._add_chrome_msg("Chat cleared. Ask anything about your project or editing.")
+            # The cleared title otherwise sat unpersisted until some later save.
+            self._save_chat_sessions_store()
 
     def _add_user_msg(self, text):
         self._add_msg(text, "user", is_assistant=False, is_system=False)
 
-    def _add_assistant_msg(self, text):
-        # Strip leaked thinking headers that sometimes prefix the final reply.
+    def _add_chrome_msg(self, text):
+        """A UI banner (welcome, "chat cleared") — shown but never persisted."""
+        self._add_msg(text, "system", is_assistant=False, is_system=True, ephemeral=True)
+
+    @staticmethod
+    def _strip_thinking(text):
+        """Drop leaked thinking headers that sometimes prefix a final reply."""
         text = re.sub(
             r"(?im)^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*\n+",
             "",
             text or "",
         )
         text = re.sub(r"(?im)^\s*Thinking(?:…|\.\.\.)?\s*\n+", "", text).strip()
-        text = re.sub(
+        return re.sub(
             r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>",
             "",
             text,
             flags=re.IGNORECASE,
         ).strip()
-        self._add_msg(text, "assistant", is_assistant=True, is_system=False)
+
+    def _add_assistant_msg(self, text):
+        self._add_msg(
+            self._strip_thinking(text), "assistant", is_assistant=True, is_system=False
+        )
 
     def _add_system_msg(self, text):
         self._add_msg(text, "system", is_assistant=False, is_system=True)
 
-    def _add_msg(self, text, role, is_assistant=False, is_system=False):
+    def _add_msg(self, text, role, is_assistant=False, is_system=False, ephemeral=False):
+        # Every backend funnels its final messages through here with the raw
+        # text still in hand, which is why this is the one persistence hook.
+        if not ephemeral:
+            self._record_message(self._active_sid, role, text)
         if self._use_web_ui:
             if is_assistant:
                 html_body = _markdown_to_html(text)
