@@ -47,6 +47,14 @@ import json
 import logging
 from pathlib import Path
 
+# On a packaged build, Contents/MacOS/lib/classes is a symlink into the signed
+# Resources/classes directory. Importing modules there would normally write
+# __pycache__/*.pyc into that directory on first run, adding files the code
+# signature never sealed and breaking Gatekeeper verification ("Zenvi is
+# damaged and can't be opened") on every subsequent launch. Disabling
+# bytecode caching for the whole process avoids that; harmless for dev runs.
+sys.dont_write_bytecode = True
+
 
 def _prepend_dll_search_path_for_libopenshot():
     """Windows/MinGW: Python 3.8+ limits DLL dirs; add paths for _openshot.pyd dependencies."""
@@ -120,14 +128,23 @@ except Exception:
     pass
 
 # Apply a staged update from a previous session (no PyQt required).
-try:
-    from classes import update_installer
+# Only for packaged/frozen builds: an unpackaged `python src/launch.py` dev
+# run has no separate install directory to apply into, and letting it run
+# the updater just swaps the dev's local checkout out for a downloaded
+# release build on every launch.
+if getattr(sys, "frozen", False):
+    try:
+        from classes import update_installer
 
-    if update_installer.has_pending_update():
-        if update_installer.apply_pending_update():
-            sys.exit(0)
-except Exception:
-    pass
+        if update_installer.has_pending_update():
+            if update_installer.apply_pending_update():
+                sys.exit(0)
+    except Exception:
+        # Startup stays best-effort -- a broken staged update must not block
+        # launching -- but the failure has to be visible, or an update that
+        # never applies looks like the updater silently doing nothing.
+        # App logging isn't configured this early, so this goes to stderr.
+        logging.getLogger(__name__).exception("Failed to apply the pending update")
 
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:

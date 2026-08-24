@@ -237,6 +237,7 @@ class BaseTheme:
         toolbar_buttons = [
             {"action": self.app.window.actionNew, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionOpen, "style": Qt.ToolButtonIconOnly},
+            {"widget": self.app.window.agent_selector_button},
             {"action": self.app.window.actionSave, "style": Qt.ToolButtonIconOnly},
             {"divide": True},
             {"action": self.app.window.actionUndo, "style": Qt.ToolButtonIconOnly},
