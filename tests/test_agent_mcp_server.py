@@ -188,6 +188,70 @@ def test_load_or_create_token_generates_when_missing(monkeypatch, tmp_path):
     assert os.path.exists(tmp_path / "nested" / "mcp_token")
 
 
+def test_token_file_is_never_world_readable(monkeypatch, tmp_path):
+    """The bearer token is the only thing stopping another local process from
+    driving the editor. A plain open() applies the umask first, so the token
+    would sit at 0644 until the follow-up chmod landed."""
+    import stat
+    import classes.agent_mcp_server as srv_mod
+
+    token_file = str(tmp_path / "mcp_token")
+    monkeypatch.setattr(srv_mod, "_token_path", lambda: token_file)
+
+    old_umask = os.umask(0o022)
+    try:
+        assert srv_mod._load_or_create_token()
+    finally:
+        os.umask(old_umask)
+
+    assert stat.S_IMODE(os.stat(token_file).st_mode) == 0o600
+
+
+def test_start_fails_loudly_when_the_port_is_lost_after_probing(monkeypatch):
+    """_bind_port only probes: it binds, closes, and hands the port back, so
+    another process can take it before uvicorn binds for real. That happens in
+    the worker thread, so without a readiness gate start() reports a listening
+    server and the CLI gets a dead URL plus a generic connection error."""
+    pytest.importorskip("mcp")
+    import classes.agent_mcp_server as srv_mod
+
+    srv = srv_mod.ZenviMcpServer()
+
+    class _NeverStarts:
+        started = False
+        should_exit = False
+
+        def __init__(self, config):
+            pass
+
+        def run(self):
+            time.sleep(2.0)
+
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "Server", _NeverStarts)
+    monkeypatch.setattr(srv, "_build_app", lambda: object())
+    monkeypatch.setattr(srv_mod, "_load_or_create_token", lambda: "tok")
+    # Keep the gate short — the point is that it raises, not how long it waits.
+    monkeypatch.setattr(srv_mod.time, "monotonic",
+                        _stepping_clock(step=1.0))
+
+    with pytest.raises(RuntimeError, match="failed to bind"):
+        srv.start()
+    assert not srv.started, "a server that never bound must not report started"
+
+
+def _stepping_clock(step):
+    """A monotonic() that jumps *step* seconds per call, so a bounded wait
+    loop expires immediately instead of really sleeping."""
+    state = {"t": 0.0}
+
+    def _now():
+        state["t"] += step
+        return state["t"]
+
+    return _now
+
+
 # --- optional: drive the real claude CLI against the server ----------------
 
 _RUN_CLI = bool(shutil.which("claude")) and os.environ.get("ZENVI_RUN_CLI_SMOKE") == "1"

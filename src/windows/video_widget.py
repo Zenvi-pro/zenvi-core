@@ -1853,8 +1853,34 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.transforming_clip = None
                 self.transforming_clip_object = None
 
-        if self.transforming_effect:
+        if self.transforming_effect and self.transforming_clips:
+            # A clip transform owns the singular handles; the branch above just
+            # refreshed them. Only the Python model is left to update.
             self.transforming_effect = Effect.get(id=self.transforming_effect.id)
+        elif self.transforming_effect:
+            # keyFrameTransformTriggered sets the *singular* clip/effect objects
+            # and never populates transforming_clips, so the branch above skips
+            # an effect transform entirely. Its native handles go stale on a
+            # rebuild just the same, so refresh them by id here -- and drop the
+            # transform when either lookup fails, rather than let paintEvent or
+            # mouseMoveEvent call into a freed object.
+            win = get_app().window
+            eff = Effect.get(id=self.transforming_effect.id)
+            eff_obj = win.timeline_sync.timeline.GetClipEffect(
+                self.transforming_effect.id) if eff else None
+            clip_id = self.transforming_clip.id if self.transforming_clip else None
+            clip = Clip.get(id=clip_id) if clip_id else None
+            clip_obj = win.timeline_sync.timeline.GetClip(clip_id) if clip else None
+            if eff and eff_obj and clip and clip_obj:
+                self.transforming_effect = eff
+                self.transforming_effect_object = eff_obj
+                self.transforming_clip = clip
+                self.transforming_clip_object = clip_obj
+            else:
+                self.transforming_effect = None
+                self.transforming_effect_object = None
+                self.transforming_clip = None
+                self.transforming_clip_object = None
 
     def transformTriggered(self, clip_ids):
         """Handle the transform signal when it's emitted. Supports multiple clip IDs."""

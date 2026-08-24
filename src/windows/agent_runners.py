@@ -59,7 +59,14 @@ def _agent_mcp_dir() -> str:
 
 
 def _project_cwd() -> str:
-    """Working directory for the agent — the current project's folder if any."""
+    """Working directory for the agent — the current project's folder if any.
+
+    With no saved project the fallback is a scratch folder under the user's
+    Zenvi data dir, never ``$HOME``: these CLIs run with approvals and sandbox
+    bypassed, and an unsaved project is the state the app launches in, so a
+    home-rooted cwd would hand the agent unattended write access to
+    everything the user owns.
+    """
     try:
         from classes.app import get_app
         fp = getattr(get_app().project, "current_filepath", "") or ""
@@ -67,7 +74,10 @@ def _project_cwd() -> str:
             return os.path.dirname(fp)
     except Exception:
         pass
-    return os.path.expanduser("~")
+    from classes import info
+    path = os.path.join(info.USER_PATH, "agent_workspace")
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _strip_mcp_prefix(name: str) -> str:
@@ -335,6 +345,18 @@ class BaseAgentRunner(QObject):
         self._cli_id_from_cli = False
         self._cli_cwd = ""
 
+    def _reset_cli_continuity(self):
+        """Start over from a fresh conversation on the next request.
+
+        Unlike ``clear_session`` this is internal bookkeeping, not a user
+        action: it runs when a launch-time failure means the CLI never created
+        the conversation we latched.
+        """
+        self._cli_started = False
+        self._cli_id_from_cli = False
+        self._cli_session_id = str(uuid.uuid4())
+        self._emit_cli_session()
+
     def cancel(self):
         """Terminate the running subprocess (called from the GUI thread).
 
@@ -466,11 +488,20 @@ class BaseAgentRunner(QObject):
                     self._handle_event(ev)
                 except Exception:
                     log.debug("agent event handling failed", exc_info=True)
-            self._proc.wait(timeout=5)
         except Exception as e:
             if not self._aborted:
                 self._emit_error(str(e))
             return
+
+        # Reaped outside the read loop's handler: stdout is already closed, so
+        # the whole response is in hand. A CLI that lingers past the timeout
+        # must not turn into "Command [...] timed out after 5 seconds" in the
+        # chat and throw that response away.
+        try:
+            self._proc.wait(timeout=5)
+        except Exception:
+            log.warning("%s did not exit within 5s of closing stdout",
+                        self.DISPLAY_NAME)
 
         if self._aborted:
             return
@@ -481,6 +512,12 @@ class BaseAgentRunner(QObject):
         elif self._last_error:
             self._emit_error(self._last_error)
         elif self._proc.returncode not in (0, None):
+            # Nothing came back at all and the CLI failed: it never got as far
+            # as creating this conversation (not logged in, bad flag, ...), so
+            # drop the resume continuity we latched at launch. Leaving it set
+            # makes every later message in this tab --resume an id the CLI does
+            # not have, which fails until the user clears the session.
+            self._reset_cli_continuity()
             tail = "\n".join(self._stderr_tail[-4:])
             self._emit_error(
                 "%s exited with code %s.%s"
@@ -723,7 +760,13 @@ class CodexRunner(BaseAgentRunner):
             if etype == "item.completed":
                 txt = item.get("text") or item.get("message") or ""
                 if txt:
-                    self._final_text = txt
+                    # Appended, not replaced (matching the Claude runner): a
+                    # turn can complete more than one assistant message, and
+                    # all of them stream into the same bubble -- so the text
+                    # turn.completed persists has to be all of them too.
+                    if self._final_text:
+                        self._final_text += "\n\n"
+                    self._final_text += txt
                     self.token_received.emit(txt)
             return
         if itype == "reasoning" and etype == "item.completed":
@@ -751,12 +794,12 @@ def _write_claude_mcp_config(server) -> str:
         }
     }
     path = os.path.join(_agent_mcp_dir(), "claude_mcp.json")
-    with open(path, "w") as fh:
+    # Created 0600 in one step rather than chmod'ed afterwards: a plain open()
+    # applies the umask first (usually 0644), leaving the bearer token this
+    # file carries world-readable for the window in between.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
         json.dump(cfg, fh)
-    try:
-        os.chmod(path, 0o600)
-    except Exception:
-        pass
     return path
 
 

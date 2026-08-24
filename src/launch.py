@@ -140,7 +140,11 @@ if getattr(sys, "frozen", False):
             if update_installer.apply_pending_update():
                 sys.exit(0)
     except Exception:
-        pass
+        # Startup stays best-effort -- a broken staged update must not block
+        # launching -- but the failure has to be visible, or an update that
+        # never applies looks like the updater silently doing nothing.
+        # App logging isn't configured this early, so this goes to stderr.
+        logging.getLogger(__name__).exception("Failed to apply the pending update")
 
 # Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
 try:

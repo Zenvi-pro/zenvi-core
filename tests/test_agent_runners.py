@@ -533,3 +533,107 @@ def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     assert "terminate" not in killed, "group kill succeeded; no need to fall back"
     assert runner._cancelled
     assert not runner._stopping, "cancel is not a shutdown — the tab stays usable"
+
+
+def test_codex_accumulates_several_assistant_messages(qapp):
+    """A turn can complete more than one assistant message, and all of them
+    stream into the same bubble — so the text ``turn.completed`` persists has
+    to be all of them, not just the last one."""
+    from windows.agent_runners import CodexRunner
+
+    runner = CodexRunner()
+    events = _collect(runner)
+    for ev in (
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "First."}},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "Second."}},
+        {"type": "turn.completed"},
+    ):
+        runner._handle_event(ev)
+
+    streamed = "".join(t for kind, t in [e for e in events if e[0] == "token"])
+    responses = [t for kind, t in [e for e in events if e[0] == "response_ready"]]
+    assert streamed == "First.Second."
+    assert responses == ["First.\n\nSecond."], "persisted text lost an earlier message"
+
+
+def test_failed_launch_does_not_leave_a_resume_for_a_session_the_cli_never_made(
+        qapp, monkeypatch, tmp_path):
+    """A CLI that exits non-zero with no output never created the conversation
+    we latched at launch. Keeping that latch makes every later message in the
+    tab ``--resume`` an unknown id, which fails until the user clears the
+    session — so the failure has to reset the continuity."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner
+
+    class _FakeServer:
+        token = "tok"
+
+        def start(self):
+            return self
+
+        def url(self):
+            return "http://127.0.0.1:1/mcp"
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
+    monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+    monkeypatch.setattr(ar, "_write_claude_mcp_config",
+                        lambda server: str(tmp_path / "claude_mcp.json"))
+    # A CLI that fails immediately: no stream-json output, non-zero exit.
+    real_build_argv = ClaudeCodeRunner._build_argv
+    monkeypatch.setattr(ClaudeCodeRunner, "_build_argv",
+                        lambda self, text: [sys.executable, "-c", "raise SystemExit(1)"])
+
+    runner = ClaudeCodeRunner()
+    runner._session_id = "11111111-1111-1111-1111-111111111111"
+    events = _collect(runner)
+    runner.run_request("hello", "")
+
+    assert [e[0] for e in events] == ["error"]
+    assert not runner._cli_started
+    first_id = runner._cli_session_id
+
+    # The next turn starts a conversation instead of resuming a phantom one.
+    argv = real_build_argv(runner, "again")
+    assert "--resume" not in argv
+    assert argv[argv.index("--session-id") + 1] == first_id
+
+
+def test_no_saved_project_confines_the_agent_outside_home(monkeypatch, tmp_path):
+    """These CLIs run with approvals and sandbox bypassed, and an unsaved
+    project is the state the app launches in — a home-rooted cwd would hand the
+    agent unattended write access to everything the user owns."""
+    import windows.agent_runners as ar
+    from classes import info
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+    monkeypatch.setattr("classes.app.get_app", lambda: (_ for _ in ()).throw(RuntimeError))
+
+    cwd = ar._project_cwd()
+    assert cwd != os.path.expanduser("~")
+    assert cwd == str(tmp_path / "agent_workspace")
+    assert os.path.isdir(cwd)
+
+
+def test_claude_mcp_config_is_never_world_readable(monkeypatch, tmp_path):
+    """The file carries the MCP bearer token: a plain open() would apply the
+    umask first and leave it readable by other local users in between."""
+    import stat
+    import windows.agent_runners as ar
+    from classes import info
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+
+    class _FakeServer:
+        token = "tok"
+
+        def url(self):
+            return "http://127.0.0.1:7434/mcp"
+
+    old_umask = os.umask(0o022)
+    try:
+        path = ar._write_claude_mcp_config(_FakeServer())
+    finally:
+        os.umask(old_umask)
+
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600

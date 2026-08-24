@@ -2844,6 +2844,14 @@ class AIChatWindow(QDockWidget):
                 self._credits_timer.stop()
             except Exception:
                 pass
+        # closeEvent leaves the dock object alive, so an armed timer keeps
+        # firing: each tick spawns a thread that shells out to the agent CLIs
+        # for --version and then posts back into a closed dock.
+        if getattr(self, "_cli_detect_timer", None):
+            try:
+                self._cli_detect_timer.stop()
+            except Exception:
+                pass
         try:
             from windows.agent_runners import cleanup_agent_mcp_configs
             cleanup_agent_mcp_configs()

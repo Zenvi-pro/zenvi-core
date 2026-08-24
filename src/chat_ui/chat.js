@@ -1954,11 +1954,13 @@
         var id = backendSelect.value;
         var info = cliStatus[id];
         if (!isCliBackend(id) || !info) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
             cliEmptyStateEl.style.display = 'none';
             messagesEl.style.display = '';
             return;
         }
         if (info.installed === false) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
             cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
                 findBackendName(id) + " CLI not found. Install it and make sure '" +
                 (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
@@ -1968,13 +1970,20 @@
             return;
         }
         if (!info.registered) {
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            // A failed connect re-detects, which lands back here with
+            // registered still false. Rebuilding the markup would wipe the
+            // diagnostic onConnectResult just wrote (invalid TOML, the
+            // `claude mcp add` stderr) before the user could read it, so
+            // render this state once per backend and leave it alone.
+            if (cliEmptyStateEl.getAttribute('data-connect-for') === id) return;
+            cliEmptyStateEl.setAttribute('data-connect-for', id);
             cliEmptyStateEl.innerHTML =
                 '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
                 ' is installed but not connected to Zenvi yet.</div>' +
                 '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Connect</button>' +
                 '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
-            cliEmptyStateEl.style.display = 'flex';
-            messagesEl.style.display = 'none';
             var btn = document.getElementById('chat-cli-connect-btn');
             if (btn) {
                 btn.addEventListener('click', function () {
@@ -1990,6 +1999,7 @@
             return;
         }
         // Installed and connected — nothing to show, back to the normal chat view.
+        cliEmptyStateEl.removeAttribute('data-connect-for');
         cliEmptyStateEl.style.display = 'none';
         messagesEl.style.display = '';
     }

@@ -23,6 +23,7 @@ import os
 import secrets
 import socket
 import threading
+import time
 
 log = logging.getLogger(__name__)
 
@@ -171,12 +172,12 @@ def _load_or_create_token() -> str:
     token = secrets.token_urlsafe(24)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
+        # Created 0600 in one step rather than chmod'ed afterwards: a plain
+        # open() applies the umask first (usually 0644), leaving the bearer
+        # token world-readable for the window in between.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(token)
-        try:
-            os.chmod(path, 0o600)
-        except Exception:
-            pass
     except Exception:
         log.debug("Failed to persist MCP token", exc_info=True)
     return token
@@ -238,6 +239,23 @@ class ZenviMcpServer:
             self._thread = threading.Thread(target=self._uvicorn.run,
                                             name="zenvi-mcp", daemon=True)
             self._thread.start()
+
+            # uvicorn binds inside the worker thread, and _bind_port only
+            # probed the port -- another process can have taken it in between.
+            # Wait for the real bind so a lost race raises here instead of
+            # handing the CLI a dead URL and a generic connection error.
+            deadline = time.monotonic() + 5.0
+            while not self._uvicorn.started and self._thread.is_alive():
+                if time.monotonic() > deadline:
+                    break
+                time.sleep(0.02)
+            if not self._uvicorn.started:
+                self._uvicorn.should_exit = True
+                self._uvicorn = None
+                self._thread = None
+                raise RuntimeError(
+                    "MCP server failed to bind %s:%s" % (self.host, self.port))
+
             self._started = True
             self._connect_shutdown_hook()
             log.info("Zenvi MCP server listening on %s (%d tools)",
