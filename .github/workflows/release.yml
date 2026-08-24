@@ -1062,6 +1062,8 @@ jobs:
             mingw-w64-ucrt-x86_64-python-pydantic
             mingw-w64-ucrt-x86_64-python-pydantic-core
             mingw-w64-ucrt-x86_64-python-pyjwt
+            # Required at import time, not optional: see the pip step below.
+            mingw-w64-ucrt-x86_64-python-pywin32
             mingw-w64-ucrt-x86_64-qtwebkit
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
@@ -1131,9 +1133,11 @@ jobs:
           # requirements-noqt.txt deliberately skips mcp on MinGW Python >= 3.14:
           # mcp declares pywin32>=311 there and no pywin32 build exists for this
           # interpreter (PyPI is MSVC-only through cp313, MSYS2 packages 310), so
-          # a plain resolve ends in ResolutionImpossible. pywin32 is only used by
-          # mcp's stdio client path; Zenvi runs the HTTP server side, so install
-          # mcp alone and let the pinned dependencies above satisfy it.
+          # a plain resolve ends in ResolutionImpossible. Installing mcp alone
+          # sidesteps that floor; pywin32 310 comes from pacman above and is
+          # genuinely needed -- importing mcp.server.fastmcp reaches
+          # mcp.os.win32.utilities, which imports pywintypes/win32api/win32con/
+          # win32job unguarded on win32.
           ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
           # Fail loudly here rather than shipping a frozen app that raises on the
           # first agent-backend use.

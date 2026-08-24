@@ -22,10 +22,16 @@ python-dotenv>=1.0.1
 # The marker skips mcp on MinGW/MSYS2 Python >= 3.14. There mcp declares
 # pywin32>=311, and no pywin32 distribution exists for that interpreter: PyPI
 # ships MSVC-only wheels through cp313 and MSYS2 packages 310, so pip resolution
-# fails outright. pywin32 is only reached by mcp's stdio *client* path
-# (mcp/os/win32/utilities.py, mcp/client/stdio) and Zenvi is the HTTP server
-# side, so on that interpreter install mcp without its dependency graph:
+# fails outright. Install it without its dependency graph instead:
 #   pip install --no-deps "mcp>=1.28,<2"
+# pywin32 itself is still REQUIRED at import time on Windows, and comes from
+# pacman (MSYS2 ships 310, which is fine because --no-deps means pip never
+# enforces the >=311 floor). Do not assume it is optional: importing
+# mcp.server.fastmcp transitively imports mcp.client.stdio, which imports
+# mcp.os.win32.utilities, whose `if sys.platform == "win32"` block imports
+# pywintypes/win32api/win32con/win32job with no try/except -- the else branch
+# only stubs them for non-Windows. Without pywin32 the server import dies with
+# ModuleNotFoundError: No module named 'pywintypes'.
 # The pins below are mcp's own runtime dependencies, kept explicit so that
 # --no-deps install produces a working server. Keep them in sync with mcp's
 # requires_dist when moving the floor.
