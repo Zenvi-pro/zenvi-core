@@ -28,6 +28,7 @@
     const preambleEl = document.getElementById('chat-preamble-label');
     const preambleStatus = document.getElementById('chat-preamble-status');
     const modelSelect = document.getElementById('chat-model-select');
+    const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
@@ -37,7 +38,13 @@
     // Move menu to <body> so it escapes any CSS transform on ancestor elements
     // (transform creates a new containing block that breaks position:fixed)
     document.body.appendChild(modelMenu);
+    const gapLogBtn = document.getElementById('chat-gap-log-btn');
+    const gapLogOverlay = document.getElementById('chat-gap-log-overlay');
+    const gapLogClose = document.getElementById('chat-gap-log-close');
+    const gapLogListEl = document.getElementById('chat-gap-log-list');
+    if (gapLogOverlay) document.body.appendChild(gapLogOverlay);
     const messagesEl = document.getElementById('chat-messages');
+    const cliEmptyStateEl = document.getElementById('chat-cli-empty-state');
     const inputEl = document.getElementById('chat-input');
     const inputRow = document.getElementById('chat-input-row');
     const glowWrap = document.getElementById('chat-input-glow-wrap');
@@ -48,6 +55,7 @@
     const traceBtn = document.getElementById('chat-trace-btn');
     const modePlanBtn = document.getElementById('chat-mode-plan');
     const modeAgentBtn = document.getElementById('chat-mode-agent');
+    const modeToggleEl = document.getElementById('chat-mode-toggle');
     var currentAgentMode = 'agent';
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
@@ -198,6 +206,10 @@
     var statusInterval = null;
 
     var activityContainer = null;
+    // True when activityContainer was lazily created for a "Live from terminal"
+    // tool call (see addToolBlock below) rather than by a normal setProcessing(true)
+    // turn — those never call setProcessing(false), so nothing would ever clear
+    // a "Reasoning" placeholder row; completeToolBlock skips creating one in that case.
     var activitySteps = [];
     var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
     var currentReasoningStep = null; // legacy; kept for compat
@@ -592,6 +604,8 @@
     }
 
     window.addToolBlock = function (payloadJson) {
+        // Normally opened by setProcessing(true), but a tool call can also be
+        // the first thing a turn produces — open the block lazily either way.
         if (!activityContainer) openThinkingBlock();
         if (!activityContainer) return;
         var data;
@@ -720,6 +734,24 @@
         scrollToBottomIfPinned();
     };
 
+    // Redraw a tool block from stored history: already finished, so it should
+    // land collapsed rather than spinning like a live call. Only the name and
+    // outcome are kept locally, so there are no logs to expand.
+    window.replayToolBlock = function (payloadJson, ok) {
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        if (!data || !data.call_id) return;
+        window.addToolBlock(data);
+        var block = toolBlocks[data.call_id];
+        if (block && block.el) {
+            block.el.classList.remove('chat-message-enter');
+            block.el.classList.remove('has-logs');
+        }
+        window.completeToolBlock(data.call_id, !!ok, '');
+    };
+
     /* ── Processing state ── */
 
     let typingEl = null;
@@ -739,6 +771,7 @@
             if (glowWrap) glowWrap.classList.add('glow-active');
             removePlaceholder();
             openThinkingBlock();
+            currentReasoningStep = null; // fresh turn
             scrollToBottomIfPinned();
         } else {
             if (glowWrap) glowWrap.classList.remove('glow-active');
@@ -1191,6 +1224,9 @@
         if (!picked && modelItems.length) picked = modelItems[0];
         if (picked) selectModel(picked.id, picked.name);
         else if (modelLabel) modelLabel.textContent = 'Model';
+        // Python pushes a new list on every backend/tab change, and whether the
+        // pill shows at all depends on that list — see applyBackendChrome.
+        if (backendSelect) applyBackendChrome(backendSelect.value);
     };
 
     window.setPreamble = function (html) {
@@ -1207,9 +1243,9 @@
         badge.style.display = 'inline-flex';
         if (balance < 0) {
             badge.textContent = '…';
-            badge.style.background = 'rgba(124,111,247,0.08)';
-            badge.style.color = 'rgba(124,111,247,0.65)';
-            badge.style.borderColor = 'rgba(124,111,247,0.15)';
+            badge.style.background = 'rgba(77,156,246,0.08)';
+            badge.style.color = 'rgba(77,156,246,0.65)';
+            badge.style.borderColor = 'rgba(77,156,246,0.15)';
             return;
         }
         badge.textContent = balance + ' credits';
@@ -1222,9 +1258,9 @@
             badge.style.color = 'rgba(245,158,11,0.9)';
             badge.style.borderColor = 'rgba(245,158,11,0.25)';
         } else {
-            badge.style.background = 'rgba(124,111,247,0.12)';
-            badge.style.color = 'rgba(124,111,247,0.9)';
-            badge.style.borderColor = 'rgba(124,111,247,0.2)';
+            badge.style.background = 'rgba(77,156,246,0.12)';
+            badge.style.color = 'rgba(77,156,246,0.95)';
+            badge.style.borderColor = 'rgba(77,156,246,0.25)';
         }
     };
 
@@ -1816,6 +1852,7 @@
     var tabBarEl = document.getElementById('chat-tab-bar');
     var tabAddBtn = document.getElementById('chat-tab-add');
     var currentTabs = [];
+    var activeSessionId = '';  // tracked from the active tab for setBackend calls
     var unreadSessions = {};  // sessionId -> true if has unread messages
 
     window.setTabs = function (tabsJson) {
@@ -1834,6 +1871,12 @@
         tabBarEl.style.display = 'flex';
 
         currentTabs.forEach(function (tab) {
+            if (tab.active) {
+                activeSessionId = tab.id;
+                if (backendSelect && tab.backend) backendSelect.value = tab.backend;
+                updateCliEmptyState();
+                applyBackendChrome(tab.backend);
+            }
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'chat-tab'
@@ -1878,8 +1921,226 @@
 
     tabAddBtn.addEventListener('click', function () {
         getBridge(function (bridge) {
-            if (bridge && bridge.createSession) bridge.createSession(modelSelect.value || '');
+            if (bridge && bridge.createSession) {
+                bridge.createSession(modelSelect.value || '', (backendSelect && backendSelect.value) || 'zenvi');
+            }
         });
+    });
+
+    // Populate the agent backend selector and react to changes. The hidden native
+    // <select> stays the single source of truth (read by Python via QWebChannel).
+    // The visible picker lives in the main window toolbar next to Save — see
+    // windows/agent_selector_button.py — so nothing here renders a control; this
+    // is only the mirror Python reads and the CLI empty state below keys off.
+    var backendItems = [];
+    // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
+    // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
+    var cliStatus = {};
+    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+
+    function findBackendName(id) {
+        var item = backendItems.find(function (b) { return b.id === id; });
+        return item ? item.name : (id || 'Zenvi Assistant');
+    }
+
+    function isCliBackend(id) {
+        return id === 'claude_code' || id === 'codex';
+    }
+
+    // Empty state (calm, not an error) shown instead of messages when the active
+    // tab's backend is a CLI agent that's missing or not yet connected.
+    function updateCliEmptyState() {
+        if (!cliEmptyStateEl || !messagesEl || !backendSelect) return;
+        var id = backendSelect.value;
+        var info = cliStatus[id];
+        if (!isCliBackend(id) || !info) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
+            cliEmptyStateEl.style.display = 'none';
+            messagesEl.style.display = '';
+            return;
+        }
+        if (info.installed === false) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
+            cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
+                findBackendName(id) + " CLI not found. Install it and make sure '" +
+                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+            ) + '</div>';
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            return;
+        }
+        if (!info.registered) {
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            // A failed connect re-detects, which lands back here with
+            // registered still false. Rebuilding the markup would wipe the
+            // diagnostic onConnectResult just wrote (invalid TOML, the
+            // `claude mcp add` stderr) before the user could read it, so
+            // render this state once per backend and leave it alone.
+            if (cliEmptyStateEl.getAttribute('data-connect-for') === id) return;
+            cliEmptyStateEl.setAttribute('data-connect-for', id);
+            cliEmptyStateEl.innerHTML =
+                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
+                ' is installed but not connected to Zenvi yet.</div>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Connect</button>' +
+                '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
+            var btn = document.getElementById('chat-cli-connect-btn');
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    btn.disabled = true;
+                    btn.textContent = 'Connecting…';
+                    var statusEl = document.getElementById('chat-cli-connect-status');
+                    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                    getBridge(function (bridge) {
+                        if (bridge && bridge.connectCli) bridge.connectCli(id);
+                    });
+                });
+            }
+            return;
+        }
+        // Installed and connected — nothing to show, back to the normal chat view.
+        cliEmptyStateEl.removeAttribute('data-connect-for');
+        cliEmptyStateEl.style.display = 'none';
+        messagesEl.style.display = '';
+    }
+
+    window.setCliStatus = function (statusJson) {
+        try { cliStatus = JSON.parse(statusJson) || {}; } catch (e) { cliStatus = {}; }
+        updateCliEmptyState();
+    };
+
+    window.onConnectResult = function (backendId, ok, message) {
+        var statusEl = document.getElementById('chat-cli-connect-status');
+        var btn = document.getElementById('chat-cli-connect-btn');
+        if (statusEl) {
+            statusEl.textContent = message || (ok ? 'Connected.' : 'Connect failed.');
+            statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        if (btn && !ok) {
+            btn.disabled = false;
+            btn.textContent = 'Connect';
+        }
+        // A fresh setCliStatus push (from the re-detect Python triggers right
+        // after this) will re-render the empty state — if now registered, it
+        // flips straight back to the normal chat view.
+    };
+
+    window.setBackends = function (backendsJson) {
+        if (!backendSelect) return;
+        var list = [];
+        try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
+        backendItems = list.map(function (b) {
+            return { id: b.id || '', name: b.name || b.id || '' };
+        });
+        var current = backendSelect.value;
+        backendSelect.innerHTML = '';
+        backendItems.forEach(function (b) {
+            var opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = b.name;
+            backendSelect.appendChild(opt);
+        });
+        if (current) backendSelect.value = current;
+    };
+
+    if (backendSelect) {
+        backendSelect.addEventListener('change', function () {
+            updateCliEmptyState();
+            if (!activeSessionId) return;
+            getBridge(function (bridge) {
+                if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
+            });
+            applyBackendChrome(backendSelect.value);
+        });
+    }
+
+    // Per-backend chrome. The model pill follows whether this backend offers a
+    // lineup at all (Python pushes a fresh setModels on every backend/tab
+    // change; an empty list means "let the CLI pick"). The Plan/Agent toggle is
+    // Zenvi-only — planning is a backend feature the CLI agents don't have; see
+    // AIChatWindow._resolve_agent_mode.
+    function applyBackendChrome(id) {
+        var isZenvi = (id === 'zenvi' || !id);
+        if (modelTrigger) modelTrigger.style.display = modelItems.length ? '' : 'none';
+        if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
+        if (!isZenvi) {
+            if (currentAgentMode !== 'agent') setAgentModeUI('agent');
+            if (window.setPlanChip) window.setPlanChip(null);
+        }
+    }
+
+    // ==================================================================
+    // Tool-gap log panel (silent capability gaps — see the agent spec, Part B)
+    // ==================================================================
+    function openGapLog() {
+        if (!gapLogOverlay) return;
+        gapLogOverlay.style.display = 'flex';
+        // Status must always be real, never stale — re-fetch every time it opens.
+        getBridge(function (bridge) {
+            if (bridge && bridge.getGaps) bridge.getGaps();
+        });
+    }
+
+    function closeGapLog() {
+        if (gapLogOverlay) gapLogOverlay.style.display = 'none';
+    }
+
+    function renderGapEntry(entry) {
+        var row = document.createElement('div');
+        row.className = 'chat-gap-log-entry';
+        var when = '';
+        try { when = new Date(entry.ts * 1000).toLocaleString(); } catch (e) { when = ''; }
+        row.innerHTML =
+            '<div class="chat-gap-log-entry-request">' + escapeHtml(entry.request || '') + '</div>' +
+            '<div class="chat-gap-log-entry-capability">' + escapeHtml(entry.missing_capability || '') + '</div>' +
+            '<div class="chat-gap-log-entry-footer">' +
+            '<span class="chat-gap-log-entry-time">' + escapeHtml(when) + '</span>' +
+            '<span class="chat-gap-log-entry-actions">' +
+            '<button type="button" class="chat-gap-log-action-btn resolve">Resolve</button>' +
+            '<button type="button" class="chat-gap-log-action-btn delete">Delete</button>' +
+            '</span></div>';
+        row.querySelector('.resolve').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.resolveGap) bridge.resolveGap(entry.id);
+            });
+        });
+        row.querySelector('.delete').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.deleteGap) bridge.deleteGap(entry.id);
+            });
+        });
+        return row;
+    }
+
+    window.setGapList = function (entriesJson) {
+        if (!gapLogListEl) return;
+        var entries = [];
+        try { entries = JSON.parse(entriesJson) || []; } catch (e) { entries = []; }
+        var open = entries.filter(function (e) { return !e.resolved; });
+        gapLogListEl.innerHTML = '';
+        if (!open.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-gap-log-empty';
+            empty.textContent = 'No tool gaps logged.';
+            gapLogListEl.appendChild(empty);
+            return;
+        }
+        open.forEach(function (entry) {
+            gapLogListEl.appendChild(renderGapEntry(entry));
+        });
+    };
+
+    if (gapLogBtn) gapLogBtn.addEventListener('click', openGapLog);
+    if (gapLogClose) gapLogClose.addEventListener('click', closeGapLog);
+    if (gapLogOverlay) {
+        gapLogOverlay.addEventListener('click', function (e) {
+            if (e.target === gapLogOverlay) closeGapLog();
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && gapLogOverlay && gapLogOverlay.style.display !== 'none') {
+            closeGapLog();
+        }
     });
 
     // Handle background responses (marks tab as unread)

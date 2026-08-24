@@ -75,6 +75,7 @@ from windows.models.emoji_model import EmojisModel
 from windows.models.files_model import FilesModel
 from windows.models.transition_model import TransitionsModel
 from windows.preview_thread import PreviewParent
+from windows.agent_selector_button import AgentSelectorButton
 from windows.update_panel import UpdatePanel
 from windows.update_status_button import (
     UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
@@ -251,9 +252,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Stop timeline background workers (such as the thumbnail thread) before Qt
         # begins destroying child widgets, to avoid QThread warnings on shutdown.
-        timeline_widget = getattr(self, "timeline", None)
-        if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
-            timeline_widget.thumbnail_manager.shutdown()
+        # Guarded like its neighbours above: by this point Qt may already have
+        # destroyed the TimelineView's C++ half, and getattr() on a dead sip
+        # wrapper raises RuntimeError rather than returning the default. That
+        # exception used to escape closeEvent and skip everything below —
+        # thread shutdown, the lock file, and the chat dock's worker/CLI
+        # teardown — aborting the process with "QThread: Destroyed while thread
+        # is still running".
+        try:
+            timeline_widget = getattr(self, "timeline", None)
+            if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
+                timeline_widget.thumbnail_manager.shutdown()
+        except Exception:
+            log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
 
         # Stop thumbnail server thread (if any)
         if self.http_server_thread:
@@ -2147,6 +2158,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # Remove clip
                 c.delete()
 
+        # A deleted clip may still be referenced by the preview widget's
+        # transform state (e.g. it was the selected/transforming clip) —
+        # its native object is gone, so clear the cached reference before
+        # the next mouseMoveEvent/paintEvent can dereference it.
+        self.videoPreview.clearTransformState()
+
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()
 
@@ -2195,6 +2212,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self.ripple_delete_gap(start_position, t.data["layer"], duration)
 
         finally:
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; its native object is gone, so clear the
+            # cached reference before the next mouseMoveEvent/paintEvent can
+            # dereference it.
+            self.videoPreview.clearTransformState()
+
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
 
@@ -4217,14 +4240,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.update_status_button = UpdateStatusButton(self)
         self._update_panel = None
 
+        # Toolbar agent picker. Built before the themes populate the toolbar;
+        # it reads through self.dockAIChat, which does not exist yet, and
+        # renders a sensible default until the chat dock shows up.
+        self.agent_selector_button = AgentSelectorButton(self)
+        # Popup the button opens. Cached and parented to the window, not the
+        # button: set_toolbar_buttons() calls toolbar.clear() on every theme
+        # change, which releases and reparents the button widget.
+        self._agent_panel = None
+
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
         self.UpdateProgressSignal.connect(self.updateDownloadProgress)
         self.UpdateFailedSignal.connect(self.updateFailed)
 
-        # Background auto-updater (stable version + optional download)
-        self._auto_updater = AutoUpdater()
-        self._auto_updater.start()
+        # Background auto-updater (stable version + optional download).
+        # Only for packaged/frozen builds — a dev running from source has no
+        # install directory to update into, and staging a real release build
+        # in the background just gets swapped in on the next source launch.
+        self._auto_updater = None
+        if getattr(sys, "frozen", False):
+            self._auto_updater = AutoUpdater()
+            self._auto_updater.start()
 
         # Initialize and start the thumbnail HTTP server
         try:
@@ -4269,6 +4306,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        self.agent_selector_button.sync_from_chat()
+
+        # Start the in-app MCP server now (instead of waiting for the first
+        # Zenvi-driven CLI request) so an external `claude`/`codex` session run
+        # in a terminal can connect as soon as the app is up.
+        try:
+            from classes.agent_mcp_server import get_mcp_server
+            get_mcp_server().start()
+        except Exception as e:
+            log.warning("Failed to start in-app MCP server: %s", e)
+
         # Re-bind chat sessions whenever the active project changes.
         try:
             self.projectChanged.connect(self.dockAIChat.reload_for_project)

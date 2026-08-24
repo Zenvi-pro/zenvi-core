@@ -445,14 +445,20 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             # Viewport and frame
             viewport = self.centeredViewport(self.width(), self.height())
-            if self.current_image:
-                pix_size = self.current_image.size()
+            # Snapshot once: present() can reassign self.current_image to a new
+            # QImage while a nested event loop (e.g. a native macOS drag) lets
+            # queued events run mid-paint. Re-reading the attribute across
+            # separate calls below could mix an old size with a new image's
+            # pixel buffer, or race a concurrent replacement outright.
+            current_image = self.current_image
+            if current_image:
+                pix_size = current_image.size()
                 pix_size.scale(event.rect().size(), Qt.KeepAspectRatio)
                 self.curr_frame_size = pix_size
 
                 scale = self.devicePixelRatioF()
                 # Use explicit QSize (int dimensions) to avoid QSizeF issues on Retina displays
-                scaled_img = self.current_image.scaled(
+                scaled_img = current_image.scaled(
                     QSize(max(1, round(pix_size.width() * scale)),
                           max(1, round(pix_size.height() * scale))),
                     Qt.KeepAspectRatio,
@@ -726,8 +732,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             log.warning("video_widget: present() received null/empty frame — skipping")
             return
 
-        # Get frame's QImage from libopenshot
+        # Get frame's QImage from libopenshot. Locked so a repaint that is
+        # mid-flight in a nested event loop (e.g. a native drag) can't read a
+        # half-replaced current_image alongside this reassignment.
+        self.mutex.lock()
         self.current_image = image
+        self.mutex.unlock()
 
         # Schedule repaint on the GUI thread (thread-safe, unlike repaint())
         self.update()
@@ -1818,16 +1828,59 @@ class VideoWidget(QWidget, updates.UpdateInterface):
     def refreshTriggered(self):
         """Signal to refresh viewport (i.e. a property might have changed that effects the preview)"""
 
-        # Update reference to clip(s)
+        # Update reference to clip(s). Must refresh transforming_clip_object(s)
+        # (the native libopenshot handles from timeline.GetClip()) alongside the
+        # Python Clip model, not just the model alone: those native handles go
+        # stale whenever the timeline rebuilds internally (e.g. a new clip
+        # dropped onto it), and mouseMoveEvent/paintEvent call methods directly
+        # on the stale object, which segfaults instead of raising in Python.
         if self.transforming_clips:
-            self.transforming_clips = [Clip.get(id=c.id) for c in self.transforming_clips if Clip.get(id=c.id)]
+            win = get_app().window
+            refreshed_clips = []
+            refreshed_objects = []
+            for c in self.transforming_clips:
+                clip = Clip.get(id=c.id)
+                clip_obj = win.timeline_sync.timeline.GetClip(c.id) if clip else None
+                if clip and clip_obj:
+                    refreshed_clips.append(clip)
+                    refreshed_objects.append(clip_obj)
+            self.transforming_clips = refreshed_clips
+            self.transforming_clip_objects = refreshed_objects
             if self.transforming_clips:
                 self.transforming_clip = self.transforming_clips[0]
+                self.transforming_clip_object = self.transforming_clip_objects[0]
             else:
                 self.transforming_clip = None
+                self.transforming_clip_object = None
 
-        if self.transforming_effect:
+        if self.transforming_effect and self.transforming_clips:
+            # A clip transform owns the singular handles; the branch above just
+            # refreshed them. Only the Python model is left to update.
             self.transforming_effect = Effect.get(id=self.transforming_effect.id)
+        elif self.transforming_effect:
+            # keyFrameTransformTriggered sets the *singular* clip/effect objects
+            # and never populates transforming_clips, so the branch above skips
+            # an effect transform entirely. Its native handles go stale on a
+            # rebuild just the same, so refresh them by id here -- and drop the
+            # transform when either lookup fails, rather than let paintEvent or
+            # mouseMoveEvent call into a freed object.
+            win = get_app().window
+            eff = Effect.get(id=self.transforming_effect.id)
+            eff_obj = win.timeline_sync.timeline.GetClipEffect(
+                self.transforming_effect.id) if eff else None
+            clip_id = self.transforming_clip.id if self.transforming_clip else None
+            clip = Clip.get(id=clip_id) if clip_id else None
+            clip_obj = win.timeline_sync.timeline.GetClip(clip_id) if clip else None
+            if eff and eff_obj and clip and clip_obj:
+                self.transforming_effect = eff
+                self.transforming_effect_object = eff_obj
+                self.transforming_clip = clip
+                self.transforming_clip_object = clip_obj
+            else:
+                self.transforming_effect = None
+                self.transforming_effect_object = None
+                self.transforming_clip = None
+                self.transforming_clip_object = None
 
     def transformTriggered(self, clip_ids):
         """Handle the transform signal when it's emitted. Supports multiple clip IDs."""
