@@ -1116,6 +1116,16 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements-noqt.txt
           ./.venv/bin/python -m pip install setuptools wheel PyOpenGL
+          # requirements-noqt.txt deliberately skips mcp on MinGW Python >= 3.14:
+          # mcp declares pywin32>=311 there and no pywin32 build exists for this
+          # interpreter (PyPI is MSVC-only through cp313, MSYS2 packages 310), so
+          # a plain resolve ends in ResolutionImpossible. pywin32 is only used by
+          # mcp's stdio client path; Zenvi runs the HTTP server side, so install
+          # mcp alone and let the pinned dependencies above satisfy it.
+          ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
+          # Fail loudly here rather than shipping a frozen app that raises on the
+          # first agent-backend use.
+          ./.venv/bin/python -c "import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK')"
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}

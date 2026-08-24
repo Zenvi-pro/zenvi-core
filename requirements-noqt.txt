@@ -18,8 +18,31 @@ python-dotenv>=1.0.1
 # call_tool(validate_input=False), and the transport test needs
 # mcp.client.streamable_http.streamable_http_client(url, http_client=...).
 # Capped below 2.0, which reorganises these APIs again.
-mcp>=1.28,<2
-uvicorn>=0.30
+#
+# The marker skips mcp on MinGW/MSYS2 Python >= 3.14. There mcp declares
+# pywin32>=311, and no pywin32 distribution exists for that interpreter: PyPI
+# ships MSVC-only wheels through cp313 and MSYS2 packages 310, so pip resolution
+# fails outright. pywin32 is only reached by mcp's stdio *client* path
+# (mcp/os/win32/utilities.py, mcp/client/stdio) and Zenvi is the HTTP server
+# side, so on that interpreter install mcp without its dependency graph:
+#   pip install --no-deps "mcp>=1.28,<2"
+# The pins below are mcp's own runtime dependencies, kept explicit so that
+# --no-deps install produces a working server. Keep them in sync with mcp's
+# requires_dist when moving the floor.
+mcp>=1.28,<2; sys_platform != "win32" or python_version < "3.14"
+anyio>=4.5
+httpx>=0.27.1,<1.0.0
+httpx-sse>=0.4
+jsonschema>=4.20.0
+pydantic>=2.12.0,<3.0.0
+pydantic-settings>=2.5.2
+pyjwt[crypto]>=2.10.1
+python-multipart>=0.0.9
+sse-starlette>=1.6.1
+starlette>=0.48.0
+typing-extensions>=4.9.0
+typing-inspection>=0.4.1
+uvicorn>=0.31.1
 
 # cx_Freeze / lief are only needed for freeze.py installers (not for day-to-day dev).
 # Pip can work for cx_Freeze on MinGW if /mingw64/bin is first on PATH and cmake/ninja/gcc are installed.
