@@ -54,9 +54,14 @@ MAX_TRACEBACK_CHARS = 12000
 DIALOG_MIN_INTERVAL = 20.0
 DIALOG_MAX_COUNT = 12
 
+# Qt platform plugins with no way for a user to dismiss a dialog. A blocking one
+# on these would hang the process forever (CI, OPENSHOT_HEADLESS=1).
+HEADLESS_PLATFORMS = ("offscreen", "minimal", "vnc")
+
 _installed = False
 _prev_excepthook = None
 _prev_threading_excepthook = None
+_prev_unraisablehook = None
 _faulthandler_stream = None
 
 # Re-entrancy guard: our handler can itself raise (broken logging, dead Qt), and
@@ -209,6 +214,20 @@ def _queue_dialog(summary, tb_text, blocking=False):
         # No GUI yet (or a headless/unittest run): the log entry is all we can do.
         return
 
+    try:
+        if QCoreApplication.closingDown():
+            # A modal exec_() here would spin a nested event loop while Qt is
+            # destroying widgets. The log entry still went out.
+            return
+    except Exception:
+        pass
+
+    if _is_headless_platform(app):
+        # Nobody can dismiss a modal dialog on the offscreen/minimal platforms
+        # (CI, OPENSHOT_HEADLESS=1), and a blocking one would hang the process
+        # forever. The log entry still went out.
+        return
+
     if not _should_show_dialog(tb_text):
         return
 
@@ -237,6 +256,13 @@ def _queue_dialog(summary, tb_text, blocking=False):
     except Exception:
         _fallback_write("crash_handler could not queue the error dialog:\n"
                         + traceback.format_exc())
+
+
+def _is_headless_platform(app):
+    try:
+        return str(app.platformName()).lower() in HEADLESS_PLATFORMS
+    except Exception:
+        return False
 
 
 def _show_dialog(summary, tb_text):
@@ -309,6 +335,32 @@ def _threading_excepthook(args):
            context="unhandled exception in thread %r" % name, show_dialog=False)
 
 
+def _unraisablehook(args):
+    """Exceptions Python cannot propagate: __del__, GC, weakref callbacks.
+
+    These never reach sys.excepthook, and the default hook prints to stderr --
+    which is None in frozen GUI builds, so they vanished entirely. Logged
+    without a dialog: they are almost always teardown noise arriving after the
+    user has already asked to quit.
+    """
+    exc_value = getattr(args, "exc_value", None)
+    exc_type = getattr(args, "exc_type", None) or type(exc_value)
+    where = getattr(args, "err_msg", None) or "unraisable exception"
+
+    # CPython hands us the object whose finalizer failed -- often the bound
+    # __del__ itself, so a repr identifies it far better than its type name.
+    obj = getattr(args, "object", None)
+    context = where
+    if obj is not None:
+        try:
+            context = "%s in %s" % (where, repr(obj)[:120])
+        except Exception:
+            context = "%s in a %s" % (where, type(obj).__name__)
+
+    report(exc_type, exc_value, getattr(args, "exc_traceback", None),
+           context=context, show_dialog=False)
+
+
 def enable_faulthandler():
     """Dump native (SIGSEGV/SIGABRT) stacks somewhere they can actually be read.
 
@@ -350,9 +402,19 @@ def install():
     so our handler runs first and still chains to theirs.
     """
     global _installed, _prev_excepthook, _prev_threading_excepthook
+    global _prev_unraisablehook
 
     if _installed and sys.excepthook is _excepthook:
         return False
+
+    # Import the logging setup now rather than lazily on the first report, so the
+    # log file and the root-logger forwarder exist before anything can fail.
+    # Records emitted before this point only ever reached stderr -- which is None
+    # in a frozen GUI build.
+    try:
+        import classes.logger  # noqa: F401
+    except Exception:
+        pass
 
     _prev_excepthook = sys.excepthook
     sys.excepthook = _excepthook
@@ -361,6 +423,10 @@ def install():
         _prev_threading_excepthook = threading.excepthook
         threading.excepthook = _threading_excepthook
 
+    if hasattr(sys, "unraisablehook"):
+        _prev_unraisablehook = sys.unraisablehook
+        sys.unraisablehook = _unraisablehook
+
     _installed = True
     return True
 
@@ -368,6 +434,7 @@ def install():
 def uninstall():
     """Restore the previous handlers (used by the tests)."""
     global _installed, _prev_excepthook, _prev_threading_excepthook
+    global _prev_unraisablehook
 
     if not _installed:
         return
@@ -375,8 +442,11 @@ def uninstall():
         sys.excepthook = _prev_excepthook
     if _prev_threading_excepthook is not None and hasattr(threading, "excepthook"):
         threading.excepthook = _prev_threading_excepthook
+    if _prev_unraisablehook is not None and hasattr(sys, "unraisablehook"):
+        sys.unraisablehook = _prev_unraisablehook
     _prev_excepthook = None
     _prev_threading_excepthook = None
+    _prev_unraisablehook = None
     _installed = False
 
 

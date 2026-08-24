@@ -30,6 +30,7 @@ import platform
 
 from classes import info
 from classes import sentry
+from classes.logger import log
 
 
 def tail_file(f, n, offset=None):
@@ -67,7 +68,11 @@ def libopenshot_crash_recovery():
         # Read from bottom up
         for raw_line in reversed(tail_file(f, 500)):
             # Format and remove extra spaces from line
-            line = " ".join(str(raw_line, 'utf-8').split()) + "\n"
+            # errors="replace": a hard crash mid-write leaves a truncated or
+            # binary tail in this log, and a strict decode raised
+            # UnicodeDecodeError from inside MainWindow.__init__ -- so one crash
+            # stopped the app from launching again.
+            line = " ".join(str(raw_line, 'utf-8', errors='replace').split()) + "\n"
             # Detect stack trace
             if "End of Stack Trace" in line:
                 found_stack = True
@@ -104,25 +109,31 @@ def libopenshot_crash_recovery():
         sentry.set_context("libopenshot", {"stack-trace": exception_lines})
         sentry.set_tag("component", "libopenshot")
 
-    # Clear / normalize log line (so we can roll them up in the analytics)
+    # Clear / normalize log line (so we can roll them up in the analytics).
+    # This is all shape-dependent slicing on a log we do not control, and it only
+    # exists to make the metric roll up nicely -- never worth failing a launch.
     if last_log_line:
-        # Format last log line based on OS (since each OS can be formatted differently)
-        if platform.system() == "Darwin":
-            last_log_line = "mac-%s" % last_log_line[58:].strip()
-        elif platform.system() == "Windows":
-            last_log_line = "windows-%s" % last_log_line
-        elif platform.system() == "Linux":
-            last_log_line = "linux-%s" % last_log_line.replace("/usr/local/lib/", "")
+        try:
+            # Format last log line based on OS (since each OS can be formatted differently)
+            if platform.system() == "Darwin":
+                last_log_line = "mac-%s" % last_log_line[58:].strip()
+            elif platform.system() == "Windows":
+                last_log_line = "windows-%s" % last_log_line
+            elif platform.system() == "Linux":
+                last_log_line = "linux-%s" % last_log_line.replace("/usr/local/lib/", "")
 
-        # Remove '()' from line, and split. Trying to grab the beginning of the log line.
-        last_log_line = last_log_line.replace("()", "")
-        log_parts = last_log_line.split("(")
-        if len(log_parts) == 2:
-            last_log_line = "-%s" % log_parts[0].replace(
-                "logger_libopenshot:INFO ", "").strip()[:64]
-        elif len(log_parts) >= 3:
-            last_log_line = "-%s (%s" % (log_parts[0].replace(
-                "logger_libopenshot:INFO ", "").strip()[:64], log_parts[1])
+            # Remove '()' from line, and split. Trying to grab the beginning of the log line.
+            last_log_line = last_log_line.replace("()", "")
+            log_parts = last_log_line.split("(")
+            if len(log_parts) == 2:
+                last_log_line = "-%s" % log_parts[0].replace(
+                    "logger_libopenshot:INFO ", "").strip()[:64]
+            elif len(log_parts) >= 3:
+                last_log_line = "-%s (%s" % (log_parts[0].replace(
+                    "logger_libopenshot:INFO ", "").strip()[:64], log_parts[1])
+        except Exception:
+            log.debug("Could not normalize the last libopenshot log line", exc_info=True)
+            last_log_line = ""
     else:
         last_log_line = ""
 

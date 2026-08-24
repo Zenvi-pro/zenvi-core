@@ -164,7 +164,9 @@ class StartupError:
 
     def show(self):
         """Display the stored error message"""
-        box_call = self.levels[self.level]
+        # An unrecognised level must not KeyError on the way to telling the user
+        # something already went wrong.
+        box_call = self.levels.get(self.level, QMessageBox.critical)
         box_call(None, self.title, self.message)
         if self.level == "error":
             sys.exit()
@@ -492,7 +494,16 @@ class OpenShotApp(QApplication):
             _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
-            error.show()
+            try:
+                error.show()
+            except SystemExit:
+                # A fatal StartupError exits on purpose; let it through.
+                raise
+            except Exception:
+                # One dialog failing must not swallow the messages behind it.
+                from classes.logger import log as _err_log
+                _err_log.error("Could not display startup message %r",
+                               error.title, exc_info=True)
 
     def _tr(self, message):
         return self.translate("", message)

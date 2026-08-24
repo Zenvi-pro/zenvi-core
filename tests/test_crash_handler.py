@@ -27,12 +27,15 @@ def _clean_handler_state():
     """Never leave the interpreter's hooks or the throttle mutated."""
     saved_excepthook = sys.excepthook
     saved_threading_hook = getattr(threading, "excepthook", None)
+    saved_unraisable_hook = getattr(sys, "unraisablehook", None)
     crash_handler.reset_dialog_throttle()
     yield
     crash_handler.uninstall()
     sys.excepthook = saved_excepthook
     if saved_threading_hook is not None:
         threading.excepthook = saved_threading_hook
+    if saved_unraisable_hook is not None:
+        sys.unraisablehook = saved_unraisable_hook
     crash_handler.reset_dialog_throttle()
 
 
@@ -44,6 +47,17 @@ def qapp():
 
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture
+def gui_platform(monkeypatch, qapp):
+    """Make the app look like a real windowing system.
+
+    The suite runs on the offscreen platform, where dialogs are suppressed on
+    purpose -- so any test about dialog *delivery* has to opt out of that.
+    """
+    monkeypatch.setattr(type(qapp), "platformName", lambda self: "xcb")
+    return qapp
 
 
 @pytest.fixture
@@ -74,10 +88,11 @@ def _raise(exc):
 # --- installation -----------------------------------------------------------
 
 
-def test_install_replaces_both_interpreter_hooks():
+def test_install_replaces_all_three_interpreter_hooks():
     crash_handler.install()
     assert sys.excepthook is crash_handler._excepthook
     assert threading.excepthook is crash_handler._threading_excepthook
+    assert sys.unraisablehook is crash_handler._unraisablehook
 
 
 def test_install_is_idempotent():
@@ -129,9 +144,11 @@ def test_chaining_falls_back_to_the_interpreter_default():
 def test_uninstall_restores_the_previous_hooks():
     marker = lambda *args: None  # noqa: E731
     sys.excepthook = marker
+    sys.unraisablehook = marker
     crash_handler.install()
     crash_handler.uninstall()
     assert sys.excepthook is marker
+    assert sys.unraisablehook is marker
 
 
 # --- reporting --------------------------------------------------------------
@@ -382,7 +399,7 @@ def test_startup_failures_ask_for_a_blocking_dialog(captured):
     assert captured["dialogs"][0][2] is True
 
 
-def test_a_blocking_dialog_is_shown_synchronously(monkeypatch, qapp):
+def test_a_blocking_dialog_is_shown_synchronously(monkeypatch, gui_platform):
     """A deferred dialog is never delivered on a path that is about to exit."""
     shown = []
     monkeypatch.setattr(crash_handler, "_show_dialog",
@@ -393,7 +410,7 @@ def test_a_blocking_dialog_is_shown_synchronously(monkeypatch, qapp):
     assert shown == ["ValueError: kaboom"]
 
 
-def test_a_worker_thread_dialog_is_never_shown_inline(monkeypatch, qapp):
+def test_a_worker_thread_dialog_is_never_shown_inline(monkeypatch, gui_platform):
     """Widgets are main-thread only, so an off-thread report must be deferred."""
     shown = []
     monkeypatch.setattr(crash_handler, "_show_dialog",
@@ -408,3 +425,229 @@ def test_a_worker_thread_dialog_is_never_shown_inline(monkeypatch, qapp):
     worker.join()
 
     assert shown == []
+
+
+# --- unraisable exceptions --------------------------------------------------
+
+
+def _unraisable_args(exc, obj=None, err_msg=None):
+    exc_type, exc_value, exc_traceback = _raise(exc)
+
+    class _Args:
+        pass
+
+    args = _Args()
+    args.exc_type = exc_type
+    args.exc_value = exc_value
+    args.exc_traceback = exc_traceback
+    args.object = obj
+    args.err_msg = err_msg
+    return args
+
+
+def test_unraisable_exceptions_are_logged(captured):
+    """__del__ / GC / weakref-callback failures never reach sys.excepthook.
+
+    The default sys.unraisablehook prints to stderr, which is None in a frozen
+    GUI build -- so these went nowhere at all.
+    """
+    crash_handler._unraisablehook(_unraisable_args(ValueError("kaboom")))
+
+    assert any("kaboom" in text for text in captured["logged"])
+
+
+def test_unraisable_exceptions_never_pop_a_dialog(captured):
+    # These arrive during teardown, usually after the user already asked to quit.
+    crash_handler._unraisablehook(_unraisable_args(ValueError("kaboom")))
+
+    assert captured["dialogs"] == []
+
+
+def test_unraisable_report_names_the_object_and_site(captured):
+    class Widget:
+        def __repr__(self):
+            return "<Widget timeline>"
+
+    args = _unraisable_args(ValueError("kaboom"), obj=Widget(),
+                            err_msg="Exception ignored in __del__")
+    crash_handler._unraisablehook(args)
+
+    logged = captured["logged"][0]
+    assert "Exception ignored in __del__" in logged
+    assert "<Widget timeline>" in logged
+
+
+def test_unraisable_report_survives_an_unprintable_object(captured):
+    class Nasty:
+        def __repr__(self):
+            raise RuntimeError("cannot repr me")
+
+    crash_handler._unraisablehook(_unraisable_args(ValueError("kaboom"), obj=Nasty()))
+
+    assert any("Nasty" in text for text in captured["logged"])
+
+
+def test_unraisable_report_survives_a_bare_hook_argument(captured):
+    # Older / partial hook arguments may not carry every attribute.
+    class _Bare:
+        exc_value = ValueError("kaboom")
+
+    crash_handler._unraisablehook(_Bare())
+
+    assert any("kaboom" in text for text in captured["logged"])
+
+
+# --- teardown ---------------------------------------------------------------
+
+
+def test_no_dialog_once_qt_is_closing_down(monkeypatch, gui_platform):
+    """A modal exec_() while Qt destroys widgets is a good way to segfault."""
+    from PyQt5.QtCore import QCoreApplication
+
+    shown = []
+    monkeypatch.setattr(crash_handler, "_show_dialog",
+                        lambda summary, tb: shown.append(summary))
+    monkeypatch.setattr(QCoreApplication, "closingDown", staticmethod(lambda: True))
+
+    crash_handler._queue_dialog("ValueError: kaboom", "traceback\n", blocking=True)
+
+    assert shown == []
+
+
+# --- where log records actually land ----------------------------------------
+
+
+def test_root_records_are_forwarded_to_the_log_file():
+    """Several of our modules log through logging.getLogger(__name__).
+
+    auth_manager, credits_client, zenvi_env, clip_utils, login_window and
+    launch.py are not children of the 'OpenShot' logger, so their records only
+    ever reached root -- which had a stderr-only handler, and stderr is None in a
+    frozen build. Their errors never made it into the log file on any platform.
+    """
+    import logging
+
+    from classes import logger as app_logger
+
+    assert app_logger.root_error_handler in logging.getLogger().handlers
+    assert app_logger.root_error_handler.target is app_logger.fh
+
+
+def test_a_third_party_error_reaches_the_file_handler(monkeypatch):
+    import logging
+
+    from classes import logger as app_logger
+
+    handled = []
+    monkeypatch.setattr(app_logger.fh, "emit", handled.append)
+
+    logging.getLogger("urllib3.connectionpool").error("connection reset")
+
+    assert [r.getMessage() for r in handled] == ["connection reset"]
+
+
+def test_third_party_warnings_do_not_reach_the_log_file(monkeypatch):
+    """Only ERROR+ is forwarded, so a chatty library can't flood the log.
+
+    Enforced on the handler, not by root's level: basicConfig() silently does
+    nothing when root already has handlers, so root's level isn't dependable.
+    """
+    import logging
+
+    from classes import logger as app_logger
+
+    handled = []
+    monkeypatch.setattr(app_logger.fh, "emit", handled.append)
+
+    logging.getLogger("urllib3.connectionpool").warning("retrying")
+
+    assert handled == []
+
+
+def test_the_app_logger_does_not_double_log_through_root():
+    """`log` keeps propagate = False, so forwarding root can't duplicate."""
+    from classes import logger as app_logger
+
+    assert app_logger.log.propagate is False
+
+
+# --- startup message display ------------------------------------------------
+
+
+def test_show_errors_continues_past_a_failing_dialog():
+    """One broken dialog must not swallow the messages queued behind it."""
+    from classes.app import OpenShotApp
+
+    shown = []
+
+    class _Error:
+        def __init__(self, title, boom=False):
+            self.title = title
+            self._boom = boom
+
+        def show(self):
+            if self._boom:
+                raise RuntimeError("no display available")
+            shown.append(self.title)
+
+    class _Stub:
+        errors = [_Error("first", boom=True), _Error("second")]
+
+    OpenShotApp.show_errors(_Stub())
+
+    assert shown == ["second"]
+
+
+def test_show_errors_lets_a_fatal_startup_error_exit():
+    from classes.app import OpenShotApp
+
+    class _Error:
+        title = "fatal"
+
+        def show(self):
+            raise SystemExit(1)
+
+    class _Stub:
+        errors = [_Error()]
+
+    with pytest.raises(SystemExit):
+        OpenShotApp.show_errors(_Stub())
+
+
+def test_startup_error_falls_back_for_an_unknown_level(monkeypatch):
+    from classes import app as app_module
+
+    calls = []
+    monkeypatch.setattr(app_module.QMessageBox, "critical",
+                        staticmethod(lambda *args: calls.append(args)))
+
+    err = app_module.StartupError("Title", "Message", level="not-a-level")
+    err.show()
+
+    assert len(calls) == 1
+
+
+def test_no_dialog_on_a_headless_qt_platform(monkeypatch, qapp):
+    """A modal dialog nobody can dismiss hangs the process forever.
+
+    The blocking startup dialog in particular: on offscreen/minimal (CI,
+    OPENSHOT_HEADLESS=1) exec_() never returns, so the process never exits.
+    """
+    shown = []
+    monkeypatch.setattr(crash_handler, "_show_dialog",
+                        lambda summary, tb: shown.append(summary))
+    monkeypatch.setattr(type(qapp), "platformName", lambda self: "offscreen")
+
+    crash_handler._queue_dialog("ValueError: kaboom", "traceback\n", blocking=True)
+
+    assert shown == []
+
+
+def test_dialogs_still_show_on_a_real_platform(monkeypatch, gui_platform):
+    shown = []
+    monkeypatch.setattr(crash_handler, "_show_dialog",
+                        lambda summary, tb: shown.append(summary))
+
+    crash_handler._queue_dialog("ValueError: kaboom", "traceback\n", blocking=True)
+
+    assert shown == ["ValueError: kaboom"]

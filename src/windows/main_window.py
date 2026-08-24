@@ -191,6 +191,31 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         else:
             self.shutting_down = True
 
+        # Tear down in a helper so the lock file is released no matter what.
+        try:
+            self._shutdown_sequence(app)
+        except Exception:
+            log.error("Error while shutting down; releasing the lock file anyway",
+                      exc_info=True)
+        finally:
+            # Leaving the lock file behind makes the *next* launch report a crash
+            # that never happened, and sends it through libopenshot_crash_recovery().
+            self.destroy_lock_file()
+
+        # If this shutdown was triggered by "Restart to Apply Update", spawn a
+        # new instance now (after the lock file is gone, so the fresh process
+        # doesn't mistake the clean exit for a crash) — it will apply the
+        # staged update at startup, before this old process has fully exited.
+        if getattr(self, "_restart_for_update", False):
+            self._relaunch_for_update()
+
+    def _shutdown_sequence(self, app):
+        """Stop threads and release libopenshot resources. Only called by closeEvent().
+
+        Every step here can raise, and destroy_lock_file() used to be the last
+        statement of closeEvent() -- so a single failure anywhere in this sequence
+        left the lock file in place and the next launch blamed a phantom crash.
+        """
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
 
@@ -288,16 +313,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.timeline_sync.timeline.Clear()
             self.timeline_sync.timeline = None
 
-        # Destroy lock file
-        self.destroy_lock_file()
-
-        # If this shutdown was triggered by "Restart to Apply Update", spawn a
-        # new instance now (after the lock file is gone, so the fresh process
-        # doesn't mistake the clean exit for a crash) — it will apply the
-        # staged update at startup, before this old process has fully exited.
-        if getattr(self, "_restart_for_update", False):
-            self._relaunch_for_update()
-
     def recover_backup(self):
         """Recover the backup file (if any)"""
         log.info("recover_backup")
@@ -317,7 +332,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         lock_path = os.path.join(info.USER_PATH, ".lock")
         # Check if it already exists
         if os.path.exists(lock_path):
-            last_log_line = exceptions.libopenshot_crash_recovery()
+            # Recovery parses libopenshot.log, which a hard crash can leave
+            # truncated or binary. It only feeds a metric, so a failure here must
+            # never stop the app from launching -- otherwise one crash makes the
+            # app permanently unstartable.
+            try:
+                last_log_line = exceptions.libopenshot_crash_recovery()
+            except Exception:
+                log.warning("Crash recovery failed to read libopenshot.log", exc_info=True)
+                last_log_line = ""
             if last_log_line:
                 log.error(f"Unhandled crash detected: {last_log_line}")
             else:
