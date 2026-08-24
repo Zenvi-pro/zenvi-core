@@ -734,6 +734,24 @@
         scrollToBottomIfPinned();
     };
 
+    // Redraw a tool block from stored history: already finished, so it should
+    // land collapsed rather than spinning like a live call. Only the name and
+    // outcome are kept locally, so there are no logs to expand.
+    window.replayToolBlock = function (payloadJson, ok) {
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        if (!data || !data.call_id) return;
+        window.addToolBlock(data);
+        var block = toolBlocks[data.call_id];
+        if (block && block.el) {
+            block.el.classList.remove('chat-message-enter');
+            block.el.classList.remove('has-logs');
+        }
+        window.completeToolBlock(data.call_id, !!ok, '');
+    };
+
     /* ── Processing state ── */
 
     let typingEl = null;

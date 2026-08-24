@@ -870,6 +870,12 @@ class AIChatWindow(QDockWidget):
         except Exception:
             self._current_project_path = ""
 
+        # Bucket this project's transcripts live under in the chat-history
+        # store.  Untitled projects get a throwaway draft key that is rekeyed
+        # onto the real project the first time the user saves.
+        self._draft_history_key: str = ""
+        self._history_key: str = self._resolve_history_key(self._current_project_path)
+
         # Stop all threads on app quit (covers the shutdown path where
         # closeEvent is never called on dock widgets).
         from PyQt5.QtWidgets import QApplication
@@ -879,7 +885,7 @@ class AIChatWindow(QDockWidget):
 
         # Restore previously open chat sessions (if any) before building UI.
         store = self._load_chat_sessions_store(self._current_project_path)
-        restored_sessions = store.get("sessions", []) if isinstance(store, dict) else []
+        restored_sessions = self._restorable_sessions(store)
         if isinstance(restored_sessions, list) and restored_sessions:
             for entry in restored_sessions:
                 if not isinstance(entry, dict):
@@ -889,7 +895,7 @@ class AIChatWindow(QDockWidget):
                 if not sid or sid in self._sessions:
                     continue
                 backend = _coerce_backend(entry.get("backend"))
-                worker, thread = self._make_worker(sid, backend)
+                worker, thread = self._make_worker(sid, backend, restore=entry)
                 self._sessions[sid] = {
                     "worker": worker,
                     "thread": thread,
@@ -902,6 +908,7 @@ class AIChatWindow(QDockWidget):
                     "agent_mode": entry.get("agent_mode", "agent"),
                     "current_plan": None,
                 }
+                self._persist_session(sid)
 
             active_from_store = store.get("active_session_id") if isinstance(store, dict) else None
             if active_from_store in self._sessions:
@@ -938,11 +945,15 @@ class AIChatWindow(QDockWidget):
     # Session management
     # ------------------------------------------------------------------
 
-    def _make_worker(self, session_id: str, backend: str = BACKEND_ZENVI):
+    def _make_worker(self, session_id: str, backend: str = BACKEND_ZENVI, restore: dict = None):
         """Create and start a worker thread pair for *session_id* using *backend*.
 
         All backends expose the same signals/slots, so the connections and the
         ``_on_*`` handlers below are identical regardless of which one is chosen.
+
+        *restore* is a stored session row; when present its CLI continuity
+        fields are seeded onto the runner so a reopened tab resumes its agent
+        conversation rather than starting a fresh one.
         """
         thread = QThread()
         if backend == BACKEND_CLAUDE:
@@ -964,8 +975,30 @@ class AIChatWindow(QDockWidget):
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
         worker.plan_event.connect(self._on_plan_event)
+        # CLI backends only: lets us persist the conversation id they resume from.
+        if hasattr(worker, "cli_session_changed"):
+            worker.cli_session_changed.connect(self._on_cli_session_changed)
+        if restore and hasattr(worker, "_cli_session_id"):
+            cli_sid = restore.get("cli_session_id") or ""
+            if cli_sid:
+                worker._cli_session_id = cli_sid
+                worker._cli_started = bool(restore.get("cli_started"))
+                worker._cli_cwd = restore.get("cli_cwd") or ""
+                # A stored id is always one the CLI itself reported or accepted.
+                worker._cli_id_from_cli = True
         thread.start()
         return worker, thread
+
+    @pyqtSlot(str, str, bool, str)
+    def _on_cli_session_changed(self, session_id: str, cli_session_id: str,
+                                cli_started: bool, cli_cwd: str):
+        """Persist a CLI agent's conversation id so --resume survives a restart."""
+        self._persist_session(
+            session_id,
+            cli_session_id=cli_session_id,
+            cli_started=cli_started,
+            cli_cwd=cli_cwd,
+        )
 
     def _create_initial_session(self):
         import uuid
@@ -984,6 +1017,7 @@ class AIChatWindow(QDockWidget):
             "current_plan": None,
         }
         self._active_sid = sid
+        self._persist_session(sid)
 
     def _create_session(self, model_id: str = "", backend: str = BACKEND_ZENVI):
         """Create a new chat session and switch to it (called from the + tab button)."""
@@ -1004,6 +1038,7 @@ class AIChatWindow(QDockWidget):
             "current_plan": None,
         }
         self._active_sid = sid
+        self._persist_session(sid)
         self._first_prompt_summary = None
         self.is_processing = False
         self._notify_agent_selector()
@@ -1012,10 +1047,10 @@ class AIChatWindow(QDockWidget):
             self._run_js("clearMessages();")
             self._push_tabs_to_js()
             self._update_preamble()
-            self._add_system_msg("New session started. Ask anything about your project.")
+            self._add_chrome_msg("New session started. Ask anything about your project.")
         else:
             self.chat_box.clear()
-            self._add_system_msg("New session started. Ask anything about your project.")
+            self._add_chrome_msg("New session started. Ask anything about your project.")
             self._update_preamble()
             self._sync_widget_backend_combo()
             self._rebuild_widget_tabs()
@@ -1109,6 +1144,7 @@ class AIChatWindow(QDockWidget):
             if not self._use_web_ui:
                 self._sync_widget_backend_combo()
         self._notify_agent_selector()
+        self._persist_session(session_id, backend=backend)
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
@@ -1157,6 +1193,10 @@ class AIChatWindow(QDockWidget):
             return  # never close the last session
         if session_id not in self._sessions:
             return
+        # Soft-delete first: the worker's clear_session below wipes the
+        # backend's own copy, so this row can end up the only record left.
+        from classes import chat_history
+        chat_history.mark_session_closed(session_id)
         sess = self._sessions.pop(session_id)
         worker = sess.get("worker")
         thread = sess.get("thread")
@@ -1201,13 +1241,45 @@ class AIChatWindow(QDockWidget):
         remain reachable when the original project is reopened.
         """
         try:
+            from classes import chat_history
+
             new_project_path = (new_project_path or "").strip()
             prev_path = getattr(self, "_current_project_path", "") or ""
-            same_bucket = self._project_key(new_project_path) == self._project_key(prev_path)
-            if same_bucket and new_project_path:
+            prev_key = getattr(self, "_history_key", "") or ""
+            if new_project_path and prev_path and (
+                os.path.abspath(new_project_path) == os.path.abspath(prev_path)
+            ):
                 # Same saved project re-signaled — nothing to do.  An empty
                 # ``new_project_path`` (New Project / untitled) is allowed to
                 # fall through so the chat resets to a fresh session.
+                return
+
+            # Resolve the new bucket first: this is what forks a Save As and
+            # adopts a project whose id churned underneath us.
+            if not new_project_path:
+                # New Project — a fresh throwaway bucket, not the last one.
+                # Bin the outgoing draft if nothing was ever said in it.
+                if prev_key.startswith("draft:"):
+                    chat_history.discard_empty_bucket(prev_key)
+                self._draft_history_key = ""
+            new_key = self._resolve_history_key(new_project_path)
+            if new_project_path and prev_key.startswith("draft:"):
+                # First save of an untitled project: its chat comes along
+                # rather than being thrown away.
+                chat_history.rekey_project(prev_key, new_key, new_project_path)
+                self._draft_history_key = ""
+
+            live_sids = set(self._sessions.keys())
+            stored_sids = {
+                row.get("session_id") for row in chat_history.load_sessions(new_key)
+            }
+            if live_sids and (live_sids & stored_sids):
+                # The store moved our live tabs into the new bucket (a draft
+                # being saved, or a Save As fork), so the conversation simply
+                # continues — no teardown, no reload.
+                self._current_project_path = new_project_path
+                self._history_key = new_key
+                self._save_chat_sessions_store(new_project_path)
                 return
 
             # 1. Persist current sessions to the previous project's store.
@@ -1234,10 +1306,9 @@ class AIChatWindow(QDockWidget):
 
             # 3. Bind to the new project and load its store.
             self._current_project_path = new_project_path
+            self._history_key = new_key
             store = self._load_chat_sessions_store(new_project_path)
-            restored_sessions = (
-                store.get("sessions", []) if isinstance(store, dict) else []
-            )
+            restored_sessions = self._restorable_sessions(store)
             if isinstance(restored_sessions, list) and restored_sessions:
                 for entry in restored_sessions:
                     if not isinstance(entry, dict):
@@ -1247,7 +1318,7 @@ class AIChatWindow(QDockWidget):
                     if not sid or sid in self._sessions:
                         continue
                     backend = _coerce_backend(entry.get("backend"))
-                    worker, thread = self._make_worker(sid, backend)
+                    worker, thread = self._make_worker(sid, backend, restore=entry)
                     self._sessions[sid] = {
                         "worker": worker,
                         "thread": thread,
@@ -1260,6 +1331,7 @@ class AIChatWindow(QDockWidget):
                         "agent_mode": entry.get("agent_mode", "agent"),
                         "current_plan": None,
                     }
+                    self._persist_session(sid)
                 active_from_store = (
                     store.get("active_session_id") if isinstance(store, dict) else None
                 )
@@ -1332,6 +1404,95 @@ class AIChatWindow(QDockWidget):
             abs_path = project_path
         return hashlib.sha1(abs_path.encode("utf-8")).hexdigest()[:16]
 
+    def _project_id(self) -> str:
+        """The id stored inside the project file — stable across rename/move."""
+        try:
+            from classes.app import get_app
+            return str(get_app().project.get("id") or "")
+        except Exception:
+            return ""
+
+    def _resolve_history_key(self, project_path: str) -> str:
+        """Chat-history bucket for *project_path*, repairing the mapping if needed.
+
+        Keyed on the project's own id rather than its path, so renaming a
+        project keeps its chats.  ``resolve_project_key`` also handles the
+        Save-As fork and the legacy-id churn cases — see that docstring.
+        """
+        from classes import chat_history
+
+        path = project_path or ""
+        if not path:
+            # Untitled: one bucket per window, rekeyed on first save so an hour
+            # of chatting before hitting Save isn't thrown away.
+            if not self._draft_history_key:
+                self._draft_history_key = chat_history.new_draft_key()
+            return self._draft_history_key
+
+        key = (
+            chat_history.resolve_project_key(self._project_id(), path)
+            or chat_history.path_key(path)
+        )
+        # First sight of this project: carry over the old metadata-only store
+        # (a no-op once the bucket has rows of its own).
+        legacy = self._load_chat_sessions_store(path)
+        if isinstance(legacy, dict) and legacy.get("sessions"):
+            chat_history.import_legacy_sessions(key, path, legacy.get("sessions"))
+        return key
+
+    def _restorable_sessions(self, legacy_store: dict) -> list:
+        """Sessions to reopen for this project — local history first.
+
+        The chat-history store is authoritative.  The legacy JSON store is
+        still read as a fallback so a rollback loses nothing.
+        """
+        from classes import chat_history
+
+        rows = chat_history.load_sessions(self._history_key)
+        if rows:
+            return rows
+        legacy = legacy_store.get("sessions", []) if isinstance(legacy_store, dict) else []
+        return [e for e in legacy if isinstance(e, dict) and e.get("session_id")]
+
+    def _persist_session(self, session_id: str, **fields) -> None:
+        """Register/refresh a session row in the chat-history store."""
+        from classes import chat_history
+
+        sess = self._sessions.get(session_id) or {}
+        chat_history.upsert_session(
+            session_id,
+            self._history_key,
+            project_path=self._current_project_path or None,
+            title=fields.get("title") or sess.get("first_prompt_summary") or sess.get("title"),
+            backend=fields.get("backend") or sess.get("backend"),
+            agent_mode=fields.get("agent_mode") or sess.get("agent_mode"),
+            cli_session_id=fields.get("cli_session_id"),
+            cli_started=fields.get("cli_started"),
+            cli_cwd=fields.get("cli_cwd"),
+        )
+
+    def _record_message(self, session_id: str, role: str, text: str) -> None:
+        """Persist one final message. Never let a store failure break a turn."""
+        if not session_id or not text:
+            return
+        from classes import chat_history
+        chat_history.record_message(session_id, role, text)
+
+    def _record_tool_started(self, session_id: str, call_id: str, tool_name: str) -> None:
+        """Note that a tool ran, so a restored transcript can show the activity.
+
+        Only the name and outcome are kept — args and results stay in the
+        backend/CLI transcripts, which is what keeps this store small.
+        """
+        from classes import chat_history
+        chat_history.record_tool_event(
+            session_id, call_id, tool_name, humanize_tool_name(tool_name)
+        )
+
+    def _record_tool_completed(self, session_id: str, call_id: str, ok: bool) -> None:
+        from classes import chat_history
+        chat_history.complete_tool_event(session_id, call_id, bool(ok))
+
     def _chat_sessions_dir(self) -> str:
         from classes import info
         return os.path.join(info.USER_PATH, "chat_sessions")
@@ -1403,15 +1564,180 @@ class AIChatWindow(QDockWidget):
             # Non-fatal: chat can still run without local persistence.
             pass
 
+    # ------------------------------------------------------------------
+    # Restoring a transcript: local history first, backend only for gaps
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _history_norm(role: str, content: str) -> str:
+        """Comparable form of a message, so two sources can be lined up."""
+        text = content or ""
+        if role == "assistant":
+            text = AIChatWindow._strip_thinking(text)
+        return " ".join(text.split())
+
+    def _render_item(self, role: str, content: str) -> dict:
+        """Render one stored message into the shape the UI replays."""
+        if role == "assistant":
+            return {
+                "role": role,
+                "html_body": _markdown_to_html(content),
+                "is_assistant": True,
+                "content": content,
+            }
+        safe = html.escape(content or "").replace("\n", "<br/>")
+        return {
+            "role": role,
+            "html_body": "<p>" + safe + "</p>",
+            "is_assistant": False,
+            "content": content or "",
+        }
+
+    def _local_history_items(self, session_id: str) -> list:
+        from classes import chat_history
+        return [
+            self._render_item(m.get("role", ""), m.get("content", ""))
+            for m in chat_history.load_messages(session_id)
+        ]
+
+    def _restore_local_histories(self) -> None:
+        """Populate every open tab from the local store, then draw the active one.
+
+        This runs before the network fetch so a reopened project shows its
+        conversation immediately — and still shows it with the backend down.
+        """
+        for sid in list(self._sessions.keys()):
+            items = self._local_history_items(sid)
+            if not items:
+                continue
+            sess = self._sessions.get(sid)
+            if sess is None:
+                continue
+            system_parts = [m for m in sess.get("messages", []) if m and m[0] == "system"]
+            sess["messages"] = system_parts + [
+                (it["role"], it["html_body"], it["is_assistant"]) for it in items
+            ]
+            sess["local_contents"] = [(it["role"], it["content"]) for it in items]
+        if self._active_sid in self._sessions and self._sessions[self._active_sid].get("local_contents"):
+            self._render_restored_active_session()
+
+    def _render_restored_active_session(self) -> None:
+        """Replay the active tab's stored transcript, tool activity included."""
+        if not self._use_web_ui:
+            self._render_active_session_widget()
+            self._rebuild_widget_tabs()
+            return
+
+        from classes import chat_history
+        messages = chat_history.load_messages(self._active_sid)
+        by_turn = {}
+        for ev in chat_history.load_tool_events(self._active_sid):
+            by_turn.setdefault(ev.get("after_seq") or 0, []).append(ev)
+
+        self._run_js("clearMessages();")
+        for ev in by_turn.pop(0, []):
+            self._replay_tool_block(ev)
+        for msg in messages:
+            item = self._render_item(msg.get("role", ""), msg.get("content", ""))
+            self._run_js(
+                "appendMessage(%s, %s, %s);" % (
+                    json.dumps(item["role"]), json.dumps(item["html_body"]),
+                    "true" if item["is_assistant"] else "false",
+                )
+            )
+            # A turn's tool blocks sit between the message that triggered them
+            # and the reply that followed, which is where they first appeared.
+            for ev in by_turn.pop(msg.get("seq"), []):
+                self._replay_tool_block(ev)
+        for leftover in by_turn.values():
+            for ev in leftover:
+                self._replay_tool_block(ev)
+        self._push_tabs_to_js()
+
+    def _replay_tool_block(self, event: dict) -> None:
+        """Redraw one finished tool block, already collapsed."""
+        payload = {
+            "call_id": event.get("call_id") or "",
+            "title": event.get("title") or humanize_tool_name(event.get("tool_name") or ""),
+            "cmd": "",
+            "args_detail": "",
+            "tool_name": event.get("tool_name") or "",
+        }
+        self._run_js(
+            "if(window.replayToolBlock) window.replayToolBlock(%s, %s);"
+            % (json.dumps(json.dumps(payload)),
+               "true" if (event.get("status") != "error") else "false")
+        )
+
+    def _history_tail_beyond_local(self, local_pairs: list, backend_items: list) -> list:
+        """Backend messages that extend what we already hold locally.
+
+        Empty unless the backend transcript is strictly longer *and* everything
+        we have locally lines up as its prefix — otherwise the two have
+        diverged and the local copy is the one we trust.
+        """
+        if len(backend_items) <= len(local_pairs):
+            return []
+        for (l_role, l_content), item in zip(local_pairs, backend_items):
+            if l_role != item.get("role"):
+                return []
+            if self._history_norm(l_role, l_content) != self._history_norm(
+                item.get("role", ""), item.get("content", "")
+            ):
+                return []
+        return backend_items[len(local_pairs):]
+
     @pyqtSlot(str, str)
     def _on_history_restored(self, session_id: str, messages_json: str):
-        """Apply restored /chat/history data into in-memory + visible UI."""
+        """Fold /chat/history into the tab — local history stays authoritative."""
         if session_id not in self._sessions:
             return
         try:
             restored_items = json.loads(messages_json) if messages_json else []
         except Exception:
             restored_items = []
+
+        local_pairs = self._sessions[session_id].get("local_contents") or []
+        if local_pairs:
+            self._sessions[session_id]["unread"] = False
+            self._sessions[session_id]["processing"] = False
+            tail = self._history_tail_beyond_local(local_pairs, restored_items)
+            if not tail:
+                # Already rendered from the local store; nothing to add.
+                if self._use_web_ui:
+                    self._push_tabs_to_js()
+                else:
+                    self._rebuild_widget_tabs()
+                return
+            appended = [
+                (it.get("role", ""), it.get("html_body", ""), bool(it.get("is_assistant")))
+                for it in tail
+            ]
+            self._sessions[session_id]["messages"] = list(
+                self._sessions[session_id].get("messages", [])
+            ) + appended
+            self._sessions[session_id]["local_contents"] = local_pairs + [
+                (it.get("role", ""), it.get("content", "")) for it in tail
+            ]
+            if session_id == self._active_sid and self._use_web_ui:
+                # Append only, so the replayed tool blocks stay put.
+                for role, html_body, is_assistant in appended:
+                    self._run_js(
+                        "appendMessage(%s, %s, %s);" % (
+                            json.dumps(role), json.dumps(html_body),
+                            "true" if is_assistant else "false",
+                        )
+                    )
+                self._push_tabs_to_js()
+            elif session_id == self._active_sid:
+                self._render_active_session_widget()
+                self._rebuild_widget_tabs()
+            else:
+                if self._use_web_ui:
+                    self._push_tabs_to_js()
+                else:
+                    self._rebuild_widget_tabs()
+            return
 
         system_parts = [m for m in self._sessions[session_id].get("messages", []) if m and m[0] == "system"]
         restored_messages = [(m.get("role", ""), m.get("html_body", ""), bool(m.get("is_assistant", False))) for m in restored_items]
@@ -1453,6 +1779,7 @@ class AIChatWindow(QDockWidget):
         if self._history_restore_started:
             return
         self._history_restore_started = True
+        self._restore_local_histories()
 
         session_ids = list(self._sessions.keys())
 
@@ -1477,12 +1804,12 @@ class AIChatWindow(QDockWidget):
                         content = m.get("content", "") or ""
                         if role == "assistant":
                             html_body = _markdown_to_html(content)
-                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": True})
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": True, "content": content})
                         else:
                             visible = _strip_context_blocks(content) if role == "user" else content
                             safe = html.escape(visible).replace("\n", "<br/>")
                             html_body = "<p>" + safe + "</p>"
-                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": False})
+                            restored_items.append({"role": role, "html_body": html_body, "is_assistant": False, "content": visible})
 
                 try:
                     QMetaObject.invokeMethod(
@@ -1746,7 +2073,7 @@ class AIChatWindow(QDockWidget):
         layout.addLayout(btn_h)
 
         self.msg_input.keyPressEvent = self._key_press
-        self._add_system_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
+        self._add_chrome_msg("Chat started. Ask to list files, add tracks, export video, or describe your project.")
         self._rebuild_widget_tabs()
         self._start_restore_chat_histories_async()
 
@@ -2201,6 +2528,7 @@ class AIChatWindow(QDockWidget):
                 self._first_prompt_summary = text
                 self._update_preamble()
             self._push_tabs_to_js()
+            self._persist_session(session_id, title=text)
             self._save_chat_sessions_store()
 
     def _clear_widget_tool_blocks(self):
@@ -2521,8 +2849,19 @@ class AIChatWindow(QDockWidget):
             cleanup_agent_mcp_configs()
         except Exception:
             pass
+        # Neither shutdown path saved the tab list before this.
+        self._save_chat_sessions_store()
         for sess in list(self._sessions.values()):
             self._shutdown_worker(sess.get("worker"), sess.get("thread"))
+        try:
+            from classes import chat_history
+            # An untitled project that was never chatted in leaves nothing behind.
+            key = getattr(self, "_history_key", "") or ""
+            if key.startswith("draft:"):
+                chat_history.discard_empty_bucket(key)
+            chat_history.close()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         """Stop all AI worker threads when the dock is explicitly closed."""
@@ -2727,6 +3066,9 @@ class AIChatWindow(QDockWidget):
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
         """Render a Cursor-style collapsible terminal block for a tool call."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        # Recorded for every tab, not just the visible one — a background tab's
+        # activity should still be there when the user switches to it.
+        self._record_tool_started(sid, call_id, tool_name)
         if sid != self._active_sid:
             return
         # Drop any pre-tool "thinking" that already streamed into the answer bubble.
@@ -2790,6 +3132,7 @@ class AIChatWindow(QDockWidget):
     def _on_tool_completed(self, call_id: str, ok: bool, result: str):
         """Mark a tool block as done/error and keep result text for inspection."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        self._record_tool_completed(sid, call_id, ok)
         if sid != self._active_sid:
             return
         summary = self._tool_result_summary(result)
@@ -2865,8 +3208,12 @@ class AIChatWindow(QDockWidget):
         else:
             # Background session — store message and notify JS for unread badge
             if sid in self._sessions:
+                # Same normalisation the active path applies, so what we persist
+                # doesn't depend on which tab happened to be in front.
+                text = self._strip_thinking(text)
                 html_body = _markdown_to_html(text)
                 self._sessions[sid]["messages"].append(("assistant", html_body, True))
+                self._record_message(sid, "assistant", text)
                 self._run_js(
                     "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
                     % (json.dumps(sid), json.dumps(html_body))
@@ -2910,6 +3257,13 @@ class AIChatWindow(QDockWidget):
                 sess["messages"] = []
                 sess["first_prompt_summary"] = None
                 sess["unread"] = False
+                from classes import chat_history
+                chat_history.clear_session_messages(self._active_sid)
+                # The worker forgets its CLI conversation too, so drop the
+                # stored resume state or we'd try to rejoin a dead thread.
+                chat_history.update_session(
+                    self._active_sid, cli_session_id="", cli_started=False
+                )
                 worker = sess.get("worker")
                 if worker:
                     QMetaObject.invokeMethod(worker, "clear_session", Qt.QueuedConnection)
@@ -2921,31 +3275,46 @@ class AIChatWindow(QDockWidget):
                 self.chat_box.clear()
                 self._rebuild_widget_tabs()
             self._update_preamble()
-            self._add_system_msg("Chat cleared. Ask anything about your project or editing.")
+            self._add_chrome_msg("Chat cleared. Ask anything about your project or editing.")
+            # The cleared title otherwise sat unpersisted until some later save.
+            self._save_chat_sessions_store()
 
     def _add_user_msg(self, text):
         self._add_msg(text, "user", is_assistant=False, is_system=False)
 
-    def _add_assistant_msg(self, text):
-        # Strip leaked thinking headers that sometimes prefix the final reply.
+    def _add_chrome_msg(self, text):
+        """A UI banner (welcome, "chat cleared") — shown but never persisted."""
+        self._add_msg(text, "system", is_assistant=False, is_system=True, ephemeral=True)
+
+    @staticmethod
+    def _strip_thinking(text):
+        """Drop leaked thinking headers that sometimes prefix a final reply."""
         text = re.sub(
             r"(?im)^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*\n+",
             "",
             text or "",
         )
         text = re.sub(r"(?im)^\s*Thinking(?:…|\.\.\.)?\s*\n+", "", text).strip()
-        text = re.sub(
+        return re.sub(
             r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>",
             "",
             text,
             flags=re.IGNORECASE,
         ).strip()
-        self._add_msg(text, "assistant", is_assistant=True, is_system=False)
+
+    def _add_assistant_msg(self, text):
+        self._add_msg(
+            self._strip_thinking(text), "assistant", is_assistant=True, is_system=False
+        )
 
     def _add_system_msg(self, text):
         self._add_msg(text, "system", is_assistant=False, is_system=True)
 
-    def _add_msg(self, text, role, is_assistant=False, is_system=False):
+    def _add_msg(self, text, role, is_assistant=False, is_system=False, ephemeral=False):
+        # Every backend funnels its final messages through here with the raw
+        # text still in hand, which is why this is the one persistence hook.
+        if not ephemeral:
+            self._record_message(self._active_sid, role, text)
         if self._use_web_ui:
             if is_assistant:
                 html_body = _markdown_to_html(text)

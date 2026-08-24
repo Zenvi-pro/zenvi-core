@@ -280,6 +280,10 @@ class BaseAgentRunner(QObject):
     # planning mode is a Zenvi-backend feature, and these agents do their own
     # planning internally.
     plan_event = pyqtSignal(str, str)          # event_type, payload_json
+    # CLI-only, and additive: lets AIChatWindow persist the conversation this
+    # runner will resume from, so --resume survives an app restart.  Zenvi's
+    # own worker never declares it (see _make_worker's hasattr guard).
+    cli_session_changed = pyqtSignal(str, str, bool, str)  # ui_sid, cli_sid, started, cwd
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
@@ -291,6 +295,12 @@ class BaseAgentRunner(QObject):
         self._backend_session_id = ""
         self._cli_session_id = ""      # CLI-side conversation id (for resume)
         self._cli_started = False
+        # The CLI stores transcripts per working directory, so a resume is only
+        # valid from the folder the conversation was created in.
+        self._cli_cwd = ""
+        # True once the CLI reported its own conversation id (Codex mints one;
+        # Claude accepts the id we hand it up front).
+        self._cli_id_from_cli = False
         self._stopping = False         # shutdown flag (mirrors AIChatWorker)
         # User pressed Stop. Distinct from _stopping, which means the whole app
         # (or this tab) is going away and must stay latched: a cancelled tab has
@@ -304,12 +314,26 @@ class BaseAgentRunner(QObject):
         self._last_error = ""
         self._stderr_tail: list = []
 
+    def _emit_cli_session(self) -> None:
+        """Tell the window which CLI conversation this tab is attached to."""
+        try:
+            self.cli_session_changed.emit(
+                self._session_id or "",
+                self._cli_session_id or "",
+                bool(self._cli_started),
+                self._cli_cwd or "",
+            )
+        except Exception:
+            log.debug("cli_session_changed emit failed", exc_info=True)
+
     # -- slots -------------------------------------------------------------
     @pyqtSlot()
     def clear_session(self):
         """Forget CLI continuity so the next message starts a fresh conversation."""
         self._cli_started = False
         self._cli_session_id = ""
+        self._cli_id_from_cli = False
+        self._cli_cwd = ""
 
     def cancel(self):
         """Terminate the running subprocess (called from the GUI thread).
@@ -361,6 +385,21 @@ class BaseAgentRunner(QObject):
         if not self._cli_session_id:
             self._cli_session_id = self._session_id or str(uuid.uuid4())
 
+        # The CLI keeps transcripts per working directory, so a conversation
+        # started elsewhere (Save As into another folder) is simply not
+        # reachable from here -- begin a new one rather than issue a --resume
+        # that is bound to fail.
+        cwd = _project_cwd()
+        if self._cli_started and self._cli_cwd and cwd != self._cli_cwd:
+            log.info(
+                "%s: project folder changed (%s -> %s), starting a new conversation",
+                self.CLI_NAME, self._cli_cwd, cwd,
+            )
+            self._cli_started = False
+            self._cli_id_from_cli = False
+            self._cli_session_id = str(uuid.uuid4())
+        self._cli_cwd = cwd
+
         try:
             from classes.agent_mcp_server import get_mcp_server
             self._server = get_mcp_server().start()
@@ -392,7 +431,7 @@ class BaseAgentRunner(QObject):
                 # errors="replace" so a genuinely malformed byte degrades to
                 # U+FFFD instead of killing the whole read loop.
                 encoding="utf-8", errors="replace",
-                bufsize=1, env=self._build_env(), cwd=_project_cwd(),
+                bufsize=1, env=self._build_env(), cwd=cwd,
                 # Own process group so cancel() can signal the CLI *and* every
                 # child it spawned (see cancel()).
                 start_new_session=True,
@@ -401,6 +440,12 @@ class BaseAgentRunner(QObject):
             if not self._aborted:
                 self._emit_error("Failed to launch %s: %s" % (self.DISPLAY_NAME, e))
             return
+
+        # The CLI has now consumed this conversation id, so every later turn
+        # must resume rather than try to create it again.  Latching here (not
+        # after a clean turn) is what makes Stop mid-turn recoverable.
+        self._cli_started = True
+        self._emit_cli_session()
 
         try:
             for line in self._proc.stdout:
@@ -429,7 +474,6 @@ class BaseAgentRunner(QObject):
 
         if self._aborted:
             return
-        self._cli_started = True
         if self._responded:
             return
         if self._final_text:
@@ -630,14 +674,22 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        if self._cli_started and self._cli_session_id:
+        # Unlike Claude, Codex will not take an id we invent -- it mints its own
+        # and reports it as ``thread.started``.  Resuming a seeded placeholder
+        # would just fail, so wait until we have heard a real one.
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
             return [self.CLI_NAME, "exec", "resume", self._cli_session_id, *common, text]
         return [self.CLI_NAME, "exec", *common, text]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
         if etype == "thread.started":
-            self._cli_session_id = ev.get("thread_id") or self._cli_session_id
+            thread_id = ev.get("thread_id") or ""
+            if thread_id:
+                self._cli_session_id = thread_id
+                self._cli_id_from_cli = True
+                # Persist it now: this is the only place the id is knowable.
+                self._emit_cli_session()
             return
         if etype in ("item.started", "item.updated", "item.completed"):
             self._handle_item(etype, ev.get("item") or {})
