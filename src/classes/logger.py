@@ -34,10 +34,46 @@ import logging.handlers
 from classes import info
 
 
+class RootErrorForwarder(logging.Handler):
+    """Forward root-logger ERROR records into the app's log file.
+
+    A separate handler rather than the RotatingFileHandler itself, so that its
+    level is independent of the app logger's and so the log file is only ever
+    opened once (two rotating handlers on one file fight over rotation).
+    """
+    def __init__(self, target, level=logging.ERROR):
+        super().__init__(level=level)
+        self.target = target
+
+    def emit(self, record):
+        try:
+            self.target.handle(record)
+        except Exception:
+            self.handleError(record)
+
+
+class NullStream(object):
+    """Stand-in for a missing stdout/stderr.
+
+    Frozen GUI builds have no console (cx_Freeze base="Win32GUI" on Windows, a
+    .app bundle launched from Finder on macOS), so sys.stderr is None there.
+    Handing None to logging.StreamHandler makes every console record fail
+    silently inside handleError(), which is how startup tracebacks went missing.
+    """
+    def write(self, text):
+        return len(text) if text else 0
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+
 class StreamToLogger(object):
     """Custom class to log all stdout and stderr streams (from libopenshot / and other libraries)"""
     def __init__(self, parent_stream, log_level=logging.INFO):
-        self.parent = parent_stream or sys.__stderr__
+        self.parent = parent_stream or sys.__stderr__ or NullStream()
         self.logger = logging.LoggerAdapter(
             logging.getLogger('OpenShot.stderr'), {'source': 'stream'})
         self.log_level = log_level
@@ -89,8 +125,13 @@ template = '%(levelname)s %(module)s: %(message)s'
 console_formatter = TruncatingFormatter(template)
 file_formatter = TruncatingFormatter('%(asctime)s ' + template, datefmt='%H:%M:%S')
 
-# Configure root logger for minimal logging
-logging.basicConfig(level=logging.ERROR)
+# Configure root logger for minimal logging.
+# basicConfig() defaults its stream to sys.stderr, which is None in frozen GUI
+# builds -- every root record would then fail silently inside handleError().
+logging.basicConfig(
+    level=logging.ERROR,
+    stream=sys.stderr if sys.stderr is not None else NullStream(),
+)
 root_log = logging.getLogger()
 
 # Set up our top-level logging context
@@ -103,6 +144,15 @@ log.propagate = False
 # Create rotating file handler
 #
 fh = None
+root_error_handler = None
+try:
+    # Make sure the log file can be created even when logger is imported before
+    # info.setup_userdirs() runs -- otherwise an early startup traceback has
+    # nowhere to go in a frozen build with no console.
+    os.makedirs(info.USER_PATH, exist_ok=True)
+except Exception:
+    # Never let this break importing the logger itself.
+    pass
 if os.path.exists(info.USER_PATH):
     log_path = os.path.join(info.USER_PATH, 'openshot-qt.log')
     try:
@@ -119,13 +169,28 @@ if fh:
     fh.setFormatter(file_formatter)
     # Only add the handler when it's a real logger (NullHandler is harmless)
     log.addHandler(fh)
+
+    # Also forward root ERROR records into the same file. Several of our own
+    # modules log through logging.getLogger(__name__) instead of this module's
+    # `log` (auth_manager, credits_client, zenvi_env, clip_utils, login_window,
+    # launch), so they are not children of 'OpenShot' and their records only ever
+    # reached root -- which had a stderr-only handler. Their errors never made it
+    # into the log file on any platform, and went nowhere at all in a frozen
+    # build. This also captures third-party errors (requests, urllib3, PIL).
+    #
+    # ERROR-only, and enforced on the handler rather than by root's level:
+    # basicConfig() above silently does nothing when root already has handlers
+    # (as under pytest), so root's level is not something we can rely on.
+    # No duplication either way, because `log` has propagate = False.
+    root_error_handler = RootErrorForwarder(fh)
+    root_log.addHandler(root_error_handler)
 else:
     fh = logging.NullHandler()
 
 #
 # Create typical stream handler which logs to stderr
 #
-sh = logging.StreamHandler(sys.stderr)
+sh = logging.StreamHandler(sys.stderr if sys.stderr is not None else NullStream())
 sh.setLevel(info.LOG_LEVEL_CONSOLE)
 sh.setFormatter(console_formatter)
 
@@ -140,6 +205,9 @@ def reroute_output():
     """Route stdout and stderr to logger (custom handler)"""
     if (getattr(sys, 'frozen', False)
        or sys.stdout != sys.__stdout__):
+        return
+    if sys.stdout is None or sys.stderr is None:
+        # No console to mirror to; the file handler already captures everything.
         return
     sys.stdout = StreamToLogger(sys.stdout, logging.INFO)
     sys.stderr = StreamToLogger(sys.stderr, logging.WARNING)
