@@ -76,9 +76,14 @@ def tool_stub():
 
 
 def test_iter_tool_defs(tool_stub):
-    from classes.agent_mcp_server import iter_tool_defs
+    from classes.agent_mcp_server import iter_tool_defs, _extra_tools
     defs = {d["name"]: d for d in iter_tool_defs()}
-    assert set(defs) == {"list_files_tool", "add_track_tool"}
+
+    # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
+    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "add_track_tool"}
+    # ...and the MCP-only extras are advertised alongside them.
+    assert set(_extra_tools()) <= set(defs)
+
     assert defs["add_track_tool"]["inputSchema"]["properties"]["label"]["type"] == "string"
     assert "media files" in defs["list_files_tool"]["description"]
 

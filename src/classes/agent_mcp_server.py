@@ -95,11 +95,15 @@ def _first_doc_paragraph(func) -> str:
 
 
 def iter_tool_defs() -> list:
-    """Build ``{name, description, inputSchema}`` for every agent tool handler."""
+    """Build ``{name, description, inputSchema}`` for every tool we expose.
+
+    The editor tools come straight from ``AGENT_TOOL_HANDLERS``; the extras are
+    tools that only make sense for an external agent CLI (see MCP_EXTRA_TOOLS).
+    """
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
 
     defs = []
-    for name, func in AGENT_TOOL_HANDLERS.items():
+    for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
         description = _first_doc_paragraph(func) or humanize_tool_name(name)
         defs.append({
             "name": name,
@@ -107,6 +111,16 @@ def iter_tool_defs() -> list:
             "inputSchema": _build_input_schema(func),
         })
     return defs
+
+
+def _extra_tools() -> dict:
+    """Non-editor tools exposed only over MCP, keyed by tool name."""
+    try:
+        from classes.agent_api_proxy import MCP_EXTRA_TOOLS
+        return MCP_EXTRA_TOOLS
+    except Exception:
+        log.debug("MCP extra tools unavailable", exc_info=True)
+        return {}
 
 
 def _free_port(host: str) -> int:
@@ -261,7 +275,14 @@ class ZenviMcpServer:
             from classes.tool_handlers import execute_tool
             args = dict(arguments or {})
 
-            result = await anyio.to_thread.run_sync(lambda: execute_tool(name, args))
+            extra = _extra_tools().get(name)
+            if extra is not None:
+                # Called directly on the worker thread rather than through
+                # execute_tool, which marshals to the GUI thread — these tools
+                # do network I/O and would freeze the UI for their duration.
+                result = await anyio.to_thread.run_sync(lambda: extra(**args))
+            else:
+                result = await anyio.to_thread.run_sync(lambda: execute_tool(name, args))
             text = "" if result is None else str(result)
             return [types.TextContent(type="text", text=text)]
 
