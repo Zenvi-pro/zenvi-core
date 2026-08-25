@@ -259,6 +259,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Deliberately OUTSIDE the cache-guarded build below. These formulae are
+      # needed at freeze/link time, not only to compile libopenshot: cx_Freeze
+      # bundles libomp.dylib, and _openshot.so dlopens Qt5 frameworks. They used
+      # to be installed inside the build step, so a cache hit skipped the build
+      # AND the installs, and "Freeze with cx_Freeze" then died with
+      #   [Errno 2] No such file or directory: '/opt/homebrew/opt/libomp/lib/libomp.dylib'
+      # That only reproduced on a warm cache, which is why the first run of a new
+      # cache key passed and the next one failed.
+      # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
+      - name: Install Homebrew dependencies (arm64 only)
+        if: matrix.arch == 'arm64'
+        run: |
+          set -eo pipefail
+          brew install swig zeromq cppzmq libsamplerate qt@5 || true
+          brew install libomp
+          brew install ffmpeg 2>/dev/null || true
+
       # Build libopenshot from source only for arm64 (native build, no cross-compilation).
       # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
       # the Homebrew Qt5/ffmpeg bottles are arm64-only on macos-15 runners.
@@ -276,12 +293,6 @@ jobs:
           set -eo pipefail
           INSTALL_PREFIX="/tmp/libopenshot-install"
           mkdir -p "$INSTALL_PREFIX"
-
-          # Install build dependencies (Homebrew arm64 bottles)
-          # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
-          brew install swig zeromq cppzmq libsamplerate qt@5 || true
-          brew install libomp
-          brew install ffmpeg 2>/dev/null || true
 
           QT5_PREFIX="$(brew --prefix qt@5)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
@@ -1062,6 +1073,8 @@ jobs:
             mingw-w64-ucrt-x86_64-python-pydantic
             mingw-w64-ucrt-x86_64-python-pydantic-core
             mingw-w64-ucrt-x86_64-python-pyjwt
+            # Required at import time, not optional: see the pip step below.
+            mingw-w64-ucrt-x86_64-python-pywin32
             mingw-w64-ucrt-x86_64-qtwebkit
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
@@ -1131,9 +1144,11 @@ jobs:
           # requirements-noqt.txt deliberately skips mcp on MinGW Python >= 3.14:
           # mcp declares pywin32>=311 there and no pywin32 build exists for this
           # interpreter (PyPI is MSVC-only through cp313, MSYS2 packages 310), so
-          # a plain resolve ends in ResolutionImpossible. pywin32 is only used by
-          # mcp's stdio client path; Zenvi runs the HTTP server side, so install
-          # mcp alone and let the pinned dependencies above satisfy it.
+          # a plain resolve ends in ResolutionImpossible. Installing mcp alone
+          # sidesteps that floor; pywin32 310 comes from pacman above and is
+          # genuinely needed -- importing mcp.server.fastmcp reaches
+          # mcp.os.win32.utilities, which imports pywintypes/win32api/win32con/
+          # win32job unguarded on win32.
           ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
           # Fail loudly here rather than shipping a frozen app that raises on the
           # first agent-backend use.
