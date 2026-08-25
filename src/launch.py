@@ -182,7 +182,10 @@ except ImportError as _openshot_import_err:
 scale = 1.0
 logger = logging.getLogger(__name__)
 
-settings_path = os.path.join(os.path.expanduser("~/.openshot_qt"), "openshot.settings")
+# Windows Python ignores HOME; MSYS ``env -i`` historically omitted USERPROFILE
+# so expanduser("~") stayed as a literal tilde under the repo cwd.
+_home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+settings_path = os.path.join(_home, ".openshot_qt", "openshot.settings")
 
 try:
     if os.path.exists(settings_path):
