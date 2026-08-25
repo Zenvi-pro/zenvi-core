@@ -1050,6 +1050,20 @@ jobs:
             mingw-w64-ucrt-x86_64-python-lief
             mingw-w64-ucrt-x86_64-python-cffi
             mingw-w64-ucrt-x86_64-python-zstandard
+            # mcp's dependency tree pulls native extensions that have no MinGW
+            # wheel on PyPI, so pip falls back to compiling them and pyo3 fails
+            # to link against MinGW Python 3.14 ("undefined reference to
+            # PyExc_OSError", maturin exit 1). Take MSYS2's prebuilt copies
+            # instead: the venv is created with --system-site-packages, so pip
+            # sees these as already satisfied and never builds them.
+            mingw-w64-ucrt-x86_64-python-cryptography
+            mingw-w64-ucrt-x86_64-python-rpds-py
+            mingw-w64-ucrt-x86_64-python-jsonschema
+            mingw-w64-ucrt-x86_64-python-pydantic
+            mingw-w64-ucrt-x86_64-python-pydantic-core
+            mingw-w64-ucrt-x86_64-python-pyjwt
+            # Required at import time, not optional: see the pip step below.
+            mingw-w64-ucrt-x86_64-python-pywin32
             mingw-w64-ucrt-x86_64-qtwebkit
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
@@ -1119,13 +1133,16 @@ jobs:
           # requirements-noqt.txt deliberately skips mcp on MinGW Python >= 3.14:
           # mcp declares pywin32>=311 there and no pywin32 build exists for this
           # interpreter (PyPI is MSVC-only through cp313, MSYS2 packages 310), so
-          # a plain resolve ends in ResolutionImpossible. pywin32 is only used by
-          # mcp's stdio client path; Zenvi runs the HTTP server side, so install
-          # mcp alone and let the pinned dependencies above satisfy it.
+          # a plain resolve ends in ResolutionImpossible. Installing mcp alone
+          # sidesteps that floor; pywin32 310 comes from pacman above and is
+          # genuinely needed -- importing mcp.server.fastmcp reaches
+          # mcp.os.win32.utilities, which imports pywintypes/win32api/win32con/
+          # win32job unguarded on win32.
           ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
           # Fail loudly here rather than shipping a frozen app that raises on the
-          # first agent-backend use.
-          ./.venv/bin/python -c "import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK')"
+          # first agent-backend use. pywin32 must come from pacman (see pkgs above);
+          # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
+          ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
