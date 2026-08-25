@@ -269,6 +269,39 @@ def _fmt_mmss(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+MAX_PLACE_SPAN_SEC = 20.0
+
+
+def _hit_peak(hit, seg_s: float, seg_e: float) -> float:
+    try:
+        if hit.get("peak") is not None and str(hit.get("peak")).strip() != "":
+            return float(hit.get("peak"))
+    except (TypeError, ValueError):
+        pass
+    return (float(seg_s) + float(seg_e)) / 2.0
+
+
+def _hit_is_degraded(hit) -> bool:
+    if not isinstance(hit, dict):
+        return False
+    if hit.get("degraded") is True:
+        return True
+    return str(hit.get("role") or "").strip().lower() == "orientation"
+
+
+def _format_search_window(hit, seg_s: float, seg_e: float) -> str:
+    if _hit_is_degraded(hit):
+        return (
+            "chapter-level match only — window not action-bounded; "
+            "re-index or narrow the query"
+        )
+    peak = _hit_peak(hit, seg_s, seg_e)
+    return (
+        f"start_seconds={float(seg_s):.3f} end_seconds={float(seg_e):.3f} "
+        f"peak_seconds={peak:.3f} ({_fmt_mmss(seg_s)}–{_fmt_mmss(seg_e)})"
+    )
+
+
 def _ffmpeg_run(args):
     try:
         p = run_ffmpeg(
@@ -1182,6 +1215,10 @@ def split_file_add_clip(
                 )
             t0 = src_start + (sf - 1) / fps
             t1 = src_start + ef / fps
+            log.warning(
+                "split_file_add_clip used 1-based frames file=%s start_frame=%s end_frame=%s",
+                file_id, sf, ef,
+            )
         if t1 < t0:
             t0, t1 = t1, t0
         t0 = max(src_start, min(float(t0), src_end))
@@ -1194,6 +1231,9 @@ def split_file_add_clip(
 
         skip_watch = _parse_explicit_source_time_range_sec(query) is not None
         watched_note = ""
+        watch_record = {}
+        orig_span = float(t1) - float(t0)
+        require_visual = bool(_kw.get("require_visual_match")) or orig_span > MAX_PLACE_SPAN_SEC
         if not skip_watch:
             path, dur, cues = _lookup_watch_meta(file_id, file_data=f.data)
             if not path:
@@ -1216,6 +1256,12 @@ def split_file_add_clip(
             if out_s > in_s + 1e-3:
                 t0, t1 = in_s, out_s
             if watched.get("used_fallback"):
+                if require_visual:
+                    return (
+                        "Error: no visual match in this chapter-level window "
+                        f"[{orig_span:.1f}s]. Narrow the query or re-index the file "
+                        "so action-bounded scenes exist; do not place the chapter start."
+                    )
                 watched_note = " (text-index window; no visual match)"
             elif watched.get("reason"):
                 watched_note = f" (watched: {str(watched.get('reason'))[:120]})"
@@ -1225,6 +1271,7 @@ def split_file_add_clip(
                 float(watched.get("window_end") or t1), t0, t1,
                 watched.get("matched"),
             )
+            watch_record = dict(watched)
 
         start_sec, end_sec = t0, t1
         result_box = [None]
@@ -1272,6 +1319,13 @@ def split_file_add_clip(
                     base = os.path.splitext(os.path.basename(f.data.get("path") or f.data.get("name", "clip")))[0]
                     new_file.data["name"] = f"{base} ({timestamp})"
                 new_file.data["zenvi_subclip"] = True
+                if watch_record:
+                    new_file.data["zenvi_watch_confirmed"] = not bool(watch_record.get("used_fallback"))
+                    try:
+                        new_file.data["zenvi_watch_confidence"] = float(watch_record.get("confidence") or 0)
+                    except (TypeError, ValueError):
+                        new_file.data["zenvi_watch_confidence"] = 0.0
+                    new_file.data["zenvi_watch_sparse"] = bool(watch_record.get("sparse"))
                 new_file.save()
                 result_box[0] = (new_file.id, new_file.data.get("name", ""))
             except Exception as exc:
@@ -1350,6 +1404,7 @@ def add_clip_to_timeline(
                 trim_dur = None
 
         watched_start = watched_end = None
+        watched_info = {}
         skip_watch = _parse_explicit_source_time_range_sec(query) is not None
         _is_image = file_looks_like_image(file_data)
         watch_q = placement_watch_query(file_data, query)
@@ -1391,9 +1446,24 @@ def add_clip_to_timeline(
                 if out_s - in_s < float(trim_dur):
                     in_s = max(src_start, out_s - float(trim_dur))
             watched_start, watched_end = in_s, out_s
+            watched_info = dict(watched)
             log.info(
                 "add_clip_to_timeline watch file=%s in=%.3f out=%.3f matched=%s query=%r",
                 file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
+            )
+
+        if (
+            trim_dur is not None
+            and trim_dur > 0
+            and watched_start is None
+            and not _is_audio_only
+            and not _is_image
+            and not bool(file_data.get("zenvi_subclip"))
+        ):
+            return (
+                "Error: cannot trim the first N seconds of an unwatched file. "
+                "Use place_moment with a search keep window (start_seconds/end_seconds) instead of "
+                "add_clip_to_timeline with duration_seconds on the full file."
             )
 
         result_box = [None]
@@ -1464,6 +1534,12 @@ def add_clip_to_timeline(
                     new_clip["start"] = start_sec
                     new_clip["end"] = end_sec
                     new_clip["duration"] = max(0.0, end_sec - start_sec)
+                    if watched_info:
+                        new_clip["zenvi_watch_confirmed"] = not bool(watched_info.get("used_fallback"))
+                        try:
+                            new_clip["zenvi_watch_confidence"] = float(watched_info.get("confidence") or 0)
+                        except (TypeError, ValueError):
+                            new_clip["zenvi_watch_confidence"] = 0.0
                     win.timeline.update_clip_data(
                         new_clip, only_basic_props=False, ignore_refresh=False
                     )
@@ -1612,7 +1688,6 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             collect_project_twelvelabs_index,
             map_search_hit_to_file,
         )
-        from classes.twelvelabs_match import compute_cut_timestamp
 
         info = collect_project_twelvelabs_index()
         if info.get("error") and not info.get("index_id"):
@@ -1680,11 +1755,10 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 r = hits_sorted[0]
                 seg_s = float(r.get("start") or 0)
                 seg_e = float(r.get("end") or 0)
-                cut = compute_cut_timestamp(seg_s, seg_e, mode="mid")
+                win = _format_search_window(r, seg_s, seg_e)
                 lines.append(
-                    f"  • {fname}{id_part}{vid_part}{type_part} — keep window "
-                    f"{_fmt_mmss(seg_s)}-{_fmt_mmss(seg_e)} (peak {_fmt_mmss(cut)}, "
-                    f"rank={r.get('rank')})"
+                    f"  • {fname}{id_part}{vid_part}{type_part} — {win} "
+                    f"(rank={r.get('rank')})"
                 )
                 shown += 1
                 continue
@@ -1694,11 +1768,10 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 r = hits_sorted[idx]
                 seg_s = float(r.get("start") or 0)
                 seg_e = float(r.get("end") or 0)
-                cut = compute_cut_timestamp(seg_s, seg_e, mode="mid")
+                win = _format_search_window(r, seg_s, seg_e)
                 lines.append(
                     f"  • {fname}{id_part}{vid_part} — occurrence #{requested_nth} "
-                    f"keep window {_fmt_mmss(seg_s)}-{_fmt_mmss(seg_e)} "
-                    f"(peak {_fmt_mmss(cut)})"
+                    f"{win}"
                 )
                 shown += 1
             else:
@@ -1708,10 +1781,9 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 for i, r in enumerate(hits_sorted[:8], 1):
                     seg_s = float(r.get("start") or 0)
                     seg_e = float(r.get("end") or 0)
-                    cut = compute_cut_timestamp(seg_s, seg_e, mode="mid")
+                    win = _format_search_window(r, seg_s, seg_e)
                     lines.append(
-                        f"      {i}. keep window {_fmt_mmss(seg_s)}-{_fmt_mmss(seg_e)} "
-                        f"(peak {_fmt_mmss(cut)}, rank={r.get('rank')})"
+                        f"      {i}. {win} (rank={r.get('rank')})"
                     )
                 if len(hits_sorted) > 1:
                     lines.append(

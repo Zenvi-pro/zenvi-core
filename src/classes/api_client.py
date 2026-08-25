@@ -629,7 +629,11 @@ class ZenviBackendClient:
             if page_limit and page_limit > effective_top_k:
                 effective_top_k = min(int(page_limit), 50)
             effective_top_k = min(effective_top_k, 50)
-            payload: Dict[str, Any] = {"query": query, "top_k": effective_top_k}
+            payload: Dict[str, Any] = {
+                "query": query,
+                "top_k": effective_top_k,
+                "for_place": True,
+            }
             if index_id:
                 payload["index_id"] = index_id
             if video_id:
@@ -654,6 +658,9 @@ class ZenviBackendClient:
         fallback_cut: Optional[float] = None,
         fallback_in: Optional[float] = None,
         fallback_out: Optional[float] = None,
+        sparse: bool = False,
+        orientation_role: bool = False,
+        source_class: str = "",
     ) -> Dict[str, Any]:
         """Vision-confirm a cut time from a small JPEG set. Frames stay off chat."""
         try:
@@ -662,7 +669,11 @@ class ZenviBackendClient:
                 "window_start": float(window_start),
                 "window_end": float(window_end),
                 "frames": list(frames or []),
+                "sparse": bool(sparse),
+                "orientation_role": bool(orientation_role),
             }
+            if source_class:
+                payload["source_class"] = str(source_class)
             if fallback_cut is not None:
                 payload["fallback_cut"] = float(fallback_cut)
             if fallback_in is not None:

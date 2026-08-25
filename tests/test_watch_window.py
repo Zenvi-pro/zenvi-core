@@ -16,6 +16,7 @@ from classes.watch_window import (
     is_onscreen_text_query,
     padded_window,
     plan_sample_times,
+    snap_to_shot_boundaries,
 )
 
 
@@ -69,3 +70,40 @@ def test_extract_watch_window_does_not_unbound_sparse(tmp_path):
                 out = extract_watch_window(str(src), 1.0, 3.0, query="handshake")
     assert out["ok"] is True
     assert out["sparse"] is False
+
+
+def test_wide_extract_uses_dense_second_pass(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"not-a-real-mp4")
+    captured = {}
+
+    def fake_plan(win_start, win_end, *a, **k):
+        captured["span"] = float(win_end) - float(win_start)
+        captured["start"] = float(win_start)
+        captured["end"] = float(win_end)
+        times, warning, sparse = plan_sample_times(win_start, win_end, max_frames=36)
+        return times, warning, sparse
+
+    with patch("classes.watch_window._probe_duration", return_value=80.0):
+        with patch("classes.watch_window._scene_times", return_value=[10.0, 12.0, 14.0]):
+            with patch("classes.watch_window._extract_one_jpeg", return_value=False):
+                with patch("classes.watch_window.plan_sample_times", side_effect=fake_plan):
+                    out = extract_watch_window(str(src), 0.0, 40.0, query="action", duration=80.0)
+    assert captured["span"] <= 16.0 + 1e-6
+    assert out["sparse"] is False
+    times, _w, sparse = plan_sample_times(captured["start"], captured["end"])
+    assert sparse is False
+    gaps = [times[i + 1] - times[i] for i in range(len(times) - 1)]
+    assert gaps
+    assert max(gaps) <= 0.5 + 1e-6
+
+
+def test_shot_boundary_snap():
+    inn, out = snap_to_shot_boundaries(2.18, 9.0, 5.0, [2.0, 7.5], tolerance=0.4)
+    assert abs(inn - 2.0) < 1e-9
+    inn2, _out2 = snap_to_shot_boundaries(3.9, 9.0, 5.0, [2.0, 7.5], tolerance=0.4)
+    assert abs(inn2 - 3.9) < 1e-9
+    inn3, out3 = snap_to_shot_boundaries(4.9, 5.2, 5.0, [6.0], tolerance=0.4)
+    assert inn3 <= 5.0 <= out3
+    assert abs(inn3 - 4.9) < 1e-9
+

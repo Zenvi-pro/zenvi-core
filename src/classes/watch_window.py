@@ -16,6 +16,7 @@ from classes.ffmpeg_cli import run_ffmpeg
 WATCH_PAD_SEC = 2.0
 MAX_FRAMES = 12
 DENSE_WINDOW_SEC = 16.0
+SHOT_SNAP_TOLERANCE = 0.4
 DEFAULT_LONG_EDGE = 512
 TEXT_LONG_EDGE = 1024
 _TEXT_QUERY_RE = re.compile(
@@ -116,6 +117,92 @@ def plan_sample_times(
         seen.add(key)
         rounded.append(float(t))
     return rounded, warning, sparse
+
+
+def pick_dense_subwindow(
+    win_start: float,
+    win_end: float,
+    extra_times: Optional[Sequence[float]] = None,
+    *,
+    dense_window_sec: float = DENSE_WINDOW_SEC,
+) -> Tuple[float, float]:
+    """Narrow a wide watch window to a dense sub-window around scene/cue times."""
+    lo = float(win_start)
+    hi = float(win_end)
+    span = max(0.0, hi - lo)
+    dense = float(dense_window_sec)
+    if span <= dense + 1e-6:
+        return lo, hi
+    pts: List[float] = []
+    for t in extra_times or []:
+        try:
+            tf = float(t)
+        except (TypeError, ValueError):
+            continue
+        if lo - 1e-3 <= tf <= hi + 1e-3:
+            pts.append(tf)
+    if pts:
+        pts.sort()
+        best_t = pts[len(pts) // 2]
+        best_n = -1
+        half = dense / 2.0
+        for t in pts:
+            n = sum(1 for u in pts if abs(u - t) <= half)
+            if n > best_n:
+                best_n = n
+                best_t = t
+        center = best_t
+    else:
+        center = (lo + hi) / 2.0
+    start = max(lo, center - dense / 2.0)
+    end = min(hi, start + dense)
+    start = max(lo, end - dense)
+    if end <= start:
+        end = min(hi, start + 0.04)
+    return start, end
+
+
+def snap_to_shot_boundaries(
+    in_source: float,
+    out_source: float,
+    peak: float,
+    boundaries: Sequence[float],
+    *,
+    tolerance: float = SHOT_SNAP_TOLERANCE,
+) -> Tuple[float, float]:
+    """Snap in/out to nearest shot boundary within tolerance; never across peak."""
+    in_s = float(in_source)
+    out_s = float(out_source)
+    peak_f = float(peak)
+    if out_s < in_s:
+        in_s, out_s = out_s, in_s
+    peak_f = max(in_s, min(peak_f, out_s))
+    bounds = []
+    for b in boundaries or []:
+        try:
+            bounds.append(float(b))
+        except (TypeError, ValueError):
+            continue
+
+    def _snap(t: float, *, max_t: Optional[float] = None, min_t: Optional[float] = None) -> float:
+        best = t
+        best_d = float(tolerance) + 1.0
+        for b in bounds:
+            if max_t is not None and b > max_t + 1e-9:
+                continue
+            if min_t is not None and b < min_t - 1e-9:
+                continue
+            d = abs(b - t)
+            if d <= float(tolerance) and d < best_d:
+                best = b
+                best_d = d
+        return best
+
+    snapped_in = _snap(in_s, max_t=peak_f)
+    snapped_out = _snap(out_s, min_t=peak_f)
+    if snapped_out <= snapped_in:
+        return in_s, out_s
+    return snapped_in, snapped_out
 
 
 def hamming_near_dup(a: bytes, b: bytes, *, min_similarity: float = 0.92) -> bool:
@@ -280,13 +367,19 @@ def extract_watch_window(
     long_edge = TEXT_LONG_EDGE if is_onscreen_text_query(query) else DEFAULT_LONG_EDGE
     scene_ts = _scene_times(path, win_start, win_end)
     span = max(0.0, float(win_end) - float(win_start))
+    cue_times = _cue_times(transcript_cues, win_start, win_end)
     sparse_pre = span > float(DENSE_WINDOW_SEC)
+    if sparse_pre:
+        win_start, win_end = pick_dense_subwindow(
+            win_start, win_end, list(scene_ts) + list(cue_times),
+        )
+        sparse_pre = False
     times, warning, sparse = plan_sample_times(
         win_start, win_end, transcript_cues,
-        max_frames=max_frames if sparse_pre else max(max_frames * 3, 24),
+        max_frames=max(max_frames * 3, 24),
         extra_times=scene_ts,
     )
-    cue_set = {round(t, 2) for t in _cue_times(transcript_cues, win_start, win_end)}
+    cue_set = {round(t, 2) for t in cue_times}
     tmp = work_dir or tempfile.mkdtemp(prefix="zenvi_watch_")
     os.makedirs(tmp, exist_ok=True)
     records: List[Dict[str, Any]] = []
@@ -319,6 +412,7 @@ def extract_watch_window(
         "sparse": sparse,
         "work_dir": tmp,
         "long_edge": long_edge,
+        "scene_times": scene_ts,
     }
 
 
@@ -368,6 +462,8 @@ def confirm_watch_window(
     fallback_cut: Optional[float] = None,
     fallback_in: Optional[float] = None,
     fallback_out: Optional[float] = None,
+    orientation_role: bool = False,
+    source_class: str = "",
 ) -> Dict[str, Any]:
     """Extract JPEGs, POST to backend vision confirm, delete temps."""
     extracted = extract_watch_window(
@@ -386,6 +482,8 @@ def confirm_watch_window(
     win_s = float(extracted.get("window_start") or start)
     win_e = float(extracted.get("window_end") or end)
     warning = str(extracted.get("warning") or "")
+    scene_ts = list(extracted.get("scene_times") or [])
+    sparse = bool(extracted.get("sparse"))
 
     def _soft(reason):
         return {
@@ -399,6 +497,7 @@ def confirm_watch_window(
             "warning": warning,
             "window_start": win_s,
             "window_end": win_e,
+            "sparse": sparse,
         }
 
     if not extracted.get("ok") or not extracted.get("frames"):
@@ -417,6 +516,9 @@ def confirm_watch_window(
             fallback_cut=fallback,
             fallback_in=fb_in,
             fallback_out=fb_out,
+            sparse=sparse,
+            orientation_role=bool(orientation_role),
+            source_class=source_class or "",
         )
     except Exception as exc:  # noqa: BLE001
         data = {"error": str(exc)}
@@ -449,6 +551,9 @@ def confirm_watch_window(
         in_s, out_s = fb_in, fb_out
     if out_s <= in_s:
         in_s, out_s = win_s, win_e
+    if matched and not used_fallback and scene_ts:
+        in_s, out_s = snap_to_shot_boundaries(in_s, out_s, cut_f, scene_ts)
+        cut_f = max(in_s, min(cut_f, out_s))
     extra_warn = str(data.get("warning") or "")
     if extra_warn and extra_warn not in warning:
         warning = (warning + " " + extra_warn).strip()
@@ -463,4 +568,5 @@ def confirm_watch_window(
         "warning": warning,
         "window_start": win_s,
         "window_end": win_e,
+        "sparse": sparse,
     }

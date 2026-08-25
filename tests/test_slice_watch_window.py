@@ -320,3 +320,61 @@ def test_split_explicit_time_skips_watch():
     assert saved[0]["start"] == 4.0
     assert saved[0]["end"] == 10.0
     assert "new-sub" in out
+
+
+def test_split_wide_window_fallback_is_refused():
+    saved = []
+
+    def fake_watch(*a, **k):
+        return {
+            "cut_source": 0.0,
+            "in_source": 0.0,
+            "out_source": 40.0,
+            "matched": False,
+            "used_fallback": True,
+            "warning": "",
+            "window_start": 0.0,
+            "window_end": 40.0,
+        }
+
+    parent = MagicMock()
+    parent.data = {
+        "fps": {"num": 30, "den": 1},
+        "start": 0.0,
+        "end": 60.0,
+        "duration": 60.0,
+        "path": "/v.mp4",
+        "name": "v.mp4",
+    }
+
+    class FakeFile:
+        def __init__(self):
+            self.data = {}
+            self.id = None
+            self.key = None
+            self.type = None
+
+        def save(self):
+            self.id = "new-sub"
+            saved.append(dict(self.data))
+
+        @staticmethod
+        def get(id=""):
+            return parent
+
+    with patch.object(tool_handlers, "_watch_confirm_cut", fake_watch):
+        with patch.object(tool_handlers, "_lookup_watch_meta", return_value=("/v.mp4", 60.0, [])):
+            query_mod = MagicMock()
+            query_mod.File = FakeFile
+            with patch.dict(sys.modules, {"classes.query": query_mod}):
+                out = tool_handlers.split_file_add_clip(
+                    file_id="parent",
+                    start_seconds="0",
+                    end_seconds="40",
+                    query="the moment",
+                    name="wide",
+                )
+    assert out.startswith("Error:")
+    assert "visual match" in out.lower()
+    assert saved == []
+
