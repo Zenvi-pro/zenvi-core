@@ -1140,8 +1140,9 @@ jobs:
           # win32job unguarded on win32.
           ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
           # Fail loudly here rather than shipping a frozen app that raises on the
-          # first agent-backend use.
-          ./.venv/bin/python -c "import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK')"
+          # first agent-backend use. pywin32 must come from pacman (see pkgs above);
+          # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
+          ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
