@@ -82,6 +82,7 @@ def test_detect_cli_not_installed(monkeypatch):
     import windows.agent_runners as ar
 
     monkeypatch.setattr(ar.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [])
     assert ar.detect_cli("claude") == {"installed": False, "version": None, "registered": False}
 
 
@@ -206,6 +207,7 @@ def test_register_claude_success(monkeypatch):
         return _R()
 
     monkeypatch.setattr(ar.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ar, "_which_cli", lambda name: name)
     ok, message = ar.register_claude(7434, "tok123")
     assert ok is True
     assert "claude" in message.lower() or "terminal" in message.lower()
@@ -228,6 +230,7 @@ def test_register_claude_add_failure_surfaces_stderr(monkeypatch):
         return _R()
 
     monkeypatch.setattr(ar.subprocess, "run", _fake_run)
+    monkeypatch.setattr(ar, "_which_cli", lambda name: name)
     ok, message = ar.register_claude(7434, "tok123")
     assert ok is False
     assert "boom" in message
@@ -388,6 +391,7 @@ def test_codex_missing_cli_reports_friendly_error(qapp, monkeypatch):
 
     monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
     monkeypatch.setattr(ar.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ar, "_which_cli", lambda name: None)
 
     runner = CodexRunner()
     runner._session_id = "s2"
@@ -636,4 +640,53 @@ def test_claude_mcp_config_is_never_world_readable(monkeypatch, tmp_path):
     finally:
         os.umask(old_umask)
 
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    if os.name != "nt":
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert os.path.isabs(path)
+    assert not path.startswith("~")
+    assert os.path.isfile(path)
+
+
+def test_which_cli_finds_standalone_codex_when_not_on_path(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    bindir = tmp_path / ".codex" / "packages" / "standalone" / "current" / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / ("codex.exe" if os.name == "nt" else "codex")
+    exe.write_bytes(b"")
+    if os.name != "nt":
+        exe.chmod(0o755)
+
+    monkeypatch.setattr(ar.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    assert ar._which_cli("codex") == str(exe)
+
+
+def test_which_cli_finds_local_bin_claude(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    bindir = tmp_path / ".local" / "bin"
+    bindir.mkdir(parents=True)
+    exe = bindir / ("claude.exe" if os.name == "nt" else "claude")
+    exe.write_bytes(b"")
+    if os.name != "nt":
+        exe.chmod(0o755)
+
+    monkeypatch.setattr(ar.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    assert ar._which_cli("claude") == str(exe)
+
+
+def test_windows_profile_prefers_users_dir_over_msys_home(tmp_path):
+    from classes.info import windows_profile_candidates
+
+    users = tmp_path / "Users" / "alice"
+    users.mkdir(parents=True)
+    env = {
+        "USERNAME": "alice",
+        "USER": "alice",
+        "SYSTEMDRIVE": str(tmp_path),
+        "HOME": "/home/alice",
+    }
+    candidates = windows_profile_candidates(env)
+    assert os.path.normpath(str(users)) == os.path.normpath(candidates[0])

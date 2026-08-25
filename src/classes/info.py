@@ -291,6 +291,65 @@ def schedule_application_icon(widget):
     QTimer.singleShot(0, _apply)
 
 
+def windows_profile_candidates(env=None):
+    """Possible Windows home directories when USERPROFILE was stripped.
+
+    MSYS launch scripts use ``env -i`` and historically forwarded HOME
+    (``/home/user``) but not USERPROFILE. Windows Python's expanduser("~")
+    ignores HOME, so without these candidates it returns the literal ``~``.
+    Prefer ``C:\\Users\\<user>`` over the MSYS home — Claude Code and Codex
+    store login state there after a cmd.exe install.
+    """
+    env = env if env is not None else os.environ
+    candidates = []
+    username = (env.get("USERNAME") or env.get("USER") or "").strip()
+    drive = (env.get("SYSTEMDRIVE") or "C:").rstrip("\\/")
+    if username:
+        candidates.append(os.path.join(drive + os.sep, "Users", username))
+    home = (env.get("HOME") or "").strip()
+    if home and home not in ("~", "/"):
+        if len(home) >= 3 and home[0] == "/" and home[1].isalpha() and home[2] == "/":
+            candidates.append(os.path.normpath(
+                "%s:\\%s" % (home[1].upper(), home[3:].replace("/", os.sep))))
+        elif home.startswith("/") and os.name == "nt":
+            try:
+                import subprocess
+                converted = subprocess.check_output(
+                    ["cygpath", "-w", home],
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                ).decode().strip()
+                if converted:
+                    candidates.append(converted)
+            except Exception:
+                pass
+        else:
+            candidates.append(home)
+    return candidates
+
+
+def ensure_windows_profile_env():
+    """Restore USERPROFILE so expanduser("~") works under MSYS ``env -i``."""
+    if os.name != "nt":
+        return
+    if not os.environ.get("USERPROFILE"):
+        for candidate in windows_profile_candidates(os.environ):
+            if candidate and os.path.isdir(candidate):
+                os.environ["USERPROFILE"] = candidate
+                drive, tail = os.path.splitdrive(os.path.abspath(candidate))
+                if drive:
+                    os.environ.setdefault("HOMEDRIVE", drive)
+                if tail:
+                    os.environ.setdefault("HOMEPATH", tail)
+                break
+    profile = os.environ.get("USERPROFILE") or ""
+    if profile:
+        os.environ.setdefault("APPDATA", os.path.join(profile, "AppData", "Roaming"))
+        os.environ.setdefault("LOCALAPPDATA", os.path.join(profile, "AppData", "Local"))
+
+
+ensure_windows_profile_env()
+
 # User paths
 HOME_PATH = os.path.join(os.path.expanduser("~"))
 USER_PATH = os.path.join(HOME_PATH, ".openshot_qt")
