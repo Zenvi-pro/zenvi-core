@@ -51,9 +51,90 @@ def models_for_backend(backend: str) -> list:
     return []
 
 
+def _resolved_home() -> str:
+    """Windows-safe home directory (never the literal ``~``)."""
+    try:
+        from classes.info import HOME_PATH
+        if HOME_PATH and HOME_PATH not in ("~", "~/") and not HOME_PATH.startswith("~" + os.sep):
+            return HOME_PATH
+    except Exception:
+        pass
+    home = os.path.expanduser("~")
+    if home and home != "~":
+        return home
+    return os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+
+
+def _cli_install_dirs() -> list:
+    """Well-known locations for native Claude Code / Codex installs.
+
+    Codex's Windows installer puts ``codex.exe`` under
+    ``~/.codex/packages/standalone/current/bin`` and does *not* always add
+    that folder to PATH — so ``shutil.which("codex")`` fails even when the
+    CLI is installed and logged in.
+    """
+    home = _resolved_home()
+    dirs = []
+    if home:
+        dirs.append(os.path.join(home, ".local", "bin"))
+        dirs.append(os.path.join(home, ".codex", "packages", "standalone", "current", "bin"))
+    appdata = os.environ.get("APPDATA") or (
+        os.path.join(home, "AppData", "Roaming") if home else ""
+    )
+    if appdata:
+        dirs.append(os.path.join(appdata, "npm"))
+    local = os.environ.get("LOCALAPPDATA") or (
+        os.path.join(home, "AppData", "Local") if home else ""
+    )
+    if local:
+        dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
+    return dirs
+
+
+def _cli_child_env(extra=None):
+    """Environment for a Windows-native Claude/Codex subprocess.
+
+    Login state lives under USERPROFILE (``C:\\Users\\...``), not MSYS HOME.
+    """
+    env = dict(os.environ)
+    home = _resolved_home()
+    if os.name == "nt" and home and not home.startswith("~"):
+        env["USERPROFILE"] = home
+        drive, tail = os.path.splitdrive(os.path.abspath(home))
+        if drive:
+            env.setdefault("HOMEDRIVE", drive)
+        if tail:
+            env.setdefault("HOMEPATH", tail)
+        env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    if extra:
+        env.update(extra)
+    return env
+
+
+def _which_cli(binary_name: str):
+    """Locate ``claude`` / ``codex`` on PATH or in known install dirs."""
+    found = shutil.which(binary_name)
+    if found:
+        return found
+    names = [binary_name]
+    if os.name == "nt":
+        names.extend([binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat"])
+        for name in names[1:]:
+            found = shutil.which(name)
+            if found:
+                return found
+    for directory in _cli_install_dirs():
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
+
+
 def _agent_mcp_dir() -> str:
     from classes import info
-    path = os.path.join(info.USER_PATH, "agent_mcp")
+    path = os.path.abspath(os.path.join(info.USER_PATH, "agent_mcp"))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -71,11 +152,11 @@ def _project_cwd() -> str:
         from classes.app import get_app
         fp = getattr(get_app().project, "current_filepath", "") or ""
         if fp and os.path.isdir(os.path.dirname(fp)):
-            return os.path.dirname(fp)
+            return os.path.abspath(os.path.dirname(fp))
     except Exception:
         pass
     from classes import info
-    path = os.path.join(info.USER_PATH, "agent_workspace")
+    path = os.path.abspath(os.path.join(info.USER_PATH, "agent_workspace"))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -95,12 +176,13 @@ def detect_cli(binary_name: str) -> dict:
     offload this to a background thread (see ``AIChatWindow``'s detection
     worker) rather than call it directly.
     """
-    if not shutil.which(binary_name):
+    cli = _which_cli(binary_name)
+    if not cli:
         return {"installed": False, "version": None, "registered": False}
     version = None
     try:
         result = subprocess.run(
-            [binary_name, "--version"], capture_output=True, text=True, timeout=3
+            [cli, "--version"], capture_output=True, text=True, timeout=3
         )
         version = (result.stdout or result.stderr or "").strip() or None
     except Exception:
@@ -117,7 +199,7 @@ def _is_registered(binary_name: str) -> bool:
 
 
 def _claude_config_path() -> str:
-    return os.path.expanduser("~/.claude.json")
+    return os.path.join(_resolved_home(), ".claude.json")
 
 
 def _claude_is_registered() -> bool:
@@ -147,7 +229,8 @@ def _claude_is_registered_via_cli() -> bool:
     server whose URL/args happen to contain the substring "zenvi"."""
     try:
         result = subprocess.run(
-            ["claude", "mcp", "list"], capture_output=True, text=True, timeout=10
+            [_which_cli("claude") or "claude", "mcp", "list"],
+            capture_output=True, text=True, timeout=10,
         )
         return "zenvi:" in (result.stdout or "")
     except Exception:
@@ -155,7 +238,7 @@ def _claude_is_registered_via_cli() -> bool:
 
 
 def _codex_config_path() -> str:
-    return os.path.expanduser("~/.codex/config.toml")
+    return os.path.join(_resolved_home(), ".codex", "config.toml")
 
 
 def _codex_is_registered() -> bool:
@@ -180,12 +263,13 @@ def register_claude(port: int, token: str):
     Returns ``(ok, message)``.
     """
     try:
+        claude = _which_cli("claude") or "claude"
         subprocess.run(
-            ["claude", "mcp", "remove", "-s", "user", "zenvi"],
+            [claude, "mcp", "remove", "-s", "user", "zenvi"],
             capture_output=True, text=True, timeout=10,
         )
         result = subprocess.run(
-            ["claude", "mcp", "add", "--transport", "http", "zenvi",
+            [claude, "mcp", "add", "--transport", "http", "zenvi",
              "http://127.0.0.1:%d/mcp" % port,
              "--header", "Authorization: Bearer %s" % token,
              "--scope", "user"],
@@ -317,6 +401,7 @@ class BaseAgentRunner(QObject):
         # to accept the next message, so this one is cleared by run_request.
         self._cancelled = False
         self._proc = None
+        self._cli_path = ""
         self._model_id = ""
         self._server = None
         self._responded = False
@@ -430,7 +515,8 @@ class BaseAgentRunner(QObject):
             self._emit_error("Could not start the editor tool server: %s" % e)
             return
 
-        if shutil.which(self.CLI_NAME) is None:
+        self._cli_path = _which_cli(self.CLI_NAME)
+        if not self._cli_path:
             self._emit_error(
                 "%s CLI not found. Install it and make sure '%s' is on your PATH, "
                 "then try again." % (self.DISPLAY_NAME, self.CLI_NAME)
@@ -555,7 +641,7 @@ class BaseAgentRunner(QObject):
         return None
 
     def _build_env(self):
-        return None
+        return _cli_child_env()
 
     def _build_argv(self, text: str):
         raise NotImplementedError
@@ -601,7 +687,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
     def _build_argv(self, text: str):
         cfg = _write_claude_mcp_config(self._server)
         argv = [
-            self.CLI_NAME, "-p", text,
+            self._cli_path or self.CLI_NAME, "-p", text,
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
             # The agent is driving the editor on the user's behalf from inside
@@ -697,10 +783,10 @@ class CodexRunner(BaseAgentRunner):
     _MSG_ITEM_TYPES = {"assistant_message", "agent_message", "message"}
 
     def _build_env(self):
-        env = dict(os.environ)
+        extra = {}
         if self._server is not None and self._server.token:
-            env["ZENVI_MCP_TOKEN"] = self._server.token
-        return env
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
 
     def _build_argv(self, text: str):
         url = self._server.url() if self._server else ""
@@ -714,9 +800,10 @@ class CodexRunner(BaseAgentRunner):
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
+        cli = self._cli_path or self.CLI_NAME
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [self.CLI_NAME, "exec", "resume", self._cli_session_id, *common, text]
-        return [self.CLI_NAME, "exec", *common, text]
+            return [cli, "exec", "resume", self._cli_session_id, *common, text]
+        return [cli, "exec", *common, text]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
@@ -793,7 +880,7 @@ def _write_claude_mcp_config(server) -> str:
             }
         }
     }
-    path = os.path.join(_agent_mcp_dir(), "claude_mcp.json")
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "claude_mcp.json"))
     # Created 0600 in one step rather than chmod'ed afterwards: a plain open()
     # applies the umask first (usually 0644), leaving the bearer token this
     # file carries world-readable for the window in between.
