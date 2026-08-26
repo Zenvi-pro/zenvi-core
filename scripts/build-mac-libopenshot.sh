@@ -2,12 +2,13 @@
 # scripts/build-mac-libopenshot.sh
 #
 # Builds libopenshot-audio + libopenshot v0.5.0 from upstream OpenShot sources
-# with the macOS / FFmpeg 8 / Apple Silicon patches required by zenvi-core.
+# with the macOS / FFmpeg 8/9 / Apple Silicon patches required by zenvi-core.
 #
 # Why this exists:
 # - Homebrew does not ship libopenshot. CI on arm64 builds it from source.
-# - libopenshot v0.5.0 source predates FFmpeg 7/8 and macOS 26 — won't compile
-#   or run cleanly without patches.
+# - libopenshot v0.5.0 source predates FFmpeg 7/8/9 and macOS 26 — won't compile
+#   or run cleanly without patches. Homebrew currently ships FFmpeg 9, which
+#   hides AVCodec.supported_samplerates / ch_layouts / sample_fmts / pix_fmts.
 # - When running zenvi-core from source (not the frozen .app), libopenshot's
 #   absolute Qt paths collide with PyQt5's bundled Qt at runtime → segfault.
 #   Post-build install_name_tool rewrites fix this.
@@ -15,7 +16,8 @@
 # What this script does:
 #   1. brew install all build deps (cmake, qt@5, swig, ffmpeg, libomp, etc.)
 #   2. Clone OpenShot/libopenshot-audio v0.5.0 + apply mac-patches/
-#   3. Clone OpenShot/libopenshot v0.5.0 + apply mac-patches/
+#   3. Clone OpenShot/libopenshot v0.5.0 + apply mac-patches/ and
+#      installer/patch-libopenshot-ffmpeg.py (FFmpeg 8/9 AVCodec lists)
 #   4. cmake configure + build + install to $ZENVI_DEPS (default: $HOME/zenvi-deps)
 #   5. install_name_tool: rewrite @rpath for Qt to point at PyQt5's bundled Qt
 #
@@ -103,6 +105,8 @@ git clone --depth=1 --branch "$TAG" \
 cd "$SRC_DIR/libopenshot"
 echo "  Applying libopenshot mac patches..."
 git apply --whitespace=nowarn "$PATCH_DIR/libopenshot-${TAG}-mac.patch"
+echo "  Applying FFmpeg 8/9 AVCodec compatibility patch..."
+"$PY311" "$REPO_ROOT/installer/patch-libopenshot-ffmpeg.py" "$SRC_DIR/libopenshot"
 
 cmake -S . -B build \
   -DCMAKE_INSTALL_PREFIX="$ZENVI_DEPS" \
