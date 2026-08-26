@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Patch cloned libopenshot sources for FFmpeg 7/8 (MSYS2/Homebrew currently ship 8.x).
+"""Patch cloned libopenshot sources for FFmpeg 7/8/9 (Homebrew currently ships 9.x).
 
-FFmpeg 8 removed AVCodec.supported_samplerates / ch_layouts / sample_fmts / pix_fmts.
+FFmpeg 8+ removed AVCodec.supported_samplerates / ch_layouts / sample_fmts / pix_fmts.
 Query them via avcodec_get_supported_config() instead.
 """
 from __future__ import annotations
