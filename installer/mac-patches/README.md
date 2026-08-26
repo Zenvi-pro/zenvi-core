@@ -2,10 +2,11 @@
 
 These patches apply to OpenShot's upstream `libopenshot` and `libopenshot-audio`
 repositories at tag `v0.5.0`. They are required for zenvi-core to build and
-run on macOS 26 / Apple Silicon / FFmpeg 8.
+run on macOS 26 / Apple Silicon / FFmpeg 8+.
 
 Apply via `scripts/build-mac-libopenshot.sh`, which clones the upstream repos,
-applies these patches, and builds against Homebrew's qt@5 + libomp.
+applies these patches, then `installer/patch-libopenshot-ffmpeg.py` (FFmpeg 8/9
+AVCodec field removal), and builds against Homebrew's qt@5 + libomp.
 
 ## Patches
 
