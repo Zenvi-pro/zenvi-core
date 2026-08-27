@@ -887,10 +887,109 @@ def add_marker(**_kw) -> str:
         return f"Error: {e}"
 
 
-def remove_clip(**_kw) -> str:
+def remove_clip(
+    timeline_clip_id: str = "",
+    clip_query: str = "",
+    track: str = "",
+    occurrence: str = "0",
+    position_near=None,
+    **_kw,
+) -> str:
+    """Delete ONE timeline clip placement, resolved by id or query. Leaves every other clip on that track untouched, and leaves a gap (no ripple).
+
+    Pass timeline_clip_id when a prior tool (list_clips_tool, timeline snapshot)
+    already identified the clip. Otherwise pass clip_query plus track /
+    occurrence (1-based) / position_near (timeline seconds) to disambiguate
+    duplicate placements. Requires at least one of timeline_clip_id or
+    clip_query -- it never deletes by UI selection. To clear an entire track
+    use delete_clips_on_track_tool instead.
+    """
     try:
-        _get_app().window.actionRemoveClip_trigger()
-        return "Selected clip(s) removed."
+        # Targeting is mandatory: the agent does not own UI selection, and the
+        # resolver's playhead / single-clip shortcuts must never be reachable
+        # from an argless call (that is the unsafe path this tool replaced).
+        if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
+            return (
+                "Error: remove_clip_tool requires timeline_clip_id or clip_query. "
+                "Use list_clips_tool to get a timeline_clip_id, or pass clip_query "
+                "with track/occurrence/position_near. To clear a whole track use "
+                "delete_clips_on_track_tool."
+            )
+
+        resolved = _resolve_timeline_clip_for_tool(
+            timeline_clip_id=timeline_clip_id,
+            clip_query=clip_query,
+            track=track,
+            occurrence=occurrence,
+            position_near=position_near,
+        )
+        if not resolved.ok or not resolved.clip:
+            # Includes the candidate list for ambiguous queries. Never widen to
+            # a track-wide delete.
+            return resolved.error or "Error: Could not resolve timeline clip."
+
+        clip_obj = resolved.clip
+        clip_id = str(getattr(clip_obj, "id", "") or "")
+        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        try:
+            layer_num = int(clip_data.get("layer") or 0)
+        except (TypeError, ValueError):
+            layer_num = 0
+        try:
+            position = float(clip_data.get("position", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            position = 0.0
+        title = str(clip_data.get("title") or clip_data.get("label") or "clip")
+
+        app = _get_app()
+        win = app.window
+        layers_out = app.project.get("layers") or []
+        track_lbl = format_track_label_for_llm(layer_num, layers_out)
+
+        # Respect locked tracks (mirrors delete_clips_on_track).
+        for L in layers_out:
+            try:
+                if int(L.get("number") or 0) == layer_num and bool(L.get("lock", False)):
+                    return f"Error: Track {track_lbl} is locked."
+            except Exception:
+                continue
+
+        def _do_delete():
+            # Own transaction id so a single undo restores just this clip.
+            tid = str(uuid_module.uuid4())
+            app.updates.transaction_id = tid
+            try:
+                try:
+                    if hasattr(win, "removeSelection"):
+                        win.removeSelection(clip_id, "clip")
+                except Exception:
+                    pass
+                clip_obj.delete()
+            finally:
+                app.updates.transaction_id = None
+
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; clear it before the next paint dereferences a
+            # freed native object (see main_window.actionRemoveClip_trigger).
+            try:
+                win.videoPreview.clearTransformState()
+            except Exception:
+                pass
+            try:
+                win.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_delete)
+        else:
+            _do_delete()
+
+        return (
+            f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
+            f"at {position:.2f}s. Other clips on that track are unchanged "
+            f"(gap left, no ripple)."
+        )
     except Exception as e:
         return f"Error: {e}"
 
