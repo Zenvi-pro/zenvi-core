@@ -43,7 +43,7 @@ from PyQt5.QtGui import (
 from PyQt5.QtWidgets import QAbstractItemView
 from classes import updates
 from classes import info
-from classes.image_types import get_media_type
+from classes.image_types import get_media_type, is_audio_only_media
 from classes.query import File
 from classes.logger import log
 from classes.app import get_app
@@ -723,7 +723,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 file_data["media_type"] = get_media_type(file_data)
 
                 # Check for audio-only files
-                if file_data.get("has_audio") and not file_data.get("has_video"):
+                if is_audio_only_media(file_data):
+                    # Cover-art MP3s report has_video=True; correct it at the source
+                    # so every clip built from this file stays transparent.
+                    file_data["has_video"] = False
                     # Audio-only file should match the current project size and FPS
                     project = get_app().project
                     file_data["width"] = project.get("width")

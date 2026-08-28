@@ -61,6 +61,7 @@ from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import clamp_timing_to_media
+from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
@@ -3819,6 +3820,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Skip clips that are missing a 'reader' attribute
         if not new_clip.get("reader"):
             return  # Skip this clip
+
+        # Audio-only media must not composite video (cover-art MP3s otherwise
+        # paint an opaque frame over every lower layer)
+        apply_audio_only_clip_overrides(
+            new_clip, file.data,
+            constant_interpolation=openshot.CONSTANT, scale_none=openshot.SCALE_NONE,
+        )
 
         # Determine start, duration, and end using file metadata
         media_type = (file.data or {}).get("media_type")

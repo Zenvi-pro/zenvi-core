@@ -35,6 +35,7 @@ from PyQt5.QtWidgets import QDialog
 from PyQt5.QtGui import QIcon
 
 from classes import info, ui_util, time_parts
+from classes.clip_placement import apply_audio_only_clip_overrides
 from classes.logger import log
 from classes.query import Clip, Transition
 from classes.app import get_app
@@ -208,6 +209,14 @@ class AddToTimeline(QDialog):
             new_clip["file_id"] = file.id
             new_clip["title"] = file.data.get("name", filename)
             new_clip["reader"] = file.data
+
+            # Audio-only media must not composite video (cover-art MP3s
+            # otherwise paint an opaque frame over every lower layer)
+            apply_audio_only_clip_overrides(
+                new_clip, file.data,
+                constant_interpolation=openshot.CONSTANT,
+                scale_none=openshot.SCALE_NONE,
+            )
 
             # Skip any clips that are missing a 'reader' attribute
             # TODO: Determine why this even happens, as it shouldn't be possible
