@@ -188,3 +188,30 @@ def copy_imported_media(files, clips, project_file_path, app_root=None):
             abs_rpath = os.path.abspath(rpath)
             if abs_rpath in src_to_new:
                 reader["path"] = src_to_new[abs_rpath]
+
+
+def snapshot_media_paths(files, clips):
+    """Record file and clip reader paths so a failed save can roll them back."""
+    file_paths = [(item, item.get("path")) for item in files or []]
+    clip_paths = []
+    for clip in clips or []:
+        reader = clip.get("reader") if isinstance(clip.get("reader"), dict) else None
+        clip_paths.append((clip, None if reader is None else reader.get("path")))
+    return file_paths, clip_paths
+
+
+def restore_media_paths(snapshot):
+    """Undo in-memory path mutations from ``copy_imported_media``."""
+    if not snapshot:
+        return
+    file_paths, clip_paths = snapshot
+    for item, path in file_paths:
+        item["path"] = path
+    for clip, path in clip_paths:
+        reader = clip.get("reader")
+        if not isinstance(reader, dict):
+            continue
+        if path is None:
+            reader.pop("path", None)
+        else:
+            reader["path"] = path

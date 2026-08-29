@@ -35,11 +35,11 @@ def kind_for_path(path: str) -> str:
 
 
 def make_attachment(path: str, file_id: str = "", name: str = "") -> dict:
-    abs_path = os.path.abspath(path)
+    abs_path = os.path.abspath(path) if path else ""
     return {
         "id": uuid.uuid4().hex[:12],
         "path": abs_path,
-        "name": name or os.path.basename(abs_path) or abs_path,
+        "name": name or (os.path.basename(abs_path) if abs_path else "") or abs_path,
         "kind": kind_for_path(abs_path),
         "file_id": str(file_id or ""),
     }
@@ -60,7 +60,9 @@ def format_referenced_files_block(attachments) -> str:
         path = item.get("path") or ""
         name = item.get("name") or os.path.basename(path)
         kind = item.get("kind") or kind_for_path(path)
-        line = f"- @{name} kind={kind} path={path}"
+        line = f"- @{name} kind={kind}"
+        if path:
+            line += f" path={path}"
         file_id = item.get("file_id") or ""
         if file_id:
             line += f" media_bin_file_id={file_id}"

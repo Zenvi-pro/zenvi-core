@@ -243,9 +243,13 @@ def local_path_from_url(url) -> str:
     try:
         if hasattr(url, "toString"):
             url_string = url.toString() or ""
-        if hasattr(url, "isLocalFile") and url.isLocalFile():
-            path = url.toLocalFile() or ""
-        if not path and hasattr(url, "toLocalFile"):
+        scheme = ""
+        if hasattr(url, "scheme"):
+            scheme = (url.scheme() or "").lower()
+        is_local = bool(hasattr(url, "isLocalFile") and url.isLocalFile())
+        if not is_local and scheme not in ("file", ""):
+            return ""
+        if hasattr(url, "toLocalFile"):
             path = url.toLocalFile() or ""
         if not path and hasattr(url, "path"):
             candidate = url.path() or ""

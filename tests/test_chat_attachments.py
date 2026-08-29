@@ -33,3 +33,22 @@ def test_display_user_text_adds_mentions_once():
     assert display_user_text("@reel.mp4 please", atts) == "@reel.mp4 please @still.png"
     assert display_user_text("", atts) == "@reel.mp4 @still.png"
     assert display_user_text("hello", []) == "hello"
+
+
+
+def test_make_attachment_empty_path_stays_empty():
+    att = make_attachment("", name="reel.mp4")
+    assert att["path"] == ""
+    assert att["name"] == "reel.mp4"
+    cwd = os.getcwd()
+    assert att["path"] != cwd
+    assert not att["path"].startswith(cwd)
+
+
+def test_format_block_omits_empty_path():
+    att = make_attachment("", file_id="abc123", name="reel.mp4")
+    block = format_referenced_files_block([att])
+    assert "media_bin_file_id=abc123" in block
+    assert "path=" not in block
+    assert os.getcwd() not in block
+    assert "@reel.mp4" in block

@@ -2,7 +2,12 @@
 
 import os
 
-from classes.assets import copy_imported_media, path_is_under
+from classes.assets import (
+    copy_imported_media,
+    path_is_under,
+    restore_media_paths,
+    snapshot_media_paths,
+)
 
 
 def _write(path, body=b"media"):
@@ -164,3 +169,51 @@ def test_skip_all_keeps_missing_files_and_clips(monkeypatch, tmp_path):
     assert len(store._data["files"]) == 1
     assert len(store._data["clips"]) == 1
     assert store._data["clips"][0]["id"] == "c1"
+
+
+
+def test_snapshot_restore_media_paths_after_copy(tmp_path):
+    src = tmp_path / "Downloads" / "clip.mp4"
+    _write(str(src))
+    project = str(tmp_path / "MyProject.zvn")
+    files = [{"id": "f1", "path": str(src)}]
+    clips = [{"id": "c1", "file_id": "f1", "reader": {"path": str(src)}}]
+
+    snapshot = snapshot_media_paths(files, clips)
+    copy_imported_media(files, clips, project)
+    assert files[0]["path"] != str(src)
+    assert clips[0]["reader"]["path"] == files[0]["path"]
+
+    restore_media_paths(snapshot)
+    assert files[0]["path"] == str(src)
+    assert clips[0]["reader"]["path"] == str(src)
+
+
+def test_save_restores_media_paths_if_write_fails(tmp_path, monkeypatch):
+    import pytest
+    pytest.importorskip("openshot")
+    pytest.importorskip("PyQt5.QtWidgets")
+
+    from classes import project_data as pd
+
+    src = tmp_path / "clip.mp4"
+    _write(str(src))
+    project = str(tmp_path / "MyProject.zvn")
+    files = [{"id": "f1", "path": str(src)}]
+    clips = [{"id": "c1", "file_id": "f1", "reader": {"path": str(src)}}]
+
+    store = pd.ProjectDataStore.__new__(pd.ProjectDataStore)
+    store._data = {"files": files, "clips": clips}
+    store.current_filepath = None
+    monkeypatch.setattr(store, "move_temp_paths_to_project_folder", lambda *a, **k: None)
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "write_to_file", _boom)
+
+    with pytest.raises(OSError, match="disk full"):
+        store.save(project)
+
+    assert files[0]["path"] == str(src)
+    assert clips[0]["reader"]["path"] == str(src)

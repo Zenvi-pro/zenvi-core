@@ -360,7 +360,9 @@ def get_downloads_path():
         from PyQt5.QtCore import QStandardPaths
         path = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
         if path:
-            return os.path.normpath(path)
+            path = os.path.normpath(path)
+            if os.path.isdir(path):
+                return path
     except Exception:
         pass
     fallback = os.path.join(os.path.expanduser("~"), "Downloads")

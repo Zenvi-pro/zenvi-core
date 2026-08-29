@@ -161,3 +161,30 @@ def test_clip_library_drag_is_not_an_os_file_drop():
     mime.setHtml("clip")
     mime.setText('["abc123"]')
     assert mime_has_file_drop(mime) is False
+
+
+
+def test_local_path_from_url_rejects_remote_http_urls():
+    """http(s) QUrls must not resolve to a local path such as /etc/passwd."""
+    pytest.importorskip("PyQt5.QtCore")
+    from PyQt5.QtCore import QUrl
+
+    https_url = QUrl("https://example.invalid/etc/passwd")
+    assert local_path_from_url(https_url) == ""
+    assert local_path_from_url(https_url) != os.path.abspath("/etc/passwd")
+
+    http_url = QUrl("http://127.0.0.1/tmp/x")
+    assert local_path_from_url(http_url) == ""
+
+    files, _notes = collect_import_paths([
+        https_url.toString(),
+        http_url.toString(),
+    ])
+    assert files == []
+    local_hits = {
+        os.path.abspath("/etc/passwd"),
+        os.path.abspath("/tmp/x"),
+        "/etc/passwd",
+        "/tmp/x",
+    }
+    assert not local_hits.intersection(files)
