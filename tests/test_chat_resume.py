@@ -355,10 +355,46 @@ class _ReloadWindow(_StubWindow):
         super().__init__(window_cls, project_id=project_id)
         self._sessions = {sid: {"messages": []} for sid in sessions}
         self._history_key = history_key
+        self._active_sid = next(iter(self._sessions), "")
+        self._use_web_ui = False
+        self._first_prompt_summary = None
+        self.is_processing = False
+        self._history_restore_started = False
         self.saved = []
 
     def _save_chat_sessions_store(self, project_path=None):
         self.saved.append(project_path)
+
+    def _shutdown_worker(self, *a, **k):
+        pass
+
+    def _make_worker(self, session_id, backend, restore=None):
+        return MagicMock(), MagicMock()
+
+    def _persist_session(self, *a, **k):
+        pass
+
+    def _create_initial_session(self):
+        self._sessions["fresh"] = {"title": "New Chat", "messages": []}
+        self._active_sid = "fresh"
+
+    def _update_preamble(self):
+        pass
+
+    def _render_active_session_widget(self):
+        pass
+
+    def _rebuild_widget_tabs(self):
+        pass
+
+    def _start_restore_chat_histories_async(self):
+        pass
+
+    def _pick_active_sid(self, legacy_store=None):
+        return self._cls._pick_active_sid(self, legacy_store)
+
+    def _restorable_sessions(self, store):
+        return self._cls._restorable_sessions(self, store)
 
     def reload(self, path):
         return self._cls.reload_for_project(self, path)
@@ -413,6 +449,57 @@ def test_a_plain_resave_of_the_same_project_is_a_no_op(window_cls, keyed_store, 
     assert win.saved == []          # returned before doing any work
 
 
+def test_opening_an_existing_project_from_untitled_restores_its_open_chats(
+    window_cls, keyed_store, tmp_path
+):
+    """Launch is always untitled; File→Open must bring back that project's tabs.
+
+    Rekeying the empty draft into the project used to make live∩stored match,
+    so restore was skipped and the user got a blank New Chat instead.
+    """
+    path = tmp_path / "a.zvn"
+    path.write_text("{}")
+    keyed_store.upsert_session("old", "ABCDEF1234", project_path=str(path), title="Edit cut")
+    keyed_store.record_message("old", "user", "keep this")
+    keyed_store.set_active_session("ABCDEF1234", "old")
+
+    draft = keyed_store.new_draft_key()
+    keyed_store.upsert_session("untitled-tab", draft)
+    win = _ReloadWindow(
+        window_cls, project_id="ABCDEF1234",
+        sessions=["untitled-tab"], history_key=draft,
+    )
+    win.reload(str(path))
+
+    assert set(win._sessions) == {"old"}
+    assert win._active_sid == "old"
+    assert win._history_key == "ABCDEF1234"
+    assert keyed_store.load_sessions(draft) == []
+    assert [m["content"] for m in keyed_store.load_messages("old")] == ["keep this"]
+
+
+def test_opening_a_project_does_not_absorb_an_untitled_conversation(
+    window_cls, keyed_store, tmp_path
+):
+    path = tmp_path / "a.zvn"
+    path.write_text("{}")
+    keyed_store.upsert_session("old", "ABCDEF1234", project_path=str(path), title="Saved")
+    keyed_store.record_message("old", "user", "project chat")
+
+    draft = keyed_store.new_draft_key()
+    keyed_store.upsert_session("draft-tab", draft)
+    keyed_store.record_message("draft-tab", "user", "typed on untitled")
+    win = _ReloadWindow(
+        window_cls, project_id="ABCDEF1234",
+        sessions=["draft-tab"], history_key=draft,
+    )
+    win.reload(str(path))
+
+    assert set(win._sessions) == {"old"}
+    assert [m["content"] for m in keyed_store.load_messages("draft-tab")] == ["typed on untitled"]
+    assert [s["session_id"] for s in keyed_store.load_sessions("ABCDEF1234")] == ["old"]
+
+
 def test_starting_a_new_project_bins_an_unused_draft(window_cls, keyed_store):
     draft = keyed_store.new_draft_key()
     keyed_store.upsert_session("s1", draft)
@@ -441,3 +528,78 @@ def test_quitting_an_untitled_project_leaves_nothing_behind(window_cls, keyed_st
 
     window_cls._stop_all_threads(W())
     assert keyed_store.load_sessions(draft) == []
+
+
+def test_closed_session_list_omits_open_tabs(window_cls, keyed_store):
+    keyed_store.upsert_session("open", "P1", title="Live")
+    keyed_store.record_message("open", "user", "still here")
+    keyed_store.upsert_session("closed", "P1", title="Yesterday")
+    keyed_store.record_message("closed", "user", "old")
+    keyed_store.mark_session_closed("closed")
+
+    class W:
+        _history_key = "P1"
+        _sessions = {"open": {}}
+
+    rows = window_cls._closed_session_list(W())
+    assert [r["id"] for r in rows] == ["closed"]
+    assert rows[0]["title"] == "Yesterday"
+
+
+def test_reopen_closed_session_restores_the_tab(window_cls, keyed_store):
+    keyed_store.upsert_session("s1", "P1", title="Bring me back", backend="zenvi")
+    keyed_store.record_message("s1", "user", "hello")
+    keyed_store.mark_session_closed("s1")
+
+    rendered = []
+
+    class W:
+        _history_key = "P1"
+        _sessions = {"live": {}}
+        _active_sid = "live"
+        _use_web_ui = False
+        _first_prompt_summary = None
+        is_processing = False
+
+        def _make_worker(self, session_id, backend, restore=None):
+            return MagicMock(), MagicMock()
+
+        def _persist_session(self, session_id, **fields):
+            pass
+
+        def _local_history_items(self, session_id):
+            return [{
+                "role": "user",
+                "html_body": "<p>hello</p>",
+                "is_assistant": False,
+                "content": "hello",
+            }]
+
+        def _notify_agent_selector(self):
+            pass
+
+        def _update_preamble(self):
+            pass
+
+        def _render_active_session_widget(self):
+            rendered.append(self._active_sid)
+
+        def _sync_widget_backend_combo(self):
+            pass
+
+        def _rebuild_widget_tabs(self):
+            pass
+
+        def _save_chat_sessions_store(self, project_path=None):
+            pass
+
+        def _switch_session(self, session_id):
+            self._active_sid = session_id
+
+    win = W()
+    window_cls._reopen_closed_session(win, "s1")
+    assert "s1" in win._sessions
+    assert win._active_sid == "s1"
+    assert win._sessions["s1"]["title"] == "Bring me back"
+    assert keyed_store.load_sessions("P1", include_closed=False)
+    assert rendered == ["s1"]
