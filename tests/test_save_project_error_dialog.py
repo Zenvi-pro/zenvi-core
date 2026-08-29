@@ -17,12 +17,6 @@ if str(SRC) not in sys.path:
 pytest.importorskip("openshot")
 pytest.importorskip("PyQt5.QtWidgets")
 
-from PyQt5.QtCore import Qt, QCoreApplication  # noqa: E402
-
-# windows/views/timeline.py picks a WebEngine/WebKit backend at import time,
-# which requires this attribute set before the QApplication is constructed.
-QCoreApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
-
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 
@@ -36,6 +30,18 @@ if not hasattr(_app, "get_settings"):
     _app.get_settings = lambda: _Settings()
 if not hasattr(_app, "_tr"):
     _app._tr = lambda s: s
+
+# windows/views/timeline.py picks a WebEngine/WebKit backend at import time
+# (needs Qt.AA_ShareOpenGLContexts set before the *first* QApplication in the
+# whole test session, which we don't control when running alongside other
+# test files). save_project() never touches the timeline view, so stub it out
+# instead of pulling in that fragile, unrelated import chain.
+import types  # noqa: E402
+
+if "windows.views.timeline" not in sys.modules:
+    _stub = types.ModuleType("windows.views.timeline")
+    _stub.TimelineView = type("TimelineView", (), {})
+    sys.modules["windows.views.timeline"] = _stub
 
 import windows.main_window as main_window  # noqa: E402
 

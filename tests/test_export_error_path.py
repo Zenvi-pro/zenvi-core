@@ -180,6 +180,13 @@ def _base_dlg(monkeypatch, project_fps=None):
     ))
     monkeypatch.setattr("windows.export.openshot.CacheMemory", lambda *a, **k: MagicMock())
     monkeypatch.setattr("windows.export.track_metric_error", lambda *a, **k: None)
+    # run_export() calls QCoreApplication.processEvents(), which can deliver an
+    # unrelated queued dialog (e.g. a deferred crash-handler report queued by
+    # an earlier test elsewhere in the full suite) and block forever on
+    # QMessageBox.exec_() in this headless/offscreen environment. Neutralize
+    # real dialog display so these tests are immune to that cross-test timing,
+    # regardless of what else is running in the same pytest session.
+    monkeypatch.setattr("classes.crash_handler._show_dialog", lambda *a, **k: None)
     return dlg
 
 
