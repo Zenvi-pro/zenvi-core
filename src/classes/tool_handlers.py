@@ -1100,10 +1100,58 @@ def center_on_playhead(**_kw) -> str:
         return f"Error: {e}"
 
 
-def import_files(**_kw) -> str:
+def import_files(paths="", path="", folder="", **_kw) -> str:
+    """Import local files, folders, or globs into the media bin (paths/path). Directories are walked recursively. Returns media_bin_file_id for each file so they can be placed with add_clip_to_timeline_tool. If paths is empty, opens the Import Files dialog."""
     try:
-        _get_app().window.actionImportFiles_trigger()
-        return "Import files dialog opened."
+        from classes.file_drop import collect_import_paths
+
+        raw = []
+        for value in (paths, path, folder, _kw.get("files")):
+            if value:
+                raw.append(value)
+        if not raw:
+            _get_app().window.actionImportFiles_trigger()
+            return "Import files dialog opened."
+
+        media_paths, notes = collect_import_paths(raw)
+        if not media_paths:
+            detail = "; ".join(notes) if notes else "no files found"
+            return f"Error: Nothing to import ({detail})."
+
+        def _do_import():
+            return (
+                _get_app().window.files_model.add_files(
+                    media_paths, quiet=True, prevent_image_seq=True
+                )
+                or []
+            )
+
+        imported = _run_on_main_thread(_do_import, timeout=120)
+        if not imported:
+            detail = "; ".join(notes) if notes else "the files could not be opened"
+            return f"Error: Nothing was added to the media bin ({detail})."
+        lines = []
+        for f in imported:
+            d = f.data if isinstance(getattr(f, "data", None), dict) else {}
+            name = d.get("name") or os.path.basename(str(d.get("path") or "")) or "?"
+            dur = float(d.get("duration", 0) or 0)
+            lines.append(
+                f"  media_bin_file_id={f.id} name={name!r} duration={dur:.2f}s"
+            )
+        chat_session_id = str(_kw.get("chat_session_id", "") or "default")
+        if imported:
+            _last_split_file_id_by_chat_session[chat_session_id] = imported[-1].id
+        summary = f"Imported {len(imported)} file(s) into the media bin:"
+        if lines:
+            summary += "\n" + "\n".join(lines)
+        if notes:
+            summary += "\nNotes: " + "; ".join(notes)
+        if imported:
+            summary += (
+                "\nIMPORTANT: Call add_clip_to_timeline_tool with file_id='<media_bin_file_id>' "
+                "to place a file on the timeline."
+            )
+        return summary
     except Exception as e:
         return f"Error: {e}"
 
@@ -1309,8 +1357,9 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "split_file_add_clip_tool / import_stock_media_tool immediately before this "
-                    "step (empty file_id only works right after those tools in the same session)."
+                    "split_file_add_clip_tool / import_files_tool / import_stock_media_tool "
+                    "immediately before this step (empty file_id only works right after those "
+                    "tools in the same session)."
                 )
         else:
             file_id = str(file_id).strip()
@@ -6544,6 +6593,7 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             "add_clip_to_timeline_tool",
             "place_motion_graphic_tool",
             "import_stock_media_tool",
+            "import_files_tool",
         ):
             tool_args = dict(tool_args)
             tool_args.pop("chat_session_id", None)

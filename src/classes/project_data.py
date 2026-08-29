@@ -42,7 +42,7 @@ from classes.image_types import get_media_type
 from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
-from classes.assets import get_assets_path
+from classes.assets import copy_imported_media, get_assets_path
 from windows.views.find_file import find_missing_file
 from classes.convert_framerate import change_profile
 
@@ -878,6 +878,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
+            copy_imported_media(
+                self._data.get("files") or [],
+                self._data.get("clips") or [],
+                file_path,
+                app_root=info.PATH,
+            )
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
@@ -1123,12 +1129,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         skip_all = msg.clickedButton() == skip_all_btn
 
         if skip_all:
-            for file, path in missing_files:
-                log.info("Removed missing file: %s", os.path.basename(path))
-                self._data["files"].remove(file)
-            for clip, path in missing_clips:
-                log.info("Removed missing clip: %s", os.path.basename(path))
-                self._data["clips"].remove(clip)
+            # Keep missing files and clips so the timeline is not wiped. Playback
+            # of those clips will fail until the media is located on a later open.
+            log.info(
+                "Opening with %s missing file(s); leaving files and clips in place",
+                total_missing,
+            )
             return
 
         # User chose "Locate files...": prompt for each missing item with parent so dialogs stay on top

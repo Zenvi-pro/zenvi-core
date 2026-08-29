@@ -1157,7 +1157,7 @@ class Export(QDialog):
 
         # Determine final exported file path (and replace blank paths with default ones)
         default_filename = "Untitled Project"
-        default_folder = os.path.join(info.HOME_PATH)
+        default_folder = os.path.join(info.DOWNLOADS_PATH)
         if export_type == _("Image Sequence"):
             file_name_with_ext = "%s%s" % (self.txtFileName.text().strip() or default_filename, self.txtImageFormat.text().strip())
         else:
@@ -1598,7 +1598,7 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     if not export_file_path:
         export_file_path = default_path
     if not export_file_path:
-        export_file_path = os.path.join(info.HOME_PATH, "export.mp4")
+        export_file_path = os.path.join(info.DOWNLOADS_PATH, "export.mp4")
 
     # Ensure directory exists
     export_dir = os.path.dirname(export_file_path)

@@ -352,6 +352,24 @@ ensure_windows_profile_env()
 
 # User paths
 HOME_PATH = os.path.join(os.path.expanduser("~"))
+
+
+def get_downloads_path():
+    """Return the current user's Downloads folder (macOS, Windows, Linux)."""
+    try:
+        from PyQt5.QtCore import QStandardPaths
+        path = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+        if path:
+            return os.path.normpath(path)
+    except Exception:
+        pass
+    fallback = os.path.join(os.path.expanduser("~"), "Downloads")
+    if os.path.isdir(fallback):
+        return fallback
+    return HOME_PATH
+
+
+DOWNLOADS_PATH = get_downloads_path()
 USER_PATH = os.path.join(HOME_PATH, ".openshot_qt")
 BACKUP_PATH = os.path.join(USER_PATH)
 RECOVERY_PATH = os.path.join(USER_PATH, "recovery")
