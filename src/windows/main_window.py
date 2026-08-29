@@ -633,9 +633,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
+                # Capture the message now: invoke_on_gui may defer _warn to run
+                # after this except block exits, and Python auto-deletes the
+                # "as ex" binding at that point, which would make a closure
+                # over `ex` itself raise instead of showing the dialog.
+                error_message = str(ex)
 
                 def _warn():
-                    QMessageBox.warning(self, _("Error Saving Project"), str(ex))
+                    QMessageBox.warning(self, _("Error Saving Project"), error_message)
 
                 invoke_on_gui(_warn, context=self)
                 return

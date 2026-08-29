@@ -875,7 +875,16 @@ class Export(QDialog):
         self.btnBrowse.setEnabled(True)
 
     def _cleanup_export_resources(self):
-        """Stop the export cache thread and restore the preview cache. Idempotent."""
+        """Stop the export cache thread and restore the preview cache. Idempotent.
+
+        Called from both run_export()'s finally block and reject() (e.g. when
+        the user closes the finished-export dialog); the guard below stops the
+        second call from re-invoking native Close()/ClearAllCache() on an
+        already-closed Timeline, which corrupts the heap on some platforms.
+        """
+        if getattr(self, "_export_cleaned_up", False):
+            return
+        self._export_cleaned_up = True
         try:
             timeline = getattr(self, "timeline", None)
             if timeline is not None:
@@ -971,6 +980,11 @@ class Export(QDialog):
         if owns_pause:
             self._auto_save_was_active = pause_window_auto_save()
             self._auto_save_paused = True
+            # Reset per-export-attempt guards. Only the top-level call (not
+            # the audio-codec-failure retry recursion below) should do this,
+            # which is exactly what owns_pause already distinguishes.
+            self._export_cleaned_up = False
+            self._fps_rescaled = False
 
         retried_as_video_only = False
         export_ok = False
@@ -987,9 +1001,13 @@ class Export(QDialog):
             new_fps_float = float(fps_num) / float(fps_den)
             export_fps_factor = new_fps_float / current_fps_float
 
-            # Rescale all keyframes (if needed)
+            # Rescale all keyframes (if needed). Guarded so the audio-codec-
+            # failure retry (which recurses into this same function) doesn't
+            # scale an already-rescaled project a second time.
             if export_fps_factor != 1.0:
-                self.project.rescale_keyframes(export_fps_factor)
+                if not getattr(self, "_fps_rescaled", False):
+                    self.project.rescale_keyframes(export_fps_factor)
+                    self._fps_rescaled = True
                 path_to_use = profile_path_for_rescale
                 if not path_to_use and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None:
                     path_to_use = self.cboSimpleVideoProfile.currentData()
@@ -1175,7 +1193,10 @@ class Export(QDialog):
                 max_frame,
                 format_of_progress_string
             )
-            self.ExportEnded.emit(export_file_path)
+            # ExportEnded is emitted once, after cleanup, below (guarded by
+            # export_ok) -- do not also emit it here, or successful exports
+            # fire the signal (and any connected "export finished" UI/hooks)
+            # twice.
             export_ok = True
 
         except Exception as e:

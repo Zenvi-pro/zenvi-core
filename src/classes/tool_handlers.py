@@ -6529,6 +6529,17 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "fetch_remotion_video_from_supabase_tool",
 })
 
+# Tools whose main-thread work can legitimately run far longer than
+# _run_on_main_thread's default 30s wait -- e.g. export_video_tool's encode
+# loop runs synchronously on the GUI thread for the entire video (minutes to
+# hours for a real project), and a 30s timeout raises TimeoutError to the
+# caller while the export keeps running to completion in the background,
+# which the agent (and user) sees as "Export failed" even though a file may
+# still land later. Give these a generous ceiling instead of the default.
+_MAIN_THREAD_TIMEOUTS = {
+    "export_video_tool": 6 * 60 * 60,  # up to 6 hours for a long project export
+}
+
 
 def execute_tool(tool_name: str, tool_args: dict) -> str:
     """Execute a tool by name with the given arguments. Returns the result string."""
@@ -6563,7 +6574,8 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             return _invoke()
         if tool_name in READ_ONLY_TOOLS or tool_name in BACKGROUND_SAFE_TOOLS:
             return _invoke()
-        return _run_on_main_thread(_invoke)
+        timeout = _MAIN_THREAD_TIMEOUTS.get(tool_name, 30)
+        return _run_on_main_thread(_invoke, timeout=timeout)
     except Exception as e:
         log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
         return f"Error: {e}"
