@@ -43,6 +43,29 @@ def test_get_downloads_path_falls_back_to_home_downloads(monkeypatch, tmp_path):
     assert get_downloads_path() == str(downloads)
 
 
+def test_get_downloads_path_rejects_missing_qt_dir(monkeypatch, tmp_path):
+    """A Qt DownloadLocation that is not an existing directory falls back to ~/Downloads."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    missing = tmp_path / "QtDownloadsMissing"
+    QtCore = pytest.importorskip("PyQt5.QtCore")
+
+    monkeypatch.setattr(
+        QtCore.QStandardPaths,
+        "writableLocation",
+        lambda location: str(missing),
+    )
+
+    def _expand(path):
+        if path == "~":
+            return str(tmp_path)
+        return path
+
+    monkeypatch.setattr(os.path, "expanduser", _expand)
+    assert not missing.exists()
+    assert get_downloads_path() == str(downloads)
+
+
 def _export_store(export_type=1, export_path="", project_path=""):
     pytest.importorskip("PyQt5.QtWidgets")
     from classes.settings import SettingStore

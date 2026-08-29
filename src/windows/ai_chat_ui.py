@@ -2363,8 +2363,8 @@ class AIChatWindow(QDockWidget):
         for existing in atts:
             if str(existing.get("file_id") or "") == str(f.id or file_id):
                 return
-        att = make_attachment(path or name or str(file_id), file_id=str(f.id or file_id), name=name)
-        att["path"] = path or att["path"]
+        att = make_attachment(path or "", file_id=str(f.id or file_id), name=name)
+        att["path"] = path or ""
         atts.append(att)
         self._push_attachments_to_js()
         if insert_mention and self._use_web_ui:
@@ -2966,11 +2966,11 @@ class AIChatWindow(QDockWidget):
         sess = self._active_session()
         worker = sess.get("worker")
         if worker is None:
-            return
+            return False
         if self.is_processing and action == "chat" and not sess.get("pending_plan_questions"):
             if text:
                 self._run_js("alert('Processing previous message...');")
-            return
+            return False
         mode = self._resolve_agent_mode(agent_mode)
         sess["agent_mode"] = mode
         if sess.get("pending_plan_questions") and action == "chat" and text:
@@ -2983,7 +2983,7 @@ class AIChatWindow(QDockWidget):
         if action == "chat" and shown:
             self._add_user_msg(shown)
         if action == "chat" and cmd and self._try_local_command(cmd):
-            return
+            return True
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
@@ -2999,6 +2999,7 @@ class AIChatWindow(QDockWidget):
             Q_ARG(str, plan_id or ""),
         )
         self._save_chat_sessions_store()
+        return True
 
     def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None):
         """Handle send from CEP UI (same logic as send_message but with args)."""
@@ -3016,18 +3017,19 @@ class AIChatWindow(QDockWidget):
         payload = typed
         if block:
             payload = f"{block}\n\n{payload}".strip() if payload else block
-        sess = self._active_session()
-        if sess is not None:
-            sess["attachments"] = []
-        self._push_attachments_to_js()
         self._mention_armed = False
-        self._dispatch_user_message(
+        sent = self._dispatch_user_message(
             payload,
             model_id,
             agent_mode=agent_mode,
             display_text=display,
             command_text=typed,
         )
+        if sent:
+            sess = self._active_session()
+            if sess is not None:
+                sess["attachments"] = []
+            self._push_attachments_to_js()
 
     def _set_agent_mode(self, agent_mode: str):
         sess = self._active_session()

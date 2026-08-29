@@ -43,7 +43,12 @@ from classes.image_types import get_media_type
 from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
-from classes.assets import copy_imported_media, get_assets_path
+from classes.assets import (
+    copy_imported_media,
+    get_assets_path,
+    restore_media_paths,
+    snapshot_media_paths,
+)
 from windows.views.find_file import find_missing_file
 from classes.convert_framerate import change_profile
 
@@ -881,12 +886,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         log.info("Saving project file: %s", file_path)
 
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
+        media_snapshot = None
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
+            files = self._data.get("files") or []
+            clips = self._data.get("clips") or []
+            media_snapshot = snapshot_media_paths(files, clips)
             copy_imported_media(
-                self._data.get("files") or [],
-                self._data.get("clips") or [],
+                files,
+                clips,
                 file_path,
                 app_root=info.PATH,
             )
@@ -895,12 +904,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         self._data["version"] = {"openshot-qt": info.VERSION,
                                  "libopenshot": openshot.OPENSHOT_VERSION_FULL}
 
-        # Try to save project settings file, will raise error on failure
-        self.write_to_file(
-            file_path,
-            self._data,
-            path_mode="ignore" if backup_only else "relative",
-            previous_path=self.current_filepath if not backup_only else None)
+        try:
+            self.write_to_file(
+                file_path,
+                self._data,
+                path_mode="ignore" if backup_only else "relative",
+                previous_path=self.current_filepath if not backup_only else None)
+        except Exception:
+            restore_media_paths(media_snapshot)
+            raise
 
         if not backup_only:
             # On success, save current filepath

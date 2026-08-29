@@ -1999,11 +1999,16 @@
                 return;
             }
             if (e.key === 'Enter' || e.key === 'Tab') {
-                e.preventDefault();
                 if (mentionMatches.length && mentionActiveIndex >= 0) {
+                    e.preventDefault();
                     selectMentionIndex(mentionActiveIndex);
+                    return;
                 }
-                return;
+                closeMentionPalette();
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    return;
+                }
             }
             if (e.key === 'Escape') {
                 e.preventDefault();
