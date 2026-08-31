@@ -1055,6 +1055,64 @@ class ZenviBackendClient:
             return {"items": [], "error": str(e)}
 
     # ------------------------------------------------------------------
+    # Watch window (vision confirm)
+    # ------------------------------------------------------------------
+    def watch_window(
+        self,
+        *,
+        query: str,
+        window_start: float,
+        window_end: float,
+        frames: List[Dict[str, Any]],
+        fallback_cut: Optional[float] = None,
+        fallback_in: Optional[float] = None,
+        fallback_out: Optional[float] = None,
+        orientation_role: bool = False,
+        sparse: bool = False,
+        source_class: str = "",
+    ) -> Dict[str, Any]:
+        """Vision-confirm a cut time from a small JPEG set.
+
+        Never raises: a watch is an optional refinement, so a backend outage
+        must degrade to the caller's fallback rather than break a slice.
+        """
+        payload: Dict[str, Any] = {
+            "query": query or "",
+            "window_start": float(window_start),
+            "window_end": float(window_end),
+            "frames": frames or [],
+            "orientation_role": bool(orientation_role),
+            "sparse": bool(sparse),
+            "source_class": source_class or "",
+        }
+        for key, value in (
+            ("fallback_cut", fallback_cut),
+            ("fallback_in", fallback_in),
+            ("fallback_out", fallback_out),
+        ):
+            if value is not None:
+                payload[key] = float(value)
+
+        try:
+            r = self.session.post(
+                f"{self.api_url}/indexing/watch-window", json=payload, timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.warning("Watch window failed: %s", e)
+            return {
+                "cut_source": float(fallback_cut if fallback_cut is not None else window_start),
+                "in_source": float(fallback_in if fallback_in is not None else window_start),
+                "out_source": float(fallback_out if fallback_out is not None else window_end),
+                "matched": False,
+                "used_fallback": True,
+                "confidence": 0.0,
+                "reason": str(e),
+                "error": str(e),
+            }
+
+    # ------------------------------------------------------------------
     # Pexels stock video
     # ------------------------------------------------------------------
     def pexels_search(self, query: str, per_page: int = 15, page: int = 1) -> Dict[str, Any]:
@@ -1133,9 +1191,38 @@ class ZenviBackendClient:
         }
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
-        """Download a Freesound preview MP3 from the CDN URL to the local machine."""
+        """Download a Freesound preview to the local machine.
+
+        Freesound serves each sound in several preview renditions and any one of
+        them can 404 while the others are fine, so fall back through the variants
+        instead of failing the whole stock_music run.
+        """
         hint = filename or f"freesound_{sound_id}"
-        return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
+        url = str(preview_url or "").strip()
+        if not url:
+            return {"success": False, "error": "No preview URL"}
+
+        candidates = [url]
+        for old_part, new_part in (
+            ("-hq.mp3", "-lq.mp3"), ("-lq.mp3", "-hq.mp3"),
+            ("-hq.ogg", "-lq.ogg"), ("-lq.ogg", "-hq.ogg"),
+        ):
+            if old_part in url:
+                candidates.append(url.replace(old_part, new_part))
+        # Different container as a last resort.
+        if "-hq.mp3" in url:
+            candidates.append(url.replace("-hq.mp3", "-hq.ogg"))
+
+        last = {"success": False, "error": "No preview URL"}
+        for candidate in candidates:
+            ext = ".ogg" if candidate.endswith(".ogg") else ".mp3"
+            last = self._download_url_to_temp(
+                candidate, ext, filename_hint=hint, timeout=180,
+            )
+            if last.get("success"):
+                return last
+            log.warning("Freesound preview failed (%s): %s", candidate, last.get("error"))
+        return last
 
 
 # Singleton
