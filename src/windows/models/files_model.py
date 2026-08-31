@@ -450,8 +450,8 @@ class FilesModel(QObject, updates.UpdateInterface):
         # add item for each file
         row_added_count = 0
         for file in files:
-            # Skip agent-created subclips (from split_file_add_clip_tool) —
-            # they're internal segments and shouldn't clutter the panel.
+            # Skip agent-created subclips — nothing creates them any more, but
+            # projects saved before placement was consolidated still carry them.
             if file.data.get("zenvi_subclip"):
                 continue
 

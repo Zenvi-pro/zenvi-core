@@ -1296,152 +1296,14 @@ def get_file_info(file_id="", **_kw) -> str:
         return f"Error: {e}"
 
 
-def split_file_add_clip(
-    file_id="",
-    start_frame=0,
-    end_frame=0,
-    name="",
-    start_seconds="",
-    end_seconds="",
-    query="",
-    **_kw,
-) -> str:
-    try:
-        from classes.query import File
-        from classes import time_parts
-        from classes.ai_metadata_utils import get_effective_ai_metadata, filter_tags_string_for_window
-
-        chat_session_id = str(_kw.get("chat_session_id", "") or "default")
-
-        if not file_id:
-            return "Error: file_id is required."
-        file_id = str(file_id).strip()
-        f = File.get(id=file_id)
-        if not f:
-            return f"Error: File not found for id={file_id}."
-        fps_num, fps_den, fps = _source_fps_parts(f.data)
-        previous_start = parse_timecode_token(f.data.get("start")) or 0.0
-        source_len = _source_duration_seconds(f.data)
-
-        try:
-            keep_start = parse_seconds_arg(start_seconds, default=None, field="start_seconds")
-            keep_end = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
-        except ValueError as exc:
-            return f"Error: {exc}"
-
-        # A query naming an explicit range is as good as the seconds args.
-        if keep_start is None and keep_end is None and query:
-            explicit = _parse_explicit_source_time_range_sec(str(query))
-            if explicit:
-                keep_start, keep_end = explicit
-
-        if keep_start is not None or keep_end is not None:
-            # Seconds path: no frame math, so a file reporting 1 fps is harmless.
-            keep_start = 0.0 if keep_start is None else max(0.0, keep_start)
-            if keep_end is None:
-                return "Error: end_seconds is required when start_seconds is given."
-            if keep_end <= keep_start:
-                return f"Error: end_seconds {keep_end} must be greater than start_seconds {keep_start}."
-            if source_len > 0 and keep_start >= source_len:
-                return (
-                    f"Error: start_seconds {keep_start} is past the end of this file "
-                    f"(duration_seconds={source_len:.2f})."
-                )
-            start_sec = previous_start + keep_start
-            end_sec = previous_start + keep_end
-            if source_len > 0:
-                end_sec = min(end_sec, previous_start + source_len)
-            start_frame = int(round(keep_start * fps)) + 1
-            end_frame = int(round((end_sec - previous_start) * fps))
-        else:
-            if _unreliable_source_fps(f.data):
-                return (
-                    f"Error: this file reports source_fps={fps_num}/{fps_den}, which cannot be used "
-                    "for frame math. Pass start_seconds and end_seconds (source seconds) instead of "
-                    "start_frame/end_frame."
-                )
-            try:
-                start_frame = int(start_frame)
-                end_frame = int(end_frame)
-            except (TypeError, ValueError):
-                return (
-                    "Error: start_frame/end_frame must be whole frame numbers, or pass "
-                    "start_seconds/end_seconds instead."
-                )
-            if fps <= 0:
-                return "Error: Invalid fps."
-            video_length = int(parse_timecode_token(f.data.get("video_length")) or 0)
-            if start_frame < 1 or end_frame < 1:
-                return (
-                    "Error: no keep window given. Pass start_seconds and end_seconds "
-                    "(source seconds); frames are 1-based if you use them instead."
-                )
-            if start_frame >= end_frame:
-                return "Error: start_frame must be < end_frame."
-            if end_frame > video_length:
-                return f"Error: end_frame {end_frame} > video_length {video_length}."
-            start_sec = previous_start + (start_frame - 1) / fps
-            end_sec = previous_start + end_frame / fps
-        new_file = File()
-        new_file.data = copy.deepcopy(f.data)
-        new_file.data.pop("name", None)
-        new_file.id = None
-        new_file.key = None
-        new_file.type = "insert"
-        new_file.data["start"] = start_sec
-        new_file.data["end"] = end_sec
-        new_file.data["parent_file_id"] = file_id
-
-        if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
-            from classes.timeline_clip_context import resolve_root_ai_metadata
-            from classes.ai_metadata_utils import materialize_clip_ai_metadata
-
-            root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
-            if root_ai:
-                effective = materialize_clip_ai_metadata(
-                    root_ai, start_sec, end_sec, rebased=True,
-                )
-            else:
-                effective = get_effective_ai_metadata(
-                    f.data,
-                    clip_data={"start": start_sec, "end": end_sec},
-                    rebased=True,
-                )
-            new_file.data["ai_metadata"] = effective
-            if new_file.data.get("tags"):
-                new_file.data["tags"] = filter_tags_string_for_window(
-                    str(new_file.data.get("tags") or ""),
-                    effective,
-                )
-
-        if name and isinstance(name, str) and name.strip():
-            new_file.data["name"] = name.strip()
-        else:
-            global_frame = round(previous_start * fps) + start_frame
-            t = time_parts.secondsToTime((global_frame - 1) / fps, fps_num, fps_den)
-            timestamp = "{}:{}:{}:{}".format(t["hour"], t["min"], t["sec"], t["frame"])
-            base = os.path.splitext(os.path.basename(f.data.get("path") or f.data.get("name", "clip")))[0]
-            new_file.data["name"] = f"{base} ({timestamp})"
-        # Mark as agent-created subclip so it's hidden from the project files panel
-        new_file.data["zenvi_subclip"] = True
-        new_file.save()
-        _last_split_file_id_by_chat_session[chat_session_id] = new_file.id
-        clip_name = new_file.data.get("name", "")
-        return (
-            f'Subclip created: "{clip_name}" (file_id={new_file.id}) '
-            f'covering {start_sec - previous_start:.2f}s to {end_sec - previous_start:.2f}s of the source. '
-            f'Call add_clip_to_timeline_tool(file_id="{new_file.id}") to place it on the timeline.'
-        )
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def add_clip_to_timeline(
     file_id="",
     position_seconds="",
     track="",
     duration_seconds="",
     start_seconds="",
+    end_seconds="",
+    query="",
     full_file="",
     **_kw,
 ) -> str:
@@ -1456,8 +1318,8 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "split_file_add_clip_tool / import_stock_media_tool immediately before this "
-                    "step (empty file_id only works right after those tools in the same session)."
+                    "import_stock_media_tool immediately before this step "
+                    "(empty file_id only works right after that tool in the same session)."
                 )
         else:
             file_id = str(file_id).strip()
@@ -1473,13 +1335,25 @@ def add_clip_to_timeline(
         file_data = f.data
         _is_audio_only = is_audio_only_media(file_data)
 
+        _watch_note = ""
+        _snap_note = ""
+
         # Optional trim window (stock / beat placement)
         try:
             trim_start = max(0.0, parse_seconds_arg(start_seconds, default=0.0, field="start_seconds"))
             trim_dur = parse_seconds_arg(duration_seconds, default=None, field="duration_seconds")
+            trim_end = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
             pos_arg = parse_seconds_arg(position_seconds, default=None, field="position_seconds")
         except ValueError as exc:
             return f"Error: {exc}"
+        # end_seconds is the keep-window form (place_moment); duration wins if both.
+        if trim_dur is None and trim_end is not None:
+            if trim_end <= trim_start:
+                return (
+                    f"Error: end_seconds {trim_end} must be greater than "
+                    f"start_seconds {trim_start}."
+                )
+            trim_dur = trim_end - trim_start
         if trim_dur is not None:
             trim_dur = max(0.0, trim_dur)
 
@@ -1571,6 +1445,34 @@ def add_clip_to_timeline(
                     min_duration=1.0 / max(fps_float, 1.0),
                 )
 
+                # A query means "find the moment in here" - watch, but only on a
+                # window wide enough for six stills to beat the index (see
+                # WATCH_MIN_WINDOW_SEC).
+                if (
+                    str(query or "").strip()
+                    and not _is_audio_only
+                    and not _window_is_dialogue_driven(file_data, start_sec, end_sec)
+                ):
+                    watched = _watch_source_window(
+                        str(file_data.get("path") or ""),
+                        start_sec, end_sec, query,
+                        source_class="add_clip_to_timeline",
+                    )
+                    if watched.get("matched"):
+                        start_sec = float(watched["in_source"])
+                        end_sec = float(watched["out_source"])
+                        _watch_note = " (watched)"
+                    else:
+                        _watch_note = " (text-index window; no visual match)"
+
+                # Do not start or end a placement mid-phrase: pull both edges
+                # off any transcript cue or chapter they land inside.
+                start_sec, end_sec, snapped_off_cue = _snap_window_off_boundaries(
+                    file_data, start_sec, end_sec,
+                )
+                if snapped_off_cue:
+                    _snap_note = ", moved off mid-sentence"
+
                 new_clip["start"] = start_sec
                 new_clip["end"] = end_sec
                 new_clip["duration"] = max(0.0, end_sec - start_sec)
@@ -1596,7 +1498,7 @@ def add_clip_to_timeline(
         id_part = f" timeline_clip_id={clip_id}" if clip_id else ""
         return (
             f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
-            f"{dur_part}{id_part}."
+            f"{dur_part}{id_part}{_snap_note}{_watch_note}."
         )
     except Exception as e:
         return f"Error: {e}"
@@ -2175,6 +2077,51 @@ def _clip_transcript_cues(clip_id_str):
         return []
 
 
+# Above this share of spoken audio a window is carried by dialogue, not by what
+# changes on screen. Stills of a talking head look identical, so the watch just
+# echoes the span it was shown - the transcript is the better boundary source.
+DIALOGUE_COVERAGE = 0.6
+
+
+def _window_is_dialogue_driven(file_data, start_sec, end_sec):
+    """True when transcript cues already describe this window better than frames."""
+    from classes import audio_mix as am
+
+    try:
+        cues = am.speech_windows((file_data or {}).get("ai_metadata"))
+        if not cues:
+            return False
+        coverage = am.cue_coverage(cues, start_sec, end_sec)
+        if coverage >= DIALOGUE_COVERAGE:
+            log.info(
+                "watch skipped: [%.2f-%.2f]s is %.0f%% speech - cutting on transcript "
+                "cues instead of stills",
+                start_sec, end_sec, coverage * 100,
+            )
+            return True
+    except Exception as exc:
+        log.debug("_window_is_dialogue_driven: %s", exc)
+    return False
+
+
+def _snap_window_off_boundaries(file_data, start_sec, end_sec):
+    """(start, end, moved) - keep a placement window off mid-phrase edges."""
+    from classes import audio_mix as am
+
+    try:
+        ai = (file_data or {}).get("ai_metadata")
+        s, e, moved = am.snap_window_to_boundaries(start_sec, end_sec, ai)
+        if moved:
+            log.info(
+                "placement snapped off mid-phrase: [%.2f-%.2f] -> [%.2f-%.2f]s",
+                start_sec, end_sec, s, e,
+            )
+        return s, e, moved
+    except Exception as exc:
+        log.debug("_snap_window_off_boundaries: %s", exc)
+        return start_sec, end_sec, False
+
+
 def _snap_cut_off_speech(clip_id_str, cut_source):
     """(cut, moved) - shift a cut that lands mid-sentence to the cue boundary."""
     from classes import audio_mix as am
@@ -2184,6 +2131,199 @@ def _snap_cut_off_speech(clip_id_str, cut_source):
         return cut_source, False
     snapped, cue = am.snap_cut_out_of_speech(cut_source, cues)
     return snapped, cue is not None
+
+
+def watch_clip_window(
+    query="",
+    start="",
+    end="",
+    clip_query="",
+    timeline_clip_id="",
+    track="",
+    **_kw,
+) -> str:
+    """Vision-check whether a query is visible in a window of a placed clip.
+
+    Read-only: reports in/out/peak in seconds and never touches the timeline.
+    start/end are clip-relative seconds; blank means the clip's whole window.
+    """
+    try:
+        from classes.ai_metadata_utils import get_source_window
+
+        try:
+            start_rel = parse_seconds_arg(start, default=None, field="start")
+            end_rel = parse_seconds_arg(end, default=None, field="end")
+        except ValueError as exc:
+            return f"Error: {exc}"
+
+        resolved = _resolve_timeline_clip_for_tool(
+            timeline_clip_id=timeline_clip_id,
+            clip_query=clip_query,
+            track=track,
+            occurrence=_kw.get("occurrence", 0),
+            position_near=_kw.get("position_near"),
+        )
+        if not resolved.ok or not resolved.clip:
+            return resolved.error or "Error: Could not resolve timeline clip."
+
+        clip_obj = resolved.clip
+        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        source_file = _get_source_file_for_clip(clip_obj)
+        file_data = source_file.data if source_file and isinstance(source_file.data, dict) else None
+        clip_start, clip_end = get_source_window(clip_data, file_data)
+
+        file_path = str((file_data or {}).get("path") or "")
+        if not file_path:
+            return "Error: Could not resolve the media path for this clip."
+
+        # Clip-relative in, source-absolute out.
+        win_s = clip_start if start_rel is None else clip_start + max(0.0, start_rel)
+        win_e = clip_end if end_rel is None else clip_start + max(0.0, end_rel)
+        win_s = max(clip_start, min(win_s, clip_end))
+        win_e = max(clip_start, min(win_e, clip_end))
+        if win_e <= win_s:
+            win_s, win_e = clip_start, clip_end
+        if win_e <= win_s:
+            return "Error: This clip has no usable source window to watch."
+
+        result = _watch_source_window(
+            file_path, win_s, win_e, query, source_class="watch_clip_window",
+        )
+
+        label = str(clip_data.get("title") or clip_obj.id)
+        head = (
+            f"watched {str(query or 'the window')!r} in {label} "
+            f"[{win_s - clip_start:.2f}-{win_e - clip_start:.2f}]"
+        )
+        if not result.get("matched"):
+            reason = str(result.get("reason") or "").strip() or "not visible in these frames"
+            return f"{head}: no match - {reason}. Times are clip-relative seconds."
+        return (
+            f"{head}: in={result['in_source'] - clip_start:.2f} "
+            f"out={result['out_source'] - clip_start:.2f} "
+            f"cut={result['cut_source'] - clip_start:.2f} "
+            f"(matched, confidence {float(result.get('confidence') or 0.0):.2f}). "
+            f"Times are clip-relative seconds - pass them straight to slice_moment."
+        )
+    except Exception as e:
+        log.error("watch_clip_window failed: %s", e, exc_info=True)
+        return f"Error: {e}"
+
+
+def _source_path_for_clip_id(clip_id_str):
+    """Media path behind a timeline clip, or "" when it cannot be resolved."""
+    try:
+        from classes.query import Clip
+
+        clip_obj = Clip.get(id=str(clip_id_str))
+        if not clip_obj:
+            return ""
+        source_file = _get_source_file_for_clip(clip_obj)
+        if source_file and isinstance(source_file.data, dict):
+            return str(source_file.data.get("path") or "")
+    except Exception as exc:
+        log.debug("_source_path_for_clip_id(%s): %s", clip_id_str, exc)
+    return ""
+
+
+def _watch_source_window(
+    file_path,
+    window_start,
+    window_end,
+    query,
+    *,
+    fallback_cut=None,
+    source_class="",
+):
+    """Vision-confirm a source window. Always returns a usable dict.
+
+    A watch is a refinement, never a gate: no ffmpeg, no GOOGLE_API_KEY or a
+    backend outage must all degrade to the caller's fallback so slicing keeps
+    working exactly as it does today.
+    """
+    win_s = float(window_start)
+    win_e = float(window_end)
+    if win_e < win_s:
+        win_s, win_e = win_e, win_s
+    cut = float(fallback_cut if fallback_cut is not None else win_s)
+
+    def _fallback(reason):
+        if reason:
+            log.warning("watch window fell back (%s): %s", source_class or "watch", reason)
+        return {
+            "cut_source": cut,
+            "in_source": win_s,
+            "out_source": win_e,
+            "matched": False,
+            "used_fallback": True,
+            "confidence": 0.0,
+            "reason": reason,
+        }
+
+    try:
+        from classes.api_client import get_backend_client
+        from classes.watch_frames import WATCH_MIN_WINDOW_SEC, extract_watch_frames
+
+        if (win_e - win_s) < WATCH_MIN_WINDOW_SEC:
+            log.info(
+                "watch skipped (%s): window [%.2f-%.2f]s is %.2fs, under the %.1fs "
+                "threshold - the index window is already tight",
+                source_class or "watch", win_s, win_e, win_e - win_s, WATCH_MIN_WINDOW_SEC,
+            )
+            return {
+                "cut_source": cut, "in_source": win_s, "out_source": win_e,
+                "matched": False, "used_fallback": True, "confidence": 0.0,
+                "reason": "window under the watch threshold",
+            }
+
+        frames, err = extract_watch_frames(str(file_path or ""), win_s, win_e)
+        if not frames:
+            return _fallback(err or "no watch frames")
+
+        result = get_backend_client().watch_window(
+            query=str(query or ""),
+            window_start=win_s,
+            window_end=win_e,
+            frames=frames,
+            fallback_cut=cut,
+            fallback_in=win_s,
+            fallback_out=win_e,
+            source_class=source_class,
+        )
+    except Exception as exc:
+        return _fallback(str(exc))
+
+    if not isinstance(result, dict) or result.get("error"):
+        return _fallback(str((result or {}).get("error") or "watch failed"))
+    if result.get("used_fallback") or not result.get("matched"):
+        return _fallback(str(result.get("reason") or ""))
+
+    def _clamp(value, default):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(win_s, min(v, win_e))
+
+    in_source = _clamp(result.get("in_source"), win_s)
+    out_source = _clamp(result.get("out_source"), win_e)
+    if out_source <= in_source:
+        in_source, out_source = win_s, win_e
+    log.info(
+        "watch (%s): matched %r in [%.2f-%.2f]s -> in=%.2f out=%.2f cut=%.2f conf=%.2f",
+        source_class or "watch", str(query or ""), win_s, win_e,
+        in_source, out_source, _clamp(result.get("cut_source"), cut),
+        _audio_float(result.get("confidence"), 0.0) or 0.0,
+    )
+    return {
+        "cut_source": _clamp(result.get("cut_source"), cut),
+        "in_source": in_source,
+        "out_source": out_source,
+        "matched": True,
+        "used_fallback": False,
+        "confidence": _audio_float(result.get("confidence"), 0.0) or 0.0,
+        "reason": str(result.get("reason") or ""),
+    }
 
 
 def _slice_at_source_cut(
@@ -2603,10 +2743,24 @@ def slice_clip_at_best_match(
         fps = _get_app().project.get("fps") or {}
         fps_num = float(fps.get("num", 30))
         fps_den = float(fps.get("den", 1)) or 1.0
-        # Never cut through a spoken line - snap to the nearer cue boundary.
-        raw_cut, moved_off_cue = _snap_cut_off_speech(
-            clip_id_str, float(chosen["cut_source"])
+
+        # Watch the matched segment before committing: the index peak is often
+        # the segment start, not the frame the query is actually on.
+        chosen_cut = float(chosen["cut_source"])
+        watched = _watch_source_window(
+            _source_path_for_clip_id(clip_id_str),
+            float(chosen.get("start", chosen_cut)),
+            float(chosen.get("end", chosen_cut)),
+            query,
+            fallback_cut=chosen_cut,
+            source_class="slice_moment",
         )
+        if watched.get("matched"):
+            chosen_cut = float(watched["cut_source"])
+            ordinal_label += ", watched"
+
+        # Never cut through a spoken line - snap to the nearer cue boundary.
+        raw_cut, moved_off_cue = _snap_cut_off_speech(clip_id_str, chosen_cut)
         if moved_off_cue:
             ordinal_label += ", moved off speech"
         cut_source = snap_source_time_to_frame(raw_cut, fps_num, fps_den)
@@ -7220,7 +7374,6 @@ AGENT_TOOL_HANDLERS = {
     "set_export_setting_tool": set_export_setting,
     # Clips
     "get_file_info_tool": get_file_info,
-    "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
@@ -7229,6 +7382,7 @@ AGENT_TOOL_HANDLERS = {
     "search_clip_scenes_tool": search_clip_scenes,
     "get_project_catalog_tool": get_project_catalog,
     "slice_clip_at_best_match_tool": slice_clip_at_best_match,
+    "watch_clip_window_tool": watch_clip_window,
     "suggest_motion_graphics_placements_tool": suggest_motion_graphics_placements,
     "propose_overlay_windows_tool": propose_overlay_windows,
     "place_motion_graphic_tool": place_motion_graphic,
@@ -7287,7 +7441,6 @@ TOOL_DISPLAY_LABELS = {
     "get_export_settings_tool": "Read export settings",
     "set_export_setting_tool": "Update export setting",
     "get_file_info_tool": "Read file info",
-    "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
@@ -7295,6 +7448,7 @@ TOOL_DISPLAY_LABELS = {
     "search_clip_scenes_tool": "Search clip scenes",
     "get_project_catalog_tool": "Read project catalog",
     "slice_clip_at_best_match_tool": "Slice clip at best match",
+    "watch_clip_window_tool": "Watch clip window",
     "suggest_motion_graphics_placements_tool": "Suggest MG placements (deprecated)",
     "propose_overlay_windows_tool": "Propose overlay windows",
     "place_motion_graphic_tool": "Place motion graphic",
@@ -7399,7 +7553,6 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
     # Only pass it through to the relevant handlers.
     if isinstance(tool_args, dict) and "chat_session_id" in tool_args:
         if tool_name not in (
-            "split_file_add_clip_tool",
             "add_clip_to_timeline_tool",
             "place_motion_graphic_tool",
             "import_stock_media_tool",
