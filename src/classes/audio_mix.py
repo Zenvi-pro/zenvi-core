@@ -265,6 +265,134 @@ def snap_cut_out_of_speech(cut_source, cues, *, max_shift=None):
     return cut, None
 
 
+# A cut inside a spoken phrase may move this far to clear it. Beyond that the
+# cut is deep inside the line and was probably meant - relocating it by seconds
+# would change which words survive.
+MAX_CUE_SHIFT_SEC = 2.0
+
+# Chapters TILE the segment, so every cut is inside one. They are an alignment
+# magnet, never an avoid-region: a cut already near a scene break tidies onto
+# it, and a cut mid-scene stays exactly where it was put.
+CHAPTER_MAGNET_SEC = 0.5
+
+
+def speech_windows(ai_metadata):
+    """Spoken-phrase spans a cut should not land inside. Real gaps between them."""
+    meta = ai_metadata if isinstance(ai_metadata, dict) else {}
+    return [c for c in (meta.get("transcript_cues") or []) if isinstance(c, dict)]
+
+
+def chapter_edges(ai_metadata):
+    """Sorted scene / song-section boundary times."""
+    meta = ai_metadata if isinstance(ai_metadata, dict) else {}
+    edges = set()
+    for ch in meta.get("chapters") or []:
+        if not isinstance(ch, dict):
+            continue
+        for key in ("start", "end"):
+            value = _f(ch.get(key), None)
+            if value is not None:
+                edges.add(round(float(value), 4))
+    return sorted(edges)
+
+
+def cue_coverage(cues, start, end):
+    """Fraction of [start, end) that spoken phrases occupy. 0.0 when silent."""
+    span = _f(end, 0.0) - _f(start, 0.0)
+    if span <= 0:
+        return 0.0
+    covered = 0.0
+    for cue in cues or []:
+        if not isinstance(cue, dict):
+            continue
+        c0 = _f(cue.get("source_start", cue.get("start")), None)
+        c1 = _f(cue.get("source_end", cue.get("end")), None)
+        if c0 is None or c1 is None or c1 <= c0:
+            continue
+        covered += max(0.0, min(c1, end) - max(c0, start))
+    return min(1.0, covered / span)
+
+
+def snap_cut_to_phrase_edge(cut, cues, *, prefer_later, max_shift=MAX_CUE_SHIFT_SEC):
+    """Land *cut* on a phrase boundary - never inside a spoken line.
+
+    prefer_later picks the trailing edge (an out-point lets the sentence
+    finish); the leading edge is used for an in-point. When the preferred edge
+    is further than *max_shift* the nearer edge wins, so the cut still lands on
+    a boundary rather than staying mid-word.
+    """
+    value = _f(cut, 0.0)
+    for cue in cues or []:
+        if not isinstance(cue, dict):
+            continue
+        c0 = _f(cue.get("source_start", cue.get("start")), None)
+        c1 = _f(cue.get("source_end", cue.get("end")), None)
+        if c0 is None or c1 is None or c1 <= c0:
+            continue
+        if not (c0 + _EPS < value < c1 - _EPS):
+            continue
+        preferred = c1 if prefer_later else c0
+        if max_shift is None or abs(preferred - value) <= max_shift:
+            return preferred, cue
+        nearer = c0 if (value - c0) <= (c1 - value) else c1
+        return nearer, cue
+    return value, None
+
+
+def snap_to_chapter_edge(cut, edges, *, tolerance=CHAPTER_MAGNET_SEC):
+    """Tidy a cut onto a scene break it is already next to. (cut, moved)."""
+    value = _f(cut, 0.0)
+    best = None
+    for edge in edges or []:
+        delta = abs(edge - value)
+        if delta <= tolerance and (best is None or delta < abs(best - value)):
+            best = edge
+    if best is None or best == value:
+        return value, False
+    return best, True
+
+
+def snap_window_to_boundaries(start, end, ai_metadata, *, max_shift=MAX_CUE_SHIFT_SEC):
+    """Keep a placement window off mid-phrase edges, then align to scene breaks.
+
+    Speech is an avoid-region (bounded move, so a deliberate mid-line cut is
+    respected); chapters are a magnet. Returns (start, end, moved) and never
+    returns an inverted or collapsed window.
+    """
+    s0 = _f(start, 0.0)
+    e0 = _f(end, 0.0)
+    if e0 <= s0:
+        return s0, e0, False
+
+    cues = speech_windows(ai_metadata)
+    edges = chapter_edges(ai_metadata)
+
+    def _one(value, *, prefer_later):
+        moved_here = False
+        if cues:
+            value, cue = snap_cut_to_phrase_edge(
+                value, cues, prefer_later=prefer_later, max_shift=max_shift,
+            )
+            moved_here = cue is not None
+        if edges:
+            value, hit = snap_to_chapter_edge(value, edges)
+            moved_here = moved_here or hit
+        return value, moved_here
+
+    # An in-point opens on a phrase; an out-point lets the phrase finish.
+    s1, s_moved = _one(s0, prefer_later=False)
+    e1, e_moved = _one(e0, prefer_later=True)
+    # Both edges can land on the same boundary when they share a phrase. Bailing
+    # out there would leave BOTH cuts mid-word, so widen to the whole phrase.
+    if e1 <= s1:
+        s2, s_cue = snap_cut_to_phrase_edge(s0, cues, prefer_later=False, max_shift=None)
+        e2, e_cue = snap_cut_to_phrase_edge(e0, cues, prefer_later=True, max_shift=None)
+        if e2 > s2:
+            return s2, e2, bool(s_cue or e_cue)
+        return s0, e0, False
+    return s1, e1, bool(s_moved or e_moved)
+
+
 def classify_clip_audio_role(
     clip_data: dict,
     file_data: Optional[dict] = None,
