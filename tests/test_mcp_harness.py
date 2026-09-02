@@ -403,8 +403,15 @@ def test_audio_codec_prefers_aac_over_ac3(monkeypatch):
     # A modern FFmpeg build: no libfaac / libvo_aacenc / libfdk_aac, but aac and
     # ac3 are both present. The old order picked ac3 here.
     available = {"aac", "ac3", "libmp3lame"}
-    monkeypatch.setattr(export_mod.openshot.FFmpegWriter, "IsValidCodec",
-                        staticmethod(lambda c: c in available))
+
+    # Replace the export module's own `openshot` reference rather than reaching
+    # through whatever stub another test happened to install first.
+    fake_openshot = types.SimpleNamespace(
+        FFmpegWriter=types.SimpleNamespace(
+            IsValidCodec=lambda c: c in available),
+        LAYOUT_STEREO=2,
+    )
+    monkeypatch.setattr(export_mod, "openshot", fake_openshot)
 
     assert export_mod._resolve_audio_codec("aac") == "aac"
 
