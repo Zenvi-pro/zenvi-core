@@ -1445,10 +1445,14 @@ def _resolve_audio_codec(preferred):
     preferred = (preferred or "aac").strip()
     if not preferred:
         preferred = "aac"
-    # Use same order as UI profile (export.py preset loading): libfaac, libvo_aacenc, then ac3.
-    # Do not use "aac" here — IsValidCodec("aac") is often True but Open() fails ("Could not open audio codec").
-    # Only use codecs that typically work at Open(); if none are valid, return None (export video-only).
-    aac_order = ("libfaac", "libvo_aacenc", "ac3", "libfdk_aac", "libmp3lame")
+    # AAC first, ac3 only as a last resort. libfaac and libvo_aacenc were dropped
+    # from modern FFmpeg builds, so an order that listed them ahead of ac3 always
+    # landed on ac3 — and AC-3 in an .mp4 is silent in most players (Windows
+    # Films & TV, Chrome, QuickTime), so the export looked fine to ffprobe and to
+    # Whisper while playing back with no sound for a human. Native "aac" is the
+    # stable encoder in current FFmpeg; if it genuinely fails to open, the
+    # audio-codec retry in export_video_headless still yields a video-only file.
+    aac_order = ("libfdk_aac", "aac", "libvo_aacenc", "libfaac", "libmp3lame", "ac3")
     if preferred.lower() == "aac" or preferred in aac_order:
         for codec in aac_order:
             if openshot.FFmpegWriter.IsValidCodec(codec):

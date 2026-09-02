@@ -392,6 +392,32 @@ def test_headless_export_keeps_audio(tmp_path, monkeypatch):
     assert captured["export_type"] == "Video & Audio"
 
 
+def test_audio_codec_prefers_aac_over_ac3(monkeypatch):
+    """AC-3 in an .mp4 plays silent in most players, so it must be the last resort.
+
+    ffprobe and Whisper both decode ac3 happily, so an export can look correct in
+    every automated check and still have no sound for a human.
+    """
+    export_mod = _import_real_export_module(monkeypatch)
+
+    # A modern FFmpeg build: no libfaac / libvo_aacenc / libfdk_aac, but aac and
+    # ac3 are both present. The old order picked ac3 here.
+    available = {"aac", "ac3", "libmp3lame"}
+    monkeypatch.setattr(export_mod.openshot.FFmpegWriter, "IsValidCodec",
+                        staticmethod(lambda c: c in available))
+
+    assert export_mod._resolve_audio_codec("aac") == "aac"
+
+    # ac3 is still reachable when nothing else is.
+    available.clear()
+    available.add("ac3")
+    assert export_mod._resolve_audio_codec("aac") == "ac3"
+
+    # And no audio codec at all means video-only rather than a crash.
+    available.clear()
+    assert export_mod._resolve_audio_codec("aac") is None
+
+
 def test_export_is_background_safe():
     """A real render outlasts the 30s dispatcher budget for interactive edits."""
     assert "export_video_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS
