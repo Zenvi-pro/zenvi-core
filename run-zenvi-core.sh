@@ -49,6 +49,17 @@ if [[ "$OS" == Linux* ]]; then
 else
   # MSYS2 / Git Bash: keep existing PATH so MinGW DLLs and tools resolve.
   RUN_PATH="$VENV_DIR/bin:${PATH:-/usr/bin:/bin}"
+  # Claude Code / Codex are Windows-native installs under USERPROFILE, which
+  # is not the MSYS $HOME. env -i would otherwise hide both the profile and
+  # these bins from Python's expanduser("~") / shutil.which.
+  if [[ -n "${USERPROFILE:-}" ]]; then
+    if command -v cygpath >/dev/null 2>&1; then
+      _win_home_unix="$(cygpath -u "$USERPROFILE")"
+    else
+      _win_home_unix="${USERPROFILE//\\//}"
+    fi
+    RUN_PATH="${_win_home_unix}/.local/bin:${_win_home_unix}/.codex/packages/standalone/current/bin:${RUN_PATH}"
+  fi
 fi
 
 ENV_ARGS=(
@@ -68,6 +79,23 @@ ENV_ARGS=(
   "PYTHONPATH=$COMBINED_PYTHONPATH"
   "PYTHONPATH_LIBOPENSHOT=$HOST_LIB"
 )
+
+# Windows Python ignores HOME and needs USERPROFILE; Claude/Codex login
+# state also lives under the Windows profile, not MSYS /home/$USER.
+if [[ "$OS" != Linux* ]]; then
+  ENV_ARGS+=(
+    "USERPROFILE=${USERPROFILE:-}"
+    "HOMEDRIVE=${HOMEDRIVE:-}"
+    "HOMEPATH=${HOMEPATH:-}"
+    "USERNAME=${USERNAME:-${USER:-}}"
+    "APPDATA=${APPDATA:-}"
+    "LOCALAPPDATA=${LOCALAPPDATA:-}"
+    "PATHEXT=${PATHEXT:-.COM;.EXE;.BAT;.CMD}"
+    "SYSTEMDRIVE=${SYSTEMDRIVE:-}"
+    "SYSTEMROOT=${SYSTEMROOT:-}"
+    "WINDIR=${WINDIR:-}"
+  )
+fi
 
 # Linux only: help the dynamic linker find libopenshot built next to the bindings tree.
 if [[ "$OS" == Linux* && -n "$HOST_LIB" && -d "$HOST_LIB" ]]; then

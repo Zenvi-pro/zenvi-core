@@ -56,12 +56,27 @@ class _DownloadWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
+            from classes.credits_client import charge_operation_on_success, check_operation
+
+            _, _, blocked = check_operation("stock_add", "stock media download")
+            if blocked:
+                self.finished.emit(self._sound_id, "", blocked)
+                return
+
             from classes.api_client import get_backend_client
             result = get_backend_client().freesound_download(
                 self._sound_id, self._preview_url, self._filename
             )
             local_path = result.get("local_path", "")
             error = result.get("error", "")
+            if not error and local_path:
+                charge_operation_on_success(
+                    True,
+                    "stock_add",
+                    "stock_add",
+                    provider="freesound",
+                    note=f"dock sound {self._sound_id}",
+                )
         except Exception as exc:
             local_path, error = "", str(exc)
         self.finished.emit(self._sound_id, local_path, error)
@@ -384,8 +399,17 @@ class FreesoundDock(QDockWidget):
         self._current_page += 1
         self._run_search(self._current_query, page=self._current_page)
 
+    def _stop_search_thread(self):
+        t = getattr(self, "_search_thread", None)
+        if t and t.isRunning():
+            t.quit()
+            if not t.wait(2000):
+                t.terminate()
+                t.wait(500)
+
     def _run_search(self, query: str, page: int):
         self._set_searching(True)
+        self._stop_search_thread()
 
         self._search_thread = QThread()
         self._worker = _SearchWorker(query, page)
@@ -506,7 +530,7 @@ class FreesoundDock(QDockWidget):
                 existing = File.get(path=local_path)
                 if existing:
                     if not (existing.data.get("ai_metadata") or {}).get("analyzed"):
-                        files_model._tag_file_async(existing.id)
+                        files_model._index_file_async(existing.id)
                 else:
                     files_model.add_files([local_path])
                     log.info("Freesound audio added to Project Files: %s", local_path)
@@ -531,7 +555,8 @@ class FreesoundDock(QDockWidget):
         self._status_label.setText("")
 
     def _cleanup_threads(self):
-        threads = [self._search_thread] + list(self._dl_threads.values())
+        self._stop_search_thread()
+        threads = list(self._dl_threads.values())
         for t in threads:
             if t and t.isRunning():
                 t.quit()

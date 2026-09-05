@@ -21,6 +21,22 @@
     <div class="chat-container relative flex flex-col h-full min-h-0"
          role="application" aria-label="Zenvi Assistant chat">
 
+        <!-- Agent backend mirror. The visible picker is the robot button in
+             the main window toolbar (windows/agent_selector_button.py); this
+             hidden select is just the value QWebChannel reads and writes. -->
+        <select id="chat-backend-select" class="hidden" aria-hidden="true"></select>
+
+        <!-- ── Tool-gap log panel (opened via the list icon above) ───────── -->
+        <div id="chat-gap-log-overlay" class="chat-gap-log-overlay" style="display:none;">
+            <div id="chat-gap-log-panel" class="chat-gap-log-panel" role="dialog" aria-label="Tool gaps log">
+                <div class="chat-gap-log-header">
+                    <span class="chat-gap-log-title">Tool Gaps</span>
+                    <button type="button" id="chat-gap-log-close" class="chat-gap-log-close" aria-label="Close">&times;</button>
+                </div>
+                <div id="chat-gap-log-list" class="chat-gap-log-list"></div>
+            </div>
+        </div>
+
         <!-- ── Tab bar (hidden until tabs are populated) ─────────────── -->
         <div id="chat-tab-bar"
              class="flex-shrink-0 flex items-center gap-1 px-2 pt-1.5 overflow-x-auto"
@@ -29,7 +45,7 @@
             <button type="button" id="chat-tab-add"
                     class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded-md ml-auto
                            text-[16px] leading-none transition-colors"
-                    style="background: transparent; border: none; color: rgba(255,255,255,0.35); cursor: pointer;"
+                    style="background: transparent; border: none; cursor: pointer;"
                     title="New chat" aria-label="New chat">+</button>
         </div>
 
@@ -42,7 +58,7 @@
                      style="color: var(--chat-text);"></div>
                 <div id="chat-credits-badge"
                      class="flex-shrink-0 ml-2 px-2 py-0.5 rounded-full text-[11px] font-medium"
-                     style="display:none; background: rgba(124,111,247,0.12); color: rgba(124,111,247,0.9); border: 1px solid rgba(124,111,247,0.2);"
+                     style="display:none; background: rgba(77,156,246,0.12); color: rgba(77,156,246,0.95); border: 1px solid rgba(77,156,246,0.25);"
                      title="AI credits remaining"></div>
             </div>
             <div id="chat-preamble-status"
@@ -57,6 +73,12 @@
              style="background: #0d0d0d;">
         </div>
 
+        <!-- ── CLI empty state (shown instead of messages when the selected
+             external agent's CLI isn't installed) ──────────────────────── -->
+        <div id="chat-cli-empty-state"
+             class="flex-1 min-h-0 mx-2.5 mb-2 flex flex-col items-center justify-center text-center px-6"
+             style="display:none; background: #0d0d0d; color: var(--chat-muted); font-size: 12px; line-height: 1.6;"></div>
+
         <!-- ── Input row ───────────────────────────────────────────────── -->
         <div class="chat-input-row flex-shrink-0 flex flex-col mx-2.5 mb-2.5" id="chat-input-row">
 
@@ -67,9 +89,6 @@
                 <!-- Inner card -->
                 <div class="chat-input-glow-inner relative z-[1] rounded-[9px] overflow-hidden"
                      style="background: var(--chat-input-bg);">
-
-                    <!-- Attached context tags (hidden when empty) -->
-                    <div id="chat-tags-row" class="chat-tags-row" style="display:none;"></div>
 
                     <!-- Textarea -->
                     <div class="chat-input-wrapper relative w-full">
@@ -88,6 +107,14 @@
 
                         <!-- Left: model selector + icon buttons -->
                         <div class="chat-bottom-left relative flex items-center gap-1">
+
+                            <!-- Mode toggle: Plan / Agent -->
+                            <div id="chat-mode-toggle" class="chat-mode-toggle flex items-center gap-0.5 rounded-full p-0.5 border"
+                                 style="border-color: var(--chat-border); background: var(--chat-surface);"
+                                 role="group" aria-label="Agent mode">
+                                <button type="button" id="chat-mode-plan" class="chat-mode-btn" data-mode="planning">Plan</button>
+                                <button type="button" id="chat-mode-agent" class="chat-mode-btn active" data-mode="agent">Agent</button>
+                            </div>
 
                             <!-- Hidden native select (QWebChannel reads its value) -->
                             <select id="chat-model-select" class="hidden" aria-hidden="true"></select>
@@ -111,33 +138,41 @@
                                 </svg>
                             </button>
 
-                            <!-- Model dropdown menu -->
+                            <!-- Model dropdown menu. Search row and footer are
+                                 static; #chat-model-list is re-rendered. -->
                             <div id="chat-model-menu"
-                                 class="chat-model-menu absolute z-[100] py-1 rounded-[10px] border overflow-y-auto"
-                                 role="listbox" aria-label="AI model" style="display: none;"></div>
+                                 class="chat-model-menu absolute z-[100] rounded-[10px] border"
+                                 role="listbox" aria-label="AI model" style="display: none;">
+                                <div class="chat-model-search-wrap">
+                                    <input type="text" id="chat-model-search"
+                                           class="chat-model-search"
+                                           placeholder="Search models"
+                                           autocomplete="off" spellcheck="false"
+                                           aria-label="Search models">
+                                </div>
+                                <div id="chat-model-list" class="chat-model-list py-1"></div>
+                                <div id="chat-model-footer" class="chat-model-footer"></div>
+                            </div>
 
-                            <!-- Attach clip -->
-                            <button type="button" id="chat-attach-clip-btn"
-                                    class="chat-bottom-icon" title="Attach selected clip — click this, then click a clip on the timeline"
-                                    aria-label="Attach selected clip">
+                            <!-- Agent Trace -->
+                            <button type="button" id="chat-trace-btn"
+                                    class="chat-bottom-icon" title="Agent Trace (tool args/results)"
+                                    aria-label="Open agent trace">
                                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <path d="M6.2 5.2l4.6-2.6a2 2 0 012.7.8 2 2 0 01-.8 2.7L8 8.8a1.6 1.6 0 01-2.2-.6 1.6 1.6 0 01.6-2.2L10.7 3.6"
-                                          stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-                                    <path d="M4.6 6.1L3.1 7a3 3 0 00-1.1 4.1 3 3 0 004.1 1.1l6.4-3.7"
-                                          stroke="currentColor" stroke-width="1.2" stroke-linecap="round"
-                                          stroke-linejoin="round" opacity="0.85"/>
+                                    <path d="M2 3.5h12M2 8h8M2 12.5h10"
+                                          stroke="currentColor" stroke-width="1.2"
+                                          stroke-linecap="round"/>
+                                    <circle cx="13" cy="8" r="1.5" fill="currentColor"/>
                                 </svg>
                             </button>
 
-                            <!-- Transition clips -->
-                            <button type="button" id="chat-transition-clips-btn"
-                                    class="chat-bottom-icon" title="Attach transition clips — click this, then click clip A, then clip B on the timeline"
-                                    aria-label="Attach transition clips">
+                            <!-- Tool-gap log (silent capability gaps — see the agent spec, Part B) -->
+                            <button type="button" id="chat-gap-log-btn"
+                                    class="chat-bottom-icon" title="Tool gaps log"
+                                    aria-label="Tool gaps log">
                                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                    <rect x="1" y="5" width="5" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                                    <rect x="10" y="5" width="5" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                                    <path d="M6 8h4M8 6l2 2-2 2" stroke="currentColor" stroke-width="1.2"
-                                          stroke-linecap="round" stroke-linejoin="round"/>
+                                    <path d="M3 4h10M3 8h10M3 12h7" stroke="currentColor"
+                                          stroke-width="1.3" stroke-linecap="round"/>
                                 </svg>
                             </button>
 

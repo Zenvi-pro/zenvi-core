@@ -44,28 +44,9 @@ find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
     sed -i 's/ avresample//g' "$f"
   done || true
 
-python3 -c "
-import glob, os, re
-root = os.environ['LOS']
-for f in glob.glob(os.path.join(root, '**', '*.cpp'), recursive=True):
-    try:
-        t = open(f, encoding='utf-8', errors='surrogateescape').read()
-    except OSError:
-        continue
-    o = t
-    if 'FF_PROFILE_' in t:
-        t = (t.replace('FF_PROFILE_H264_BASELINE', 'AV_PROFILE_H264_BASELINE')
-             .replace('FF_PROFILE_H264_CONSTRAINED', 'AV_PROFILE_H264_CONSTRAINED')
-             .replace('FF_PROFILE_H264_MAIN', 'AV_PROFILE_H264_MAIN')
-             .replace('FF_PROFILE_H264_HIGH', 'AV_PROFILE_H264_HIGH'))
-    if 'av_stream_add_side_data' in t:
-        t = re.sub(r'av_stream_add_side_data\([^;]*\);', '(void)0; /* removed FFmpeg7+ */', t)
-    if '->nb_side_data' in t:
-        t = (t.replace('->nb_side_data', '->codecpar->nb_coded_side_data')
-             .replace('->side_data[', '->codecpar->coded_side_data['))
-    if t != o:
-        open(f, 'w', encoding='utf-8', errors='surrogateescape').write(t)
-"
+# FFmpeg 7/8: FF_PROFILE_*, side-data, and FFmpeg 8 AVCodec field removal
+# (supported_samplerates / ch_layouts / sample_fmts / pix_fmts).
+python3 "${GITHUB_WORKSPACE}/installer/patch-libopenshot-ffmpeg.py" "${LOS}"
 
 cmake -S "${LOS}" -B "${LOS}/build" \
   -G "MSYS Makefiles" \
@@ -135,6 +116,11 @@ done
 [[ -e /ucrt64/bin/zlib1.dll ]] && cp -v /ucrt64/bin/zlib1.dll "${BUNDLE}/" || true
 [[ -e /ucrt64/bin/libsamplerate-0.dll ]] && cp -v /ucrt64/bin/libsamplerate-0.dll "${BUNDLE}/" || true
 
+# Gemini indexing / thumbnails / tool handlers spawn the FFmpeg CLI (not just libav*).
+for f in /ucrt64/bin/ffmpeg.exe /ucrt64/bin/ffprobe.exe; do
+  [[ -e "$f" ]] && cp -v "$f" "${BUNDLE}/"
+done
+
 # avcodec loads many codec DLLs at runtime; copy the full PE dependency closure from
 # /ucrt64/bin (and JUCE audio from /usr/bin) so libopenshot.dll loads on a clean PC.
 bundle_transitive_pe_deps() {
@@ -142,7 +128,7 @@ bundle_transitive_pe_deps() {
   while (( iter < max_iter )); do
     added=0
     shopt -s nullglob
-    for f in "${BUNDLE}"/*.dll; do
+    for f in "${BUNDLE}"/*.dll "${BUNDLE}"/*.exe; do
       [[ -f "$f" ]] || continue
       while IFS= read -r dllname; do
         [[ -z "$dllname" ]] && continue
@@ -188,6 +174,11 @@ _jcpp=( "${BUNDLE}"/libjsoncpp-*.dll )
 shopt -u nullglob
 if [[ ${#_jcpp[@]} -eq 0 ]]; then
   echo "::error::OpenShot bundle has no libjsoncpp DLL — install mingw-w64-ucrt-x86_64-jsoncpp and ensure /ucrt64/bin/libjsoncpp-*.dll exists."
+  exit 1
+fi
+
+if [[ ! -f "${BUNDLE}/ffmpeg.exe" ]]; then
+  echo "::error::OpenShot bundle has no ffmpeg.exe — Gemini indexing needs the FFmpeg CLI from /ucrt64/bin."
   exit 1
 fi
 

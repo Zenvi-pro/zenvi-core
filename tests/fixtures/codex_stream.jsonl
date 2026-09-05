@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"cdx-abc-123"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"The user wants the file count. I'll call the editor's list_files tool."}}
+{"type":"item.started","item":{"id":"t1","type":"mcp_tool_call","tool":"list_files_tool","arguments":{}}}
+{"type":"item.completed","item":{"id":"t1","type":"mcp_tool_call","status":"completed","output":"FIXTURE_FILES: intro.mp4, music.wav, logo.png"}}
+{"type":"item.completed","item":{"id":"m1","type":"assistant_message","text":"There are 3 files: intro.mp4, music.wav, and logo.png."}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}

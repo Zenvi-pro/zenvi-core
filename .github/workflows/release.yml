@@ -18,7 +18,8 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write  # needed for creating releases & uploading assets
+  contents: write # needed for creating releases & uploading assets
+  id-token: write # Azure OIDC (Artifact Signing) on Windows job when secrets below are set
 
 env:
   # Parsed from src/classes/info.py at build time
@@ -108,16 +109,25 @@ jobs:
           # Copy frozen build
           cp -r build/exe.linux-*/* "$APPDIR/usr/bin/"
 
-          # Desktop file
-          cp xdg/*.desktop "$APPDIR/usr/share/applications/" 2>/dev/null || true
-          cp xdg/*.desktop "$APPDIR/" 2>/dev/null || true
-
-          # Icon
-          ICON=$(find images xdg -name "*.png" -path "*256*" 2>/dev/null | head -1)
-          if [ -n "$ICON" ]; then
-            cp "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
-            cp "$ICON" "$APPDIR/zenvi.png"
+          # Desktop + AppStream (Zenvi only — do not ship legacy OpenShot .desktop files)
+          DESKTOP="xdg/org.zenvi.Zenvi.desktop"
+          APPDATA="xdg/org.zenvi.Zenvi.appdata.xml"
+          if [ ! -f "$DESKTOP" ]; then
+            echo "::error::Missing $DESKTOP"
+            exit 1
           fi
+          cp "$DESKTOP" "$APPDIR/usr/share/applications/"
+          cp "$DESKTOP" "$APPDIR/zenvi.desktop"
+          [ -f "$APPDATA" ] && cp "$APPDATA" "$APPDIR/usr/share/metainfo/"
+
+          # Icon (same branding as installer/dmg-icon.png)
+          ICON="installer/dmg-icon.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::error::Missing packaging icon: $ICON"
+            exit 1
+          fi
+          cp "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
+          cp "$ICON" "$APPDIR/zenvi.png"
 
           # AppRun
           cat > "$APPDIR/AppRun" << 'APPRUN'
@@ -167,14 +177,21 @@ jobs:
           LAUNCHER
           chmod +x "$DEB_DIR/usr/bin/zenvi"
 
-          # Desktop file
-          cp xdg/*.desktop "$DEB_DIR/usr/share/applications/" 2>/dev/null || true
-
-          # Icon
-          ICON=$(find images xdg -name "*.png" -path "*256*" 2>/dev/null | head -1)
-          if [ -n "$ICON" ]; then
-            cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
+          # Desktop file (Zenvi only)
+          DESKTOP="xdg/org.zenvi.Zenvi.desktop"
+          if [ ! -f "$DESKTOP" ]; then
+            echo "::error::Missing $DESKTOP"
+            exit 1
           fi
+          cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
+
+          # Icon (same branding as installer/dmg-icon.png)
+          ICON="installer/dmg-icon.png"
+          if [ ! -f "$ICON" ]; then
+            echo "::error::Missing packaging icon: $ICON"
+            exit 1
+          fi
+          cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
 
           # Control file
           cat > "$DEB_DIR/DEBIAN/control" << CTRL
@@ -242,6 +259,23 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Deliberately OUTSIDE the cache-guarded build below. These formulae are
+      # needed at freeze/link time, not only to compile libopenshot: cx_Freeze
+      # bundles libomp.dylib, and _openshot.so dlopens Qt5 frameworks. They used
+      # to be installed inside the build step, so a cache hit skipped the build
+      # AND the installs, and "Freeze with cx_Freeze" then died with
+      #   [Errno 2] No such file or directory: '/opt/homebrew/opt/libomp/lib/libomp.dylib'
+      # That only reproduced on a warm cache, which is why the first run of a new
+      # cache key passed and the next one failed.
+      # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
+      - name: Install Homebrew dependencies (arm64 only)
+        if: matrix.arch == 'arm64'
+        run: |
+          set -eo pipefail
+          brew install swig zeromq cppzmq libsamplerate qt@5 || true
+          brew install libomp
+          brew install ffmpeg 2>/dev/null || true
+
       # Build libopenshot from source only for arm64 (native build, no cross-compilation).
       # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
       # the Homebrew Qt5/ffmpeg bottles are arm64-only on macos-15 runners.
@@ -251,7 +285,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v3
+          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v4
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -259,12 +293,6 @@ jobs:
           set -eo pipefail
           INSTALL_PREFIX="/tmp/libopenshot-install"
           mkdir -p "$INSTALL_PREFIX"
-
-          # Install build dependencies (Homebrew arm64 bottles)
-          # cppzmq provides zmq.hpp C++ header (separate from zeromq's libzmq/zmq.h)
-          brew install swig zeromq cppzmq libsamplerate qt@5 || true
-          brew install libomp
-          brew install ffmpeg 2>/dev/null || true
 
           QT5_PREFIX="$(brew --prefix qt@5)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
@@ -300,13 +328,8 @@ jobs:
             xargs grep -l "avresample" 2>/dev/null | \
             xargs sed -i '' 's/ avresample//g' || true
 
-          # 2. FFmpeg 7/8 compat patches in libopenshot .cpp source files:
-          #    a. FF_PROFILE_* macros removed in FFmpeg 8 — replace with AV_PROFILE_*.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("FF_PROFILE_H264_BASELINE","AV_PROFILE_H264_BASELINE").replace("FF_PROFILE_H264_CONSTRAINED","AV_PROFILE_H264_CONSTRAINED").replace("FF_PROFILE_H264_MAIN","AV_PROFILE_H264_MAIN").replace("FF_PROFILE_H264_HIGH","AV_PROFILE_H264_HIGH")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "FF_PROFILE_" in (t:=open(f).read())]'
-          #    b. av_stream_add_side_data removed in FFmpeg 7+ — replace with no-op.
-          python3 -c 'import re,glob; [open(f,"w").write(re.sub(r"av_stream_add_side_data\([^;]*\);","(void)0; /* removed FFmpeg7+ */",t)) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "av_stream_add_side_data" in (t:=open(f).read())]'
-          #    c. AVStream::nb_side_data / side_data moved to codecpar->{nb_coded_side_data,coded_side_data} in FFmpeg 7+.
-          python3 -c 'import glob; [open(f,"w").write(t.replace("->nb_side_data","->codecpar->nb_coded_side_data").replace("->side_data[","->codecpar->coded_side_data[")) for f in glob.glob("/tmp/libopenshot/**/*.cpp",recursive=True) if "nb_side_data" in (t:=open(f).read())]'
+          # 2. FFmpeg 7/8 compat (FF_PROFILE_*, side-data, AVCodec config lists).
+          python3 "$GITHUB_WORKSPACE/installer/patch-libopenshot-ffmpeg.py" /tmp/libopenshot
           # Note: SWR channel layout (the FFmpeg 8 av_opt_set_chlayout fix) is
           # included in libopenshot v0.7.0 upstream — no local patch needed.
 
@@ -974,16 +997,52 @@ jobs:
   build-windows:
     needs: version
     runs-on: windows-latest
+    # OIDC subject for Azure login is environment-based (stable across v* tags).
+    # Entra federated credential subject must be:
+    #   repo:Zenvi-pro/zenvi-core:environment:release
+    # (Not refs/tags/v* — partial tag wildcards often do not match in Entra.)
+    environment: release
     env:
       VER: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
+      # Install the MSYS2 shell first, then pacman with retries. A single
+      # setup-msys2 update+install often dies on ftp2.osuosl.org .sig files
+      # ("Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds").
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          update: true
-          install: >-
+          update: false
+
+      - name: Harden pacman downloads (timeout + skip stalled OSUOSL mirror)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          grep -q '^DisableDownloadTimeout' /etc/pacman.conf \
+            || sed -i '/^\[options\]/a DisableDownloadTimeout' /etc/pacman.conf
+          for f in /etc/pacman.d/mirrorlist.*; do
+            [[ -f "$f" ]] || continue
+            sed -i 's|^Server = https://ftp2.osuosl.org|# &|' "$f"
+          done
+
+      - name: Update MSYS2 (pass 1, runtime may kill this shell)
+        # msys2-runtime upgrade terminates the shell; || true never runs when
+        # the process is killed. Allow failure so the next step can finish.
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Update MSYS2 (pass 2, after runtime restart)
+        continue-on-error: true
+        shell: msys2 {0}
+        run: pacman -Syuu --noconfirm --disable-download-timeout
+
+      - name: Install MSYS2 packages
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          pkgs=(
             base-devel
             git
             mingw-w64-ucrt-x86_64-toolchain
@@ -1002,19 +1061,49 @@ jobs:
             mingw-w64-ucrt-x86_64-python-lief
             mingw-w64-ucrt-x86_64-python-cffi
             mingw-w64-ucrt-x86_64-python-zstandard
+            # mcp's dependency tree pulls native extensions that have no MinGW
+            # wheel on PyPI, so pip falls back to compiling them and pyo3 fails
+            # to link against MinGW Python 3.14 ("undefined reference to
+            # PyExc_OSError", maturin exit 1). Take MSYS2's prebuilt copies
+            # instead: the venv is created with --system-site-packages, so pip
+            # sees these as already satisfied and never builds them.
+            mingw-w64-ucrt-x86_64-python-cryptography
+            mingw-w64-ucrt-x86_64-python-rpds-py
+            mingw-w64-ucrt-x86_64-python-jsonschema
+            mingw-w64-ucrt-x86_64-python-pydantic
+            mingw-w64-ucrt-x86_64-python-pydantic-core
+            mingw-w64-ucrt-x86_64-python-pyjwt
+            # Required at import time, not optional: see the pip step below.
+            mingw-w64-ucrt-x86_64-python-pywin32
             mingw-w64-ucrt-x86_64-qtwebkit
             mingw-w64-ucrt-x86_64-libffi
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-babl
             mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
+          )
+          attempt=1
+          max=6
+          while true; do
+            if pacman -Syuu --noconfirm --disable-download-timeout \
+              && pacman -S --needed --noconfirm --overwrite '*' --disable-download-timeout "${pkgs[@]}"; then
+              break
+            fi
+            if (( attempt >= max )); then
+              echo "::error::pacman install failed after ${max} attempts (slow/stalled MSYS2 mirrors)"
+              exit 1
+            fi
+            echo "pacman failed (attempt ${attempt}/${max}), retrying..."
+            sleep $(( attempt * 20 ))
+            attempt=$((attempt + 1))
+          done
 
       - name: Cache libopenshot bundle (MSYS2 UCRT64)
         id: cache-libopenshot-win
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh') }}
+          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/patch-libopenshot-ffmpeg.py') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
@@ -1052,6 +1141,19 @@ jobs:
           ./.venv/bin/python -m pip install --upgrade pip
           ./.venv/bin/python -m pip install -r requirements-noqt.txt
           ./.venv/bin/python -m pip install setuptools wheel PyOpenGL
+          # requirements-noqt.txt deliberately skips mcp on MinGW Python >= 3.14:
+          # mcp declares pywin32>=311 there and no pywin32 build exists for this
+          # interpreter (PyPI is MSVC-only through cp313, MSYS2 packages 310), so
+          # a plain resolve ends in ResolutionImpossible. Installing mcp alone
+          # sidesteps that floor; pywin32 310 comes from pacman above and is
+          # genuinely needed -- importing mcp.server.fastmcp reaches
+          # mcp.os.win32.utilities, which imports pywintypes/win32api/win32con/
+          # win32job unguarded on win32.
+          ./.venv/bin/python -m pip install --no-deps "mcp>=1.28,<2"
+          # Fail loudly here rather than shipping a frozen app that raises on the
+          # first agent-backend use. pywin32 must come from pacman (see pkgs above);
+          # FastMCP import dies with ModuleNotFoundError: pywintypes without it.
+          ./.venv/bin/python -c "import pywintypes, win32api, win32con, win32job; import mcp.types; from mcp.server.fastmcp import FastMCP; print('mcp import OK'); print('pywin32', pywintypes.__file__)"
 
       - name: Freeze with cx_Freeze
         shell: msys2 {0}
@@ -1115,6 +1217,54 @@ jobs:
             throw "Expected installer Zenvi-v${env:VER}-x86_64.exe not created"
           }
         shell: powershell
+
+      # Optional: Azure Artifact Signing (SmartScreen / known publisher). Configure:
+      # 1) GitHub: Settings → Environments → create "release" (name must match job environment).
+      # 2) Entra app (same as AZURE_CODESIGNING_CLIENT_ID) → Federated credentials → GitHub Actions
+      #    → Entity type Environment → name "release", OR custom subject exactly:
+      #      repo:Zenvi-pro/zenvi-core:environment:release
+      #    Issuer: https://token.actions.githubusercontent.com
+      #    Audience: api://AzureADTokenExchange
+      #    Tag patterns (refs/tags/v*) are unreliable; use environment + this job's
+      #    `environment: release` instead.
+      #    https://learn.microsoft.com/en-us/azure/developer/github/connect-from-azure
+      # 2) Role "Artifact Signing Certificate Profile Signer" on the certificate profile
+      #    (or broader scope per Microsoft docs) for that app's service principal.
+      # 3) Repo secrets: AZURE_CODESIGNING_CLIENT_ID, AZURE_CODESIGNING_TENANT_ID,
+      #    AZURE_CODESIGNING_SUBSCRIPTION_ID
+      # 4) Repo variables: AZURE_CODESIGNING_ENDPOINT (region URL, e.g. https://eus.codesigning.azure.net/),
+      #    AZURE_CODESIGNING_ACCOUNT_NAME, AZURE_CODESIGNING_PROFILE_NAME
+      # Signing steps run when all three variables are set (secrets cannot be used in `if:`).
+      # See: https://github.com/Azure/artifact-signing-action/blob/main/docs/OIDC.md
+      - name: Azure login (OIDC for Artifact Signing)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CODESIGNING_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_CODESIGNING_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_CODESIGNING_SUBSCRIPTION_ID }}
+
+      - name: Sign Windows installer (Azure Artifact Signing)
+        if: ${{ vars.AZURE_CODESIGNING_ENDPOINT != '' && vars.AZURE_CODESIGNING_ACCOUNT_NAME != '' && vars.AZURE_CODESIGNING_PROFILE_NAME != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_CODESIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_CODESIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_CODESIGNING_PROFILE_NAME }}
+          files: ${{ github.workspace }}\Zenvi-v${{ env.VER }}-x86_64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -1202,10 +1352,6 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: "Zenvi v${{ env.VER }}"
           body: |
-            ## What's New
-
-            See the [commit log](https://github.com/${{ github.repository }}/compare/v${{ env.VER }}...HEAD) for a full list of changes.
-
             ## Downloads
 
             | Platform | Installer |

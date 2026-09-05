@@ -170,10 +170,12 @@ class BaseTheme:
                 continue
 
             if widget:
-                widget.setVisible(True)
+                widget.setVisible(button_visible)
                 if button_stylesheet:
                     widget.setStyleSheet(button_stylesheet)
-                toolbar.addWidget(widget)
+                # addWidget() wraps the widget in a QWidgetAction that owns its
+                # visibility, so hiding the widget alone is not enough
+                toolbar.addWidget(widget).setVisible(button_visible)
                 continue
 
             # Create button from action
@@ -235,6 +237,7 @@ class BaseTheme:
         toolbar_buttons = [
             {"action": self.app.window.actionNew, "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionOpen, "style": Qt.ToolButtonIconOnly},
+            {"widget": self.app.window.agent_selector_button},
             {"action": self.app.window.actionSave, "style": Qt.ToolButtonIconOnly},
             {"divide": True},
             {"action": self.app.window.actionUndo, "style": Qt.ToolButtonIconOnly},
@@ -245,6 +248,7 @@ class BaseTheme:
             {"action": self.app.window.actionFullscreen, "style": Qt.ToolButtonIconOnly},
             {"divide": True},
             {"action": self.app.window.actionExportVideo, "style": Qt.ToolButtonIconOnly},
+            {"action": self.app.window.actionLogout, "style": Qt.ToolButtonIconOnly},
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=24, settings=toolbar_buttons)
 

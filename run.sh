@@ -8,6 +8,42 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
+DELETE_CACHE=0
+APP_ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--delete-cache" ]]; then
+    DELETE_CACHE=1
+  else
+    APP_ARGS+=("$arg")
+  fi
+done
+set -- "${APP_ARGS[@]}"
+
+if [[ "$DELETE_CACHE" -eq 1 ]]; then
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW*|MSYS*|CYGWIN*)
+      USER_HOME="${USERPROFILE:-${HOME:-}}"
+      if command -v cygpath >/dev/null 2>&1; then
+        USER_HOME="$(cygpath -u "$USER_HOME")"
+      else
+        USER_HOME="${USER_HOME//\\//}"
+      fi
+      ;;
+    *)
+      USER_HOME="${HOME:-}"
+      ;;
+  esac
+
+  ZENVI_USER_DIR="${USER_HOME%/}/.openshot_qt"
+  if [[ -z "$USER_HOME" || "$ZENVI_USER_DIR" == "/.openshot_qt" ]]; then
+    echo "ERROR: Could not determine the user home directory; login data was not reset."
+    exit 1
+  fi
+
+  rm -rf -- "$ZENVI_USER_DIR"
+  echo "Reset login data by deleting $ZENVI_USER_DIR"
+fi
+
 if [[ "$(uname)" == "Darwin" ]]; then
   # macOS native dev flow.
   # libopenshot has no Homebrew bottle, and its compile-time Qt collides with
@@ -113,5 +149,12 @@ fi
 if [[ -n "${OPENSHOT_HEADLESS:-}" ]]; then
   export QT_QPA_PLATFORM=offscreen
 fi
+
+# For local testing: start with fresh cache each run.
+# This preserves projects/settings while removing cache artifacts.
+ZENVI_USER_DIR="${HOME}/.openshot_qt"
+for cache_dir in cache preview-cache thumbnail; do
+  rm -rf "${ZENVI_USER_DIR}/${cache_dir}"
+done
 
 exec .venv/bin/python3 src/launch.py "$@"

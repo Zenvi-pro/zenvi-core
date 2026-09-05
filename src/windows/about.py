@@ -41,8 +41,6 @@ from windows.views.credits_treeview import CreditsTreeView
 from windows.views.changelog_treeview import ChangelogTreeView
 from windows.views.menu import StyledContextMenu
 
-import requests
-import threading
 import json
 import datetime
 
@@ -95,12 +93,17 @@ class About(QDialog):
         self.app = get_app()
         _ = self.app._tr
 
+        _bg = ""
+        for _p in info.application_icon_paths():
+            if _p.lower().endswith((".svg", ".png")):
+                _bg = "background-image: url(%s);" % _p.replace("\\", "/")
+                break
         self.setStyleSheet("""
             QDialog {
-                background-image: url(:/about/AboutLogo.png);
+                %s
                 background-repeat: no-repeat;
                 background-position: center;
-                background-size: stretch;
+                background-size: contain;
                 margin: 0px;
                 padding: 0px;
                 border: none;
@@ -208,27 +211,14 @@ class About(QDialog):
         self.txtversion.setText(version_html)
 
     def get_current_release(self):
-        """Get the current version """
-        t = threading.Thread(target=self.get_release_from_http, daemon=True)
-        t.start()
+        """Build the version label shown in the About dialog.
 
-    def get_release_from_http(self):
-        """Get the current version # from openshot.org"""
-        RELEASE_URL = 'http://www.openshot.org/releases/%s/'
-
-        # Send metric HTTP data
+        This used to fetch http://www.openshot.org/releases/<version>/ over
+        plaintext with verify=False, purely to compare a release SHA. That feed
+        never had Zenvi's versions, so it always 404'd. AutoUpdater is the one
+        source of release information now, and everything shown here comes from
+        the local build metadata."""
         try:
-            release_details = {}
-            r = requests.get(RELEASE_URL % info.VERSION,
-                             headers={"user-agent": "openshot-qt-%s" % info.VERSION}, verify=False)
-            if r.ok:
-                log.warning("Found current release: %s" % r.json())
-                release_details = r.json()
-            else:
-                log.warning("Failed to find current release: %s" % r.status_code)
-            release_git_SHA = release_details.get("sha", "")
-            release_notes = release_details.get("notes", "")
-
             # get translations
             self.app = get_app()
             _ = self.app._tr
@@ -240,29 +230,15 @@ class About(QDialog):
                 with open(version_path, "r", encoding="UTF-8") as f:
                     version_info = json.loads(f.read())
                     if version_info:
-                        frozen_git_SHA = version_info.get("openshot-qt", {}).get("CI_COMMIT_SHA", "")
                         build_name = version_info.get('build_name')
                         string_release_date = _("Release Date")
-                        string_release_notes = _("Release Notes")
-                        string_official = _("Official")
                         version_date = version_info.get("date")
 
                         # Parse the date string into a datetime object
                         date_obj = datetime.datetime.strptime(version_date, "%Y-%m-%d %H:%M")
                         formatted_date = date_obj.strftime("%Y-%m-%d")
 
-                        if frozen_git_SHA == release_git_SHA:
-                            # Remove -release-candidate... from build name
-                            log.warning("Official release detected with SHA (%s) for v%s" % (release_git_SHA, info.VERSION))
-                            build_name = build_name.replace("-candidate", "")
-                            frozen_version_label = f'{build_name} | {string_official}<br/>{string_release_date}: {formatted_date}'
-                            if string_release_notes:
-                                frozen_version_label += f' | <a href="{release_notes}" style="text-decoration:none;color: #91C3FF;">{string_release_notes}</a>'
-                        else:
-                            # Display current build name - unedited
-                            log.warning("Build SHA (%s) does not match an official release SHA (%s) for v%s" %
-                                        (frozen_git_SHA, release_git_SHA, info.VERSION))
-                            frozen_version_label = f"{build_name}<br/>{string_release_date}: {formatted_date}"
+                        frozen_version_label = f"{build_name}<br/>{string_release_date}: {formatted_date}"
 
             # Init some variables
             openshot_qt_version = _("Version: %s") % info.VERSION
@@ -274,8 +250,9 @@ class About(QDialog):
             # emit release found
             self.releaseFound.emit(version_text)
 
-        except Exception as Ex:
-            log.error("Failed to get version from: %s" % RELEASE_URL % info.VERSION)
+        except Exception:
+            log.error("Failed to build the version label for v%s",
+                      info.VERSION, exc_info=True)
 
 
     def load_credit(self):

@@ -42,25 +42,101 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+_QT_MSG_PREFIXES = {
+    QtMsgType.QtDebugMsg: "debug",
+    QtMsgType.QtInfoMsg: "info",
+    QtMsgType.QtWarningMsg: "warning",
+    QtMsgType.QtCriticalMsg: "critical",
+    QtMsgType.QtFatalMsg: "fatal",
+}
+
+
 def _qt_message_handler(msg_type, context, message):
     """Filter out known noisy Qt warnings (e.g. QWebChannel property notify signals)."""
     if "has no notify signal" in message and "value updates in HTML will be broken" in message:
         return
+    prefix = _QT_MSG_PREFIXES.get(msg_type, "debug")
+
+    # Qt aborts the process immediately after a fatal message, so make sure it
+    # reaches the log file first -- stderr is None in frozen GUI builds and this
+    # is otherwise the only record of a Qt-side abort.
+    if msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        try:
+            from classes.logger import log as _log
+
+            location = ""
+            if context is not None and getattr(context, "file", None):
+                location = " (%s:%s)" % (context.file, context.line)
+            _log.error("Qt %s: %s%s", prefix, message, location)
+        except Exception:
+            pass
+
     # Forward all other messages to stderr like Qt's default handler
-    prefixes = {
-        QtMsgType.QtDebugMsg: "debug",
-        QtMsgType.QtInfoMsg: "info",
-        QtMsgType.QtWarningMsg: "warning",
-        QtMsgType.QtCriticalMsg: "critical",
-        QtMsgType.QtFatalMsg: "fatal",
-    }
-    prefix = prefixes.get(msg_type, "debug")
-    sys.stderr.write("%s: %s\n" % (prefix, message))
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write("%s: %s\n" % (prefix, message))
+        except Exception:
+            pass
 
 # Disable sandbox support for QtWebEngine (required on some Linux distros
 # for the QtWebEngineWidgets to be rendered, otherwise no timeline is visible).
 # https://doc.qt.io/qt-5/qtwebengine-platform-notes.html#sandboxing-support
 os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+
+
+def _install_windows_qfiledialog_workaround():
+    """Avoid native IFileOpenDialog COM on MSYS2/MinGW (HRESULT 0x80040155)."""
+    if sys.platform != "win32":
+        return
+    from PyQt5.QtWidgets import QFileDialog
+
+    _FLAG = QFileDialog.DontUseNativeDialog
+
+    def _merge_options(options):
+        if options is None:
+            return _FLAG
+        return options | _FLAG
+
+    _orig_init = QFileDialog.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        self.setOption(_FLAG, True)
+
+    QFileDialog.__init__ = _patched_init
+
+    def _patch_static(method_name):
+        orig = getattr(QFileDialog, method_name)
+
+        def wrapped(*args, **kwargs):
+            args = list(args)
+            if "options" in kwargs:
+                kwargs["options"] = _merge_options(kwargs["options"])
+            elif method_name == "getExistingDirectory":
+                if len(args) >= 4:
+                    args[3] = _merge_options(args[3])
+                else:
+                    args.append(_FLAG)
+            else:
+                # getOpenFileName / getOpenFileNames / getSaveFileName:
+                # (parent, caption, directory, filter, selectedFilter="", options=0)
+                while len(args) < 5:
+                    args.append("")
+                if len(args) >= 6:
+                    args[5] = _merge_options(args[5])
+                else:
+                    args.append(_FLAG)
+            return orig(*args, **kwargs)
+
+        setattr(QFileDialog, method_name, wrapped)
+
+    for _method in (
+        "getOpenFileName",
+        "getOpenFileNames",
+        "getSaveFileName",
+        "getExistingDirectory",
+    ):
+        _patch_static(_method)
 
 
 def get_app():
@@ -88,10 +164,16 @@ class StartupError:
 
     def show(self):
         """Display the stored error message"""
-        box_call = self.levels[self.level]
+        # An unrecognised level must not KeyError on the way to telling the user
+        # something already went wrong.
+        box_call = self.levels.get(self.level, QMessageBox.critical)
         box_call(None, self.title, self.message)
         if self.level == "error":
-            sys.exit()
+            # Non-zero on purpose: a bare sys.exit() reports success, and this
+            # SystemExit propagates out through show_errors() past launch.py's
+            # own sys.exit(1) -- so a startup that failed looked fine to the
+            # shell, to packaging smoke tests, and to any supervising process.
+            sys.exit(1)
 
 
 class OpenShotApp(QApplication):
@@ -100,6 +182,7 @@ class OpenShotApp(QApplication):
     def __init__(self, *args, **kwargs):
         self.mode = kwargs.pop("mode", None)
         super().__init__(*args, **kwargs)
+        _install_windows_qfiledialog_workaround()
         self.args = super().arguments()
         self.errors = []
 
@@ -117,7 +200,7 @@ class OpenShotApp(QApplication):
 
             log.debug("Command line: %s", self.args)
 
-            from classes import settings, project_data, updates, update_queue as update_queue_module, task_queue, sentry
+            from classes import settings, project_data, updates, update_queue as update_queue_module, sentry
             import openshot
 
             # Re-route stdout and stderr to logger
@@ -152,19 +235,32 @@ class OpenShotApp(QApplication):
                 level="error"))
             # Stop launching
             raise
-        except Exception:
-            log.error('OpenShotApp::Init Error', exc_info=1)
-            sys.exit()
+        except Exception as ex:
+            # Do NOT sys.exit() here: SystemExit bypasses launch.py's handler, so
+            # the process used to end before anything was shown -- and frozen GUI
+            # builds have no console, so the app simply vanished. Queue the
+            # traceback as a startup error and let launch.py display it.
+            tb = traceback.format_exc()
+            try:
+                log.error('OpenShotApp::Init Error', exc_info=1)
+            except Exception:
+                pass
+            self.errors.append(StartupError(
+                "Startup Error",
+                "Zenvi could not finish starting up.\n\n%(type)s: %(msg)s\n\n%(tb)s" % {
+                    "type": type(ex).__name__,
+                    "msg": ex,
+                    "tb": tb,
+                },
+                level="error"))
+            # Stop launching (launch.py catches this and calls show_errors())
+            raise
 
         self.info = info
 
-        # Task bar / window icon (Windows uses QApplication + main window icon; avoids generic/Qt default).
+        # Task bar / window icon (Windows uses QApplication + per-window icons).
         try:
-            from PyQt5.QtGui import QIcon
-
-            _ico = info.application_icon_ico_path()
-            if _ico:
-                self.setWindowIcon(QIcon(_ico))
+            info.apply_application_icon()
         except Exception:
             pass
 
@@ -185,7 +281,6 @@ class OpenShotApp(QApplication):
         # It is important that the project is the first listener if the key gets update
         self.updates.add_listener(self.project)
         self.updates.reset()
-        self.task_queue = task_queue.VideoTaskQueue(parent=self)
 
         # Set location of OpenShot program (for libopenshot)
         openshot.Settings.Instance().PATH_OPENSHOT_INSTALL = info.PATH
@@ -340,10 +435,11 @@ class OpenShotApp(QApplication):
         # Connect our exit signals
         self.aboutToQuit.connect(self.cleanup)
 
-        # Show auth dialog if user is not signed in
+        # Show auth dialog if user is not signed in (keep main window hidden from taskbar until then).
         from classes.auth_manager import AuthManager
         auth = AuthManager.instance()
         if not auth.is_authenticated():
+            self.window.hide()
             from windows.login_window import LoginWindow
             login_dlg = LoginWindow(parent=None)
             result = login_dlg.exec_()
@@ -353,8 +449,12 @@ class OpenShotApp(QApplication):
                 self.window.close()
                 return False
 
-        # Show main window
+        # Show main window (Win32 HWND icon needed when host is python.exe on Windows).
         self.window.show()
+        try:
+            info.schedule_application_icon(self.window)
+        except Exception:
+            pass
 
         args = self.args
         if len(args) < 2:
@@ -400,7 +500,16 @@ class OpenShotApp(QApplication):
             _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
-            error.show()
+            try:
+                error.show()
+            except SystemExit:
+                # A fatal StartupError exits on purpose; let it through.
+                raise
+            except Exception:
+                # One dialog failing must not swallow the messages behind it.
+                from classes.logger import log as _err_log
+                _err_log.error("Could not display startup message %r",
+                               error.title, exc_info=True)
 
     def _tr(self, message):
         return self.translate("", message)

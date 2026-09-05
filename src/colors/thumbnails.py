@@ -4,7 +4,9 @@ from openshot import QtImageReader, ColorMap
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from classes.info import PATH
 
-# Path to your source JPG
+# Preview frame for LUT/color gallery generation (colors/thumbnails.py).
+# Must be a colorful photo/scene — not a flat black/dark fill. A neutral or
+# black background makes every LUT preview look identical and breaks the gallery.
 SOURCE = "../images/effect-background.jpg"
 # Directory of LUT sub-folders
 BASE_DIR = "."

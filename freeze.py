@@ -105,6 +105,12 @@ python_packages = ["os",
                    "zmq",
                    "webbrowser",
                    "json",
+                   # In-app MCP server for external agent CLIs (Claude Code, Codex)
+                   "mcp",
+                   "uvicorn",
+                   "anyio",
+                   "starlette",
+                   "httpx",
                    ]
 
 # Conditionally include openshot — it requires native C++ bindings (libopenshot)
@@ -351,6 +357,10 @@ if sys.platform == "win32":
 
     # Append Windows ICON file
     iconFile += ".ico"
+    _zenvi_ico = os.path.join(PATH, "xdg", "zenvi.ico")
+    if os.path.isfile(_zenvi_ico):
+        src_files.append((_zenvi_ico, "zenvi.ico"))
+        src_files.append((_zenvi_ico, os.path.join("lib", "xdg", "zenvi.ico")))
 
     # Append some additional files for Windows (this is a debug launcher)
     src_files.append((os.path.join(PATH, "installer", "launch-win.bat"), "launch-win.bat"))
@@ -359,6 +369,11 @@ if sys.platform == "win32":
     python_packages.extend([
         "idna",
         "OpenGL",
+        # mcp.os.win32.utilities imports these unguarded on win32
+        "pywintypes",
+        "win32api",
+        "win32con",
+        "win32job",
     ])
 
     # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
@@ -766,6 +781,45 @@ for frozen_path in os.listdir(build_path):
                 _dst = os.path.join(lib_dir, _basename)
                 log.info("Post-build openshot copy: %s -> %s" % (_src, _dst))
                 shutil.copy2(_src, _dst)
+
+# Frozen Windows: Gemini indexing shells out to ffmpeg.exe (libav* DLLs are not enough).
+if sys.platform == "win32":
+    _ff_names = ("ffmpeg.exe", "ffprobe.exe")
+    _ff_src_dirs = []
+    _which_ff = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if _which_ff:
+        _ff_src_dirs.append(os.path.dirname(_which_ff))
+    for _env_dir in (
+        os.environ.get("ZENVI_OPENSHOT_PYROOT", ""),
+        os.environ.get("ZENVI_OPENSHOT_BINDDIR", ""),
+        os.environ.get("FFMPEG_BIN_DIR", ""),
+    ):
+        if _env_dir:
+            _ff_src_dirs.append(_env_dir)
+    _ff_src_dirs.extend([
+        r"C:\msys64\ucrt64\bin",
+        r"C:\msys64\mingw64\bin",
+        "/ucrt64/bin",
+        "/mingw64/bin",
+    ])
+    for frozen_path in os.listdir(build_path):
+        if not frozen_path.startswith("exe"):
+            continue
+        lib_dir = os.path.join(build_path, frozen_path, "lib")
+        if not os.path.isdir(lib_dir):
+            continue
+        for _name in _ff_names:
+            _dst = os.path.join(lib_dir, _name)
+            if os.path.isfile(_dst):
+                continue
+            for _src_dir in _ff_src_dirs:
+                _src = os.path.join(_src_dir, _name)
+                if os.path.isfile(_src):
+                    log.info("Post-build ffmpeg CLI copy: %s -> %s" % (_src, _dst))
+                    shutil.copy2(_src, _dst)
+                    break
+            else:
+                log.warning("WARNING: %s not found — Gemini indexing will fail in the frozen build" % _name)
 
 # Post-build: bundle shared library dependencies of _openshot and libopenshot.
 # cx_Freeze's include_files silently drops many .so files, so we use ldd to

@@ -24,4 +24,21 @@ jobs:
         pip3 install cx_Freeze==7.0.0 distro defusedxml requests certifi chardet urllib3
 
     - name: Test
-      run: python3 ./src/tests/query_tests.py -platform minimal
+      run: |
+        python3 ./src/tests/query_tests.py -platform minimal
+        python3 ./src/tests/update_installer_tests.py -v
+
+  windows-update-installer-tests:
+    # Separate job (not added to the matrix above): the Ubuntu job's
+    # dependency-install steps are Ubuntu-specific, and this job only needs
+    # to validate the Windows-only paths in update_installer_tests.py (the
+    # external-updater PowerShell script and spawn logic) — no openshot/PyQt
+    # build required, since classes.update_installer deliberately avoids
+    # those dependencies.
+    runs-on: windows-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Test
+      run: python ./src/tests/update_installer_tests.py -v
