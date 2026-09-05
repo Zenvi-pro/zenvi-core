@@ -55,8 +55,55 @@ from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen, track_metric_error
 from classes.query import File
+from classes.qt_main_thread import invoke_on_gui
 
 import json
+
+
+def pause_window_auto_save():
+    """Stop the main-window auto-save timer. Returns True if it was running."""
+    try:
+        window = get_app().window
+        timer = getattr(window, "auto_save_timer", None) if window is not None else None
+        if timer is not None and timer.isActive():
+            timer.stop()
+            return True
+    except Exception:
+        log.debug("Could not pause auto-save during export", exc_info=True)
+    return False
+
+
+def resume_window_auto_save(was_active):
+    """Restart the main-window auto-save timer if it was running before export."""
+    if not was_active:
+        return
+    try:
+        window = get_app().window
+        timer = getattr(window, "auto_save_timer", None) if window is not None else None
+        if timer is not None:
+            timer.start()
+    except Exception:
+        log.debug("Could not resume auto-save after export", exc_info=True)
+
+
+def friendly_export_error(error_type_str):
+    """Turn a libopenshot/FFmpeg exception string into text the user can act on."""
+    raw = str(error_type_str or "")
+    if "> " in raw:
+        raw = raw.split("> ")[0].replace("<", "")
+    raw = raw.strip() or str(error_type_str)
+    lower = raw.lower()
+    if "audio codec" in lower:
+        hint = "The selected audio codec is not available. Try a different audio codec, or export Video Only."
+    elif "video codec" in lower or "could not open" in lower:
+        hint = "The selected video codec or profile could not be opened. Try a different format, codec, or resolution."
+    elif "profile" in lower or "invalid" in lower:
+        hint = "The selected export profile or resolution is not compatible with this project. Choose a matching profile and try again."
+    else:
+        hint = None
+    if hint:
+        return "%s\n\n%s" % (raw, hint)
+    return raw
 
 
 class Export(QDialog):
@@ -827,6 +874,82 @@ class Export(QDialog):
         self.export_button.setEnabled(True)
         self.btnBrowse.setEnabled(True)
 
+    def _cleanup_export_resources(self):
+        """Stop the export cache thread and restore the preview cache. Idempotent.
+
+        Called from both run_export()'s finally block and reject() (e.g. when
+        the user closes the finished-export dialog); the guard below stops the
+        second call from re-invoking native Close()/ClearAllCache() on an
+        already-closed Timeline, which corrupts the heap on some platforms.
+        """
+        if getattr(self, "_export_cleaned_up", False):
+            return
+        self._export_cleaned_up = True
+        try:
+            timeline = getattr(self, "timeline", None)
+            if timeline is not None:
+                try:
+                    timeline.Close()
+                except Exception:
+                    pass
+                try:
+                    timeline.ClearAllCache()
+                except Exception:
+                    pass
+        except Exception:
+            log.warning("Export timeline cleanup failed", exc_info=True)
+        try:
+            openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
+        except Exception:
+            pass
+        try:
+            if getattr(self, "cache_thread", None):
+                self.cache_thread.StopThread(10000)
+                self.cache_thread.Reader(None)
+                self.cache_thread = None
+        except Exception:
+            log.warning("Export cache thread cleanup failed", exc_info=True)
+        try:
+            window = get_app().window
+            old_cache = getattr(self, "old_cache_object", None)
+            if window is not None and old_cache is not None:
+                window.timeline_sync.timeline.SetCache(old_cache)
+                window.cache_object = old_cache
+        except Exception:
+            log.warning("Failed to restore preview cache after export", exc_info=True)
+
+    def _present_export_error(self, friendly_error):
+        """Show a retryable export error on the GUI thread. Never closes the dialog."""
+        _ = get_app()._tr
+        retry_hint = _("You can change the export settings and try again.")
+
+        def _show():
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle(_("Export Error"))
+            msg.setText(_("Sorry, there was an error exporting your video:\n%s") % friendly_error)
+            msg.setInformativeText(retry_hint)
+            msg.exec_()
+
+        invoke_on_gui(_show, context=self)
+
+    def _show_export_finished(self):
+        """Dialog-only success UI. Headless export just returns."""
+        if getattr(self, "_headless", False):
+            return
+        if hasattr(self, 'cancel_button') and self.cancel_button is not None:
+            if self.s.get("show_finished_window") and self.exporting:
+                self.cancel_button.setVisible(False)
+                self.export_button.setVisible(False)
+                self.close_button.setVisible(True)
+                from PyQt5.QtGui import QPalette
+                p = QPalette()
+                p.setColor(QPalette.Highlight, Qt.green)
+                self.progressExportVideo.setPalette(p)
+                self.show()
+            else:
+                super(Export, self).accept()
+
     def run_export(self, export_file_path, video_settings, audio_settings, export_type,
                    video_bitrate_text=None, profile_path_for_rescale=None):
         """
@@ -853,77 +976,90 @@ class Export(QDialog):
             self.progressExportVideo.setMaximum(int(video_settings.get("end_frame")))
             self.progressExportVideo.setValue(int(video_settings.get("start_frame")))
 
-        # Set lossless cache settings (temporarily)
-        export_cache_object = openshot.CacheMemory(250 * 1024 * 1024)
-        self.timeline.SetCache(export_cache_object)
+        owns_pause = not getattr(self, "_auto_save_paused", False)
+        if owns_pause:
+            self._auto_save_was_active = pause_window_auto_save()
+            self._auto_save_paused = True
+            # Reset per-export-attempt guards. Only the top-level call (not
+            # the audio-codec-failure retry recursion below) should do this,
+            # which is exactly what owns_pause already distinguishes.
+            self._export_cleaned_up = False
+            self._fps_rescaled = False
 
-        # Compute export_fps_factor from project and video_settings
-        current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-        current_fps_float = float(current_fps.get("num", 30)) / float(current_fps.get("den", 1) or 1)
-        fps_num = video_settings.get("fps", {}).get("num", 30)
-        fps_den = video_settings.get("fps", {}).get("den", 1) or 1
-        new_fps_float = float(fps_num) / float(fps_den)
-        export_fps_factor = new_fps_float / current_fps_float
-
-        # Rescale all keyframes (if needed)
-        if export_fps_factor != 1.0:
-            self.project.rescale_keyframes(export_fps_factor)
-            path_to_use = profile_path_for_rescale
-            if not path_to_use and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None:
-                path_to_use = self.cboSimpleVideoProfile.currentData()
-            if not path_to_use:
-                # Resolve from project profile name
-                profile_name = get_app().project.get("profile")
-                for folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
-                    if not os.path.isdir(folder):
-                        continue
-                    for f in os.listdir(folder):
-                        p = os.path.join(folder, f)
-                        if os.path.isfile(p):
-                            try:
-                                prof = openshot.Profile(p)
-                                if prof.info.description == profile_name:
-                                    path_to_use = p
-                                    break
-                            except Exception:
-                                pass
-                    if path_to_use:
-                        break
-            if path_to_use:
-                profile = openshot.Profile(path_to_use)
-                self.project.apply_profile(profile)
-                self.timeline.SetJson(json.dumps(self.project._data))
-
-        # Set timeline info from settings (no UI dependency)
-        self.timeline.info.width = video_settings.get("width")
-        self.timeline.info.height = video_settings.get("height")
-        self.timeline.info.fps.num = video_settings.get("fps", {}).get("num", 30)
-        self.timeline.info.fps.den = video_settings.get("fps", {}).get("den", 1) or 1
-        self.timeline.info.sample_rate = audio_settings.get("sample_rate", 48000)
-        self.timeline.info.channels = audio_settings.get("channels", 2)
-        self.timeline.info.channel_layout = audio_settings.get("channel_layout", openshot.LAYOUT_STEREO)
-        if self.timeline.info.sample_rate == 0 or self.timeline.info.channels == 0:
-            self.timeline.info.has_audio = False
-        else:
-            self.timeline.info.has_audio = True
-        # Headless export: force no audio before cache/writer so we never open an audio codec.
-        if getattr(self, "_headless", False):
-            self.timeline.info.has_audio = False
-
-        # Set MaxSize and apply mappers
-        self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
-        self.timeline.ApplyMapperToClips()
-
-        max_frame = 0
-        format_of_progress_string = "%4.1f%% "
-        fps_encode = 0
-
-        # Start video cache thread
-        self.cache_thread.Reader(self.timeline)
-        self.cache_thread.setSpeed(1)
-        self.cache_thread.StartThread()
-
+        retried_as_video_only = False
+        export_ok = False
         try:
+            # Set lossless cache settings (temporarily)
+            export_cache_object = openshot.CacheMemory(250 * 1024 * 1024)
+            self.timeline.SetCache(export_cache_object)
+
+            # Compute export_fps_factor from project and video_settings
+            current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
+            current_fps_float = float(current_fps.get("num", 30)) / float(current_fps.get("den", 1) or 1)
+            fps_num = video_settings.get("fps", {}).get("num", 30)
+            fps_den = video_settings.get("fps", {}).get("den", 1) or 1
+            new_fps_float = float(fps_num) / float(fps_den)
+            export_fps_factor = new_fps_float / current_fps_float
+
+            # Rescale all keyframes (if needed). Guarded so the audio-codec-
+            # failure retry (which recurses into this same function) doesn't
+            # scale an already-rescaled project a second time.
+            if export_fps_factor != 1.0:
+                if not getattr(self, "_fps_rescaled", False):
+                    self.project.rescale_keyframes(export_fps_factor)
+                    self._fps_rescaled = True
+                path_to_use = profile_path_for_rescale
+                if not path_to_use and hasattr(self, 'cboSimpleVideoProfile') and self.cboSimpleVideoProfile is not None:
+                    path_to_use = self.cboSimpleVideoProfile.currentData()
+                if not path_to_use:
+                    # Resolve from project profile name
+                    profile_name = get_app().project.get("profile")
+                    for folder in [info.USER_PROFILES_PATH, info.PROFILES_PATH]:
+                        if not os.path.isdir(folder):
+                            continue
+                        for f in os.listdir(folder):
+                            p = os.path.join(folder, f)
+                            if os.path.isfile(p):
+                                try:
+                                    prof = openshot.Profile(p)
+                                    if prof.info.description == profile_name:
+                                        path_to_use = p
+                                        break
+                                except Exception:
+                                    pass
+                        if path_to_use:
+                            break
+                if path_to_use:
+                    profile = openshot.Profile(path_to_use)
+                    self.project.apply_profile(profile)
+                    self.timeline.SetJson(json.dumps(self.project._data))
+
+            # Set timeline info from settings (no UI dependency)
+            self.timeline.info.width = video_settings.get("width")
+            self.timeline.info.height = video_settings.get("height")
+            self.timeline.info.fps.num = video_settings.get("fps", {}).get("num", 30)
+            self.timeline.info.fps.den = video_settings.get("fps", {}).get("den", 1) or 1
+            self.timeline.info.sample_rate = audio_settings.get("sample_rate", 48000)
+            self.timeline.info.channels = audio_settings.get("channels", 2)
+            self.timeline.info.channel_layout = audio_settings.get("channel_layout", openshot.LAYOUT_STEREO)
+            if self.timeline.info.sample_rate == 0 or self.timeline.info.channels == 0:
+                self.timeline.info.has_audio = False
+            else:
+                self.timeline.info.has_audio = True
+
+            # Set MaxSize and apply mappers
+            self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
+            self.timeline.ApplyMapperToClips()
+
+            max_frame = 0
+            format_of_progress_string = "%4.1f%% "
+            fps_encode = 0
+
+            # Start video cache thread
+            self.cache_thread.Reader(self.timeline)
+            self.cache_thread.setSpeed(1)
+            self.cache_thread.StartThread()
+
             w = openshot.FFmpegWriter(export_file_path)
 
             if export_type in [_("Video & Audio"), _("Video Only"), _("Image Sequence")]:
@@ -951,10 +1087,11 @@ class Export(QDialog):
                 )
 
             in_audio_block = export_type in [_("Video & Audio"), _("Audio Only")]
-            # Headless export (e.g. from AI chat): skip audio to avoid "Could not open audio codec" on systems
-            # where no encoder works reliably; export video-only so the user always gets a file.
-            headless_skip_audio = getattr(self, "_headless", False)
-            if in_audio_block and not headless_skip_audio:
+            # Headless exports keep their audio: an unattended run is verified by
+            # the transcript of what it produced, so a silent file fails the
+            # check. A codec that genuinely cannot open is still caught below and
+            # retried as Video Only, which is what that fallback is for.
+            if in_audio_block:
                 ac = audio_settings.get("acodec") or "aac"
                 if not isinstance(ac, str):
                     ac = str(ac)
@@ -975,8 +1112,6 @@ class Export(QDialog):
                 else:
                     # No audio codec available; tell timeline we have no audio so writer/encode loop don't expect it.
                     self.timeline.info.has_audio = False
-            elif in_audio_block and headless_skip_audio:
-                self.timeline.info.has_audio = False
 
             w.PrepareStreams()
 
@@ -1054,6 +1189,11 @@ class Export(QDialog):
                 max_frame,
                 format_of_progress_string
             )
+            # ExportEnded is emitted once, after cleanup, below (guarded by
+            # export_ok) -- do not also emit it here, or successful exports
+            # fire the signal (and any connected "export finished" UI/hooks)
+            # twice.
+            export_ok = True
 
         except Exception as e:
             error_type_str = str(e)
@@ -1062,6 +1202,7 @@ class Export(QDialog):
             if "audio codec" in error_type_str.lower() and export_type in [_("Video & Audio"), _("Audio Only")]:
                 log.info("Audio codec failed, retrying export as video only")
                 self.timeline.info.has_audio = False
+                retried_as_video_only = True
                 self.run_export(
                     export_file_path,
                     video_settings,
@@ -1072,41 +1213,28 @@ class Export(QDialog):
                 )
                 return
             track_metric_error("export-error-%s" % error_type_str[:50])
-            friendly_error = error_type_str.split("> ")[0].replace("<", "") if "> " in error_type_str else error_type_str
-            if hasattr(self, 'cancel_button'):
-                msg = QMessageBox()
-                msg.setWindowTitle(_("Export Error"))
-                msg.setText(_("Sorry, there was an error exporting your video: \n%s") % friendly_error)
-                msg.exec_()
+            friendly_error = friendly_export_error(error_type_str)
+            if getattr(self, "_headless", False):
+                raise
+            if hasattr(self, 'cancel_button') and self.cancel_button is not None:
+                self._present_export_error(friendly_error)
+                self.enableControls()
+                self.exporting = False
             else:
                 raise
+        finally:
+            if not retried_as_video_only:
+                self._cleanup_export_resources()
+            if owns_pause:
+                resume_window_auto_save(getattr(self, "_auto_save_was_active", False))
+                self._auto_save_paused = False
 
-        self.ExportEnded.emit(export_file_path)
-        self.timeline.Close()
-        self.timeline.ClearAllCache()
-        openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
-        if self.cache_thread:
-            self.cache_thread.StopThread(10000)
-            self.cache_thread.Reader(None)
-            self.cache_thread = None
-        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
-        get_app().window.cache_object = self.old_cache_object
-
-        # Dialog-only: show finished state or close (skip when headless)
-        if getattr(self, "_headless", False):
-            return
-        if hasattr(self, 'cancel_button') and self.cancel_button is not None:
-            if self.s.get("show_finished_window") and self.exporting:
-                self.cancel_button.setVisible(False)
-                self.export_button.setVisible(False)
-                self.close_button.setVisible(True)
-                from PyQt5.QtGui import QPalette
-                p = QPalette()
-                p.setColor(QPalette.Highlight, Qt.green)
-                self.progressExportVideo.setPalette(p)
-                self.show()
-            else:
-                super(Export, self).accept()
+        if export_ok:
+            try:
+                self.ExportEnded.emit(export_file_path)
+            except Exception:
+                log.warning("ExportEnded emit failed", exc_info=True)
+            self._show_export_finished()
 
     def accept(self):
         """ Start exporting video """
@@ -1342,16 +1470,8 @@ class Export(QDialog):
                 # Resume export
                 return
 
-        # Return scale mode to lower quality scaling (for faster previews)
-        openshot.Settings.Instance().HIGH_QUALITY_SCALING = False
-
         # Stop cache thread and restore project cache
-        if self.cache_thread:
-            self.cache_thread.StopThread(10000)
-            self.cache_thread.Reader(None)
-            self.cache_thread = None
-        get_app().window.timeline_sync.timeline.SetCache(self.old_cache_object)
-        get_app().window.cache_object = self.old_cache_object
+        self._cleanup_export_resources()
 
         # Cancel dialog
         self.exporting = False
@@ -1449,10 +1569,14 @@ def _resolve_audio_codec(preferred):
     preferred = (preferred or "aac").strip()
     if not preferred:
         preferred = "aac"
-    # Use same order as UI profile (export.py preset loading): libfaac, libvo_aacenc, then ac3.
-    # Do not use "aac" here — IsValidCodec("aac") is often True but Open() fails ("Could not open audio codec").
-    # Only use codecs that typically work at Open(); if none are valid, return None (export video-only).
-    aac_order = ("libfaac", "libvo_aacenc", "ac3", "libfdk_aac", "libmp3lame")
+    # AAC first, ac3 only as a last resort. libfaac and libvo_aacenc were dropped
+    # from modern FFmpeg builds, so an order that listed them ahead of ac3 always
+    # landed on ac3 — and AC-3 in an .mp4 is silent in most players (Windows
+    # Films & TV, Chrome, QuickTime), so the export looked fine to ffprobe and to
+    # Whisper while playing back with no sound for a human. Native "aac" is the
+    # stable encoder in current FFmpeg; if it genuinely fails to open, the
+    # audio-codec retry in export_video_headless still yields a video-only file.
+    aac_order = ("libfdk_aac", "aac", "libvo_aacenc", "libfaac", "libmp3lame", "ac3")
     if preferred.lower() == "aac" or preferred in aac_order:
         for codec in aac_order:
             if openshot.FFmpegWriter.IsValidCodec(codec):
@@ -1589,6 +1713,9 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     _ = app._tr
 
     vs, as_, et, default_path = get_default_export_settings()
+    # Remember whether the caller chose a range or we fell back to the project's
+    # stored one, which is often a stale default.
+    use_default_range = video_settings is None
     if video_settings is None:
         video_settings = vs
     if audio_settings is None:
@@ -1616,13 +1743,19 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     win = Export()
     win.exporting = True
     win._headless = True
-    # Headless: always export video-only to avoid "Could not open audio codec".
-    if export_type in [_("Video & Audio"), _("Audio Only")]:
-        export_type = _("Video Only")
-    # Use timeline length for end_frame if not set
+    # Audio is kept rather than pre-emptively stripped: an unattended export is
+    # verified by its transcript, so a silent file fails the check. A genuinely
+    # failing audio codec is still retried as Video Only below.
     try:
         max_frame = win.timeline.GetMaxFrame()
-        if not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
+        if use_default_range and max_frame:
+            # The project's stored range is frequently a stale default (e.g. 300
+            # frames) that would silently truncate the export to a few seconds,
+            # so fit it to the timeline we are actually exporting.
+            video_settings = dict(video_settings)
+            video_settings["start_frame"] = 1
+            video_settings["end_frame"] = max_frame
+        elif not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
             video_settings["end_frame"] = max_frame
         if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
             return _("Invalid range of frames to export.")

@@ -48,3 +48,6 @@ notes.txt
 graphify-out/
 graphify_out/
 graphify_output/
+
+# gstack
+.gstack/

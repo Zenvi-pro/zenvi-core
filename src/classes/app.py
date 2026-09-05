@@ -42,20 +42,47 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
+_QT_MSG_PREFIXES = {
+    QtMsgType.QtDebugMsg: "debug",
+    QtMsgType.QtInfoMsg: "info",
+    QtMsgType.QtWarningMsg: "warning",
+    QtMsgType.QtCriticalMsg: "critical",
+    QtMsgType.QtFatalMsg: "fatal",
+}
+
+
 def _qt_message_handler(msg_type, context, message):
     """Filter out known noisy Qt warnings (e.g. QWebChannel property notify signals)."""
     if "has no notify signal" in message and "value updates in HTML will be broken" in message:
         return
+    prefix = _QT_MSG_PREFIXES.get(msg_type, "debug")
+
+    # Qt aborts the process immediately after a fatal message, so make sure it
+    # reaches the log file first -- stderr is None in frozen GUI builds and this
+    # is otherwise the only record of a Qt-side abort.
+    if msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
+        try:
+            from classes.logger import log as _log
+
+            location = ""
+            if context is not None and getattr(context, "file", None):
+                location = " (%s:%s)" % (context.file, context.line)
+            _log.error("Qt %s: %s%s", prefix, message, location)
+        except Exception:
+            pass
+
+    try:
+        from classes import crash_handler
+        crash_handler.report_qt_thread_warning(message)
+    except Exception:
+        pass
+
     # Forward all other messages to stderr like Qt's default handler
-    prefixes = {
-        QtMsgType.QtDebugMsg: "debug",
-        QtMsgType.QtInfoMsg: "info",
-        QtMsgType.QtWarningMsg: "warning",
-        QtMsgType.QtCriticalMsg: "critical",
-        QtMsgType.QtFatalMsg: "fatal",
-    }
-    prefix = prefixes.get(msg_type, "debug")
-    sys.stderr.write("%s: %s\n" % (prefix, message))
+    if sys.stderr is not None:
+        try:
+            sys.stderr.write("%s: %s\n" % (prefix, message))
+        except Exception:
+            pass
 
 # Disable sandbox support for QtWebEngine (required on some Linux distros
 # for the QtWebEngineWidgets to be rendered, otherwise no timeline is visible).
@@ -143,10 +170,16 @@ class StartupError:
 
     def show(self):
         """Display the stored error message"""
-        box_call = self.levels[self.level]
+        # An unrecognised level must not KeyError on the way to telling the user
+        # something already went wrong.
+        box_call = self.levels.get(self.level, QMessageBox.critical)
         box_call(None, self.title, self.message)
         if self.level == "error":
-            sys.exit()
+            # Non-zero on purpose: a bare sys.exit() reports success, and this
+            # SystemExit propagates out through show_errors() past launch.py's
+            # own sys.exit(1) -- so a startup that failed looked fine to the
+            # shell, to packaging smoke tests, and to any supervising process.
+            sys.exit(1)
 
 
 class OpenShotApp(QApplication):
@@ -208,9 +241,26 @@ class OpenShotApp(QApplication):
                 level="error"))
             # Stop launching
             raise
-        except Exception:
-            log.error('OpenShotApp::Init Error', exc_info=1)
-            sys.exit()
+        except Exception as ex:
+            # Do NOT sys.exit() here: SystemExit bypasses launch.py's handler, so
+            # the process used to end before anything was shown -- and frozen GUI
+            # builds have no console, so the app simply vanished. Queue the
+            # traceback as a startup error and let launch.py display it.
+            tb = traceback.format_exc()
+            try:
+                log.error('OpenShotApp::Init Error', exc_info=1)
+            except Exception:
+                pass
+            self.errors.append(StartupError(
+                "Startup Error",
+                "Zenvi could not finish starting up.\n\n%(type)s: %(msg)s\n\n%(tb)s" % {
+                    "type": type(ex).__name__,
+                    "msg": ex,
+                    "tb": tb,
+                },
+                level="error"))
+            # Stop launching (launch.py catches this and calls show_errors())
+            raise
 
         self.info = info
 
@@ -258,6 +308,11 @@ class OpenShotApp(QApplication):
         # Instantiate Theme Manager (Singleton)
         from themes.manager import ThemeManager
         self.theme_manager = ThemeManager(self)
+
+    def notify(self, receiver, event):
+        """Keep a Python exception in a Qt event from tearing down the process."""
+        from classes import crash_handler
+        return crash_handler.notify_with_guard(super().notify, receiver, event)
 
     def show_environment(self, info, openshot):
         log = self.log
@@ -454,7 +509,16 @@ class OpenShotApp(QApplication):
             _log.warning("Displaying %d startup messages", count)
         while self.errors:
             error = self.errors.pop(0)
-            error.show()
+            try:
+                error.show()
+            except SystemExit:
+                # A fatal StartupError exits on purpose; let it through.
+                raise
+            except Exception:
+                # One dialog failing must not swallow the messages behind it.
+                from classes.logger import log as _err_log
+                _err_log.error("Could not display startup message %r",
+                               error.title, exc_info=True)
 
     def _tr(self, message):
         return self.translate("", message)

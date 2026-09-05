@@ -47,6 +47,14 @@ import json
 import logging
 from pathlib import Path
 
+# On a packaged build, Contents/MacOS/lib/classes is a symlink into the signed
+# Resources/classes directory. Importing modules there would normally write
+# __pycache__/*.pyc into that directory on first run, adding files the code
+# signature never sealed and breaking Gatekeeper verification ("Zenvi is
+# damaged and can't be opened") on every subsequent launch. Disabling
+# bytecode caching for the whole process avoids that; harmless for dev runs.
+sys.dont_write_bytecode = True
+
 
 def _prepend_dll_search_path_for_libopenshot():
     """Windows/MinGW: Python 3.8+ limits DLL dirs; add paths for _openshot.pyd dependencies."""
@@ -120,22 +128,40 @@ except Exception:
     pass
 
 # Apply a staged update from a previous session (no PyQt required).
+# Only for packaged/frozen builds: an unpackaged `python src/launch.py` dev
+# run has no separate install directory to apply into, and letting it run
+# the updater just swaps the dev's local checkout out for a downloaded
+# release build on every launch.
+if getattr(sys, "frozen", False):
+    try:
+        from classes import update_installer
+
+        if update_installer.has_pending_update():
+            if update_installer.apply_pending_update():
+                sys.exit(0)
+    except Exception:
+        # Startup stays best-effort -- a broken staged update must not block
+        # launching -- but the failure has to be visible, or an update that
+        # never applies looks like the updater silently doing nothing.
+        # App logging isn't configured this early, so this goes to stderr.
+        logging.getLogger(__name__).exception("Failed to apply the pending update")
+
+# Install the process-wide crash handlers before anything else can raise.
+# Frozen builds are GUI binaries with no stdout/stderr (cx_Freeze base="Win32GUI"
+# on Windows, a .app bundle on macOS), so without these an unhandled traceback
+# left no log entry and no dialog -- the app just vanished.
 try:
-    from classes import update_installer
-
-    if update_installer.has_pending_update():
-        if update_installer.apply_pending_update():
-            sys.exit(0)
+    from classes import crash_handler
 except Exception:
-    pass
-
-# Enable faulthandler early so native crashes (SIGSEGV) dump Python stack traces.
-try:
-    import faulthandler
-
-    faulthandler.enable(all_threads=True)
-except Exception:
-    pass
+    crash_handler = None
+else:
+    try:
+        # faulthandler defaults to sys.stderr, which is None in frozen GUI builds;
+        # enable_faulthandler() falls back to a file so native crashes are dumped too.
+        crash_handler.enable_faulthandler()
+        crash_handler.install()
+    except Exception:
+        pass
 
 try:
     # This needs to be imported before PyQt5
@@ -156,7 +182,10 @@ except ImportError as _openshot_import_err:
 scale = 1.0
 logger = logging.getLogger(__name__)
 
-settings_path = os.path.join(os.path.expanduser("~/.openshot_qt"), "openshot.settings")
+# Windows Python ignores HOME; MSYS ``env -i`` historically omitted USERPROFILE
+# so expanduser("~") stayed as a literal tilde under the repo cwd.
+_home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+settings_path = os.path.join(_home, ".openshot_qt", "openshot.settings")
 
 try:
     if os.path.exists(settings_path):
@@ -224,6 +253,25 @@ except ImportError:
 
 # Global holder for QApplication instance
 app = None
+
+
+def _report_startup_failure(context):
+    """Log + surface the exception currently being handled, then fall through.
+
+    Called from except blocks around startup and the event loop so that a
+    traceback reaches the log file (and a dialog, when a QApplication exists)
+    instead of terminating a windowless frozen build in silence.
+    """
+    exc_info = sys.exc_info()
+    if crash_handler is not None:
+        # blocking=True: we are about to sys.exit(), so a deferred dialog would
+        # never be delivered.
+        crash_handler.report(*exc_info, context=context, blocking=True)
+        return
+    try:
+        logger.error("Zenvi %s", context, exc_info=exc_info)
+    except Exception:
+        pass
 
 
 def main():
@@ -321,6 +369,11 @@ def main():
     from classes import sentry
     sentry.init_tracing()
 
+    # sentry_sdk's excepthook integration replaces sys.excepthook, so re-install
+    # ours on top of it (crash_handler chains to whatever it displaces).
+    if crash_handler is not None:
+        crash_handler.install()
+
     # Create any missing paths in the user's settings dir
     info.setup_userdirs()
 
@@ -338,8 +391,12 @@ def main():
     except Exception:
         # OpenShotApp.__init__ can fail after QApplication.__init__; the module-level app may stay None.
         inst = QApplication.instance()
+        queued = bool(getattr(inst, "errors", None))
         if inst is not None and hasattr(inst, "show_errors"):
             inst.show_errors()
+        if not queued:
+            # Nothing was queued for display, so the traceback is all we have.
+            _report_startup_failure("failed to start")
         sys.exit(1)
 
     # Setup Qt application details
@@ -353,9 +410,23 @@ def main():
     except AttributeError:
         pass
 
-    # Launch GUI and start event loop
-    if app.gui():
-        sys.exit(app.exec_())
+    # Launch GUI and start event loop.
+    # MainWindow construction and the event loop are the two largest bodies of
+    # code in the app; an exception escaping either used to end the process with
+    # nothing shown to the user, so report it explicitly here.
+    try:
+        gui_ready = app.gui()
+    except Exception:
+        _report_startup_failure("failed while building the main window")
+        sys.exit(1)
+
+    if gui_ready:
+        try:
+            exit_code = app.exec_()
+        except Exception:
+            _report_startup_failure("failed inside the main event loop")
+            exit_code = 1
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

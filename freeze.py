@@ -105,6 +105,12 @@ python_packages = ["os",
                    "zmq",
                    "webbrowser",
                    "json",
+                   # In-app MCP server for external agent CLIs (Claude Code, Codex)
+                   "mcp",
+                   "uvicorn",
+                   "anyio",
+                   "starlette",
+                   "httpx",
                    ]
 
 # Conditionally include openshot — it requires native C++ bindings (libopenshot)
@@ -363,6 +369,11 @@ if sys.platform == "win32":
     python_packages.extend([
         "idna",
         "OpenGL",
+        # mcp.os.win32.utilities imports these unguarded on win32
+        "pywintypes",
+        "win32api",
+        "win32con",
+        "win32job",
     ])
 
     # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,

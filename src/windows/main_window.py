@@ -58,6 +58,7 @@ from classes import exceptions, info, qt_types, sentry, ui_util, updates
 from classes.auto_updater import AutoUpdater, get_update_manifest
 from classes.update_installer import is_version_newer
 from classes.app import get_app
+from classes.qt_main_thread import invoke_on_gui
 from classes.exporters.edl import export_edl
 from classes.exporters.final_cut_pro import export_xml
 from classes.importers.edl import import_edl
@@ -75,6 +76,7 @@ from windows.models.emoji_model import EmojisModel
 from windows.models.files_model import FilesModel
 from windows.models.transition_model import TransitionsModel
 from windows.preview_thread import PreviewParent
+from windows.agent_selector_button import AgentSelectorButton
 from windows.update_panel import UpdatePanel
 from windows.update_status_button import (
     UpdateStatusButton, STATE_DOWNLOADING, STATE_READY,
@@ -191,6 +193,31 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         else:
             self.shutting_down = True
 
+        # Tear down in a helper so the lock file is released no matter what.
+        try:
+            self._shutdown_sequence(app)
+        except Exception:
+            log.error("Error while shutting down; releasing the lock file anyway",
+                      exc_info=True)
+        finally:
+            # Leaving the lock file behind makes the *next* launch report a crash
+            # that never happened, and sends it through libopenshot_crash_recovery().
+            self.destroy_lock_file()
+
+        # If this shutdown was triggered by "Restart to Apply Update", spawn a
+        # new instance now (after the lock file is gone, so the fresh process
+        # doesn't mistake the clean exit for a crash) — it will apply the
+        # staged update at startup, before this old process has fully exited.
+        if getattr(self, "_restart_for_update", False):
+            self._relaunch_for_update()
+
+    def _shutdown_sequence(self, app):
+        """Stop threads and release libopenshot resources. Only called by closeEvent().
+
+        Every step here can raise, and destroy_lock_file() used to be the last
+        statement of closeEvent() -- so a single failure anywhere in this sequence
+        left the lock file in place and the next launch blamed a phantom crash.
+        """
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
 
@@ -251,9 +278,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Stop timeline background workers (such as the thumbnail thread) before Qt
         # begins destroying child widgets, to avoid QThread warnings on shutdown.
-        timeline_widget = getattr(self, "timeline", None)
-        if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
-            timeline_widget.thumbnail_manager.shutdown()
+        # Guarded like its neighbours above: by this point Qt may already have
+        # destroyed the TimelineView's C++ half, and getattr() on a dead sip
+        # wrapper raises RuntimeError rather than returning the default. That
+        # exception used to escape closeEvent and skip everything below —
+        # thread shutdown, the lock file, and the chat dock's worker/CLI
+        # teardown — aborting the process with "QThread: Destroyed while thread
+        # is still running".
+        try:
+            timeline_widget = getattr(self, "timeline", None)
+            if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
+                timeline_widget.thumbnail_manager.shutdown()
+        except Exception:
+            log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
 
         # Stop thumbnail server thread (if any)
         if self.http_server_thread:
@@ -288,16 +325,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.timeline_sync.timeline.Clear()
             self.timeline_sync.timeline = None
 
-        # Destroy lock file
-        self.destroy_lock_file()
-
-        # If this shutdown was triggered by "Restart to Apply Update", spawn a
-        # new instance now (after the lock file is gone, so the fresh process
-        # doesn't mistake the clean exit for a crash) — it will apply the
-        # staged update at startup, before this old process has fully exited.
-        if getattr(self, "_restart_for_update", False):
-            self._relaunch_for_update()
-
     def recover_backup(self):
         """Recover the backup file (if any)"""
         log.info("recover_backup")
@@ -317,7 +344,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         lock_path = os.path.join(info.USER_PATH, ".lock")
         # Check if it already exists
         if os.path.exists(lock_path):
-            last_log_line = exceptions.libopenshot_crash_recovery()
+            # Recovery parses libopenshot.log, which a hard crash can leave
+            # truncated or binary. It only feeds a metric, so a failure here must
+            # never stop the app from launching -- otherwise one crash makes the
+            # app permanently unstartable.
+            try:
+                last_log_line = exceptions.libopenshot_crash_recovery()
+            except Exception:
+                log.warning("Crash recovery failed to read libopenshot.log", exc_info=True)
+                last_log_line = ""
             if last_log_line:
                 log.error(f"Unhandled crash detected: {last_log_line}")
             else:
@@ -594,26 +629,32 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # Save project to file
                 app.project.save(file_path)
 
-                # Set Window title
-                self.SetWindowTitle()
-
-                # Load recent projects again
-                self.load_recent_menu()
-
                 log.info("Saved project %s", file_path)
 
-                # Notify listeners if Save As (or first save of an Untitled
-                # project) actually changed the file path.  Plain Save into
-                # the same file is a no-op for project-scoped consumers.
+            except Exception as ex:
+                log.error("Couldn't save project %s", file_path, exc_info=1)
+                # Capture the message now: invoke_on_gui may defer _warn to run
+                # after this except block exits, and Python auto-deletes the
+                # "as ex" binding at that point, which would make a closure
+                # over `ex` itself raise instead of showing the dialog.
+                error_message = str(ex)
+
+                def _warn():
+                    QMessageBox.warning(self, _("Error Saving Project"), error_message)
+
+                invoke_on_gui(_warn, context=self)
+                return
+
+            def _after_save():
+                self.SetWindowTitle()
+                self.load_recent_menu()
                 try:
                     if (file_path or "") != previous_filepath:
                         self.projectChanged.emit(file_path or "")
                 except Exception:
                     pass
 
-            except Exception as ex:
-                log.error("Couldn't save project %s", file_path, exc_info=1)
-                QMessageBox.warning(self, _("Error Saving Project"), str(ex))
+            invoke_on_gui(_after_save, context=self)
 
     def save_recovery(self, file_path):
         """Saves the project and manages recovery files based on configured limits."""
@@ -2147,6 +2188,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # Remove clip
                 c.delete()
 
+        # A deleted clip may still be referenced by the preview widget's
+        # transform state (e.g. it was the selected/transforming clip) —
+        # its native object is gone, so clear the cached reference before
+        # the next mouseMoveEvent/paintEvent can dereference it.
+        self.videoPreview.clearTransformState()
+
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()
 
@@ -2195,6 +2242,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self.ripple_delete_gap(start_position, t.data["layer"], duration)
 
         finally:
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; its native object is gone, so clear the
+            # cached reference before the next mouseMoveEvent/paintEvent can
+            # dereference it.
+            self.videoPreview.clearTransformState()
+
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
 
@@ -2816,34 +2869,38 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if not profile:
             profile = app.project.get("profile")
 
-        # Determine if the project needs saving (has any unsaved changes)
-        save_indicator = ""
-        if app.project.needs_save():
-            save_indicator = "*"
-            self.actionSave.setEnabled(True)
-        else:
-            self.actionSave.setEnabled(False)
+        def _apply():
+            # Determine if the project needs saving (has any unsaved changes)
+            save_indicator = ""
+            if app.project.needs_save():
+                save_indicator = "*"
+                self.actionSave.setEnabled(True)
+            else:
+                self.actionSave.setEnabled(False)
 
-        # Is this a saved project?
-        if not app.project.current_filepath:
-            # Not saved yet (use singleShot since this method can be invoked by our preview thread)
-            QTimer.singleShot(0, functools.partial(self.setWindowTitle,
-                "%s %s [%s] - %s" % (save_indicator, _("Untitled Project"), profile, info.PRODUCT_NAME)))
-        else:
-            # Yes, project is saved
-            # Get just the filename
-            filename = os.path.basename(app.project.current_filepath)
-            filename = os.path.splitext(filename)[0]
-            # Use singleShot since this method can be invoked by our preview thread
-            QTimer.singleShot(0, functools.partial(self.setWindowTitle,
-                "%s %s [%s] - %s" % (save_indicator, filename, profile, info.PRODUCT_NAME)))
+            # Is this a saved project?
+            if not app.project.current_filepath:
+                title = "%s %s [%s] - %s" % (
+                    save_indicator, _("Untitled Project"), profile, info.PRODUCT_NAME)
+            else:
+                filename = os.path.basename(app.project.current_filepath)
+                filename = os.path.splitext(filename)[0]
+                title = "%s %s [%s] - %s" % (
+                    save_indicator, filename, profile, info.PRODUCT_NAME)
+            self.setWindowTitle(title)
+
+        # Preview/save threads also call this; QAction.setEnabled must stay on the GUI thread.
+        invoke_on_gui(_apply, context=self)
 
     # Update undo and redo buttons enabled/disabled to available changes
     def updateStatusChanged(self, undo_status, redo_status):
-        self.actionUndo.setEnabled(undo_status)
-        self.actionRedo.setEnabled(redo_status)
-        self.actionClearHistory.setEnabled(undo_status | redo_status)
-        self.SetWindowTitle()
+        def _apply():
+            self.actionUndo.setEnabled(undo_status)
+            self.actionRedo.setEnabled(redo_status)
+            self.actionClearHistory.setEnabled(undo_status | redo_status)
+            self.SetWindowTitle()
+
+        invoke_on_gui(_apply, context=self)
 
     def addSelection(self, item_id, item_type, clear_existing=False):
         """Add an item to the selection list.
@@ -4217,14 +4274,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.update_status_button = UpdateStatusButton(self)
         self._update_panel = None
 
+        # Toolbar agent picker. Built before the themes populate the toolbar;
+        # it reads through self.dockAIChat, which does not exist yet, and
+        # renders a sensible default until the chat dock shows up.
+        self.agent_selector_button = AgentSelectorButton(self)
+        # Popup the button opens. Cached and parented to the window, not the
+        # button: set_toolbar_buttons() calls toolbar.clear() on every theme
+        # change, which releases and reparents the button widget.
+        self._agent_panel = None
+
         self.FoundVersionSignal.connect(self.foundCurrentVersion)
         self.UpdateReadySignal.connect(self.updateDownloaded)
         self.UpdateProgressSignal.connect(self.updateDownloadProgress)
         self.UpdateFailedSignal.connect(self.updateFailed)
 
-        # Background auto-updater (stable version + optional download)
-        self._auto_updater = AutoUpdater()
-        self._auto_updater.start()
+        # Background auto-updater (stable version + optional download).
+        # Only for packaged/frozen builds — a dev running from source has no
+        # install directory to update into, and staging a real release build
+        # in the background just gets swapped in on the next source launch.
+        self._auto_updater = None
+        if getattr(sys, "frozen", False):
+            self._auto_updater = AutoUpdater()
+            self._auto_updater.start()
 
         # Initialize and start the thumbnail HTTP server
         try:
@@ -4269,6 +4340,24 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from windows.ai_chat_ui import AIChatWindow
         self.dockAIChat = AIChatWindow(self)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAIChat)
+        self.agent_selector_button.sync_from_chat()
+
+        # Start the in-app MCP server now (instead of waiting for the first
+        # Zenvi-driven CLI request) so an external `claude`/`codex` session run
+        # in a terminal can connect as soon as the app is up.
+        # Deferred to the first event-loop pass rather than started inline: an
+        # unattended harness treats "MCP answers" as "the editor is usable", so
+        # the server must not come up while this constructor still owns the main
+        # thread — every mutating tool would time out with the port wide open.
+        def _start_mcp_server():
+            try:
+                from classes.agent_mcp_server import get_mcp_server
+                get_mcp_server().start()
+            except Exception as e:
+                log.warning("Failed to start in-app MCP server: %s", e)
+
+        QTimer.singleShot(0, _start_mcp_server)
+
         # Re-bind chat sessions whenever the active project changes.
         try:
             self.projectChanged.connect(self.dockAIChat.reload_for_project)

@@ -148,6 +148,15 @@ def test_timeline_clip_id_takes_priority():
     assert result.clip is mock_clip
 
 
+def test_timeline_clip_id_miss_errors():
+    """Unknown id must fail loudly, never fall through to query/playhead matching."""
+    with _resolver_env({}):
+        result = resolve_timeline_clip(timeline_clip_id="clip-gone")
+    assert not result.ok
+    assert result.clip is None
+    assert "No timeline clip with id=" in result.error
+
+
 def test_single_clip_shortcut_without_query():
     ctx = _make_context("only", "Solo Clip")
     with _patch_contexts([ctx]):
