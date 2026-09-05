@@ -434,7 +434,13 @@ class ZenviBackendClient:
                         )
                     except Exception as exc:  # noqa: BLE001
                         log.error("Tool execution error: %s", exc)
-                        result = f"Tool execution error: {exc}"
+                        # Must start with "Error" -- the bridge never populates
+                        # a separate `error` field, so the backend classifies a
+                        # failed tool call purely by this prefix
+                        # (api/routes/chat.py). "Tool execution error: ..."
+                        # sailed through as a success, and a crashed undo was
+                        # reported to the user as done.
+                        result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
                     if text and not text.startswith("Error"):
                         last_tool_result_holder[0] = text

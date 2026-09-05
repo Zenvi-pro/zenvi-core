@@ -30,6 +30,7 @@
 from classes.logger import log
 from classes.app import get_app
 import json
+import threading
 import uuid
 
 
@@ -145,11 +146,40 @@ class UpdateManager:
         self.actionHistory = []  # List of actions performed to current state
         self.redoHistory = []  # List of actions undone
         self.currentStatus = [None, None]  # Status of Undo and Redo buttons (true/false for should be enabled)
-        self.ignore_history = False  # Ignore saving actions to history, to prevent a huge undo/redo list
         self.last_action = None  # The last action processed
         self.pending_action = None  # Last action not added to actionHistory list
-        self.transaction_id = None  # The current transaction id to be attached to any UpdateActions created
         self.data_version = 0  # Incremented on every dispatch to invalidate caches
+
+        # transaction_id and ignore_history are per-thread (see the properties
+        # below).  Agent tool calls arrive one worker thread each
+        # (api_client._spawn_tool_worker) and the prompt tells the agent to fire
+        # independent timeline edits in parallel, so a single shared field would
+        # let two concurrent operations merge into one undo step -- or tear each
+        # other's group apart.  The Qt main thread keeps its own slot, so every
+        # GUI path behaves exactly as it did before.
+        self._tls = threading.local()
+
+    @property
+    def transaction_id(self):
+        """Id attached to UpdateActions created by *this* thread, or None.
+
+        None means UpdateAction mints its own uuid, i.e. the mutation is its
+        own undo step.
+        """
+        return getattr(self._tls, "transaction_id", None)
+
+    @transaction_id.setter
+    def transaction_id(self, value):
+        self._tls.transaction_id = value
+
+    @property
+    def ignore_history(self):
+        """Whether *this* thread's mutations skip the undo history."""
+        return getattr(self._tls, "ignore_history", False)
+
+    @ignore_history.setter
+    def ignore_history(self, value):
+        self._tls.ignore_history = value
 
     def load_history(self, project):
         """Load history from project"""
@@ -283,12 +313,32 @@ class UpdateManager:
 
         return reverse
 
+    @staticmethod
+    def _tail_transaction(history):
+        """Return every action sharing the last transaction id, newest first.
+
+        Deliberately NOT limited to the contiguous tail.  A composite operation
+        mutates across several main-thread hops, and a second operation's hops
+        can land between them -- background-safe tools do their network work off
+        the Qt thread and marshal each mutation over separately, so the history
+        for two concurrent operations interleaves as A, B, A.  Taking only the
+        contiguous run would undo that last A and leave the first one applied,
+        which is precisely the half-undone edit this module exists to prevent.
+
+        Grouping by id across the whole history is safe because ids are uuid4
+        and minted per tool call (tool_handlers.execute_tool) or per composite
+        (_new_transaction_id), so a stale id never reappears by accident.
+        """
+        if not history:
+            return []
+        tid = history[-1].transaction
+        return [a for a in reversed(history) if a.transaction == tid]
+
     def undo(self):
         """ Undo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
         # Get all actions with the same transaction id as the last one, in reverse order
-        last_transaction = self.actionHistory[-1].transaction if self.actionHistory else None
-        last_transactions = [a for a in reversed(self.actionHistory) if a.transaction == last_transaction]
+        last_transactions = self._tail_transaction(self.actionHistory)
         remove_selection = any(a.type == "insert" for a in last_transactions)
 
         if remove_selection:
@@ -332,8 +382,7 @@ class UpdateManager:
         """ Redo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
         # Get all actions with the same transaction id as the last one, in reverse order
-        last_transaction = self.redoHistory[-1].transaction if self.redoHistory else None
-        last_transactions = [a for a in reversed(self.redoHistory) if a.transaction == last_transaction]
+        last_transactions = self._tail_transaction(self.redoHistory)
 
         # Iterate through each action in this transaction
         for index, next_action in enumerate(last_transactions):
