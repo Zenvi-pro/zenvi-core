@@ -906,9 +906,6 @@ class Export(QDialog):
             self.timeline.info.has_audio = False
         else:
             self.timeline.info.has_audio = True
-        # Headless export: force no audio before cache/writer so we never open an audio codec.
-        if getattr(self, "_headless", False):
-            self.timeline.info.has_audio = False
 
         # Set MaxSize and apply mappers
         self.timeline.SetMaxSize(video_settings.get("width"), video_settings.get("height"))
@@ -951,10 +948,11 @@ class Export(QDialog):
                 )
 
             in_audio_block = export_type in [_("Video & Audio"), _("Audio Only")]
-            # Headless export (e.g. from AI chat): skip audio to avoid "Could not open audio codec" on systems
-            # where no encoder works reliably; export video-only so the user always gets a file.
-            headless_skip_audio = getattr(self, "_headless", False)
-            if in_audio_block and not headless_skip_audio:
+            # Headless exports keep their audio: an unattended run is verified by
+            # the transcript of what it produced, so a silent file fails the
+            # check. A codec that genuinely cannot open is still caught below and
+            # retried as Video Only, which is what that fallback is for.
+            if in_audio_block:
                 ac = audio_settings.get("acodec") or "aac"
                 if not isinstance(ac, str):
                     ac = str(ac)
@@ -975,8 +973,6 @@ class Export(QDialog):
                 else:
                     # No audio codec available; tell timeline we have no audio so writer/encode loop don't expect it.
                     self.timeline.info.has_audio = False
-            elif in_audio_block and headless_skip_audio:
-                self.timeline.info.has_audio = False
 
             w.PrepareStreams()
 
@@ -1449,10 +1445,14 @@ def _resolve_audio_codec(preferred):
     preferred = (preferred or "aac").strip()
     if not preferred:
         preferred = "aac"
-    # Use same order as UI profile (export.py preset loading): libfaac, libvo_aacenc, then ac3.
-    # Do not use "aac" here — IsValidCodec("aac") is often True but Open() fails ("Could not open audio codec").
-    # Only use codecs that typically work at Open(); if none are valid, return None (export video-only).
-    aac_order = ("libfaac", "libvo_aacenc", "ac3", "libfdk_aac", "libmp3lame")
+    # AAC first, ac3 only as a last resort. libfaac and libvo_aacenc were dropped
+    # from modern FFmpeg builds, so an order that listed them ahead of ac3 always
+    # landed on ac3 — and AC-3 in an .mp4 is silent in most players (Windows
+    # Films & TV, Chrome, QuickTime), so the export looked fine to ffprobe and to
+    # Whisper while playing back with no sound for a human. Native "aac" is the
+    # stable encoder in current FFmpeg; if it genuinely fails to open, the
+    # audio-codec retry in export_video_headless still yields a video-only file.
+    aac_order = ("libfdk_aac", "aac", "libvo_aacenc", "libfaac", "libmp3lame", "ac3")
     if preferred.lower() == "aac" or preferred in aac_order:
         for codec in aac_order:
             if openshot.FFmpegWriter.IsValidCodec(codec):
@@ -1589,6 +1589,9 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     _ = app._tr
 
     vs, as_, et, default_path = get_default_export_settings()
+    # Remember whether the caller chose a range or we fell back to the project's
+    # stored one, which is often a stale default.
+    use_default_range = video_settings is None
     if video_settings is None:
         video_settings = vs
     if audio_settings is None:
@@ -1616,13 +1619,19 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
     win = Export()
     win.exporting = True
     win._headless = True
-    # Headless: always export video-only to avoid "Could not open audio codec".
-    if export_type in [_("Video & Audio"), _("Audio Only")]:
-        export_type = _("Video Only")
-    # Use timeline length for end_frame if not set
+    # Audio is kept rather than pre-emptively stripped: an unattended export is
+    # verified by its transcript, so a silent file fails the check. A genuinely
+    # failing audio codec is still retried as Video Only below.
     try:
         max_frame = win.timeline.GetMaxFrame()
-        if not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
+        if use_default_range and max_frame:
+            # The project's stored range is frequently a stale default (e.g. 300
+            # frames) that would silently truncate the export to a few seconds,
+            # so fit it to the timeline we are actually exporting.
+            video_settings = dict(video_settings)
+            video_settings["start_frame"] = 1
+            video_settings["end_frame"] = max_frame
+        elif not video_settings.get("end_frame") or video_settings.get("end_frame") < video_settings.get("start_frame", 1):
             video_settings["end_frame"] = max_frame
         if video_settings.get("start_frame", 1) >= video_settings["end_frame"]:
             return _("Invalid range of frames to export.")

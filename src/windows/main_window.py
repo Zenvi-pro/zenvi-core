@@ -4334,11 +4334,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Start the in-app MCP server now (instead of waiting for the first
         # Zenvi-driven CLI request) so an external `claude`/`codex` session run
         # in a terminal can connect as soon as the app is up.
-        try:
-            from classes.agent_mcp_server import get_mcp_server
-            get_mcp_server().start()
-        except Exception as e:
-            log.warning("Failed to start in-app MCP server: %s", e)
+        # Deferred to the first event-loop pass rather than started inline: an
+        # unattended harness treats "MCP answers" as "the editor is usable", so
+        # the server must not come up while this constructor still owns the main
+        # thread — every mutating tool would time out with the port wide open.
+        def _start_mcp_server():
+            try:
+                from classes.agent_mcp_server import get_mcp_server
+                get_mcp_server().start()
+            except Exception as e:
+                log.warning("Failed to start in-app MCP server: %s", e)
+
+        QTimer.singleShot(0, _start_mcp_server)
 
         # Re-bind chat sessions whenever the active project changes.
         try:

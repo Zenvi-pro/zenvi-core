@@ -145,7 +145,21 @@ def _resume_player(was_playing):
         pass
 
 
-def _run_on_main_thread(func, *args, timeout=30):
+# How long a marshalled call waits for the GUI thread before giving up.
+MAIN_THREAD_TIMEOUT_SECONDS = 30
+
+
+class MainThreadTimeout(TimeoutError):
+    """The Qt main thread never ran a marshalled call.
+
+    Raised as a distinct type so an unattended MCP/harness run can tell "the
+    editor is wedged" apart from an ordinary tool error: read-only tools keep
+    answering from the worker thread even when the GUI thread is stuck, so this
+    is the only signal that the event loop has stopped draining.
+    """
+
+
+def _run_on_main_thread(func, *args, timeout=None):
     """Schedule *func(*args)* on the Qt main thread and block until it
     finishes.  Returns the value returned by *func*.
 
@@ -158,6 +172,9 @@ def _run_on_main_thread(func, *args, timeout=30):
     thread's event loop we get the same behaviour as a manual keyboard /
     mouse-driven slice.
     """
+    if timeout is None:
+        timeout = MAIN_THREAD_TIMEOUT_SECONDS
+
     if QThread is None:
         # Fallback: no Qt — just call directly (unit-test scenario)
         return func(*args)
@@ -175,8 +192,11 @@ def _run_on_main_thread(func, *args, timeout=30):
     dispatcher._dispatch.emit((func, args, result_box, error_box, done))
 
     if not done.wait(timeout=timeout):
-        raise TimeoutError(
-            f"Main-thread operation did not complete within {timeout}s"
+        raise MainThreadTimeout(
+            f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
+            f"{timeout}s. The editor is up but its event loop is not draining "
+            f"(a modal dialog, or startup never finished). Read-only tools "
+            f"still work; call mcp_health_tool to confirm."
         )
 
     if error_box[0] is not None:
@@ -1100,29 +1120,176 @@ def center_on_playhead(**_kw) -> str:
         return f"Error: {e}"
 
 
-def import_files(**_kw) -> str:
+# Extensions collected when a directory is imported. Explicit file paths are
+# passed through unfiltered — libopenshot decides whether it can read them.
+_IMPORT_MEDIA_EXTS = (
+    ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv",
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp",
+)
+
+# A whole folder of media can take minutes to probe; the default 30s budget is
+# for small interactive edits, not a bulk import.
+_IMPORT_MAIN_THREAD_TIMEOUT = 900
+
+
+def _coerce_path_list(paths) -> list:
+    """Accept a list, a JSON array, or a comma/newline-separated string."""
+    if paths is None:
+        return []
+    if isinstance(paths, (list, tuple)):
+        items = list(paths)
+    else:
+        text = str(paths).strip()
+        if not text:
+            return []
+        items = None
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    items = parsed
+            except Exception:
+                items = None
+        if items is None:
+            items = re.split(r"[,\n]", text) if ("," in text or "\n" in text) else [text]
+    return [str(p).strip().strip('"').strip("'") for p in items if str(p).strip()]
+
+
+def _expand_import_paths(entries) -> tuple:
+    """Return (media_paths, missing). Directories are walked for media files."""
+    resolved, missing, seen = [], [], set()
+    for entry in entries:
+        path = os.path.expanduser(entry)
+        if os.path.isdir(path):
+            for root, _dirs, files in os.walk(path):
+                for name in sorted(files):
+                    if os.path.splitext(name)[1].lower() in _IMPORT_MEDIA_EXTS:
+                        full = os.path.join(root, name)
+                        if full not in seen:
+                            seen.add(full)
+                            resolved.append(full)
+        elif os.path.isfile(path):
+            if path not in seen:
+                seen.add(path)
+                resolved.append(path)
+        else:
+            missing.append(entry)
+    return resolved, missing
+
+
+def import_files(paths="", skip_indexing="false", **_kw) -> str:
+    """Import media into the project bin by explicit path, without opening a file dialog.
+
+    ``paths`` is a list (or JSON/comma-separated string) of media files and/or
+    directories; directories are searched recursively for media. Indexing starts
+    automatically unless ``skip_indexing`` is true — poll ``analyzed`` via
+    list_files_tool, or block with wait_until_project_indexed_tool. Required: an
+    unattended MCP/harness run has no way to complete a file picker.
+    """
+    entries = _coerce_path_list(paths)
+    if not entries:
+        return ("Error: paths is required for MCP/harness import. Pass the media "
+                "files or folders to import, e.g. paths=[\"/clips/dialog_test\"]. "
+                "This tool never opens a file dialog.")
+
+    resolved, missing = _expand_import_paths(entries)
+    if not resolved:
+        return "Error: no media files found in: %s" % ", ".join(entries)
+
+    skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
+
     try:
-        _get_app().window.actionImportFiles_trigger()
-        return "Import files dialog opened."
+        from classes.query import File as _File
+
+        def _do_add():
+            _get_app().window.files_model.add_files(
+                resolved, quiet=True, prevent_image_seq=True, skip_indexing=skip,
+            )
+
+        _run_on_main_thread(_do_add, timeout=_IMPORT_MAIN_THREAD_TIMEOUT)
+
+        lines = []
+        for path in resolved:
+            f = _File.get(path=path)
+            lines.append("file_id=%s path=%s" % (getattr(f, "id", "?"), path))
     except Exception as e:
         return f"Error: {e}"
+
+    head = "Imported %d file(s). indexing_started=%s" % (
+        len(resolved), "false" if skip else "true")
+    if missing:
+        head += " (not found: %s)" % ", ".join(missing)
+    return head + "\n" + "\n".join(lines)
+
+
+def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
+    """Block until every media file in the project has finished indexing.
+
+    Returns once all files report analyzed, or lists the file ids still pending
+    when ``timeout_seconds`` runs out. Use this after import_files_tool and
+    before prompting the assistant, so it plans against indexed footage.
+    """
+    import time
+
+    try:
+        budget = max(30, int(float(timeout_seconds)))
+    except Exception:
+        budget = 1800
+
+    try:
+        from classes.query import File as _File
+
+        files_model = _get_app().window.files_model
+        targets = [f for f in (_File.filter() or [])
+                   if isinstance(getattr(f, "data", None), dict)
+                   and not f.data.get("zenvi_subclip")]
+        if not targets:
+            return "No project files to index."
+
+        deadline = time.time() + budget
+        done, pending = [], []
+        for f in targets:
+            fid = str(getattr(f, "id", "") or f.data.get("id") or "")
+            remaining = int(max(1, deadline - time.time()))
+            err = _wait_for_file_indexing(fid, files_model, timeout_sec=remaining)
+            (done if not err else pending).append(fid)
+    except Exception as e:
+        return f"Error: {e}"
+
+    if not pending:
+        return "All %d project file(s) indexed." % len(done)
+    return "Indexed %d/%d file(s) within %ss. pending: %s" % (
+        len(done), len(targets), budget, ", ".join(pending))
 
 
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
+# A full render runs on the GUI thread and easily outlives the 30s budget meant
+# for small interactive edits.
+_EXPORT_MAIN_THREAD_TIMEOUT = 3600
+
+
 def export_video(show_dialog="true", output_path="", **_kw) -> str:
-    """Export the project. Opens the dialog by default; set show_dialog=false to render immediately."""
+    """Export the project. Opens the dialog by default; pass show_dialog=false with an output_path to render with no dialog.
+
+    The headless form is what an unattended MCP/harness run uses — it writes the
+    file directly instead of waiting for someone to complete an export dialog.
+    """
     try:
         open_ui = str(show_dialog).lower().strip() not in ("0", "false", "no")
         path = (output_path or "").strip()
         if open_ui and not path:
-            _get_app().window.actionExportVideo_trigger()
+            _run_on_main_thread(lambda: _get_app().window.actionExportVideo_trigger())
             return "Export video dialog opened."
         from windows.export import export_video_headless, get_default_export_settings
         _, _, _, default_path = get_default_export_settings()
-        err = export_video_headless(path or None, None, None, None)
+        err = _run_on_main_thread(
+            lambda: export_video_headless(path or None, None, None, None),
+            timeout=_EXPORT_MAIN_THREAD_TIMEOUT,
+        )
         if err:
             return f"Export failed: {err}"
         return f"Exported to {path or default_path}."
@@ -1198,7 +1365,10 @@ def get_file_info(file_id="", **_kw) -> str:
         fps_num = int(fps_data.get("num", 30))
         fps_den = int(fps_data.get("den", 1))
         video_length = int(f.data.get("video_length", 0))
-        return f"file_id={file_id} path={f.data.get('path','')} fps={fps_num}/{fps_den} video_length={video_length}"
+        analyzed = _file_is_analyzed(f.data)
+        return (f"file_id={file_id} path={f.data.get('path','')} "
+                f"fps={fps_num}/{fps_den} video_length={video_length} "
+                f"analyzed={analyzed}")
     except Exception as e:
         return f"Error: {e}"
 
@@ -6359,6 +6529,7 @@ AGENT_TOOL_HANDLERS = {
     "zoom_out_tool": zoom_out,
     "center_on_playhead_tool": center_on_playhead,
     "import_files_tool": import_files,
+    "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
     "export_video_tool": export_video,
     "get_export_settings_tool": get_export_settings,
@@ -6425,6 +6596,7 @@ TOOL_DISPLAY_LABELS = {
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files",
+    "wait_until_project_indexed_tool": "Wait for indexing",
     "export_video_tool": "Export video",
     "get_export_settings_tool": "Read export settings",
     "set_export_setting_tool": "Update export setting",
@@ -6511,6 +6683,13 @@ READ_ONLY_TOOLS = frozenset({
 # 30 minutes for TwelveLabs indexing) and serialize parallel agent calls.
 BACKGROUND_SAFE_TOOLS = frozenset({
     "reindex_project_file_tool",
+    # Probing a folder of media can outlast the 30s dispatcher budget; the
+    # add_files call marshals itself with its own, longer timeout.
+    "import_files_tool",
+    # Polls indexing state for minutes — must never occupy the GUI thread.
+    "wait_until_project_indexed_tool",
+    # A render takes minutes; it marshals itself with its own longer timeout.
+    "export_video_tool",
     # Downloads + re-encodes off the GUI thread; its timeline mutations
     # marshal to the main thread internally.
     "import_video_url_and_add_to_timeline_tool",
