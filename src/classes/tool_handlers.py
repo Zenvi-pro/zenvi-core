@@ -11,6 +11,7 @@ Usage (from ai_chat_ui.py):
     result = execute_tool(tool_name, tool_args)
 """
 
+import contextlib
 import copy
 import json
 import os
@@ -20,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import uuid as uuid_module
+from collections import Counter
 from typing import Optional
 
 from classes.ffmpeg_cli import run_ffmpeg
@@ -191,12 +193,30 @@ def _run_on_main_thread(func, *args, timeout=None):
     if QThread.currentThread() is app.thread():
         return func(*args)
 
+    # transaction_id is per-thread (classes/updates.UpdateManager), so the work
+    # we are about to queue would otherwise run on the main thread with the
+    # main thread's id -- i.e. outside our group.  Carry the caller's id across
+    # the hop so a composite operation that ripples in one hop and places in
+    # the next still collapses into a single undo step, without every handler
+    # having to thread a tid through its signature.
+    caller_tid = app.updates.transaction_id
+
+    def _with_caller_transaction(*a):
+        previous = app.updates.transaction_id
+        app.updates.transaction_id = caller_tid
+        try:
+            return func(*a)
+        finally:
+            app.updates.transaction_id = previous
+
     result_box = [None]
     error_box = [None]
     done = threading.Event()
 
     dispatcher = _get_dispatcher()
-    dispatcher._dispatch.emit((func, args, result_box, error_box, done))
+    dispatcher._dispatch.emit(
+        (_with_caller_transaction, args, result_box, error_box, done)
+    )
 
     if not done.wait(timeout=timeout):
         raise MainThreadTimeout(
@@ -209,6 +229,197 @@ def _run_on_main_thread(func, *args, timeout=None):
     if error_box[0] is not None:
         raise error_box[0]
     return result_box[0]
+
+
+# ---------------------------------------------------------------------------
+# Undo/redo transaction helpers
+# ---------------------------------------------------------------------------
+# UpdateAction auto-assigns a fresh uuid4 transaction id per mutation whenever
+# UpdateManager.transaction_id is unset (see classes/updates.py).  That means a
+# handler performing two mutations for one user-facing action (e.g. place a
+# clip, then trim it) lands as *two* undo steps, so a single undo only reverts
+# half the operation.  Wrapping the mutations in _transaction() gives them one
+# shared id, which UpdateManager.undo() reverses as a single group.
+
+# Upper bound on a single undo_tool/redo_tool call.  Mirrors the backend's
+# ZENVI_HEURISTIC_MAX_FANOUT default so "undo 999" behaves the same on both
+# sides of the WebSocket.
+_MAX_UNDO_STEPS = 20
+
+
+def _new_transaction_id() -> str:
+    """Mint an id for a composite operation spanning several main-thread hops."""
+    return str(uuid_module.uuid4())
+
+
+@contextlib.contextmanager
+def _transaction(app, tid=None):
+    """Group every project mutation made inside this block into ONE undo step.
+
+    Restores the *previous* transaction id rather than clearing it, so nesting
+    is safe: an inner block cannot silently detach the outer group.
+
+    Composite operations that mutate across *several* main-thread hops (ripple
+    the timeline, then place the clip) pass the same explicit *tid* to each hop.
+    UpdateManager groups by transaction id, so the hops collapse into a single
+    undo step without anyone having to hold ``transaction_id`` across a thread
+    boundary — it stays set only while the main thread is inside the block.
+    Use ``_new_transaction_id()`` to mint one.
+
+    With *tid* omitted, an already-active transaction is joined rather than
+    nested, so a helper that opens its own transaction still contributes to the
+    caller's group instead of splitting off a second undo step.
+    """
+    prev = app.updates.transaction_id
+    if tid is None:
+        if prev:
+            yield prev
+            return
+        tid = _new_transaction_id()
+    app.updates.transaction_id = tid
+    try:
+        yield tid
+    finally:
+        app.updates.transaction_id = prev
+
+
+@contextlib.contextmanager
+def _ignore_history(app):
+    """Apply updates inside this block without recording them in history.
+
+    Always restores the flag — a leaked ignore_history=True disables undo
+    globally for every subsequent action.
+    """
+    prev = app.updates.ignore_history
+    app.updates.ignore_history = True
+    try:
+        yield
+    finally:
+        app.updates.ignore_history = prev
+
+
+def _atomic(app, func, tid=None):
+    """Wrap *func* so every mutation it makes lands in ONE undo transaction.
+
+    Handy for the ``_run_on_main_thread(_do_x)`` handlers: the wrapping has to
+    happen inside the main-thread hop, and this keeps the mutation body itself
+    untouched.  Pass *tid* to join a composite operation's group.
+    """
+    def _wrapped(*args, **kwargs):
+        with _transaction(app, tid):
+            return func(*args, **kwargs)
+    return _wrapped
+
+
+def _coerce_steps(value) -> int:
+    """Coerce an LLM-supplied step count to a sane int in [1, _MAX_UNDO_STEPS].
+
+    Tolerates ints, numeric strings and the small number words the backend's
+    heuristic router understands, since tool args arrive as raw JSON.
+    """
+    words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+        "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+        "twelve": 12, "once": 1, "twice": 2, "thrice": 3, "couple": 2,
+        "few": 3,
+    }
+    n = 1
+    if isinstance(value, bool):
+        n = 1
+    elif isinstance(value, int):
+        n = value
+    elif isinstance(value, float):
+        n = int(value)
+    elif isinstance(value, str):
+        token = value.strip().lower()
+        if token.isdigit():
+            n = int(token)
+        elif token in words:
+            n = words[token]
+        else:
+            try:
+                n = int(float(token))
+            except ValueError:
+                n = 1
+    return max(1, min(int(n), _MAX_UNDO_STEPS))
+
+
+def _describe_group(actions) -> str:
+    """Summarise one transaction for the agent, using only what it carries.
+
+    Returns e.g. "insert x2 on clips".  Never invents clip names — the
+    UpdateAction only reliably holds a type and a key path.
+    """
+    try:
+        if not actions:
+            return ""
+        counts = Counter(getattr(a, "type", "?") or "?" for a in actions)
+        parts = []
+        for kind, n in counts.most_common():
+            parts.append(f"{kind} x{n}" if n > 1 else kind)
+        summary = ", ".join(parts)
+        key = getattr(actions[0], "key", None)
+        if isinstance(key, (list, tuple)) and key and isinstance(key[0], str):
+            summary = f"{summary} on {key[0]}"
+        return summary
+    except Exception:
+        return ""
+
+
+def _timeline_signature(app):
+    """A cheap, comparable snapshot of what is actually on the timeline.
+
+    Undo used to infer success from the history stack shrinking, which is how
+    it could report "Undid 1 action" while the clip the user asked about was
+    still there: the step it popped was a trailing metadata update, not the
+    insert.  Comparing this before and after answers the question the user
+    actually asked -- did the timeline change?
+
+    Returns a dict keyed by clip id so the caller can name what appeared or
+    disappeared, not just count it.  Never raises: a signature we could not
+    build degrades to "unknown", and the caller falls back to stack counting.
+    """
+    try:
+        out = {}
+        for clip in app.project.get("clips") or []:
+            data = clip if isinstance(clip, dict) else getattr(clip, "data", None)
+            if not isinstance(data, dict):
+                continue
+            cid = str(data.get("id") or "")
+            if not cid:
+                continue
+            out[cid] = (
+                data.get("layer"),
+                round(float(data.get("position", 0) or 0), 3),
+                round(float(data.get("start", 0) or 0), 3),
+                round(float(data.get("end", 0) or 0), 3),
+            )
+        return out
+    except Exception as e:
+        log.debug("_timeline_signature: %s", e)
+        return None
+
+
+def _describe_timeline_delta(before, after):
+    """Say what changed between two signatures, in the agent's vocabulary.
+
+    Returns "" when nothing changed, or None when it cannot tell.
+    """
+    if before is None or after is None:
+        return None
+    removed = sorted(set(before) - set(after))
+    added = sorted(set(after) - set(before))
+    moved = sorted(
+        cid for cid in set(before) & set(after) if before[cid] != after[cid]
+    )
+    parts = []
+    if removed:
+        parts.append(f"removed {len(removed)} clip(s) ({', '.join(removed[:4])})")
+    if added:
+        parts.append(f"restored {len(added)} clip(s) ({', '.join(added[:4])})")
+    if moved:
+        parts.append(f"moved/retrimmed {len(moved)} clip(s) ({', '.join(moved[:4])})")
+    return "; ".join(parts)
 
 
 def _resolve_timeline_clip_for_tool(**kwargs):
@@ -913,18 +1124,118 @@ def go_to_end(**_kw) -> str:
         return f"Error: {e}"
 
 
-def undo(**_kw) -> str:
+def _undo_redo(app, direction, steps) -> str:
+    """Apply *steps* sequential undo/redo operations and report what happened.
+
+    Runs entirely on the Qt main thread (one hop), because UpdateManager.undo()
+    touches window selections and calls processEvents().
+
+    UpdateManager.undo()/redo() return None and silently no-op on an empty
+    stack, so "did that step do anything?" is answered by watching the stack
+    length rather than by changing the UpdateManager contract.
+    """
+    undoing = direction == "undo"
+    label = "undo" if undoing else "redo"
+    stack = app.updates.actionHistory if undoing else app.updates.redoHistory
+    apply_one = app.updates.undo if undoing else app.updates.redo
+
+    if not stack:
+        return f"Error: nothing to {label}."
+
+    signature_before = _timeline_signature(app)
+
+    done = 0
+    described = None
+    touched_clips = False
+    for _ in range(steps):
+        if not stack:
+            break
+        before = len(stack)
+        tail_tid = stack[-1].transaction
+        group = [a for a in stack if a.transaction == tail_tid]
+        if described is None:
+            described = _describe_group(group)
+        # Only a group that edits clips is expected to move the timeline;
+        # undoing a marker, export setting or track rename legitimately
+        # leaves the clip signature identical.
+        for action in group:
+            key = getattr(action, "key", None)
+            if isinstance(key, (list, tuple)) and key and key[0] == "clips":
+                touched_clips = True
+                break
+        apply_one()
+        if len(stack) >= before:
+            # Nothing moved — stop rather than spin.
+            break
+        done += 1
+
+    # Update the preview exactly like main_window.actionUndo_trigger does.
+    # Emitted once at the end: the final frame is the same, and N repaints
+    # would eat into the blocking main-thread budget in _run_on_main_thread.
     try:
-        _get_app().updates.undo()
-        return "Undo performed."
+        app.window.refreshFrameSignal.emit()
+    except Exception:
+        pass
+
+    if done == 0:
+        return f"Error: nothing to {label}."
+
+    # Did the project actually change?  A history step can pop cleanly and
+    # still leave the thing the user pointed at on the timeline -- that is
+    # exactly the failure this now reports instead of hiding.
+    delta = _describe_timeline_delta(signature_before, _timeline_signature(app))
+    # signature_before being empty means there was nothing on the timeline to
+    # change, so an unchanged signature proves nothing -- fall through to the
+    # history-based report rather than claiming a failure.
+    if delta == "" and touched_clips and signature_before:
+        return (
+            f"Error: {label} applied {done} history step(s) but the timeline "
+            f"did not change. The edit you meant may span several steps -- "
+            f"check list_clips_tool, then {label} again with steps=N, or "
+            f"delete the clip directly."
+        )
+
+    verb = "Undid" if undoing else "Redid"
+    noun = "action" if done == 1 else "actions"
+    # Only describe the group when there was exactly one — naming the first of
+    # several would read as if every step had been that kind of change.
+    # Prefer what actually changed on the timeline over the history-action
+    # summary; fall back to the summary when no signature was available.
+    if delta:
+        detail = f": {delta}"
+    elif described and done == 1:
+        detail = f" ({described})"
+    else:
+        detail = ""
+
+    if done < steps:
+        return (
+            f"{verb} {done} of {steps} requested{detail}; "
+            f"nothing left to {label}."
+        )
+
+    remaining = len({a.transaction for a in stack})
+    if remaining == 1:
+        tail = f" 1 {label} step remains."
+    elif remaining:
+        tail = f" {remaining} {label} steps remain."
+    else:
+        tail = f" Nothing left to {label}."
+    return f"{verb} {done} {noun}{detail}.{tail}"
+
+
+def undo(steps=1, **_kw) -> str:
+    try:
+        app = _get_app()
+        return _run_on_main_thread(_undo_redo, app, "undo", _coerce_steps(steps))
     except Exception as e:
         return f"Error: {e}"
 
 
-def redo(**_kw) -> str:
+def redo(steps=1, **_kw) -> str:
     try:
-        _get_app().updates.redo()
-        return "Redo performed."
+        app = _get_app()
+        return _run_on_main_thread(_undo_redo, app, "redo", _coerce_steps(steps))
     except Exception as e:
         return f"Error: {e}"
 
@@ -949,33 +1260,208 @@ def add_marker(**_kw) -> str:
         return f"Error: {e}"
 
 
-def remove_clip(
+def _locked_track_error(app, layer_num):
+    """Return an error string if *layer_num* is a locked track, else ''."""
+    layers_out = app.project.get("layers") or []
+    track_lbl = format_track_label_for_llm(layer_num, layers_out)
+    for L in layers_out:
+        try:
+            if int(L.get("number") or 0) == layer_num and bool(L.get("lock", False)):
+                return f"Error: Track {track_lbl} is locked."
+        except Exception:
+            continue
+    return ""
+
+
+def _delete_one_clip(app, resolved) -> str:
+    """Delete a single resolved timeline clip. The caller owns the transaction."""
+    win = app.window
+    clip_obj = resolved.clip
+    clip_id = str(getattr(clip_obj, "id", "") or "")
+    clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+    try:
+        layer_num = int(clip_data.get("layer") or 0)
+    except (TypeError, ValueError):
+        layer_num = 0
+    try:
+        position = float(clip_data.get("position", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        position = 0.0
+    title = str(clip_data.get("title") or clip_data.get("label") or "clip")
+
+    locked = _locked_track_error(app, layer_num)
+    if locked:
+        return locked
+
+    track_lbl = format_track_label_for_llm(layer_num, app.project.get("layers") or [])
+
+    def _do_delete():
+        # No transaction of its own: execute_tool already opened one for this
+        # tool call. The previous code set a fresh id here and reset it to None
+        # in a finally, which detached whatever the caller did afterwards into
+        # separate undo steps.
+        try:
+            if hasattr(win, "removeSelection"):
+                win.removeSelection(clip_id, "clip")
+        except Exception:
+            pass
+        clip_obj.delete()
+
+        # A deleted clip may still be referenced by the preview widget's
+        # transform state; clear it before the next paint dereferences a freed
+        # native object (see main_window.actionRemoveClip_trigger).
+        try:
+            win.videoPreview.clearTransformState()
+        except Exception:
+            pass
+        try:
+            win.refreshFrameSignal.emit()
+        except Exception:
+            pass
+
+    if QThread is not None and QThread.currentThread() is not app.thread():
+        _run_on_main_thread(_do_delete)
+    else:
+        _do_delete()
+
+    return (
+        f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
+        f"at {position:.2f}s. Other clips on that track are unchanged "
+        f"(gap left, no ripple). 1 undo step."
+    )
+
+
+def _delete_whole_track(app, track, include_transitions) -> str:
+    """Delete every clip (and optionally transition) on one track."""
+    from classes.query import Clip, Transition
+
+    win = app.window
+    layers = app.project.get("layers") or []
+
+    layer_num, err = normalize_track_or_layer_arg(str(track).strip(), layers)
+    if err:
+        return err
+    if layer_num is None:
+        return "Error: Unknown track or layer."
+    layer_num = int(layer_num)
+
+    locked = _locked_track_error(app, layer_num)
+    if locked:
+        return locked
+
+    track_lbl = format_track_label_for_llm(layer_num, app.project.get("layers") or [])
+
+    # Avoid stale selections pointing at soon-to-be-deleted objects.
+    if hasattr(win, "clearSelections"):
+        win.clearSelections()
+
+    clips = Clip.filter(layer=layer_num)
+    transitions = Transition.filter(layer=layer_num) if include_transitions else []
+
+    # Delete transitions first (they may reference clip time ranges).
+    for t in transitions:
+        try:
+            if hasattr(win, "removeSelection"):
+                win.removeSelection(t.id, "transition")
+        except Exception:
+            pass
+        t.delete()
+
+    for c in clips:
+        try:
+            if hasattr(win, "removeSelection"):
+                win.removeSelection(c.id, "clip")
+        except Exception:
+            pass
+        c.delete()
+
+    # Refresh preview frame to reflect the new timeline immediately.
+    try:
+        win.refreshFrameSignal.emit()
+    except Exception:
+        pass
+
+    return (
+        f"Deleted {len(clips)} clips and {len(transitions)} transitions on "
+        f"track {track_lbl}. 1 undo step."
+    )
+
+
+def delete_from_timeline(
     timeline_clip_id: str = "",
     clip_query: str = "",
     track: str = "",
+    scope: str = "auto",
     occurrence: str = "0",
     position_near=None,
+    include_transitions: bool = True,
     **_kw,
 ) -> str:
-    """Delete ONE timeline clip placement, resolved by id or query. Leaves every other clip on that track untouched, and leaves a gap (no ripple).
+    """Delete from the timeline: one clip placement, or an entire track.
 
-    Pass timeline_clip_id when a prior tool (list_clips_tool, timeline snapshot)
-    already identified the clip. Otherwise pass clip_query plus track /
-    occurrence (1-based) / position_near (timeline seconds) to disambiguate
-    duplicate placements. Requires at least one of timeline_clip_id or
-    clip_query -- it never deletes by UI selection. To clear an entire track
-    use delete_clips_on_track_tool instead.
+    This is the ONLY timeline delete tool. Target it one of three ways:
+      * timeline_clip_id - an id from list_clips_tool or the timeline snapshot
+      * clip_query       - a description, narrowed with track / occurrence
+                           (1-based) / position_near (timeline seconds)
+      * track            - clear that whole track (UI "Track 1".."N", bottom=1,
+                           or a storage layer_number)
+
+    scope is normally "auto": a clip id or query deletes ONE placement, a bare
+    track clears the track. Pass scope="clip" or scope="track" to force the
+    branch. include_transitions also removes transitions sitting on the track
+    (track scope only). Deleting leaves a gap - it never ripples the timeline.
+
+    The whole call is a single undo step, whether it removes one clip or fifty.
     """
     try:
+        app = _get_app()
+
+        has_clip_target = bool(
+            str(timeline_clip_id or "").strip() or str(clip_query or "").strip()
+        )
+        has_track = bool(str(track or "").strip())
+
+        mode = str(scope or "auto").strip().lower()
+        if mode not in ("auto", "clip", "track"):
+            return f"Error: scope must be 'auto', 'clip' or 'track' (got {scope!r})."
+        if mode == "auto":
+            # A clip target wins over a bare track: `track` doubles as a
+            # disambiguator for clip_query ("the b-roll on track 3"), and
+            # deleting one clip is the recoverable reading if the caller
+            # actually meant to clear the track. The result string names what
+            # was deleted, so a wrong guess is visible immediately.
+            mode = "clip" if has_clip_target else ("track" if has_track else "")
+
+        if not mode:
+            return (
+                "Error: delete_from_timeline_tool needs a target. Pass "
+                "timeline_clip_id (from list_clips_tool) or clip_query to "
+                "delete one placement, or track to clear a whole track."
+            )
+
+        if mode == "track":
+            if not has_track:
+                return "Error: scope='track' needs track."
+            if has_clip_target:
+                # Refuse the destructive reading of a contradictory call: the
+                # caller named ONE clip and also asked to clear the track.
+                # Silently clearing would delete everything on it.
+                return (
+                    "Error: scope='track' clears the whole track, but a single "
+                    "clip was also named (timeline_clip_id/clip_query). Drop the "
+                    "clip target to clear the track, or use scope='clip' to "
+                    "delete just that clip."
+                )
+            return _delete_whole_track(app, track, include_transitions)
+
         # Targeting is mandatory: the agent does not own UI selection, and the
         # resolver's playhead / single-clip shortcuts must never be reachable
         # from an argless call (that is the unsafe path this tool replaced).
-        if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
+        if not has_clip_target:
             return (
-                "Error: remove_clip_tool requires timeline_clip_id or clip_query. "
-                "Use list_clips_tool to get a timeline_clip_id, or pass clip_query "
-                "with track/occurrence/position_near. To clear a whole track use "
-                "delete_clips_on_track_tool."
+                "Error: scope='clip' needs timeline_clip_id or clip_query. Use "
+                "list_clips_tool to get a timeline_clip_id, or pass clip_query "
+                "with track/occurrence/position_near."
             )
 
         resolved = _resolve_timeline_clip_for_tool(
@@ -990,152 +1476,42 @@ def remove_clip(
             # a track-wide delete.
             return resolved.error or "Error: Could not resolve timeline clip."
 
-        clip_obj = resolved.clip
-        clip_id = str(getattr(clip_obj, "id", "") or "")
-        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-        try:
-            layer_num = int(clip_data.get("layer") or 0)
-        except (TypeError, ValueError):
-            layer_num = 0
-        try:
-            position = float(clip_data.get("position", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            position = 0.0
-        title = str(clip_data.get("title") or clip_data.get("label") or "clip")
-
-        app = _get_app()
-        win = app.window
-        layers_out = app.project.get("layers") or []
-        track_lbl = format_track_label_for_llm(layer_num, layers_out)
-
-        # Respect locked tracks (mirrors delete_clips_on_track).
-        for L in layers_out:
-            try:
-                if int(L.get("number") or 0) == layer_num and bool(L.get("lock", False)):
-                    return f"Error: Track {track_lbl} is locked."
-            except Exception:
-                continue
-
-        def _do_delete():
-            # Own transaction id so a single undo restores just this clip.
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
-            try:
-                try:
-                    if hasattr(win, "removeSelection"):
-                        win.removeSelection(clip_id, "clip")
-                except Exception:
-                    pass
-                clip_obj.delete()
-            finally:
-                app.updates.transaction_id = None
-
-            # A deleted clip may still be referenced by the preview widget's
-            # transform state; clear it before the next paint dereferences a
-            # freed native object (see main_window.actionRemoveClip_trigger).
-            try:
-                win.videoPreview.clearTransformState()
-            except Exception:
-                pass
-            try:
-                win.refreshFrameSignal.emit()
-            except Exception:
-                pass
-
-        if QThread is not None and QThread.currentThread() is not app.thread():
-            _run_on_main_thread(_do_delete)
-        else:
-            _do_delete()
-
-        return (
-            f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
-            f"at {position:.2f}s. Other clips on that track are unchanged "
-            f"(gap left, no ripple)."
-        )
+        return _delete_one_clip(app, resolved)
     except Exception as e:
         return f"Error: {e}"
+
+
+def remove_clip(
+    timeline_clip_id: str = "",
+    clip_query: str = "",
+    track: str = "",
+    occurrence: str = "0",
+    position_near=None,
+    **_kw,
+) -> str:
+    """Deprecated alias for delete_from_timeline (scope="clip").
+
+    Kept so stored plans and in-flight sessions that still name
+    remove_clip_tool keep working. The agent catalog exposes only
+    delete_from_timeline_tool.
+    """
+    return delete_from_timeline(
+        timeline_clip_id=timeline_clip_id,
+        clip_query=clip_query,
+        track=track,
+        scope="clip",
+        occurrence=occurrence,
+        position_near=position_near,
+    )
 
 
 def delete_clips_on_track(track: str = "", include_transitions: bool = True, **_kw) -> str:
-    """
-    Delete all clips on a UI track (Track 1..N bottom=1) or storage layer_number.
-    Optionally also deletes timeline transitions/effects that sit on the same layer.
-
-    Important: this is implemented as ONE atomic UpdateManager transaction so that
-    a single undo restores the entire operation.
-    """
-    try:
-        from classes.query import Clip, Transition
-
-        app = _get_app()
-        win = app.window
-
-        layers = app.project.get("layers") or []
-        if track is None or (isinstance(track, str) and not track.strip()):
-            return "Error: track is required."
-
-        layer_num, err = normalize_track_or_layer_arg(str(track).strip(), layers)
-        if err:
-            return err
-        if layer_num is None:
-            return "Error: Unknown track or layer."
-
-        layer_num = int(layer_num)
-        layers_out = app.project.get("layers") or []
-        track_lbl = format_track_label_for_llm(layer_num, layers_out)
-
-        # Respect locked tracks.
-        for L in layers_out:
-            try:
-                if int(L.get("number") or 0) == layer_num and bool(L.get("lock", False)):
-                    return f"Error: Track {track_lbl} is locked."
-            except Exception:
-                continue
-
-        # One shared transaction id makes undo/redo atomic.
-        tid = str(uuid_module.uuid4())
-        app.updates.transaction_id = tid
-        try:
-            # Avoid stale selections pointing at soon-to-be-deleted objects.
-            if hasattr(win, "clearSelections"):
-                win.clearSelections()
-
-            clips = Clip.filter(layer=layer_num)
-            transitions = Transition.filter(layer=layer_num) if include_transitions else []
-
-            # Delete transitions first (they may reference clip time ranges).
-            for t in transitions:
-                # Clear selection to reduce UI churn (doesn't affect history).
-                try:
-                    if hasattr(win, "removeSelection"):
-                        win.removeSelection(t.id, "transition")
-                except Exception:
-                    pass
-                t.delete()
-
-            for c in clips:
-                try:
-                    if hasattr(win, "removeSelection"):
-                        win.removeSelection(c.id, "clip")
-                except Exception:
-                    pass
-                c.delete()
-
-        finally:
-            app.updates.transaction_id = None
-
-        # Refresh preview frame to reflect the new timeline immediately.
-        try:
-            app.window.refreshFrameSignal.emit()
-        except Exception:
-            pass
-
-        return (
-            f"Deleted {len(clips)} clips and {len(transitions)} transitions on track {track_lbl} "
-            f"(atomic undo)."
-        )
-    except Exception as e:
-        return f"Error: {e}"
+    """Deprecated alias for delete_from_timeline (scope="track")."""
+    if track is None or (isinstance(track, str) and not track.strip()):
+        return "Error: track is required."
+    return delete_from_timeline(
+        track=track, scope="track", include_transitions=include_transitions
+    )
 
 
 def zoom_in(**_kw) -> str:
@@ -1383,10 +1759,10 @@ def set_export_setting(key="", value="", **_kw) -> str:
             overrides["vformat"] = value.strip()
         else:
             overrides[kl] = value.strip()
-        from classes.app import get_app
-        get_app().updates.ignore_history = True
-        app.updates.update(["export_overrides"], overrides)
-        get_app().updates.ignore_history = False
+        # try/finally: a leaked ignore_history=True would silently disable
+        # undo for every action that follows.
+        with _ignore_history(app):
+            app.updates.update(["export_overrides"], overrides)
         return f"Set {kl} = {value}."
     except Exception as e:
         return f"Error: {e}"
@@ -1626,8 +2002,15 @@ def add_clip_to_timeline(
     duration_seconds="",
     start_seconds="",
     query="",
+    transaction_id=None,
     **_kw,
 ) -> str:
+    """Place a clip on the timeline.
+
+    *transaction_id* is internal: callers that ripple the timeline first pass
+    the id they used for the ripple so the whole operation is ONE undo step.
+    It is never supplied by the LLM.
+    """
     try:
         from classes.query import File, Track, Clip
 
@@ -1817,7 +2200,13 @@ def add_clip_to_timeline(
             except Exception as exc:
                 error_box[0] = str(exc)
 
-        _run_on_main_thread(_do_add)
+        # Place + trim is ONE user-facing action, so it must be ONE undo step.
+        # Without a shared transaction id the insert and the trim land as two
+        # transactions and a single undo only reverts the trim.  When a caller
+        # rippled the timeline to make room, transaction_id joins that group so
+        # the ripple and the placement undo together.
+        app = _get_app()
+        _run_on_main_thread(_atomic(app, _do_add, tid=transaction_id))
         if error_box[0]:
             return error_box[0] if str(error_box[0]).startswith("Error") else f"Error: {error_box[0]}"
         if not result_box[0]:
@@ -1825,7 +2214,6 @@ def add_clip_to_timeline(
 
         placed, pos_sec, track_num = result_box[0]
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
-        app = _get_app()
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
         placed = placed or {}
@@ -4488,6 +4876,10 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
 
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
+            # None unless the ripple branch below runs; add_clip_to_timeline
+            # then mints its own id and the placement is its own undo step.
+            _composite_tid = None
+
             _pos = None
             if position_seconds and str(position_seconds).strip():
                 try:
@@ -4538,7 +4930,12 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                                 ["clips", {"id": cid}], {"position": c_pos + _gen_dur}
                             )
 
-                _run_on_main_thread(_do_ripple_insert)
+                # The ripple and the placement below are one user action, so
+                # they share a transaction id and undo as a single step.
+                _composite_tid = _new_transaction_id()
+                _run_on_main_thread(
+                    _atomic(_app_ref, _do_ripple_insert, tid=_composite_tid)
+                )
 
             try:
                 ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
@@ -4560,6 +4957,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     track=track or "",
                     query=prompt,
                     duration_seconds=explicit_dur,
+                    transaction_id=_composite_tid,
                 )
             finally:
                 _resume_player(was_playing)
@@ -5421,7 +5819,8 @@ def add_transition_between_clips(clip1_id="", clip2_id="", transition_name="", d
             win.timeline.update_transition_data(transition_data, only_basic_props=False)
             result_box[0] = (tid, snapped_dur, snapped_c2_pos)
 
-        _run_on_main_thread(_do_transition)
+        # Moving clip2 + inserting the Mask is one user action -> one undo step.
+        _run_on_main_thread(_atomic(app, _do_transition))
         tid, actual_dur, actual_pos = result_box[0] if result_box[0] else ("?", dur, new_clip2_pos)
         return (
             f"Added '{transition_name}' transition between clips (overlap: {actual_dur:.2f}s).\n"
@@ -5615,7 +6014,8 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
             app.updates.insert(["files"], file_data)
             app.updates.insert(["clips"], clip_data)
 
-        _run_on_main_thread(_do_insert)
+        # File + clip insert is one user action -> one undo step.
+        _run_on_main_thread(_atomic(app, _do_insert))
 
         return f"Added TTS audio to timeline at position {position}s on track {track}."
     except Exception as e:
@@ -6723,7 +7123,10 @@ def place_motion_graphic(
                 log.debug("mg_placement stamp failed: %s", stamp_exc)
             return True
 
-        _run_on_main_thread(_ripple_and_stamp)
+        # Ripple + metadata stamp + placement are one user action, so they
+        # share a transaction id and undo as a single step.
+        _composite_tid = _new_transaction_id()
+        _run_on_main_thread(_atomic(app, _ripple_and_stamp, tid=_composite_tid))
         # add_clip marshals Qt mutations itself
         result = add_clip_to_timeline(
             file_id=fid,
@@ -6732,6 +7135,7 @@ def place_motion_graphic(
             duration_seconds=str(dur),
             query=watch_query,
             chat_session_id=_kw.get("chat_session_id", ""),
+            transaction_id=_composite_tid,
         )
 
         track_lbl = format_track_label_for_llm(int(track_num), layers)
@@ -7051,6 +7455,9 @@ AGENT_TOOL_HANDLERS = {
     # Timeline
     "add_track_tool": add_track,
     "add_marker_tool": add_marker,
+    "delete_from_timeline_tool": delete_from_timeline,
+    # Deprecated aliases -- kept dispatchable for stored plans and in-flight
+    # sessions; the backend catalog exposes delete_from_timeline_tool only.
     "remove_clip_tool": remove_clip,
     "delete_clips_on_track_tool": delete_clips_on_track,
     "zoom_in_tool": zoom_in,
@@ -7119,8 +7526,9 @@ TOOL_DISPLAY_LABELS = {
     "redo_tool": "Redo",
     "add_track_tool": "Add track",
     "add_marker_tool": "Add marker",
-    "remove_clip_tool": "Remove clip",
-    "delete_clips_on_track_tool": "Delete clips on track",
+    "delete_from_timeline_tool": "Delete from timeline",
+    "remove_clip_tool": "Delete from timeline",
+    "delete_clips_on_track_tool": "Delete from timeline",
     "zoom_in_tool": "Zoom in",
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
@@ -7254,6 +7662,33 @@ _MAIN_THREAD_TIMEOUTS = {
 }
 
 
+# Tools that execute_tool must NOT wrap in a transaction.
+#
+# Read-only tools make no mutations, so a transaction would be pure overhead.
+# undo/redo are the sharp case: they walk the history stack, and opening a
+# transaction around that would stamp the caller's id onto the reversal
+# actions pushed into redoHistory, gluing separate steps together.
+_UNGROUPED_TOOLS = READ_ONLY_TOOLS | frozenset({"undo_tool", "redo_tool"})
+
+
+# Tools whose main-thread runtime scales with a `steps` argument.  A fixed 30s
+# budget is fine for a single undo but can sever a steps=20 run mid-loop --
+# _run_on_main_thread raises TimeoutError in the *caller* while the queued work
+# keeps running, so the tool would report failure while undos kept applying.
+_STEPPED_TOOLS = frozenset({"undo_tool", "redo_tool"})
+_MAIN_THREAD_TIMEOUT_DEFAULT = 30
+_MAIN_THREAD_TIMEOUT_PER_STEP = 8
+
+
+def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
+    if tool_name in _MAIN_THREAD_TIMEOUTS:
+        return _MAIN_THREAD_TIMEOUTS[tool_name]
+    if tool_name not in _STEPPED_TOOLS:
+        return _MAIN_THREAD_TIMEOUT_DEFAULT
+    n = _coerce_steps((tool_args or {}).get("steps"))
+    return max(_MAIN_THREAD_TIMEOUT_DEFAULT, _MAIN_THREAD_TIMEOUT_PER_STEP * n)
+
+
 def execute_tool(tool_name: str, tool_args: dict) -> str:
     """Execute a tool by name with the given arguments. Returns the result string."""
     handler = TOOL_HANDLERS.get(tool_name)
@@ -7274,7 +7709,14 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
 
     def _invoke():
         try:
-            return handler(**tool_args)
+            if tool_name in _UNGROUPED_TOOLS:
+                return handler(**tool_args)
+            # One tool call == one undo step, decided here rather than
+            # annotated on ~60 handlers.  Mutations a handler makes across
+            # several main-thread hops join this group too, because
+            # _run_on_main_thread carries the id across the hop.  A handler
+            # that opens its own _transaction/_atomic joins rather than nests.
+            return _atomic(_get_app(), handler)(**tool_args)
         except Exception as e:
             log.error("Tool %s execution failed: %s", tool_name, e, exc_info=True)
             return f"Error: {e}"
@@ -7287,8 +7729,9 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             return _invoke()
         if tool_name in READ_ONLY_TOOLS or tool_name in BACKGROUND_SAFE_TOOLS:
             return _invoke()
-        timeout = _MAIN_THREAD_TIMEOUTS.get(tool_name, 30)
-        return _run_on_main_thread(_invoke, timeout=timeout)
+        return _run_on_main_thread(
+            _invoke, timeout=_main_thread_timeout(tool_name, tool_args)
+        )
     except Exception as e:
         log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
         return f"Error: {e}"
