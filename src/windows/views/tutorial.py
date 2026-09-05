@@ -425,7 +425,7 @@ class TutorialManager(QObject):
         if self.tutorial_enabled:
             self.tutorial_timer.start()
 
-    def __init__(self, win, *args):
+    def __init__(self, win, auto_start=True, *args):
         # Init QObject superclass
         super().__init__(*args)
 
@@ -523,10 +523,11 @@ class TutorialManager(QObject):
         self.tutorial_timer.setSingleShot(True)
         self.tutorial_timer.timeout.connect(self.process)
 
-        # Connect to interface dock widgets
-        self.win.dockFiles.visibilityChanged.connect(self.process_visibility)
-        self.win.dockTransitions.visibilityChanged.connect(self.process_visibility)
-        self.win.dockEffects.visibilityChanged.connect(self.process_visibility)
-        self.win.dockProperties.visibilityChanged.connect(self.process_visibility)
-        self.win.dockVideo.visibilityChanged.connect(self.process_visibility)
-        self.win.dockEmojis.visibilityChanged.connect(self.process_visibility)
+        # Connect to interface dock widgets (auto-start on first launch)
+        if auto_start:
+            self.win.dockFiles.visibilityChanged.connect(self.process_visibility)
+            self.win.dockTransitions.visibilityChanged.connect(self.process_visibility)
+            self.win.dockEffects.visibilityChanged.connect(self.process_visibility)
+            self.win.dockProperties.visibilityChanged.connect(self.process_visibility)
+            self.win.dockVideo.visibilityChanged.connect(self.process_visibility)
+            self.win.dockEmojis.visibilityChanged.connect(self.process_visibility)

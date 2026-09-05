@@ -56,12 +56,27 @@ class _DownloadWorker(QObject):
     @pyqtSlot()
     def run(self):
         try:
+            from classes.credits_client import charge_operation_on_success, check_operation
+
+            _, _, blocked = check_operation("stock_add", "stock media download")
+            if blocked:
+                self.finished.emit(self._video_id, "", blocked)
+                return
+
             from classes.api_client import get_backend_client
             result = get_backend_client().pexels_download(
                 self._video_id, self._link, self._filename
             )
             local_path = result.get("local_path", "")
             error = result.get("error", "")
+            if not error and local_path:
+                charge_operation_on_success(
+                    True,
+                    "stock_add",
+                    "stock_add",
+                    provider="pexels",
+                    note=f"dock video {self._video_id}",
+                )
         except Exception as exc:
             local_path, error = "", str(exc)
         self.finished.emit(self._video_id, local_path, error)
@@ -384,8 +399,17 @@ class PexelsDock(QDockWidget):
         self._current_page += 1
         self._run_search(self._current_query, page=self._current_page)
 
+    def _stop_search_thread(self):
+        t = getattr(self, "_search_thread", None)
+        if t and t.isRunning():
+            t.quit()
+            if not t.wait(2000):
+                t.terminate()
+                t.wait(500)
+
     def _run_search(self, query: str, page: int):
         self._set_searching(True)
+        self._stop_search_thread()
 
         self._search_thread = QThread()
         self._worker = _SearchWorker(query, page)
@@ -519,7 +543,7 @@ class PexelsDock(QDockWidget):
         if card:
             card.set_done()
 
-        # Add to Project Files and trigger tagging/indexing.
+        # Add to Project Files and trigger indexing/summarize.
         try:
             from classes.app import get_app
             from classes.query import File
@@ -528,15 +552,15 @@ class PexelsDock(QDockWidget):
                 files_model = app.window.files_model
                 existing = File.get(path=local_path)
                 if existing:
-                    # File already in project — re-trigger tagging if it was
+                    # File already in project — re-trigger indexing if it was
                     # never successfully analyzed (e.g., backend was down during
                     # the first import).
                     if not (existing.data.get("ai_metadata") or {}).get("analyzed"):
                         log.info(
                             "Pexels video already in project but untagged, "
-                            "re-triggering tagging: %s", local_path,
+                            "re-triggering indexing: %s", local_path,
                         )
-                        files_model._tag_file_async(existing.id)
+                        files_model._index_file_async(existing.id)
                 else:
                     files_model.add_files([local_path])
                     log.info("Pexels video added to Project Files: %s", local_path)
@@ -561,7 +585,8 @@ class PexelsDock(QDockWidget):
         self._status_label.setText("")
 
     def _cleanup_threads(self):
-        threads = [self._search_thread] + list(self._dl_threads.values())
+        self._stop_search_thread()
+        threads = list(self._dl_threads.values())
         for t in threads:
             if t and t.isRunning():
                 t.quit()

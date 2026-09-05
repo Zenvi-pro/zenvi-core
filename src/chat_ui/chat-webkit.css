@@ -279,44 +279,6 @@ html[data-zenvi-webkit="1"] .chat-tab {
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-/* Tags / pills — replace color-mix with rgba */
-html[data-zenvi-webkit="1"] .chat-tags-row {
-    display: -webkit-flex;
-    display: flex;
-    -webkit-flex-wrap: wrap;
-    flex-wrap: wrap;
-    padding: 5px 8px 4px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-html[data-zenvi-webkit="1"] .chat-tags-row > * {
-    margin-right: 4px;
-    margin-bottom: 4px;
-}
-
-html[data-zenvi-webkit="1"] .chat-tag-pill {
-    display: -webkit-inline-flex;
-    display: inline-flex;
-    -webkit-align-items: center;
-    align-items: center;
-    background: rgba(77, 156, 246, 0.14);
-    border: 1px solid rgba(77, 156, 246, 0.28);
-}
-
-@-webkit-keyframes chat-pick-pulse-wk {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.55; }
-}
-@keyframes chat-pick-pulse-wk {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.55; }
-}
-html[data-zenvi-webkit="1"] .chat-pick-hint {
-    background: rgba(77, 156, 246, 0.08);
-    border-bottom: 1px solid rgba(77, 156, 246, 0.18);
-    -webkit-animation: chat-pick-pulse-wk 1.5s ease-in-out infinite;
-    animation: chat-pick-pulse-wk 1.5s ease-in-out infinite;
-}
-
 /* Activity row icon spin (matches .activity-icon svg in chat.css) */
 html[data-zenvi-webkit="1"] .chat-activity-step.running .activity-icon svg {
     -webkit-animation: activity-spin-wk 1s linear infinite;

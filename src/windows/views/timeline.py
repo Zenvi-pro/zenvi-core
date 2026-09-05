@@ -51,7 +51,8 @@ from classes.query import File, Clip, Transition, Track, Effect
 from classes.clipboard import ClipboardManager
 from classes.thumbnail import GetThumbPath
 from classes.waveform import get_audio_data
-from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+from classes.ai_metadata_utils import apply_metadata_to_clip_data, merge_basic_clip_props
+from classes.timeline_clip_context import resolve_root_ai_metadata
 from .timeline_backend.enums import (
     MenuFade, MenuRotate, MenuLayout, MenuAlign, MenuAnimate, MenuVolume,
     MenuTransform, MenuTime, MenuCopy, MenuSlice, MenuSplitAudio
@@ -59,12 +60,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import (
-    clamp_timing_to_media,
-    copy_audio_stream_fields_from_reader,
-    normalize_imported_media_channel_layout,
-    sync_reader_audio_info,
-)
+from classes.clip_utils import clamp_timing_to_media
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
@@ -568,18 +564,19 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Constrain timing values to the reader's bounds
         clamp_timing_to_media(clip_data, existing_clip)
 
-        # Update clip data
-        existing_clip.data = clip_data
+        old_data = (
+            json.loads(json.dumps(existing_clip.data))
+            if existing_clip and isinstance(existing_clip.data, dict) and existing_clip.data
+            else {}
+        )
 
-        # Remove unneeded properties (since they don't change here... this is a performance boost)
-        if only_basic_props:
-            existing_clip.data = {}
-            existing_clip.data["id"] = clip_data["id"]
-            existing_clip.data["layer"] = clip_data["layer"]
-            existing_clip.data["position"] = clip_data["position"]
-            existing_clip.data["start"] = clip_data["start"]
-            existing_clip.data["end"] = clip_data["end"]
-            existing_clip.data["duration"] = clip_data.get("duration")
+        # Update clip data — preserve ai_metadata/effects on drag/resize (only_basic_props)
+        if only_basic_props and old_data:
+            existing_clip.data = merge_basic_clip_props(old_data, clip_data)
+        else:
+            existing_clip.data = clip_data
+
+        # Legacy path removed: only_basic_props must not wipe derived ai_metadata.
 
         # Delete invalid items (i.e. negative duration)
         if self.delete_invalid_timeline_item(existing_clip):
@@ -2547,34 +2544,35 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             try:
                 data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
                 file_id = data.get("file_id")
+                file_data = None
                 if file_id:
                     file_obj = File.get(id=str(file_id))
                     if file_obj and isinstance(file_obj.data, dict):
-                        ai_meta = file_obj.data.get("ai_metadata")
-                        return ai_meta if isinstance(ai_meta, dict) else None
-                # Fallback: try reader path match (best-effort)
-                reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
-                path = reader.get("path")
-                if path:
-                    file_obj = File.get(path=path)
-                    if file_obj and isinstance(file_obj.data, dict):
-                        ai_meta = file_obj.data.get("ai_metadata")
-                        return ai_meta if isinstance(ai_meta, dict) else None
+                        file_data = file_obj.data
+                if not file_data:
+                    reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+                    path = reader.get("path")
+                    if path:
+                        file_obj = File.get(path=path)
+                        if file_obj and isinstance(file_obj.data, dict):
+                            file_data = file_obj.data
+                root_ai, _parent = resolve_root_ai_metadata(
+                    file_data,
+                    file_id=str(file_id or ""),
+                )
+                return root_ai, file_data
             except Exception:
                 pass
-            return None
+            return None, None
 
-        def _apply_clip_ai_metadata(clip_data, source_ai_metadata):
-            if not source_ai_metadata or not isinstance(clip_data, dict):
-                return
-            if not source_ai_metadata.get("analyzed"):
-                return
-            try:
-                start_sec = float(clip_data.get("start", 0.0) or 0.0)
-                end_sec = float(clip_data.get("end", start_sec) or start_sec)
-            except Exception:
-                return
-            clip_data["ai_metadata"] = adjust_scene_descriptions_for_subclip(source_ai_metadata, start_sec, end_sec)
+        def _apply_clip_ai_metadata(clip_data, root_ai_metadata, file_data=None, *, exclusive_start=False):
+            apply_metadata_to_clip_data(
+                clip_data,
+                root_ai_metadata,
+                file_data=file_data,
+                rebased=True,
+                exclusive_start=exclusive_start,
+            )
 
         # Get FPS from project
         fps = get_app().project.get("fps")
@@ -2593,6 +2591,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         new_starting_frame = -1
 
         try:
+            if ViewClass == TimelineWidget:
+                self._flush_pending_clip_overrides(clip_ids)
+
             # Get the nearest starting frame position to the playhead (snap to frame boundaries)
             playhead_position = float(round((playhead_position * fps_num) / fps_den) * fps_den) / fps_num
             if action == MenuSlice.KEEP_LEFT: playhead_position += fps_den / fps_num
@@ -2605,7 +2606,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not clip or clip.data.get("layer") in locked_layers:
                     continue
 
-                source_ai_metadata = _source_ai_metadata_for_clip(clip)
+                # Pending drag overrides only exist on the native qwidget backend.
+                if ViewClass == TimelineWidget:
+                    clip_data = self._apply_clip_override_fields(clip.data, clip_id)
+                    if clip_data is not clip.data:
+                        clip.data = clip_data
+
+                source_ai_metadata, source_file_data = _source_ai_metadata_for_clip(clip)
 
                 original_position = float(clip.data["position"])  # Original position in timeline seconds
                 start_of_clip = float(clip.data["start"])  # Trim start time in clip seconds
@@ -2618,7 +2625,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clip.data["end"] = new_end
                     clip.data["duration"] = max(0.0, new_end - start_of_clip)
 
-                    _apply_clip_ai_metadata(clip.data, source_ai_metadata)
+                    _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
 
                     if ripple:
                         removed_duration = original_duration - (clip.data["end"] - start_of_clip)
@@ -2631,7 +2638,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clip.data["start"] = new_start
                     clip.data["duration"] = max(0.0, end_of_clip - new_start)
 
-                    _apply_clip_ai_metadata(clip.data, source_ai_metadata)
+                    _apply_clip_ai_metadata(
+                        clip.data, source_ai_metadata, source_file_data, exclusive_start=True,
+                    )
 
                     if ripple:
                         removed_duration = original_duration - (end_of_clip - new_start)
@@ -2648,35 +2657,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clip.data["duration"] = max(0.0, new_end - start_of_clip)
 
                     # Left clip gets translated metadata
-                    _apply_clip_ai_metadata(clip.data, source_ai_metadata)
+                    _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
 
-                    # Split into two clips (left and right side)
-                    right_clip = Clip.get(id=clip_id)
-                    if not right_clip:
-                        continue
-
-                    # Create right side clip. Work from deep copies so shared
-                    # references (such as effect dicts) are not retained between
-                    # the original and the new clip.
-                    right_clip_data = deepcopy(right_clip.data)
-                    right_clip_key = list(right_clip.key)
-
+                    # New Clip instance — never reuse Clip.get() after mutating the left clip.
+                    right_clip_data = deepcopy(clip.data)
+                    right_clip = Clip()
                     right_clip.id = None
                     right_clip.type = 'insert'
                     right_clip.data = right_clip_data
                     right_clip.data.pop('id', None)
+                    right_clip_key = list(clip.key)
                     if len(right_clip_key) > 1:
                         right_clip_key.pop(1)
                     right_clip.key = right_clip_key
                     right_clip.data["position"] = playhead_position
-                    right_clip.data["start"] = clip.data["end"]
+                    right_clip.data["start"] = new_end
                     right_clip.data["end"] = end_of_clip
                     right_start = float(right_clip.data["start"])
                     right_end = float(right_clip.data.get("end", right_start))
                     right_clip.data["duration"] = max(0.0, right_end - right_start)
+                    right_clip.data.pop("ai_metadata", None)
 
-                    # Right clip gets translated metadata
-                    _apply_clip_ai_metadata(right_clip.data, source_ai_metadata)
+                    _apply_clip_ai_metadata(
+                        right_clip.data, source_ai_metadata, source_file_data, exclusive_start=True,
+                    )
                     self._assign_new_effect_ids(right_clip.data)
                     right_clip.save()
 
@@ -2686,6 +2690,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             # Redraw audio waveforms
             self.redraw_audio_timer.start()
+
+            from classes.timeline_clip_context import clear_metadata_lookup_cache
+            clear_metadata_lookup_cache()
 
             # Handle transitions (similar to clips)
             for trans_id in trans_ids:
@@ -2721,20 +2728,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 elif action == MenuSlice.KEEP_BOTH:
                     # Update data for the left transition
-                    trans.data["end"] = start_of_tran + (playhead_position - original_position)
+                    new_tran_end = start_of_tran + (playhead_position - original_position)
+                    trans.data["end"] = new_tran_end
 
-                    # Split into two transitions (left and right side)
-                    right_tran = Transition.get(id=trans_id)
-                    if not right_tran:
-                        continue
-
-                    # Create right side transition
+                    right_tran_data = deepcopy(trans.data)
+                    right_tran = Transition()
                     right_tran.id = None
                     right_tran.type = 'insert'
-                    right_tran.data.pop('id')
-                    right_tran.key.pop(1)
+                    right_tran.data = right_tran_data
+                    right_tran.data.pop('id', None)
+                    right_tran_key = list(trans.key)
+                    if len(right_tran_key) > 1:
+                        right_tran_key.pop(1)
+                    right_tran.key = right_tran_key
                     right_tran.data["position"] = playhead_position
-                    right_tran.data["start"] = trans.data["end"]
+                    right_tran.data["start"] = new_tran_end
+                    right_tran.data["end"] = end_of_tran
                     right_tran.save()
 
                 # Save changes for the left or right slice
@@ -2744,6 +2753,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
+
+            if ViewClass == TimelineWidget:
+                self._sync_timeline_geometry_after_edit()
 
             if new_starting_frame != -1:
                 # Seek to new position (if needed)
@@ -3858,11 +3870,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Create a new Clip object with the file path
         c = openshot.Clip(file_path)
-        normalize_imported_media_channel_layout(file.data, c.Reader())
-        _ch = max(1, int(file.data.get("channels") or 1))
-        _cl = int(file.data.get("channel_layout") or openshot.LAYOUT_STEREO)
-        sync_reader_audio_info(c.Reader(), _ch, _cl)
-        copy_audio_stream_fields_from_reader(file.data, c.Reader())
 
         # Convert the clip object to JSON and fill missing attributes
         new_clip = json.loads(c.Json())
@@ -4197,7 +4204,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Clear new clip
         self.new_item = False
         self.item_type = None
-        self.item_ids = None
+        self.item_ids = []
 
     def redraw_audio_onTimeout(self):
         """Timer is ready to redraw audio (if any)"""

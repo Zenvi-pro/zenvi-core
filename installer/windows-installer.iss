@@ -8,7 +8,8 @@
   #define ONLY_64_BIT "x64"
 #endif
 #ifndef PY_EXE_DIR
-  #define PY_EXE_DIR "exe.mingw-3.8"
+  ; cx_Freeze output dir under build/ (CI passes /DPY_EXE_DIR from the actual exe.* folder)
+  #define PY_EXE_DIR "exe.win-amd64-3.11"
 #endif
 
 #define MyAppName "Zenvi"
@@ -32,7 +33,7 @@ VersionInfoVersion={#VERSION}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyPublisherURL}
 AppSupportURL={#MySupportURL}
-AppCopyright=(c) 2008-2022 {#MyAppPublisher}
+AppCopyright=(c) {#MyAppPublisher}
 DefaultDirName={code:GetDefaultDirName|Zenvi}
 DisableProgramGroupPage=yes
 LicenseFile=..\COPYING
@@ -67,14 +68,14 @@ english.FirewallException=Add an exception to the Windows Firewall for optionall
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: not PortableCheck;
-Name: "fileassoc"; Description: "{cm:AssocFileExtension,{#MyAppName},.osp}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: not PortableCheck and IsAdminInstallMode;
+Name: "fileassoc"; Description: "{cm:AssocFileExtension,{#MyAppName},.zvn}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; Check: not PortableCheck and IsAdminInstallMode;
 Name: "firewall"; Description: "{cm:FirewallException}"; GroupDescription: "{cm:AdditionalIcons}"; Check: not PortableCheck;
 
 [InstallDelete]
 ; Remove previous installed versions of Zenvi
 Type: filesandordirs; Name: "{app}\*"
 Type: dirifempty; Name: "{app}\*"
-Type: files; Name: "{group}\Zenvi"; BeforeInstall: DeleteInvalidFiles; Check: not PortableCheck and IsAdminInstallMode;
+Type: files; Name: "{group}\Zenvi"; Check: not PortableCheck and IsAdminInstallMode;
 
 [Registry]
 ; Associate .zvn files with the installed application. Uninstaller will clean them up, when run.
@@ -100,20 +101,3 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""{#MyAppName}"""; Flags: runhidden; Tasks: firewall;
-
-[Code]
-procedure DeleteInvalidFiles();
-begin
-  if (FileExists (ExpandConstant('{sys}\zlib1.dll'))) then
-  begin
-    RenameFile(ExpandConstant('{sys}\zlib1.dll'), ExpandConstant('{sys}\zlib1.DELETE'));
-  end;
-  if (FileExists (ExpandConstant('{win}\system32\zlib1.dll'))) then
-  begin
-    RenameFile(ExpandConstant('{win}\system32\zlib1.dll'), ExpandConstant('{win}\system32\zlib1.DELETE'));
-  end;
-  if (FileExists (ExpandConstant('{syswow64}\zlib1.dll'))) then
-  begin
-    RenameFile(ExpandConstant('{syswow64}\zlib1.dll'), ExpandConstant('{syswow64}\zlib1.DELETE'));
-  end;
-end;

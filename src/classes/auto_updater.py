@@ -8,7 +8,7 @@
  @section LICENSE
 
  Copyright (c) 2008-2026 Zenvi.
- This file is part of Zenvi Video Editor (https://zenvi.org).
+ This file is part of Zenvi Video Editor (https://zenvi.pro).
 
  Zenvi is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -28,6 +28,14 @@ import requests
 
 from classes import info
 from classes.logger import log
+from classes.update_installer import (
+    UPDATE_MANIFEST,
+    UPDATE_STAGING_DIR,
+    discard_staged_update,
+    has_pending_update as installer_has_pending_update,
+    is_version_newer,
+    read_manifest,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -38,14 +46,18 @@ GITHUB_API_URL = (
     "https://api.github.com/repos/{repo}/releases/latest"
 )
 
-UPDATE_STAGING_DIR = os.path.join(info.USER_PATH, "updates")
-UPDATE_MANIFEST = os.path.join(UPDATE_STAGING_DIR, "update_manifest.json")
-
 # How long to wait after app launch before first check (seconds)
 INITIAL_DELAY = 15
 
 # Chunk size for streaming downloads
 DOWNLOAD_CHUNK_SIZE = 64 * 1024  # 64 KB
+
+# Minimum wall-clock gap between progress signals (seconds)
+PROGRESS_EMIT_INTERVAL = 0.25
+
+# Percent sentinel meaning "total size unknown" — the UI shows an
+# indeterminate bar instead of a stuck 0%
+PROGRESS_INDETERMINATE = -1
 
 
 # ---------------------------------------------------------------------------
@@ -83,60 +95,63 @@ def _platform_asset_arch_hint():
 
 
 # ---------------------------------------------------------------------------
-# Version comparison
-# ---------------------------------------------------------------------------
-
-def _parse_version(v):
-    """Parse a version string like '3.4.1' into a comparable tuple."""
-    try:
-        return tuple(int(x) for x in v.strip().split("."))
-    except (ValueError, AttributeError):
-        return (0,)
-
-
-def is_newer(remote_version, local_version):
-    """Return True if *remote_version* is strictly newer than *local_version*."""
-    return _parse_version(remote_version) > _parse_version(local_version)
-
-
-# ---------------------------------------------------------------------------
-# Manifest helpers (used by both auto_updater and update_installer)
+# Manifest helpers — delegate to update_installer (single source of truth)
 # ---------------------------------------------------------------------------
 
 def has_pending_update():
     """Return True when a verified update is staged and ready to install."""
-    if not os.path.exists(UPDATE_MANIFEST):
-        return False
-    try:
-        with open(UPDATE_MANIFEST, "r", encoding="utf-8") as fh:
-            manifest = json.load(fh)
-        return os.path.exists(manifest.get("filepath", ""))
-    except Exception:
-        return False
+    return installer_has_pending_update()
 
 
 def get_update_manifest():
     """Read and return the update manifest dict, or None."""
-    try:
-        with open(UPDATE_MANIFEST, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return None
+    return read_manifest()
 
 
 def cleanup_staged_update():
     """Remove all staged update files."""
     try:
-        manifest = get_update_manifest()
-        if manifest:
-            fp = manifest.get("filepath", "")
-            if os.path.exists(fp):
-                os.unlink(fp)
-        if os.path.exists(UPDATE_MANIFEST):
-            os.unlink(UPDATE_MANIFEST)
+        discard_staged_update()
         log.info("AutoUpdater: Staged update cleaned up")
     except Exception as exc:
         log.warning("AutoUpdater: Cleanup error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Progress throttling
+# ---------------------------------------------------------------------------
+
+class ProgressThrottle:
+    """Rate-limits download progress updates.
+
+    The download loop reads 64 KB at a time, so a 120 MB asset produces ~2000
+    iterations. Emitting a queued signal on each one would flood the Qt event
+    loop for no visible benefit, so only report when the whole-number percent
+    actually advances (or after *interval* seconds, which keeps a slow
+    connection from looking frozen)."""
+
+    def __init__(self, total, interval=PROGRESS_EMIT_INTERVAL):
+        self.total = total or 0
+        self.interval = interval
+        self._last_percent = None
+        self._last_time = None
+
+    def percent_for(self, downloaded):
+        """Whole-number percent, or PROGRESS_INDETERMINATE if the size is unknown."""
+        if not self.total:
+            return PROGRESS_INDETERMINATE
+        return min(100, int(downloaded * 100 / self.total))
+
+    def tick(self, downloaded, now):
+        """Return the percent to report, or None to skip this chunk."""
+        percent = self.percent_for(downloaded)
+        if self._last_time is None:
+            pass
+        elif percent == self._last_percent and (now - self._last_time) < self.interval:
+            return None
+        self._last_percent = percent
+        self._last_time = now
+        return percent
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +193,9 @@ class AutoUpdater:
     def _run(self):
         """Entry point for the background thread."""
         try:
-            # Wait before first check so the UI is fully loaded
+            release, latest_version = self._fetch_latest_release()
+
+            # Wait before download check so the UI is fully loaded
             for _ in range(INITIAL_DELAY):
                 if self._stop.is_set():
                     return
@@ -190,15 +207,19 @@ class AutoUpdater:
                 self._notify_ui_pending()
                 return
 
-            self._check_and_download()
+            if release is None:
+                return
+
+            self._check_and_download(release, latest_version)
         except Exception:
             log.error("AutoUpdater: Unhandled error in background thread", exc_info=True)
 
-    def _check_and_download(self):
-        """Query GitHub for the latest release; download if newer."""
-        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
-        log.info("AutoUpdater: Checking %s", url)
+    def _fetch_latest_release(self):
+        """Single GitHub /releases/latest fetch for Sentry, UI, and download logic.
 
+        Returns (release_dict_or_None, latest_version_str_or_empty).
+        """
+        url = GITHUB_API_URL.format(repo=info.GITHUB_REPO)
         try:
             resp = requests.get(
                 url,
@@ -210,21 +231,27 @@ class AutoUpdater:
             )
         except requests.RequestException as exc:
             log.warning("AutoUpdater: Network error checking for updates: %s", exc)
-            return
+            return None, ""
 
         if resp.status_code != 200:
             log.warning("AutoUpdater: GitHub API returned HTTP %d", resp.status_code)
-            return
+            return None, ""
 
         release = resp.json()
         tag = release.get("tag_name", "")
         latest_version = tag.lstrip("v")
+        if latest_version:
+            info.ERROR_REPORT_STABLE_VERSION = latest_version
+            self._emit_version_signal(latest_version)
+        return release, latest_version
 
+    def _check_and_download(self, release, latest_version):
+        """Download the platform asset from an already-fetched release payload."""
         if not latest_version:
-            log.warning("AutoUpdater: Could not parse version from tag '%s'", tag)
+            log.warning("AutoUpdater: Could not parse version from release tag")
             return
 
-        if not is_newer(latest_version, info.VERSION):
+        if not is_version_newer(latest_version, info.VERSION):
             log.info(
                 "AutoUpdater: Current version %s is up-to-date (latest: %s)",
                 info.VERSION, latest_version,
@@ -295,13 +322,23 @@ class AutoUpdater:
         """Stream-download *url* to the staging directory. Returns True on success."""
         staging_file = os.path.join(UPDATE_STAGING_DIR, filename)
         temp_file = staging_file + ".part"
+        throttle = ProgressThrottle(expected_size)
 
         try:
             resp = requests.get(url, stream=True, timeout=600)
             resp.raise_for_status()
 
+            # GitHub always reports an asset size, but fall back to the response
+            # header so a mirror or redirect still yields a real percentage
+            if not throttle.total:
+                throttle.total = int(resp.headers.get("Content-Length") or 0)
+
             sha256 = hashlib.sha256()
             downloaded = 0
+
+            # Flip the UI into its downloading state before the first chunk lands
+            self._emit_progress_signal(
+                version, throttle.percent_for(0), 0, throttle.total)
 
             with open(temp_file, "wb") as fh:
                 for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
@@ -313,6 +350,11 @@ class AutoUpdater:
                     sha256.update(chunk)
                     downloaded += len(chunk)
 
+                    percent = throttle.tick(downloaded, time.monotonic())
+                    if percent is not None:
+                        self._emit_progress_signal(
+                            version, percent, downloaded, throttle.total)
+
             # Size sanity check
             if expected_size and downloaded != expected_size:
                 log.error(
@@ -320,7 +362,10 @@ class AutoUpdater:
                     expected_size, downloaded,
                 )
                 self._safe_remove(temp_file)
+                self._emit_failed_signal(version, "Downloaded file was incomplete")
                 return False
+
+            self._emit_progress_signal(version, 100, downloaded, downloaded)
 
             # Promote temp → final
             shutil.move(temp_file, staging_file)
@@ -344,38 +389,77 @@ class AutoUpdater:
             )
             return True
 
-        except Exception:
+        except Exception as exc:
             log.error("AutoUpdater: Download failed", exc_info=True)
             self._safe_remove(temp_file)
+            # A stop signal during shutdown is a normal abort, not a failure
+            if not self._stop.is_set():
+                self._emit_failed_signal(version, str(exc) or exc.__class__.__name__)
             return False
 
     # ------------------------------------------------------------------
     # Signal helpers
     # ------------------------------------------------------------------
 
-    def _emit_version_signal(self, version):
-        """Emit the existing FoundVersionSignal so the UI shows 'Update Available'."""
+    @staticmethod
+    def _main_window():
+        """Return the MainWindow if it exists, else None.
+
+        The updater runs on a plain daemon thread, so it reaches the UI through
+        the window's queued signals rather than owning any Qt objects itself."""
         try:
             from classes.app import get_app
             app = get_app()
             if app and hasattr(app, "window") and app.window:
-                app.window.FoundVersionSignal.emit(version)
+                return app.window
         except Exception:
             pass
+        return None
+
+    def _emit_version_signal(self, version):
+        """Emit the existing FoundVersionSignal so the UI shows 'Update Available'."""
+        if version:
+            info.ERROR_REPORT_STABLE_VERSION = version
+        window = self._main_window()
+        if window:
+            try:
+                window.FoundVersionSignal.emit(version)
+            except Exception:
+                pass
 
     def _emit_update_ready_signal(self, version):
         """Emit a signal indicating the update has been downloaded and staged."""
-        try:
-            from classes.app import get_app
-            app = get_app()
-            if app and hasattr(app, "window") and app.window:
-                app.window.UpdateReadySignal.emit(version)
-        except Exception:
-            pass
+        window = self._main_window()
+        if window:
+            try:
+                window.UpdateReadySignal.emit(version)
+            except Exception:
+                pass
+
+    def _emit_progress_signal(self, version, percent, downloaded, total):
+        """Report download progress so the toolbar can show a live bar.
+
+        *percent* is PROGRESS_INDETERMINATE when the total size is unknown."""
+        window = self._main_window()
+        if window:
+            try:
+                window.UpdateProgressSignal.emit(
+                    version, int(percent), int(downloaded), int(total))
+            except Exception:
+                pass
+
+    def _emit_failed_signal(self, version, reason):
+        """Report that the download failed, so the UI can offer a manual download."""
+        window = self._main_window()
+        if window:
+            try:
+                window.UpdateFailedSignal.emit(version, reason)
+            except Exception:
+                pass
 
     def _notify_ui_pending(self):
         """Notify the UI about an already-staged update."""
-        manifest = get_update_manifest()
+        manifest = read_manifest()
         if manifest:
             version = manifest.get("version", "")
             if version:

@@ -35,6 +35,27 @@ from classes.info import PATH
 from ..base import BaseTheme
 
 
+# objectName → nav SVG filename (stable across translations)
+DOCK_NAV_ICONS = [
+    ("dockFiles", "nav-files.svg"),
+    ("dockTransitions", "nav-transitions.svg"),
+    ("dockEffects", "nav-effects.svg"),
+    ("dockEmojis", "nav-emojis.svg"),
+    ("PexelsDock", "nav-pexels.svg"),
+    ("FreesoundDock", "nav-freesound.svg"),
+    ("dockVideo", "nav-video.svg"),
+    ("dockProperties", "nav-properties.svg"),
+    ("dockCaptionEditor", "nav-captions.svg"),
+    ("dockTimeline", "nav-timeline.svg"),
+    ("AIChatWindow", "nav-ai-chat.svg"),
+    ("AIMediaPanel", "nav-scene-desc.svg"),
+    ("director_panel_dock", "nav-directors.svg"),
+    ("director_plan_review_dock", "nav-plan-review.svg"),
+    ("dockPlanGraph", "nav-plan-graph.svg"),
+    ("thinkingDock", "nav-thinking.svg"),
+]
+
+
 # ── Design tokens (Cursor-IDE inspired dark palette) ──────────────────────
 #
 #   BG_DEEP    #0d0d0d   main window / dialog floor  ← the "absolute black"
@@ -278,6 +299,13 @@ QLabel#dock-title-handle {
     qproperty-pixmap: url({PATH}themes/cosmic/images/dock-move.svg);
 }
 
+/* Custom (Qt-drawn) dock title bar — also used by floating panels, where it
+   is the drag handle that lets them be docked back in */
+QWidget#dock-title-bar {
+    background-color: #0d0d0d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 /* ── Dock widgets ─────────────────────────────────────────── */
 QDockWidget {
     background-color: #0d0d0d;
@@ -327,23 +355,6 @@ QPushButton#dock-close-button:hover {
     color: #ef4444;
 }
 
-/* Menu-bar logout button (top-right corner widget) */
-QToolButton#logout-btn {
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-    padding: 3px 6px;
-    margin: 1px 4px;
-    color: #8a8a8a;
-}
-QToolButton#logout-btn:hover {
-    background: rgba(239,68,68,0.15);
-    color: #ef4444;
-}
-QToolButton#logout-btn:pressed {
-    background: rgba(239,68,68,0.25);
-}
-
 QDockWidget QWidget { border: none; }
 
 /* Dock content areas */
@@ -352,7 +363,11 @@ QWidget#dockTransitionsContents,
 QWidget#dockEmojisContents,
 QWidget#dockEffectsContents,
 QWidget#dockCaptionContents,
-QWidget#dockPropertiesContents {
+QWidget#dockPropertiesContents,
+QWidget#PexelsDockContents,
+QWidget#FreesoundDockContents,
+QWidget#AIChatWindowContents,
+QWidget#AIMediaPanelContents {
     background-color: #0d0d0d;
     border-radius: 0;
     margin: 0 12px;
@@ -410,21 +425,29 @@ QTabBar::tab:hover:!selected {
     background: rgba(255, 255, 255, 0.05);
 }
 
-/* Override for export / preferences dialogs that use horizontal (North) tabs */
+/* Override for dialogs that use horizontal (North) tabs with visible labels */
 QTabWidget#exportTabs QTabBar::tab,
 QTabWidget#tabCategories QTabBar::tab,
-QTabWidget#tabCredits QTabBar::tab {
+QTabWidget#tabCredits QTabBar::tab,
+QTabWidget#tabChangelog QTabBar::tab,
+QTabWidget#tabWidget QTabBar::tab {
+    color: #d4d4d4;
+    font-size: 12px;
+    min-width: 0;
+    min-height: 0;
+    max-width: 400px;
     padding: 6px 14px;
     border-right: none;
     border-bottom: 2px solid transparent;
     margin-bottom: 8px;
-    max-width: 400px;
     text-align: center;
 }
 
 QTabWidget#exportTabs QTabBar::tab:selected,
 QTabWidget#tabCategories QTabBar::tab:selected,
-QTabWidget#tabCredits QTabBar::tab:selected {
+QTabWidget#tabCredits QTabBar::tab:selected,
+QTabWidget#tabChangelog QTabBar::tab:selected,
+QTabWidget#tabWidget QTabBar::tab:selected {
     border-right: none;
     border-bottom: 2px solid #4d9cf6;
     background: transparent;
@@ -837,8 +860,11 @@ QDockWidget#AIMediaPanel QTreeWidget {
 }
 
 QDockWidget#AIMediaPanel QTabBar::tab {
+    color: #d4d4d4;
     padding: 5px 12px;
     font-size: 11px;
+    min-width: 0;
+    min-height: 0;
     max-width: 400px;
 }
 
@@ -1002,59 +1028,116 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         _tab_size = 36   # must match the min/max-width/height in the instance stylesheet
         _icon_size = QSize(20, 20)
         _icon_offset = (_tab_size - _icon_size.width()) // 2  # 8px — centers 20px icon in 36px tab
+        _icon_cache = {}
+        _vertical_tab_shapes = {
+            QTabBar.RoundedWest, QTabBar.TriangularWest,
+            QTabBar.RoundedEast, QTabBar.TriangularEast,
+        }
 
-        def _nav_icon(filename):
-            """Load SVG, center it in a _tab_size × _tab_size canvas, then pre-rotate 90° CW
-            to cancel Qt's CCW rotation for West tabs. Centering is baked into the pixmap so
-            that Qt's icon placement doesn't matter."""
+        def _make_nav_icon(filename, rotate=False):
+            """Load SVG, center in tab canvas; optionally rotate for vertical tab bars."""
+            cache_key = (filename, rotate)
+            if cache_key in _icon_cache:
+                return _icon_cache[cache_key]
             raw_icon = QIcon(os.path.join(_img_dir, filename))
             src_pix = raw_icon.pixmap(_icon_size)
-            # Paint the 20×20 icon onto a transparent _tab_size×_tab_size canvas
             canvas = QPixmap(_tab_size, _tab_size)
             canvas.fill(Qt.transparent)
             painter = QPainter(canvas)
             painter.drawPixmap(_icon_offset, _icon_offset, src_pix)
             painter.end()
-            # Pre-rotate 90° CW to cancel Qt's built-in CCW rotation for West tabs
-            return QIcon(canvas.transformed(QTransform().rotate(90)))
+            if rotate:
+                icon = QIcon(canvas.transformed(QTransform().rotate(90)))
+            else:
+                icon = QIcon(canvas)
+            _icon_cache[cache_key] = icon
+            return icon
 
-        _nav_icon_map = {
-            win.dockFiles.windowTitle():       _nav_icon("nav-files.svg"),
-            win.dockTransitions.windowTitle(): _nav_icon("nav-transitions.svg"),
-            win.dockEffects.windowTitle():     _nav_icon("nav-effects.svg"),
-            win.dockEmojis.windowTitle():      _nav_icon("nav-emojis.svg"),
-        }
+        _nav_by_title = {}
+        _nav_by_object = {}
+        _registered_docks = []
 
-        # Also set windowIcon so Qt uses it as fallback
-        for dock, icon in zip(
-            [win.dockFiles, win.dockTransitions, win.dockEffects, win.dockEmojis],
-            _nav_icon_map.values(),
-        ):
+        for object_name, filename in DOCK_NAV_ICONS:
+            dock = win.findChild(QDockWidget, object_name)
+            if dock is None:
+                continue
+            icon = _make_nav_icon(filename, rotate=False)
+            _nav_by_object[object_name] = icon
+            _nav_by_title[dock.windowTitle()] = icon
+            _registered_docks.append(dock)
             dock.setWindowIcon(icon)
 
+        def _tabbar_is_vertical(tabbar):
+            return tabbar.shape() in _vertical_tab_shapes
+
+        def _icon_for_dock_title(title, rotate=False):
+            icon = _nav_by_title.get(title)
+            if icon is None:
+                return None
+            if not rotate:
+                return icon
+            for object_name, filename in DOCK_NAV_ICONS:
+                dock = win.findChild(QDockWidget, object_name)
+                if dock is not None and dock.windowTitle() == title:
+                    return _make_nav_icon(filename, rotate=True)
+            return icon
+
+        def _dock_tab_group_titles(anchor_dock):
+            """Ordered window titles for docks tabified with anchor_dock."""
+            first = anchor_dock
+            for dock in win.findChildren(QDockWidget):
+                tabified = win.tabifiedDockWidgets(dock)
+                if anchor_dock in tabified:
+                    first = dock
+                    break
+            chain = [first]
+            current = first
+            while win.tabifiedDockWidgets(current):
+                nxt = win.tabifiedDockWidgets(current)[0]
+                if nxt in chain:
+                    break
+                chain.append(nxt)
+                current = nxt
+            return [
+                d.windowTitle() for d in chain
+                if d.objectName() in _nav_by_object
+            ]
+
         def _apply_tab_icons():
-            """Write icons onto every QTabBar that hosts nav docks.
-            Matches by windowTitle (text) or by tooltip (already-processed tabs)."""
+            """Write icons onto every QTabBar that hosts nav docks."""
             for tabbar in win.findChildren(QTabBar):
+                if tabbar.parent() and isinstance(tabbar.parent(), QTabWidget):
+                    widget_name = tabbar.parent().objectName() or ""
+                    if widget_name in ("exportTabs", "tabCategories", "tabCredits"):
+                        continue
                 tabbar.setIconSize(QSize(_tab_size, _tab_size))
+                rotate = _tabbar_is_vertical(tabbar)
                 has_nav = False
                 for i in range(tabbar.count()):
                     text = tabbar.tabText(i)
                     tooltip = tabbar.tabToolTip(i)
-                    # Match by original title (fresh tab) or preserved tooltip (re-opened tab)
-                    key = text if text in _nav_icon_map else (tooltip if tooltip in _nav_icon_map else None)
+                    key = None
+                    if text in _nav_by_title:
+                        key = text
+                    elif tooltip in _nav_by_title:
+                        key = tooltip
+                    else:
+                        for dock in _registered_docks:
+                            titles = _dock_tab_group_titles(dock)
+                            if len(titles) == tabbar.count() and i < len(titles):
+                                key = titles[i]
+                                break
                     if key is None:
                         continue
+                    icon = _icon_for_dock_title(key, rotate=rotate)
+                    if icon is None:
+                        continue
                     has_nav = True
-                    tabbar.setTabIcon(i, _nav_icon_map[key])
-                    tabbar.setTabToolTip(i, key)    # dock name for hover display
-                    tabbar.setTabText(i, "")        # remove text — eliminates reserved height
+                    tabbar.setTabIcon(i, icon)
+                    tabbar.setTabToolTip(i, key)
+                    tabbar.setTabText(i, "")
                 if has_nav:
-                    # Only disable expanding on the nav sidebar tabbar — not dialog tabbars
                     tabbar.setExpanding(False)
-                    # Force fixed tab height via instance-level stylesheet (highest priority).
-                    # Global QSS max-width/max-height are ignored after text-based size is cached,
-                    # but instance stylesheet overrides the cached sizeHint.
                     tabbar.setStyleSheet("""
                         QTabBar::tab {
                             min-width:  36px;
@@ -1077,13 +1160,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         def _schedule_tab_icons():
             QTimer.singleShot(150, _apply_tab_icons)
 
-        # Run immediately and after event-loop settle
         _apply_tab_icons()
         QTimer.singleShot(200, _apply_tab_icons)
 
-        # Re-apply when a nav dock is shown/hidden (close→reopen from Views menu)
-        # and when dock location changes (dock moved, tabified, detached)
-        for _dock in [win.dockFiles, win.dockTransitions, win.dockEffects, win.dockEmojis]:
+        for _dock in _registered_docks:
             _dock.visibilityChanged.connect(_schedule_tab_icons)
             _dock.dockLocationChanged.connect(lambda _area: _schedule_tab_icons())
 
@@ -1120,6 +1200,7 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             {"action": self.app.window.actionImportFiles, "icon": "themes/cosmic/images/tool-import-files.svg", "style": Qt.ToolButtonIconOnly},
             {"action": self.app.window.actionProfile,     "icon": "themes/cosmic/images/tool-profile.svg",      "style": Qt.ToolButtonIconOnly},
             {"expand": True},
+            {"widget": self.app.window.agent_selector_button},
             {"action": self.app.window.actionSave,        "icon": "themes/cosmic/images/tool-save-project.svg", "style": Qt.ToolButtonIconOnly},
             {
                 "action": self.app.window.actionExportVideo,
@@ -1131,11 +1212,20 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
                 ),
             },
             {
-                "action": self.app.window.actionUpdate,
-                "icon": "themes/cosmic/images/warning.svg",
-                "visible": False,
+                "action": self.app.window.actionLogout,
+                "icon": "themes/cosmic/images/tool-logout.svg",
                 "style": Qt.ToolButtonIconOnly,
-                "stylesheet": "QToolButton { background-color: #252525; color: #f59e0b; }",
+                "stylesheet": (
+                    "QToolButton { background: transparent; border: none; border-radius: 6px; padding: 8px 10px; } "
+                    "QToolButton:hover { background-color: rgba(239,68,68,0.15); } "
+                    "QToolButton:pressed { background-color: rgba(239,68,68,0.25); }"
+                ),
+            },
+            {
+                # The update pill styles itself per state and paints its own
+                # download progress, so it carries no stylesheet here
+                "widget": self.app.window.update_status_button,
+                "visible": self.app.window.update_status_button.is_active,
             },
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)

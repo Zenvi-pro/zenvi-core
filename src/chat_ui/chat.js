@@ -28,29 +28,37 @@
     const preambleEl = document.getElementById('chat-preamble-label');
     const preambleStatus = document.getElementById('chat-preamble-status');
     const modelSelect = document.getElementById('chat-model-select');
+    const backendSelect = document.getElementById('chat-backend-select');
     const modelTrigger = document.getElementById('chat-model-trigger');
     const modelLabel = document.getElementById('chat-model-label');
     const modelMenu = document.getElementById('chat-model-menu');
+    const modelSearch = document.getElementById('chat-model-search');
+    const modelList = document.getElementById('chat-model-list');
+    const modelFooter = document.getElementById('chat-model-footer');
     // Move menu to <body> so it escapes any CSS transform on ancestor elements
     // (transform creates a new containing block that breaks position:fixed)
     document.body.appendChild(modelMenu);
+    const gapLogBtn = document.getElementById('chat-gap-log-btn');
+    const gapLogOverlay = document.getElementById('chat-gap-log-overlay');
+    const gapLogClose = document.getElementById('chat-gap-log-close');
+    const gapLogListEl = document.getElementById('chat-gap-log-list');
+    if (gapLogOverlay) document.body.appendChild(gapLogOverlay);
     const messagesEl = document.getElementById('chat-messages');
+    const cliEmptyStateEl = document.getElementById('chat-cli-empty-state');
     const inputEl = document.getElementById('chat-input');
     const inputRow = document.getElementById('chat-input-row');
     const glowWrap = document.getElementById('chat-input-glow-wrap');
     const inputOverlay = document.getElementById('chat-input-overlay');
     const sendBtn = document.getElementById('chat-send-btn');
     const cancelBtn = document.getElementById('chat-cancel-btn');
-    const attachClipBtn = document.getElementById('chat-attach-clip-btn');
-    const transitionClipsBtn = document.getElementById('chat-transition-clips-btn');
     const clearBtn = document.getElementById('chat-clear-btn');
-    const tagsRow = document.getElementById('chat-tags-row');
+    const traceBtn = document.getElementById('chat-trace-btn');
+    const modePlanBtn = document.getElementById('chat-mode-plan');
+    const modeAgentBtn = document.getElementById('chat-mode-agent');
+    const modeToggleEl = document.getElementById('chat-mode-toggle');
+    var currentAgentMode = 'agent';
     const inputRowEl = document.getElementById('chat-input-row');
     const chatContainer = document.querySelector('.chat-container');
-
-    // ── Tag / pick-mode state ─────────────────────────────────────────────
-    var attachedContext = null;   // null | {type, ...}
-    var pickMode = null;          // null | 'selected_clip' | 'transition_a' | 'transition_b'
 
     // ── Command palette state ("/" commands) ─────────────────────────────
     var commandPaletteEl = null;
@@ -59,10 +67,11 @@
     var commandQuery = '';
     var COMMANDS = [
         { prefix: '/add-track', label: 'Add track', description: 'Add a new track to the timeline' },
-        { prefix: '/split', label: 'Split clip', description: 'Split the selected clip at the playhead' },
+        { prefix: '/generate', label: 'Generate video', description: 'Generate a new AI video clip from a text prompt (Kling O1 Pro, default 5s)' },
+        { prefix: '/split', label: 'Split clip', description: 'Split a timeline clip at the playhead (name the clip in chat or scrub to it first)' },
         { prefix: '/export', label: 'Export', description: 'Export the current project (choose preset)' },
-        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for the selected clip' },
-        { prefix: '/transition', label: 'Transition', description: 'Generate a transition clip between two selected clips' }
+        { prefix: '/caption', label: 'Generate captions', description: 'Generate captions for a timeline clip (describe which clip)' },
+        { prefix: '/transition', label: 'Transition', description: 'Generate a transition between two clips (describe both clips)' }
     ];
 
     function ensureCommandPaletteEl() {
@@ -191,98 +200,45 @@
         } catch (e) {}
     }
 
-    function renderTags() {
-        if (!tagsRow) return;
-        tagsRow.innerHTML = '';
-        if (!attachedContext) { tagsRow.style.display = 'none'; return; }
-        tagsRow.style.display = 'flex';
-
-        var pill = document.createElement('span');
-        pill.className = 'chat-tag-pill';
-
-        var labelEl = document.createElement('span');
-        if (attachedContext.type === 'selected_clip') {
-            labelEl.textContent = '@clip: ' + (attachedContext.title || 'clip');
-        } else if (attachedContext.type === 'transition_clips') {
-            var aTitle = (attachedContext.clipA && attachedContext.clipA.title) || '…';
-            var bTitle = (attachedContext.clipB && attachedContext.clipB.title) || '…';
-            labelEl.textContent = '@transition: ' + aTitle + ' → ' + bTitle;
-            if (!attachedContext.clipB) pill.classList.add('chat-tag-pending');
-        }
-        pill.appendChild(labelEl);
-
-        var xBtn = document.createElement('button');
-        xBtn.type = 'button';
-        xBtn.className = 'chat-tag-remove';
-        xBtn.setAttribute('aria-label', 'Remove');
-        xBtn.textContent = '×';
-        xBtn.addEventListener('click', function () {
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            getBridge(function (bridge) { if (bridge && bridge.cancelClipPick) bridge.cancelClipPick(); });
-            renderTags();
-        });
-        pill.appendChild(xBtn);
-        tagsRow.appendChild(pill);
-    }
-
-    function showPickHint(msg) {
-        var existing = document.getElementById('chat-pick-hint');
-        if (!existing) {
-            existing = document.createElement('div');
-            existing.id = 'chat-pick-hint';
-            existing.className = 'chat-pick-hint';
-            if (tagsRow && tagsRow.parentNode) {
-                tagsRow.parentNode.insertBefore(existing, tagsRow);
-            }
-        }
-        existing.textContent = msg;
-        existing.style.display = 'block';
-    }
-
-    function hidePendingPickHint() {
-        var el = document.getElementById('chat-pick-hint');
-        if (el) el.style.display = 'none';
-    }
-
-    // Called from Python: window.chatSetPickResult({id, title, start, end})
-    window.chatSetPickResult = function (json) {
-        try {
-            var data = typeof json === 'string' ? JSON.parse(json) : json;
-            if (pickMode === 'selected_clip') {
-                attachedContext = { type: 'selected_clip', id: data.id, title: data.title,
-                                    start: data.start, end: data.end };
-                pickMode = null;
-                hidePendingPickHint();
-            } else if (pickMode === 'transition_a') {
-                attachedContext = { type: 'transition_clips', clipA: data, clipB: null };
-                pickMode = 'transition_b';
-                showPickHint('Now click the second clip (B) on the timeline…');
-                // Re-enter pick mode on Python side for clip B
-                getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_b'); });
-            } else if (pickMode === 'transition_b') {
-                attachedContext.clipB = data;
-                pickMode = null;
-                hidePendingPickHint();
-            }
-            renderTags();
-        } catch (e) {}
-    };
-
     var processingStartTime = null;
     var lastRunTimestamp = null;
     var lastThoughtSec = null;
     var statusInterval = null;
 
     var activityContainer = null;
+    // True when activityContainer was lazily created for a "Live from terminal"
+    // tool call (see addToolBlock below) rather than by a normal setProcessing(true)
+    // turn — those never call setProcessing(false), so nothing would ever clear
+    // a "Reasoning" placeholder row; completeToolBlock skips creating one in that case.
     var activitySteps = [];
+    var toolBlocks = {}; // call_id -> { el, body, header, lines: [] }
+    var currentReasoningStep = null; // legacy; kept for compat
+    var enterStagger = 0;   // index within the current entrance burst
+    var lastEnterAt = 0;    // timestamp of the last staggered tool-block entrance
+
+    // Cursor-style collapsible thinking block (tool activity lives inside)
+    var thinkingBlockEl = null;
+    var thinkingBlockBody = null;
+    var thinkingBlockHeader = null;
+    var thinkingBlockCollapsed = false;
+    var firstAnswerTokenReceived = false;
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.2" stroke-dasharray="16 16" stroke-linecap="round"/></svg>';
 
     var ACTIVITY_CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
         '<path d="M3.5 7.5l2.5 2L10.5 4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    var ACTIVITY_X_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
+        '<path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+    var TOOL_CHEVRON_SVG = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none">' +
+        '<path d="M3.5 2L6.5 5l-3 3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    const SUGGESTED_PROMPTS = 'List my files · Add a track · Export video · Undo';
+    let typingInterval = null;
+    let typingIndex = 0;
+    let overlayVisible = true;
 
     function escapeHtml(s) {
         const div = document.createElement('div');
@@ -294,6 +250,70 @@
         const ph = messagesEl.querySelector('.chat-placeholder');
         if (ph) ph.remove();
     }
+
+    function isPinnedToBottom(el, threshold) {
+        threshold = threshold || 80;
+        return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+    }
+
+    function scrollToBottomIfPinned() {
+        if (messagesEl && isPinnedToBottom(messagesEl)) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+    }
+
+    function openThinkingBlock() {
+        if (thinkingBlockEl) return;
+        thinkingBlockCollapsed = false;
+        firstAnswerTokenReceived = false;
+        thinkingBlockEl = document.createElement('div');
+        thinkingBlockEl.className = 'chat-thinking-block expanded';
+        thinkingBlockHeader = document.createElement('button');
+        thinkingBlockHeader.type = 'button';
+        thinkingBlockHeader.className = 'chat-thinking-header';
+        thinkingBlockHeader.innerHTML =
+            '<span class="chat-thinking-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-thinking-title">Thinking…</span>';
+        thinkingBlockHeader.addEventListener('click', function () {
+            if (!thinkingBlockEl) return;
+            var expanded = thinkingBlockEl.classList.toggle('expanded');
+            if (thinkingBlockBody) {
+                thinkingBlockBody.style.display = expanded ? 'block' : 'none';
+            }
+        });
+        thinkingBlockBody = document.createElement('div');
+        thinkingBlockBody.className = 'chat-thinking-body';
+        thinkingBlockBody.style.display = 'block';
+        thinkingBlockEl.appendChild(thinkingBlockHeader);
+        thinkingBlockEl.appendChild(thinkingBlockBody);
+        messagesEl.appendChild(thinkingBlockEl);
+        activityContainer = document.createElement('div');
+        activityContainer.className = 'chat-activity-log';
+        activityContainer.setAttribute('aria-live', 'polite');
+        thinkingBlockBody.appendChild(activityContainer);
+        activitySteps = [];
+        currentReasoningStep = null;
+        scrollToBottomIfPinned();
+    }
+
+    window.openThinkingBlock = openThinkingBlock;
+
+    function collapseThinkingBlock(elapsedMs) {
+        if (!thinkingBlockEl || thinkingBlockCollapsed) return;
+        thinkingBlockCollapsed = true;
+        var sec = Math.round((elapsedMs || 0) / 1000);
+        var title = thinkingBlockHeader && thinkingBlockHeader.querySelector('.chat-thinking-title');
+        if (title) {
+            title.textContent = 'Thought for ' + (sec < 1 ? '<1' : sec) + 's';
+        }
+        thinkingBlockEl.classList.remove('expanded');
+        if (thinkingBlockBody) thinkingBlockBody.style.display = 'none';
+        clearReasoningStep();
+        lastThoughtSec = sec;
+        scrollToBottomIfPinned();
+    }
+
+    window.collapseThinkingBlock = collapseThinkingBlock;
 
     function setInputIdle(idle) {
         const container = document.querySelector('.chat-container');
@@ -333,7 +353,8 @@
             streamingMessageEl.classList.remove('chat-message-streaming');
             streamingMessageEl = null;
             streamingBuffer = '';
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            streamMdEl = null;
+            scrollToBottomIfPinned();
             return;
         }
         const div = document.createElement('div');
@@ -347,15 +368,14 @@
             div.innerHTML = '<div class="chat-message-body">' + (isAssistant ? bodyHtml : '<p>' + bodyHtml + '</p>') + '</div>';
         }
         messagesEl.appendChild(div);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     // ── Streaming-token rendering ──────────────────────────────────────────
-    // Tokens arrive incrementally from the backend WebSocket; we paint them
-    // into a single in-progress assistant bubble that's later replaced with
-    // the finalised markdown-rendered HTML when the full response arrives.
     var streamingMessageEl = null;
     var streamingBuffer = '';
+    var streamFlushScheduled = false;
+    var streamMdEl = null;
 
     function escapeHtmlForStream(s) {
         return s.replace(/&/g, '&amp;')
@@ -363,31 +383,114 @@
                 .replace(/>/g, '&gt;');
     }
 
+    function lightMarkdown(text) {
+        var s = escapeHtmlForStream(text);
+        s = s.replace(/```([\s\S]*?)```/g, function (_, code) {
+            return '<pre><code>' + code + '</code></pre>';
+        });
+        s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+        s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+        s = s.replace(/\n/g, '<br/>');
+        return s;
+    }
+
+    function sanitizeStreamText(text) {
+        if (!text) return '';
+        var s = String(text);
+        s = s.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '');
+        s = s.replace(/<think(?:ing)?>[\s\S]*$/gi, '');
+        s = s.replace(/^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*\n+/im, '');
+        s = s.replace(/^\s*Thought for\s+(?:<)?\d+(?:\.\d+)?(?:s| sec| seconds)?\.?\s*/im, '');
+        s = s.replace(/^\s*Thinking(?:…|\.\.\.)?\s*\n+/im, '');
+        return s;
+    }
+
+    function flushStreamingBuffer() {
+        streamFlushScheduled = false;
+        if (!streamingMessageEl) return;
+        var body = streamingMessageEl.querySelector('.chat-message-body');
+        if (!body) return;
+        streamingBuffer = sanitizeStreamText(streamingBuffer);
+        if (!streamMdEl) {
+            body.innerHTML = '<div class="stream-md"></div>';
+            streamMdEl = body.querySelector('.stream-md');
+        }
+        if (streamMdEl) streamMdEl.innerHTML = lightMarkdown(streamingBuffer);
+        scrollToBottomIfPinned();
+    }
+
+    window.resetStreamingMessage = function () {
+        if (streamingMessageEl && streamingMessageEl.parentNode) {
+            streamingMessageEl.remove();
+        }
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+        streamingSuppressed = false;
+    };
+
+    var streamingSuppressed = false;
+    window.suppressStreamingMessage = function () {
+        streamingSuppressed = true;
+        if (streamingMessageEl && streamingMessageEl.parentNode) {
+            streamingMessageEl.remove();
+        }
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+    };
+
     window.appendOrUpdateStreamingMessage = function (text) {
-        if (!text) return;
+        if (!text || streamingSuppressed) return;
+        // Don't paint answer text while tools are still running — that is usually
+        // pre-tool monologue and belongs in the thinking block, not the reply.
+        if (typeof runningToolCount === 'function' && runningToolCount() > 0) {
+            return;
+        }
         removePlaceholder();
+        if (!firstAnswerTokenReceived) {
+            firstAnswerTokenReceived = true;
+            clearReasoningStep();
+            var elapsed = processingStartTime ? (Date.now() - processingStartTime) : 0;
+            collapseThinkingBlock(elapsed);
+        }
         if (!streamingMessageEl) {
             streamingMessageEl = document.createElement('div');
             streamingMessageEl.className = 'chat-message chat-message-enter chat-message-streaming';
-            streamingMessageEl.innerHTML = '<div class="chat-message-body"><p></p></div>';
+            streamingMessageEl.innerHTML = '<div class="chat-message-body"></div>';
             messagesEl.appendChild(streamingMessageEl);
             streamingBuffer = '';
+            streamMdEl = null;
         }
         streamingBuffer += text;
-        var body = streamingMessageEl.querySelector('.chat-message-body');
-        if (body) {
-            // Render line breaks; keep it cheap — full markdown comes with the
-            // finalised message via appendMessage() once the turn completes.
-            body.innerHTML = '<p>' + escapeHtmlForStream(streamingBuffer).replace(/\n/g, '<br/>') + '</p>';
+        if (!streamFlushScheduled) {
+            streamFlushScheduled = true;
+            requestAnimationFrame(flushStreamingBuffer);
         }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+    };
+
+    window.reopenThinkingForTools = function () {
+        // Pre-tool tokens collapsed thinking early — reopen while tools run.
+        firstAnswerTokenReceived = false;
+        streamingSuppressed = false;
+        if (thinkingBlockEl) {
+            thinkingBlockCollapsed = false;
+            thinkingBlockEl.classList.add('expanded');
+            if (thinkingBlockBody) thinkingBlockBody.style.display = 'block';
+            var title = thinkingBlockHeader && thinkingBlockHeader.querySelector('.chat-thinking-title');
+            if (title) title.textContent = 'Thinking…';
+        } else if (typeof openThinkingBlock === 'function') {
+            openThinkingBlock();
+        }
     };
 
     window.finalizeStreamingMessage = function () {
-        // Called right before appendMessage delivers the markdown-rendered
-        // version of the same content.  appendMessage handles the swap, so
-        // we just ensure no stale buffer lingers if appendMessage isn't
-        // called (e.g. error path).
+        streamingSuppressed = false;
+        if (streamFlushScheduled) {
+            flushStreamingBuffer();
+        }
         if (streamingMessageEl) {
             streamingMessageEl.classList.remove('chat-message-streaming');
         }
@@ -395,16 +498,36 @@
 
     /* ── Activity log helpers (tool step display during processing) ── */
 
-    function addReasoningStep() {
-        if (!activityContainer) return;
-        var step = document.createElement('div');
-        step.className = 'chat-activity-step running';
-        step.setAttribute('data-type', 'reasoning');
-        step.innerHTML = '<span class="activity-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
-                         '<span class="activity-label activity-reasoning">Reasoning</span>';
-        activityContainer.appendChild(step);
-        activitySteps.push(step);
+    // Number of tool blocks still spinning. The DOM is the single source of
+    // truth so dedupe / unknown-id handling can never desync a counter.
+    function runningToolCount() {
+        var n = 0;
+        for (var k in toolBlocks) {
+            if (toolBlocks.hasOwnProperty(k) && toolBlocks[k] &&
+                toolBlocks[k].el && toolBlocks[k].el.classList.contains('running')) {
+                n++;
+            }
+        }
+        return n;
     }
+
+    // Idempotent: reasoning spinner retired — thinking block replaces it.
+    function ensureReasoningStep() {
+        return;
+    }
+
+    // Remove the live reasoning placeholder (used when a tool starts — the
+    // agent is no longer "just thinking").
+    function clearReasoningStep() {
+        if (!currentReasoningStep) return;
+        var idx = activitySteps.indexOf(currentReasoningStep);
+        if (idx !== -1) activitySteps.splice(idx, 1);
+        if (currentReasoningStep.parentNode) currentReasoningStep.remove();
+        currentReasoningStep = null;
+    }
+
+    // Back-compat alias for the older activity API / any external callers.
+    function addReasoningStep() { ensureReasoningStep(); }
 
     function completeActivityStep(step) {
         if (!step) return;
@@ -418,7 +541,10 @@
     }
 
     window.addActivityStep = function (label, detail) {
+        if (!activityContainer) openThinkingBlock();
         if (!activityContainer) return;
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
         // Complete current step (reasoning or previous tool)
         if (activitySteps.length > 0) {
             completeActivityStep(activitySteps[activitySteps.length - 1]);
@@ -435,15 +561,195 @@
         step.innerHTML = h;
         activityContainer.appendChild(step);
         activitySteps.push(step);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollToBottomIfPinned();
     };
 
     window.completeLastActivityStep = function () {
         if (!activityContainer || activitySteps.length === 0) return;
-        completeActivityStep(activitySteps[activitySteps.length - 1]);
-        // LLM will reason about the tool result next
-        addReasoningStep();
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        var last = activitySteps[activitySteps.length - 1];
+        if (last === currentReasoningStep) {
+            clearReasoningStep();
+        } else {
+            completeActivityStep(last);
+        }
+        scrollToBottomIfPinned();
+    };
+
+    /* ── Cursor-style collapsible tool terminal blocks ───────────────── */
+
+    // Stagger entrance animations so a burst of tool blocks pops in one-by-one
+    // rather than all at once. Blocks appearing >400ms apart start a fresh burst.
+    function staggerEntrance(el) {
+        var now = Date.now();
+        if (now - lastEnterAt > 400) {
+            enterStagger = 0;
+        } else {
+            enterStagger = Math.min(enterStagger + 1, 8);
+        }
+        lastEnterAt = now;
+        if (enterStagger > 0) {
+            el.style.animationDelay = (enterStagger * 80) + 'ms';
+        }
+    }
+
+    function setToolBlockExpanded(block, expanded) {
+        if (!block || !block.el) return;
+        if (expanded) {
+            block.el.classList.add('expanded');
+            block.body.style.display = 'block';
+        } else {
+            block.el.classList.remove('expanded');
+            block.body.style.display = 'none';
+        }
+    }
+
+    window.addToolBlock = function (payloadJson) {
+        // Normally opened by setProcessing(true), but a tool call can also be
+        // the first thing a turn produces — open the block lazily either way.
+        if (!activityContainer) openThinkingBlock();
+        if (!activityContainer) return;
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        var callId = data.call_id || ('tool_' + Date.now());
+        var title = data.title || 'Running tool';
+        var cmd = data.cmd || '';
+        var argsDetail = data.args_detail || '';
+        var toolName = (data.tool_name || '').toLowerCase();
+        var isMg = /motion-graphics|hyperframes|publish motion|lint draft|product demo|place motion graphic|propose overlay/.test(
+            (title + ' ' + toolName).toLowerCase()
+        );
+
+        // A tool is starting — dismiss the live reasoning placeholder.
+        clearReasoningStep();
+
+        // Dedupe: the same call_id can be announced twice (local on_tool_call
+        // and ws on_tool_progress both reach here). Reuse the existing block so
+        // we never orphan a still-spinning DOM node that completeToolBlock can't
+        // reach. Preserve any logs already streamed into its body.
+        var existing = toolBlocks[callId];
+        if (existing && existing.el && existing.el.parentNode) {
+            existing.el.classList.remove('done', 'error');
+            existing.el.classList.add('running');
+            if (isMg) existing.el.classList.add('chat-tool-block--mg');
+            var exIcon = existing.header.querySelector('.chat-tool-icon');
+            if (exIcon) exIcon.innerHTML = ACTIVITY_SPINNER_SVG;
+            if (title) {
+                var exTitle = existing.header.querySelector('.chat-tool-title');
+                if (exTitle) exTitle.textContent = title;
+            }
+            if (cmd) {
+                var exCmd = existing.header.querySelector('.chat-tool-cmd');
+                if (exCmd) exCmd.textContent = cmd;
+            }
+            if (argsDetail && existing.lines.length === 0) {
+                window.appendToolLog(callId, 'ARGS:\n' + argsDetail);
+            }
+            scrollToBottomIfPinned();
+            return;
+        }
+
+        var el = document.createElement('div');
+        el.className = 'chat-tool-block running expanded chat-message-enter';
+        if (isMg) el.classList.add('chat-tool-block--mg');
+        el.setAttribute('data-call-id', callId);
+        staggerEntrance(el);
+
+        var header = document.createElement('button');
+        header.type = 'button';
+        header.className = 'chat-tool-header';
+        header.innerHTML =
+            '<span class="chat-tool-chevron">' + TOOL_CHEVRON_SVG + '</span>' +
+            '<span class="chat-tool-icon">' + ACTIVITY_SPINNER_SVG + '</span>' +
+            '<span class="chat-tool-title">' + escapeHtml(title) + '</span>' +
+            '<span class="chat-tool-cmd">' + escapeHtml(cmd) + '</span>';
+
+        var body = document.createElement('div');
+        body.className = 'chat-tool-body';
+
+        header.addEventListener('click', function () {
+            var block = toolBlocks[callId];
+            // Expand when we have args/result logs.
+            if (!block || block.lines.length === 0) return;
+            var nowExpanded = !el.classList.contains('expanded');
+            setToolBlockExpanded(block, nowExpanded);
+        });
+
+        el.appendChild(header);
+        el.appendChild(body);
+        activityContainer.appendChild(el);
+
+        toolBlocks[callId] = { el: el, header: header, body: body, lines: [] };
+        if (argsDetail) {
+            window.appendToolLog(callId, 'ARGS:\n' + argsDetail);
+        }
+        scrollToBottomIfPinned();
+    };
+
+    window.appendToolLog = function (callId, line) {
+        if (!callId || !line) return;
+        if (!toolBlocks[callId]) {
+            window.addToolBlock(JSON.stringify({
+                call_id: callId,
+                title: 'Tool',
+                cmd: ''
+            }));
+        }
+        var block = toolBlocks[callId];
+        if (!block) return;
+        var row = document.createElement('div');
+        row.className = 'chat-tool-line';
+        row.textContent = line;
+        block.body.appendChild(row);
+        block.lines.push(line);
+        // Reveal the chevron now that there's something to expand.
+        block.el.classList.add('has-logs');
+        block.body.scrollTop = block.body.scrollHeight;
+        scrollToBottomIfPinned();
+    };
+
+    window.completeToolBlock = function (callId, ok, summary) {
+        var block = toolBlocks[callId];
+        if (block && block.el) {
+            block.el.classList.remove('running');
+            if (!ok) {
+                // Keep failed tools visible so args/results can be inspected.
+                block.el.classList.add('error', 'has-logs');
+                var errIcon = block.header.querySelector('.chat-tool-icon');
+                if (errIcon) errIcon.innerHTML = ACTIVITY_X_SVG;
+                if (summary) {
+                    var errCmd = block.header.querySelector('.chat-tool-cmd');
+                    if (errCmd) errCmd.textContent = summary;
+                }
+                setToolBlockExpanded(block, false);
+            } else {
+                block.el.classList.add('done');
+                var iconEl = block.header.querySelector('.chat-tool-icon');
+                if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
+                setToolBlockExpanded(block, false);
+            }
+        }
+
+        scrollToBottomIfPinned();
+    };
+
+    // Redraw a tool block from stored history: already finished, so it should
+    // land collapsed rather than spinning like a live call. Only the name and
+    // outcome are kept locally, so there are no logs to expand.
+    window.replayToolBlock = function (payloadJson, ok) {
+        var data;
+        try {
+            data = typeof payloadJson === 'string' ? JSON.parse(payloadJson) : payloadJson;
+        } catch (e) { return; }
+        if (!data || !data.call_id) return;
+        window.addToolBlock(data);
+        var block = toolBlocks[data.call_id];
+        if (block && block.el) {
+            block.el.classList.remove('chat-message-enter');
+            block.el.classList.remove('has-logs');
+        }
+        window.completeToolBlock(data.call_id, !!ok, '');
     };
 
     /* ── Processing state ── */
@@ -453,55 +759,59 @@
         sendBtn.disabled = processing;
         cancelBtn.style.display = processing ? 'flex' : 'none';
         if (processing) {
-            // Guard against duplicate calls (JS sendMessage + Python _set_processing_ui
-            // both fire setProcessing(true) for the same turn). Without this we'd append
-            // a second activity container and end up with two "Reasoning" rows.
-            if (activityContainer) return;
+            if (thinkingBlockEl && !thinkingBlockCollapsed) return;
+            if (thinkingBlockEl && thinkingBlockCollapsed) {
+                thinkingBlockEl = null;
+                thinkingBlockBody = null;
+                thinkingBlockHeader = null;
+                thinkingBlockCollapsed = false;
+                activityContainer = null;
+            }
             processingStartTime = Date.now();
             if (glowWrap) glowWrap.classList.add('glow-active');
             removePlaceholder();
-            activityContainer = document.createElement('div');
-            activityContainer.className = 'chat-activity-log';
-            activityContainer.setAttribute('aria-live', 'polite');
-            messagesEl.appendChild(activityContainer);
-            addReasoningStep();
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            openThinkingBlock();
+            currentReasoningStep = null; // fresh turn
+            scrollToBottomIfPinned();
         } else {
             if (glowWrap) glowWrap.classList.remove('glow-active');
-            // Finalize activity log: remove trailing reasoning step
-            if (activityContainer && activitySteps.length > 0) {
-                var last = activitySteps[activitySteps.length - 1];
-                if (last.getAttribute('data-type') === 'reasoning') {
-                    last.remove();
-                    activitySteps.pop();
-                }
-            }
-            // Complete any remaining running steps
+            clearReasoningStep();
             for (var i = 0; i < activitySteps.length; i++) {
                 if (activitySteps[i].classList.contains('running')) {
                     completeActivityStep(activitySteps[i]);
                 }
             }
-            // Remove empty activity container
-            if (activityContainer && activitySteps.length === 0) {
-                activityContainer.remove();
+            Object.keys(toolBlocks).forEach(function (cid) {
+                var block = toolBlocks[cid];
+                if (block && block.el && block.el.classList.contains('running')) {
+                    block.el.classList.remove('running');
+                    block.el.classList.add('done');
+                    var iconEl = block.header.querySelector('.chat-tool-icon');
+                    if (iconEl) iconEl.innerHTML = ACTIVITY_CHECK_SVG;
+                    setToolBlockExpanded(block, false);
+                }
+            });
+            if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {
+                collapseThinkingBlock(Date.now() - processingStartTime);
+            }
+            window.resetStreamingMessage();
+            if (thinkingBlockEl && thinkingBlockBody) {
+                var hasTools = thinkingBlockBody.querySelector('.chat-tool-block');
+                var hasSteps = activitySteps.length > 0;
+                if (!hasTools && !hasSteps && !thinkingBlockCollapsed) {
+                    thinkingBlockEl.remove();
+                    thinkingBlockEl = null;
+                    thinkingBlockBody = null;
+                    thinkingBlockHeader = null;
+                }
             }
             activityContainer = null;
             activitySteps = [];
-            // Calculate thought time
+            toolBlocks = {};
+            currentReasoningStep = null;
             if (processingStartTime) {
-                var elapsed = Math.round((Date.now() - processingStartTime) / 1000);
-                lastThoughtSec = elapsed;
                 lastRunTimestamp = Date.now();
                 processingStartTime = null;
-                // Insert "Thought X sec" badge before the last assistant message
-                var badge = document.createElement('div');
-                badge.className = 'chat-thought-badge';
-                badge.textContent = 'Thought ' + (elapsed < 1 ? '<1' : elapsed) + ' sec';
-                var lastMsg = messagesEl.querySelector('.chat-message:last-child');
-                if (lastMsg) {
-                    messagesEl.insertBefore(badge, lastMsg);
-                }
                 updatePreambleStatus();
             }
             if (inputEl) inputEl.focus();
@@ -574,6 +884,10 @@
             '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">' +
             '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6" fill="none"/>' +
             '<circle cx="12" cy="12" r="4" fill="currentColor"/></svg>',
+        xai:
+            '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 24 24" fill="none">' +
+            '<path d="M3 21L12.5 11.5M21 3l-7.5 7.5M9.5 3H5l10.5 18H20L9.5 3z" ' +
+            'stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
         default:
             '<svg class="chat-model-option-icon" width="16" height="16" viewBox="0 0 16 16" fill="none">' +
             '<path d="M8 1a3 3 0 00-3 3v1H4a2 2 0 00-2 2v6a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-1V4a3 3 0 00-3-3zm0 1.5A1.5 1.5 0 019.5 4v1h-3V4A1.5 1.5 0 018 2.5zM6 9a1 1 0 112 0 1 1 0 01-2 0zm4 0a1 1 0 112 0 1 1 0 01-2 0z" fill="currentColor"/></svg>'
@@ -581,6 +895,10 @@
 
     function detectProvider(modelId) {
         var id = (modelId || '').toLowerCase();
+        // xAI first: 'grok-4.20-...' contains no 'gpt', but the openai test
+        // below also matches a bare 'o1'/'o3' substring, so keep the explicit
+        // provider checks ahead of the loose ones.
+        if (id.indexOf('xai') === 0 || id.indexOf('grok') !== -1) return 'xai';
         if (id.indexOf('openai') === 0 || id.indexOf('gpt') !== -1 || id.indexOf('o1') !== -1 || id.indexOf('o3') !== -1) return 'openai';
         if (id.indexOf('anthropic') !== -1 || id.indexOf('claude') !== -1) return 'anthropic';
         if (id.indexOf('ollama') !== -1 || id.indexOf('llama') !== -1 || id.indexOf('local') !== -1) return 'ollama';
@@ -601,24 +919,129 @@
             '<path d="M3 7.5l2.5 2.5L11 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     }
 
-    function renderMenu() {
-        modelMenu.innerHTML = '';
-        modelItems.forEach(function (item) {
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'chat-model-option' + (item.id === selectedModelId ? ' selected' : '');
-            btn.setAttribute('role', 'option');
-            btn.setAttribute('aria-selected', item.id === selectedModelId ? 'true' : 'false');
-            btn.innerHTML = getModelIcon(item.id) +
-                '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
-                getCheckIcon();
-            btn.addEventListener('click', function (e) {
-                e.stopPropagation();
-                selectModel(item.id, item.name);
-                closeMenu();
-            });
-            modelMenu.appendChild(btn);
+    var PROVIDER_LABELS = {
+        openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google',
+        xai: 'xAI', ollama: 'Ollama', meta: 'Meta', mistral: 'Mistral',
+        cohere: 'Cohere', default: 'Other'
+    };
+
+    function providerLabel(slug) {
+        return PROVIDER_LABELS[slug] || slug;
+    }
+
+    function matchesQuery(item, q) {
+        return item.id.toLowerCase().indexOf(q) !== -1 ||
+               item.name.toLowerCase().indexOf(q) !== -1;
+    }
+
+    function buildOption(item) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-model-option' +
+            (item.id === selectedModelId ? ' selected' : '') +
+            (item.available === false ? ' unavailable' : '');
+        btn.setAttribute('role', 'option');
+        btn.setAttribute('data-model-id', item.id);
+        btn.setAttribute('aria-selected', item.id === selectedModelId ? 'true' : 'false');
+        var badges = (item.tags || []).map(function (t) {
+            return '<span class="chat-model-badge">' + escapeHtml(t) + '</span>';
+        }).join('');
+        btn.innerHTML = getModelIcon(item.id) +
+            '<span class="chat-model-option-name">' + escapeHtml(item.name) + '</span>' +
+            badges + getCheckIcon();
+        btn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            selectModel(item.id, item.name);
+            closeMenu();
         });
+        return btn;
+    }
+
+    /* Two render states:
+         empty query  -> flat list of featured models (the default view)
+         search       -> the whole catalog, grouped under provider headers
+       Searching is what reaches the long tail, so grouping only appears where
+       a query can return dozens of matches. */
+    function renderMenu() {
+        if (!modelList) return;
+        modelList.innerHTML = '';
+        activeIndex = -1;
+
+        var q = (modelSearch && modelSearch.value || '').trim().toLowerCase();
+
+        if (!q) {
+            var featured = modelItems.filter(function (i) { return i.featured; });
+            // An older backend sends no `featured` flag at all — fall back to
+            // showing everything rather than an empty menu.
+            if (!featured.length) featured = modelItems;
+            featured.forEach(function (item) {
+                modelList.appendChild(buildOption(item));
+            });
+            var hidden = modelItems.length - featured.length;
+            if (modelFooter) {
+                modelFooter.textContent = hidden > 0
+                    ? 'Search ' + hidden + ' more model' + (hidden === 1 ? '' : 's') + '…'
+                    : '';
+                modelFooter.style.display = hidden > 0 ? '' : 'none';
+            }
+            return;
+        }
+
+        var matches = modelItems.filter(function (i) { return matchesQuery(i, q); });
+        if (!matches.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-model-empty';
+            empty.textContent = 'No models match “' + q + '”';
+            modelList.appendChild(empty);
+            if (modelFooter) modelFooter.style.display = 'none';
+            return;
+        }
+
+        // Group by provider, preserving the order providers first appear in
+        // the (rank-sorted) list so the best models lead.
+        var order = [];
+        var groups = {};
+        matches.forEach(function (item) {
+            var p = item.provider || detectProvider(item.id);
+            if (!groups[p]) { groups[p] = []; order.push(p); }
+            groups[p].push(item);
+        });
+        order.forEach(function (p) {
+            var header = document.createElement('div');
+            header.className = 'chat-model-group-label';
+            header.textContent = providerLabel(p);
+            modelList.appendChild(header);
+            groups[p].forEach(function (item) {
+                modelList.appendChild(buildOption(item));
+            });
+        });
+        if (modelFooter) {
+            modelFooter.textContent = matches.length + ' of ' + modelItems.length + ' models';
+            modelFooter.style.display = '';
+        }
+    }
+
+    // ── Keyboard navigation over whatever is currently rendered ──────────
+    var activeIndex = -1;
+
+    function optionEls() {
+        return modelList ? Array.prototype.slice.call(
+            modelList.querySelectorAll('.chat-model-option')) : [];
+    }
+
+    function setActive(idx) {
+        var els = optionEls();
+        if (!els.length) return;
+        // wrap around
+        if (idx < 0) idx = els.length - 1;
+        if (idx >= els.length) idx = 0;
+        els.forEach(function (el) { el.classList.remove('active'); });
+        activeIndex = idx;
+        els[idx].classList.add('active');
+        // keep the cursor inside the scroll viewport
+        if (els[idx].scrollIntoView) {
+            els[idx].scrollIntoView({ block: 'nearest' });
+        }
     }
 
     function updateTriggerIcon(modelId) {
@@ -687,8 +1110,16 @@
             modelMenu.style.top = 'auto';
             modelMenu.style.maxHeight = Math.min(menuMax, spaceAbove) + 'px';
         }
-        modelMenu.style.display = 'block';
+        // 'flex', not 'block': .chat-model-menu is a flex column so the search
+        // row and footer stay pinned while only the list scrolls. An inline
+        // display:block would override that and collapse the layout.
+        modelMenu.style.display = 'flex';
         modelTrigger.classList.add('active');
+        if (modelSearch) {
+            // Focus after the menu is displayed — focusing a hidden input is a
+            // no-op in Qt WebKit.
+            try { modelSearch.focus(); modelSearch.select(); } catch (e) {}
+        }
     }
 
     function closeMenu() {
@@ -699,6 +1130,12 @@
         modelMenu.style.bottom = '';
         modelMenu.style.maxHeight = '';
         modelTrigger.classList.remove('active');
+        // Reset the query so the menu always reopens on the featured view.
+        if (modelSearch && modelSearch.value) {
+            modelSearch.value = '';
+            renderMenu();
+        }
+        activeIndex = -1;
     }
 
     function toggleMenu(e) {
@@ -717,6 +1154,33 @@
         if (e.key === 'Escape' && menuOpen) closeMenu();
     });
 
+    if (modelSearch) {
+        modelSearch.addEventListener('input', function () {
+            renderMenu();
+        });
+        // Keep typing inside the box from bubbling out to the composer.
+        modelSearch.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive(activeIndex + 1);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive(activeIndex - 1);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                var els = optionEls();
+                // With no explicit cursor, Enter takes the first match — the
+                // usual expectation after typing a query.
+                var el = els[activeIndex >= 0 ? activeIndex : 0];
+                if (el) el.click();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeMenu();
+            }
+            e.stopPropagation();
+        });
+    }
+
     window.setModels = function (modelListJson) {
         var list = [];
         try {
@@ -724,8 +1188,25 @@
         } catch (e) {
             list = [];
         }
+        /* Read the picker metadata tolerantly: an older backend sends only
+           id/name, in which case every model is treated as featured so the
+           menu still lists something, ranks tie, and no badges render. */
         modelItems = list.map(function (item) {
-            return { id: item.id || item.name || '', name: item.name || item.id || '', isDefault: !!item.default };
+            var id = item.id || item.name || '';
+            return {
+                id: id,
+                name: item.name || item.id || '',
+                isDefault: !!item.default,
+                provider: item.provider || detectProvider(id),
+                featured: item.featured === undefined ? true : !!item.featured,
+                rank: typeof item.rank === 'number' ? item.rank : 500,
+                tags: Array.isArray(item.tags) ? item.tags : [],
+                available: item.available === undefined ? true : !!item.available
+            };
+        });
+        modelItems.sort(function (a, b) {
+            if (a.rank !== b.rank) return a.rank - b.rank;
+            return a.name.localeCompare(b.name);
         });
         // Keep hidden select in sync
         var currentValue = modelSelect.value;
@@ -743,6 +1224,9 @@
         if (!picked && modelItems.length) picked = modelItems[0];
         if (picked) selectModel(picked.id, picked.name);
         else if (modelLabel) modelLabel.textContent = 'Model';
+        // Python pushes a new list on every backend/tab change, and whether the
+        // pill shows at all depends on that list — see applyBackendChrome.
+        if (backendSelect) applyBackendChrome(backendSelect.value);
     };
 
     window.setPreamble = function (html) {
@@ -752,11 +1236,18 @@
     window.updateCreditsBalance = function (balance) {
         var badge = document.getElementById('chat-credits-badge');
         if (!badge) return;
-        if (balance === null || balance === undefined || balance < 0) {
+        if (balance === null || balance === undefined) {
             badge.style.display = 'none';
             return;
         }
         badge.style.display = 'inline-flex';
+        if (balance < 0) {
+            badge.textContent = '…';
+            badge.style.background = 'rgba(77,156,246,0.08)';
+            badge.style.color = 'rgba(77,156,246,0.65)';
+            badge.style.borderColor = 'rgba(77,156,246,0.15)';
+            return;
+        }
         badge.textContent = balance + ' credits';
         if (balance === 0) {
             badge.style.background = 'rgba(239,68,68,0.12)';
@@ -767,9 +1258,9 @@
             badge.style.color = 'rgba(245,158,11,0.9)';
             badge.style.borderColor = 'rgba(245,158,11,0.25)';
         } else {
-            badge.style.background = 'rgba(124,111,247,0.12)';
-            badge.style.color = 'rgba(124,111,247,0.9)';
-            badge.style.borderColor = 'rgba(124,111,247,0.2)';
+            badge.style.background = 'rgba(77,156,246,0.12)';
+            badge.style.color = 'rgba(77,156,246,0.95)';
+            badge.style.borderColor = 'rgba(77,156,246,0.25)';
         }
     };
 
@@ -854,21 +1345,345 @@
         if (!text) return;
         exitIdle();
         closeCommandPalette();
-        var ctxJson = attachedContext ? JSON.stringify(attachedContext) : '';
         getBridge(function (bridge) {
             if (!bridge) return;
-            bridge.sendMessage(text, modelSelect.value || '', ctxJson);
+            bridge.sendMessage(text, modelSelect.value || '', currentAgentMode);
             inputEl.value = '';
             adjustTextareaHeight();
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
-            // Note: Python's _handle_web_send_message will fire setProcessing(true)
-            // *after* the user message is appended, so the "Reasoning" row lines up
-            // beneath the user bubble instead of above it.
         });
     }
+
+    function setAgentModeUI(mode) {
+        currentAgentMode = mode === 'planning' ? 'planning' : 'agent';
+        if (modePlanBtn) modePlanBtn.classList.toggle('active', currentAgentMode === 'planning');
+        if (modeAgentBtn) modeAgentBtn.classList.toggle('active', currentAgentMode === 'agent');
+        if (inputEl) {
+            inputEl.placeholder = currentAgentMode === 'planning'
+                ? 'Describe the edit; I will draft a plan without changing the timeline…'
+                : 'Ask or edit directly…';
+        }
+        var wrap = document.getElementById('chat-input-glow-wrap');
+        if (wrap) {
+            wrap.classList.toggle('planning-mode', currentAgentMode === 'planning');
+        }
+    }
+
+    window.setAgentModeUI = setAgentModeUI;
+
+    function onModeButtonClick(mode) {
+        setAgentModeUI(mode);
+        getBridge(function (bridge) {
+            if (bridge && bridge.setAgentMode) {
+                bridge.setAgentMode(mode);
+            }
+        });
+    }
+
+    if (modePlanBtn) modePlanBtn.addEventListener('click', function () { onModeButtonClick('planning'); });
+    if (modeAgentBtn) modeAgentBtn.addEventListener('click', function () { onModeButtonClick('agent'); });
+
+    window.setPlanReadyBanner = function (show) {
+        if (!show) window.setPlanChip(null);
+    };
+
+    var currentPlanData = null;
+
+    function escapeAttr(s) {
+        if (!s) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;');
+    }
+
+    window.setPlanChip = function (planJson) {
+        var root = document.getElementById('chat-plan-chip');
+        if (!planJson) {
+            currentPlanData = null;
+            if (root && root.parentNode) root.remove();
+            return;
+        }
+        var plan = typeof planJson === 'string' ? JSON.parse(planJson) : planJson;
+        currentPlanData = plan;
+        if (!root) {
+            root = document.createElement('div');
+            root.id = 'chat-plan-chip';
+            root.className = 'chat-plan-chip';
+            var messages = document.getElementById('chat-messages');
+            if (messages) messages.appendChild(root);
+        }
+        var status = (plan.status || 'draft').toUpperCase();
+        var steps = plan.steps || [];
+        var done = 0;
+        var failed = 0;
+        for (var i = 0; i < steps.length; i++) {
+            var st = (steps[i].status || '').toLowerCase();
+            if (st === 'completed') done++;
+            if (st === 'failed' || st === 'blocked') failed++;
+        }
+        var progress = steps.length ? (done + '/' + steps.length + ' done') : '';
+        if (failed > 0) progress += ' (' + failed + ' failed)';
+        var unfinished = Array.isArray(plan.unfinished_step_ids)
+            ? plan.unfinished_step_ids
+            : null;
+        if (unfinished === null) {
+            unfinished = [];
+            for (var j = 0; j < steps.length; j++) {
+                var ust = (steps[j].status || '').toLowerCase();
+                var uerr = (steps[j].last_error || '').trim();
+                if (ust === 'completed') continue;
+                if (ust === 'skipped' && !uerr) continue;
+                if (ust === 'skipped' && uerr) unfinished.push(steps[j].step_id || String(j));
+                else if (ust === 'failed' || ust === 'blocked' || ust === 'pending' || ust === 'in_progress') {
+                    unfinished.push(steps[j].step_id || String(j));
+                }
+            }
+        }
+        var allSucceeded = plan.all_steps_succeeded === true ||
+            (status === 'COMPLETED' && unfinished.length === 0 && steps.length > 0);
+        var html = '<div class="chat-plan-chip-inner">' +
+            '<span class="chat-plan-chip-title">' + escapeHtml(plan.title || 'Edit plan') + '</span>' +
+            '<span class="chat-plan-chip-badge chat-plan-chip-badge-' + escapeHtml(status.toLowerCase()) + '">' + escapeHtml(status) + '</span>' +
+            (progress ? '<span class="chat-plan-chip-progress" id="chat-plan-chip-progress">' + escapeHtml(progress) + '</span>' : '') +
+            '<div class="chat-plan-chip-actions">' +
+            '<button type="button" class="chat-plan-chip-open" id="chat-plan-chip-open">Open Plan</button>';
+        if (status === 'READY') {
+            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Execute</button>';
+        } else if (status === 'COMPLETED' && unfinished.length > 0 && !allSucceeded) {
+            html += '<button type="button" class="chat-plan-chip-exec" id="chat-plan-chip-exec">Re-run unfinished</button>';
+        }
+        html += '</div></div>';
+        root.innerHTML = html;
+        var openBtn = document.getElementById('chat-plan-chip-open');
+        if (openBtn) {
+            openBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.openPlanDock) bridge.openPlanDock();
+                });
+            };
+        }
+        var execBtn = document.getElementById('chat-plan-chip-exec');
+        if (execBtn) {
+            execBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.executePlanNoArgs) bridge.executePlanNoArgs();
+                    else if (bridge && bridge.executePlan) bridge.executePlan('', '');
+                });
+            };
+        }
+        var editBtn = document.getElementById('chat-plan-chip-edit');
+        if (editBtn) {
+            editBtn.onclick = function () {
+                getBridge(function (bridge) {
+                    if (bridge && bridge.editPlanInPlanningMode) bridge.editPlanInPlanningMode();
+                });
+            };
+        }
+    };
+
+    window.setPlanData = window.setPlanChip;
+
+    window.updatePlanChipProgress = function (stepId, status, error) {
+        if (!currentPlanData || !currentPlanData.steps) return;
+        for (var i = 0; i < currentPlanData.steps.length; i++) {
+            if (currentPlanData.steps[i].step_id === stepId) {
+                currentPlanData.steps[i].status = status;
+                if (error) currentPlanData.steps[i].last_error = error;
+                break;
+            }
+        }
+        var el = document.getElementById('chat-plan-chip-progress');
+        if (!el) return;
+        var done = 0;
+        var failed = 0;
+        var steps = currentPlanData.steps;
+        for (var j = 0; j < steps.length; j++) {
+            var st = (steps[j].status || '').toLowerCase();
+            if (st === 'completed') done++;
+            if (st === 'failed' || st === 'blocked') failed++;
+        }
+        var text = done + '/' + steps.length + ' done';
+        if (failed > 0) text += ' (' + failed + ' failed)';
+        el.textContent = text;
+    };
+
+    window.updatePlanStep = function () { /* chip uses updatePlanChipProgress */ };
+
+    window.clearPlanQuestions = function () {
+        var el = document.getElementById('chat-plan-questions');
+        if (el && el.parentNode) el.remove();
+    };
+
+    window.setPlanQuestions = function (questionsJson) {
+        var questions = typeof questionsJson === 'string' ? JSON.parse(questionsJson) : questionsJson;
+        if (!questions || !questions.length) {
+            window.clearPlanQuestions();
+            return;
+        }
+        window.clearPlanQuestions();
+        var root = document.createElement('div');
+        root.id = 'chat-plan-questions';
+        root.className = 'chat-plan-questions';
+
+        var requiredIds = [];
+        var answers = {};
+        var parts = [];
+        parts.push('<div class="chat-plan-questions-header">A few questions before I finalize the plan</div>');
+        for (var i = 0; i < questions.length; i++) {
+            var q = questions[i];
+            var qid = String(q.id || ('q' + (i + 1)));
+            requiredIds.push(qid);
+            answers[qid] = '';
+            parts.push('<div class="chat-plan-question" data-qid="' + escapeAttr(qid) + '">');
+            parts.push('<label class="chat-plan-question-prompt">' + escapeHtml(q.prompt || '') + '</label>');
+            if (q.options && q.options.length) {
+                parts.push('<div class="chat-plan-question-options">');
+                for (var j = 0; j < q.options.length; j++) {
+                    var opt = String(q.options[j]);
+                    parts.push(
+                        '<button type="button" class="chat-plan-option-btn" data-qid="' +
+                        escapeAttr(qid) + '" data-value="' + escapeAttr(opt) + '">' +
+                        escapeHtml(opt) + '</button>'
+                    );
+                }
+                parts.push('</div>');
+            }
+            parts.push(
+                '<input type="text" class="chat-plan-question-input" data-qid="' +
+                escapeAttr(qid) + '" placeholder="Your answer…" />'
+            );
+            parts.push('</div>');
+        }
+        parts.push('<textarea class="chat-plan-questions-notes" placeholder="Anything else? (optional)" rows="2"></textarea>');
+        parts.push('<div class="chat-plan-questions-actions">');
+        parts.push('<button type="button" class="chat-plan-questions-submit" disabled>Submit answers</button>');
+        parts.push('<button type="button" class="chat-plan-questions-skip">Skip — use your judgment</button>');
+        parts.push('</div>');
+        root.innerHTML = parts.join('');
+
+        var messages = document.getElementById('chat-messages');
+        if (messages) messages.appendChild(root);
+
+        var submitBtn = root.querySelector('.chat-plan-questions-submit');
+        var skipBtn = root.querySelector('.chat-plan-questions-skip');
+        var notesEl = root.querySelector('.chat-plan-questions-notes');
+
+        function allAnswered() {
+            for (var k = 0; k < requiredIds.length; k++) {
+                if (!String(answers[requiredIds[k]] || '').trim()) return false;
+            }
+            return requiredIds.length > 0;
+        }
+
+        function updateSubmitState() {
+            if (submitBtn) submitBtn.disabled = !allAnswered();
+        }
+
+        function setAnswer(qid, value) {
+            answers[qid] = value;
+            var input = null;
+            var inputs = root.querySelectorAll('.chat-plan-question-input');
+            for (var i = 0; i < inputs.length; i++) {
+                if (inputs[i].getAttribute('data-qid') === qid) {
+                    input = inputs[i];
+                    break;
+                }
+            }
+            if (input && input.value !== value) input.value = value;
+            updateSubmitState();
+        }
+
+        root.addEventListener('click', function (e) {
+            var btn = e.target;
+            if (!btn || !btn.classList || !btn.classList.contains('chat-plan-option-btn')) {
+                // Walk up in case text node / nested (unlikely)
+                var t = e.target;
+                while (t && t !== root) {
+                    if (t.classList && t.classList.contains('chat-plan-option-btn')) {
+                        btn = t;
+                        break;
+                    }
+                    t = t.parentNode;
+                }
+            }
+            if (!btn || !btn.classList || !btn.classList.contains('chat-plan-option-btn')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var qid = btn.getAttribute('data-qid') || '';
+            var value = btn.getAttribute('data-value') || '';
+            setAnswer(qid, value);
+            var optionBtns = root.querySelectorAll('.chat-plan-option-btn');
+            for (var i = 0; i < optionBtns.length; i++) {
+                if (optionBtns[i].getAttribute('data-qid') === qid) {
+                    if (optionBtns[i] === btn) optionBtns[i].classList.add('selected');
+                    else optionBtns[i].classList.remove('selected');
+                }
+            }
+        });
+
+        root.addEventListener('input', function (e) {
+            var t = e.target;
+            if (!t || !t.classList || !t.classList.contains('chat-plan-question-input')) return;
+            setAnswer(t.getAttribute('data-qid') || '', t.value || '');
+        });
+
+        function sendAnswers(payload) {
+            getBridge(function (bridge) {
+                if (bridge && bridge.submitPlanAnswers) {
+                    try {
+                        bridge.submitPlanAnswers(JSON.stringify(payload));
+                    } catch (err) {
+                        console.warn('submitPlanAnswers failed', err);
+                    }
+                } else {
+                    console.warn('submitPlanAnswers bridge method missing');
+                }
+            });
+            window.clearPlanQuestions();
+        }
+
+        if (submitBtn) {
+            submitBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!allAnswered()) return;
+                var out = {};
+                for (var k = 0; k < requiredIds.length; k++) {
+                    var id = requiredIds[k];
+                    var val = String(answers[id] || '').trim();
+                    if (val) out[id] = val;
+                }
+                sendAnswers({
+                    answers: out,
+                    notes: notesEl ? String(notesEl.value || '').trim() : ''
+                });
+            });
+        }
+        if (skipBtn) {
+            skipBtn.addEventListener('click', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                sendAnswers({ skip: true });
+            });
+        }
+
+        updateSubmitState();
+        scrollToBottomIfPinned();
+        try {
+            root.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        } catch (err) {}
+    };
+
+    window.setChatInput = function (text) {
+        if (!inputEl) return;
+        inputEl.value = text || '';
+        try {
+            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        } catch (e) {}
+        inputEl.focus();
+    };
+
+    setAgentModeUI('agent');
 
     function insertAtCursor(text) {
         try {
@@ -900,34 +1715,21 @@
         });
     }
 
+    function openAgentTrace() {
+        getBridge(function (bridge) {
+            if (bridge && bridge.openAgentTrace) {
+                bridge.openAgentTrace();
+            }
+        });
+    }
+
     sendBtn.addEventListener('click', sendMessage);
-
-    // Attach single clip: enter pick mode → user clicks clip on timeline
-    if (attachClipBtn) {
-        attachClipBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
-
-    // Attach two clips for transition
-    if (transitionClipsBtn) {
-        transitionClipsBtn.addEventListener('click', function () {
-            hideOverlay();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-            if (inputEl) inputEl.focus();
-        });
-    }
 
     cancelBtn.addEventListener('click', cancelRequest);
     clearBtn.addEventListener('click', clearChat);
+    if (traceBtn) {
+        traceBtn.addEventListener('click', openAgentTrace);
+    }
 
     inputEl.addEventListener('keydown', function (e) {
         if (commandPaletteOpen) {
@@ -979,24 +1781,6 @@
         adjustTextareaHeight();
         maybeUpdateCommandPaletteFromValue(val);
         if (val.trim().length > 0) hideOverlay();
-        // Auto-detect typed @mentions and convert them to tags
-        if (val.includes('@transition_clips') || val.includes('@transition')) {
-            inputEl.value = val.replace(/@transition_clips?/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'transition_a';
-            attachedContext = { type: 'transition_clips', clipA: null, clipB: null };
-            renderTags();
-            showPickHint('Click the first clip (A) on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('transition_a'); });
-        } else if (val.includes('@selected_clip') || val.includes('@clip')) {
-            inputEl.value = val.replace(/@selected_clip\b/g, '').replace(/@clip\b/g, '').replace(/\s+/g, ' ').trim();
-            closeCommandPalette();
-            adjustTextareaHeight();
-            pickMode = 'selected_clip';
-            showPickHint('Click a clip on the timeline…');
-            getBridge(function (bridge) { if (bridge) bridge.requestClipPick('selected_clip'); });
-        }
     });
 
     // Close command palette on outside click (but keep model menu behavior intact)
@@ -1033,7 +1817,17 @@
             typingEl = null;
             activityContainer = null;
             activitySteps = [];
-            if (inputOverlay) inputOverlay.classList.add('hidden');
+            toolBlocks = {};
+            currentReasoningStep = null;
+            thinkingBlockEl = null;
+            thinkingBlockBody = null;
+            thinkingBlockHeader = null;
+            thinkingBlockCollapsed = false;
+            firstAnswerTokenReceived = false;
+            window.resetStreamingMessage();
+            overlayVisible = true;
+            if (inputOverlay) inputOverlay.classList.remove('hidden');
+            typingIndex = 0;
             lastRunTimestamp = null;
             lastThoughtSec = null;
             processingStartTime = null;
@@ -1041,11 +1835,6 @@
                 preambleStatus.classList.remove('visible');
                 preambleStatus.innerHTML = '';
             }
-            // Reset tag state
-            attachedContext = null;
-            pickMode = null;
-            hidePendingPickHint();
-            renderTags();
             updateIdleState();
         };
     })(window.clearMessages);
@@ -1063,6 +1852,7 @@
     var tabBarEl = document.getElementById('chat-tab-bar');
     var tabAddBtn = document.getElementById('chat-tab-add');
     var currentTabs = [];
+    var activeSessionId = '';  // tracked from the active tab for setBackend calls
     var unreadSessions = {};  // sessionId -> true if has unread messages
 
     window.setTabs = function (tabsJson) {
@@ -1081,6 +1871,12 @@
         tabBarEl.style.display = 'flex';
 
         currentTabs.forEach(function (tab) {
+            if (tab.active) {
+                activeSessionId = tab.id;
+                if (backendSelect && tab.backend) backendSelect.value = tab.backend;
+                updateCliEmptyState();
+                applyBackendChrome(tab.backend);
+            }
             var btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'chat-tab'
@@ -1125,8 +1921,226 @@
 
     tabAddBtn.addEventListener('click', function () {
         getBridge(function (bridge) {
-            if (bridge && bridge.createSession) bridge.createSession(modelSelect.value || '');
+            if (bridge && bridge.createSession) {
+                bridge.createSession(modelSelect.value || '', (backendSelect && backendSelect.value) || 'zenvi');
+            }
         });
+    });
+
+    // Populate the agent backend selector and react to changes. The hidden native
+    // <select> stays the single source of truth (read by Python via QWebChannel).
+    // The visible picker lives in the main window toolbar next to Save — see
+    // windows/agent_selector_button.py — so nothing here renders a control; this
+    // is only the mirror Python reads and the CLI empty state below keys off.
+    var backendItems = [];
+    // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
+    // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
+    var cliStatus = {};
+    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+
+    function findBackendName(id) {
+        var item = backendItems.find(function (b) { return b.id === id; });
+        return item ? item.name : (id || 'Zenvi Assistant');
+    }
+
+    function isCliBackend(id) {
+        return id === 'claude_code' || id === 'codex';
+    }
+
+    // Empty state (calm, not an error) shown instead of messages when the active
+    // tab's backend is a CLI agent that's missing or not yet connected.
+    function updateCliEmptyState() {
+        if (!cliEmptyStateEl || !messagesEl || !backendSelect) return;
+        var id = backendSelect.value;
+        var info = cliStatus[id];
+        if (!isCliBackend(id) || !info) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
+            cliEmptyStateEl.style.display = 'none';
+            messagesEl.style.display = '';
+            return;
+        }
+        if (info.installed === false) {
+            cliEmptyStateEl.removeAttribute('data-connect-for');
+            cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
+                findBackendName(id) + " CLI not found. Install it and make sure '" +
+                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+            ) + '</div>';
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            return;
+        }
+        if (!info.registered) {
+            cliEmptyStateEl.style.display = 'flex';
+            messagesEl.style.display = 'none';
+            // A failed connect re-detects, which lands back here with
+            // registered still false. Rebuilding the markup would wipe the
+            // diagnostic onConnectResult just wrote (invalid TOML, the
+            // `claude mcp add` stderr) before the user could read it, so
+            // render this state once per backend and leave it alone.
+            if (cliEmptyStateEl.getAttribute('data-connect-for') === id) return;
+            cliEmptyStateEl.setAttribute('data-connect-for', id);
+            cliEmptyStateEl.innerHTML =
+                '<div class="chat-cli-connect-msg">' + escapeHtml(findBackendName(id)) +
+                ' is installed but not connected to Zenvi yet.</div>' +
+                '<button type="button" id="chat-cli-connect-btn" class="chat-cli-connect-btn">Connect</button>' +
+                '<div id="chat-cli-connect-status" class="chat-cli-connect-status"></div>';
+            var btn = document.getElementById('chat-cli-connect-btn');
+            if (btn) {
+                btn.addEventListener('click', function () {
+                    btn.disabled = true;
+                    btn.textContent = 'Connecting…';
+                    var statusEl = document.getElementById('chat-cli-connect-status');
+                    if (statusEl) { statusEl.textContent = ''; statusEl.className = 'chat-cli-connect-status'; }
+                    getBridge(function (bridge) {
+                        if (bridge && bridge.connectCli) bridge.connectCli(id);
+                    });
+                });
+            }
+            return;
+        }
+        // Installed and connected — nothing to show, back to the normal chat view.
+        cliEmptyStateEl.removeAttribute('data-connect-for');
+        cliEmptyStateEl.style.display = 'none';
+        messagesEl.style.display = '';
+    }
+
+    window.setCliStatus = function (statusJson) {
+        try { cliStatus = JSON.parse(statusJson) || {}; } catch (e) { cliStatus = {}; }
+        updateCliEmptyState();
+    };
+
+    window.onConnectResult = function (backendId, ok, message) {
+        var statusEl = document.getElementById('chat-cli-connect-status');
+        var btn = document.getElementById('chat-cli-connect-btn');
+        if (statusEl) {
+            statusEl.textContent = message || (ok ? 'Connected.' : 'Connect failed.');
+            statusEl.className = 'chat-cli-connect-status ' + (ok ? 'ok' : 'error');
+        }
+        if (btn && !ok) {
+            btn.disabled = false;
+            btn.textContent = 'Connect';
+        }
+        // A fresh setCliStatus push (from the re-detect Python triggers right
+        // after this) will re-render the empty state — if now registered, it
+        // flips straight back to the normal chat view.
+    };
+
+    window.setBackends = function (backendsJson) {
+        if (!backendSelect) return;
+        var list = [];
+        try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
+        backendItems = list.map(function (b) {
+            return { id: b.id || '', name: b.name || b.id || '' };
+        });
+        var current = backendSelect.value;
+        backendSelect.innerHTML = '';
+        backendItems.forEach(function (b) {
+            var opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = b.name;
+            backendSelect.appendChild(opt);
+        });
+        if (current) backendSelect.value = current;
+    };
+
+    if (backendSelect) {
+        backendSelect.addEventListener('change', function () {
+            updateCliEmptyState();
+            if (!activeSessionId) return;
+            getBridge(function (bridge) {
+                if (bridge && bridge.setBackend) bridge.setBackend(activeSessionId, backendSelect.value);
+            });
+            applyBackendChrome(backendSelect.value);
+        });
+    }
+
+    // Per-backend chrome. The model pill follows whether this backend offers a
+    // lineup at all (Python pushes a fresh setModels on every backend/tab
+    // change; an empty list means "let the CLI pick"). The Plan/Agent toggle is
+    // Zenvi-only — planning is a backend feature the CLI agents don't have; see
+    // AIChatWindow._resolve_agent_mode.
+    function applyBackendChrome(id) {
+        var isZenvi = (id === 'zenvi' || !id);
+        if (modelTrigger) modelTrigger.style.display = modelItems.length ? '' : 'none';
+        if (modeToggleEl) modeToggleEl.style.display = isZenvi ? '' : 'none';
+        if (!isZenvi) {
+            if (currentAgentMode !== 'agent') setAgentModeUI('agent');
+            if (window.setPlanChip) window.setPlanChip(null);
+        }
+    }
+
+    // ==================================================================
+    // Tool-gap log panel (silent capability gaps — see the agent spec, Part B)
+    // ==================================================================
+    function openGapLog() {
+        if (!gapLogOverlay) return;
+        gapLogOverlay.style.display = 'flex';
+        // Status must always be real, never stale — re-fetch every time it opens.
+        getBridge(function (bridge) {
+            if (bridge && bridge.getGaps) bridge.getGaps();
+        });
+    }
+
+    function closeGapLog() {
+        if (gapLogOverlay) gapLogOverlay.style.display = 'none';
+    }
+
+    function renderGapEntry(entry) {
+        var row = document.createElement('div');
+        row.className = 'chat-gap-log-entry';
+        var when = '';
+        try { when = new Date(entry.ts * 1000).toLocaleString(); } catch (e) { when = ''; }
+        row.innerHTML =
+            '<div class="chat-gap-log-entry-request">' + escapeHtml(entry.request || '') + '</div>' +
+            '<div class="chat-gap-log-entry-capability">' + escapeHtml(entry.missing_capability || '') + '</div>' +
+            '<div class="chat-gap-log-entry-footer">' +
+            '<span class="chat-gap-log-entry-time">' + escapeHtml(when) + '</span>' +
+            '<span class="chat-gap-log-entry-actions">' +
+            '<button type="button" class="chat-gap-log-action-btn resolve">Resolve</button>' +
+            '<button type="button" class="chat-gap-log-action-btn delete">Delete</button>' +
+            '</span></div>';
+        row.querySelector('.resolve').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.resolveGap) bridge.resolveGap(entry.id);
+            });
+        });
+        row.querySelector('.delete').addEventListener('click', function () {
+            getBridge(function (bridge) {
+                if (bridge && bridge.deleteGap) bridge.deleteGap(entry.id);
+            });
+        });
+        return row;
+    }
+
+    window.setGapList = function (entriesJson) {
+        if (!gapLogListEl) return;
+        var entries = [];
+        try { entries = JSON.parse(entriesJson) || []; } catch (e) { entries = []; }
+        var open = entries.filter(function (e) { return !e.resolved; });
+        gapLogListEl.innerHTML = '';
+        if (!open.length) {
+            var empty = document.createElement('div');
+            empty.className = 'chat-gap-log-empty';
+            empty.textContent = 'No tool gaps logged.';
+            gapLogListEl.appendChild(empty);
+            return;
+        }
+        open.forEach(function (entry) {
+            gapLogListEl.appendChild(renderGapEntry(entry));
+        });
+    };
+
+    if (gapLogBtn) gapLogBtn.addEventListener('click', openGapLog);
+    if (gapLogClose) gapLogClose.addEventListener('click', closeGapLog);
+    if (gapLogOverlay) {
+        gapLogOverlay.addEventListener('click', function (e) {
+            if (e.target === gapLogOverlay) closeGapLog();
+        });
+    }
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && gapLogOverlay && gapLogOverlay.style.display !== 'none') {
+            closeGapLog();
+        }
     });
 
     // Handle background responses (marks tab as unread)

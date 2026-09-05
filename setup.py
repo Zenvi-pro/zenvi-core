@@ -89,6 +89,9 @@ for _env_name in ('.env.example', '.env.production'):
     _p = os.path.join(PATH, _env_name)
     if os.path.isfile(_p):
         _share_zenvi_files.append(_p)
+_zenvi_ico = os.path.join(PATH, "xdg", "zenvi.ico")
+if os.path.isfile(_zenvi_ico):
+    _share_zenvi_files.append(_zenvi_ico)
 if _share_zenvi_files:
     os_files.append(('share/zenvi', _share_zenvi_files))
 

@@ -43,12 +43,6 @@ def _candidate_search_roots() -> list[str]:
     return out
 
 
-def zenvi_install_root() -> str:
-    """Primary install directory (exe folder when frozen, else repo root in dev)."""
-    roots = _candidate_search_roots()
-    return roots[0]
-
-
 def _first_env_path(filename: str) -> str | None:
     for root in _candidate_search_roots():
         p = os.path.join(root, filename)
@@ -81,7 +75,7 @@ def _merge_env_file(env_path: str) -> None:
                 value = value.strip()
                 if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
                     value = value[1:-1].strip()
-                if not key or not value:
+                if not key or not value or value.startswith("#"):
                     continue
                 if key not in os.environ:
                     os.environ[key] = value

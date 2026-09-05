@@ -86,14 +86,21 @@ exec "$HERE/zenvi" "$@"
 LAUNCHER
     chmod +x "$DEB_DIR/usr/bin/zenvi"
 
-    # Desktop file
-    cp xdg/*.desktop "$DEB_DIR/usr/share/applications/" 2>/dev/null || true
-
-    # Icon
-    ICON=$(find images xdg -name "*.png" -path "*256*" 2>/dev/null | head -1)
-    if [ -n "$ICON" ]; then
-        cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
+    # Desktop file (Zenvi only)
+    DESKTOP="xdg/org.zenvi.Zenvi.desktop"
+    if [ ! -f "$DESKTOP" ]; then
+        echo "ERROR: Missing $DESKTOP"
+        exit 1
     fi
+    cp "$DESKTOP" "$DEB_DIR/usr/share/applications/"
+
+    # Icon (same branding as installer/dmg-icon.png)
+    ICON="installer/dmg-icon.png"
+    if [ ! -f "$ICON" ]; then
+        echo "ERROR: Missing packaging icon: $ICON"
+        exit 1
+    fi
+    cp "$ICON" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/zenvi.png"
 
     # Control file (must NOT have leading whitespace)
     cat > "$DEB_DIR/DEBIAN/control" << CTRL

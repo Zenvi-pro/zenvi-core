@@ -1,0 +1,21 @@
+{
+  "vp9_alpha_webm": {
+    "expect_pix_fmt": "yuv420p",
+    "expect_alpha_mode": "1",
+    "expect_explicit_yuva": false,
+    "expect_libvpx_ok": true,
+    "expect_native_ok": false,
+    "note": "HyperFrames delivery; OpenShot must re-encode to qtrle MOV"
+  },
+  "openshot_qtrle_mov": {
+    "expect_pix_fmt": "argb",
+    "expect_ext": ".mov",
+    "expect_openshot_ok": true,
+    "note": "Native decode preserves alpha — what FFmpegReader uses"
+  },
+  "vp9_opaque_webm": {
+    "expect_pix_fmt": "yuv420p",
+    "expect_alpha_mode": "",
+    "expect_openshot_ok": false
+  }
+}
