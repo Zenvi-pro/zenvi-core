@@ -31,6 +31,7 @@ from classes.app import get_app
 from classes.logger import log
 from classes.query import File, Clip
 from classes.clip_utils import project_fps_fraction, video_length_to_project_frames
+from classes.qt_main_thread import invoke_on_gui
 from PyQt5.QtGui import QCursor
 from PyQt5.QtCore import Qt
 import openshot
@@ -115,28 +116,28 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             log.info(f"file: {file_data['path']} has no audio_data. Skipping")
             return
 
-        # Show waiting cursor
-        get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
+        # Show waiting cursor (must run on the GUI thread)
+        invoke_on_gui(lambda: get_app().setOverrideCursor(QCursor(Qt.WaitCursor)))
 
-        # Extract audio waveform data (for all channels)
-        # Use max RMS (root mean squared) value for each sample
-        # NOTE: we also have the average RMS value calculated, although we do
-        # not use it yet
-        waveformer = openshot.AudioWaveformer(temp_clip.Reader())
-        file_audio_data = waveformer.ExtractSamples(channel, SAMPLES_PER_SECOND, True)
-        samples_vectors = file_audio_data.vectors()
-        max_samples_vector = samples_vectors[0]  # max sample value dataset
-        rms_samples_vector = samples_vectors[1]  # average RMS sample value dataset
+        try:
+            # Extract audio waveform data (for all channels)
+            # Use max RMS (root mean squared) value for each sample
+            # NOTE: we also have the average RMS value calculated, although we do
+            # not use it yet
+            waveformer = openshot.AudioWaveformer(temp_clip.Reader())
+            file_audio_data = waveformer.ExtractSamples(channel, SAMPLES_PER_SECOND, True)
+            samples_vectors = file_audio_data.vectors()
+            max_samples_vector = samples_vectors[0]  # max sample value dataset
+            rms_samples_vector = samples_vectors[1]  # average RMS sample value dataset
 
-        # Clear data
-        file_audio_data.clear()
+            # Clear data
+            file_audio_data.clear()
 
-        # Update file with audio data (only if all channels requested)
-        if channel == -1:
-            get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
-
-        # Restore cursor
-        get_app().restoreOverrideCursor()
+            # Update file with audio data (only if all channels requested)
+            if channel == -1:
+                get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
+        finally:
+            invoke_on_gui(lambda: get_app().restoreOverrideCursor())
 
         # Return audio sample dataset
         return max_samples_vector
