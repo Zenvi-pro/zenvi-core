@@ -38,5 +38,30 @@ class PlanningToolGuardTests(unittest.TestCase):
         self.assertTrue(is_planning_tool_allowed("search_clips_tool"))
 
 
+class PlanningBlockMessageTests(unittest.TestCase):
+    """The block message has to tell the planner which step to write instead."""
+
+    def setUp(self):
+        from windows.ai_chat_ui import _planning_block_message
+
+        self.msg = _planning_block_message
+
+    def test_generate_points_at_video_gen(self):
+        text = self.msg("generate_video_and_add_to_timeline_tool")
+        self.assertIn("video_gen", text)
+        self.assertTrue(text.startswith("Error:"))
+
+    def test_add_clip_still_blocked_generically(self):
+        text = self.msg("add_clip_to_timeline_tool")
+        self.assertTrue(text.startswith("Error:"))
+        self.assertIn("plan step", text)
+
+    def test_guard_matches_backend_allowlist_names(self):
+        from windows.ai_chat_ui import _is_planning_tool_allowed
+
+        self.assertFalse(_is_planning_tool_allowed("generate_video_and_add_to_timeline_tool"))
+        self.assertTrue(_is_planning_tool_allowed("search_clips_tool"))
+
+
 if __name__ == "__main__":
     unittest.main()
