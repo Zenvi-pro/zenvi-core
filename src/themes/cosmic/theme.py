@@ -845,51 +845,10 @@ QWidget#cutting QPushButton#btnAddClip:disabled {
 /* ── Video preview ────────────────────────────────────────── */
 QWidget#videoPreview { background-color: #0d0d0d; }
 
-/* ── AI Media Manager dock ────────────────────────────────── */
-QDockWidget#AIMediaPanel QWidget,
-QDockWidget#AIMediaPanel QTabWidget,
-QDockWidget#AIMediaPanel QTabWidget::pane {
+/* ── Scene Descriptions dock ──────────────────────────────── */
+QDockWidget#AIMediaPanel QWidget {
     background-color: #0d0d0d;
     border: none;
-}
-
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
-    background-color: #0d0d0d;
-    border: none;
-}
-
-QDockWidget#AIMediaPanel QTabBar::tab {
-    color: #d4d4d4;
-    padding: 5px 12px;
-    font-size: 11px;
-    min-width: 0;
-    min-height: 0;
-    max-width: 400px;
-}
-
-/* Make the tag search feel like a real search field */
-QDockWidget#AIMediaPanel QLineEdit {
-    background: #0d0d0d;
-    border-radius: 5px;
-    padding: 5px 10px;
-}
-
-/* Compact list rows in the Tags list */
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
-    font-size: 11px;
-}
-
-QDockWidget#AIMediaPanel QListWidget::item,
-QDockWidget#AIMediaPanel QTreeWidget::item {
-    padding: 3px 4px;
-    border-radius: 3px;
-}
-
-QDockWidget#AIMediaPanel QListWidget::item:selected,
-QDockWidget#AIMediaPanel QTreeWidget::item:selected {
-    background: rgba(77, 156, 246, 0.18);
 }
 
 /* ── Tree/List view item height ───────────────────────────── */

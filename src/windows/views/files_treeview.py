@@ -38,6 +38,7 @@ from classes.app import get_app
 from classes.logger import log
 from classes.query import File
 from .menu import StyledContextMenu
+from .indexing_badge import IndexingBadgeDelegate
 
 
 class FilesTreeView(QTreeView):
@@ -236,6 +237,12 @@ class FilesTreeView(QTreeView):
         self.header().setSectionResizeMode(1, QHeaderView.Stretch)
         self.header().setSectionResizeMode(2, QHeaderView.Interactive)
 
+    def _on_indexing_progress(self, file_id, phase, percent):
+        self.viewport().update()
+
+    def _on_file_status_changed(self, file_id):
+        self.viewport().update()
+
     def value_updated(self, item):
         """ Name or tags updated """
         if self.files_model.ignore_updates:
@@ -292,7 +299,13 @@ class FilesTreeView(QTreeView):
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
 
+        # Indexing badge on the thumbnail/name cell
+        self._badge_delegate = IndexingBadgeDelegate(self)
+        self.setItemDelegateForColumn(0, self._badge_delegate)
+
         self.files_model.ModelRefreshed.connect(self.refresh_view)
+        self.files_model.indexingProgress.connect(self._on_indexing_progress)
+        self.win.FileUpdated.connect(self._on_file_status_changed)
 
         # setup filter events
         self.files_model.model.itemChanged.connect(self.value_updated)
