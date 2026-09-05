@@ -82,6 +82,16 @@ class UpdatesRouter:
     delegate to the real manager.
     """
 
+    # Mutable state that lives on the real UpdateManager and is *assigned to*
+    # by callers (``app.updates.transaction_id = tid``, ~20 sites across the
+    # GUI and the agent tool handlers).  ``__getattr__`` only covers reads, so
+    # without these properties such a write would land in the router's own
+    # __dict__ and the UpdateManager would never see it -- leaving
+    # transaction_id None, which makes UpdateAction mint a fresh uuid per
+    # mutation and reduces undo() to reversing one mutation at a time.
+    _FORWARDED_STATE = ("transaction_id", "ignore_history",
+                        "pending_action", "last_action")
+
     def __init__(self, real_updates, update_queue):
         self._updates = real_updates
         self._queue = update_queue
@@ -89,24 +99,62 @@ class UpdatesRouter:
     def set_agent_context(self, value):
         self._queue.set_agent_context(value)
 
+    @property
+    def transaction_id(self):
+        return self._updates.transaction_id
+
+    @transaction_id.setter
+    def transaction_id(self, value):
+        self._updates.transaction_id = value
+
+    @property
+    def ignore_history(self):
+        return self._updates.ignore_history
+
+    @ignore_history.setter
+    def ignore_history(self, value):
+        self._updates.ignore_history = value
+
+    @property
+    def pending_action(self):
+        return self._updates.pending_action
+
+    @pending_action.setter
+    def pending_action(self, value):
+        self._updates.pending_action = value
+
+    @property
+    def last_action(self):
+        return self._updates.last_action
+
+    @last_action.setter
+    def last_action(self, value):
+        self._updates.last_action = value
+
     def insert(self, key, values):
         from classes.updates import UpdateAction
         if self._queue.from_agent:
-            self._queue.enqueue(UpdateAction("insert", key, values))
+            self._queue.enqueue(
+                UpdateAction("insert", key, values,
+                             transaction=self._updates.transaction_id))
             return
         self._updates.insert(key, values)
 
     def update(self, key, values):
         from classes.updates import UpdateAction
         if self._queue.from_agent:
-            self._queue.enqueue(UpdateAction("update", key, values))
+            self._queue.enqueue(
+                UpdateAction("update", key, values,
+                             transaction=self._updates.transaction_id))
             return
         self._updates.update(key, values)
 
     def delete(self, key):
         from classes.updates import UpdateAction
         if self._queue.from_agent:
-            self._queue.enqueue(UpdateAction("delete", key))
+            self._queue.enqueue(
+                UpdateAction("delete", key,
+                             transaction=self._updates.transaction_id))
             return
         self._updates.delete(key)
 
