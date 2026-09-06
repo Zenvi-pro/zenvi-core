@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QColor, QTextCursor
 
+from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
@@ -696,28 +697,28 @@ class ChatBridge(QObject):
         super().__init__(parent)
         self.window = window
 
-    @pyqtSlot(str, str, str)
+    @guarded_slot(str, str, str)
     def sendMessage(self, text: str, model_id: str, agent_mode: str = ""):
         if self.window:
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(text.strip(), model_id or "", mode)
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
             self.window._execute_plan(plan_id or "", model_id or "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def executePlanNoArgs(self):
         if self.window:
             self.window._execute_plan("", "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def editPlanInPlanningMode(self):
         if self.window:
             self.window._edit_plan_in_planning_mode()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openPlanDock(self):
         if not self.window:
             return
@@ -734,12 +735,12 @@ class ChatBridge(QObject):
             dock.show()
             dock.raise_()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openAgentTrace(self):
         if self.window:
             self.window.open_agent_trace()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
         if not self.window:
             return
@@ -773,78 +774,78 @@ class ChatBridge(QObject):
             self.window._set_processing_ui(False)
         self.window._dispatch_user_message(text, model_id, agent_mode="planning")
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setAgentMode(self, agent_mode: str):
         if self.window:
             self.window._set_agent_mode(agent_mode or "agent")
 
-    @pyqtSlot()
+    @guarded_slot()
     def cancelRequest(self):
         if self.window:
             self.window.cancel_request()
 
-    @pyqtSlot()
+    @guarded_slot()
     def clearChat(self):
         if self.window:
             self.window.clear_chat()
 
-    @pyqtSlot()
+    @guarded_slot()
     def ready(self):
         """Called from JS when QWebChannel is ready; push initial state."""
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def createSession(self, model_id: str, backend: str = ""):
         if self.window:
             self.window._create_session(model_id, backend or "zenvi")
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def setBackend(self, session_id: str, backend: str):
         if self.window:
             self.window._set_session_backend(session_id, backend)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def switchSession(self, session_id: str):
         if self.window:
             self.window._switch_session(session_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def closeSession(self, session_id: str):
         if self.window:
             self.window._close_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getClosedSessions(self):
         if self.window:
             self.window._push_closed_sessions()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def reopenSession(self, session_id: str):
         if self.window:
             self.window._reopen_closed_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getGaps(self):
         if self.window:
             self.window._push_gap_list()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def resolveGap(self, entry_id: str):
         if self.window:
             self.window._resolve_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def deleteGap(self, entry_id: str):
         if self.window:
             self.window._delete_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def connectCli(self, backend_id: str):
         if self.window:
             self.window._connect_cli(backend_id)
 
-    @pyqtSlot(str, result=str)
+    @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
             return "[]"
@@ -853,18 +854,18 @@ class ChatBridge(QObject):
         except Exception:
             return "[]"
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setMentionArmed(self, armed: str):
         if self.window:
             self.window._mention_armed = str(armed).lower() in ("1", "true", "yes")
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def addMention(self, file_id: str):
         if self.window:
             self.window._attach_project_file_id(file_id, insert_mention=False)
             self.window._mention_armed = False
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def removeAttachment(self, attach_id: str):
         if self.window:
             self.window._remove_chat_attachment(attach_id)
