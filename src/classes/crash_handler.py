@@ -499,6 +499,11 @@ def enable_faulthandler():
     faulthandler defaults to sys.stderr, which is None in frozen GUI builds --
     faulthandler.enable() then raises and we got no native crash dumps at all on
     Windows. Point it at a file whenever stderr is missing.
+
+    On Windows the file is used even when stderr exists: the native audio and
+    preview threads raise benign, handled COM exceptions (0x8001010e
+    RPC_E_WRONG_THREAD) that faulthandler reports as "fatal", and concurrent
+    dumps interleave into unreadable garbage in the app log.
     """
     global _faulthandler_stream
 
@@ -507,7 +512,7 @@ def enable_faulthandler():
     except Exception:
         return False
 
-    if getattr(sys, "stderr", None) is not None:
+    if sys.platform != "win32" and getattr(sys, "stderr", None) is not None:
         try:
             faulthandler.enable(all_threads=True)
             return True

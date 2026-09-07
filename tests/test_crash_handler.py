@@ -348,6 +348,49 @@ def test_faulthandler_uses_a_file_when_there_is_no_stderr(monkeypatch, tmp_path)
             stream.close()
 
 
+def test_faulthandler_uses_a_file_on_windows_even_with_stderr(monkeypatch, tmp_path):
+    # Windows raises benign, handled COM exceptions (0x8001010e RPC_E_WRONG_THREAD)
+    # from the native audio/preview threads. faulthandler reports every one as a
+    # "fatal exception" and, on stderr, the concurrent dumps interleave into
+    # unreadable garbage in the app log. Keep the dumps, off stderr.
+    import faulthandler
+
+    monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    real_stderr = open(tmp_path / "stderr.txt", "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stderr", real_stderr)
+    try:
+        assert crash_handler.enable_faulthandler() is True
+
+        assert (tmp_path / "faulthandler.log").exists()
+        assert crash_handler._faulthandler_stream is not None
+        assert faulthandler.is_enabled()
+    finally:
+        faulthandler.disable()
+        real_stderr.close()
+        stream = crash_handler._faulthandler_stream
+        crash_handler._faulthandler_stream = None
+        if stream is not None:
+            stream.close()
+
+
+def test_faulthandler_still_uses_stderr_off_windows(monkeypatch, tmp_path):
+    import faulthandler
+
+    monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "linux")
+    real_stderr = open(tmp_path / "stderr.txt", "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stderr", real_stderr)
+    try:
+        assert crash_handler.enable_faulthandler() is True
+
+        assert not (tmp_path / "faulthandler.log").exists()
+        assert crash_handler._faulthandler_stream is None
+    finally:
+        faulthandler.disable()
+        real_stderr.close()
+
+
 def test_log_file_path_points_at_the_app_log(monkeypatch, tmp_path):
     monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
 

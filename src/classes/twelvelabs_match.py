@@ -157,7 +157,7 @@ def select_hits_for_display(
                 enriched["end"],
                 clip_start=clip_start,
                 clip_end=clip_end,
-                mode="start",
+                mode="mid",
             )
             overlapping.append(enriched)
 

@@ -66,7 +66,7 @@ def test_search_clips_uses_project_index_and_maps_file_id():
         pass
     assert kwargs.kwargs.get("index_id") == "idx-project-1"
     assert "media_bin_file_id=file-dog" in out
-    assert "timestamp" in out.lower() or "0:12" in out
+    assert "start_seconds=12.000" in out
     assert "zenvi-proj-abc" in out or "idx-project-1" in out
 
 
