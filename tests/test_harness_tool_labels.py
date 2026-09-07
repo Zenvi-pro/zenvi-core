@@ -67,6 +67,45 @@ class TestZenviLabelsAreUnchanged(unittest.TestCase):
         self.assertEqual(humanize_tool_name("some_new_thing_tool"), "Some new thing")
 
 
+class TestHarnessKeysCannotShadowAZenviTool(unittest.TestCase):
+    """The harness labels are a separate namespace, and must stay one.
+
+    ``humanize_tool_name`` is a flat exact-match lookup, so adding a harness name
+    that happens to match a Zenvi tool would silently retitle that tool -- and
+    the label tests above would keep passing, because they read the same table
+    they are checking.
+    """
+
+    HARNESS_KEYS = frozenset({
+        "task", "bash", "edit", "write", "read", "glob", "grep",
+        "question", "todowrite",
+    })
+
+    def test_no_harness_key_is_a_desktop_tool(self):
+        from classes.tool_handlers import AGENT_TOOL_HANDLERS
+
+        self.assertEqual(self.HARNESS_KEYS & set(AGENT_TOOL_HANDLERS), set())
+
+    def test_no_harness_key_is_a_backend_workflow(self):
+        workflows = {
+            "video_gen", "stock_video", "stock_music", "clip_edit", "ai_morph",
+            "tts", "product_demo", "product_launch", "place_moment",
+            "slice_moment", "motion_graphics",
+        }
+        self.assertEqual(self.HARNESS_KEYS & workflows, set())
+
+    def test_no_harness_key_overwrites_the_primary_label_table(self):
+        from classes.tool_handlers import TOOL_DISPLAY_LABELS
+
+        self.assertEqual(self.HARNESS_KEYS & set(TOOL_DISPLAY_LABELS), set())
+
+    def test_every_harness_key_is_actually_labelled(self):
+        from classes.tool_handlers import _EXTRA_TOOL_DISPLAY_LABELS
+
+        missing = self.HARNESS_KEYS - set(_EXTRA_TOOL_DISPLAY_LABELS)
+        self.assertEqual(missing, set(), "unlabelled harness tools: %s" % missing)
+
+
 def _expected(name: str) -> str:
     """Whatever the shipped label table says -- this test pins stability, not text."""
     from classes.tool_handlers import (
