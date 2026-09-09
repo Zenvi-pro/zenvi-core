@@ -18,6 +18,7 @@ QtWebKit then rejects as an ambiguous overloaded call.
 
 import functools
 import sys
+from contextlib import contextmanager
 
 from classes import crash_handler
 
@@ -75,3 +76,21 @@ def guarded_slot(*types, **kwargs):
         return pyqtSlot(*types, **kwargs)(wrapper)
 
     return decorate
+
+
+@contextmanager
+def slot_transaction(updates, transaction_id=None):
+    """Scope an undo/redo transaction id to a slot body.
+
+    Cleared in a ``finally``: a guarded slot that raises mid-save must not
+    leave a dead transaction id behind, or every later edit is silently
+    grouped into that one undo step.  A slot called without an id leaves an
+    in-flight transaction alone.
+    """
+    if transaction_id:
+        updates.transaction_id = transaction_id
+    try:
+        yield
+    finally:
+        if transaction_id:
+            updates.transaction_id = None

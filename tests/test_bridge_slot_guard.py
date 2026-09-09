@@ -161,9 +161,120 @@ def test_healthy_slot_still_runs_its_body(bridge, reports):
 
 
 def test_real_bridges_use_guarded_slots():
-    """The three registered QWebChannel bridges actually opt in."""
+    """The registered QWebChannel bridges actually opt in."""
     from windows.plan_dock_ui import PlanDockBridge
+    from windows.ai_chat_ui import ChatBridge
 
-    guarded = [name for name, value in vars(PlanDockBridge).items()
-               if getattr(value, "__zenvi_guarded__", False)]
-    assert sorted(guarded) == ["editPlanInPlanningMode", "executePlan"]
+    def guarded(cls):
+        return sorted(name for name, value in vars(cls).items()
+                      if getattr(value, "__zenvi_guarded__", False))
+
+    assert guarded(PlanDockBridge) == ["editPlanInPlanningMode", "executePlan"]
+    assert "submitPlanAnswers" in guarded(ChatBridge)
+    assert "cancelRequest" in guarded(ChatBridge)
+
+
+# ── every slot on every bridge, without importing the GUI modules ────────
+#
+# TimelineView pulls in libopenshot and a real QWebEngine/QtWebKit view, so it
+# cannot be imported headlessly.  Reading the source keeps the "no bare
+# pyqtSlot survives on a bridge class" check honest for all three classes
+# instead of only the two that import.
+
+BRIDGE_CLASSES = [
+    ("windows/plan_dock_ui.py", "PlanDockBridge"),
+    ("windows/ai_chat_ui.py", "ChatBridge"),
+    ("windows/views/timeline.py", "TimelineView"),
+]
+
+
+def _slot_decorated_methods(rel_path, class_name):
+    """(method name, decorator names) for every slot-decorated method."""
+    import ast
+
+    tree = ast.parse((SRC / rel_path).read_text(encoding="utf-8"))
+    cls = next(
+        (n for n in ast.walk(tree)
+         if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+    assert cls is not None, f"{class_name} not found in {rel_path}"
+
+    found = []
+    for node in cls.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = []
+        for dec in node.decorator_list:
+            call = dec.func if isinstance(dec, ast.Call) else dec
+            names.append(call.attr if isinstance(call, ast.Attribute) else getattr(call, "id", ""))
+        if {"pyqtSlot", "guarded_slot"} & set(names):
+            found.append((node.name, names))
+    return found
+
+
+@pytest.mark.parametrize("rel_path, class_name", BRIDGE_CLASSES)
+def test_every_bridge_slot_is_guarded(rel_path, class_name):
+    """A bare @pyqtSlot on a bridge is the hang this PR fixes."""
+    slots = _slot_decorated_methods(rel_path, class_name)
+    assert slots, f"no slots found on {class_name}"
+    unguarded = [name for name, decs in slots if "guarded_slot" not in decs]
+    assert unguarded == [], f"{class_name} slots still using bare pyqtSlot: {unguarded}"
+
+
+# ── a guarded slot must not leave shared state half-mutated ─────────────
+
+
+def test_transaction_is_cleared_when_the_slot_body_raises():
+    """A dead transaction id groups every later edit into one undo step."""
+    updates = type("U", (), {"transaction_id": None, "ignore_history": False})()
+
+    with pytest.raises(RuntimeError):
+        with bridge_guard.slot_transaction(updates, "tx-1"):
+            assert updates.transaction_id == "tx-1"
+            raise RuntimeError("save failed")
+
+    assert updates.transaction_id is None
+
+
+def test_transaction_is_cleared_on_success():
+    updates = type("U", (), {"transaction_id": None})()
+    with bridge_guard.slot_transaction(updates, "tx-1"):
+        pass
+    assert updates.transaction_id is None
+
+
+def test_no_transaction_id_leaves_an_outer_transaction_alone():
+    """JS calls without a transaction id must not clobber an in-flight one."""
+    updates = type("U", (), {"transaction_id": "outer"})()
+    with bridge_guard.slot_transaction(updates, None):
+        pass
+    assert updates.transaction_id == "outer"
+
+
+def test_submit_plan_answers_restores_session_state_when_dispatch_fails():
+    """Otherwise Skip/Submit silently stops working for the rest of the session."""
+    from windows.ai_chat_ui import ChatBridge
+
+    sess = {"awaiting_plan_answers": True, "pending_plan_questions": [{"id": "q1"}]}
+
+    class FakeWindow:
+        is_processing = True
+        model_combo = None
+        processing_calls = []
+
+        def _active_session(self):
+            return sess
+
+        def _set_processing_ui(self, value):
+            self.processing_calls.append(value)
+            self.is_processing = value
+
+        def _dispatch_user_message(self, *a, **kw):
+            raise RuntimeError("websocket down")
+
+    bridge = ChatBridge.__new__(ChatBridge)
+    bridge.window = FakeWindow()
+    bridge.submitPlanAnswers('{"skip": true}')
+
+    assert sess["awaiting_plan_answers"] is True
+    assert sess["pending_plan_questions"] == [{"id": "q1"}]
+    assert bridge.window.is_processing is True
