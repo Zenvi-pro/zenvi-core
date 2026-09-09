@@ -18,37 +18,7 @@ from PyQt5.QtWidgets import (
 
 from classes.logger import log
 from classes.app import get_app
-from classes.indexing_status import FAILED, RUNNING, derive_indexing_status
-
-_PANEL_QSS = """
-QWidget#AIMediaPanelContents { background: #0d0d0d; }
-QLabel#clipNameLabel { color: #d4d4d4; font-size: 12px; font-weight: bold; }
-QLabel#statusLabel { color: #6a9fd8; font-size: 11px; }
-QLabel#statusLabel[failed="true"] { color: #ef4444; }
-QTextEdit#descriptionView {
-    background: #0d0d0d;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 4px;
-    color: #d4d4d4;
-    padding: 8px;
-    font-size: 12px;
-}
-QProgressBar#indexingProgress {
-    background: #252525;
-    border: none;
-    border-radius: 1px;
-}
-QProgressBar#indexingProgress::chunk { background: #4d9cf6; border-radius: 1px; }
-QPushButton#refreshBtn {
-    background: #252525;
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 4px;
-    color: #d4d4d4;
-    padding: 6px;
-    font-size: 11px;
-}
-QPushButton#refreshBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
-"""
+from classes.indexing_status import FAILED, RUNNING, derive_indexing_status, status_source
 
 
 def _format_description_text(ai_meta: dict) -> str:
@@ -104,7 +74,6 @@ class AIMediaPanel(QDockWidget):
     def _build_ui(self):
         root = QWidget()
         root.setObjectName("AIMediaPanelContents")
-        root.setStyleSheet(_PANEL_QSS)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(6)
@@ -223,6 +192,7 @@ class AIMediaPanel(QDockWidget):
         from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
 
         ai_meta = {}
+        source_meta = None
         name = ""
 
         if timeline_clip and isinstance(getattr(timeline_clip, "data", None), dict):
@@ -239,6 +209,8 @@ class AIMediaPanel(QDockWidget):
                             source_file.data.get("path", "Clip")
                         )
                         candidate = source_file.data.get("ai_metadata")
+                        if isinstance(candidate, dict):
+                            source_meta = candidate
                         if isinstance(candidate, dict) and candidate.get("analyzed"):
                             clip_start = float(clip_data.get("start", 0.0) or 0.0)
                             clip_end = float(clip_data.get("end", 0.0) or 0.0)
@@ -253,7 +225,7 @@ class AIMediaPanel(QDockWidget):
             candidate = file_obj.get_ai_metadata()
             ai_meta = candidate if isinstance(candidate, dict) else {}
 
-        return ai_meta, name
+        return ai_meta, name, status_source(ai_meta, source_meta)
 
     def _show_status(self, status, percent=None):
         """Render the shared indexing status on the label + thin progress bar."""
@@ -297,11 +269,15 @@ class AIMediaPanel(QDockWidget):
                 self._stop_progress_timer()
                 return
 
-            ai_meta, name = self._load_ai_metadata(timeline_clip, file_obj)
+            ai_meta, name, badge_meta = self._load_ai_metadata(timeline_clip, file_obj)
 
-            progress = files_model.get_indexing_progress(file_id) if files_model and file_id else None
-            is_active = files_model.is_file_indexing(file_id) if files_model and file_id else False
-            status = derive_indexing_status(ai_meta, progress=progress, is_active=is_active)
+            has_model = bool(files_model and file_id)
+            progress = files_model.get_indexing_progress(file_id) if has_model else None
+            is_active = files_model.is_file_indexing(file_id) if has_model else False
+            is_queued = files_model.is_file_queued(file_id) if has_model else False
+            status = derive_indexing_status(
+                badge_meta, progress=progress, is_active=is_active, is_queued=is_queued
+            )
 
             if status.state == RUNNING:
                 self._start_progress_timer()

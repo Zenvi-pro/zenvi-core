@@ -851,6 +851,34 @@ QDockWidget#AIMediaPanel QWidget {
     border: none;
 }
 
+QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background: #0d0d0d; }
+QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #d4d4d4; font-size: 12px; font-weight: bold; }
+QDockWidget#AIMediaPanel QLabel#statusLabel { color: #6a9fd8; font-size: 11px; }
+QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #ef4444; }
+QDockWidget#AIMediaPanel QTextEdit#descriptionView {
+    background: #0d0d0d;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 8px;
+    font-size: 12px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress {
+    background: #252525;
+    border: none;
+    border-radius: 1px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #4d9cf6; border-radius: 1px; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+    background: #252525;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 6px;
+    font-size: 11px;
+}
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
+
 /* ── Tree/List view item height ───────────────────────────── */
 QTreeView::item,
 QListView::item {

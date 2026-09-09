@@ -602,6 +602,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             ai_meta,
             progress=self._indexing_progress.get(fid),
             is_active=self.is_file_indexing(fid),
+            is_queued=self.is_file_queued(fid),
         )
         self._status_cache[fid] = status
         return status
@@ -619,6 +620,15 @@ class FilesModel(QObject, updates.UpdateInterface):
             str(w.file_data.get("id", "")) == fid for w in self._active_indexers
         )
 
+    def is_file_queued(self, file_id):
+        """True while a file waits for one of the bounded indexing worker slots."""
+        fid = str(file_id or "")
+        return any(qid == fid for qid, _ in self._indexing_queue)
+
+    def has_active_indexing(self):
+        """True while any file in the project is indexing or waiting to index."""
+        return bool(self._active_indexers or self._indexing_queue)
+
     def get_indexing_progress(self, file_id):
         return self._indexing_progress.get(str(file_id or ""))
 
@@ -632,6 +642,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         if any(qid == fid for qid, _ in self._indexing_queue):
             return
         self._indexing_queue.append((fid, bool(summarize_only)))
+        self._status_cache.pop(fid, None)
         self._drain_indexing_queue()
 
     def _drain_indexing_queue(self):

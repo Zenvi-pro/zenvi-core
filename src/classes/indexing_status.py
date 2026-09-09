@@ -44,18 +44,38 @@ def _index_block(ai_metadata: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def status_source(
+    clip_metadata: Optional[dict], source_metadata: Optional[dict]
+) -> dict:
+    """Metadata a timeline clip's badge should be derived from.
+
+    A clip only carries ai_metadata once its source has been analyzed, so an
+    un-analyzed clip must fall back to the source file, otherwise the source's
+    ``error`` / ``skip_reason`` is lost and the clip reads as "not yet analyzed".
+    """
+    if isinstance(clip_metadata, dict) and clip_metadata.get("analyzed"):
+        return clip_metadata
+    if isinstance(source_metadata, dict) and source_metadata:
+        return source_metadata
+    return clip_metadata if isinstance(clip_metadata, dict) else {}
+
+
 def derive_indexing_status(
     ai_metadata: Optional[dict],
     progress: Optional[dict] = None,
     is_active: bool = False,
+    is_queued: bool = False,
 ) -> IndexingStatus:
-    """Map ai_metadata + FilesModel progress onto one badge state."""
+    """Map ai_metadata + FilesModel progress/queue onto one badge state."""
     meta = ai_metadata if isinstance(ai_metadata, dict) else {}
     block = _index_block(meta)
     block_status = str(block.get("status") or "").lower()
 
     phase = (progress or {}).get("phase")
     percent = (progress or {}).get("percent")
+
+    if is_queued and not is_active:
+        return IndexingStatus(PENDING, "Waiting to index", "Waiting for an indexing slot")
 
     if is_active or (phase and phase != "done") or block_status in _RUNNING_BLOCK_STATUS:
         label = phase_label(phase or block_status or "indexing", percent)
