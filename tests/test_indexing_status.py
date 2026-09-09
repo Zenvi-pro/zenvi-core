@@ -13,6 +13,7 @@ from classes.indexing_status import (  # noqa: E402
     RUNNING,
     SUCCESS,
     derive_indexing_status,
+    status_source,
 )
 
 
@@ -114,3 +115,47 @@ def test_status_is_hashable_and_has_label():
     st = derive_indexing_status({"analyzed": True})
     assert st.label
     assert isinstance(st.label, str)
+
+
+# ── queued jobs (bounded concurrency leaves files waiting for a worker) ──
+
+
+def test_queued_file_is_pending():
+    st = derive_indexing_status({}, is_queued=True)
+    assert st.state == PENDING
+    assert st.tooltip
+
+
+def test_queued_beats_stale_index_block():
+    st = derive_indexing_status({"index": {"status": "indexing"}}, is_queued=True)
+    assert st.state == PENDING
+
+
+def test_active_worker_still_wins_over_queue_flag():
+    st = derive_indexing_status({}, is_active=True, is_queued=True)
+    assert st.state == RUNNING
+
+
+# ── timeline clips fall back to the source file for status ──────────────
+
+
+def test_status_source_prefers_analyzed_clip_metadata():
+    clip = {"analyzed": True, "description": "trimmed"}
+    source = {"analyzed": True, "description": "full"}
+    assert status_source(clip, source) is clip
+
+
+def test_status_source_falls_back_to_source_when_clip_not_analyzed():
+    source = {"error": "upload rejected"}
+    assert derive_indexing_status(status_source({}, source)).state == FAILED
+
+
+def test_status_source_surfaces_source_skip_reason():
+    source = {"skip_reason": "Clip duration 41.0 min exceeds the 30-minute limit."}
+    st = derive_indexing_status(status_source({}, source))
+    assert st.state == PENDING
+    assert "30-minute limit" in st.tooltip
+
+
+def test_status_source_without_source_returns_clip_metadata():
+    assert status_source({}, None) == {}

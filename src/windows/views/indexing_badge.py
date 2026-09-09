@@ -111,15 +111,31 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         model = index.model()
         return str(model.data(index.sibling(index.row(), 5), Qt.DisplayRole) or "")
 
-    def _status(self, index):
+    def _files_model(self):
         try:
-            files_model = get_app().window.files_model
+            return get_app().window.files_model
         except Exception:
+            return None
+
+    def _status(self, index):
+        files_model = self._files_model()
+        if files_model is None:
             return None
         file_id = self._file_id(index)
         if not file_id:
             return None
         return files_model.file_indexing_status(file_id)
+
+    def _any_indexing(self):
+        """Aggregate state, so a finished row painted after a running one
+        cannot stop the shared timer while that running badge is still on screen."""
+        files_model = self._files_model()
+        if files_model is None:
+            return False
+        try:
+            return bool(files_model.has_active_indexing())
+        except Exception:
+            return False
 
     # ── pulse ─────────────────────────────────────────────────────────────
 
@@ -145,7 +161,7 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         status = self._status(index)
         if status is None or not status.state:
             return
-        self._sync_pulse(status.state == RUNNING)
+        self._sync_pulse(self._any_indexing())
         paint_status_badge(painter, badge_rect(option.rect), status.state, self._angle)
 
     def helpEvent(self, event, view, option, index):
