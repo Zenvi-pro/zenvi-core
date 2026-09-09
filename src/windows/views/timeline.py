@@ -45,6 +45,7 @@ from PyQt5.QtWidgets import QDialog
 
 from classes import info, updates
 from classes.app import get_app
+from classes.bridge_guard import guarded_slot, slot_transaction
 from classes.effect_init import effect_options
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
@@ -120,7 +121,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Propagate to timeline qwidget
             TimelineWidget.connect_playback(self)
 
-    @pyqtSlot()
+    @guarded_slot()
     def page_ready(self):
         """Document.Ready event has fired, and is initialized"""
         self.document_is_ready = True
@@ -128,12 +129,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Set the thumbnail server address immediately (required before any clips are rendered)
         self.run_js(JS_SCOPE_SELECTOR + ".setThumbAddress('" + self.get_thumb_address() + "');")
 
-    @pyqtSlot(result=str)
+    @guarded_slot(result=str)
     def get_uuid(self):
         """Get a unique id (used for generating a transaction id for the undo/redo system)"""
         return str(uuid.uuid4())
 
-    @pyqtSlot(result=str)
+    @guarded_slot(result=str)
     def get_thumb_address(self):
         """Return the thumbnail HTTP server address"""
         thumb_server_details = self.window.http_server_thread.server_address
@@ -145,7 +146,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         thumb_address = "http://%s:%s/thumbnails/" % (thumb_server_details[0], thumb_server_details[1])
         return thumb_address
 
-    @pyqtSlot(str, str, str)
+    @guarded_slot(str, str, str)
     def StartKeyframeDrag(self, object_type, object_id, transaction_id):
         """Begin a keyframe drag operation"""
         self.keyframe_transaction_id = transaction_id
@@ -154,15 +155,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Ignore UI updates without showing the wait cursor
         self.window.IgnoreUpdates.emit(True, False)
         self.show_wait_spinner = False
-        obj = None
-        if object_type == "clip":
-            obj = Clip.get(id=object_id)
-        elif object_type == "transition":
-            obj = Transition.get(id=object_id)
-        if obj:
-            self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        try:
+            obj = None
+            if object_type == "clip":
+                obj = Clip.get(id=object_id)
+            elif object_type == "transition":
+                obj = Transition.get(id=object_id)
+            if obj:
+                self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        except Exception:
+            # The drag never starts, so undo the suppression it turned on --
+            # otherwise the timeline stops refreshing until the next restart.
+            self.keyframe_transaction_id = None
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.show_wait_spinner = True
+            self.window.IgnoreUpdates.emit(False, False)
+            raise
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def FinalizeKeyframeDrag(self, object_type, object_id):
         """Finalize a keyframe drag operation and record history"""
         obj = None
@@ -171,18 +182,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif object_type == "transition":
             obj = Transition.get(id=object_id)
         self.show_wait_spinner = True
-        original = self.keyframe_drag_original.pop(object_id, None)
-        if obj:
-            get_app().updates.transaction_id = self.keyframe_transaction_id
-            get_app().updates.ignore_history = True
-            obj.save()
-            if original:
-                get_app().updates.apply_last_action_to_history(original)
-        get_app().updates.transaction_id = None
-        get_app().updates.ignore_history = False
-        self.keyframe_transaction_id = None
-        # Re-enable UI updates
-        self.window.IgnoreUpdates.emit(False, False)
+        original = self.keyframe_drag_original.get(object_id)
+        try:
+            if obj:
+                get_app().updates.transaction_id = self.keyframe_transaction_id
+                get_app().updates.ignore_history = True
+                obj.save()
+                if original:
+                    get_app().updates.apply_last_action_to_history(original)
+            # Only drop the pre-drag snapshot once history has taken it
+            self.keyframe_drag_original.pop(object_id, None)
+        finally:
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.keyframe_transaction_id = None
+            # Re-enable UI updates
+            self.window.IgnoreUpdates.emit(False, False)
 
     def _collect_clip_ids_from_value(self, value, clip_ids):
         """Recursively collect clip ids from an update payload without walking audio samples"""
@@ -532,7 +547,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return True
         return False
 
-    @pyqtSlot(str, bool, bool, bool, str)
+    @guarded_slot(str, bool, bool, bool, str)
     def update_clip_data(
         self, clip_json, only_basic_props=True, ignore_reader=False,
         ignore_refresh=False, transaction_id=None
@@ -587,21 +602,21 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if ignore_reader and "reader" in existing_clip.data:
             existing_clip.data.pop("reader")
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
-
-        # Save clip
-        existing_clip.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+        # Save clip (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_clip.save()
+            except Exception:
+                # Do not leave the in-memory clip on data that never persisted
+                if old_data:
+                    existing_clip.data = old_data
+                raise
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
 
     # Add missing transition
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def add_missing_transition(self, transition_json):
         if not get_app().get_settings().get("automatic_transitions"):
             log.debug("Skipping auto transition (disabled in settings)")
@@ -690,7 +705,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         )
 
     # Javascript callable function to update the project data when a transition changes
-    @pyqtSlot(str, bool, bool, str)
+    @guarded_slot(str, bool, bool, str)
     def update_transition_data(self, transition_json, only_basic_props=True, ignore_refresh=False, transaction_id=None):
         """Create an updateAction and send it to the update manager.
         Transaction ID is for undo/redo grouping (if any)"""
@@ -746,15 +761,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if self.delete_invalid_timeline_item(existing_item):
             return
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
-
-        # Save transition
-        existing_item.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+        # Save transition (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_item.save()
+            except Exception:
+                if old_data:
+                    existing_item.data = old_data
+                raise
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
@@ -764,7 +778,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.ignore()
 
     # Javascript callable function to show clip or transition content menus, passing in type to show
-    @pyqtSlot(float)
+    @guarded_slot(float)
     def ShowPlayheadMenu(self, position=None):
         log.debug('ShowPlayheadMenu: %s' % position)
 
@@ -806,7 +820,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.context_menu_cursor_position = QCursor.pos()
             return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowEffectMenu(self, effect_id=None):
         log.debug('ShowEffectMenu: %s' % effect_id)
 
@@ -833,7 +847,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot(float, int)
+    @guarded_slot(float, int)
     def ShowTimelineMenu(self, position, layer_number):
         log.debug('ShowTimelineMenu: position: %s, layer: %s' % (position, layer_number))
 
@@ -919,7 +933,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowClipMenu(self, clip_id=None):
         log.debug('ShowClipMenu: %s' % clip_id)
 
@@ -2459,7 +2473,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
-    @pyqtSlot(str, str, float)
+    @guarded_slot(str, str, float)
     def RazorSliceAtCursor(self, clip_id, trans_id, cursor_position):
         """Callback from javascript that the razor tool was clicked"""
 
@@ -3112,7 +3126,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.Repeat_Triggered(pattern, direction, passes, clip_ids, delay_frames, ramp)
 
 
-    @pyqtSlot(str, float, float)
+    @guarded_slot(str, float, float)
     def RetimeClip(self, clip_id, new_end, new_position):
         """Public slot to retime a clip from the timeline UI (Timing Mode)."""
         clip = Clip.get(id=clip_id)
@@ -3245,7 +3259,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             tran.data = tran_data_copy
             self.update_transition_data(tran.data, only_basic_props=False)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowTransitionMenu(self, tran_id=None):
         log.info('ShowTransitionMenu: %s' % tran_id)
 
@@ -3382,7 +3396,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowTrackMenu(self, layer_id=None):
         log.info('ShowTrackMenu: %s', layer_id)
 
@@ -3457,7 +3471,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowMarkerMenu(self, marker_id=None):
         log.info('ShowMarkerMenu: %s' % marker_id)
 
@@ -3471,7 +3485,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.popup(self.context_menu_cursor_position)
 
-    @pyqtSlot()
+    @guarded_slot()
     def EnableCacheThread(self):
         log.debug('EnableCacheThread: Start caching frames on timeline')
 
@@ -3483,14 +3497,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # is required for an accurate end to srubbing
         QTimer.singleShot(50, self.window.refreshFrameSignal.emit)
 
-    @pyqtSlot()
+    @guarded_slot()
     def DisableCacheThread(self):
         log.debug('DisableCacheThread: Stop caching frames on timeline')
 
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
-    @pyqtSlot(str, int)
+    @guarded_slot(str, int)
     def PreviewClipFrame(self, clip_id, frame_number):
 
         # Get existing clip object
@@ -3533,7 +3547,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Seek to frame
         self.window.SeekSignal.emit(frame_number)
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SeekToKeyframe(self, frame_number):
         """Seek to a specific frame when a keyframe point is clicked"""
 
@@ -3543,7 +3557,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Display properties (if not visible)
         self.window.actionProperties.trigger()
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def PlayheadMoved(self, position_frames):
 
         # Load the timeline into the Player (ignored if this has already happened)
@@ -3556,13 +3570,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Notify main window of current frame
             self.window.SeekSignal.emit(position_frames)
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def movePlayhead(self, position_frames):
         """ Move the playhead since the position has changed inside OpenShot (probably due to the video player) """
         # Get access to timeline scope and set scale to zoom slider value (passed in)
         self.run_js(JS_SCOPE_SELECTOR + ".movePlayheadToFrame(%s);" % (str(position_frames)))
 
-    @pyqtSlot()
+    @guarded_slot()
     def centerOnPlayhead(self):
         """ Center the timeline on the current playhead position """
         if ViewClass == TimelineWidget:
@@ -3571,7 +3585,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Execute JavaScript to center the timeline
         self.run_js(JS_SCOPE_SELECTOR + '.centerOnPlayhead();')
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetSnappingMode(self, enable_snapping):
         """ Enable / Disable snapping mode """
         # Init snapping state (1 = snapping, 0 = no snapping)
@@ -3580,7 +3594,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setSnappingMode(%s);" % int(enable_snapping))
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetRazorMode(self, enable_razor):
         """ Enable / Disable razor mode """
         # Init razor state (1 = razor, 0 = no razor)
@@ -3589,7 +3603,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setRazorMode(%s);" % int(enable_razor))
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetTimingMode(self, enable_timing):
         """ Enable / Disable timing mode """
         # Init timing state (1 = timing, 0 = no timing)
@@ -3598,17 +3612,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setTimingMode(%s);" % int(enable_timing))
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def SetPropertyFilter(self, property):
         """ Filter a specific property name """
         self.run_js(JS_SCOPE_SELECTOR + ".setPropertyFilter('%s');" % property)
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetPlayheadFollow(self, enable_follow):
         """ Enable / Disable playhead follow on seek """
         self.run_js(JS_SCOPE_SELECTOR + ".setFollow({});".format(int(enable_follow)))
 
-    @pyqtSlot(str, str, bool)
+    @guarded_slot(str, str, bool)
     def addSelection(self, item_id, item_type, clear_existing=False):
         """ Add the selected item to the current selection """
         self.window.SelectionAdded.emit(item_id, item_type, clear_existing)
@@ -3634,12 +3648,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif item_type == "effect":
             self.run_js(JS_SCOPE_SELECTOR + ".selectEffect('{}', {}, null);".format(item_id, clear_js))
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def removeSelection(self, item_id, item_type):
         """ Remove the selected clip from the selection """
         self.window.SelectionRemoved.emit(item_id, item_type)
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def qt_log(self, level="INFO", message=None):
         levels = {
             "DEBUG": logging.DEBUG,
@@ -3654,11 +3668,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             level = levels.get(level, logging.INFO)
         self.log_fn(level, message)
 
-    @pyqtSlot()
+    @guarded_slot()
     def zoomIn(self):
         get_app().window.sliderZoomWidget.zoomIn()
 
-    @pyqtSlot()
+    @guarded_slot()
     def zoomOut(self):
         get_app().window.sliderZoomWidget.zoomOut()
 
@@ -3879,13 +3893,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
         return new_clip
 
-    @pyqtSlot(list)
+    @guarded_slot(list)
     def ScrollbarChanged(self, new_positions):
         """Timeline scrollbars changed"""
         get_app().window.TimelineScrolled.emit(new_positions)
 
     # Resize timeline
-    @pyqtSlot(float)
+    @guarded_slot(float)
     def resizeTimeline(self, new_duration):
         """Resize the duration of the timeline"""
         log.debug(f"Changing timeline to length: {new_duration}")

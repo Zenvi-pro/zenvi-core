@@ -8,6 +8,7 @@ import os
 from PyQt5.QtCore import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QDockWidget, QLabel
 
+from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from windows.embedded_web import attach_webkit_window_object, run_js, web_embed_backend
 
@@ -18,11 +19,11 @@ class PlanDockBridge(QObject):
     execute_requested = pyqtSignal(str)
     edit_plan_requested = pyqtSignal()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def executePlan(self, plan_id: str = ""):
         self.execute_requested.emit(plan_id or "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def editPlanInPlanningMode(self):
         self.edit_plan_requested.emit()
 
