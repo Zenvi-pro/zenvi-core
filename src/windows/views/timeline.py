@@ -45,7 +45,7 @@ from PyQt5.QtWidgets import QDialog
 
 from classes import info, updates
 from classes.app import get_app
-from classes.bridge_guard import guarded_slot
+from classes.bridge_guard import guarded_slot, slot_transaction
 from classes.effect_init import effect_options
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
@@ -155,13 +155,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Ignore UI updates without showing the wait cursor
         self.window.IgnoreUpdates.emit(True, False)
         self.show_wait_spinner = False
-        obj = None
-        if object_type == "clip":
-            obj = Clip.get(id=object_id)
-        elif object_type == "transition":
-            obj = Transition.get(id=object_id)
-        if obj:
-            self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        try:
+            obj = None
+            if object_type == "clip":
+                obj = Clip.get(id=object_id)
+            elif object_type == "transition":
+                obj = Transition.get(id=object_id)
+            if obj:
+                self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        except Exception:
+            # The drag never starts, so undo the suppression it turned on --
+            # otherwise the timeline stops refreshing until the next restart.
+            self.keyframe_transaction_id = None
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.show_wait_spinner = True
+            self.window.IgnoreUpdates.emit(False, False)
+            raise
 
     @guarded_slot(str, str)
     def FinalizeKeyframeDrag(self, object_type, object_id):
@@ -172,18 +182,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif object_type == "transition":
             obj = Transition.get(id=object_id)
         self.show_wait_spinner = True
-        original = self.keyframe_drag_original.pop(object_id, None)
-        if obj:
-            get_app().updates.transaction_id = self.keyframe_transaction_id
-            get_app().updates.ignore_history = True
-            obj.save()
-            if original:
-                get_app().updates.apply_last_action_to_history(original)
-        get_app().updates.transaction_id = None
-        get_app().updates.ignore_history = False
-        self.keyframe_transaction_id = None
-        # Re-enable UI updates
-        self.window.IgnoreUpdates.emit(False, False)
+        original = self.keyframe_drag_original.get(object_id)
+        try:
+            if obj:
+                get_app().updates.transaction_id = self.keyframe_transaction_id
+                get_app().updates.ignore_history = True
+                obj.save()
+                if original:
+                    get_app().updates.apply_last_action_to_history(original)
+            # Only drop the pre-drag snapshot once history has taken it
+            self.keyframe_drag_original.pop(object_id, None)
+        finally:
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.keyframe_transaction_id = None
+            # Re-enable UI updates
+            self.window.IgnoreUpdates.emit(False, False)
 
     def _collect_clip_ids_from_value(self, value, clip_ids):
         """Recursively collect clip ids from an update payload without walking audio samples"""
@@ -588,15 +602,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if ignore_reader and "reader" in existing_clip.data:
             existing_clip.data.pop("reader")
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
-
-        # Save clip
-        existing_clip.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+        # Save clip (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_clip.save()
+            except Exception:
+                # Do not leave the in-memory clip on data that never persisted
+                if old_data:
+                    existing_clip.data = old_data
+                raise
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
@@ -747,15 +761,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if self.delete_invalid_timeline_item(existing_item):
             return
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
-
-        # Save transition
-        existing_item.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+        # Save transition (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_item.save()
+            except Exception:
+                if old_data:
+                    existing_item.data = old_data
+                raise
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)

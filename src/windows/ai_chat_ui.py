@@ -758,13 +758,25 @@ class ChatBridge(QObject):
             model_id = self.window.model_combo.currentData() or ""
         # Always treat as answering pending questions so the processing gate cannot block Skip/Submit.
         sess = self.window._active_session()
+        prev = None
         if sess is not None:
+            prev = (sess.get("pending_plan_questions"), sess.get("awaiting_plan_answers"))
             sess["pending_plan_questions"] = sess.get("pending_plan_questions") or [{"id": "_"}]
             sess["awaiting_plan_answers"] = False
         # If a prior planning turn is still winding down, force-clear processing so answers can send.
-        if self.window.is_processing:
+        was_processing = bool(self.window.is_processing)
+        if was_processing:
             self.window._set_processing_ui(False)
-        self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        try:
+            self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        except Exception:
+            # Leave the answer gate exactly as it was, or Skip/Submit stops
+            # working for the rest of the session.
+            if sess is not None and prev is not None:
+                sess["pending_plan_questions"], sess["awaiting_plan_answers"] = prev
+            if was_processing:
+                self.window._set_processing_ui(True)
+            raise
 
     @guarded_slot(str)
     def setAgentMode(self, agent_mode: str):
