@@ -47,6 +47,7 @@ from classes.image_types import get_media_type
 from classes.query import File
 from classes.logger import log
 from classes.app import get_app
+from classes.file_drop import local_path_from_url
 from classes.thumbnail import GetThumbPath
 from classes.api_client import get_backend_client
 
@@ -845,6 +846,8 @@ class FilesModel(QObject, updates.UpdateInterface):
                     log.warning("Failed to start background indexing: %s", _e)
             QTimer.singleShot(0, _start)
 
+        return scroll_to_files
+
     def get_image_sequence_details(self, file_path):
         """Inspect a file path and determine if this is an image sequence"""
 
@@ -918,39 +921,48 @@ class FilesModel(QObject, updates.UpdateInterface):
         return parameters
 
     def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False):
-        """Recursively process QUrls from a QDropEvent"""
+        """Recursively process QUrls from a QDropEvent.
+
+        Returns the list of imported (or already-present) File objects, or an
+        empty list when nothing was imported. Opening a dropped project file
+        emits OpenProjectSignal and returns [].
+        """
         media_paths = []
 
         # Transaction
         tid = str(uuid.uuid4())
         get_app().updates.transaction_id = tid
 
-        for uri in qurl_list:
-            filepath = uri.toLocalFile()
-            if not os.path.exists(filepath):
-                continue
-            if filepath.endswith(info.ALL_PROJECT_EXTS) and os.path.isfile(filepath):
-                # Auto load project passed as argument
-                get_app().window.OpenProjectSignal.emit(filepath)
-                return True
-            if os.path.isdir(filepath):
-                import_quietly = True
-                log.info("Recursively importing {}".format(filepath))
-                try:
-                    for r, _, f in os.walk(filepath):
-                        media_paths.extend(
-                            [os.path.join(r, p) for p in f])
-                except OSError:
-                    log.warning("Directory recursion failed", exc_info=1)
-            elif os.path.isfile(filepath):
-                media_paths.append(filepath)
-        if not media_paths:
-            return
-        # Import all new media files
-        media_paths.sort()
-        log.debug("Importing file list: {}".format(media_paths))
-        self.add_files(media_paths, quiet=import_quietly, prevent_image_seq=prevent_image_seq)
-        get_app().updates.transaction_id = None
+        try:
+            for uri in qurl_list or []:
+                filepath = local_path_from_url(uri)
+                if not filepath or not os.path.exists(filepath):
+                    continue
+                if filepath.endswith(info.ALL_PROJECT_EXTS) and os.path.isfile(filepath):
+                    # Auto load project passed as argument
+                    get_app().window.OpenProjectSignal.emit(filepath)
+                    return []
+                if os.path.isdir(filepath):
+                    import_quietly = True
+                    log.info("Recursively importing {}".format(filepath))
+                    try:
+                        for r, _, f in os.walk(filepath):
+                            media_paths.extend(
+                                [os.path.join(r, p) for p in f])
+                    except OSError:
+                        log.warning("Directory recursion failed", exc_info=1)
+                elif os.path.isfile(filepath):
+                    media_paths.append(filepath)
+            if not media_paths:
+                return []
+            # Import all new media files
+            media_paths.sort()
+            log.debug("Importing file list: {}".format(media_paths))
+            return self.add_files(
+                media_paths, quiet=import_quietly, prevent_image_seq=prevent_image_seq
+            ) or []
+        finally:
+            get_app().updates.transaction_id = None
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""

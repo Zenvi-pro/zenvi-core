@@ -14,7 +14,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QComboBox, QMessageBox, QFrame,
-    QGraphicsOpacityEffect, QScrollArea, QToolButton,
+    QGraphicsOpacityEffect, QScrollArea, QToolButton, QMenu,
 )
 from PyQt5.QtGui import QColor, QTextCursor
 
@@ -807,6 +807,16 @@ class ChatBridge(QObject):
             self.window._close_session(session_id)
 
     @pyqtSlot()
+    def getClosedSessions(self):
+        if self.window:
+            self.window._push_closed_sessions()
+
+    @pyqtSlot(str)
+    def reopenSession(self, session_id: str):
+        if self.window:
+            self.window._reopen_closed_session(session_id)
+
+    @pyqtSlot()
     def getGaps(self):
         if self.window:
             self.window._push_gap_list()
@@ -825,6 +835,31 @@ class ChatBridge(QObject):
     def connectCli(self, backend_id: str):
         if self.window:
             self.window._connect_cli(backend_id)
+
+    @pyqtSlot(str, result=str)
+    def listMentionables(self, query: str = "") -> str:
+        if not self.window:
+            return "[]"
+        try:
+            return json.dumps(self.window._mentionable_files(query or ""))
+        except Exception:
+            return "[]"
+
+    @pyqtSlot(str)
+    def setMentionArmed(self, armed: str):
+        if self.window:
+            self.window._mention_armed = str(armed).lower() in ("1", "true", "yes")
+
+    @pyqtSlot(str)
+    def addMention(self, file_id: str):
+        if self.window:
+            self.window._attach_project_file_id(file_id, insert_mention=False)
+            self.window._mention_armed = False
+
+    @pyqtSlot(str)
+    def removeAttachment(self, attach_id: str):
+        if self.window:
+            self.window._remove_chat_attachment(attach_id)
 
 
 class AIChatWindow(QDockWidget):
@@ -853,6 +888,7 @@ class AIChatWindow(QDockWidget):
         self._user_cancelled = False
         self._token_buffer = []
         self._token_flush_scheduled = False
+        self._mention_armed = False
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -910,12 +946,9 @@ class AIChatWindow(QDockWidget):
                 }
                 self._persist_session(sid)
 
-            active_from_store = store.get("active_session_id") if isinstance(store, dict) else None
-            if active_from_store in self._sessions:
-                self._active_sid = active_from_store
-            elif self._sessions:
-                self._active_sid = next(iter(self._sessions))
-            self._first_prompt_summary = self._sessions[self._active_sid].get("first_prompt_summary")
+            self._active_sid = self._pick_active_sid(store)
+            if self._active_sid:
+                self._first_prompt_summary = self._sessions[self._active_sid].get("first_prompt_summary")
         if not self._sessions:
             # Create the initial session before building the UI widgets.
             self._create_initial_session()
@@ -935,6 +968,8 @@ class AIChatWindow(QDockWidget):
             self._init_widget_ui()
 
         self.setMinimumSize(400, 450)
+        self.visibilityChanged.connect(self._restore_chat_if_hijacked)
+        QTimer.singleShot(0, self._connect_file_mention_clicks)
 
         # Prefetch credits before the web UI finishes loading (avoids 0 → real flash).
         self._start_credits_refresh()
@@ -1175,6 +1210,7 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.setPlanChip) window.setPlanChip(null);")
             mode = sess.get("agent_mode", "agent")
             self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(mode))
+            self._push_attachments_to_js()
             # Tabs can run different backends, and each has its own lineup.
             self._push_models_for_backend(sess.get("backend", BACKEND_ZENVI))
         self._notify_agent_selector()
@@ -1216,6 +1252,98 @@ class AIChatWindow(QDockWidget):
             else:
                 self._rebuild_widget_tabs()
         self._save_chat_sessions_store()
+
+    def _closed_session_list(self) -> list:
+        """Closed chats for this project that can be restored as tabs."""
+        from classes import chat_history
+        rows = chat_history.load_closed_sessions(self._history_key)
+        open_ids = set(self._sessions)
+        out = []
+        for row in rows:
+            sid = row.get("session_id")
+            if not sid or sid in open_ids:
+                continue
+            out.append({
+                "id": sid,
+                "title": row.get("title") or "New Chat",
+                "updated_at": row.get("updated_at") or "",
+            })
+        return out
+
+    def _push_closed_sessions(self):
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.setClosedSessions) window.setClosedSessions(%s);"
+                % json.dumps(json.dumps(self._closed_session_list()))
+            )
+
+    def _reopen_closed_session(self, session_id: str):
+        """Restore a soft-deleted chat as an open tab and switch to it."""
+        if not session_id:
+            return
+        if session_id in self._sessions:
+            self._switch_session(session_id)
+            return
+        from classes import chat_history
+        chat_history.reopen_session(session_id)
+        rows = chat_history.load_sessions(self._history_key, include_closed=True)
+        entry = next((r for r in rows if r.get("session_id") == session_id), None)
+        if not entry:
+            return
+        backend = _coerce_backend(entry.get("backend"))
+        worker, thread = self._make_worker(session_id, backend, restore=entry)
+        title = entry.get("title") or "New Chat"
+        self._sessions[session_id] = {
+            "worker": worker,
+            "thread": thread,
+            "title": title,
+            "messages": [],
+            "processing": False,
+            "unread": False,
+            "first_prompt_summary": title,
+            "backend": backend,
+            "agent_mode": entry.get("agent_mode", "agent"),
+            "current_plan": None,
+        }
+        self._persist_session(session_id)
+        items = self._local_history_items(session_id)
+        sess = self._sessions[session_id]
+        sess["messages"] = [
+            (it["role"], it["html_body"], it["is_assistant"]) for it in items
+        ]
+        sess["local_contents"] = [(it["role"], it["content"]) for it in items]
+        self._active_sid = session_id
+        self._first_prompt_summary = sess.get("first_prompt_summary")
+        self.is_processing = False
+        self._notify_agent_selector()
+        self._update_preamble()
+        if self._use_web_ui:
+            self._push_models_for_backend(backend)
+            self._render_restored_active_session()
+        else:
+            self._render_active_session_widget()
+            self._sync_widget_backend_combo()
+            self._rebuild_widget_tabs()
+        self._save_chat_sessions_store()
+
+    def _show_closed_session_menu(self, anchor=None):
+        """Widget-mode history picker next to the + tab button."""
+        menu = QMenu(self)
+        closed = self._closed_session_list()
+        if not closed:
+            act = menu.addAction("No previous chats")
+            act.setEnabled(False)
+        else:
+            for row in closed:
+                act = menu.addAction(row["title"])
+                act.triggered.connect(
+                    lambda _checked=False, sid=row["id"]: self._reopen_closed_session(sid)
+                )
+        origin = anchor if anchor is not None else self
+        try:
+            menu.exec_(origin.mapToGlobal(origin.rect().bottomLeft()))
+        except Exception:
+            menu.exec_()
 
     def _push_tabs_to_js(self):
         """Push the current session list to the JS tab bar."""
@@ -1264,9 +1392,15 @@ class AIChatWindow(QDockWidget):
                 self._draft_history_key = ""
             new_key = self._resolve_history_key(new_project_path)
             if new_project_path and prev_key.startswith("draft:"):
-                # First save of an untitled project: its chat comes along
-                # rather than being thrown away.
-                chat_history.rekey_project(prev_key, new_key, new_project_path)
+                # First save of an untitled project: take its chat along.
+                # Opening an *existing* project must not dump the untitled
+                # draft into that project's bucket — that hid the real tabs
+                # behind the empty "New Chat" and skipped restore.
+                existing = chat_history.load_sessions(new_key, include_closed=True)
+                if existing:
+                    chat_history.discard_empty_bucket(prev_key)
+                else:
+                    chat_history.rekey_project(prev_key, new_key, new_project_path)
                 self._draft_history_key = ""
 
             live_sids = set(self._sessions.keys())
@@ -1332,16 +1466,11 @@ class AIChatWindow(QDockWidget):
                         "current_plan": None,
                     }
                     self._persist_session(sid)
-                active_from_store = (
-                    store.get("active_session_id") if isinstance(store, dict) else None
-                )
-                if active_from_store in self._sessions:
-                    self._active_sid = active_from_store
-                else:
-                    self._active_sid = next(iter(self._sessions))
-                self._first_prompt_summary = self._sessions[self._active_sid].get(
-                    "first_prompt_summary"
-                )
+                self._active_sid = self._pick_active_sid(store)
+                if self._active_sid:
+                    self._first_prompt_summary = self._sessions[self._active_sid].get(
+                        "first_prompt_summary"
+                    )
 
             if not self._sessions:
                 self._create_initial_session()
@@ -1454,6 +1583,17 @@ class AIChatWindow(QDockWidget):
         legacy = legacy_store.get("sessions", []) if isinstance(legacy_store, dict) else []
         return [e for e in legacy if isinstance(e, dict) and e.get("session_id")]
 
+    def _pick_active_sid(self, legacy_store: dict = None) -> str:
+        """Which restored tab to show: last selected, else the first open one."""
+        from classes import chat_history
+        stored = chat_history.get_active_session(self._history_key)
+        if stored in self._sessions:
+            return stored
+        legacy = legacy_store.get("active_session_id") if isinstance(legacy_store, dict) else None
+        if legacy in self._sessions:
+            return legacy
+        return next(iter(self._sessions), "")
+
     def _persist_session(self, session_id: str, **fields) -> None:
         """Register/refresh a session row in the chat-history store."""
         from classes import chat_history
@@ -1533,6 +1673,14 @@ class AIChatWindow(QDockWidget):
             return {}
 
     def _save_chat_sessions_store(self, project_path: str = None) -> None:
+        try:
+            from classes import chat_history
+            chat_history.set_active_session(
+                getattr(self, "_history_key", "") or "",
+                getattr(self, "_active_sid", "") or "",
+            )
+        except Exception:
+            pass
         # Untitled / unsaved projects are ephemeral — don't persist their chats.
         if self._project_key(project_path) == "_default":
             return
@@ -1930,6 +2078,13 @@ class AIChatWindow(QDockWidget):
                 close_btn.clicked.connect(lambda _=False, s=sid: self._close_session(s))
                 layout.addWidget(close_btn)
 
+        hist_btn = QPushButton("History")
+        hist_btn.setObjectName("chatWidgetTabHistoryBtn")
+        hist_btn.setFlat(True)
+        hist_btn.setStyleSheet("border: 1px solid rgba(255,255,255,0.08);")
+        hist_btn.clicked.connect(lambda _=False, b=hist_btn: self._show_closed_session_menu(b))
+        layout.addWidget(hist_btn)
+
         add_btn = QPushButton("+")
         add_btn.setObjectName("chatWidgetTabAddBtn")
         add_btn.setFlat(True)
@@ -2106,6 +2261,241 @@ class AIChatWindow(QDockWidget):
             pass
         return text
 
+    def _session_attachments(self) -> list:
+        sess = self._active_session()
+        if sess is None:
+            return []
+        atts = sess.get("attachments")
+        if atts is None:
+            sess["attachments"] = []
+            return sess["attachments"]
+        return atts
+
+    def _push_attachments_to_js(self):
+        if not self._use_web_ui:
+            return
+        self._run_js(
+            "if(window.setChatAttachments) window.setChatAttachments(%s);"
+            % json.dumps(self._session_attachments())
+        )
+
+    def _file_id_for_path(self, path: str) -> str:
+        if not path:
+            return ""
+        try:
+            from classes.query import File
+        except Exception:
+            return ""
+        abs_path = os.path.abspath(path)
+        try:
+            found = File.get(path=path) or File.get(path=abs_path)
+            if found and found.id:
+                return str(found.id)
+        except Exception:
+            pass
+        try:
+            for f in File.filter():
+                d = f.data if isinstance(f.data, dict) else {}
+                if d.get("zenvi_subclip"):
+                    continue
+                fp = d.get("path") or ""
+                try:
+                    if fp and os.path.abspath(fp) == abs_path:
+                        return str(f.id or "")
+                except Exception:
+                    continue
+                try:
+                    if f.absolute_path() and os.path.abspath(f.absolute_path()) == abs_path:
+                        return str(f.id or "")
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return ""
+
+    def _attach_path(self, path: str, file_id: str = "", name: str = "", insert_mention: bool = True):
+        if not path or not os.path.isfile(path):
+            return None
+        from classes.chat_attachments import make_attachment
+
+        abs_path = os.path.abspath(path)
+        atts = self._session_attachments()
+        for existing in atts:
+            if os.path.abspath(existing.get("path") or "") == abs_path:
+                return existing
+        file_id = str(file_id or self._file_id_for_path(abs_path) or "")
+        att = make_attachment(abs_path, file_id=file_id, name=name)
+        atts.append(att)
+        self._push_attachments_to_js()
+        if insert_mention and self._use_web_ui:
+            mode = "replace" if self._mention_armed else "append"
+            token = "@" + att["name"]
+            self._run_js(
+                "if(window.insertChatMention) window.insertChatMention(%s, %s);"
+                % (json.dumps(token), json.dumps(mode))
+            )
+        return att
+
+    def _attach_project_file_id(self, file_id: str, insert_mention: bool = True):
+        if not file_id:
+            return
+        try:
+            from classes.query import File
+            f = File.get(id=file_id)
+        except Exception:
+            f = None
+        if not f:
+            return
+        d = f.data if isinstance(f.data, dict) else {}
+        path = ""
+        try:
+            path = f.absolute_path() or d.get("path") or ""
+        except Exception:
+            path = d.get("path") or ""
+        name = d.get("name") or os.path.basename(path)
+        if path and os.path.isfile(path):
+            self._attach_path(path, file_id=str(f.id or file_id), name=name, insert_mention=insert_mention)
+            return
+        # Media-bin entry whose file is missing: still mention it by id.
+        from classes.chat_attachments import make_attachment
+
+        atts = self._session_attachments()
+        for existing in atts:
+            if str(existing.get("file_id") or "") == str(f.id or file_id):
+                return
+        att = make_attachment(path or "", file_id=str(f.id or file_id), name=name)
+        att["path"] = path or ""
+        atts.append(att)
+        self._push_attachments_to_js()
+        if insert_mention and self._use_web_ui:
+            token = "@" + att["name"]
+            mode = "replace" if self._mention_armed else "append"
+            self._run_js(
+                "if(window.insertChatMention) window.insertChatMention(%s, %s);"
+                % (json.dumps(token), json.dumps(mode))
+            )
+
+    def _remove_chat_attachment(self, attach_id: str):
+        sess = self._sessions.get(self._active_sid)
+        if not sess:
+            return
+        atts = sess.get("attachments") or []
+        sess["attachments"] = [
+            a for a in atts if str(a.get("id") or "") != str(attach_id or "")
+        ]
+        self._push_attachments_to_js()
+
+    def _on_chat_files_dropped(self, paths):
+        armed = self._mention_armed
+        for path in paths or []:
+            self._attach_path(path, insert_mention=armed)
+        self._mention_armed = False
+
+    def _on_chat_file_ids_dropped(self, file_ids):
+        armed = self._mention_armed
+        for file_id in file_ids or []:
+            self._attach_project_file_id(str(file_id), insert_mention=armed)
+        self._mention_armed = False
+
+    def _mentionable_files(self, query: str):
+        items = []
+        q = (query or "").lower().strip()
+        try:
+            from classes.query import File
+            files = File.filter()
+        except Exception:
+            return items
+        for f in files:
+            d = f.data if isinstance(f.data, dict) else {}
+            if d.get("zenvi_subclip"):
+                continue
+            path = d.get("path") or ""
+            name = d.get("name") or os.path.basename(path) or str(f.id or "")
+            hay = f"{name} {os.path.basename(path)}".lower()
+            if q and q not in hay:
+                continue
+            from classes.chat_attachments import kind_for_path
+            items.append({
+                "file_id": str(f.id or ""),
+                "name": name,
+                "kind": kind_for_path(path),
+                "path": path,
+            })
+            if len(items) >= 40:
+                break
+        return items
+
+    def _connect_file_mention_clicks(self):
+        if getattr(self, "_file_mention_clicks_connected", False):
+            return
+        win = self.parent()
+        if win is None:
+            try:
+                from classes.app import get_app
+                win = get_app().window
+            except Exception:
+                win = None
+        if win is None:
+            QTimer.singleShot(400, self._connect_file_mention_clicks)
+            return
+        connected = False
+        seen = set()
+        for name in ("filesListView", "filesTreeView", "filesView"):
+            view = getattr(win, name, None)
+            if view is None:
+                continue
+            key = id(view)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                view.clicked.connect(self._on_project_file_clicked)
+                connected = True
+            except Exception:
+                pass
+        if connected:
+            self._file_mention_clicks_connected = True
+        else:
+            QTimer.singleShot(400, self._connect_file_mention_clicks)
+
+    def _on_project_file_clicked(self, index):
+        if not self._mention_armed:
+            return
+        if index is None or not index.isValid():
+            return
+        try:
+            model = index.model()
+            id_index = index.sibling(index.row(), 5)
+            file_id = model.data(id_index, Qt.DisplayRole)
+        except Exception:
+            return
+        if file_id:
+            self._attach_project_file_id(str(file_id), insert_mention=True)
+            self._mention_armed = False
+
+    def _restore_chat_if_hijacked(self, visible=True):
+        """Reload chat HTML if Chromium navigated away (dropped video, etc.)."""
+        if visible is False or not self._use_web_ui:
+            return
+        view = getattr(self, "_chat_view", None)
+        html = getattr(self, "_chat_html", None)
+        base = getattr(self, "_chat_base_url", None)
+        chat_dir = getattr(self, "_chat_ui_dir", "") or ""
+        if view is None or not html or base is None:
+            return
+        try:
+            url = view.url()
+        except Exception:
+            return
+        if url is None or url.isEmpty():
+            return
+        from classes.chat_navigation import is_allowed_chat_navigation
+        if is_allowed_chat_navigation(url, chat_dir):
+            return
+        log.info("Chat webview left the assistant page; restoring %s", url.toString() if hasattr(url, "toString") else url)
+        self._chat_web_initial_sync_done = False
+        view.setHtml(html, base)
+
     def _load_chat_html_for_embed(self, webkit=False):
         """Load chat_ui/index.html; inject WebKit companion stylesheet + flag when needed."""
         from classes import info
@@ -2128,7 +2518,7 @@ class AIChatWindow(QDockWidget):
     def _init_web_ui(self):
         """Build embedded HTML chat UI (Qt WebEngine)."""
         from classes import info
-        from PyQt5.QtWebEngineWidgets import QWebEngineView
+        from windows.chat_web_view import ChatWebEngineView
         from PyQt5.QtWebChannel import QWebChannel
 
         self._chat_embed_backend = "webengine"
@@ -2146,6 +2536,9 @@ class AIChatWindow(QDockWidget):
         index_path = os.path.join(chat_ui_dir, "index.html")
         base_url = QUrl.fromLocalFile(QFileInfo(index_path).absoluteFilePath())
         html = self._load_chat_html_for_embed(webkit=False)
+        self._chat_html = html
+        self._chat_base_url = base_url
+        self._chat_ui_dir = chat_ui_dir
 
         inject_js = (
             "var r = document.documentElement.style;"
@@ -2160,9 +2553,10 @@ class AIChatWindow(QDockWidget):
             "if (preamble) { preamble.style.background = '#0d0d0d'; preamble.style.border = 'none'; }"
         )
 
-        self._chat_view = QWebEngineView(self)
+        self._chat_view = ChatWebEngineView(chat_ui_dir, self)
         self._chat_view.setObjectName("AIChatWindowContents")
-        self._chat_view.page().setBackgroundColor(QColor(13, 13, 13))
+        self._chat_view.filesDropped.connect(self._on_chat_files_dropped)
+        self._chat_view.fileIdsDropped.connect(self._on_chat_file_ids_dropped)
         self.setWidget(self._chat_view)
 
         self._chat_channel = QWebChannel(self._chat_view.page())
@@ -2181,10 +2575,10 @@ class AIChatWindow(QDockWidget):
     def _init_webkit_ui(self):
         """Embedded HTML chat using Qt WebKit (MSYS2 / Windows WebKit builds)."""
         from classes import info
-        from PyQt5.QtWebKitWidgets import QWebView
         from PyQt5.QtWebKit import QWebSettings
 
         from windows.embedded_web import attach_webkit_window_object, run_js as web_run_js
+        from windows import chat_web_view as _cwv
 
         self._chat_embed_backend = "webkit"
         self._chat_fade_done = True
@@ -2201,8 +2595,18 @@ class AIChatWindow(QDockWidget):
         index_path = os.path.join(chat_ui_dir, "index.html")
         base_url = QUrl.fromLocalFile(QFileInfo(index_path).absoluteFilePath())
         html = self._load_chat_html_for_embed(webkit=True)
+        self._chat_html = html
+        self._chat_base_url = base_url
+        self._chat_ui_dir = chat_ui_dir
 
-        self._chat_view = QWebView(self)
+        ChatWebKitView = getattr(_cwv, "ChatWebKitView", None)
+        if ChatWebKitView is not None:
+            self._chat_view = ChatWebKitView(chat_ui_dir, self)
+            self._chat_view.filesDropped.connect(self._on_chat_files_dropped)
+            self._chat_view.fileIdsDropped.connect(self._on_chat_file_ids_dropped)
+        else:
+            from PyQt5.QtWebKitWidgets import QWebView
+            self._chat_view = QWebView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         pal = self._chat_view.palette()
         pal.setColor(self._chat_view.backgroundRole(), QColor(13, 13, 13))
@@ -2290,6 +2694,7 @@ class AIChatWindow(QDockWidget):
             self._run_js(
                 "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(cached_cli_status)
             )
+        self._push_attachments_to_js()
 
         # Push prefetched balance (or loading placeholder) when the web UI is ready.
         try:
@@ -2555,17 +2960,17 @@ class AIChatWindow(QDockWidget):
             return agent_mode
         return sess.get("agent_mode", "agent")
 
-    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = ""):
+    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None):
         """Shared send pipeline for web and widget chat UIs."""
         self._user_cancelled = False
         sess = self._active_session()
         worker = sess.get("worker")
         if worker is None:
-            return
+            return False
         if self.is_processing and action == "chat" and not sess.get("pending_plan_questions"):
             if text:
                 self._run_js("alert('Processing previous message...');")
-            return
+            return False
         mode = self._resolve_agent_mode(agent_mode)
         sess["agent_mode"] = mode
         if sess.get("pending_plan_questions") and action == "chat" and text:
@@ -2573,12 +2978,14 @@ class AIChatWindow(QDockWidget):
             if self._use_web_ui:
                 self._run_js("if(window.clearPlanQuestions) window.clearPlanQuestions();")
         self._clear_widget_tool_blocks()
-        if action == "chat" and text:
-            self._add_user_msg(text)
-        if action == "chat" and text and self._try_local_command(text):
-            return
-        if action == "chat" and text:
-            self._request_preamble_summary(text)
+        shown = display_text if display_text is not None else text
+        cmd = command_text if command_text is not None else text
+        if action == "chat" and shown:
+            self._add_user_msg(shown)
+        if action == "chat" and cmd and self._try_local_command(cmd):
+            return True
+        if action == "chat" and cmd:
+            self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
@@ -2592,15 +2999,37 @@ class AIChatWindow(QDockWidget):
             Q_ARG(str, plan_id or ""),
         )
         self._save_chat_sessions_store()
+        return True
 
     def _handle_web_send_message(self, text: str, model_id: str, agent_mode: str = None):
         """Handle send from CEP UI (same logic as send_message but with args)."""
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
-        if not text:
+        from classes.chat_attachments import display_user_text, format_referenced_files_block
+
+        attachments = list(self._session_attachments())
+        typed = (text or "").strip()
+        if not typed and not attachments:
             return
-        self._dispatch_user_message(text, model_id, agent_mode=agent_mode)
+        display = display_user_text(typed, attachments)
+        block = format_referenced_files_block(attachments)
+        payload = typed
+        if block:
+            payload = f"{block}\n\n{payload}".strip() if payload else block
+        self._mention_armed = False
+        sent = self._dispatch_user_message(
+            payload,
+            model_id,
+            agent_mode=agent_mode,
+            display_text=display,
+            command_text=typed,
+        )
+        if sent:
+            sess = self._active_session()
+            if sess is not None:
+                sess["attachments"] = []
+            self._push_attachments_to_js()
 
     def _set_agent_mode(self, agent_mode: str):
         sess = self._active_session()
@@ -2879,6 +3308,8 @@ class AIChatWindow(QDockWidget):
     def showEvent(self, event):
         """Run fade-in animation the first time the dock is shown (widget UI only)."""
         super().showEvent(event)
+        if self._use_web_ui:
+            QTimer.singleShot(0, self._restore_chat_if_hijacked)
         if not self._use_web_ui and not self._chat_fade_done and self._chat_opacity_effect and self._chat_fade_anim:
             self._chat_opacity_effect.setOpacity(0.0)
             self._chat_fade_anim.stop()
@@ -2975,14 +3406,12 @@ class AIChatWindow(QDockWidget):
             QMessageBox.warning(self, "Wait", "Processing previous message...")
             return
         text = self.msg_input.toPlainText().strip()
-        if not text:
-            return
-        self.msg_input.clear()
         model_id = self.model_combo.currentData()
         if not model_id and self.model_combo.count():
             model_id = self.model_combo.currentText()
         model_id_str = model_id if model_id else ""
-        self._dispatch_user_message(text, model_id_str)
+        self.msg_input.clear()
+        self._handle_web_send_message(text, model_id_str)
         self.msg_input.setFocus()
 
     def _set_processing_ui(self, processing: bool):
@@ -3265,6 +3694,7 @@ class AIChatWindow(QDockWidget):
                 sess["messages"] = []
                 sess["first_prompt_summary"] = None
                 sess["unread"] = False
+                sess["attachments"] = []
                 from classes import chat_history
                 chat_history.clear_session_messages(self._active_sid)
                 # The worker forgets its CLI conversation too, so drop the
@@ -3278,6 +3708,7 @@ class AIChatWindow(QDockWidget):
             if self._use_web_ui:
                 self._run_js("clearMessages();")
                 self._push_tabs_to_js()
+                self._push_attachments_to_js()
             else:
                 self._clear_widget_tool_blocks()
                 self.chat_box.clear()
