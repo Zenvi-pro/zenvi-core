@@ -237,6 +237,30 @@ def _is_planning_tool_allowed(tool_name: str) -> bool:
     return False
 
 
+# Blocked composite → the plan step name the planner should write instead.
+_PLANNING_STEP_HINTS = {
+    "generate_video_and_add_to_timeline_tool": "video_gen",
+    "generate_video_tool": "video_gen",
+    "generate_tts_and_add_to_timeline_tool": "tts",
+    "modify_clip_tool": "clip_edit",
+    "import_stock_media_tool": "stock_video",
+}
+
+
+def _planning_block_message(tool_name: str) -> str:
+    """Refuse the call and name the step, so the plan still gets written."""
+    hint = _PLANNING_STEP_HINTS.get(tool_name or "")
+    if hint:
+        return (
+            f"Error: Planning mode — {tool_name} is blocked. Add a '{hint}' plan step "
+            "instead (with prompt/query plus track and position_seconds)."
+        )
+    return (
+        "Error: Planning mode — this tool is blocked. "
+        "Add it as a plan step instead."
+    )
+
+
 def _format_tool_command(tool_name: str, args: dict) -> str:
     """Build a `$`-style preview line summarising the tool invocation."""
     parts = [tool_name]
@@ -475,10 +499,7 @@ class AIChatWorker(QObject):
                 """Execute a tool locally and return the result."""
                 nonlocal last_tool_result
                 if getattr(self, "_agent_mode", "agent") == "planning" and not _is_planning_tool_allowed(tool_name):
-                    return (
-                        "Error: Planning mode — this tool is blocked. "
-                        "Add it as a plan step instead."
-                    )
+                    return _planning_block_message(tool_name)
                 log.info("Tool delegated from backend: %s", tool_name)
                 args = dict(tool_args or {})
                 # Args displayed to the user shouldn't leak the chat session id.
