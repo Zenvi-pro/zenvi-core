@@ -441,6 +441,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         if clear:
             self.model_ids = {}
             self.model.clear()
+            self._status_cache.clear()
 
         # Add Headers
         self.model.setHorizontalHeaderLabels(["", _("Name"), _("Tags")])
@@ -571,20 +572,63 @@ class FilesModel(QObject, updates.UpdateInterface):
             elif ai_metadata.get("index"):
                 merged["twelvelabs"] = ai_metadata["index"]
             file_obj.data["ai_metadata"] = merged
+            self._status_cache.pop(str(file_obj.data.get("id", "")), None)
             return
 
         file_obj.data["ai_metadata"] = ai_metadata
+        self._status_cache.pop(str(file_obj.data.get("id", "")), None)
         # Do not auto-fill legacy file.data["tags"] from AI analysis.
 
     def _set_indexing_progress(self, file_id, phase, percent):
         self._indexing_progress[str(file_id)] = {"phase": phase, "percent": percent}
+        self._status_cache.pop(str(file_id), None)
         self.indexingProgress.emit(str(file_id), phase, percent)
+
+    def file_indexing_status(self, file_id):
+        """Badge status for a file id — cached, so views can call it from paint()."""
+        from classes.indexing_status import derive_indexing_status
+
+        fid = str(file_id or "")
+        if not fid:
+            return derive_indexing_status(None)
+        cached = self._status_cache.get(fid)
+        if cached is not None:
+            return cached
+        try:
+            f = File.get(id=fid)
+            ai_meta = f.data.get("ai_metadata") if f else None
+        except Exception:
+            ai_meta = None
+        status = derive_indexing_status(
+            ai_meta,
+            progress=self._indexing_progress.get(fid),
+            is_active=self.is_file_indexing(fid),
+            is_queued=self.is_file_queued(fid),
+        )
+        self._status_cache[fid] = status
+        return status
+
+    def invalidate_indexing_status(self, file_id=None):
+        """Drop cached status for a file (or all files) after metadata changes."""
+        if file_id is None:
+            self._status_cache.clear()
+        else:
+            self._status_cache.pop(str(file_id), None)
 
     def is_file_indexing(self, file_id):
         fid = str(file_id or "")
         return any(
             str(w.file_data.get("id", "")) == fid for w in self._active_indexers
         )
+
+    def is_file_queued(self, file_id):
+        """True while a file waits for one of the bounded indexing worker slots."""
+        fid = str(file_id or "")
+        return any(qid == fid for qid, _ in self._indexing_queue)
+
+    def has_active_indexing(self):
+        """True while any file in the project is indexing or waiting to index."""
+        return bool(self._active_indexers or self._indexing_queue)
 
     def get_indexing_progress(self, file_id):
         return self._indexing_progress.get(str(file_id or ""))
@@ -599,6 +643,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         if any(qid == fid for qid, _ in self._indexing_queue):
             return
         self._indexing_queue.append((fid, bool(summarize_only)))
+        self._status_cache.pop(fid, None)
         self._drain_indexing_queue()
 
     def _drain_indexing_queue(self):
@@ -640,6 +685,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             except ValueError:
                 pass
             self._indexing_progress.pop(str(file_id), None)
+            self._status_cache.pop(str(file_id), None)
             self._drain_indexing_queue()
 
         def _on_progress(fid, phase, percent):
@@ -966,6 +1012,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
+        self._status_cache.pop(str(file_id), None)
         file = File.get(id=file_id)
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
@@ -1071,6 +1118,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         self._active_indexers = []  # strong refs to keep QThreads alive until finished
         self._indexing_queue = []  # (file_id, summarize_only) waiting for a worker slot
         self._indexing_progress = {}
+        self._status_cache = {}
 
         # Stop any running indexing threads cleanly when the app quits
         try:
