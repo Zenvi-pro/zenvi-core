@@ -58,6 +58,7 @@ from classes import exceptions, info, qt_types, sentry, ui_util, updates
 from classes.auto_updater import AutoUpdater, get_update_manifest
 from classes.update_installer import is_version_newer
 from classes.app import get_app
+from classes.qt_main_thread import invoke_on_gui
 from classes.exporters.edl import export_edl
 from classes.exporters.final_cut_pro import export_xml
 from classes.importers.edl import import_edl
@@ -628,26 +629,32 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # Save project to file
                 app.project.save(file_path)
 
-                # Set Window title
-                self.SetWindowTitle()
-
-                # Load recent projects again
-                self.load_recent_menu()
-
                 log.info("Saved project %s", file_path)
 
-                # Notify listeners if Save As (or first save of an Untitled
-                # project) actually changed the file path.  Plain Save into
-                # the same file is a no-op for project-scoped consumers.
+            except Exception as ex:
+                log.error("Couldn't save project %s", file_path, exc_info=1)
+                # Capture the message now: invoke_on_gui may defer _warn to run
+                # after this except block exits, and Python auto-deletes the
+                # "as ex" binding at that point, which would make a closure
+                # over `ex` itself raise instead of showing the dialog.
+                error_message = str(ex)
+
+                def _warn():
+                    QMessageBox.warning(self, _("Error Saving Project"), error_message)
+
+                invoke_on_gui(_warn, context=self)
+                return
+
+            def _after_save():
+                self.SetWindowTitle()
+                self.load_recent_menu()
                 try:
                     if (file_path or "") != previous_filepath:
                         self.projectChanged.emit(file_path or "")
                 except Exception:
                     pass
 
-            except Exception as ex:
-                log.error("Couldn't save project %s", file_path, exc_info=1)
-                QMessageBox.warning(self, _("Error Saving Project"), str(ex))
+            invoke_on_gui(_after_save, context=self)
 
     def save_recovery(self, file_path):
         """Saves the project and manages recovery files based on configured limits."""
@@ -2862,34 +2869,38 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if not profile:
             profile = app.project.get("profile")
 
-        # Determine if the project needs saving (has any unsaved changes)
-        save_indicator = ""
-        if app.project.needs_save():
-            save_indicator = "*"
-            self.actionSave.setEnabled(True)
-        else:
-            self.actionSave.setEnabled(False)
+        def _apply():
+            # Determine if the project needs saving (has any unsaved changes)
+            save_indicator = ""
+            if app.project.needs_save():
+                save_indicator = "*"
+                self.actionSave.setEnabled(True)
+            else:
+                self.actionSave.setEnabled(False)
 
-        # Is this a saved project?
-        if not app.project.current_filepath:
-            # Not saved yet (use singleShot since this method can be invoked by our preview thread)
-            QTimer.singleShot(0, functools.partial(self.setWindowTitle,
-                "%s %s [%s] - %s" % (save_indicator, _("Untitled Project"), profile, info.PRODUCT_NAME)))
-        else:
-            # Yes, project is saved
-            # Get just the filename
-            filename = os.path.basename(app.project.current_filepath)
-            filename = os.path.splitext(filename)[0]
-            # Use singleShot since this method can be invoked by our preview thread
-            QTimer.singleShot(0, functools.partial(self.setWindowTitle,
-                "%s %s [%s] - %s" % (save_indicator, filename, profile, info.PRODUCT_NAME)))
+            # Is this a saved project?
+            if not app.project.current_filepath:
+                title = "%s %s [%s] - %s" % (
+                    save_indicator, _("Untitled Project"), profile, info.PRODUCT_NAME)
+            else:
+                filename = os.path.basename(app.project.current_filepath)
+                filename = os.path.splitext(filename)[0]
+                title = "%s %s [%s] - %s" % (
+                    save_indicator, filename, profile, info.PRODUCT_NAME)
+            self.setWindowTitle(title)
+
+        # Preview/save threads also call this; QAction.setEnabled must stay on the GUI thread.
+        invoke_on_gui(_apply, context=self)
 
     # Update undo and redo buttons enabled/disabled to available changes
     def updateStatusChanged(self, undo_status, redo_status):
-        self.actionUndo.setEnabled(undo_status)
-        self.actionRedo.setEnabled(redo_status)
-        self.actionClearHistory.setEnabled(undo_status | redo_status)
-        self.SetWindowTitle()
+        def _apply():
+            self.actionUndo.setEnabled(undo_status)
+            self.actionRedo.setEnabled(redo_status)
+            self.actionClearHistory.setEnabled(undo_status | redo_status)
+            self.SetWindowTitle()
+
+        invoke_on_gui(_apply, context=self)
 
     def addSelection(self, item_id, item_type, clear_existing=False):
         """Add an item to the selection list.
@@ -4353,11 +4364,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Start the in-app MCP server now (instead of waiting for the first
         # Zenvi-driven CLI request) so an external `claude`/`codex` session run
         # in a terminal can connect as soon as the app is up.
-        try:
-            from classes.agent_mcp_server import get_mcp_server
-            get_mcp_server().start()
-        except Exception as e:
-            log.warning("Failed to start in-app MCP server: %s", e)
+        # Deferred to the first event-loop pass rather than started inline: an
+        # unattended harness treats "MCP answers" as "the editor is usable", so
+        # the server must not come up while this constructor still owns the main
+        # thread — every mutating tool would time out with the port wide open.
+        def _start_mcp_server():
+            try:
+                from classes.agent_mcp_server import get_mcp_server
+                get_mcp_server().start()
+            except Exception as e:
+                log.warning("Failed to start in-app MCP server: %s", e)
+
+        QTimer.singleShot(0, _start_mcp_server)
 
         # Re-bind chat sessions whenever the active project changes.
         try:

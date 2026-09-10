@@ -238,7 +238,7 @@ def test_excepthook_treats_control_flow_as_normal(captured, exc):
     assert captured["dialogs"] == []
 
 
-def test_threading_excepthook_logs_without_a_dialog(captured):
+def test_threading_excepthook_surfaces_a_dialog(captured):
     class _Args:
         exc_type, exc_value, exc_traceback = _raise(ValueError("kaboom"))
         thread = threading.current_thread()
@@ -246,8 +246,7 @@ def test_threading_excepthook_logs_without_a_dialog(captured):
     crash_handler._threading_excepthook(_Args())
 
     assert any("kaboom" in text for text in captured["logged"])
-    # Background failures are usually cancelled jobs the user can't act on.
-    assert captured["dialogs"] == []
+    assert captured["dialogs"], "background-thread failures must reach the UI"
 
 
 def test_threading_excepthook_names_the_thread(captured):
@@ -347,6 +346,49 @@ def test_faulthandler_uses_a_file_when_there_is_no_stderr(monkeypatch, tmp_path)
         crash_handler._faulthandler_stream = None
         if stream is not None:
             stream.close()
+
+
+def test_faulthandler_uses_a_file_on_windows_even_with_stderr(monkeypatch, tmp_path):
+    # Windows raises benign, handled COM exceptions (0x8001010e RPC_E_WRONG_THREAD)
+    # from the native audio/preview threads. faulthandler reports every one as a
+    # "fatal exception" and, on stderr, the concurrent dumps interleave into
+    # unreadable garbage in the app log. Keep the dumps, off stderr.
+    import faulthandler
+
+    monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    real_stderr = open(tmp_path / "stderr.txt", "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stderr", real_stderr)
+    try:
+        assert crash_handler.enable_faulthandler() is True
+
+        assert (tmp_path / "faulthandler.log").exists()
+        assert crash_handler._faulthandler_stream is not None
+        assert faulthandler.is_enabled()
+    finally:
+        faulthandler.disable()
+        real_stderr.close()
+        stream = crash_handler._faulthandler_stream
+        crash_handler._faulthandler_stream = None
+        if stream is not None:
+            stream.close()
+
+
+def test_faulthandler_still_uses_stderr_off_windows(monkeypatch, tmp_path):
+    import faulthandler
+
+    monkeypatch.setattr(crash_handler, "_user_path", lambda: str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "linux")
+    real_stderr = open(tmp_path / "stderr.txt", "w", encoding="utf-8")
+    monkeypatch.setattr(sys, "stderr", real_stderr)
+    try:
+        assert crash_handler.enable_faulthandler() is True
+
+        assert not (tmp_path / "faulthandler.log").exists()
+        assert crash_handler._faulthandler_stream is None
+    finally:
+        faulthandler.disable()
+        real_stderr.close()
 
 
 def test_log_file_path_points_at_the_app_log(monkeypatch, tmp_path):
@@ -651,3 +693,54 @@ def test_dialogs_still_show_on_a_real_platform(monkeypatch, gui_platform):
     crash_handler._queue_dialog("ValueError: kaboom", "traceback\n", blocking=True)
 
     assert shown == ["ValueError: kaboom"]
+
+
+def test_notify_with_guard_reports_and_keeps_running(captured):
+    class _Boom(Exception):
+        pass
+
+    def boom(_receiver, _event):
+        raise _Boom("slot-failed")
+
+    result = crash_handler.notify_with_guard(boom, None, None)
+
+    assert result is False
+    assert captured["logged"]
+    assert captured["dialogs"]
+    assert "slot-failed" in captured["dialogs"][0][0]
+
+
+def test_notify_with_guard_returns_the_impl_result(captured):
+    assert crash_handler.notify_with_guard(lambda r, e: True, None, None) is True
+    assert captured["logged"] == []
+    assert captured["dialogs"] == []
+
+
+def test_report_qt_thread_warning_surfaces_starttimer(captured):
+    assert crash_handler.report_qt_thread_warning(
+        "QObject::startTimer: Timers cannot be started from another thread") is True
+    assert captured["dialogs"]
+    assert "started from another thread" in captured["dialogs"][0][0]
+
+
+def test_report_qt_thread_warning_logs_teardown_without_a_dialog(captured):
+    assert crash_handler.report_qt_thread_warning(
+        "QObject::~QObject: Timers cannot be stopped from another thread") is True
+    assert captured["logged"]
+    assert captured["dialogs"] == []
+
+
+def test_report_qt_thread_warning_ignores_unrelated_messages(captured):
+    assert crash_handler.report_qt_thread_warning("has no notify signal") is False
+    assert captured["dialogs"] == []
+
+
+def test_native_exception_handlers_are_noop_off_darwin(monkeypatch):
+    monkeypatch.setattr(crash_handler, "_native_handlers_installed", False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert crash_handler.install_native_exception_handlers() is False
+
+
+def test_native_exception_handlers_are_idempotent_once_installed(monkeypatch):
+    monkeypatch.setattr(crash_handler, "_native_handlers_installed", True)
+    assert crash_handler.install_native_exception_handlers() is True
