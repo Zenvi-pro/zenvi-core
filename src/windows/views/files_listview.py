@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import (QListView, QAbstractItemView,
 
 from classes import info
 from classes.app import get_app
+from classes.file_drop import accept_os_file_drag, urls_from_mime
 from classes.logger import log
 from classes.query import File
 from .menu import StyledContextMenu
@@ -210,12 +211,8 @@ class FilesListView(QListView):
             get_app().window.actionPreview_File.trigger()
 
     def dragEnterEvent(self, event):
-        # If dragging urls onto widget, accept
-        if not event.mimeData().hasUrls():
-            event.ignore()
+        if not accept_os_file_drag(event):
             return
-        event.accept()
-        event.setDropAction(Qt.CopyAction)
 
     def startDrag(self, supportedActions):
         """ Override startDrag method to display custom icon """
@@ -278,9 +275,9 @@ class FilesListView(QListView):
 
     # Handle a drag and drop being dropped on widget
     def dropEvent(self, event):
-        if not event.mimeData().hasUrls():
-            # Nothing we're interested in
-            event.reject()
+        urls = urls_from_mime(event.mimeData())
+        if not urls:
+            event.ignore()
             return
         event.accept()
         # Use try/finally so we always reset the cursor
@@ -288,9 +285,8 @@ class FilesListView(QListView):
             # Set cursor to waiting
             get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
 
-            qurl_list = event.mimeData().urls()
-            log.info("Processing drop event for {} urls".format(len(qurl_list)))
-            self.files_model.process_urls(qurl_list)
+            log.info("Processing drop event for {} urls".format(len(urls)))
+            self.files_model.process_urls(urls)
         finally:
             # Restore cursor
             get_app().restoreOverrideCursor()

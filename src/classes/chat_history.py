@@ -300,6 +300,31 @@ def mark_session_closed(conn, session_id: str) -> None:
     conn.commit()
 
 
+@_store()
+def reopen_session(conn, session_id: str) -> None:
+    """Clear ``closed_at`` so the session can be restored as an open tab."""
+    conn.execute(
+        "UPDATE sessions SET closed_at = NULL, updated_at = ? WHERE session_id = ?",
+        (_now(), session_id),
+    )
+    conn.commit()
+
+
+@_store(factory=list)
+def load_closed_sessions(conn, project_key: str) -> list:
+    """Closed sessions that still have a transcript, newest first."""
+    return [
+        dict(r) for r in conn.execute(
+            "SELECT s.* FROM sessions s "
+            "WHERE s.project_key = ? AND s.closed_at IS NOT NULL "
+            "AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id) "
+            "ORDER BY s.updated_at DESC, s.rowid DESC",
+            (project_key,),
+        ).fetchall()
+    ]
+
+
+
 # ---------------------------------------------------------------------------
 # Messages and tool events
 # ---------------------------------------------------------------------------
@@ -487,7 +512,49 @@ def rekey_project(conn, old_key: str, new_key: str, new_path: str = None) -> Non
             "WHERE project_key = ?",
             (new_key, os.path.abspath(new_path), _now(), old_key),
         )
+    _move_active_session(conn, old_key, new_key)
     conn.commit()
+
+
+_ACTIVE_PREFIX = "active:"
+
+
+def _move_active_session(conn, old_key: str, new_key: str) -> None:
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = ?", (_ACTIVE_PREFIX + old_key,)
+    ).fetchone()
+    if not row or not row["value"]:
+        return
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (_ACTIVE_PREFIX + new_key, row["value"]),
+    )
+    conn.execute("DELETE FROM meta WHERE key = ?", (_ACTIVE_PREFIX + old_key,))
+
+
+@_store()
+def set_active_session(conn, project_key: str, session_id: str) -> None:
+    """Remember which tab was selected for this project."""
+    if not project_key:
+        return
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (_ACTIVE_PREFIX + project_key, session_id or ""),
+    )
+    conn.commit()
+
+
+@_store(default="")
+def get_active_session(conn, project_key: str) -> str:
+    if not project_key:
+        return ""
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = ?",
+        (_ACTIVE_PREFIX + project_key,),
+    ).fetchone()
+    return (row["value"] if row else "") or ""
 
 
 @_store()
