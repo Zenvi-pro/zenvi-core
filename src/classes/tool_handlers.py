@@ -1596,24 +1596,58 @@ def _expand_import_paths(entries) -> tuple:
     return resolved, missing
 
 
-def import_files(paths="", skip_indexing="false", **_kw) -> str:
+def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> str:
     """Import media into the project bin by explicit path, without opening a file dialog.
 
-    ``paths`` is a list (or JSON/comma-separated string) of media files and/or
-    directories; directories are searched recursively for media. Indexing starts
+    ``paths`` / ``path`` / ``folder`` / ``files`` accept files, directories, globs, or
+    file URLs. Directories are searched recursively for media. Indexing starts
     automatically unless ``skip_indexing`` is true — poll ``analyzed`` via
     list_files_tool, or block with wait_until_project_indexed_tool. Required: an
     unattended MCP/harness run has no way to complete a file picker.
     """
-    entries = _coerce_path_list(paths)
+    import glob as _glob
+    from urllib.parse import unquote, urlparse
+
+    entries = []
+    for value in (paths, path, folder, _kw.get("files")):
+        if value:
+            entries.extend(_coerce_path_list(value))
     if not entries:
         return ("Error: paths is required for MCP/harness import. Pass the media "
                 "files or folders to import, e.g. paths=[\"/clips/dialog_test\"]. "
                 "This tool never opens a file dialog.")
 
-    resolved, missing = _expand_import_paths(entries)
+    def _normalize_entry(entry: str) -> str:
+        text = str(entry).strip()
+        if text.startswith("file://"):
+            parsed = urlparse(text)
+            path_part = unquote(parsed.path or "")
+            if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
+                path_part = path_part.lstrip("/")
+            return path_part or text
+        return text
+
+    notes = []
+    normalized = []
+    for entry in entries:
+        candidate = _normalize_entry(entry)
+        if _glob.has_magic(candidate) or _glob.has_magic(entry):
+            matches = _glob.glob(candidate, recursive=True)
+            if not matches:
+                matches = _glob.glob(os.path.expanduser(entry), recursive=True)
+            if not matches:
+                notes.append("No files matched: %s" % entry)
+                continue
+            normalized.extend(matches)
+        else:
+            normalized.append(candidate)
+
+    resolved, missing = _expand_import_paths(normalized)
     if not resolved:
-        return "Error: no media files found in: %s" % ", ".join(entries)
+        detail = "; ".join(notes) if notes else (
+            "no media files found in: %s" % ", ".join(entries)
+        )
+        return f"Error: Nothing to import ({detail})."
 
     skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
 
@@ -1621,24 +1655,55 @@ def import_files(paths="", skip_indexing="false", **_kw) -> str:
         from classes.query import File as _File
 
         def _do_add():
-            _get_app().window.files_model.add_files(
+            return _get_app().window.files_model.add_files(
                 resolved, quiet=True, prevent_image_seq=True, skip_indexing=skip,
             )
 
-        _run_on_main_thread(_do_add, timeout=_IMPORT_MAIN_THREAD_TIMEOUT)
+        added = _run_on_main_thread(_do_add, timeout=_IMPORT_MAIN_THREAD_TIMEOUT)
+
+        by_path = {}
+        if isinstance(added, (list, tuple)):
+            for f in added:
+                d = getattr(f, "data", None)
+                if isinstance(d, dict) and d.get("path"):
+                    by_path[os.path.abspath(str(d["path"]))] = f
+
+        if isinstance(added, (list, tuple)) and len(added) == 0:
+            detail = "; ".join(notes) if notes else "the files could not be opened"
+            return f"Error: Nothing was added to the media bin ({detail})."
 
         lines = []
-        for path in resolved:
-            f = _File.get(path=path)
-            lines.append("file_id=%s path=%s" % (getattr(f, "id", "?"), path))
+        ids = []
+        for media_path in resolved:
+            key = os.path.abspath(media_path)
+            f = by_path.get(key) or _File.get(path=media_path)
+            if not f and key != media_path:
+                f = _File.get(path=key)
+            if not f:
+                continue
+            fid = getattr(f, "id", "?")
+            lines.append("file_id=%s path=%s" % (fid, media_path))
+            if fid and fid != "?":
+                ids.append(fid)
+
+        if not lines:
+            detail = "; ".join(notes) if notes else "the files could not be opened"
+            return f"Error: Nothing was added to the media bin ({detail})."
+
+        chat_session_id = str(_kw.get("chat_session_id", "") or "default")
+        if ids:
+            _last_split_file_id_by_chat_session[chat_session_id] = ids[-1]
     except Exception as e:
         return f"Error: {e}"
 
     head = "Imported %d file(s). indexing_started=%s" % (
-        len(resolved), "false" if skip else "true")
+        len(lines), "false" if skip else "true")
     if missing:
         head += " (not found: %s)" % ", ".join(missing)
+    if notes:
+        head += "\nNotes: " + "; ".join(notes)
     return head + "\n" + "\n".join(lines)
+
 
 
 def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
@@ -2023,8 +2088,9 @@ def add_clip_to_timeline(
                 return (
                     "Error: No clip was just created. "
                     "Pass tool_args.file_id with a media_bin file id, or run "
-                    "split_file_add_clip_tool / import_stock_media_tool immediately before this "
-                    "step (empty file_id only works right after those tools in the same session)."
+                    "split_file_add_clip_tool / import_files_tool / import_stock_media_tool "
+                    "immediately before this step (empty file_id only works right after those "
+                    "tools in the same session)."
                 )
         else:
             file_id = str(file_id).strip()
@@ -7703,6 +7769,7 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             "add_clip_to_timeline_tool",
             "place_motion_graphic_tool",
             "import_stock_media_tool",
+            "import_files_tool",
         ):
             tool_args = dict(tool_args)
             tool_args.pop("chat_session_id", None)

@@ -1362,7 +1362,7 @@
     "category": "Location",
     "title": "Video Export",
     "setting": "locationExportType",
-    "value": 2,
+    "value": 1,
     "type": "dropdown",
     "values": [
       {
@@ -1381,6 +1381,14 @@
     "title": "Video Export Path",
     "setting": "locationExportPath",
     "value": "",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Location",
+    "title": "Export Downloads Default Applied",
+    "setting": "exportDownloadsDefaultApplied",
+    "value": true,
     "type": "hidden",
     "restart": false
   },

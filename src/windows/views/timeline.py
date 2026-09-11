@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import QDialog
 from classes import info, updates
 from classes.app import get_app
 from classes.effect_init import effect_options
+from classes.file_drop import mime_has_file_drop, urls_from_mime
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
 from classes.clipboard import ClipboardManager
@@ -3717,23 +3718,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
 
         # Handle URL-based OS file drop
-        if event.mimeData().hasUrls():
+        if mime_has_file_drop(event.mimeData()):
             self.item_type = "clip"
-            urls = event.mimeData().urls()
+            urls = urls_from_mime(event.mimeData())
 
-            # Import list of files
-            get_app().window.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
-
-            # Get File objects and add JSON data
-            for uri in urls:
-                filepath = uri.toLocalFile()
-                if not os.path.exists(filepath) or not os.path.isfile(filepath):
-                    continue  # Skip invalid files
-
-                # Create File object and get its JSON data
-                for file in File.filter(path=filepath):
-                    if file:
-                        data_list.append(file.id)
+            imported = get_app().window.files_model.process_urls(
+                urls, import_quietly=True, prevent_image_seq=True
+            ) or []
+            for file in imported:
+                if file and getattr(file, "id", None):
+                    data_list.append(file.id)
 
         # Handle text-based mime data (clips or transitions)
         elif event.mimeData().html():
