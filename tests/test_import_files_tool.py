@@ -12,14 +12,16 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 
-def test_import_files_opens_dialog_when_no_paths(monkeypatch):
+def test_import_files_without_paths_errors_and_opens_no_dialog(monkeypatch):
     from classes import tool_handlers as th
 
     win = MagicMock()
     monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
     out = th.import_files()
-    win.actionImportFiles_trigger.assert_called_once()
-    assert "dialog opened" in out.lower()
+    assert out.startswith("Error:")
+    assert "paths is required" in out
+    win.actionImportFiles_trigger.assert_not_called()
+    win.files_model.add_files.assert_not_called()
 
 
 def test_import_files_missing_path_errors(monkeypatch, tmp_path):
