@@ -12,7 +12,33 @@
 
 $ErrorActionPreference = "Stop"
 
-$msys2Root = "C:\msys64"
+# Was hardcoded to C:\msys64 in 3 places -- now detected, since winget/manual
+# installs don't always land there. Checks (in order): $env:MSYS2_ROOT, the
+# registry uninstall entry MSYS2's installer writes, then falls back to the
+# documented default.
+function Find-Msys2Root {
+    if ($env:MSYS2_ROOT -and (Test-Path (Join-Path $env:MSYS2_ROOT "usr\bin\bash.exe"))) {
+        return $env:MSYS2_ROOT
+    }
+
+    $uninstallGlobs = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($glob in $uninstallGlobs) {
+        $entry = Get-ItemProperty -Path $glob -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like "MSYS2*" -and $_.InstallLocation } |
+            Select-Object -First 1
+        if ($entry -and (Test-Path (Join-Path $entry.InstallLocation "usr\bin\bash.exe"))) {
+            return $entry.InstallLocation
+        }
+    }
+
+    return "C:\msys64"
+}
+
+$msys2Root = Find-Msys2Root
 $msys2Bash = Join-Path $msys2Root "usr\bin\bash.exe"
 
 function Test-Msys2Installed {
@@ -32,7 +58,7 @@ if (-not (Test-Msys2Installed)) {
 
     if (-not (Test-Msys2Installed)) {
         Write-Host "MSYS2 install did not land at the expected path ($msys2Root)."
-        Write-Host "If you installed it elsewhere, edit the msys2Root variable at the top of this script and re-run."
+        Write-Host "If you installed it elsewhere, set an MSYS2_ROOT environment variable to that path and re-run."
         exit 1
     }
 
@@ -57,9 +83,23 @@ echo "=== Zenvi Core Windows (MSYS2) Setup ==="
 echo "Dependency build directory: $DEPS_DIR"
 
 echo ""
-echo "--- [1/6] Syncing MSYS2 and installing packages ---"
-pacman -Syu --noconfirm
+echo "--- [1/6] Syncing MSYS2 package databases and installing packages ---"
+# Deliberately NOT running a full `pacman -Syu` here. That was causing two
+# separate reported failures:
+#  - Fresh MSYS2 install: -Syu upgrades msys2-runtime itself, which force-closes
+#    this very shell mid-script (documented MSYS2 behavior) -- script exits
+#    before step 1 finishes.
+#  - Existing MSYS2 install: -Syu does a full system upgrade (e.g. FFmpeg 8->9,
+#    gcc 15->16 -- 351 packages in one report), which can break an
+#    already-built libopenshot, and has hit leftover-file conflicts in
+#    unrelated environments (e.g. ucrt64) this repo never touches.
+# `pacman -Sy` only refreshes the package database (no runtime upgrade, no
+# shell close); `-S --needed` then installs/updates only the packages below
+# to their currently-synced versions and leaves everything else alone.
+pacman -Sy --noconfirm
 pacman -S --needed --noconfirm --disable-download-timeout \
+    mingw-w64-x86_64-python-cryptography \
+    mingw-w64-x86_64-python-rpds-py \
     base-devel git \
     mingw-w64-x86_64-toolchain \
     mingw64/mingw-w64-x86_64-ffmpeg \
@@ -96,11 +136,16 @@ if [ ! -f /usr/lib/libUnitTest++.a ]; then
 else
     echo "unittest-cpp already installed -- skipping."
 fi
-export UNITTEST_DIR="C:\msys64\usr"
+export UNITTEST_DIR="${MSYS2_ROOT_WIN}\usr"
 
 echo ""
 echo "--- [3/6] libopenshot-audio ---"
-if ! find /usr -maxdepth 1 -iname 'libopenshot-audio*' 2>/dev/null | grep -q .; then
+# Was checking for a file literally named 'libopenshot-audio*' directly under
+# /usr (maxdepth 1) -- that never exists, since the real installed artifacts
+# are the headers under /usr/include/libopenshot-audio/ and the lib under
+# /usr/lib/. That mismatch meant this check never matched, so the build (and
+# `make install`, silently overwriting any existing install) ran every time.
+if ! find /usr/include /usr/lib -maxdepth 2 -iname '*openshot-audio*' 2>/dev/null | grep -q .; then
     cd "$DEPS_DIR"
     [ -d libopenshot-audio ] || git clone https://github.com/OpenShot/libopenshot-audio.git
     cd libopenshot-audio
@@ -131,12 +176,15 @@ if ! find /usr -maxdepth 1 -iname 'libopenshot-audio*' 2>/dev/null | grep -q .; 
 
     cd build
     make
+    if find /usr/include /usr/lib -maxdepth 2 -iname '*openshot-audio*' 2>/dev/null | grep -q .; then
+        echo "NOTE: an existing libopenshot-audio install was found under /usr -- 'make install' will overwrite it now."
+    fi
     make install
     echo "libopenshot-audio built and installed."
 else
     echo "libopenshot-audio already installed -- skipping."
 fi
-export LIBOPENSHOT_AUDIO_DIR="C:\msys64\usr"
+export LIBOPENSHOT_AUDIO_DIR="${MSYS2_ROOT_WIN}\usr"
 
 echo ""
 echo "--- [4/6] Extra libopenshot deps ---"
@@ -214,7 +262,16 @@ else
 fi
 
 source .venv/bin/activate
-pip install -r requirements-noqt.txt
+
+# cryptography and rpds-py have Rust extension modules that fail to compile
+# from source under MSYS2's Python via pip. Both are already installed above
+# via pacman (mingw-w64-x86_64-python-cryptography / -rpds-py), and this venv
+# was created with --system-site-packages so it can see them -- strip the two
+# lines from the requirements file before installing the rest via pip so pip
+# doesn't try to build (or reinstall) them itself.
+REQS_FILTERED="$DEPS_DIR/requirements-noqt.filtered.txt"
+grep -viE '^(cryptography|rpds-py)([=<>~[:space:]]|$)' requirements-noqt.txt > "$REQS_FILTERED"
+pip install -r "$REQS_FILTERED"
 # pip install -r requirements-manim.txt   # uncomment if your build needs it
 
 echo ""
@@ -251,7 +308,7 @@ Write-Host "=== Handing off to MSYS2 MinGW64 shell ==="
 $env:MSYSTEM        = "MINGW64"
 $env:CHERE_INVOKING = "1"
 
-& $msys2Bash -lc "export REPO_ROOT_UNIX='$repoRootUnix'; bash '$tempScriptUnix'"
+& $msys2Bash -lc "export REPO_ROOT_UNIX='$repoRootUnix'; export MSYS2_ROOT_WIN='$msys2Root'; bash '$tempScriptUnix'"
 $exitCode = $LASTEXITCODE
 
 Remove-Item -Path $tempScriptWin -ErrorAction SilentlyContinue
