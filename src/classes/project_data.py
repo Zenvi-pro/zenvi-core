@@ -42,6 +42,7 @@ from classes.clip_placement import (
     apply_audio_only_clip_overrides,
     repair_audio_only_project_data,
 )
+from classes.qt_main_thread import invoke_on_gui
 from classes.image_types import get_media_type, is_audio_only_media
 from classes.json_data import JsonDataStore
 from classes.logger import log
@@ -398,10 +399,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     project_data["history"] = {"undo": [], "redo": []}
 
                 # If project has waveforms, enable removing waveforms
-                get_app().window.actionClearWaveformData.setEnabled(False)
+                def _set_clear_waveform(enabled):
+                    window = get_app().window
+                    if window is not None:
+                        window.actionClearWaveformData.setEnabled(enabled)
+
+                invoke_on_gui(_set_clear_waveform, False)
                 for file in project_data["files"]:
-                    if file.get("ui",{}).get("audio_data", []):
-                        get_app().window.actionClearWaveformData.setEnabled(True)
+                    if file.get("ui", {}).get("audio_data", []):
+                        invoke_on_gui(_set_clear_waveform, True)
                         break
 
             except Exception:

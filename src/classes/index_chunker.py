@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from classes.ffmpeg_cli import run_ffmpeg
@@ -115,6 +116,14 @@ def _is_full_file_chunk(start: float, end: float, source_path: str) -> bool:
     return end >= src_dur - 0.5
 
 
+def video_scale_filter(max_height: int = 720) -> str:
+    """Cap height at max_height without upscaling (even width)."""
+    h = int(max_height or 720)
+    if h <= 0:
+        h = 720
+    return f"scale=-2:'min({h},ih)'"
+
+
 def extract_chunk(
     video_path: str,
     *,
@@ -123,11 +132,13 @@ def extract_chunk(
     out_dir: Optional[str] = None,
     chunk_index: int = 0,
     media_type: str = "video",
+    max_height: int = 720,
 ) -> Tuple[str, str]:
     """Extract [start, end) to a temp file. Returns (path, error).
 
     For audio: prefer the original file when the chunk spans the whole asset;
     otherwise stream-copy or fall back to WAV (Gemini accepts audio/wav).
+    Video is re-encoded with height capped at max_height (never upscaled).
     """
     if not video_path or not os.path.isfile(video_path):
         return "", f"File not found: {video_path}"
@@ -189,11 +200,13 @@ def extract_chunk(
     out_path = os.path.join(
         dest_dir, f"chunk_{int(chunk_index):04d}_{start_f:.3f}_{end_f:.3f}.mp4"
     )
+    vf = video_scale_filter(max_height)
     ok, err = _ffmpeg_run([
         "ffmpeg", "-y", "-loglevel", "error",
         "-ss", f"{start_f:.3f}",
         "-i", video_path,
         "-t", f"{duration:.3f}",
+        "-vf", vf,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
         "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
@@ -218,6 +231,7 @@ def extract_chunks(
     *,
     out_dir: Optional[str] = None,
     media_type: str = "video",
+    max_height: int = 720,
 ) -> Tuple[List[Dict[str, Any]], str, str]:
     """Execute a server chunk plan. Returns (chunk_infos, work_dir, error).
 
@@ -263,7 +277,7 @@ def extract_chunks(
     work = out_dir or tempfile.mkdtemp(prefix="zenvi_idx_chunks_")
     results: List[Dict[str, Any]] = []
     try:
-        for item in plan:
+        def _one(item: Dict[str, Any]) -> Dict[str, Any]:
             idx = int(item.get("chunk_index") or 0)
             start = float(item.get("start") or 0)
             end = float(item.get("end") or start)
@@ -274,13 +288,13 @@ def extract_chunks(
                 out_dir=work,
                 chunk_index=idx,
                 media_type=mt,
+                max_height=max_height,
             )
             if err:
-                cleanup_chunk_dir(work)
-                return [], "", err
+                raise RuntimeError(err)
             owned = os.path.abspath(path) != os.path.abspath(video_path)
             mime = guess_mime(path, mt)
-            results.append({
+            return {
                 "chunk_index": idx,
                 "start": start,
                 "end": end,
@@ -288,8 +302,17 @@ def extract_chunks(
                 "size": os.path.getsize(path),
                 "mime_type": mime,
                 "owned": owned,
-            })
-        # If nothing was written into work (all originals), drop empty temp dir.
+            }
+
+        workers = min(4, max(1, len(plan)))
+        if len(plan) == 1:
+            results = [_one(plan[0])]
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futs = [pool.submit(_one, item) for item in plan]
+                for fut in as_completed(futs):
+                    results.append(fut.result())
+            results.sort(key=lambda r: int(r.get("chunk_index") or 0))
         if results and all(not r.get("owned") for r in results):
             cleanup_chunk_dir(work)
             return results, "", ""
