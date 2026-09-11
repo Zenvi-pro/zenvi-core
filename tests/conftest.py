@@ -123,9 +123,7 @@ def _install_stubs():
     sys.meta_path.insert(0, _StubPyQt5Finder())
 
     # libopenshot is a compiled extension; absent in headless CI.
-    openshot_stub = types.ModuleType("openshot")
-    openshot_stub.OPENSHOT_VERSION_FULL = "0.0.0-test"
-    sys.modules.setdefault("openshot", openshot_stub)
+    sys.modules.setdefault("openshot", types.ModuleType("openshot"))
     return True
 
 

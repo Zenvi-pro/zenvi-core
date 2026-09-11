@@ -79,8 +79,6 @@
     opacity: 0;
     transform: translateY(12px);
     animation: chat-message-enter 0.3s ease forwards;
-    -webkit-user-select: text;
-    user-select: text;
 }
 
 /* User bubble */
@@ -229,92 +227,6 @@
     padding: 10px;
     font-size: 12px;
     color: var(--chat-muted);
-}
-
-/* ── Attachment chips + @ mention palette ───────────────────────────── */
-.chat-attach-row {
-    display: none;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 8px 10px 0;
-}
-.chat-attach-row.has-items {
-    display: flex;
-}
-.chat-attach-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 100%;
-    padding: 3px 8px 3px 10px;
-    border-radius: 999px;
-    font-size: 11px;
-    line-height: 1.3;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid var(--chat-border);
-    color: var(--chat-text);
-}
-.chat-attach-chip-kind {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--chat-muted);
-}
-.chat-attach-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 180px;
-}
-.chat-attach-chip-remove {
-    border: none;
-    background: transparent;
-    color: var(--chat-muted);
-    cursor: pointer;
-    padding: 0 2px;
-    font-size: 14px;
-    line-height: 1;
-}
-.chat-attach-chip-remove:hover {
-    color: var(--chat-text);
-}
-.chat-mention-palette {
-    position: absolute;
-    left: 8px;
-    right: 8px;
-    bottom: 42px;
-    z-index: 21;
-    border-radius: 10px;
-    border: 1px solid var(--chat-border);
-    background: var(--chat-surface);
-    box-shadow: 0 10px 30px rgba(0,0,0,0.55), 0 1px 4px rgba(0,0,0,0.35);
-    overflow: auto;
-    max-height: 220px;
-}
-.chat-mention-item {
-    width: 100%;
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 2px 8px;
-    padding: 8px 10px;
-    border: none;
-    background: transparent;
-    color: var(--chat-text);
-    text-align: left;
-    cursor: pointer;
-}
-.chat-mention-item:hover,
-.chat-mention-item.active {
-    background: color-mix(in srgb, var(--chat-accent) 14%, transparent);
-}
-.chat-mention-kind {
-    font-size: 10px;
-    text-transform: uppercase;
-    color: var(--chat-muted);
-    padding-top: 2px;
-}
-.chat-mention-name {
-    font-size: 12px;
 }
 
 /* ── Idle layout: centre input when there are no messages ───────────── */
@@ -474,8 +386,6 @@
 
 .chat-thinking-body {
     padding: 0 6px 6px 22px;
-    -webkit-user-select: text;
-    user-select: text;
 }
 
 .chat-thinking-body .chat-activity-log {
@@ -633,8 +543,6 @@
     color: var(--chat-text);
     white-space: pre-wrap;
     word-break: break-word;
-    -webkit-user-select: text;
-    user-select: text;
 }
 
 .chat-tool-line {
@@ -819,43 +727,6 @@
 }
 #chat-tab-add:active {
     transform: scale(0.9);
-}
-#chat-tab-history {
-    color: var(--chat-muted);
-}
-#chat-tab-history:hover {
-    background: var(--chat-button-bg);
-    color: var(--chat-text);
-}
-#chat-tab-history:active {
-    transform: scale(0.9);
-}
-
-.chat-history-entry {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 10px 10px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--chat-text);
-    cursor: pointer;
-    font-size: 12px;
-    font-family: inherit;
-}
-.chat-history-entry:hover {
-    background: var(--chat-button-bg);
-}
-.chat-history-entry-title {
-    display: block;
-    font-weight: 500;
-}
-.chat-history-entry-time {
-    display: block;
-    margin-top: 3px;
-    font-size: 11px;
-    color: var(--chat-muted);
 }
 
 /* ── Tool-gap log button + panel ──────────────────────────────────────── */

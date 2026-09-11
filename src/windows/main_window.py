@@ -3848,21 +3848,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Handler for slicing selected clips and keeping the right side at the playhead position."""
         self.slice_clips(MenuSlice.KEEP_RIGHT, selected_only=True)
 
-    def _dispatch_chat_edit_action(self, name: str) -> bool:
-        """If the assistant chat owns focus, send Copy/Cut/Paste/SelectAll there."""
-        from windows.chat_web_view import dispatch_chat_edit_action
-
-        chat = getattr(self, "dockAIChat", None)
-        view = getattr(chat, "_chat_view", None) if chat is not None else None
-        under_mouse = bool(view is not None and view.underMouse())
-        return dispatch_chat_edit_action(
-            chat, name, QApplication.focusWidget(), under_mouse
-        )
-
     def selectAll(self):
         """Select all clips and transitions"""
-        if self._dispatch_chat_edit_action("selectAll"):
-            return
         # Check if filesView has focus
         if self.filesView.hasFocus():
             # Select all files
@@ -3877,21 +3864,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def copyAll(self):
         """Handle Copy QShortcut (selected clips / transitions)"""
-        if self._dispatch_chat_edit_action("copy"):
-            return
         self.timeline.Copy_Triggered(MenuCopy.ALL, self.selected_clips, self.selected_transitions, [])
 
     def cutAll(self):
         """Copy and remove the currently selected clip/transition"""
-        if self._dispatch_chat_edit_action("cut"):
-            return
         self.copyAll()
         self.deleteItem()
 
     def pasteAll(self):
         """Handle Paste QShortcut (at timeline position, same track as original clip)"""
-        if self._dispatch_chat_edit_action("paste"):
-            return
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
 

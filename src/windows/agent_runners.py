@@ -15,7 +15,6 @@ tools too (full agent abilities).
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import os
@@ -92,73 +91,6 @@ def _cli_install_dirs() -> list:
     return dirs
 
 
-def _bash_major(path):
-    """Major version of a bash binary, or 0 if it cannot be probed."""
-    try:
-        result = subprocess.run(
-            [path, "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
-            capture_output=True, text=True, timeout=2,
-        )
-        return int((result.stdout or "").strip() or 0)
-    except Exception:
-        return 0
-
-
-def _bash_candidates():
-    """Possible bash binaries; Homebrew/local first so they beat /bin/bash 3.2."""
-    home = _resolved_home()
-    out = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
-    if home:
-        out.append(os.path.join(home, ".local", "bin", "bash"))
-    which = shutil.which("bash")
-    if which:
-        out.append(which)
-    seen = set()
-    uniq = []
-    for path in out:
-        if path not in seen:
-            seen.add(path)
-            uniq.append(path)
-    return uniq
-
-
-@functools.lru_cache(maxsize=1)
-def _resolve_cli_bash():
-    """A bash ≥4 binary for Claude Code's Bash tool, or None.
-
-    macOS ``/bin/bash`` is 3.2 (no associative arrays). Pointing
-    ``CLAUDE_CODE_SHELL`` at it would break ``declare -A``. Claude Code's
-    documented override is ``CLAUDE_CODE_SHELL``; ``$SHELL`` alone is often
-    ignored in favour of zsh auto-detection.
-    """
-    if os.name == "nt":
-        return None
-    for path in _bash_candidates():
-        if not os.path.isfile(path) or not os.access(path, os.X_OK):
-            continue
-        if _bash_major(path) >= 4:
-            return path
-    return None
-
-
-def _agent_bash_prompt():
-    """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
-    return (
-        "Media conversion (Bash tool):\n"
-        "- HEIC/HEIF stills: never ffmpeg -vf on the HEIC itself. ffmpeg 7 "
-        "decodes HEIC through a complex filtergraph; combining that with -vf "
-        "fails with 'Simple and complex filtering cannot be used together'.\n"
-        "- macOS: sips -s format jpeg IN.HEIC --out OUT.jpg, then scale the "
-        "jpeg with -vf if needed.\n"
-        "- Fallback: ffmpeg -i IN.HEIC -filter_complex "
-        "'[0:v:0]scale=W:-2[o]' -map '[o]' -frames:v 1 -update 1 -y OUT.jpg\n"
-        "- This Bash tool may still run zsh on macOS. Never use bash "
-        "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
-        "Iterate a plain path list, or zsh: "
-        'for name in "${(@k)files}"; do ...; done.'
-    )
-
-
 def _cli_child_env(extra=None):
     """Environment for a Windows-native Claude/Codex subprocess.
 
@@ -175,33 +107,9 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
-    # Claude Code auto-detects zsh on macOS; bash ≥4 makes ${!files[@]} work.
-    # Do not clobber a user-set CLAUDE_CODE_SHELL.
-    if "CLAUDE_CODE_SHELL" not in env:
-        bash = _resolve_cli_bash()
-        if bash:
-            env["CLAUDE_CODE_SHELL"] = bash
-            env["SHELL"] = bash
     if extra:
         env.update(extra)
     return env
-
-
-def _add_dir_args():
-    """``--add-dir`` flags for typical footage folders (Desktop, Downloads, …).
-
-    cwd stays the project / agent_workspace so the CLI is not rooted at
-    ``$HOME``; these extra dirs let Glob/Read see local media the user points at.
-    """
-    try:
-        from classes.file_drop import media_add_dirs
-        dirs = media_add_dirs(_resolved_home())
-    except Exception:
-        dirs = []
-    args = []
-    for path in dirs:
-        args.extend(["--add-dir", path])
-    return args
 
 
 def _which_cli(binary_name: str):
@@ -786,9 +694,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
             # the app — there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
-            "--append-system-prompt", _agent_bash_prompt(),
         ]
-        argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
         if self._cli_started and self._cli_session_id:
@@ -891,7 +797,6 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
-        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.

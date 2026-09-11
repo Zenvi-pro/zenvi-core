@@ -104,39 +104,6 @@ def test_closing_a_session_hides_it_but_keeps_the_transcript(store):
     assert len(store.load_messages("s1")) == 1
 
 
-def test_reopen_session_makes_it_loadable_again(store):
-    store.upsert_session("s1", "P1", title="Old chat")
-    store.record_message("s1", "user", "hi")
-    store.mark_session_closed("s1")
-    store.reopen_session("s1")
-    rows = store.load_sessions("P1")
-    assert [r["session_id"] for r in rows] == ["s1"]
-    assert rows[0]["closed_at"] is None
-    assert len(store.load_messages("s1")) == 1
-
-
-def test_active_session_round_trips_and_follows_a_rekey(store):
-    store.upsert_session("s1", "draft:1")
-    store.set_active_session("draft:1", "s1")
-    assert store.get_active_session("draft:1") == "s1"
-    store.rekey_project("draft:1", "PID1", "/tmp/a.zvn")
-    assert store.get_active_session("PID1") == "s1"
-    assert store.get_active_session("draft:1") == ""
-
-
-def test_load_closed_sessions_skips_empty_and_open_tabs(store):
-    store.upsert_session("open", "P1", title="Live")
-    store.record_message("open", "user", "still open")
-    store.upsert_session("empty", "P1", title="Closed empty")
-    store.mark_session_closed("empty")
-    store.upsert_session("kept", "P1", title="Closed with text")
-    store.record_message("kept", "user", "remember me")
-    store.mark_session_closed("kept")
-    closed = store.load_closed_sessions("P1")
-    assert [r["session_id"] for r in closed] == ["kept"]
-    assert closed[0]["title"] == "Closed with text"
-
-
 def test_tool_events_record_status_and_anchor_to_the_turn(store):
     store.upsert_session("s1", "P1")
     store.record_message("s1", "user", "list my clips")

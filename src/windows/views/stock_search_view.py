@@ -15,19 +15,12 @@ download workers, result cards and async image loaders are reused as-is from
 
 from typing import Dict
 
-from PyQt5.QtCore import Qt, QSize, QThread, QThreadPool, QEvent, pyqtSlot
-from PyQt5.QtGui import QPixmap, QCursor
+from PyQt5.QtCore import Qt, QSize, QThread, QThreadPool, pyqtSlot
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QGridLayout, QLabel, QApplication,
 )
 
-from classes.app import get_app
-from classes.file_drop import (
-    EMPTY_FILES_DROP_MIN_HEIGHT,
-    accept_os_file_drag,
-    mime_has_file_drop,
-    urls_from_mime,
-)
 from classes.logger import log
 
 from windows.pexels_dock import (
@@ -148,17 +141,6 @@ class StockSearchView(QWidget):
         scroll.setWidget(content)
         outer.addWidget(scroll)
 
-        self.setAcceptDrops(True)
-        scroll.setAcceptDrops(True)
-        scroll.viewport().setAcceptDrops(True)
-        content.setAcceptDrops(True)
-        self._files_holder.setAcceptDrops(True)
-        for widget in (
-            self, scroll, scroll.viewport(), content,
-            self._files_holder, self._files_header,
-        ):
-            widget.installEventFilter(self)
-
         self._set_stock_visible(False)
 
     def set_files_view(self, files_view):
@@ -198,47 +180,7 @@ class StockSearchView(QWidget):
         width = view.viewport().width() or self.width() or 320
         cols = max(1, width // gw)
         rows = (count + cols - 1) // cols
-        content_h = rows * gh + 8 if rows else 0
-        view.setFixedHeight(max(content_h, EMPTY_FILES_DROP_MIN_HEIGHT))
-
-    def eventFilter(self, obj, event):
-        # Catch Finder drops on the scroll area / empty Project Files space.
-        # The embedded list view keeps its own handlers for drops on cards.
-        etype = event.type()
-        if etype in (QEvent.DragEnter, QEvent.DragMove):
-            if mime_has_file_drop(event.mimeData()):
-                accept_os_file_drag(event)
-                return True
-            return False
-        if etype == QEvent.Drop:
-            if mime_has_file_drop(event.mimeData()):
-                self._import_os_drop(event)
-                return True
-            return False
-        return super().eventFilter(obj, event)
-
-    def _import_os_drop(self, event):
-        urls = urls_from_mime(event.mimeData())
-        if not urls:
-            event.ignore()
-            return
-        event.accept()
-        files_model = None
-        if self._files_view is not None:
-            files_model = getattr(self._files_view, "files_model", None)
-        if files_model is None:
-            try:
-                files_model = get_app().window.files_model
-            except Exception:
-                files_model = None
-        if files_model is None:
-            return
-        try:
-            get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
-            log.info("Processing Files dock drop for %s urls", len(urls))
-            files_model.process_urls(urls)
-        finally:
-            get_app().restoreOverrideCursor()
+        view.setFixedHeight(rows * gh + 8 if rows else 0)
 
     # ── Public API ──────────────────────────────────────────────────────────────
 
