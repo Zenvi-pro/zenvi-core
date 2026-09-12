@@ -357,5 +357,7 @@ def test_end_seconds_alone_still_bounds_the_window():
     )
     assert not out.startswith("Error:"), out
     assert calls == []
-    # Snapping may widen to the phrase edge; the point is it lands, bounded.
-    assert placed["start"] < placed["end"] <= 600.0
+    # Snapping may widen to the phrase edge, but it must stay a window - not
+    # the whole 600s file.
+    assert placed["start"] < placed["end"]
+    assert placed["end"] - placed["start"] < 100.0
