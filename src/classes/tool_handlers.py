@@ -2278,7 +2278,7 @@ def add_clip_to_timeline(
             trim_dur=trim_dur,
             watched_start=watched_start,
             has_explicit_end=trim_end is not None,
-            has_explicit_time_range=skip_watch,
+            has_explicit_start=trim_start > 0,
             is_audio=_is_audio_only,
             is_image=_is_image,
             is_subclip=bool(file_data.get("zenvi_subclip")),

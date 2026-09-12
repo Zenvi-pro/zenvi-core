@@ -266,7 +266,7 @@ def blind_trim_rejected(
     trim_dur,
     watched_start,
     has_explicit_end: bool = False,
-    has_explicit_time_range: bool = False,
+    has_explicit_start: bool = False,
     is_audio: bool = False,
     is_image: bool = False,
     is_subclip: bool = False,
@@ -275,13 +275,16 @@ def blind_trim_rejected(
 
     Only a blind "keep the first N seconds" duration trim on a full file is
     worth blocking. A watch is not the only source of boundaries: a caller that
-    named both edges (end_seconds, or an explicit range in the query) has
-    bounded the window itself, and the watch is deliberately skipped on
-    dialogue-heavy windows because transcript cues are the better boundary.
-    Rejecting those made the error unsatisfiable - it demanded the keep window
-    that armed it.
+    named an edge (start_seconds or end_seconds) has bounded the window itself,
+    and the watch is deliberately skipped on dialogue-heavy windows because
+    transcript cues are the better boundary. Rejecting those made the error
+    unsatisfiable - it demanded the keep window that armed it.
+
+    Times named in the query text alone do not count: nothing reads them back
+    into the in-point, so honouring them would place the first N seconds while
+    claiming to place the named range.
     """
-    if watched_start is not None or has_explicit_end or has_explicit_time_range:
+    if watched_start is not None or has_explicit_end or has_explicit_start:
         return False
     if is_audio or is_image or is_subclip:
         return False

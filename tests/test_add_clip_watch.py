@@ -247,7 +247,7 @@ def test_keep_window_longer_than_watch_limit_places_without_watch():
     assert abs(placed["end"] - placed["start"] - 60.0) < 1e-6
 
 
-def test_duration_trim_with_explicit_times_in_query_places_without_watch():
+def test_duration_trim_from_an_explicit_in_point_places_without_watch():
     out, calls, placed = _run_add(
         {
             "path": "/clips/long.mp4",
@@ -265,6 +265,24 @@ def test_duration_trim_with_explicit_times_in_query_places_without_watch():
     assert calls == []
     assert abs(placed["start"] - 15.0) < 1e-6
     assert abs(placed["end"] - 20.0) < 1e-6
+
+
+def test_times_named_only_in_the_query_still_reject_a_first_n_seconds_trim():
+    """The query text never moves the in-point - placing 0..5 here is wrong."""
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        duration_seconds="5",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
 
 
 def test_blind_duration_trim_error_does_not_name_an_already_supplied_remedy():

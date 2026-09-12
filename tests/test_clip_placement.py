@@ -118,10 +118,16 @@ def test_explicit_keep_window_is_not_a_blind_trim():
     ) is False
 
 
-def test_explicit_time_range_in_query_is_not_a_blind_trim():
+def test_explicit_in_point_is_not_a_first_n_seconds_trim():
     assert blind_trim_rejected(
-        trim_dur=5.0, watched_start=None, has_explicit_time_range=True,
+        trim_dur=5.0, watched_start=None, has_explicit_start=True,
     ) is False
+
+
+def test_times_named_only_in_the_query_do_not_exempt_a_duration_trim():
+    # The query text never moves the in-point, so start=0 + duration really is
+    # the first N seconds however the query describes it - keep blocking it.
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None) is True
 
 
 def test_watched_or_exempt_media_is_not_a_blind_trim():
