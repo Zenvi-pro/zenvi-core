@@ -115,6 +115,59 @@ def test_server_lists_and_calls_tools(tool_stub):
         assert "FIXTURE_FILES" in text
     finally:
         srv.stop()
+
+
+# --- watch parity: MCP harnesses must be able to self-check after an edit ---
+
+def test_watch_tool_description_is_agent_callable_not_internal():
+    """iter_tool_defs must surface watch_clip_window as a real callable tool,
+    not one marked 'internal - do not call' (issue #59)."""
+    from classes.agent_mcp_server import _build_input_schema, _first_doc_paragraph
+
+    def watch_clip_window(query="", start="", end="", **_kw):
+        """Vision-check whether a query is visible in a window of a placed clip.
+
+        Call this after you place, slice, trim, or modify a clip to confirm your
+        own edit with vision. Read-only: reports in/out/peak in seconds.
+        """
+
+    desc = _first_doc_paragraph(watch_clip_window).lower()
+    assert "vision" in desc
+    assert "do not call" not in desc and "internal" not in desc
+    schema = _build_input_schema(watch_clip_window)
+    assert {"query", "start", "end"} <= set(schema["properties"])
+
+
+def test_server_instructions_tell_harnesses_to_watch_after_edits():
+    from classes.agent_mcp_server import SERVER_INSTRUCTIONS
+
+    text = SERVER_INSTRUCTIONS.lower()
+    assert "watch_clip_window_tool" in text
+    assert "after any edit" in text or "after an edit" in text
+
+
+def test_initialize_advertises_the_watch_instruction(tool_stub):
+    pytest.importorskip("mcp")
+    from classes.agent_mcp_server import ZenviMcpServer
+
+    srv = ZenviMcpServer().start()
+    time.sleep(1.0)
+    try:
+        async def run():
+            import httpx
+            from mcp import ClientSession
+            from mcp.client.streamable_http import streamable_http_client
+            headers = {"Authorization": "Bearer %s" % srv.token}
+            async with httpx.AsyncClient(headers=headers) as http_client:
+                async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
+                    async with ClientSession(r, w) as session:
+                        init = await session.initialize()
+                        return init.instructions or ""
+
+        instructions = asyncio.run(run())
+        assert "watch_clip_window_tool" in instructions
+    finally:
+        srv.stop()
 def test_server_requires_bearer_token(tool_stub):
     from classes.agent_mcp_server import ZenviMcpServer
 

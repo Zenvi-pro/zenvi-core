@@ -30,6 +30,22 @@ log = logging.getLogger(__name__)
 # Name the external CLIs see; their tools are namespaced as ``mcp__zenvi-editor__<tool>``.
 SERVER_NAME = "zenvi-editor"
 
+# Returned in the MCP ``initialize`` response, so every current and future
+# runner (Claude Code, Codex, ...) inherits it without a per-CLI prompt flag.
+# The built-in Zenvi Assistant bakes watch into its place/slice workflows; CLI
+# harnesses do not run those, so they must watch their own edits explicitly.
+SERVER_INSTRUCTIONS = (
+    "These tools drive a live video editor. After any edit that changes what is "
+    "on the timeline (add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
+    "slice_clip_at_playhead_tool, modify_clip_tool, place_motion_graphic_tool, "
+    "apply_transition_tool, remove_clip_tool), call watch_clip_window_tool on the "
+    "affected clip to confirm the result with vision - is the intended moment on "
+    "screen, did the cut land cleanly, is album art covering video. Feed the "
+    "in/out it returns back into a slice/placement call to tighten a bad cut, or "
+    "undo_tool if the edit is wrong. A watch that cannot run degrades to 'no "
+    "match' and never blocks you."
+)
+
 # Preferred port: stable across restarts so a CLI registered once (e.g.
 # ``claude mcp add zenvi --transport http http://127.0.0.1:7434/mcp``) keeps
 # working. Falls back to an ephemeral port if taken — only the terminal-attach
@@ -277,7 +293,8 @@ class ZenviMcpServer:
         from mcp.server.fastmcp import FastMCP
 
         fm = FastMCP(SERVER_NAME, host=self.host, port=self.port,
-                     stateless_http=True, json_response=True)
+                     stateless_http=True, json_response=True,
+                     instructions=SERVER_INSTRUCTIONS)
 
         tools = [types.Tool(name=d["name"], description=d["description"],
                             inputSchema=d["inputSchema"]) for d in iter_tool_defs()]
