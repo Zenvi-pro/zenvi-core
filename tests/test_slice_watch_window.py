@@ -200,6 +200,8 @@ def test_slice_explicit_time_skips_watch():
 
 def test_watch_clip_window_in_handlers():
     assert "watch_clip_window_tool" in tool_handlers.AGENT_TOOL_HANDLERS
+    # place_moment's first step on the backend; "Unknown tool" breaks every place.
+    assert tool_handlers.AGENT_TOOL_HANDLERS["split_file_add_clip_tool"] is tool_handlers.split_file_add_clip
     assert "watch_clip_window_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS
     assert "slice_clip_at_best_match_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS
     assert "split_file_add_clip_tool" in tool_handlers.BACKGROUND_SAFE_TOOLS
@@ -377,4 +379,128 @@ def test_split_wide_window_fallback_is_refused():
     assert out.startswith("Error:")
     assert "visual match" in out.lower()
     assert saved == []
+
+
+def _split_with_cues(cues, watch_result):
+    """split_file_add_clip(12s-18s) on a parent whose transcript has *cues*."""
+    watch_calls = []
+    saved = []
+
+    def fake_watch(path, start, end, query, **kw):
+        watch_calls.append((float(start), float(end)))
+        return dict(watch_result, window_start=start, window_end=end)
+
+    parent = MagicMock()
+    parent.data = {
+        "fps": {"num": 30, "den": 1},
+        "start": 0.0,
+        "end": 30.0,
+        "duration": 30.0,
+        "path": "/v.mp4",
+        "name": "v.mp4",
+        "ai_metadata": {"transcript_cues": cues},
+    }
+
+    class FakeFile:
+        def __init__(self):
+            self.data = {}
+            self.id = None
+            self.key = None
+            self.type = None
+
+        def save(self):
+            self.id = "new-sub"
+            saved.append(dict(self.data))
+
+        @staticmethod
+        def get(id=""):
+            return parent
+
+    query_mod = MagicMock()
+    query_mod.File = FakeFile
+    with patch.object(tool_handlers, "_watch_confirm_cut", fake_watch):
+        with patch.object(tool_handlers, "_lookup_watch_meta", return_value=("/v.mp4", 30.0, cues)):
+            with patch.dict(sys.modules, {"classes.query": query_mod}):
+                out = tool_handlers.split_file_add_clip(
+                    file_id="parent", start_seconds="12", end_seconds="18", query="handshake",
+                )
+    return out, watch_calls, saved
+
+
+def test_split_snaps_a_watched_window_off_mid_sentence():
+    """The watch picks frames, not words - its in-point must still open on a phrase."""
+    out, calls, saved = _split_with_cues(
+        [{"start": 11.0, "end": 13.0, "text": "a spoken line"}],
+        {"cut_source": 14.0, "in_source": 12.5, "out_source": 16.0,
+         "matched": True, "used_fallback": False},
+    )
+    assert calls, out
+    assert saved, out
+    assert saved[0]["start"] == 11.0
+    assert saved[0]["end"] == 16.0
+
+
+def test_split_skips_watch_on_a_dialogue_window_and_cuts_on_phrases():
+    """Stills of a talking head echo the span back - the transcript is the better edge."""
+    out, calls, saved = _split_with_cues(
+        [{"start": 11.0, "end": 19.0, "text": "one long spoken line"}],
+        {"cut_source": 15.0, "in_source": 10.0, "out_source": 20.0,
+         "matched": True, "used_fallback": False},
+    )
+    assert calls == []
+    assert saved, out
+    assert saved[0]["start"] == 11.0
+    assert saved[0]["end"] == 19.0
+
+
+def test_slice_clip_at_best_match_snaps_a_watched_cut_off_speech():
+    from contextlib import ExitStack
+
+    sliced = []
+    resolved = MagicMock(ok=True, clip=MagicMock())
+    resolved.clip.id = "clip-1"
+    resolved.clip.data = {
+        "file_id": "file-1", "position": 0.0, "start": 10.0, "end": 40.0, "layer": 1,
+    }
+    sf = MagicMock()
+    sf.data = {
+        "path": "/v.mp4",
+        "duration": 120,
+        "ai_metadata": {"index": {"status": "ready", "index_id": "idx", "video_id": "vid"}},
+    }
+    chosen = {"start": 12.0, "end": 18.0, "cut_source": 12.0, "rank": 1, "overlap_ratio": 1.0}
+    app = MagicMock()
+    app.project.get.return_value = {"num": 30, "den": 1}
+
+    def run_main(fn):
+        if getattr(fn, "__name__", "") == "_do_slice":
+            sliced.append(True)
+            return None
+        return fn() if callable(fn) else None
+
+    patches = [
+        patch.object(tool_handlers, "_watch_confirm_cut",
+                     return_value={"cut_source": 13.4, "matched": True, "used_fallback": False}),
+        patch.object(tool_handlers, "_lookup_watch_meta", return_value=("/v.mp4", 120.0, [])),
+        patch.object(tool_handlers, "_clip_transcript_cues",
+                     return_value=[{"start": 13.0, "end": 16.0, "text": "a spoken line"}]),
+        patch.object(tool_handlers, "_run_on_main_thread", side_effect=run_main),
+        patch.object(tool_handlers, "_get_app", return_value=app),
+        patch.object(tool_handlers, "_get_source_file_for_clip", return_value=sf),
+        patch.object(tool_handlers, "_twelvelabs_search_in_window", return_value=([chosen], None)),
+        patch("classes.clip_resolver.resolve_timeline_clip", return_value=resolved),
+        patch("classes.ai_metadata_utils.get_source_window", return_value=(10.0, 40.0)),
+        patch("classes.timeline_clip_context.resolve_parent_file_data", return_value=sf.data),
+        patch("classes.twelvelabs_match.select_twelvelabs_match", return_value=chosen),
+        patch("classes.twelvelabs_match.snap_source_time_to_frame", lambda t, *a, **k: t),
+        patch("classes.twelvelabs_match.snap_timeline_position", lambda t, *a, **k: t),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        client = stack.enter_context(patch("classes.api_client.get_backend_client"))
+        client.return_value.is_indexing_configured.return_value = True
+        out = tool_handlers.slice_clip_at_best_match(query="jump", clip_query="sub")
+    assert sliced, out
+    assert "moved off speech" in out
 

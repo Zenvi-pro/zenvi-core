@@ -42,7 +42,9 @@ def _clean_handler_state():
 @pytest.fixture(scope="module")
 def qapp():
     """A QApplication that stays alive: a discarded one is collected at once."""
-    pytest.importorskip("PyQt5.QtWidgets")
+    from _qt_support import skip_without_pyqt5
+
+    skip_without_pyqt5(allow_module_level=False)
     from PyQt5.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])

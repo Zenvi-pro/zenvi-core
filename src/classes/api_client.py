@@ -1197,9 +1197,38 @@ class ZenviBackendClient:
         }
 
     def freesound_download(self, sound_id: int, preview_url: str, filename: str = "") -> Dict[str, Any]:
-        """Download a Freesound preview MP3 from the CDN URL to the local machine."""
+        """Download a Freesound preview to the local machine.
+
+        Freesound serves each sound in several preview renditions and any one of
+        them can 404 while the others are fine, so fall back through the variants
+        instead of failing the whole stock_music run.
+        """
         hint = filename or f"freesound_{sound_id}"
-        return self._download_url_to_temp(preview_url, ".mp3", filename_hint=hint, timeout=180)
+        url = str(preview_url or "").strip()
+        if not url:
+            return {"success": False, "error": "No preview URL"}
+
+        candidates = [url]
+        for old_part, new_part in (
+            ("-hq.mp3", "-lq.mp3"), ("-lq.mp3", "-hq.mp3"),
+            ("-hq.ogg", "-lq.ogg"), ("-lq.ogg", "-hq.ogg"),
+        ):
+            if old_part in url:
+                candidates.append(url.replace(old_part, new_part))
+        # Different container as a last resort.
+        if "-hq.mp3" in url:
+            candidates.append(url.replace("-hq.mp3", "-hq.ogg"))
+
+        last = {"success": False, "error": "No preview URL"}
+        for candidate in candidates:
+            ext = ".ogg" if candidate.endswith(".ogg") else ".mp3"
+            last = self._download_url_to_temp(
+                candidate, ext, filename_hint=hint, timeout=180,
+            )
+            if last.get("success"):
+                return last
+            log.warning("Freesound preview failed (%s): %s", candidate, last.get("error"))
+        return last
 
 
 # Singleton

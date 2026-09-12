@@ -43,7 +43,9 @@ def settings_app():
     classes.metrics reads get_app().get_settings() at import time, and a
     QApplication with no Python reference is collected immediately.
     """
-    pytest.importorskip("PyQt5.QtWidgets")
+    from _qt_support import skip_without_pyqt5
+
+    skip_without_pyqt5(allow_module_level=False)
     from PyQt5.QtWidgets import QApplication
 
     class _Settings:

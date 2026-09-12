@@ -27,13 +27,17 @@ from typing import Optional
 from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
+    apply_audio_only_clip_overrides,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
+    parse_seconds_arg,
+    parse_timecode_token,
     placement_watch_query,
     should_watch_placement,
     source_window_for_file,
 )
+from classes.image_types import is_audio_only_media
 from classes.track_display import (
     format_track_label_for_llm,
     layer_number_to_display_index,
@@ -231,6 +235,19 @@ def _run_on_main_thread(func, *args, timeout=None):
     return result_box[0]
 
 
+def _audio_role_of(clip_data, file_data, ctx=None) -> str:
+    """speech / music / sfx / ambient / silent / unknown for a timeline listing.
+
+    Reuses the context's already-materialized metadata so listings stay cheap.
+    """
+    try:
+        from classes import audio_mix
+        effective = getattr(ctx, "effective_metadata", None) if ctx is not None else None
+        return audio_mix.classify_clip_audio_role(clip_data, file_data, effective)
+    except Exception:
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Undo/redo transaction helpers
 # ---------------------------------------------------------------------------
@@ -364,6 +381,80 @@ def _describe_group(actions) -> str:
         return summary
     except Exception:
         return ""
+
+
+def _source_fps_parts(file_data):
+    """(num, den, fps_float) for a file reader's own fps."""
+    fps_data = file_data.get("fps") or {}
+    num = parse_timecode_token(fps_data.get("num")) or 30.0
+    den = parse_timecode_token(fps_data.get("den")) or 1.0
+    if num <= 0:
+        num = 30.0
+    if den <= 0:
+        den = 1.0
+    return int(num), int(den), num / den
+
+
+def _source_duration_seconds(file_data):
+    """Source duration in seconds, preferring real seconds over frame counts."""
+    start = parse_timecode_token(file_data.get("start")) or 0.0
+    end = parse_timecode_token(file_data.get("end")) or 0.0
+    if end > start:
+        return end - start
+    duration = parse_timecode_token(file_data.get("duration"))
+    if duration and duration > 0:
+        return duration
+    reader = file_data.get("reader") or {}
+    duration = parse_timecode_token(reader.get("duration"))
+    if duration and duration > 0:
+        return duration
+    frames = parse_timecode_token(file_data.get("video_length")) or 0.0
+    _, _, fps_float = _source_fps_parts(file_data)
+    return frames / fps_float if frames > 0 and fps_float > 0 else 0.0
+
+
+def _unreliable_source_fps(file_data):
+    """True when a file's own fps must not be used for frame math.
+
+    Audio and some broken imports report 1/1 with video_length counted in that
+    1 fps space, which is what sends agents into a place/retry loop.
+    """
+    _, _, fps_float = _source_fps_parts(file_data)
+    if is_audio_only_media(file_data):
+        return True
+    return fps_float <= 2.0 and _source_duration_seconds(file_data) > 2.0
+
+
+def _describe_file_for_llm(file_id, file_data):
+    fps_num, fps_den, _ = _source_fps_parts(file_data)
+    duration = _source_duration_seconds(file_data)
+    project_fps = _get_app().project.get("fps") or {}
+    p_num = int(parse_timecode_token(project_fps.get("num")) or 30)
+    p_den = int(parse_timecode_token(project_fps.get("den")) or 1)
+    media_type = file_data.get("media_type") or ("audio" if is_audio_only_media(file_data) else "video")
+    line = (
+        f"file_id={file_id} path={file_data.get('path','')} "
+        f"duration_seconds={duration:.2f} source_fps={fps_num}/{fps_den} "
+        f"project_fps={p_num}/{p_den} media_type={media_type}"
+    )
+    if _unreliable_source_fps(file_data):
+        line += (
+            f"\nNOTE: source_fps is {fps_num}/{fps_den} and cannot be used for frame math. "
+            "Pass start_seconds/end_seconds (in source seconds) - never frame numbers."
+        )
+    return line
+
+
+def _project_fps_float(fps) -> float:
+    """Project fps as a float, tolerating string or malformed num/den."""
+    fps = fps if isinstance(fps, dict) else {}
+    num = parse_timecode_token(fps.get("num"))
+    den = parse_timecode_token(fps.get("den"))
+    if not num or num <= 0:
+        num = 30.0
+    if not den or den <= 0:
+        den = 1.0
+    return num / den
 
 
 def _timeline_signature(app):
@@ -907,6 +998,7 @@ def list_clips(layer="", **_kw) -> str:
             fname = ""
             summary_preview = ""
             parent_file_id = ""
+            audio_role = ""
             source_start = d.get("start", 0)
             source_end = d.get("end", 0)
             timeline_end = float(d.get("position", 0) or 0)
@@ -929,6 +1021,7 @@ def list_clips(layer="", **_kw) -> str:
                         source_start = ctx.source_start
                         source_end = ctx.source_end
                         timeline_end = ctx.timeline_end
+                        audio_role = _audio_role_of(d, fdata, ctx)
                 except Exception:
                     pass
             summary_part = f" summary_preview={summary_preview!r}" if summary_preview else ""
@@ -948,6 +1041,7 @@ def list_clips(layer="", **_kw) -> str:
                 f"layer_number={lid_int if lid_int is not None else lid}{ui_part}{tid_part} "
                 f"position={d.get('position',0)} timeline_end={timeline_end:.2f} "
                 f"source_start={source_start} source_end={source_end}"
+                f"{f' audio_role={audio_role}' if audio_role else ''}"
             )
         return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
     except Exception as e:
@@ -1845,14 +1939,7 @@ def get_file_info(file_id="", **_kw) -> str:
         f = File.get(id=file_id.strip())
         if not f:
             return f"Error: File not found for id={file_id}."
-        fps_data = f.data.get("fps") or {}
-        fps_num = int(fps_data.get("num", 30))
-        fps_den = int(fps_data.get("den", 1))
-        video_length = int(f.data.get("video_length", 0))
-        analyzed = _file_is_analyzed(f.data)
-        return (f"file_id={file_id} path={f.data.get('path','')} "
-                f"fps={fps_num}/{fps_den} video_length={video_length} "
-                f"analyzed={analyzed}")
+        return _describe_file_for_llm(file_id, f.data)
     except Exception as e:
         return f"Error: {e}"
 
@@ -1945,7 +2032,7 @@ def split_file_add_clip(
         watch_record = {}
         orig_span = float(t1) - float(t0)
         require_visual = bool(_kw.get("require_visual_match")) or orig_span > MAX_PLACE_SPAN_SEC
-        if not skip_watch:
+        if not skip_watch and not _window_is_dialogue_driven(f.data, t0, t1):
             path, dur, cues = _lookup_watch_meta(file_id, file_data=f.data)
             if not path:
                 try:
@@ -1984,6 +2071,8 @@ def split_file_add_clip(
             )
             watch_record = dict(watched)
 
+        # Vision picks frames, not words: keep both edges off a mid-phrase cue.
+        t0, t1, _snapped = _snap_window_off_boundaries(f.data, t0, t1)
         start_sec, end_sec = t0, t1
         result_box = [None]
         error_box = [None]
@@ -2066,7 +2155,9 @@ def add_clip_to_timeline(
     track="",
     duration_seconds="",
     start_seconds="",
+    end_seconds="",
     query="",
+    full_file="",
     transaction_id=None,
     **_kw,
 ) -> str:
@@ -2099,28 +2190,39 @@ def add_clip_to_timeline(
             return f"Error: File not found for id={file_id}."
 
         file_data = f.data
-        _ext = (file_data.get("path") or "").rsplit(".", 1)[-1].lower()
-        _audio_exts = {"mp3", "wav", "ogg", "flac", "aac", "m4a", "wma"}
-        _is_audio_only = (
-            file_data.get("media_type", "") == "audio"
-            or _ext in _audio_exts
-            or (not file_data.get("has_video", True) and file_data.get("has_audio", False))
-        )
+        _is_audio_only = is_audio_only_media(file_data)
+
 
         src_start, src_end = source_window_for_file(file_data)
         source_len = max(0.0, src_end - src_start)
-        trim_dur = None
-        trim_start = 0.0
-        if str(start_seconds or "").strip():
-            try:
-                trim_start = max(0.0, float(start_seconds))
-            except (TypeError, ValueError):
-                trim_start = 0.0
-        if str(duration_seconds or "").strip():
-            try:
-                trim_dur = max(0.0, float(duration_seconds))
-            except (TypeError, ValueError):
-                trim_dur = None
+        # Optional trim window (stock / beat placement)
+        try:
+            trim_start = max(0.0, parse_seconds_arg(start_seconds, default=0.0, field="start_seconds"))
+            trim_dur = parse_seconds_arg(duration_seconds, default=None, field="duration_seconds")
+            trim_end = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
+            pos_arg = parse_seconds_arg(position_seconds, default=None, field="position_seconds")
+        except ValueError as exc:
+            return f"Error: {exc}"
+        # end_seconds is the keep-window form (place_moment); duration wins if both.
+        if trim_dur is None and trim_end is not None:
+            if trim_end <= trim_start:
+                return (
+                    f"Error: end_seconds {trim_end} must be greater than "
+                    f"start_seconds {trim_start}."
+                )
+            trim_dur = trim_end - trim_start
+        if trim_dur is not None:
+            trim_dur = max(0.0, trim_dur)
+
+        # A music bed stretched from 0 over the whole sequence is almost never what
+        # was asked for. Make the agent name the section, or opt in explicitly.
+        _whole_file = str(full_file or "").strip().lower() in ("1", "true", "yes")
+        if _is_audio_only and not _whole_file and (pos_arg is None or trim_dur is None):
+            return (
+                "Error: audio placement needs position_seconds (where on the timeline) and "
+                "duration_seconds (how much to use), plus start_seconds for the source in-point. "
+                "Pass full_file=\"true\" only when the user asked for one continuous bed."
+            )
 
         watched_start = watched_end = None
         watched_info = {}
@@ -2139,7 +2241,7 @@ def add_clip_to_timeline(
             is_already_watched_subclip=bool(file_data.get("zenvi_subclip")),
             explicit_query=bool(query),
             window_sec=win_e - win_s,
-        ):
+        ) and not _window_is_dialogue_driven(file_data, win_s, win_e):
             path, dur, cues = _lookup_watch_meta(file_id, file_data=file_data)
             if not path:
                 path = str(file_data.get("path") or "")
@@ -2198,7 +2300,7 @@ def add_clip_to_timeline(
                 if not track or (isinstance(track, str) and not track.strip()):
                     layers = app.project.get("layers") or []
                     if _is_audio_only:
-                        track_num = default_underlay_layer_number(layers, audio=True)
+                        track_num = default_underlay_layer_number(layers)
                     else:
                         selected = getattr(win, "selected_tracks", []) or []
                         if selected:
@@ -2214,7 +2316,7 @@ def add_clip_to_timeline(
                         return
                     track_num = resolved
 
-                if not position_seconds or (isinstance(position_seconds, str) and not position_seconds.strip()):
+                if pos_arg is None:
                     if _is_audio_only:
                         pos_sec = 0.0
                     else:
@@ -2229,7 +2331,7 @@ def add_clip_to_timeline(
                         else:
                             pos_sec = 0.0
                 else:
-                    pos_sec = float(position_seconds)
+                    pos_sec = pos_arg
 
                 if QPointF is None:
                     from PyQt5.QtCore import QPointF as _QPointF
@@ -2237,8 +2339,9 @@ def add_clip_to_timeline(
                 else:
                     pos = QPointF(pos_sec, 0.0)
 
+                snapped = False
                 new_clip = win.timeline.addClip(file_id, pos, track_num)
-                apply_trim = watched_start is not None or (trim_dur is not None and trim_dur > 0)
+                apply_trim =watched_start is not None or (trim_dur is not None and trim_dur > 0)
                 if new_clip and apply_trim:
                     if watched_start is not None:
                         start_sec, end_sec = watched_start, watched_end
@@ -2250,6 +2353,11 @@ def add_clip_to_timeline(
                             file_start=src_start,
                             min_duration=1.0 / max(fps_float, 1.0),
                         )
+                    # Do not start or end a placement mid-phrase: pull both edges
+                    # off any transcript cue or chapter they land inside.
+                    start_sec, end_sec, snapped = _snap_window_off_boundaries(
+                        file_data, start_sec, end_sec,
+                    )
                     new_clip["start"] = start_sec
                     new_clip["end"] = end_sec
                     new_clip["duration"] = max(0.0, end_sec - start_sec)
@@ -2262,7 +2370,7 @@ def add_clip_to_timeline(
                     win.timeline.update_clip_data(
                         new_clip, only_basic_props=False, ignore_refresh=False
                     )
-                result_box[0] = (new_clip, pos_sec, track_num)
+                result_box[0] = (new_clip, pos_sec, track_num, snapped)
             except Exception as exc:
                 error_box[0] = str(exc)
 
@@ -2278,7 +2386,8 @@ def add_clip_to_timeline(
         if not result_box[0]:
             return "Error: Failed to add clip to timeline."
 
-        placed, pos_sec, track_num = result_box[0]
+        placed, pos_sec, track_num, snapped = result_box[0]
+        _snap_note = ", moved off mid-sentence" if snapped else ""
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
@@ -2295,7 +2404,7 @@ def add_clip_to_timeline(
         watch_part = " (watched)" if watched_start is not None else ""
         return (
             f"Added clip to timeline at position {pos_sec}s on track {track_lbl}"
-            f"{dur_part}{id_part}{watch_part}."
+            f"{dur_part}{id_part}{_snap_note}{watch_part}."
         )
     except Exception as e:
         return f"Error: {e}"
@@ -2313,7 +2422,7 @@ def slice_clip_at_playhead(**_kw) -> str:
             app = _get_app()
             win = app.window
             fps = app.project.get("fps") or {}
-            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+            fps_float = _project_fps_float(fps)
             playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
             intersecting_clips = Clip.filter(intersect=playhead_position)
             intersecting_trans = Transition.filter(intersect=playhead_position)
@@ -3085,6 +3194,88 @@ def _scene_description_cut_source(
     return scored[0][0]
 
 
+def _clip_transcript_cues(clip_id_str):
+    """Effective transcript cues for a timeline clip, in source seconds."""
+    try:
+        from classes.query import Clip, File
+        from classes.ai_metadata_utils import get_effective_ai_metadata
+
+        clip_obj = Clip.get(id=clip_id_str)
+        if not clip_obj or not isinstance(clip_obj.data, dict):
+            return []
+        data = clip_obj.data
+        file_data = None
+        file_id = str(data.get("file_id") or "")
+        if file_id:
+            file_obj = File.get(id=file_id)
+            if file_obj and isinstance(file_obj.data, dict):
+                file_data = file_obj.data
+        effective = get_effective_ai_metadata(
+            file_data, data, clip_ai_metadata=data.get("ai_metadata")
+        )
+        cues = (effective or {}).get("transcript_cues")
+        return [c for c in cues if isinstance(c, dict)] if isinstance(cues, list) else []
+    except Exception as exc:
+        log.debug("_clip_transcript_cues(%s): %s", clip_id_str, exc)
+        return []
+
+
+# Above this share of spoken audio a window is carried by dialogue, not by what
+# changes on screen. Stills of a talking head look identical, so the watch just
+# echoes the span it was shown - the transcript is the better boundary source.
+DIALOGUE_COVERAGE = 0.6
+
+
+def _window_is_dialogue_driven(file_data, start_sec, end_sec):
+    """True when transcript cues already describe this window better than frames."""
+    from classes import audio_mix as am
+
+    try:
+        cues = am.speech_windows((file_data or {}).get("ai_metadata"))
+        if not cues:
+            return False
+        coverage = am.cue_coverage(cues, start_sec, end_sec)
+        if coverage >= DIALOGUE_COVERAGE:
+            log.info(
+                "watch skipped: [%.2f-%.2f]s is %.0f%% speech - cutting on transcript "
+                "cues instead of stills",
+                start_sec, end_sec, coverage * 100,
+            )
+            return True
+    except Exception as exc:
+        log.debug("_window_is_dialogue_driven: %s", exc)
+    return False
+
+
+def _snap_window_off_boundaries(file_data, start_sec, end_sec):
+    """(start, end, moved) - keep a placement window off mid-phrase edges."""
+    from classes import audio_mix as am
+
+    try:
+        ai = (file_data or {}).get("ai_metadata")
+        s, e, moved = am.snap_window_to_boundaries(start_sec, end_sec, ai)
+        if moved:
+            log.info(
+                "placement snapped off mid-phrase: [%.2f-%.2f] -> [%.2f-%.2f]s",
+                start_sec, end_sec, s, e,
+            )
+        return s, e, moved
+    except Exception as exc:
+        log.debug("_snap_window_off_boundaries: %s", exc)
+        return start_sec, end_sec, False
+
+
+def _snap_cut_off_speech(clip_id_str, cut_source):
+    """(cut, moved) - shift a cut that lands mid-sentence to the cue boundary."""
+    from classes import audio_mix as am
+
+    cues = _clip_transcript_cues(clip_id_str)
+    if not cues:
+        return cut_source, False
+    snapped, cue = am.snap_cut_out_of_speech(cut_source, cues)
+    return snapped, cue is not None
+
+
 def _slice_at_source_cut(
     clip_id_str: str,
     clip_start: float,
@@ -3100,6 +3291,12 @@ def _slice_at_source_cut(
     fps = _get_app().project.get("fps") or {}
     fps_num = float(fps.get("num", 30))
     fps_den = float(fps.get("den", 1)) or 1.0
+
+    # Never cut through a spoken line - snap to the nearer transcript boundary.
+    cut_source, moved_off_cue = _snap_cut_off_speech(clip_id_str, float(cut_source))
+    if moved_off_cue:
+        label = f"{label}, moved off speech"
+
     cut_source = snap_source_time_to_frame(float(cut_source), fps_num, fps_den)
     slice_pos = snap_timeline_position(
         clip_pos + (cut_source - clip_start), fps_num, fps_den,
@@ -3128,26 +3325,9 @@ def _slice_at_source_cut(
 
 def _parse_mmss_or_hhmmss_token(tok: str):
     """Return seconds for 'SS', 'M:SS', or 'H:M:SS' tokens, else None."""
-    if not tok or not isinstance(tok, str):
+    if not isinstance(tok, str):
         return None
-    tok = tok.strip()
-    if not tok:
-        return None
-    if ":" not in tok:
-        try:
-            return float(tok)
-        except ValueError:
-            return None
-    parts = tok.split(":")
-    if len(parts) > 3:
-        return None
-    try:
-        nums = [float(p) for p in parts]
-    except ValueError:
-        return None
-    if len(parts) == 2:
-        return nums[0] * 60.0 + nums[1]
-    return nums[0] * 3600.0 + nums[1] * 60.0 + nums[2]
+    return parse_timecode_token(tok)
 
 
 def _parse_explicit_source_time_range_sec(query: str):
@@ -3542,7 +3722,11 @@ def slice_clip_at_best_match(
         fps = _get_app().project.get("fps") or {}
         fps_num = float(fps.get("num", 30))
         fps_den = float(fps.get("den", 1)) or 1.0
-        cut_source = snap_source_time_to_frame(confirmed, fps_num, fps_den)
+        # Never cut through a spoken line - snap to the nearer cue boundary.
+        raw_cut, moved_off_cue = _snap_cut_off_speech(clip_id_str, float(confirmed))
+        if moved_off_cue:
+            ordinal_label += ", moved off speech"
+        cut_source = snap_source_time_to_frame(raw_cut, fps_num, fps_den)
         slice_pos = snap_timeline_position(
             clip_pos + (cut_source - clip_start), fps_num, fps_den,
         )
@@ -6064,6 +6248,7 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
         file_data = {
             "path": audio_path,
             "id": str(uuid_module.uuid4()),
+            "media_type": "audio",
         }
         clip_data = {
             "id": str(uuid_module.uuid4()),
@@ -6074,6 +6259,12 @@ def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) ->
             "end": 0,
             "reader": {"path": audio_path, "has_audio": True, "has_video": False},
         }
+        import openshot
+
+        apply_audio_only_clip_overrides(
+            clip_data, file_data,
+            constant_interpolation=openshot.CONSTANT, scale_none=openshot.SCALE_NONE,
+        )
 
         # Must run on Qt main thread — app.updates dispatches to Qt listeners
         def _do_insert():
@@ -7370,6 +7561,7 @@ def get_timeline_state(**_kw) -> str:
                     summary_preview = ""
                     analyzed_part = ""
                     source_part = ""
+                    role_part = ""
                     try:
                         from classes.query import File as _File
                         fobj = _File.get(id=d.get("file_id", ""))
@@ -7384,6 +7576,7 @@ def get_timeline_state(**_kw) -> str:
                             source_part = (
                                 f" source={ctx.source_start:.1f}-{ctx.source_end:.1f}s"
                             )
+                            role_part = f" audio_role={_audio_role_of(d, fobj.data, ctx)}"
                             if not _file_is_analyzed(fobj.data):
                                 analyzed_part = " analyzed=False"
                         else:
@@ -7394,7 +7587,7 @@ def get_timeline_state(**_kw) -> str:
                     lines.append(
                         f"  timeline_clip_id={c.id} media_bin_file_id={d.get('file_id','')} "
                         f"file={fname!r} title={(d.get('title') or d.get('label') or '')!r}"
-                        f"{summary_part}{analyzed_part}{source_part}"
+                        f"{summary_part}{analyzed_part}{source_part}{role_part}"
                         f" @ {d.get('position',0):.2f}s–{clip_end:.2f}s (dur={clip_dur:.2f}s)"
                     )
         else:
@@ -7499,6 +7692,669 @@ def build_editor_snapshot_for_chat(max_chars: int = 5500) -> str:
         return ""
 
 
+# --------------------------------------------------------------------------
+# Audio mixing / context-aware ducking
+# --------------------------------------------------------------------------
+
+def _audio_float(value, default=None):
+    """Parse an LLM-supplied numeric arg; blank/garbage falls back to default."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return default
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _audio_bool(value, default=False) -> bool:
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return default
+    return text in ("1", "true", "yes", "y", "on")
+
+
+def _audio_id_list(value) -> list:
+    """Comma/space separated clip ids to a list, preserving order."""
+    if isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        raw = str(value or "").replace(",", " ").split()
+    out = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _collect_timeline_audio(app, layer_filter=None):
+    """Every timeline clip with audio, tagged with role + speech windows.
+
+    Roles are derived from data that already exists (reader streams + indexed
+    transcript cues) — see classes.audio_mix.classify_clip_audio_role.
+    """
+    from classes.query import Clip, File
+    from classes.ai_metadata_utils import get_effective_ai_metadata
+    from classes.timeline_clip_context import clear_metadata_lookup_cache
+    from classes import audio_mix as am
+
+    clear_metadata_lookup_cache()
+    layers_raw = app.project.get("layers") or []
+    fps = app.project.get("fps") or {"num": 30, "den": 1}
+    file_cache: dict = {}
+    entries = []
+
+    for clip_obj in Clip.filter():
+        data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        try:
+            layer_num = int(data.get("layer") or 0)
+        except (TypeError, ValueError):
+            layer_num = 0
+        if layer_filter is not None and layer_num != layer_filter:
+            continue
+
+        file_id = str(data.get("file_id") or "")
+        if file_id and file_id not in file_cache:
+            try:
+                fobj = File.get(id=file_id)
+                file_cache[file_id] = fobj.data if fobj and isinstance(fobj.data, dict) else None
+            except Exception:
+                file_cache[file_id] = None
+        file_data = file_cache.get(file_id)
+
+        try:
+            effective = get_effective_ai_metadata(
+                file_data, data, clip_ai_metadata=data.get("ai_metadata")
+            )
+        except Exception:
+            effective = {}
+
+        role = am.classify_clip_audio_role(data, file_data, effective)
+        if role == am.ROLE_SILENT:
+            continue
+
+        windows = am.speech_windows_from_cues(data, effective)
+        window_source = "cues" if windows else ""
+        if windows:
+            refined = am.refine_windows_with_energy(windows, data)
+            if refined != windows:
+                window_source = "cues+energy"
+            windows = refined
+
+        tl_start, tl_end = am.clip_timeline_extent(data)
+        entries.append(
+            {
+                "clip": clip_obj,
+                "id": str(clip_obj.id),
+                "data": data,
+                "file_data": file_data,
+                "role": role,
+                "layer": layer_num,
+                "track_label": format_track_label_for_llm(layer_num, layers_raw),
+                "title": str(data.get("title") or data.get("label") or "clip"),
+                "start": tl_start,
+                "end": tl_end,
+                "windows": windows,
+                "window_source": window_source,
+                "level": am.current_static_level(data),
+                "points": len(am.curve_points(data)),
+                "analyzed": bool(effective.get("analyzed")),
+                "fps": fps,
+            }
+        )
+
+    entries.sort(key=lambda e: (e["start"], e["layer"]))
+    return entries, layers_raw, fps
+
+
+def _describe_audio_clip(entry) -> str:
+    from classes import audio_mix as am
+
+    level = entry["level"]
+    if level is not None:
+        level_part = f"level={level:.2f} ({am.gain_to_db(level):+.1f} dB)"
+    else:
+        level_part = f"level=automated({entry['points']} points)"
+    return (
+        f"  timeline_clip_id={entry['id']} audio_role={entry['role']} "
+        f"track={entry['track_label']} title={entry['title']!r} "
+        f"{entry['start']:.2f}s-{entry['end']:.2f}s {level_part} "
+        f"indexed={'yes' if entry['analyzed'] else 'no'}"
+    )
+
+
+def _fmt_windows(windows, limit=8) -> str:
+    shown = [f"{s:.2f}-{e:.2f}" for s, e in windows[:limit]]
+    if len(windows) > limit:
+        shown.append(f"... +{len(windows) - limit} more")
+    return ", ".join(shown)
+
+
+def _speech_overlaps(entries) -> list:
+    """Pairs of speech clips that overlap in time — the known stacking bug."""
+    speech = [e for e in entries if e["role"] == "speech"]
+    clashes = []
+    for i, a in enumerate(speech):
+        for b in speech[i + 1:]:
+            if min(a["end"], b["end"]) - max(a["start"], b["start"]) > 0.05:
+                clashes.append((a, b))
+    return clashes
+
+
+def _locked_layer_error(layer_num, layers_raw, track_label):
+    for L in layers_raw:
+        try:
+            if int(L.get("number") or 0) == int(layer_num) and bool(L.get("lock", False)):
+                return f"Error: Track {track_label} is locked."
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _write_volume_points(clip_obj, points):
+    """Partial save of a volume curve (keeps reader/ai_metadata intact).
+
+    The caller sets app.updates.transaction_id so one undo reverts the pass.
+    """
+    clip_obj.data = {"volume": {"Points": list(points)}}
+    clip_obj.save()
+
+
+def _refresh_audio_ui(app, refreshed, tid):
+    """Redraw waveforms for clips that already have cached audio data."""
+    if refreshed:
+        try:
+            from classes.waveform import get_audio_data
+            get_audio_data(refreshed, transaction_id=tid)
+        except Exception as e:
+            log.debug("audio mix waveform refresh skipped: %s", e)
+    try:
+        app.window.refreshFrameSignal.emit()
+    except Exception:
+        pass
+
+
+def analyze_timeline_audio(track="", timeline_clip_id="", detail="summary", **_kw) -> str:
+    """Report the audio role, level and speech windows of every timeline clip.
+
+    Roles: speech (has transcript cues), music/sfx (audio-only, no cues),
+    ambient (video, no cues), unknown (not indexed yet). Use this before mixing
+    so you know which clips are beds and which carry the voice. detail='windows'
+    also lists the detected speech ranges in timeline seconds.
+    """
+    try:
+        app = _get_app()
+        layers_raw = app.project.get("layers") or []
+        layer_filter = None
+        if str(track or "").strip():
+            layer_filter, err = normalize_track_or_layer_arg(str(track).strip(), layers_raw)
+            if err:
+                return err
+
+        entries, layers_raw, _fps = _collect_timeline_audio(app, layer_filter)
+        wanted = str(timeline_clip_id or "").strip()
+        if wanted:
+            entries = [e for e in entries if e["id"] == wanted]
+            if not entries:
+                return f"Error: No timeline clip with id={wanted} (or it has no audio)."
+        if not entries:
+            return "No timeline clips with audio."
+
+        show_windows = str(detail or "").strip().lower() == "windows"
+        lines = [f"Timeline audio ({len(entries)} clip(s) with sound):"]
+        for entry in entries:
+            lines.append(_describe_audio_clip(entry))
+            if show_windows and entry["windows"]:
+                lines.append(
+                    f"    speech windows ({entry['window_source']}, timeline s): "
+                    f"{_fmt_windows(entry['windows'])}"
+                )
+
+        speech = [e for e in entries if e["role"] == "speech"]
+        beds = [e for e in entries if e["role"] in ("music", "sfx")]
+        unknown = [e for e in entries if e["role"] == "unknown"]
+        lines.append(
+            f"Summary: {len(speech)} speech, {len(beds)} music/sfx bed(s), "
+            f"{len(unknown)} unknown."
+        )
+        if unknown:
+            lines.append(
+                "  unknown = source not indexed yet; index it or pass the clip id "
+                "explicitly to mix it."
+            )
+
+        for a, b in _speech_overlaps(entries):
+            lines.append(
+                f"WARNING: speech clips {a['id']} and {b['id']} overlap in time "
+                f"({max(a['start'], b['start']):.2f}s-{min(a['end'], b['end']):.2f}s). "
+                "Two voices at once cannot be fixed by ducking — move or trim one."
+            )
+
+        for bed in beds:
+            higher = [
+                s for s in speech
+                if s["layer"] < bed["layer"]
+                and min(s["end"], bed["end"]) - max(s["start"], bed["start"]) > 0.05
+            ]
+            if higher:
+                lines.append(
+                    f"NOTE: bed {bed['id']} sits above speech on track {bed['track_label']}. "
+                    "Duck its level instead of restacking tracks."
+                )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def set_clip_volume(
+    timeline_clip_id="",
+    clip_query="",
+    track="",
+    occurrence="0",
+    level_db="",
+    level="",
+    start_seconds="",
+    end_seconds="",
+    fade_ms="150",
+    mode="replace",
+    **_kw,
+) -> str:
+    """Set a timeline clip's audio level, over the whole clip or one time window.
+
+    Give exactly one of level_db (decibels, negative = quieter) or level
+    (0.0-1.3 linear). mode='replace' sets the level outright; mode='scale'
+    multiplies the clip's existing volume automation. start_seconds/end_seconds
+    are TIMELINE seconds; omit both to set a flat level for the whole clip.
+    """
+    try:
+        from classes import audio_mix as am
+
+        if not str(timeline_clip_id or "").strip() and not str(clip_query or "").strip():
+            return "Error: set_clip_volume requires timeline_clip_id or clip_query."
+
+        db = _audio_float(level_db)
+        lin = _audio_float(level)
+        if db is not None and lin is not None:
+            return "Error: pass either level_db or level, not both."
+        if db is None and lin is None:
+            return "Error: set_clip_volume requires level_db or level."
+        target = am.db_to_gain(db) if db is not None else lin
+
+        resolved = _resolve_timeline_clip_for_tool(
+            timeline_clip_id=timeline_clip_id,
+            clip_query=clip_query,
+            track=track,
+            occurrence=occurrence,
+        )
+        if not resolved.ok or not resolved.clip:
+            return resolved.error or "Error: Could not resolve timeline clip."
+
+        clip_obj = resolved.clip
+        clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+        app = _get_app()
+        layers_raw = app.project.get("layers") or []
+        try:
+            layer_num = int(clip_data.get("layer") or 0)
+        except (TypeError, ValueError):
+            layer_num = 0
+        track_label = format_track_label_for_llm(layer_num, layers_raw)
+        locked = _locked_layer_error(layer_num, layers_raw, track_label)
+        if locked:
+            return locked
+        if not am.has_audio_stream(clip_data, _file_data_for_clip(clip_obj)):
+            return f"Error: timeline clip {clip_obj.id} has no audio stream."
+
+        fps = app.project.get("fps") or {"num": 30, "den": 1}
+        before = am.current_static_level(clip_data)
+        points = am.build_static_level_points(
+            clip_data,
+            fps,
+            target,
+            start_seconds=_audio_float(start_seconds),
+            end_seconds=_audio_float(end_seconds),
+            fade=max(0.0, (_audio_float(fade_ms, 150.0) or 0.0) / 1000.0),
+            scale=str(mode or "").strip().lower() == "scale",
+        )
+        if not points:
+            return (
+                f"Error: the requested window does not overlap timeline clip "
+                f"{clip_obj.id} ({am.clip_timeline_extent(clip_data)[0]:.2f}s-"
+                f"{am.clip_timeline_extent(clip_data)[1]:.2f}s)."
+            )
+
+        clip_id = str(clip_obj.id)
+        title = str(clip_data.get("title") or clip_data.get("label") or "clip")
+        file_id = str(clip_data.get("file_id") or "")
+        has_waveform = bool((clip_data.get("ui") or {}).get("audio_data"))
+
+        def _do_set():
+            tid = str(uuid_module.uuid4())
+            app.updates.transaction_id = tid
+            try:
+                _write_volume_points(clip_obj, points)
+            finally:
+                app.updates.transaction_id = None
+            _refresh_audio_ui(app, {file_id: [clip_id]} if (has_waveform and file_id) else {}, tid)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_set)
+        else:
+            _do_set()
+
+        before_text = f"{before:.2f}" if before is not None else "automated"
+        window_text = "whole clip"
+        if _audio_float(start_seconds) is not None or _audio_float(end_seconds) is not None:
+            tl_start, tl_end = am.clip_timeline_extent(clip_data)
+            s = _audio_float(start_seconds, tl_start)
+            e = _audio_float(end_seconds, tl_end)
+            window_text = f"{s:.2f}s-{e:.2f}s (timeline)"
+        return (
+            f"Set volume on timeline_clip_id={clip_id} (track {track_label}, "
+            f"{title!r}): {before_text} -> {target:.3f} "
+            f"({am.gain_to_db(target):+.1f} dB) over {window_text}; "
+            f"{len(points)} volume point(s) written. Track and position unchanged."
+        )
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _file_data_for_clip(clip_obj):
+    f = _get_source_file_for_clip(clip_obj)
+    return f.data if f is not None and isinstance(getattr(f, "data", None), dict) else None
+
+
+def duck_under_speech(
+    bed_clip_ids="",
+    bed_query="",
+    bed_track="",
+    speech_clip_ids="auto",
+    duck_db="auto",
+    attack_ms="150",
+    release_ms="400",
+    pad_before_ms="200",
+    pad_after_ms="300",
+    boost_speech_db="0",
+    dry_run="false",
+    **_kw,
+) -> str:
+    """Duck music/SFX beds under speech with volume keyframes, restoring in gaps.
+
+    Writes timeline volume automation only — no media is re-encoded and no clip
+    changes track or position. With speech_clip_ids='auto' the speech clips are
+    detected from indexed transcript cues; beds default to every music/sfx clip
+    that overlaps speech. Use dry_run='true' to preview the envelope first.
+
+    duck_db='auto' (the default) derives the attenuation per bed from its own
+    measured level against the speech it overlaps, so the result depends on the
+    material instead of always being the same envelope. Pass a number to force one.
+    """
+    try:
+        from classes import audio_mix as am
+
+        app = _get_app()
+        layers_raw = app.project.get("layers") or []
+        layer_filter = None
+        if str(bed_track or "").strip():
+            layer_filter, err = normalize_track_or_layer_arg(str(bed_track).strip(), layers_raw)
+            if err:
+                return err
+
+        entries, layers_raw, fps = _collect_timeline_audio(app)
+        if not entries:
+            return "No timeline clips with audio — nothing to mix."
+        by_id = {e["id"]: e for e in entries}
+
+        # --- speech sources -------------------------------------------------
+        explicit_speech = _audio_id_list(speech_clip_ids)
+        if explicit_speech and explicit_speech != ["auto"]:
+            speech = []
+            missing = []
+            for cid in explicit_speech:
+                if cid in by_id:
+                    speech.append(by_id[cid])
+                else:
+                    missing.append(cid)
+            if missing:
+                return f"Error: no timeline clip with audio for id(s): {', '.join(missing)}."
+            # A declared speech clip with no cues falls back to waveform energy.
+            for entry in speech:
+                if not entry["windows"]:
+                    energetic = am.speech_windows_from_energy(entry["data"])
+                    if energetic:
+                        entry["windows"] = energetic
+                        entry["window_source"] = "energy"
+        else:
+            speech = [e for e in entries if e["role"] == "speech" and e["windows"]]
+
+        if not speech:
+            unknown = [e["id"] for e in entries if e["role"] == "unknown"]
+            hint = (
+                f" {len(unknown)} clip(s) are not indexed yet ({', '.join(unknown[:5])}); "
+                "index them or pass speech_clip_ids explicitly."
+                if unknown else ""
+            )
+            return (
+                "No speech detected on the timeline, so there is nothing to duck under."
+                + hint
+                + " Use set_clip_volume_tool for a static level change."
+            )
+
+        speech_windows = am.merge_windows(
+            [w for entry in speech for w in entry["windows"]]
+        )
+        if not speech_windows:
+            return (
+                "Could not resolve any speech time windows for "
+                + ", ".join(e["id"] for e in speech)
+                + " (no transcript cues and no usable waveform). Index the source, "
+                "or use set_clip_volume_tool with an explicit time range."
+            )
+
+        # --- beds -----------------------------------------------------------
+        speech_ids = {e["id"] for e in speech}
+        explicit_beds = _audio_id_list(bed_clip_ids)
+        warnings = []
+        if explicit_beds:
+            beds = []
+            for cid in explicit_beds:
+                if cid not in by_id:
+                    return f"Error: no timeline clip with audio for id={cid}."
+                beds.append(by_id[cid])
+            for bed in beds:
+                if bed["role"] == "speech":
+                    warnings.append(
+                        f"WARNING: {bed['id']} carries speech; ducking it will "
+                        "attenuate its own dialogue too."
+                    )
+        elif str(bed_query or "").strip():
+            resolved = _resolve_timeline_clip_for_tool(
+                clip_query=bed_query, track=bed_track
+            )
+            if not resolved.ok or not resolved.clip:
+                return resolved.error or "Error: Could not resolve the bed clip."
+            bed_id = str(resolved.clip.id)
+            if bed_id not in by_id:
+                return f"Error: timeline clip {bed_id} has no audio stream."
+            beds = [by_id[bed_id]]
+        else:
+            beds = [
+                e for e in entries
+                if e["role"] in am.BED_ROLES
+                and e["id"] not in speech_ids
+                and (layer_filter is None or e["layer"] == layer_filter)
+                and am.clamp_windows(speech_windows, e["start"], e["end"])
+            ]
+
+        if not beds:
+            return (
+                "No music/SFX bed overlaps the detected speech, so no ducking was "
+                "needed. Speech windows (timeline s): "
+                f"{_fmt_windows(speech_windows)}"
+            )
+
+        # --- build envelopes ------------------------------------------------
+        duck_arg = str(duck_db or "").strip().lower()
+        auto_duck = duck_arg in ("", "auto")
+        fixed_gain = None if auto_duck else am.db_to_gain(
+            _audio_float(duck_db, am.DEFAULT_DUCK_DB)
+        )
+        speech_levels = [e["level"] for e in speech if e["level"] is not None]
+        speech_level = min(speech_levels) if speech_levels else None
+        attack = max(0.0, (_audio_float(attack_ms, 150.0) or 0.0) / 1000.0)
+        release = max(0.0, (_audio_float(release_ms, 400.0) or 0.0) / 1000.0)
+        pad_before = max(0.0, (_audio_float(pad_before_ms, 200.0) or 0.0) / 1000.0)
+        pad_after = max(0.0, (_audio_float(pad_after_ms, 300.0) or 0.0) / 1000.0)
+
+        planned = []
+        for bed in beds:
+            locked = _locked_layer_error(bed["layer"], layers_raw, bed["track_label"])
+            if locked:
+                return locked
+            windows = am.clamp_windows(speech_windows, bed["start"], bed["end"])
+            if not windows:
+                continue
+            if fixed_gain is not None:
+                duck_gain = fixed_gain
+            else:
+                duck_gain = am.db_to_gain(am.auto_duck_db(bed["level"], speech_level))
+            points = am.build_duck_points(
+                bed["data"], fps, windows, duck_gain=duck_gain,
+                attack=attack, release=release,
+                pad_before=pad_before, pad_after=pad_after,
+            )
+            if not points:
+                continue
+            held = am.ducked_windows(
+                bed["data"], windows, attack=attack, release=release,
+                pad_before=pad_before, pad_after=pad_after,
+            )
+            planned.append((bed, points, held, duck_gain))
+
+        boost_db = _audio_float(boost_speech_db, 0.0) or 0.0
+        boosted = []
+        if abs(boost_db) > 1e-6:
+            boost_level = am.db_to_gain(boost_db)
+            for entry in speech:
+                if _locked_layer_error(entry["layer"], layers_raw, entry["track_label"]):
+                    continue
+                pts = am.build_static_level_points(
+                    entry["data"], fps, min(am.MAX_LEVEL, boost_level)
+                )
+                if pts:
+                    boosted.append((entry, pts))
+
+        if not planned and not boosted:
+            return (
+                "The music/SFX beds do not overlap the detected speech windows, so "
+                "no volume automation was written."
+            )
+
+        # --- report ---------------------------------------------------------
+        header = (
+            f"{'Would duck' if _audio_bool(dry_run) else 'Ducked'} {len(planned)} bed clip(s) "
+            f"under {len(speech)} speech clip(s). "
+            + (
+                "duck=auto (per bed, from measured levels)"
+                if fixed_gain is None
+                else f"duck={am.gain_to_db(fixed_gain):+.1f} dB (gain {fixed_gain:.3f})"
+            )
+        )
+        lines = [header, ""]
+        for bed, points, held, duck_gain in planned:
+            base = bed["level"]
+            base_text = f"{base:.2f}" if base is not None else "automated"
+            lines.append(
+                f"bed timeline_clip_id={bed['id']} track={bed['track_label']} "
+                f"title={bed['title']!r}"
+            )
+            if base is not None:
+                lines.append(
+                    f"  role={bed['role']} base={base_text} -> {base * duck_gain:.2f} "
+                    f"({am.gain_to_db(duck_gain):+.1f} dB)"
+                )
+            else:
+                lines.append(
+                    f"  role={bed['role']} base=automated "
+                    f"(existing curve scaled by {duck_gain:.3f} under speech)"
+                )
+            lines.append(
+                f"  {len(held)} duck window(s), {len(points)} volume points"
+            )
+            lines.append(f"  ducked (timeline s): {_fmt_windows(held)}")
+            gaps = am.invert_windows(held, bed["start"], bed["end"])
+            if gaps:
+                lines.append(f"  restored (timeline s): {_fmt_windows(gaps)}")
+        if boosted:
+            lines.append(
+                f"speech boosted by {boost_db:+.1f} dB on: "
+                + ", ".join(e["id"] for e, _ in boosted)
+            )
+        lines.append(
+            "speech sources: "
+            + ", ".join(
+                f"{e['id']} ({e['window_source'] or 'declared'}, {len(e['windows'])} windows)"
+                for e in speech
+            )
+        )
+        skipped = [e for e in entries if e["role"] == "unknown"]
+        if skipped:
+            lines.append(
+                "skipped: "
+                + ", ".join(f"{e['id']} role=unknown (not indexed)" for e in skipped[:5])
+            )
+        for warning in warnings:
+            lines.append(warning)
+        for a, b in _speech_overlaps(entries):
+            lines.append(
+                f"WARNING: speech clips {a['id']} and {b['id']} overlap; ducking "
+                "cannot separate two voices — move or trim one."
+            )
+
+        if _audio_bool(dry_run):
+            lines.append("")
+            lines.append("dry_run=true — nothing was written.")
+            return "\n".join(lines)
+
+        # --- write ----------------------------------------------------------
+        refreshed: dict = {}
+        for bed, points, _held, _gain in planned:
+            if (bed["data"].get("ui") or {}).get("audio_data"):
+                fid = str(bed["data"].get("file_id") or "")
+                if fid:
+                    refreshed.setdefault(fid, []).append(bed["id"])
+        for entry, _pts in boosted:
+            if (entry["data"].get("ui") or {}).get("audio_data"):
+                fid = str(entry["data"].get("file_id") or "")
+                if fid:
+                    refreshed.setdefault(fid, []).append(entry["id"])
+
+        def _do_duck():
+            tid = str(uuid_module.uuid4())
+            app.updates.transaction_id = tid
+            try:
+                for bed_entry, pts, _w, _g in planned:
+                    _write_volume_points(bed_entry["clip"], pts)
+                for speech_entry, pts in boosted:
+                    _write_volume_points(speech_entry["clip"], pts)
+            finally:
+                app.updates.transaction_id = None
+            _refresh_audio_ui(app, refreshed, tid)
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_duck)
+        else:
+            _do_duck()
+
+        lines.append("")
+        lines.append(
+            "No clip changed track, position or trim. One undo reverts the whole mix."
+        )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
@@ -7526,6 +8382,10 @@ AGENT_TOOL_HANDLERS = {
     # sessions; the backend catalog exposes delete_from_timeline_tool only.
     "remove_clip_tool": remove_clip,
     "delete_clips_on_track_tool": delete_clips_on_track,
+    # Audio mix / ducking
+    "analyze_timeline_audio_tool": analyze_timeline_audio,
+    "set_clip_volume_tool": set_clip_volume,
+    "duck_under_speech_tool": duck_under_speech,
     "zoom_in_tool": zoom_in,
     "zoom_out_tool": zoom_out,
     "center_on_playhead_tool": center_on_playhead,
@@ -7595,6 +8455,9 @@ TOOL_DISPLAY_LABELS = {
     "delete_from_timeline_tool": "Delete from timeline",
     "remove_clip_tool": "Delete from timeline",
     "delete_clips_on_track_tool": "Delete from timeline",
+    "analyze_timeline_audio_tool": "Analyze timeline audio",
+    "set_clip_volume_tool": "Set clip volume",
+    "duck_under_speech_tool": "Duck music under speech",
     "zoom_in_tool": "Zoom in",
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
@@ -7677,6 +8540,7 @@ READ_ONLY_TOOLS = frozenset({
     "get_clips_with_full_metadata_tool",
     "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
+    "analyze_timeline_audio_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
