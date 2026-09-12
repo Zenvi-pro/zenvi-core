@@ -11,6 +11,7 @@ if str(SRC) not in sys.path:
 
 from classes.clip_placement import (
     DEFAULT_WATCH_QUERY,
+    blind_trim_rejected,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -103,3 +104,39 @@ def test_should_watch_skips_already_watched_subclip_unless_query():
 def test_should_watch_skips_long_untrimmed_file():
     assert should_watch_placement(window_sec=120.0) is False
     assert should_watch_placement(window_sec=6.0) is True
+
+
+def test_blind_duration_trim_on_full_file_is_rejected():
+    assert blind_trim_rejected(trim_dur=60.0, watched_start=None) is True
+
+
+def test_explicit_keep_window_is_not_a_blind_trim():
+    # start_seconds + end_seconds names both edges - the form the old error
+    # message demanded, so it must never be what arms the guard (#167).
+    assert blind_trim_rejected(
+        trim_dur=5.0, watched_start=None, has_explicit_end=True,
+    ) is False
+
+
+def test_explicit_in_point_is_not_a_first_n_seconds_trim():
+    assert blind_trim_rejected(
+        trim_dur=5.0, watched_start=None, has_explicit_start=True,
+    ) is False
+
+
+def test_times_named_only_in_the_query_do_not_exempt_a_duration_trim():
+    # The query text never moves the in-point, so start=0 + duration really is
+    # the first N seconds however the query describes it - keep blocking it.
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None) is True
+
+
+def test_watched_or_exempt_media_is_not_a_blind_trim():
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=2.0) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_audio=True) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_image=True) is False
+    assert blind_trim_rejected(trim_dur=5.0, watched_start=None, is_subclip=True) is False
+
+
+def test_no_trim_at_all_is_not_a_blind_trim():
+    assert blind_trim_rejected(trim_dur=None, watched_start=None) is False
+    assert blind_trim_rejected(trim_dur=0.0, watched_start=None) is False

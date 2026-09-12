@@ -28,6 +28,7 @@ from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
+    blind_trim_rejected,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -2204,7 +2205,10 @@ def add_clip_to_timeline(
         except ValueError as exc:
             return f"Error: {exc}"
         # end_seconds is the keep-window form (place_moment); duration wins if both.
-        if trim_dur is None and trim_end is not None:
+        # Only the winner bounds the out-point - an overridden end_seconds is not
+        # a keep window, it is a leftover arg.
+        end_bounds_window = trim_dur is None and trim_end is not None
+        if end_bounds_window:
             if trim_end <= trim_start:
                 return (
                     f"Error: end_seconds {trim_end} must be greater than "
@@ -2273,18 +2277,20 @@ def add_clip_to_timeline(
                 file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
             )
 
-        if (
-            trim_dur is not None
-            and trim_dur > 0
-            and watched_start is None
-            and not _is_audio_only
-            and not _is_image
-            and not bool(file_data.get("zenvi_subclip"))
+        if blind_trim_rejected(
+            trim_dur=trim_dur,
+            watched_start=watched_start,
+            has_explicit_end=end_bounds_window,
+            has_explicit_start=trim_start > 0,
+            is_audio=_is_audio_only,
+            is_image=_is_image,
+            is_subclip=bool(file_data.get("zenvi_subclip")),
         ):
             return (
-                "Error: cannot trim the first N seconds of an unwatched file. "
-                "Use place_moment with a search keep window (start_seconds/end_seconds) instead of "
-                "add_clip_to_timeline with duration_seconds on the full file."
+                "Error: duration_seconds alone cannot trim the first N seconds of a file "
+                "nothing has looked at. Name both edges of the section you want: pass "
+                "start_seconds and end_seconds (the keep window search_clips returned), "
+                "or place_moment with that window."
             )
 
         result_box = [None]
@@ -2491,6 +2497,14 @@ _ORDINAL_MAP = {
 }
 
 
+def _search_rank_key(hit):
+    """Sort key that puts the best-ranked hit first; unranked hits sort last."""
+    try:
+        return float(hit.get("rank"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def _detect_ordinal(query: str) -> int:
     words = (query or "").lower().split()
     for word in words:
@@ -2611,17 +2625,29 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 lines.append(
                     f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
                 )
-                for i, r in enumerate(hits_sorted[:8], 1):
+                # Pick WHICH occurrences to show by rank, then show them in time
+                # order. Truncating the chronological list drops the best match
+                # whenever it sits late in the file, and an unmarked rank= is easy
+                # to read past - both send the agent to the wrong window.
+                by_rank = sorted(hits, key=_search_rank_key)
+                best = by_rank[0] if by_rank else None
+                # Number each row by its occurrence index in the FULL chronological
+                # list - that is what an ordinal ("the 3rd time") resolves against,
+                # so rank selection must not renumber the rows it kept.
+                nth_of = {id(h): n for n, h in enumerate(hits_sorted, 1)}
+                for r in sorted(by_rank[:8], key=lambda x: float(x.get("start") or 0)):
                     seg_s = float(r.get("start") or 0)
                     seg_e = float(r.get("end") or 0)
                     win = _format_search_window(r, seg_s, seg_e)
+                    marker = "  <-- best match" if r is best else ""
                     lines.append(
-                        f"      {i}. {win} (rank={r.get('rank')})"
+                        f"      {nth_of.get(id(r), '?')}. {win} "
+                        f"(rank={r.get('rank')}){marker}"
                     )
                 if len(hits_sorted) > 1:
                     lines.append(
-                        "      Multiple matches — specify which occurrence "
-                        "(e.g. 'the 1st time', 'the 2nd time')."
+                        "      Place the best match unless the user asked for a "
+                        "different one (e.g. 'the 2nd time')."
                     )
                 shown += 1
 
