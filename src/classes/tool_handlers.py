@@ -2205,7 +2205,10 @@ def add_clip_to_timeline(
         except ValueError as exc:
             return f"Error: {exc}"
         # end_seconds is the keep-window form (place_moment); duration wins if both.
-        if trim_dur is None and trim_end is not None:
+        # Only the winner bounds the out-point - an overridden end_seconds is not
+        # a keep window, it is a leftover arg.
+        end_bounds_window = trim_dur is None and trim_end is not None
+        if end_bounds_window:
             if trim_end <= trim_start:
                 return (
                     f"Error: end_seconds {trim_end} must be greater than "
@@ -2277,7 +2280,7 @@ def add_clip_to_timeline(
         if blind_trim_rejected(
             trim_dur=trim_dur,
             watched_start=watched_start,
-            has_explicit_end=trim_end is not None,
+            has_explicit_end=end_bounds_window,
             has_explicit_start=trim_start > 0,
             is_audio=_is_audio_only,
             is_image=_is_image,

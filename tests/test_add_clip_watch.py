@@ -301,3 +301,61 @@ def test_blind_duration_trim_error_does_not_name_an_already_supplied_remedy():
     assert calls == []
     # The remedy it names must be something the caller did NOT already do.
     assert "end_seconds" in out
+
+
+def test_ignored_end_seconds_does_not_exempt_a_first_n_seconds_trim():
+    """duration wins over end_seconds, so end did not bound anything here."""
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        duration_seconds="5",
+        end_seconds="20",
+        query="a person speaking",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+
+
+def test_duration_alone_on_a_dialogue_heavy_window_still_errors():
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        duration_seconds="30",
+        query="a person speaking",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+
+
+def test_end_seconds_alone_still_bounds_the_window():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        end_seconds="50",
+        query="a person speaking",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    # Snapping may widen to the phrase edge; the point is it lands, bounded.
+    assert placed["start"] < placed["end"] <= 600.0
