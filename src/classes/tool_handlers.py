@@ -28,6 +28,7 @@ from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
+    blind_trim_rejected,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -2273,18 +2274,20 @@ def add_clip_to_timeline(
                 file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
             )
 
-        if (
-            trim_dur is not None
-            and trim_dur > 0
-            and watched_start is None
-            and not _is_audio_only
-            and not _is_image
-            and not bool(file_data.get("zenvi_subclip"))
+        if blind_trim_rejected(
+            trim_dur=trim_dur,
+            watched_start=watched_start,
+            has_explicit_end=trim_end is not None,
+            has_explicit_time_range=skip_watch,
+            is_audio=_is_audio_only,
+            is_image=_is_image,
+            is_subclip=bool(file_data.get("zenvi_subclip")),
         ):
             return (
-                "Error: cannot trim the first N seconds of an unwatched file. "
-                "Use place_moment with a search keep window (start_seconds/end_seconds) instead of "
-                "add_clip_to_timeline with duration_seconds on the full file."
+                "Error: duration_seconds alone cannot trim the first N seconds of a file "
+                "nothing has looked at. Name both edges of the section you want: pass "
+                "start_seconds and end_seconds (the keep window search_clips returned), "
+                "or place_moment with that window."
             )
 
         result_box = [None]

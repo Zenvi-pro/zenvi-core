@@ -177,3 +177,109 @@ def test_add_clip_skips_watch_on_long_untrimmed_file():
     )
     assert calls == []
     assert "watched" not in out
+
+
+# --- #167: a named keep window must never be what arms the unwatched guard ---
+
+def test_dialogue_heavy_keep_window_places_without_watch():
+    """>= 60% speech skips the watch on purpose - the window is still bounded."""
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 60.0,
+            "start": 0.0,
+            "end": 60.0,
+            "has_video": True,
+            "ai_metadata": {
+                "transcript_cues": [
+                    {"start": 15.0, "end": 17.5},
+                    {"start": 17.6, "end": 20.0},
+                ]
+            },
+        },
+        start_seconds="15",
+        end_seconds="20",
+        query="guy with an iPad appears",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1.0
+    assert abs(placed["end"] - 20.0) < 1.0
+    assert placed["end"] > placed["start"]
+
+
+def test_keep_window_with_explicit_times_in_query_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/b_roll.mp4",
+            "name": "b_roll.mp4",
+            "duration": 60.0,
+            "start": 0.0,
+            "end": 60.0,
+            "has_video": True,
+        },
+        start_seconds="15",
+        end_seconds="20",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1e-6
+    assert abs(placed["end"] - 20.0) < 1e-6
+
+
+def test_keep_window_longer_than_watch_limit_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        start_seconds="0",
+        end_seconds="60",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["end"] - placed["start"] - 60.0) < 1e-6
+
+
+def test_duration_trim_with_explicit_times_in_query_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        start_seconds="15",
+        duration_seconds="5",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1e-6
+    assert abs(placed["end"] - 20.0) < 1e-6
+
+
+def test_blind_duration_trim_error_does_not_name_an_already_supplied_remedy():
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        duration_seconds="60",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+    # The remedy it names must be something the caller did NOT already do.
+    assert "end_seconds" in out

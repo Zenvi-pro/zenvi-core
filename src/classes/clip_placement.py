@@ -259,3 +259,34 @@ def should_watch_placement(
     except (TypeError, ValueError):
         span = 0.0
     return 1e-3 < span <= float(max_window_sec) + 1e-6
+
+
+def blind_trim_rejected(
+    *,
+    trim_dur,
+    watched_start,
+    has_explicit_end: bool = False,
+    has_explicit_time_range: bool = False,
+    is_audio: bool = False,
+    is_image: bool = False,
+    is_subclip: bool = False,
+) -> bool:
+    """True when a trim has no boundary information behind it at all.
+
+    Only a blind "keep the first N seconds" duration trim on a full file is
+    worth blocking. A watch is not the only source of boundaries: a caller that
+    named both edges (end_seconds, or an explicit range in the query) has
+    bounded the window itself, and the watch is deliberately skipped on
+    dialogue-heavy windows because transcript cues are the better boundary.
+    Rejecting those made the error unsatisfiable - it demanded the keep window
+    that armed it.
+    """
+    if watched_start is not None or has_explicit_end or has_explicit_time_range:
+        return False
+    if is_audio or is_image or is_subclip:
+        return False
+    try:
+        span = float(trim_dur) if trim_dur is not None else 0.0
+    except (TypeError, ValueError):
+        span = 0.0
+    return span > 0
