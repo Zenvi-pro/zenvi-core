@@ -97,3 +97,52 @@ def test_degraded_hit_is_not_keep_window():
     assert "chapter-level match only" in out
     hit_line = [ln for ln in out.splitlines() if "media_bin_file_id=file-a" in ln][0]
     assert "start_seconds=" not in hit_line
+
+
+# --- #167 follow-up: the best match must survive truncation and be findable ---
+
+def _hit(start, end, rank):
+    return {
+        "video_id": "vid-a",
+        "start": start,
+        "end": end,
+        "peak": (start + end) / 2.0,
+        "rank": rank,
+        "filename": "a.mp4",
+        "role": "action",
+        "degraded": False,
+    }
+
+
+def test_best_match_is_not_truncated_away_by_chronological_cutoff():
+    """rank=1 sits late in time; a chronological top-8 would drop it entirely."""
+    hits = [_hit(float(i * 10), float(i * 10 + 5), rank=i + 2) for i in range(12)]
+    hits.append(_hit(300.0, 307.5, rank=1))
+    out = _run_search(hits)
+    assert "start_seconds=300.000" in out, out
+
+
+def test_best_match_is_marked_so_the_agent_can_tell_which_to_place():
+    out = _run_search([
+        _hit(0.0, 7.5, rank=1),
+        _hit(7.5, 25.5, rank=3),
+        _hit(0.0, 2.2, rank=46),
+    ])
+    best_line = [l for l in out.splitlines() if "start_seconds=0.000" in l and "end_seconds=7.500" in l]
+    assert best_line, out
+    assert "best match" in best_line[0], out
+    other = [l for l in out.splitlines() if "end_seconds=25.500" in l]
+    assert other and "best match" not in other[0], out
+
+
+def test_occurrences_stay_in_time_order():
+    out = _run_search([
+        _hit(30.0, 35.0, rank=1),
+        _hit(10.0, 15.0, rank=5),
+        _hit(20.0, 25.0, rank=3),
+    ])
+    starts = [
+        float(l.split("start_seconds=")[1].split(" ")[0])
+        for l in out.splitlines() if "start_seconds=" in l and l.strip()[0].isdigit()
+    ]
+    assert starts == sorted(starts), out

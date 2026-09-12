@@ -2497,6 +2497,14 @@ _ORDINAL_MAP = {
 }
 
 
+def _search_rank_key(hit):
+    """Sort key that puts the best-ranked hit first; unranked hits sort last."""
+    try:
+        return float(hit.get("rank"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def _detect_ordinal(query: str) -> int:
     words = (query or "").lower().split()
     for word in words:
@@ -2617,17 +2625,24 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 lines.append(
                     f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
                 )
-                for i, r in enumerate(hits_sorted[:8], 1):
+                # Pick WHICH occurrences to show by rank, then show them in time
+                # order. Truncating the chronological list drops the best match
+                # whenever it sits late in the file, and an unmarked rank= is easy
+                # to read past - both send the agent to the wrong window.
+                by_rank = sorted(hits, key=_search_rank_key)
+                best = by_rank[0] if by_rank else None
+                for i, r in enumerate(sorted(by_rank[:8], key=lambda x: float(x.get("start") or 0)), 1):
                     seg_s = float(r.get("start") or 0)
                     seg_e = float(r.get("end") or 0)
                     win = _format_search_window(r, seg_s, seg_e)
+                    marker = "  <-- best match" if r is best else ""
                     lines.append(
-                        f"      {i}. {win} (rank={r.get('rank')})"
+                        f"      {i}. {win} (rank={r.get('rank')}){marker}"
                     )
                 if len(hits_sorted) > 1:
                     lines.append(
-                        "      Multiple matches — specify which occurrence "
-                        "(e.g. 'the 1st time', 'the 2nd time')."
+                        "      Place the best match unless the user asked for a "
+                        "different one (e.g. 'the 2nd time')."
                     )
                 shown += 1
 
