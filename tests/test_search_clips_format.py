@@ -168,18 +168,34 @@ def test_occurrences_stay_in_time_order():
     assert starts == sorted(starts), out
 
 
-def test_listed_row_numbers_match_what_an_ordinal_resolves_to():
-    """A listed "3." must be the window "the 3rd time" returns, even after
-    rank selection drops rows from the display."""
+def test_ordinal_resolves_chronologically_not_to_the_nth_shown_row():
+    """"the 2nd time" must mean the 2nd occurrence in the file, not the 2nd row
+    left after rank selection - the two diverge once rows are dropped."""
+    # rank descends with time, so rank selection keeps the LAST 8 (start >= 40)
+    # and drops starts 0,10,20,30. Chronological #2 is start=10.0, which is not
+    # shown at all; the 2nd shown row is start=50.0.
     hits = [_hit(float(i * 10), float(i * 10 + 5), rank=20 - i) for i in range(12)]
     listed = _run_search(hits)
-    rows = [l.strip() for l in listed.splitlines() if l.strip()[:1].isdigit() and ". start_seconds=" in l]
-    assert rows, listed
-    for row in rows:
-        n = int(row.split(".")[0])
-        start = float(row.split("start_seconds=")[1].split(" ")[0])
-        nth = _run_search_query(hits, f"dog jumps the {n}th time")
-        assert f"start_seconds={start:.3f}" in nth, (n, row, nth)
+    assert "start_seconds=10.000" not in listed, listed
+
+    out = _run_search_query(hits, "dog jumps the 2nd time")
+    assert "occurrence #2" in out, out
+    assert "start_seconds=10.000" in out, out      # hits_sorted[1]
+    assert "start_seconds=50.000" not in out, out  # 2nd rank-selected row
+
+
+def test_listed_label_round_trips_through_a_mapped_ordinal():
+    hits = [_hit(float(i * 10), float(i * 10 + 5), rank=20 - i) for i in range(12)]
+    listed = _run_search(hits)
+    rows = [l.strip() for l in listed.splitlines()
+            if l.strip()[:1].isdigit() and ". start_seconds=" in l]
+    labels = {int(r.split(".")[0]): float(r.split("start_seconds=")[1].split(" ")[0])
+              for r in rows}
+    # 5 is the largest ordinal _ORDINAL_MAP knows; assert the label it carries.
+    assert 5 in labels, rows
+    out = _run_search_query(hits, "dog jumps the 5th time")
+    assert "occurrence #5" in out, out
+    assert f"start_seconds={labels[5]:.3f}" in out, (labels, out)
 
 
 def test_late_best_match_is_both_kept_and_marked():
