@@ -44,6 +44,26 @@ def _run_search(results):
         return tool_handlers.search_clips(query="dog jumps", top_k="5")
 
 
+def _run_search_query(results, query):
+    info = {
+        "index_id": "idx-1",
+        "index_name": "zenvi-proj",
+        "indexed_count": 1,
+        "video_map": {"vid-a": {"file_id": "file-a", "name": "a.mp4"}},
+    }
+    client = MagicMock()
+    client.is_indexing_configured.return_value = True
+    client.search.return_value = {"results": results}
+    with patch(
+        "classes.project_tl_index.collect_project_twelvelabs_index",
+        return_value=info,
+    ), patch(
+        "classes.api_client.get_backend_client",
+        return_value=client,
+    ):
+        return tool_handlers.search_clips(query=query, top_k="5")
+
+
 def test_search_clips_emits_raw_seconds_three_dp():
     out = _run_search([{
         "video_id": "vid-a",
@@ -146,3 +166,34 @@ def test_occurrences_stay_in_time_order():
         for l in out.splitlines() if "start_seconds=" in l and l.strip()[0].isdigit()
     ]
     assert starts == sorted(starts), out
+
+
+def test_listed_row_numbers_match_what_an_ordinal_resolves_to():
+    """A listed "3." must be the window "the 3rd time" returns, even after
+    rank selection drops rows from the display."""
+    hits = [_hit(float(i * 10), float(i * 10 + 5), rank=20 - i) for i in range(12)]
+    listed = _run_search(hits)
+    rows = [l.strip() for l in listed.splitlines() if l.strip()[:1].isdigit() and ". start_seconds=" in l]
+    assert rows, listed
+    for row in rows:
+        n = int(row.split(".")[0])
+        start = float(row.split("start_seconds=")[1].split(" ")[0])
+        nth = _run_search_query(hits, f"dog jumps the {n}th time")
+        assert f"start_seconds={start:.3f}" in nth, (n, row, nth)
+
+
+def test_late_best_match_is_both_kept_and_marked():
+    hits = [_hit(float(i * 10), float(i * 10 + 5), rank=i + 2) for i in range(12)]
+    hits.append(_hit(300.0, 307.5, rank=1))
+    out = _run_search(hits)
+    line = [l for l in out.splitlines() if "start_seconds=300.000" in l]
+    assert line, out
+    assert "best match" in line[0], out
+
+
+def test_ninth_best_by_rank_is_omitted_even_when_early():
+    hits = [_hit(float(100 + i * 10), float(105 + i * 10), rank=i + 1) for i in range(8)]
+    hits.append(_hit(0.0, 5.0, rank=99))
+    out = _run_search(hits)
+    assert "start_seconds=0.000" not in out, out
+    assert "start_seconds=100.000" in out, out
