@@ -514,12 +514,6 @@ class AIChatWorker(QObject):
                 # if the WebSocket breaks after the tool already completed.
                 if ok:
                     last_tool_result = result
-                    if tool_name == "split_file_add_clip_tool":
-                        QMetaObject.invokeMethod(
-                            self,
-                            "clear_session",
-                            Qt.QueuedConnection,
-                        )
                 return result
 
             final_response = None

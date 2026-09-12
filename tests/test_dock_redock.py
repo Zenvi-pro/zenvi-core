@@ -23,7 +23,9 @@ if str(SRC) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-pytest.importorskip("PyQt5.QtWidgets")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 
 from PyQt5.QtCore import Qt, QEvent, QPoint  # noqa: E402
 from PyQt5.QtGui import QMouseEvent  # noqa: E402

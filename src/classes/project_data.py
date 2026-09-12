@@ -38,8 +38,12 @@ from PyQt5.QtWidgets import QMessageBox
 
 from classes import info
 from classes.app import get_app
+from classes.clip_placement import (
+    apply_audio_only_clip_overrides,
+    repair_audio_only_project_data,
+)
 from classes.qt_main_thread import invoke_on_gui
-from classes.image_types import get_media_type
+from classes.image_types import get_media_type, is_audio_only_media
 from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
@@ -865,6 +869,14 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                     stroke_alpha = point.get("co", {}).get("Y", 1.0)
                                     point["co"]["Y"] = 1.0 - stroke_alpha
 
+        # Audio-only files saved before the cover-art fix still carry
+        # has_video=True, which paints an opaque frame over lower layers.
+        repair_audio_only_project_data(
+            self._data,
+            constant_interpolation=openshot.CONSTANT,
+            scale_none=openshot.SCALE_NONE,
+        )
+
         # Fix default project id (if found)
         if self._data.get("id") == "T0":
             self._data["id"] = self.generate_id()
@@ -1211,7 +1223,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     # Update size of audio-only files
                     for file in self._data.get("files", []):
                         # Check for audio-only files
-                        if file.get("has_audio") and not file.get("has_video"):
+                        if is_audio_only_media(file):
+                            file["has_video"] = False
                             # Audio-only file should match the current project size and FPS
                             file["width"] = profile.info.width
                             file["height"] = profile.info.height

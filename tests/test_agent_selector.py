@@ -11,7 +11,9 @@ import sys
 
 import pytest
 
-pytest.importorskip("PyQt5.QtCore")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 from PyQt5.QtCore import QPoint, QRect, Qt  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMainWindow  # noqa: E402
 

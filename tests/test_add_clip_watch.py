@@ -110,6 +110,27 @@ def test_add_clip_watches_bounded_stock_window_without_query():
     assert abs(calls[0][1] - calls[0][0] - 6.0) < 1e-6 or calls[0][1] - calls[0][0] >= 4.0
 
 
+def test_add_clip_snaps_watched_window_off_mid_sentence():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/talk.mp4",
+            "name": "talk.mp4",
+            "duration": 5.0,
+            "start": 0.0,
+            "end": 5.0,
+            "has_video": True,
+            "ai_metadata": {
+                "prompt": "a person talking",
+                "transcript_cues": [{"start": 0.0, "end": 0.8}, {"start": 3.0, "end": 5.0}],
+            },
+        }
+    )
+    assert calls, out
+    assert "watched" in out
+    assert placed["start"] == 0.0
+    assert placed["end"] == 5.0
+
+
 def test_add_clip_skips_watch_on_audio():
     out, calls, _placed = _run_add(
         {

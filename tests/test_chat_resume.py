@@ -10,7 +10,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-pytest.importorskip("PyQt5.QtCore")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 
