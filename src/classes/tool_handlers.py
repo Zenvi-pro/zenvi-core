@@ -2867,7 +2867,12 @@ def watch_clip_window(
     timeline_clip_id="",
     **_kw,
 ) -> str:
-    """Layer-3 watch of a candidate window. Distinct from watch_clip_tool (play)."""
+    """Vision-check a window of a placed clip: confirm the query is on screen.
+
+    Call this after you place, slice, trim, or modify a clip to verify your own
+    edit. Read-only: reports in/out/peak in seconds. Layer-3 watch of a candidate
+    window; distinct from watch_clip_tool, which plays the clip in the editor.
+    """
     try:
         from classes.clip_resolver import _coerce_optional_float
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
