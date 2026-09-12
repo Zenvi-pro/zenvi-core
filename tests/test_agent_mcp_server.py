@@ -120,16 +120,12 @@ def test_server_lists_and_calls_tools(tool_stub):
 # --- watch parity: MCP harnesses must be able to self-check after an edit ---
 
 def test_watch_tool_description_is_agent_callable_not_internal():
-    """iter_tool_defs must surface watch_clip_window as a real callable tool,
-    not one marked 'internal - do not call' (issue #59)."""
+    """The description harnesses actually receive for the real registered tool
+    must read as a post-edit vision check, not internal jargon (issue #59)."""
     from classes.agent_mcp_server import _build_input_schema, _first_doc_paragraph
+    from classes.tool_handlers import AGENT_TOOL_HANDLERS
 
-    def watch_clip_window(query="", start="", end="", **_kw):
-        """Vision-check whether a query is visible in a window of a placed clip.
-
-        Call this after you place, slice, trim, or modify a clip to confirm your
-        own edit with vision. Read-only: reports in/out/peak in seconds.
-        """
+    watch_clip_window = AGENT_TOOL_HANDLERS["watch_clip_window_tool"]
 
     desc = _first_doc_paragraph(watch_clip_window).lower()
     assert "vision" in desc
