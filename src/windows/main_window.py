@@ -973,6 +973,61 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # Save new project
             threading.Thread(target=self.save_project, args=(file_path,), daemon=True).start()
 
+    def actionCollectMedia_trigger(self, checked=True):
+        """Copy referenced external media into this project's assets folder."""
+        app = get_app()
+        _ = app._tr
+        project = app.project
+        if not getattr(project, "current_filepath", None):
+            QMessageBox.information(
+                self,
+                _("Collect Media"),
+                _("Save the project first, then collect media into it."),
+            )
+            return
+        from classes import info as _info
+        from classes.media_collect import collect_media_into_project
+
+        files = project._data.get("files") or []
+        clips = project._data.get("clips") or []
+        copied, skipped, errors = collect_media_into_project(
+            files, clips, project.current_filepath, app_root=_info.PATH
+        )
+        project.has_unsaved_changes = True
+        QMessageBox.information(
+            self,
+            _("Collect Media"),
+            _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
+            % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
+        )
+
+    def actionReclaimMedia_trigger(self, checked=True):
+        """Remove asset copies that still have a matching original on disk."""
+        app = get_app()
+        _ = app._tr
+        project = app.project
+        if not getattr(project, "current_filepath", None):
+            QMessageBox.information(
+                self,
+                _("Reclaim Space"),
+                _("Save the project first."),
+            )
+            return
+        from classes.media_collect import reclaim_unused_asset_media
+
+        files = project._data.get("files") or []
+        removed, kept, errors = reclaim_unused_asset_media(
+            files, project.current_filepath
+        )
+        if removed:
+            project.has_unsaved_changes = True
+        QMessageBox.information(
+            self,
+            _("Reclaim Space"),
+            _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
+            % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
+        )
+
     def actionImportFiles_trigger(self):
         app = get_app()
         s = app.get_settings()
@@ -3101,6 +3156,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Build recovery menu as well
         self.load_restore_menu()
+
+        # Collect / reclaim media (storage tools)
+        if not getattr(self, "_media_storage_actions_added", False):
+            self.menuFile.addSeparator()
+            collect_action = self.menuFile.addAction(_("Collect Media into Project..."))
+            collect_action.triggered.connect(self.actionCollectMedia_trigger)
+            reclaim_action = self.menuFile.addAction(_("Reclaim Duplicate Media..."))
+            reclaim_action.triggered.connect(self.actionReclaimMedia_trigger)
+            self._media_storage_actions_added = True
 
     def time_ago_string(self, timestamp):
         """ Returns a friendly time difference string for the given timestamp. """
