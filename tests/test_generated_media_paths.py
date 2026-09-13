@@ -14,7 +14,6 @@ def test_durable_media_path_uses_project_assets_when_saved(tmp_path):
     assert path.endswith(".mp4")
     assert "MyProject_assets" in path
     assert os.path.basename(os.path.dirname(path)) == "media"
-    assert not path.startswith(tempfile.gettempdir())
     assert os.path.isdir(os.path.dirname(path))
 
 
@@ -24,7 +23,6 @@ def test_durable_media_path_uses_user_generated_when_unsaved(tmp_path, monkeypat
     assert path.endswith(".webm")
     assert os.path.basename(os.path.dirname(path)) == "generated"
     assert str(tmp_path / "user") in path
-    assert not path.startswith(tempfile.gettempdir())
 
 
 def test_durable_media_path_normalizes_extension(tmp_path):

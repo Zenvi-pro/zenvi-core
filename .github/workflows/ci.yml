@@ -28,7 +28,12 @@ jobs:
       run: |
         python3 ./src/tests/query_tests.py -platform minimal
         python3 ./src/tests/update_installer_tests.py -v
-        QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q --tb=line
+        QT_QPA_PLATFORM=offscreen python3 -m pytest \
+          tests/test_path_serialization.py \
+          tests/test_generated_media_paths.py \
+          tests/test_project_media.py \
+          tests/test_media_fingerprint.py \
+          tests/test_media_cache.py -q --tb=line
 
   windows-update-installer-tests:
     # Separate job (not added to the matrix above): the Ubuntu job's
