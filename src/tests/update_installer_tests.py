@@ -187,7 +187,10 @@ class SpawnExternalUpdaterTests(unittest.TestCase):
         self._manifest_patch.start()
         self.addCleanup(self._manifest_patch.stop)
 
-        ok = self.ui._spawn_external_updater(stub_installer, relaunch_target)
+        # Skip Wait-Process: this unittest process does not exit, and the
+        # real app path always waits via the default parent_pid=os.getpid().
+        ok = self.ui._spawn_external_updater(
+            stub_installer, relaunch_target, parent_pid=None)
         self.assertTrue(ok)
 
         import time

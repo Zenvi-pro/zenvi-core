@@ -81,7 +81,11 @@ def is_version_newer(remote_version, local_version):
 
 def _log(msg):
     line = f"[ZenviUpdater] {msg}"
-    print(line)
+    try:
+        print(line)
+    except UnicodeEncodeError:
+        # Windows consoles are often cp1252; never let logging abort install.
+        print(line.encode("ascii", "replace").decode("ascii"))
     try:
         with open(UPDATE_LOG, "a", encoding="utf-8") as fh:
             fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}\n")
@@ -377,12 +381,12 @@ def _apply_macos(filepath, filename):
         try:
             if os.path.exists(dest_new):
                 shutil.rmtree(dest_new)
-            _log(f"Copying {app_bundle} → {dest_new}")
+            _log(f"Copying {app_bundle} -> {dest_new}")
             shutil.copytree(app_bundle, dest_new, symlinks=True)
             if os.path.exists(dest):
                 if os.path.exists(dest_bak):
                     shutil.rmtree(dest_bak)
-                _log(f"Moving current install {dest} → {dest_bak}")
+                _log(f"Moving current install {dest} -> {dest_bak}")
                 os.rename(dest, dest_bak)
             os.rename(dest_new, dest)
             if os.path.exists(dest_bak):
@@ -542,16 +546,26 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
     )
 
 
-def _spawn_external_updater(filepath, relaunch_target):
+_AUTO_PARENT_PID = object()
+
+
+def _spawn_external_updater(filepath, relaunch_target, parent_pid=_AUTO_PARENT_PID):
     """Write the helper script to the update staging dir and launch it fully
     detached. Returns True once the helper process has been started — at
     that point the staged installer/manifest are no longer this process's
     responsibility to clean up; the helper does that itself once Setup
-    actually finishes."""
+    actually finishes.
+
+    parent_pid defaults to this process (so Setup waits for zenvi.exe to
+    exit). Pass parent_pid=None to skip the wait (unit tests that keep the
+    caller alive).
+    """
+    if parent_pid is _AUTO_PARENT_PID:
+        parent_pid = os.getpid()
     script_path = os.path.join(UPDATE_STAGING_DIR, _UPDATE_HELPER_SCRIPT_NAME)
     script = _build_update_helper_script(
         filepath, UPDATE_MANIFEST, relaunch_target, UPDATE_LOG,
-        parent_pid=os.getpid())
+        parent_pid=parent_pid)
 
     try:
         os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
