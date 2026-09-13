@@ -655,6 +655,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self._apply_ai_metadata(f, metadata)
                 f.save()
                 get_app().window.FileUpdated.emit(str(fid))
+                try:
+                    get_app().window.schedule_flush_project_to_disk()
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning(f"Failed to apply intermediate indexing result: {exc}")
 
@@ -671,6 +675,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self._apply_ai_metadata(f, metadata)
                 f.save()
                 get_app().window.FileUpdated.emit(str(file_id))
+                try:
+                    get_app().window.schedule_flush_project_to_disk()
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning(f"Failed to apply background indexing result: {exc}")
 

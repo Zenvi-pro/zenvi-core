@@ -1384,6 +1384,13 @@ class AIChatWindow(QDockWidget):
                 if prev_key.startswith("draft:"):
                     chat_history.discard_empty_bucket(prev_key)
                 self._draft_history_key = ""
+                try:
+                    from classes.app import get_app
+                    window = getattr(get_app(), "window", None)
+                    if window is not None and hasattr(window, "_set_restore_draft_history_key"):
+                        window._set_restore_draft_history_key("")
+                except Exception:
+                    pass
             new_key = self._resolve_history_key(new_project_path)
             if new_project_path and prev_key.startswith("draft:"):
                 # First save of an untitled project: take its chat along.
@@ -1396,6 +1403,13 @@ class AIChatWindow(QDockWidget):
                 else:
                     chat_history.rekey_project(prev_key, new_key, new_project_path)
                 self._draft_history_key = ""
+                try:
+                    from classes.app import get_app
+                    window = getattr(get_app(), "window", None)
+                    if window is not None and hasattr(window, "_set_restore_draft_history_key"):
+                        window._set_restore_draft_history_key("")
+                except Exception:
+                    pass
 
             live_sids = set(self._sessions.keys())
             stored_sids = {
@@ -1498,6 +1512,97 @@ class AIChatWindow(QDockWidget):
         except Exception as e:
             log.warning("AI chat reload_for_project failed: %s", e, exc_info=True)
 
+    def restore_draft(self, draft_key: str) -> None:
+        """Adopt an untitled chat bucket after crash recovery of backup.zvn.
+
+        Unlike ``reload_for_project("")`` (File → New), this keeps the prior
+        draft conversations instead of minting a fresh empty bucket.
+        """
+        draft_key = (draft_key or "").strip()
+        if not draft_key.startswith("draft:"):
+            return
+        try:
+            from classes import chat_history
+
+            prev_key = getattr(self, "_history_key", "") or ""
+            if prev_key and prev_key != draft_key and prev_key.startswith("draft:"):
+                chat_history.discard_empty_bucket(prev_key)
+
+            try:
+                from classes.api_client import get_backend_client
+                get_backend_client().cancel_current_request()
+            except Exception:
+                pass
+            for sess in list(self._sessions.values()):
+                self._shutdown_worker(sess.get("worker"), sess.get("thread"), wait_ms=1500)
+            self._sessions.clear()
+            self._active_sid = ""
+            self._first_prompt_summary = None
+            self._history_restore_started = False
+            self.is_processing = False
+
+            self._current_project_path = ""
+            self._draft_history_key = draft_key
+            self._history_key = draft_key
+
+            store = {}
+            restored_sessions = self._restorable_sessions(store)
+            if isinstance(restored_sessions, list) and restored_sessions:
+                for entry in restored_sessions:
+                    if not isinstance(entry, dict):
+                        continue
+                    sid = entry.get("session_id")
+                    title = entry.get("title") or "New Chat"
+                    if not sid or sid in self._sessions:
+                        continue
+                    backend = _coerce_backend(entry.get("backend"))
+                    worker, thread = self._make_worker(sid, backend, restore=entry)
+                    self._sessions[sid] = {
+                        "worker": worker,
+                        "thread": thread,
+                        "title": title,
+                        "messages": [],
+                        "processing": False,
+                        "unread": False,
+                        "first_prompt_summary": title,
+                        "backend": backend,
+                        "agent_mode": entry.get("agent_mode", "agent"),
+                        "current_plan": None,
+                    }
+                    self._persist_session(sid)
+                self._active_sid = self._pick_active_sid(store)
+                if self._active_sid:
+                    self._first_prompt_summary = self._sessions[self._active_sid].get(
+                        "first_prompt_summary"
+                    )
+
+            if not self._sessions:
+                self._create_initial_session()
+
+            if self._use_web_ui:
+                try:
+                    self._run_js("clearMessages();")
+                except Exception:
+                    pass
+                self._push_tabs_to_js()
+                self._update_preamble()
+            else:
+                try:
+                    if hasattr(self, "chat_box") and self.chat_box is not None:
+                        self.chat_box.clear()
+                except Exception:
+                    pass
+                self._update_preamble()
+                self._render_active_session_widget()
+                self._rebuild_widget_tabs()
+
+            try:
+                self._start_restore_chat_histories_async()
+            except Exception:
+                pass
+        except Exception as e:
+            log.warning("AI chat restore_draft failed: %s", e, exc_info=True)
+
     # ------------------------------------------------------------------
     # Local persistence for open chat sessions (session ids + titles)
     # ------------------------------------------------------------------
@@ -1550,6 +1655,13 @@ class AIChatWindow(QDockWidget):
             # of chatting before hitting Save isn't thrown away.
             if not self._draft_history_key:
                 self._draft_history_key = chat_history.new_draft_key()
+                try:
+                    from classes.app import get_app
+                    window = getattr(get_app(), "window", None)
+                    if window is not None and hasattr(window, "_set_restore_draft_history_key"):
+                        window._set_restore_draft_history_key(self._draft_history_key)
+                except Exception:
+                    pass
             return self._draft_history_key
 
         key = (
