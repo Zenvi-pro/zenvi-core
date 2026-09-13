@@ -126,6 +126,11 @@ class SettingStore(JsonDataStore):
                 self.set("locationExportType", self.pathType.RECENT.value)
                 self.set("exportDownloadsDefaultApplied", True)
 
+        # Hardware decode auto-detect is intentionally NOT done here.
+        # settings.load() runs before libopenshot/Qt are fully ready, so the
+        # probe can falsely fail and lock in software decode. MainWindow runs
+        # it after openshot.Settings is live (see _maybe_auto_detect_hw_decode).
+
         # Return success of saving user settings file back after merge
         return self.write_to_file(file_path, self._data)
 

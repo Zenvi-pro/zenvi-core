@@ -1,0 +1,38 @@
+{
+  "recorded_at": "2026-09-13T03:40:07.167212+00:00",
+  "libopenshot_version": "0.5.0",
+  "platform": "darwin",
+  "note": "Phase 0 baseline uses ffmpeg re-encode of fixtures as a portable throughput floor. Full Timeline.GetFrame export benchmarks require an initialized OpenShot App and are layered on in later phases.",
+  "cases": [
+    {
+      "mode": "ffmpeg-reencode",
+      "vcodec": "libx264",
+      "elapsed_sec": 0.2669,
+      "frames": 60,
+      "fps": 224.84,
+      "output_bytes": 1823194,
+      "ssim_vs_source": 0.999555,
+      "fixture": "h264_720p30_2s.mp4"
+    },
+    {
+      "mode": "ffmpeg-reencode",
+      "vcodec": "libx264",
+      "elapsed_sec": 0.3993,
+      "frames": 60,
+      "fps": 150.26,
+      "output_bytes": 2344528,
+      "ssim_vs_source": 0.998707,
+      "fixture": "h264_1080p30_2s.mp4"
+    },
+    {
+      "mode": "ffmpeg-reencode",
+      "vcodec": "libx264",
+      "elapsed_sec": 0.7272,
+      "frames": 30,
+      "fps": 41.25,
+      "output_bytes": 1985466,
+      "ssim_vs_source": 0.990985,
+      "fixture": "h264_4k30_1s.mp4"
+    }
+  ]
+}
