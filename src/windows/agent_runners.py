@@ -155,7 +155,14 @@ def _agent_bash_prompt():
         "- This Bash tool may still run zsh on macOS. Never use bash "
         "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
         "Iterate a plain path list, or zsh: "
-        'for name in "${(@k)files}"; do ...; done.'
+        'for name in "${(@k)files}"; do ...; done.\n'
+        "Importing local media (import_files_tool):\n"
+        "- Prefer absolute paths or globs "
+        "(e.g. ~/Desktop/nilay/**/*.mp4).\n"
+        "- For folders or vague asks, call with dry_run=true first, show the "
+        "preview, ask the user to confirm, then call again with "
+        "dry_run=false.\n"
+        "- If several candidates match, ask — do not guess."
     )
 
 
