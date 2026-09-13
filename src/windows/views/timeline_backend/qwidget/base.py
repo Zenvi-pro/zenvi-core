@@ -1018,77 +1018,79 @@ class TimelineWidgetBase(QWidget):
         effect_names = []
         mime = event.mimeData()
         mime_html = mime.html()
-        if mime_has_file_drop(mime):
-            urls = urls_from_mime(mime)
-            imported = self.win.files_model.process_urls(
-                urls, import_quietly=True, prevent_image_seq=True
-            ) or []
-            for f in imported:
-                if f and getattr(f, "id", None):
-                    file_ids.append(f.id)
-        elif mime_html == "clip":
-            try:
-                ids = json.loads(mime.text())
-            except Exception:
-                ids = []
-            if not isinstance(ids, list):
-                ids = [ids]
-            file_ids.extend(ids)
-        elif mime_html == "transition":
-            try:
-                ids = json.loads(mime.text())
-            except Exception:
-                ids = []
-            if not isinstance(ids, list):
-                ids = [ids]
-            file_ids.extend(ids)
-        elif mime_html == "effect":
-            try:
-                names = json.loads(mime.text())
-            except Exception:
-                names = []
-            if not isinstance(names, list):
-                names = [names]
-            effect_names.extend(names)
+        from classes.updates import nested_transaction
+        with nested_transaction(get_app().updates):
+            if mime_has_file_drop(mime):
+                urls = urls_from_mime(mime)
+                imported = self.win.files_model.process_urls(
+                    urls, import_quietly=True, prevent_image_seq=True
+                ) or []
+                for f in imported:
+                    if f and getattr(f, "id", None):
+                        file_ids.append(f.id)
+            elif mime_html == "clip":
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                file_ids.extend(ids)
+            elif mime_html == "transition":
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                file_ids.extend(ids)
+            elif mime_html == "effect":
+                try:
+                    names = json.loads(mime.text())
+                except Exception:
+                    names = []
+                if not isinstance(names, list):
+                    names = [names]
+                effect_names.extend(names)
 
-        if not file_ids and not effect_names:
+            if not file_ids and not effect_names:
+                self._reset_drag_preview()
+                return
+
+            coords = self._event_seconds_track(event)
+            if coords is None:
+                coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
+            pos_seconds, track_num, _ = coords
+            pos = QPointF(pos_seconds, 0)
+
+            if effect_names:
+                self._apply_effect_drop(effect_names, pos_seconds, track_num)
+                self._reset_drag_preview()
+                return
+
+            for idx, fid in enumerate(file_ids):
+                ignore_refresh = idx < len(file_ids) - 1
+                if mime_html == "transition":
+                    item = self.addTransition(
+                        fid,
+                        pos,
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if item:
+                        pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
+                else:
+                    clip = self.addClip(
+                        fid,
+                        pos,
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if clip:
+                        pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
             self._reset_drag_preview()
-            return
-
-        coords = self._event_seconds_track(event)
-        if coords is None:
-            coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
-        pos_seconds, track_num, _ = coords
-        pos = QPointF(pos_seconds, 0)
-
-        if effect_names:
-            self._apply_effect_drop(effect_names, pos_seconds, track_num)
-            self._reset_drag_preview()
-            return
-
-        for idx, fid in enumerate(file_ids):
-            ignore_refresh = idx < len(file_ids) - 1
-            if mime_html == "transition":
-                item = self.addTransition(
-                    fid,
-                    pos,
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if item:
-                    pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
-            else:
-                clip = self.addClip(
-                    fid,
-                    pos,
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if clip:
-                    pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
-        self._reset_drag_preview()
 
     def dragLeaveEvent(self, event):
         event.accept()

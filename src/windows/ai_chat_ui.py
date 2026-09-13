@@ -459,11 +459,15 @@ class AIChatWorker(QObject):
         super().__init__(parent)
         self._backend_session_id = None
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
+        # Vision parts for the next hosted-chat turn (set by AIChatWindow before invoke).
+        self._pending_chat_images = []
 
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
         self._agent_mode = agent_mode or "agent"
+        images = list(getattr(self, "_pending_chat_images", None) or [])
+        self._pending_chat_images = []
         try:
             from classes.tool_handlers import execute_tool
 
@@ -608,6 +612,7 @@ class AIChatWorker(QObject):
                 action=action or "chat",
                 plan_id=plan_id or None,
                 on_plan_event=on_plan_event,
+                images=images or None,
             )
 
             if final_error:
@@ -883,6 +888,8 @@ class AIChatWindow(QDockWidget):
         self._token_buffer = []
         self._token_flush_scheduled = False
         self._mention_armed = False
+        # Composer attachment undo: snapshots before each drop/paste batch.
+        self._attachment_undo_stack = []
 
         # Per-session state: each entry holds {"worker", "thread", "title",
         # "messages", "processing", "first_prompt_summary"}.
@@ -1181,6 +1188,7 @@ class AIChatWindow(QDockWidget):
         if session_id not in self._sessions or session_id == self._active_sid:
             return
         self._active_sid = session_id
+        self._clear_attachment_undo()
         sess = self._sessions[session_id]
         self._first_prompt_summary = sess.get("first_prompt_summary")
         self.is_processing = sess.get("processing", False)
@@ -2265,6 +2273,46 @@ class AIChatWindow(QDockWidget):
             return sess["attachments"]
         return atts
 
+    def _clear_attachment_undo(self):
+        self._attachment_undo_stack = []
+
+    def _push_attachment_undo(self):
+        from classes.chat_attachments import snapshot_attachments
+        self._attachment_undo_stack.append(snapshot_attachments(self._session_attachments()))
+
+    def undo_chat_attachments(self) -> bool:
+        """Restore the previous composer attachment list. True if a step was undone."""
+        if not self._attachment_undo_stack:
+            return False
+        prev = self._attachment_undo_stack.pop()
+        sess = self._active_session()
+        if sess is None:
+            return False
+        sess["attachments"] = prev if isinstance(prev, list) else []
+        self._push_attachments_to_js()
+        return True
+
+    def attach_paths(self, paths, insert_mention: bool = False) -> int:
+        """Attach local files as one undoable composer batch. Returns how many were added."""
+        from classes.chat_attachments import attach_paths_batch
+
+        atts = self._session_attachments()
+        before, added = attach_paths_batch(atts, paths, file_id_for_path=self._file_id_for_path)
+        if before is None or added == 0:
+            return 0
+        self._attachment_undo_stack.append(before)
+        self._push_attachments_to_js()
+        if insert_mention and self._use_web_ui:
+            mode = "replace" if self._mention_armed else "append"
+            for att in atts[-added:]:
+                token = "@" + att["name"]
+                self._run_js(
+                    "if(window.insertChatMention) window.insertChatMention(%s, %s);"
+                    % (json.dumps(token), json.dumps(mode))
+                )
+                mode = "append"
+        return added
+
     def _push_attachments_to_js(self):
         if not self._use_web_ui:
             return
@@ -2310,16 +2358,16 @@ class AIChatWindow(QDockWidget):
     def _attach_path(self, path: str, file_id: str = "", name: str = "", insert_mention: bool = True):
         if not path or not os.path.isfile(path):
             return None
-        from classes.chat_attachments import make_attachment
+        from classes.chat_attachments import append_path_attachment
 
-        abs_path = os.path.abspath(path)
         atts = self._session_attachments()
-        for existing in atts:
-            if os.path.abspath(existing.get("path") or "") == abs_path:
-                return existing
-        file_id = str(file_id or self._file_id_for_path(abs_path) or "")
-        att = make_attachment(abs_path, file_id=file_id, name=name)
-        atts.append(att)
+        file_id = str(file_id or self._file_id_for_path(os.path.abspath(path)) or "")
+        att = append_path_attachment(atts, path, file_id=file_id, name=name)
+        if att is None:
+            for existing in atts:
+                if os.path.abspath(existing.get("path") or "") == os.path.abspath(path):
+                    return existing
+            return None
         self._push_attachments_to_js()
         if insert_mention and self._use_web_ui:
             mode = "replace" if self._mention_armed else "append"
@@ -2381,15 +2429,21 @@ class AIChatWindow(QDockWidget):
 
     def _on_chat_files_dropped(self, paths):
         armed = self._mention_armed
-        for path in paths or []:
-            self._attach_path(path, insert_mention=armed)
+        self.attach_paths(paths, insert_mention=armed)
         self._mention_armed = False
 
     def _on_chat_file_ids_dropped(self, file_ids):
+        ids = [str(i) for i in (file_ids or []) if i]
+        if not ids:
+            return
+        self._push_attachment_undo()
         armed = self._mention_armed
-        for file_id in file_ids or []:
-            self._attach_project_file_id(str(file_id), insert_mention=armed)
+        before = len(self._session_attachments())
+        for file_id in ids:
+            self._attach_project_file_id(file_id, insert_mention=armed)
         self._mention_armed = False
+        if len(self._session_attachments()) == before and self._attachment_undo_stack:
+            self._attachment_undo_stack.pop()
 
     def _mentionable_files(self, query: str):
         items = []
@@ -2954,7 +3008,7 @@ class AIChatWindow(QDockWidget):
             return agent_mode
         return sess.get("agent_mode", "agent")
 
-    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None):
+    def _dispatch_user_message(self, text: str, model_id: str, agent_mode: str = None, action: str = "chat", plan_id: str = "", display_text: str = None, command_text: str = None, images=None):
         """Shared send pipeline for web and widget chat UIs."""
         self._user_cancelled = False
         sess = self._active_session()
@@ -2981,6 +3035,11 @@ class AIChatWindow(QDockWidget):
         if action == "chat" and cmd:
             self._request_preamble_summary(cmd)
         augmented_text = self._prepend_editor_snapshot(text) if text else text
+        # Hosted Zenvi only: CLI agents read attachment paths themselves.
+        if sess.get("backend", BACKEND_ZENVI) == BACKEND_ZENVI and images:
+            worker._pending_chat_images = list(images)
+        else:
+            worker._pending_chat_images = []
         self._set_processing_ui(True)
         QMetaObject.invokeMethod(
             worker,
@@ -3000,7 +3059,11 @@ class AIChatWindow(QDockWidget):
         if self.is_processing:
             self._run_js("alert('Processing previous message...');")
             return
-        from classes.chat_attachments import display_user_text, format_referenced_files_block
+        from classes.chat_attachments import (
+            display_user_text,
+            encode_chat_images,
+            format_referenced_files_block,
+        )
 
         attachments = list(self._session_attachments())
         typed = (text or "").strip()
@@ -3012,17 +3075,23 @@ class AIChatWindow(QDockWidget):
         if block:
             payload = f"{block}\n\n{payload}".strip() if payload else block
         self._mention_armed = False
+        sess = self._active_session() or {}
+        vision = []
+        if sess.get("backend", BACKEND_ZENVI) == BACKEND_ZENVI:
+            vision = encode_chat_images(attachments)
         sent = self._dispatch_user_message(
             payload,
             model_id,
             agent_mode=agent_mode,
             display_text=display,
             command_text=typed,
+            images=vision,
         )
         if sent:
             sess = self._active_session()
             if sess is not None:
                 sess["attachments"] = []
+            self._clear_attachment_undo()
             self._push_attachments_to_js()
 
     def _set_agent_mode(self, agent_mode: str):
@@ -3689,6 +3758,7 @@ class AIChatWindow(QDockWidget):
                 sess["first_prompt_summary"] = None
                 sess["unread"] = False
                 sess["attachments"] = []
+                self._clear_attachment_undo()
                 from classes import chat_history
                 chat_history.clear_session_messages(self._active_sid)
                 # The worker forgets its CLI conversation too, so drop the

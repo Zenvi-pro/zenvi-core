@@ -929,14 +929,16 @@ class FilesModel(QObject, updates.UpdateInterface):
         Returns the list of imported (or already-present) File objects, or an
         empty list when nothing was imported. Opening a dropped project file
         emits OpenProjectSignal and returns [].
+
+        Reuses an existing ``updates.transaction_id`` when the caller already
+        opened one (e.g. timeline drop that also places clips), so the whole
+        gesture undoes as a single step.
         """
         media_paths = []
 
-        # Transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
+        from classes.updates import nested_transaction
 
-        try:
+        with nested_transaction(get_app().updates):
             for uri in qurl_list or []:
                 filepath = local_path_from_url(uri)
                 if not filepath or not os.path.exists(filepath):
@@ -964,8 +966,6 @@ class FilesModel(QObject, updates.UpdateInterface):
             return self.add_files(
                 media_paths, quiet=import_quietly, prevent_image_seq=prevent_image_seq
             ) or []
-        finally:
-            get_app().updates.transaction_id = None
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
