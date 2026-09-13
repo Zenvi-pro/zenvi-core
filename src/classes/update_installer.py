@@ -54,10 +54,18 @@ UPDATE_LOG = os.path.join(UPDATE_STAGING_DIR, "install.log")
 # ---------------------------------------------------------------------------
 
 def parse_version(version_str):
-    """Parse '3.4.1' or 'v3.4.1' into a comparable tuple."""
+    """Parse '3.4.1' or 'v3.4.1' into a comparable tuple.
+
+    Build metadata (+foo) and pre-release suffixes (-rc1) are stripped so
+    ``1.1.0-rc1`` still compares as ``(1, 1, 0)`` rather than ``(0,)``.
+    """
     try:
         clean = (version_str or "").strip().lstrip("v")
-        return tuple(int(x) for x in clean.split("."))
+        for sep in ("+", "-"):
+            if sep in clean:
+                clean = clean.split(sep, 1)[0]
+        parts = [int(x) for x in clean.split(".") if x != ""]
+        return tuple(parts) if parts else (0,)
     except (ValueError, AttributeError):
         return (0,)
 
@@ -183,6 +191,25 @@ def _show_update_notice(system, version):
                 ["notify-send", "Zenvi", message],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
+        elif system == "windows":
+            safe = message.replace("'", "''")
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "Add-Type -AssemblyName System.Drawing; "
+                "$n = New-Object System.Windows.Forms.NotifyIcon; "
+                "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+                "$n.Visible = $true; "
+                "$n.ShowBalloonTip(8000, 'Zenvi', '%s', "
+                "[System.Windows.Forms.ToolTipIcon]::Info); "
+                "Start-Sleep -Seconds 8; $n.Dispose()"
+            ) % safe
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-NonInteractive",
+                 "-WindowStyle", "Hidden", "-Command", ps],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=flags,
+            )
     except Exception:
         pass
 
@@ -263,6 +290,9 @@ def _apply_deb(filepath):
             )
             if result.returncode == 0:
                 _log(f"deb installed via {tool}")
+                relaunch = shutil.which("zenvi") or "/usr/bin/zenvi"
+                if os.path.isfile(relaunch):
+                    _relaunch([relaunch])
                 return True
             _log(f"{tool} dpkg returned {result.returncode}: {result.stderr.strip()}")
         except FileNotFoundError:
@@ -341,14 +371,35 @@ def _apply_macos(filepath, filename):
             return False
 
         dest = os.path.join("/Applications", os.path.basename(app_bundle))
+        dest_new = dest + ".new"
+        dest_bak = dest + ".bak"
 
-        # Remove old and copy new
-        if os.path.exists(dest):
-            _log(f"Removing old installation at {dest}")
-            shutil.rmtree(dest)
-
-        _log(f"Copying {app_bundle} → {dest}")
-        shutil.copytree(app_bundle, dest, symlinks=True)
+        try:
+            if os.path.exists(dest_new):
+                shutil.rmtree(dest_new)
+            _log(f"Copying {app_bundle} → {dest_new}")
+            shutil.copytree(app_bundle, dest_new, symlinks=True)
+            if os.path.exists(dest):
+                if os.path.exists(dest_bak):
+                    shutil.rmtree(dest_bak)
+                _log(f"Moving current install {dest} → {dest_bak}")
+                os.rename(dest, dest_bak)
+            os.rename(dest_new, dest)
+            if os.path.exists(dest_bak):
+                shutil.rmtree(dest_bak)
+        except Exception:
+            if os.path.exists(dest_bak) and not os.path.exists(dest):
+                _log("Restoring previous install from .bak")
+                try:
+                    os.rename(dest_bak, dest)
+                except OSError as restore_exc:
+                    _log(f"Failed to restore .bak: {restore_exc}")
+            if os.path.exists(dest_new):
+                try:
+                    shutil.rmtree(dest_new)
+                except OSError:
+                    pass
+            raise
 
         _log("macOS update installed")
         _relaunch(["open", "-n", dest])
@@ -419,7 +470,8 @@ def _ps_str(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_path):
+def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_path,
+                                parent_pid=None):
     """Return PowerShell source for a detached external updater.
 
     Why this can't just run inline in this process: Setup is about to
@@ -442,6 +494,16 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
             f"        Log 'Relaunched app'\n"
             f"    }}\n"
         )
+    wait_parent_block = ""
+    if parent_pid:
+        wait_parent_block = (
+            f"Log 'Waiting for parent process {int(parent_pid)} to exit'\n"
+            f"try {{\n"
+            f"    Wait-Process -Id {int(parent_pid)} -Timeout 30 "
+            f"-ErrorAction SilentlyContinue\n"
+            f"}} catch {{}}\n"
+            f"Start-Sleep -Milliseconds 400\n"
+        )
 
     return (
         "$ErrorActionPreference = 'SilentlyContinue'\n"
@@ -453,6 +515,7 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
         "}\n"
         "\n"
         "Log 'External updater started'\n"
+        f"{wait_parent_block}"
         "try {\n"
         f"    $p = Start-Process -FilePath {_ps_str(filepath)} "
         f"-ArgumentList {inno_arg_list} -Wait -PassThru -ErrorAction Stop\n"
@@ -487,7 +550,8 @@ def _spawn_external_updater(filepath, relaunch_target):
     actually finishes."""
     script_path = os.path.join(UPDATE_STAGING_DIR, _UPDATE_HELPER_SCRIPT_NAME)
     script = _build_update_helper_script(
-        filepath, UPDATE_MANIFEST, relaunch_target, UPDATE_LOG)
+        filepath, UPDATE_MANIFEST, relaunch_target, UPDATE_LOG,
+        parent_pid=os.getpid())
 
     try:
         os.makedirs(UPDATE_STAGING_DIR, exist_ok=True)
@@ -575,8 +639,8 @@ def _verify_integrity(manifest):
         return False
 
     if not expected:
-        _log("No SHA-256 in manifest — skipping integrity check")
-        return True  # can't verify, proceed anyway
+        _log("No SHA-256 in manifest — refusing to install")
+        return False
 
     sha = hashlib.sha256()
     with open(filepath, "rb") as fh:

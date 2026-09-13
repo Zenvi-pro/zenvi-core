@@ -32,6 +32,7 @@ import os
 import platform
 import traceback
 import json
+import logging
 
 from PyQt5.QtCore import (
     PYQT_VERSION_STR,
@@ -218,7 +219,11 @@ class OpenShotApp(QApplication):
 
         except ImportError as ex:
             tb = traceback.format_exc()
-            log.error('OpenShotApp::Import Error', exc_info=1)
+            try:
+                log.error('OpenShotApp::Import Error', exc_info=1)
+            except Exception:
+                logging.getLogger(__name__).error(
+                    'OpenShotApp::Import Error', exc_info=True)
             diag_hint = ""
             try:
                 from classes.openshot_import_diag import write_openshot_import_diagnostic
