@@ -2168,9 +2168,13 @@
     };
 
     function renderTabs() {
-        // Remove all existing tab buttons (keep the "+" button)
+        // Remove all existing tab buttons (keep the "+" button). Qt WebKit has
+        // no NodeList.forEach, so walk the collection with an index loop (same
+        // pattern as the model-list code above).
         var existing = tabBarEl.querySelectorAll('.chat-tab');
-        existing.forEach(function (el) { el.remove(); });
+        for (var ei = existing.length - 1; ei >= 0; ei--) {
+            existing[ei].remove();
+        }
 
         // Always show the tab bar so the "+" new chat button is visible (Cursor-style).
         tabBarEl.style.display = 'flex';
@@ -2199,8 +2203,13 @@
             btn.innerHTML = processingDot + badge + titleSpan + closeBtn;
 
             btn.addEventListener('click', function (e) {
-                if (e.target.classList.contains('chat-tab-close') || e.target.closest('.chat-tab-close')) {
-                    return; // handled by close button
+                // Clicks on the close control are handled by its own listener
+                // (which stops propagation). Walk parents by hand — Qt WebKit
+                // has no Element.closest.
+                var t = e.target;
+                while (t && t !== btn) {
+                    if (t.classList && t.classList.contains('chat-tab-close')) return;
+                    t = t.parentNode;
                 }
                 unreadSessions[tab.id] = false;
                 getBridge(function (bridge) {
