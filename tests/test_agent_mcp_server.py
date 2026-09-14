@@ -60,7 +60,12 @@ def tool_stub():
         """Add a new track to the timeline."""
         return "added track %s" % label
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "add_track_tool": add_track}
+    def watch_clip_window(query="", start="", end="", **_kw):
+        """Vision-check a placed clip."""
+        return "WATCH_RESULT query=%s" % query
+
+    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "add_track_tool": add_track,
+                              "watch_clip_window_tool": watch_clip_window}
     th.humanize_tool_name = lambda n: n
     th.execute_tool = lambda name, args: th.AGENT_TOOL_HANDLERS[name](**(args or {}))
 
@@ -80,7 +85,8 @@ def test_iter_tool_defs(tool_stub):
     defs = {d["name"]: d for d in iter_tool_defs()}
 
     # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
-    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "add_track_tool"}
+    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "add_track_tool",
+                                               "watch_clip_window_tool"}
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
@@ -129,6 +135,9 @@ def test_watch_tool_description_is_agent_callable_not_internal():
 
     desc = _first_doc_paragraph(watch_clip_window).lower()
     assert "vision" in desc
+    # Only the first paragraph reaches harnesses, so the when-to-call guidance
+    # has to live there.
+    assert "after" in desc and "place" in desc and "slice" in desc
     assert "do not call" not in desc and "internal" not in desc
     schema = _build_input_schema(watch_clip_window)
     assert {"query", "start", "end"} <= set(schema["properties"])
@@ -140,6 +149,14 @@ def test_server_instructions_tell_harnesses_to_watch_after_edits():
     text = SERVER_INSTRUCTIONS.lower()
     assert "watch_clip_window_tool" in text
     assert "after any edit" in text or "after an edit" in text
+    # A removed clip can't be watched; verify removals from timeline state instead.
+    watch_list = text.split("call watch_clip_window_tool", 1)[0]
+    assert "remove_clip_tool" not in watch_list
+    assert "get_timeline_state_tool" in text
+    # No slice/placement tool accepts in/out, so don't promise a correction path.
+    assert "feed the in/out" not in text
+    # An unresolvable clip returns a hard Error, not a degraded "no match".
+    assert "degrades to 'no match'" not in text
 
 
 def test_initialize_advertises_the_watch_instruction(tool_stub):
@@ -158,12 +175,20 @@ def test_initialize_advertises_the_watch_instruction(tool_stub):
                 async with streamable_http_client(srv.url(), http_client=http_client) as (r, w, _):
                     async with ClientSession(r, w) as session:
                         init = await session.initialize()
-                        return init.instructions or ""
+                        tools = await session.list_tools()
+                        result = await session.call_tool(
+                            "watch_clip_window_tool", {"query": "goal"})
+                        return (init.instructions or "", [t.name for t in tools.tools],
+                                result.content[0].text)
 
-        instructions = asyncio.run(run())
+        instructions, names, text = asyncio.run(run())
         assert "watch_clip_window_tool" in instructions
+        assert "watch_clip_window_tool" in names
+        assert "WATCH_RESULT query=goal" in text
     finally:
         srv.stop()
+
+
 def test_server_requires_bearer_token(tool_stub):
     from classes.agent_mcp_server import ZenviMcpServer
 

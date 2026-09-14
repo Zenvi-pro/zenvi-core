@@ -2868,10 +2868,11 @@ def watch_clip_window(
     **_kw,
 ) -> str:
     """Vision-check a window of a placed clip: confirm the query is on screen.
-
     Call this after you place, slice, trim, or modify a clip to verify your own
-    edit. Read-only: reports in/out/peak in seconds. Layer-3 watch of a candidate
-    window; distinct from watch_clip_tool, which plays the clip in the editor.
+    edit. Read-only: reports in/out/peak in source seconds.
+
+    Layer-3 watch of a candidate window; distinct from watch_clip_tool, which
+    plays the clip in the editor.
     """
     try:
         from classes.clip_resolver import _coerce_optional_float

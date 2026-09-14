@@ -38,12 +38,13 @@ SERVER_INSTRUCTIONS = (
     "These tools drive a live video editor. After any edit that changes what is "
     "on the timeline (add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
     "slice_clip_at_playhead_tool, modify_clip_tool, place_motion_graphic_tool, "
-    "apply_transition_tool, remove_clip_tool), call watch_clip_window_tool on the "
-    "affected clip to confirm the result with vision - is the intended moment on "
-    "screen, did the cut land cleanly, is album art covering video. Feed the "
-    "in/out it returns back into a slice/placement call to tighten a bad cut, or "
-    "undo_tool if the edit is wrong. A watch that cannot run degrades to 'no "
-    "match' and never blocks you."
+    "apply_transition_tool), call watch_clip_window_tool on the affected clip to "
+    "confirm the result with vision - is the intended moment on screen, did the "
+    "cut land cleanly, is album art covering video. If the edit is wrong, use "
+    "undo_tool and try again. After remove_clip_tool, check get_timeline_state_tool "
+    "instead - a removed clip cannot be watched. watch_clip_window_tool returns an "
+    "Error if the clip cannot be resolved; if vision is unavailable it falls back "
+    "to the text-index time and says so."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
