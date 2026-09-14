@@ -207,6 +207,21 @@ def test_late_best_match_is_both_kept_and_marked():
     assert "best match" in line[0], out
 
 
+def test_look_for_reaches_the_backend_search():
+    """A visual description must not be ranked against transcript lines."""
+    client = MagicMock()
+    client.is_indexing_configured.return_value = True
+    client.search.return_value = {"results": [_hit(0.0, 7.0, rank=1)]}
+    info = {"index_id": "idx-1", "video_map": {"vid-a": {"file_id": "file-a", "name": "a.mp4"}}}
+    with patch(
+        "classes.project_tl_index.collect_project_twelvelabs_index", return_value=info,
+    ), patch("classes.api_client.get_backend_client", return_value=client):
+        tool_handlers.search_clips(query="guy with the iPad", look_for="on_screen")
+        tool_handlers.search_clips(query="guy with the iPad")
+    assert client.search.call_args_list[0].kwargs["look_for"] == "on_screen"
+    assert client.search.call_args_list[1].kwargs["look_for"] is None
+
+
 def test_ninth_best_by_rank_is_omitted_even_when_early():
     hits = [_hit(float(100 + i * 10), float(105 + i * 10), rank=i + 1) for i in range(8)]
     hits.append(_hit(0.0, 5.0, rank=99))

@@ -29,6 +29,7 @@ from classes.logger import log
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
     blind_trim_rejected,
+    butt_against_previous_clip,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -2336,8 +2337,20 @@ def add_clip_to_timeline(
                             pos_sec = last_end + _one_frame
                         else:
                             pos_sec = 0.0
-                else:
+                elif _is_audio_only:
                     pos_sec = pos_arg
+                else:
+                    from classes import audio_mix as am
+
+                    pos_sec = butt_against_previous_clip(
+                        pos_arg,
+                        [
+                            (c.data.get("position", 0),
+                             c.data.get("position", 0) + c.data.get("end", 0) - c.data.get("start", 0))
+                            for c in Clip.filter() if c.data.get("layer", 0) == track_num
+                        ],
+                        max_shift=am.MAX_CUE_SHIFT_SEC + am.CHAPTER_MAGNET_SEC,
+                    )
 
                 if QPointF is None:
                     from PyQt5.QtCore import QPointF as _QPointF
@@ -2394,6 +2407,8 @@ def add_clip_to_timeline(
 
         placed, pos_sec, track_num, snapped = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
+        if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
+            _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
@@ -2513,7 +2528,7 @@ def _detect_ordinal(query: str) -> int:
     return 0
 
 
-def search_clips(query="", top_k="5", **_kw) -> str:
+def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
     """Project-wide video index search on this project's shared index.
 
     Returns media_bin_file_id + timestamp (deeper than Gemini tags).
@@ -2559,6 +2574,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             top_k=page_limit,
             index_id=index_id,
             page_limit=page_limit,
+            look_for=str(look_for or "").strip() or None,
         )
         if resp.get("error"):
             return f"Error: {resp['error']}"

@@ -58,6 +58,21 @@ def compute_clip_trim_bounds(
     return start_sec, end_sec
 
 
+def butt_against_previous_clip(position: float, spans, *, max_shift: float) -> float:
+    """Timeline position that closes a snap-sized gap or overlap with the clip before.
+
+    Snapping a placement onto phrase edges changes its length after the caller
+    already planned where the next clip goes, so that planned position lands a
+    fraction of a second off the clip before it: a black gap, or an overlap.
+    A miss no wider than a snap can move an edge is that artefact; a wider one
+    was meant. *spans* are (start, end) timeline seconds on the same track.
+    """
+    prev_end = max((end for start, end in spans if start < position), default=None)
+    if prev_end is not None and abs(position - prev_end) <= max_shift:
+        return prev_end
+    return position
+
+
 def default_underlay_layer_number(layers) -> int:
     """Lowest layer_number (bottom underlay). Used when track= is omitted."""
     if not layers:
