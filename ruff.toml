@@ -1,0 +1,38 @@
+# Phase 0 lint baseline for src/classes/.
+# Conservative rule set (pyflakes + a pycodestyle subset). Day-one green via
+# per-file ignores below; burn those down over time rather than expanding scope.
+
+target-version = "py310"
+include = ["src/classes/**/*.py"]
+
+[lint]
+select = [
+    "F",     # pyflakes
+    "E9",    # runtime syntax errors
+    "E71",   # comparison style
+    "E72",   # bare except / type comparison
+    "E74",   # ambiguous names
+]
+
+[lint.per-file-ignores]
+# Existing violations frozen at Phase 0 baseline. Do not add new codes here
+# without fixing the underlying issue or justifying the exception.
+"src/classes/ai_metadata_utils.py" = ["F841"]
+"src/classes/api_client.py" = ["F401", "F811"]
+"src/classes/assets.py" = ["E722"]
+"src/classes/clip_placement.py" = ["E741"]
+"src/classes/clip_resolver.py" = ["F541"]
+"src/classes/exporters/edl.py" = ["F401"]
+"src/classes/gemini_direct_upload.py" = ["F401"]
+"src/classes/importers/edl.py" = ["F841"]
+"src/classes/info.py" = ["F401"]
+"src/classes/json_data.py" = ["E721"]
+"src/classes/metrics.py" = ["F401"]
+"src/classes/project_data.py" = ["E721", "F401", "F841"]
+"src/classes/query.py" = ["F841"]
+"src/classes/sentry.py" = ["F811"]
+"src/classes/settings.py" = ["E712", "E722", "F401", "F541"]
+"src/classes/thumbnail.py" = ["F401"]
+"src/classes/tool_handlers.py" = ["F401", "F811", "F841"]
+"src/classes/track_display.py" = ["F401"]
+"src/classes/waveform.py" = ["E712", "F841"]

@@ -1,0 +1,15 @@
+# Developer / CI dependencies for the headless unit suite in tests/.
+# Reuses requirements-noqt.txt (no PyQt5 / libopenshot) because
+# tests/conftest.py stubs Qt and openshot by default.
+# Do NOT add pytest-qt: real Qt breaks the no-Qt path the suite relies on.
+# Opt into real Qt locally with ZENVI_REAL_QT=1 when needed.
+
+-r requirements-noqt.txt
+
+pytest>=8
+ruff
+pyright
+# Headless alpha-pixel checks in tool_handlers fall back to QImage when PIL
+# is missing; under the Qt stub that path is a no-op, so Pillow is required
+# for motion-graphics alpha tests.
+Pillow>=10
