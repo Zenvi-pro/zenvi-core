@@ -87,3 +87,9 @@ cut anything that becomes aspirational.
   platforms, or second implementations of the same domain rule.
 - Do not claim UI or end-to-end verification without a manual check list
   for a human.
+
+## Pull requests
+
+Write PRs so another person can test without reading the diff first.
+Follow [docs/PR_FORMAT.md](docs/PR_FORMAT.md). GitHub fills
+`.github/PULL_REQUEST_TEMPLATE.md` when you open a PR.
