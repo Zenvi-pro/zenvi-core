@@ -28,6 +28,42 @@ jobs:
         python3 ./src/tests/query_tests.py -platform minimal
         python3 ./src/tests/update_installer_tests.py -v
 
+  pytest-suite:
+    # Runs the tests/ suite that was previously never executed in CI.
+    # Uses the same Ubuntu + libopenshot setup as the legacy build job.
+    # Stale tests should be fixed or explicitly pytest.mark.skip'd rather
+    # than silently ignored.
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo add-apt-repository ppa:openshot.developers/libopenshot-daily
+        sudo apt update
+        sudo apt install libopenshot-audio-dev libopenshot-dev python3-openshot
+        sudo apt install qttranslations5-l10n libssl-dev xvfb ffmpeg
+        sudo apt install python3-pyqt5 python3-pyqt5.qtsvg python3-pyqt5.qtwebengine python3-pyqt5.qtopengl python3-zmq python3-xdg
+        pip3 install -r requirements-dev.txt
+
+    - name: Generate export fixtures
+      run: python3 scripts/generate_export_fixtures.py
+
+    - name: Run pytest suite
+      run: |
+        # Hard-gate on the export-acceleration suite (new in this plan).
+        xvfb-run -a python3 -m pytest tests/test_export_acceleration.py -q --tb=short
+        # Broader suite: continue reporting while stale tests are triaged.
+        # Remove continue-on-error once Phase 0 triage makes this green.
+        xvfb-run -a python3 -m pytest tests/ -q --tb=line \
+          --ignore=tests/smoke_test.py \
+          --ignore=tests/test_export_acceleration.py \
+          -k "not (mcp or agent_runners or indexing)" || true
+
   windows-update-installer-tests:
     # Separate job (not added to the matrix above): the Ubuntu job's
     # dependency-install steps are Ubuntu-specific, and this job only needs

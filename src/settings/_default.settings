@@ -565,7 +565,7 @@
   {
     "min": 0,
     "max": 16000,
-    "value": 1950,
+    "value": 8192,
     "title": "Hardware Decoder Max Width (0 = Default)",
     "type": "spinner-int",
     "restart": true,
@@ -575,12 +575,76 @@
   {
     "min": 0,
     "max": 16000,
-    "value": 1100,
+    "value": 4320,
     "title": "Hardware Decoder Max Height (0 = Default)",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
     "setting": "decode_hw_max_height"
+  },
+  {
+    "value": false,
+    "title": "Hardware Auto Detect Applied",
+    "type": "hidden",
+    "category": "Performance",
+    "setting": "hardwareAutoDetectApplied",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Pipelined Export (overlap composite and encode)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportPipelined",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Parallel Composite Workers (Experimental)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportParallelComposite",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Smart Render (stream-copy untouched clips)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportSmartRender",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Prefer Hardware Encoder for Headless/Agent Export",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportPreferHardwareEncoder",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Background Cache Warming While Idle",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundCacheWarming",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Background Disk Render Files (Experimental, Off by Default)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundDiskRenders",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Reuse Background Renders on Export (Experimental)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundRenderReuseOnExport",
+    "restart": false
   },
   {
     "value": false,

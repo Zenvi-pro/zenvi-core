@@ -729,27 +729,26 @@ class Preferences(QDialog):
             current_decoder_name, current_decoder, current_decoder_card)
 
         try:
-            # Find reader
-            example_media = os.path.join(info.RESOURCES_PATH, "hardware-example.mp4")
-            clip = openshot.Clip(example_media)
-            reader = clip.Reader()
+            from classes.export_acceleration.hw_decode import probe_hardware_decoder
 
-            # Open reader
-            reader.Open()
-
-            # Test decoded pixel values for a valid decode (based on hardware-example.mp4)
-            if reader.GetFrame(0).CheckPixel(0, 0, 2, 133, 255, 255, 5):
-                is_supported = True
-                log.debug("Successful test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
-                          current_decoder_name, current_decoder, current_decoder_card)
+            is_supported = probe_hardware_decoder(
+                int(current_decoder),
+                device_index=int(current_decoder_card or 0),
+            )
+            if is_supported:
+                log.debug(
+                    "Successful test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
+                    current_decoder_name,
+                    current_decoder,
+                    current_decoder_card,
+                )
             else:
-                log.debug("Failed test of hardware decoder (incorrect pixel color found): "
-                          "%s (Decoder Type: %s, Graphics Card: %s)",
-                          current_decoder_name, current_decoder, current_decoder_card)
-
-            reader.Close()
-            clip.Close()
-
+                log.debug(
+                    "Failed test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
+                    current_decoder_name,
+                    current_decoder,
+                    current_decoder_card,
+                )
         except Exception as ex:
             log.debug("Exception testing hardware decoder: %s (Decoder Type: %s, Graphics Card: %s) %s",
                       current_decoder_name, current_decoder, current_decoder_card, str(ex))

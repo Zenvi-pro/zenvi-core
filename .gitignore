@@ -18,6 +18,7 @@ CLAUDE.md
 # Exclude results of the build process
 doc/_build
 **/__pycache__/
+.pytest_cache/
 build
 dist
 openshot_qt.egg-info
@@ -25,6 +26,11 @@ openshot_qt.egg-info
 .env*
 !.env.example
 !.env.production
+
+# Generated export benchmark fixtures (see scripts/generate_export_fixtures.py)
+tests/fixtures/media/*.mp4
+tests/fixtures/media/*.mov
+tests/fixtures/media/*.mkv
 
 protobuf_data/
 openshot_qt/

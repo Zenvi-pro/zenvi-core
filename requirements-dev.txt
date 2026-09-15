@@ -1,0 +1,12 @@
+# Development / test dependencies for zenvi-core.
+# Install with: pip install -r requirements-dev.txt
+# Runtime deps remain in requirements.txt; libopenshot is installed separately.
+
+-r requirements.txt
+
+# Test runner (required to execute tests/)
+pytest>=7.4,<9
+
+# Optional quality metrics for scripts/benchmark-export.py
+# Install separately when measuring SSIM/VMAF:
+#   pip install ffmpeg-python  (uses system ffmpeg filters; no extra package required)
