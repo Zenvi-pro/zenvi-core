@@ -100,6 +100,78 @@ def absolute_media_path(path_value, project_file=None):
     return os.path.normpath(os.path.join(base_folder, normalized))
 
 
+def _media_roots():
+    """Remembered folders used to silently relink missing media."""
+    try:
+        app = get_app()
+        if app:
+            settings = app.get_settings()
+            roots = settings.get("media-roots") if settings else None
+            if isinstance(roots, list):
+                return [r for r in roots if isinstance(r, str) and r]
+    except Exception:
+        pass
+    return []
+
+
+def remember_media_root(folder):
+    """Persist *folder* in settings so later opens can relink silently."""
+    if not folder or not os.path.isdir(folder):
+        return
+    try:
+        app = get_app()
+        if not app:
+            return
+        settings = app.get_settings()
+        if not settings:
+            return
+        roots = settings.get("media-roots") or []
+        if not isinstance(roots, list):
+            roots = []
+        abs_folder = os.path.abspath(folder)
+        if abs_folder not in roots:
+            roots = [abs_folder] + [r for r in roots if r != abs_folder]
+            settings.set("media-roots", roots[:20])
+            settings.save()
+    except Exception:
+        pass
+
+
+def resolve_media_path(path_value, fingerprint=None, project_file=None, fingerprint_index=None):
+    """Resolve a media path, falling back to remembered roots and fingerprints.
+
+    Order: existing absolute/relative path, basename under media roots,
+    then fingerprint match against *fingerprint_index* ``{sha256: path}``.
+    """
+    resolved = absolute_media_path(path_value, project_file=project_file)
+    if resolved and os.path.exists(resolved):
+        return resolved
+
+    basename = os.path.basename(path_value or "")
+    if basename and "%" not in basename:
+        for root in _media_roots():
+            candidate = os.path.join(root, basename)
+            if os.path.isfile(candidate):
+                return os.path.normpath(candidate)
+            # Also search one level of subdirs for common layouts.
+            try:
+                for name in os.listdir(root):
+                    sub = os.path.join(root, name, basename)
+                    if os.path.isfile(sub):
+                        return os.path.normpath(sub)
+            except OSError:
+                continue
+
+    if fingerprint and isinstance(fingerprint, dict) and fingerprint_index:
+        digest = fingerprint.get("sha256")
+        if digest and digest in fingerprint_index:
+            hit = fingerprint_index[digest]
+            if hit and os.path.isfile(hit):
+                return os.path.normpath(hit)
+
+    return resolved
+
+
 def relative_export_path(abs_path, export_folder):
     """Return path relative to export folder when possible."""
     if not abs_path:
