@@ -1,7 +1,7 @@
 """Toolbar agent selector: the flow button and its popup panel.
 
 These pin the invariants that are cheap to assert and expensive to notice
-breaking by eye — stable toolbar width, exact CSS easing, a popup that cannot
+breaking by eye ΓÇö stable toolbar width, exact CSS easing, a popup that cannot
 resize or escape the screen, and the held state that survives the mouse grab
 a Qt.Popup takes when it opens.
 """
@@ -31,7 +31,7 @@ def qapp():
 
 
 class FakeChat:
-    """Stands in for AIChatWindow — the panel and button only read this much."""
+    """Stands in for AIChatWindow ΓÇö the panel and button only read this much."""
 
     def __init__(self, status=None, active=CLAUDE):
         self.status = status if status is not None else {}
@@ -71,11 +71,11 @@ MISSING = {
 }
 
 
-# ── Easing ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Easing ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_easing_curves_match_the_css_including_overshoot(qapp):
     """The whole motion design rests on Qt reproducing cubic-bezier() exactly,
-    overshoot included — a clamped curve would silently flatten the arrows."""
+    overshoot included ΓÇö a clamped curve would silently flatten the arrows."""
     from windows.agent_selector_button import (
         CURVE_ARROW, CURVE_INK, CURVE_LABEL, CURVE_RADIUS,
     )
@@ -103,7 +103,7 @@ def test_only_the_monotonic_curve_is_ever_inverted(qapp):
             target, abs=1e-3)
 
 
-# ── Button ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Button ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_width_is_identical_for_every_backend_name(qapp):
     """Otherwise picking "Codex" after "Zenvi Assistant" reflows the toolbar."""
@@ -192,7 +192,7 @@ def test_label_follows_the_active_tab(qapp):
     assert button.text() == "Claude Code"
 
 
-# ── Panel ──────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def _panel(chat):
     from windows.agent_panel import AgentPanel
@@ -203,7 +203,7 @@ def _panel(chat):
 
 
 def test_panel_height_never_changes_between_states(qapp):
-    """It is a popup under the cursor — resizing while open would move the rows
+    """It is a popup under the cursor ΓÇö resizing while open would move the rows
     out from under the pointer."""
     heights = set()
 
@@ -235,7 +235,7 @@ def test_panel_reports_each_status(qapp):
     assert "claude" in panel._rows[CLAUDE].desc.text()
 
     panel = _panel(FakeChat({}))       # nothing probed yet
-    assert panel._rows[CLAUDE].word.text() == "checking…"
+    assert panel._rows[CLAUDE].word.text() == "checkingΓÇª"
 
     # The built-in assistant is always ready and never offers Connect.
     assert panel._rows["zenvi"].word.text() == "ready"
@@ -254,7 +254,7 @@ def test_connect_marks_the_row_busy_then_reports_the_result(qapp):
 
     panel._on_connect_requested(CODEX)
     assert chat.connects == [CODEX]
-    assert panel._rows[CODEX].word.text() == "connecting…"
+    assert panel._rows[CODEX].word.text() == "connectingΓÇª"
     assert not panel._rows[CODEX].action.isEnabled()
 
     panel.on_connect_result(CODEX, False, "codex config write failed\ndetail")
@@ -328,13 +328,13 @@ def test_tool_count_is_computed_not_hard_coded(qapp):
     assert _editor_tool_count() == len(AGENT_TOOL_HANDLERS)
 
 
-# ── Shutdown guard ─────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Shutdown guard ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_getattr_on_a_deleted_widget_raises(qapp):
     """The premise of the closeEvent guard.
 
     getattr(obj, name, default) does NOT swallow the RuntimeError sip raises for
-    a destroyed C++ object — it propagates. main_window.closeEvent relied on the
+    a destroyed C++ object ΓÇö it propagates. main_window.closeEvent relied on the
     default and so aborted mid-shutdown, skipping thread teardown (including the
     agent CLI subprocesses) and killing the process with
     "QThread: Destroyed while thread is still running".

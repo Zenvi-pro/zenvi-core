@@ -454,7 +454,7 @@ class OpenShotApp(QApplication):
             result = login_dlg.exec_()
             # If user cancelled auth, quit the application
             if result != LoginWindow.Accepted:
-                log.info("Auth cancelled by user — exiting.")
+                log.info("Auth cancelled by user ΓÇö exiting.")
                 self.window.close()
                 return False
 
