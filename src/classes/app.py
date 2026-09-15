@@ -71,6 +71,12 @@ def _qt_message_handler(msg_type, context, message):
         except Exception:
             pass
 
+    try:
+        from classes import crash_handler
+        crash_handler.report_qt_thread_warning(message)
+    except Exception:
+        pass
+
     # Forward all other messages to stderr like Qt's default handler
     if sys.stderr is not None:
         try:
@@ -303,6 +309,11 @@ class OpenShotApp(QApplication):
         from themes.manager import ThemeManager
         self.theme_manager = ThemeManager(self)
 
+    def notify(self, receiver, event):
+        """Keep a Python exception in a Qt event from tearing down the process."""
+        from classes import crash_handler
+        return crash_handler.notify_with_guard(super().notify, receiver, event)
+
     def show_environment(self, info, openshot):
         log = self.log
         try:
@@ -443,7 +454,7 @@ class OpenShotApp(QApplication):
             result = login_dlg.exec_()
             # If user cancelled auth, quit the application
             if result != LoginWindow.Accepted:
-                log.info("Auth cancelled by user — exiting.")
+                log.info("Auth cancelled by user ΓÇö exiting.")
                 self.window.close()
                 return False
 

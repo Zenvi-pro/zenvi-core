@@ -1,7 +1,7 @@
 """Parser tests for the CLI agent runners (windows.agent_runners).
 
 Feed recorded streaming-JSON fixtures through each runner's ``_handle_event``
-and assert the emitted signal sequence — no subprocess or backend required.
+and assert the emitted signal sequence ΓÇö no subprocess or backend required.
 ``claude_stream.jsonl`` was captured from a real ``claude`` run against the
 in-app MCP server; ``codex_stream.jsonl`` mirrors the Codex thread/turn/item
 event schema.
@@ -13,7 +13,9 @@ import sys
 
 import pytest
 
-pytest.importorskip("PyQt5.QtCore")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 from PyQt5.QtWidgets import QApplication  # noqa: E402
 
 _FIX = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -133,7 +135,7 @@ def test_claude_is_registered_false_from_config_file(monkeypatch, tmp_path):
     cfg = tmp_path / "claude.json"
     cfg.write_text('{"mcpServers": {"magic": {"type": "stdio"}}}')
     monkeypatch.setattr(ar, "_claude_config_path", lambda: str(cfg))
-    # Not in the config file → falls back to the CLI check, which we also
+    # Not in the config file ΓåÆ falls back to the CLI check, which we also
     # make say "absent" here so the overall result is a clean False.
     monkeypatch.setattr(ar, "_claude_is_registered_via_cli", lambda: False)
     assert ar._claude_is_registered() is False
@@ -151,7 +153,7 @@ def test_claude_is_registered_via_cli_true(monkeypatch):
     import windows.agent_runners as ar
 
     class _FakeResult:
-        stdout = "magic: npx foo - ✔ Connected\nzenvi: http://127.0.0.1:7434/mcp (HTTP) - ✔ Connected\n"
+        stdout = "magic: npx foo - Γ£ö Connected\nzenvi: http://127.0.0.1:7434/mcp (HTTP) - Γ£ö Connected\n"
 
     monkeypatch.setattr(ar.subprocess, "run", lambda *a, **kw: _FakeResult())
     assert ar._claude_is_registered_via_cli() is True
@@ -161,7 +163,7 @@ def test_claude_is_registered_via_cli_false_when_absent(monkeypatch):
     import windows.agent_runners as ar
 
     class _FakeResult:
-        stdout = "magic: npx foo - ✔ Connected\n"
+        stdout = "magic: npx foo - Γ£ö Connected\n"
 
     monkeypatch.setattr(ar.subprocess, "run", lambda *a, **kw: _FakeResult())
     assert ar._claude_is_registered_via_cli() is False
@@ -301,7 +303,7 @@ def test_register_codex_refuses_to_touch_invalid_toml(monkeypatch, tmp_path):
 def test_run_request_popen_uses_explicit_utf8_encoding(qapp, monkeypatch):
     """Regression guard for the actual fix: subprocess.Popen(..., text=True)
     with no explicit encoding falls back to locale.getpreferredencoding(),
-    which can resolve to ASCII depending on the *parent* process's locale —
+    which can resolve to ASCII depending on the *parent* process's locale ΓÇö
     decoding happens on this side of the pipe, so nothing the child's env
     declares can influence it. That crashed the whole read loop with
     UnicodeDecodeError the moment real claude/codex output contained an em
@@ -342,7 +344,7 @@ def test_run_request_popen_uses_explicit_utf8_encoding(qapp, monkeypatch):
 
 
 def test_run_request_decodes_real_non_ascii_subprocess_output(qapp, monkeypatch):
-    """End-to-end sanity check (not a locale-fault repro — see above test for
+    """End-to-end sanity check (not a locale-fault repro ΓÇö see above test for
     that): a real subprocess emitting UTF-8 non-ASCII bytes decodes cleanly
     through the actual run_request/Popen/read-loop path, with no error."""
     import windows.agent_runners as ar
@@ -360,7 +362,7 @@ def test_run_request_decodes_real_non_ascii_subprocess_output(qapp, monkeypatch)
     monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
     monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/bin/" + name)
 
-    non_ascii = "done — ✔ all set"  # em dash + checkmark
+    non_ascii = "done ΓÇö Γ£ö all set"  # em dash + checkmark
     payload = json.dumps({"type": "result", "is_error": False, "result": non_ascii})
     argv = [sys.executable, "-c", "import sys; print(sys.argv[1])", payload]
     monkeypatch.setattr(ClaudeCodeRunner, "_build_argv", lambda self, text: argv)
@@ -401,7 +403,7 @@ def test_codex_missing_cli_reports_friendly_error(qapp, monkeypatch):
     assert any(e[0] == "error" and "Codex CLI not found" in e[1] for e in events)
 
 
-# ── Model selection ────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Model selection ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_claude_argv_carries_model_and_skips_permission_prompts(qapp, monkeypatch):
     """The picked model reaches the CLI, and the agent never waits on a
@@ -419,6 +421,39 @@ def test_claude_argv_carries_model_and_skips_permission_prompts(qapp, monkeypatc
     assert "--dangerously-skip-permissions" in argv
     assert "--permission-mode" not in argv, "would conflict with the skip flag"
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+
+
+def test_claude_and_codex_argv_add_typical_media_dirs(qapp, monkeypatch, tmp_path):
+    """Claude/Codex cwd stays the project; --add-dir exposes Desktop/Downloads/ΓÇª"""
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner, CodexRunner
+
+    desktop = tmp_path / "Desktop"
+    downloads = tmp_path / "Downloads"
+    desktop.mkdir()
+    downloads.mkdir()
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [str(desktop), str(downloads)])
+
+    claude = ClaudeCodeRunner()
+    claude._session_id = "s5"
+    claude._cli_session_id = "s5"
+    claude_argv = claude._build_argv("hi")
+    assert claude_argv.count("--add-dir") == 2
+    assert str(desktop) in claude_argv
+    assert str(downloads) in claude_argv
+
+    codex = CodexRunner()
+    class _FakeServer:
+        token = "tok"
+        def url(self):
+            return "http://127.0.0.1:7434/mcp"
+    codex._server = _FakeServer()
+    codex_argv = codex._build_argv("hi")
+    assert codex_argv.count("--add-dir") == 2
+    assert str(desktop) in codex_argv
+    assert str(downloads) in codex_argv
 
 
 def test_runner_drops_a_model_id_from_another_backend(qapp):
@@ -467,10 +502,10 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert models_for_backend(BACKEND_CLAUDE)[0]["name"] != "mutated"
 
 
-# ── Cancel ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Cancel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_cancel_does_not_disable_the_tab_for_later_messages(qapp, monkeypatch):
-    """Stop must silence the turn in flight and nothing more — a cancelled tab
+    """Stop must silence the turn in flight and nothing more ΓÇö a cancelled tab
     still has to answer the next message the user sends."""
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner
@@ -536,12 +571,12 @@ def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     assert killed.get("group") == (4242, signal.SIGTERM)
     assert "terminate" not in killed, "group kill succeeded; no need to fall back"
     assert runner._cancelled
-    assert not runner._stopping, "cancel is not a shutdown — the tab stays usable"
+    assert not runner._stopping, "cancel is not a shutdown ΓÇö the tab stays usable"
 
 
 def test_codex_accumulates_several_assistant_messages(qapp):
     """A turn can complete more than one assistant message, and all of them
-    stream into the same bubble — so the text ``turn.completed`` persists has
+    stream into the same bubble ΓÇö so the text ``turn.completed`` persists has
     to be all of them, not just the last one."""
     from windows.agent_runners import CodexRunner
 
@@ -565,7 +600,7 @@ def test_failed_launch_does_not_leave_a_resume_for_a_session_the_cli_never_made(
     """A CLI that exits non-zero with no output never created the conversation
     we latched at launch. Keeping that latch makes every later message in the
     tab ``--resume`` an unknown id, which fails until the user clears the
-    session — so the failure has to reset the continuity."""
+    session ΓÇö so the failure has to reset the continuity."""
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner
 
@@ -605,7 +640,7 @@ def test_failed_launch_does_not_leave_a_resume_for_a_session_the_cli_never_made(
 
 def test_no_saved_project_confines_the_agent_outside_home(monkeypatch, tmp_path):
     """These CLIs run with approvals and sandbox bypassed, and an unsaved
-    project is the state the app launches in — a home-rooted cwd would hand the
+    project is the state the app launches in ΓÇö a home-rooted cwd would hand the
     agent unattended write access to everything the user owns."""
     import windows.agent_runners as ar
     from classes import info
@@ -690,3 +725,86 @@ def test_windows_profile_prefers_users_dir_over_msys_home(tmp_path):
     }
     candidates = windows_profile_candidates(env)
     assert os.path.normpath(str(users)) == os.path.normpath(candidates[0])
+
+
+def test_agent_bash_prompt_covers_heic_and_zsh():
+    from windows.agent_runners import _agent_bash_prompt
+
+    text = _agent_bash_prompt()
+    assert "sips" in text
+    assert "filter_complex" in text
+    assert "${!" in text
+    assert "-vf" in text
+    assert "HEIC" in text
+
+
+def test_claude_argv_appends_bash_prompt(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from windows.agent_runners import ClaudeCodeRunner, _agent_bash_prompt
+
+    monkeypatch.setattr(ar, "_write_claude_mcp_config", lambda server: "/tmp/cfg.json")
+    runner = ClaudeCodeRunner()
+    runner._session_id = "s7"
+    runner._cli_session_id = "s7"
+    argv = runner._build_argv("hi")
+    assert "--append-system-prompt" in argv
+    assert argv[argv.index("--append-system-prompt") + 1] == _agent_bash_prompt()
+
+
+def test_cli_child_env_sets_claude_code_shell_for_bash4(monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_resolve_cli_bash", lambda: "/opt/homebrew/bin/bash")
+    monkeypatch.delenv("CLAUDE_CODE_SHELL", raising=False)
+    env = ar._cli_child_env()
+    assert env["CLAUDE_CODE_SHELL"] == "/opt/homebrew/bin/bash"
+    assert env["SHELL"] == "/opt/homebrew/bin/bash"
+
+
+def test_cli_child_env_omits_claude_code_shell_without_bash4(monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_resolve_cli_bash", lambda: None)
+    monkeypatch.delenv("CLAUDE_CODE_SHELL", raising=False)
+    env = ar._cli_child_env()
+    assert "CLAUDE_CODE_SHELL" not in env
+
+
+def test_cli_child_env_keeps_user_claude_code_shell(monkeypatch):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_resolve_cli_bash", lambda: "/opt/homebrew/bin/bash")
+    monkeypatch.setenv("CLAUDE_CODE_SHELL", "/custom/bash")
+    env = ar._cli_child_env()
+    assert env["CLAUDE_CODE_SHELL"] == "/custom/bash"
+
+
+def test_resolve_cli_bash_skips_version_below_4(monkeypatch):
+    import windows.agent_runners as ar
+
+    ar._resolve_cli_bash.cache_clear()
+    monkeypatch.setattr(ar, "_bash_candidates", lambda: ["/bin/bash"])
+    monkeypatch.setattr(ar.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(ar.os, "access", lambda p, m: True)
+    monkeypatch.setattr(ar, "_bash_major", lambda path: 3)
+    try:
+        assert ar._resolve_cli_bash() is None
+    finally:
+        ar._resolve_cli_bash.cache_clear()
+
+
+def test_resolve_cli_bash_picks_version_4(monkeypatch):
+    import windows.agent_runners as ar
+
+    ar._resolve_cli_bash.cache_clear()
+    monkeypatch.setattr(ar, "_bash_candidates", lambda: ["/opt/homebrew/bin/bash"])
+    monkeypatch.setattr(ar.os.path, "isfile", lambda p: True)
+    monkeypatch.setattr(ar.os, "access", lambda p, m: True)
+    monkeypatch.setattr(ar, "_bash_major", lambda path: 5)
+    try:
+        if os.name == "nt":
+            assert ar._resolve_cli_bash() is None
+        else:
+            assert ar._resolve_cli_bash() == "/opt/homebrew/bin/bash"
+    finally:
+        ar._resolve_cli_bash.cache_clear()

@@ -38,11 +38,21 @@ from PyQt5.QtWidgets import QMessageBox
 
 from classes import info
 from classes.app import get_app
-from classes.image_types import get_media_type
+from classes.clip_placement import (
+    apply_audio_only_clip_overrides,
+    repair_audio_only_project_data,
+)
+from classes.qt_main_thread import invoke_on_gui
+from classes.image_types import get_media_type, is_audio_only_media
 from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
-from classes.assets import get_assets_path
+from classes.assets import (
+    copy_imported_media,
+    get_assets_path,
+    restore_media_paths,
+    snapshot_media_paths,
+)
 from windows.views.find_file import find_missing_file
 from classes.convert_framerate import change_profile
 
@@ -394,10 +404,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     project_data["history"] = {"undo": [], "redo": []}
 
                 # If project has waveforms, enable removing waveforms
-                get_app().window.actionClearWaveformData.setEnabled(False)
+                def _set_clear_waveform(enabled):
+                    window = get_app().window
+                    if window is not None:
+                        window.actionClearWaveformData.setEnabled(enabled)
+
+                invoke_on_gui(_set_clear_waveform, False)
                 for file in project_data["files"]:
-                    if file.get("ui",{}).get("audio_data", []):
-                        get_app().window.actionClearWaveformData.setEnabled(True)
+                    if file.get("ui", {}).get("audio_data", []):
+                        invoke_on_gui(_set_clear_waveform, True)
                         break
 
             except Exception:
@@ -854,6 +869,14 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                     stroke_alpha = point.get("co", {}).get("Y", 1.0)
                                     point["co"]["Y"] = 1.0 - stroke_alpha
 
+        # Audio-only files saved before the cover-art fix still carry
+        # has_video=True, which paints an opaque frame over lower layers.
+        repair_audio_only_project_data(
+            self._data,
+            constant_interpolation=openshot.CONSTANT,
+            scale_none=openshot.SCALE_NONE,
+        )
+
         # Fix default project id (if found)
         if self._data.get("id") == "T0":
             self._data["id"] = self.generate_id()
@@ -875,20 +898,33 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         log.info("Saving project file: %s", file_path)
 
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
+        media_snapshot = None
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
+            files = self._data.get("files") or []
+            clips = self._data.get("clips") or []
+            media_snapshot = snapshot_media_paths(files, clips)
+            copy_imported_media(
+                files,
+                clips,
+                file_path,
+                app_root=info.PATH,
+            )
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
                                  "libopenshot": openshot.OPENSHOT_VERSION_FULL}
 
-        # Try to save project settings file, will raise error on failure
-        self.write_to_file(
-            file_path,
-            self._data,
-            path_mode="ignore" if backup_only else "relative",
-            previous_path=self.current_filepath if not backup_only else None)
+        try:
+            self.write_to_file(
+                file_path,
+                self._data,
+                path_mode="ignore" if backup_only else "relative",
+                previous_path=self.current_filepath if not backup_only else None)
+        except Exception:
+            restore_media_paths(media_snapshot)
+            raise
 
         if not backup_only:
             # On success, save current filepath
@@ -1123,12 +1159,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         skip_all = msg.clickedButton() == skip_all_btn
 
         if skip_all:
-            for file, path in missing_files:
-                log.info("Removed missing file: %s", os.path.basename(path))
-                self._data["files"].remove(file)
-            for clip, path in missing_clips:
-                log.info("Removed missing clip: %s", os.path.basename(path))
-                self._data["clips"].remove(clip)
+            # Keep missing files and clips so the timeline is not wiped. Playback
+            # of those clips will fail until the media is located on a later open.
+            log.info(
+                "Opening with %s missing file(s); leaving files and clips in place",
+                total_missing,
+            )
             return
 
         # User chose "Locate files...": prompt for each missing item with parent so dialogs stay on top
@@ -1187,7 +1223,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     # Update size of audio-only files
                     for file in self._data.get("files", []):
                         # Check for audio-only files
-                        if file.get("has_audio") and not file.get("has_video"):
+                        if is_audio_only_media(file):
+                            file["has_video"] = False
                             # Audio-only file should match the current project size and FPS
                             file["width"] = profile.info.width
                             file["height"] = profile.info.height

@@ -16,6 +16,18 @@ AMBIGUITY_GAP = 0.08
 AUDIO_HEAVY_MIN_CONFIDENCE = 0.08
 
 
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    """Treat missing/blank LLM args as unset (float('') raises)."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _effective_min_confidence(contexts: List[TimelineClipContext]) -> float:
     try:
         from classes.tl_search_strategy import infer_tl_search_hint
@@ -362,7 +374,8 @@ def search_timeline_placements(
         return []
 
     contexts = enumerate_timeline_contexts(layers=_project_layers())
-    pos_near = float(position_near) if position_near is not None else 0.0
+    pos_near = _coerce_optional_float(position_near)
+    pos_near_f = float(pos_near) if pos_near is not None else 0.0
     parent_filter = str(parent_file_id or "").strip()
 
     scored: List[TimelineClipContext] = []
@@ -375,10 +388,10 @@ def search_timeline_placements(
                 continue
         if parent_filter and ctx.parent_file_id != parent_filter and ctx.file_id != parent_filter:
             continue
-        if position_near is not None:
-            if not (ctx.timeline_position <= pos_near <= ctx.timeline_end):
+        if pos_near is not None:
+            if not (ctx.timeline_position <= pos_near_f <= ctx.timeline_end):
                 continue
-        s = _score_context_against_query(ctx, query, prefer_position_near=pos_near)
+        s = _score_context_against_query(ctx, query, prefer_position_near=pos_near_f)
         if s >= min_confidence:
             ctx.score = s
             scored.append(ctx)
@@ -495,11 +508,11 @@ def resolve_timeline_clip(
     if track_err:
         return ResolveResult(ok=False, window=win, error=track_err)
 
-    pos_near_val = position_near if position_near is not None else prefer_position_near
-    if pos_near_val is None:
-        pos_near_val = _playhead_position()
-    else:
-        pos_near_val = float(pos_near_val)
+    provided_pos_val = _coerce_optional_float(position_near)
+    if provided_pos_val is None:
+        provided_pos_val = _coerce_optional_float(prefer_position_near)
+    provided_pos = provided_pos_val is not None
+    pos_near_val = provided_pos_val if provided_pos else _playhead_position()
 
     try:
         occ = int(occurrence or 0)
@@ -511,7 +524,7 @@ def resolve_timeline_clip(
         placements = search_timeline_placements(
             q,
             track=track_arg,
-            position_near=pos_near_val if (position_near is not None or prefer_position_near is not None) else None,
+            position_near=pos_near_val if provided_pos else None,
             occurrence=occ,
             min_confidence=0.0,
         )

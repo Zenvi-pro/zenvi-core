@@ -3,9 +3,9 @@ Utility functions for handling AI metadata on clips, especially for sub-clipping
 
 Scene timestamps are always resolved against **root source-file seconds** for filtering.
 Persisted clip metadata stores:
-  - scene.source_time — absolute seconds in the indexed root file
-  - scene.time — clip-local seconds (0 at clip trim start) when rebased=True
-  - source_window — {start, end} absolute source bounds for this placement
+  - scene.source_time ΓÇö absolute seconds in the indexed root file
+  - scene.time ΓÇö clip-local seconds (0 at clip trim start) when rebased=True
+  - source_window ΓÇö {start, end} absolute source bounds for this placement
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ def clip_metadata_is_valid(
     ws = float(sw.get("start", -1) or -1)
     we = float(sw.get("end", -1) or -1)
     if abs(ws - source_start) > _SCENE_EPS or abs(we - source_end) > _SCENE_EPS:
+        return False
+    # Pre-cue metadata lacks speech windows; force a recompute from the root.
+    if "transcript_cues" not in clip_ai:
         return False
     scenes = clip_ai.get("scene_descriptions") or []
     if not scenes:
@@ -162,6 +165,41 @@ def _filter_tags_for_window(
     return filtered
 
 
+def _filter_timed_items(
+    items,
+    source_start: float,
+    source_end: float,
+    *,
+    rebased: bool = True,
+) -> List[dict]:
+    """Items with start/end in root-source seconds, clipped to a trim window.
+
+    Absolute bounds are kept as source_start/source_end so a consumer can work
+    in root-source seconds even when start/end have been rebased clip-local.
+    """
+    out = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            i0 = float(item.get("start", 0) or 0)
+            i1 = float(item.get("end", i0) or i0)
+        except (TypeError, ValueError):
+            continue
+        if i1 < source_start - _SCENE_EPS or i0 > source_end + _SCENE_EPS:
+            continue
+        entry = dict(item)
+        clipped_start = max(i0, source_start)
+        clipped_end = min(i1, source_end)
+        entry["source_start"] = clipped_start
+        entry["source_end"] = max(clipped_start, clipped_end)
+        if rebased:
+            entry["start"] = max(0.0, clipped_start - source_start)
+            entry["end"] = max(entry["start"], clipped_end - source_start)
+        out.append(entry)
+    return out
+
+
 def materialize_clip_ai_metadata(
     root_ai: Optional[dict],
     source_start: float,
@@ -173,7 +211,7 @@ def materialize_clip_ai_metadata(
     """
     Build clip-local metadata from root file ai_metadata and a source trim window.
 
-    Always filters by absolute source_time — never trusts rebased scene.time alone.
+    Always filters by absolute source_time ΓÇö never trusts rebased scene.time alone.
     """
     if not isinstance(root_ai, dict) or not root_ai.get("analyzed"):
         return {}
@@ -209,6 +247,14 @@ def materialize_clip_ai_metadata(
             entry["end"] = max(entry["start"], c1 - source_start)
         filtered_chapters.append(entry)
 
+    # Speech windows + notable moments for this trim window (audio mix/ducking).
+    filtered_cues = _filter_timed_items(
+        root_ai.get("transcript_cues"), source_start, source_end, rebased=rebased
+    )
+    filtered_moments = _filter_timed_items(
+        root_ai.get("moments"), source_start, source_end, rebased=rebased
+    )
+
     short = str(root_ai.get("short_summary") or "").strip()
     description = str(root_ai.get("description") or "").strip()
     sounds = str(root_ai.get("sounds") or "").strip()
@@ -228,6 +274,9 @@ def materialize_clip_ai_metadata(
         "sounds": sounds,
         "transcript": transcript,
         "chapters": filtered_chapters,
+        "transcript_cues": filtered_cues,
+        "moments": filtered_moments,
+        "has_speech": bool(filtered_cues),
         "scene_descriptions": filtered_scenes,
         "tags": tags,
         "faces": root_ai.get("faces", []) if rebased else copy.deepcopy(root_ai.get("faces", [])),
@@ -326,7 +375,7 @@ def build_summary_preview(effective_metadata: Optional[dict], max_items: int = 5
                 parts.extend(str(v).strip() for v in vals[:max_items] if v)
     preview = ", ".join(parts[:max_items])
     if len(preview) > 80:
-        preview = preview[:79].rstrip() + "…"
+        preview = preview[:79].rstrip() + "ΓÇª"
     return preview
 
 

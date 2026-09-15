@@ -120,6 +120,84 @@ def test_start_direct_indexing_job_orchestration(tmp_path):
     cleanup.assert_called_once()
 
 
+def test_start_direct_indexing_job_uploads_in_parallel(tmp_path):
+    import threading
+    from classes.api_client import ZenviBackendClient
+
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"video-bytes")
+
+    client = ZenviBackendClient.__new__(ZenviBackendClient)
+    client.api_url = "http://backend.test/api/v1"
+    client._ssl_verify = True
+
+    plan_resp = MagicMock()
+    plan_resp.raise_for_status = MagicMock()
+    plan_resp.json.return_value = {
+        "chunks": [
+            {"chunk_index": 0, "start": 0.0, "end": 5.0, "role": "av"},
+            {"chunk_index": 1, "start": 5.0, "end": 10.0, "role": "av"},
+        ],
+        "index_max_height": 720,
+    }
+    complete_resp = MagicMock()
+    complete_resp.raise_for_status = MagicMock()
+    complete_resp.json.return_value = {"success": True, "job_id": "job-p"}
+
+    plan_session = MagicMock()
+    plan_session.post.side_effect = [plan_resp, complete_resp]
+
+    barrier = threading.Barrier(2, timeout=5)
+    session_posts = []
+
+    def _hs_post(url, **kwargs):
+        session_posts.append(url)
+        barrier.wait()
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "job_id": "job-p",
+            "upload_url": "https://upload.example/u",
+        }
+        return resp
+
+    hs = MagicMock()
+    hs.post.side_effect = _hs_post
+
+    with patch("classes.index_chunker.extract_chunks") as extract, \
+         patch("classes.index_chunker.cleanup_chunk_dir"), \
+         patch(
+             "classes.gemini_direct_upload.upload_file_to_gemini_resumable",
+             return_value=({"name": "files/x", "uri": "https://x/files/x"}, ""),
+         ), \
+         patch.object(client, "_new_http_session", return_value=hs), \
+         patch.object(
+             client,
+             "_poll_indexing_job",
+             return_value={"success": True, "video_id": "vid-1", "status": "ready"},
+         ):
+        extract.return_value = (
+            [
+                {"chunk_index": 0, "path": str(media), "size": 11, "start": 0.0, "end": 5.0, "mime_type": "video/mp4"},
+                {"chunk_index": 1, "path": str(media), "size": 11, "start": 5.0, "end": 10.0, "mime_type": "video/mp4"},
+            ],
+            str(tmp_path / "work"),
+            "",
+        )
+        result = client.start_direct_indexing_job(
+            str(media),
+            "zenvi-proj1",
+            file_id="f1",
+            filename="clip.mp4",
+            session=plan_session,
+            project_id="proj1",
+            duration_sec=10.0,
+            media_type="video",
+        )
+    assert result.get("success") is True
+    assert len(session_posts) == 2
+
+
 def test_auto_index_gate_media_types():
     """Import path queues video/image/audio unless skip_indexing (source contract)."""
     src = (_REPO / "src" / "windows" / "models" / "files_model.py").read_text(encoding="utf-8")
@@ -128,3 +206,12 @@ def test_auto_index_gate_media_types():
     assert "skip_indexing" in src
     assert 'media_type") not in ("video", "image", "audio")' in src or \
            'not in ("video", "image", "audio")' in src
+
+
+def test_poll_indexing_job_interval_is_3s():
+    import inspect
+    from classes.api_client import ZenviBackendClient
+
+    sig = inspect.signature(ZenviBackendClient._poll_indexing_job)
+    assert sig.parameters["poll_interval"].default == 3
+    assert sig.parameters["max_wait"].default == 21600

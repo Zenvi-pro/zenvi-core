@@ -2,7 +2,7 @@
 
 A floating QDockWidget with no title bar widget gets *native* window
 decorations, and window frame drags are never delivered to Qt on Windows or
-Linux — so the panel turns into an unrelated window that can't be dragged back
+Linux ΓÇö so the panel turns into an unrelated window that can't be dragged back
 in. These tests pin the two things that keep panels dockable there:
 
   1. floating panels keep a Qt-drawn (frameless) title bar, and
@@ -23,7 +23,9 @@ if str(SRC) not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-pytest.importorskip("PyQt5.QtWidgets")
+from _qt_support import skip_without_pyqt5  # noqa: E402
+
+skip_without_pyqt5()
 
 from PyQt5.QtCore import Qt, QEvent, QPoint  # noqa: E402
 from PyQt5.QtGui import QMouseEvent  # noqa: E402

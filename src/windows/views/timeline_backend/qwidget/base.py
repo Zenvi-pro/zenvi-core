@@ -71,6 +71,7 @@ from ..state import TimelineStateMachine
 from windows.views.menu import StyledContextMenu
 from classes.ai_metadata_utils import merge_basic_clip_props
 from classes.app import get_app
+from classes.file_drop import mime_has_file_drop, urls_from_mime
 from classes.query import Clip, Transition, File
 from classes.logger import log
 from .thumbnails import TimelineThumbnailManager
@@ -956,11 +957,11 @@ class TimelineWidgetBase(QWidget):
         self._drag_payload = None
         mime = event.mimeData()
 
-        if mime.hasUrls():
+        if mime_has_file_drop(mime):
             event.accept()
             self.new_item = True
             self.item_type = "os_drop"
-            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+            self._drag_payload = {"type": "os_drop", "urls": urls_from_mime(mime)}
             return
 
         mime_html = mime.html()
@@ -1017,11 +1018,13 @@ class TimelineWidgetBase(QWidget):
         effect_names = []
         mime = event.mimeData()
         mime_html = mime.html()
-        if mime.hasUrls():
-            urls = mime.urls()
-            self.win.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
-            for uri in urls:
-                for f in File.filter(path=uri.toLocalFile()):
+        if mime_has_file_drop(mime):
+            urls = urls_from_mime(mime)
+            imported = self.win.files_model.process_urls(
+                urls, import_quietly=True, prevent_image_seq=True
+            ) or []
+            for f in imported:
+                if f and getattr(f, "id", None):
                     file_ids.append(f.id)
         elif mime_html == "clip":
             try:
@@ -1096,8 +1099,8 @@ class TimelineWidgetBase(QWidget):
         if self._drag_payload:
             return self._drag_payload
         mime = event.mimeData()
-        if mime.hasUrls():
-            self._drag_payload = {"type": "os_drop", "urls": mime.urls()}
+        if mime_has_file_drop(mime):
+            self._drag_payload = {"type": "os_drop", "urls": urls_from_mime(mime)}
             return self._drag_payload
         mime_html = mime.html()
         if mime_html in {"clip", "transition"}:

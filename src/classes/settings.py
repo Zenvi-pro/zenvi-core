@@ -102,9 +102,16 @@ class SettingStore(JsonDataStore):
 
         # Load or create user settings
         file_path = os.path.join(info.USER_PATH, self.settings_filename)
+        user_had_downloads_flag = False
         if os.path.exists(os.fsencode(file_path)):
             try:
                 user_settings = self.read_from_file(file_path)
+                if isinstance(user_settings, list):
+                    user_had_downloads_flag = any(
+                        isinstance(item, dict)
+                        and item.get("setting") == "exportDownloadsDefaultApplied"
+                        for item in user_settings
+                    )
                 # Merge sources, excluding user settings not found in default
                 self._data = self.merge_settings(default_settings, user_settings)
             except Exception as ex:
@@ -112,6 +119,12 @@ class SettingStore(JsonDataStore):
                 if self.app:
                     # We have a parent, ask to show a message box
                     self.app.settings_load_error(file_path)
+
+            # Existing installs defaulted Video Export to Project Folder.
+            # One-time: switch them to Recent Folder (Downloads fallback).
+            if not user_had_downloads_flag:
+                self.set("locationExportType", self.pathType.RECENT.value)
+                self.set("exportDownloadsDefaultApplied", True)
 
         # Return success of saving user settings file back after merge
         return self.write_to_file(file_path, self._data)
@@ -247,6 +260,11 @@ class SettingStore(JsonDataStore):
             default_path = os.path.dirname(default_path)
 
         if not (default_path and os.path.exists(default_path)):
+            if action == self.actionType.EXPORT:
+                downloads = getattr(info, "DOWNLOADS_PATH", "") or ""
+                if downloads and os.path.exists(downloads):
+                    log.debug("Default path invalid. Falling back to Downloads")
+                    return downloads
             log.debug("Default path invalid. Falling back to home directory")
             return os.path.expanduser("~")
 

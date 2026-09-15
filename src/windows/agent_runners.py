@@ -3,7 +3,7 @@
 Each runner is a ``QObject`` worker (moved onto a ``QThread`` by
 ``AIChatWindow._make_worker``) that exposes the *same* six signals and the
 ``run_request(...)`` / ``clear_session()`` slots as the built-in
-``AIChatWorker`` — so the existing chat rendering works unchanged regardless of
+``AIChatWorker`` ΓÇö so the existing chat rendering works unchanged regardless of
 which backend produced the events.
 
 The CLI runners (Claude Code, Codex) spawn the agent CLI as a headless
@@ -15,6 +15,7 @@ tools too (full agent abilities).
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ BACKEND_CODEX = "codex"
 # the picker keeps meaning the same model after a new release ships.
 #
 # A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects — that is the case for Codex, whose model
+# whatever its own config selects ΓÇö that is the case for Codex, whose model
 # lineup we do not track here.
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
@@ -70,7 +71,7 @@ def _cli_install_dirs() -> list:
 
     Codex's Windows installer puts ``codex.exe`` under
     ``~/.codex/packages/standalone/current/bin`` and does *not* always add
-    that folder to PATH — so ``shutil.which("codex")`` fails even when the
+    that folder to PATH ΓÇö so ``shutil.which("codex")`` fails even when the
     CLI is installed and logged in.
     """
     home = _resolved_home()
@@ -91,6 +92,73 @@ def _cli_install_dirs() -> list:
     return dirs
 
 
+def _bash_major(path):
+    """Major version of a bash binary, or 0 if it cannot be probed."""
+    try:
+        result = subprocess.run(
+            [path, "-c", 'printf %s "${BASH_VERSINFO[0]}"'],
+            capture_output=True, text=True, timeout=2,
+        )
+        return int((result.stdout or "").strip() or 0)
+    except Exception:
+        return 0
+
+
+def _bash_candidates():
+    """Possible bash binaries; Homebrew/local first so they beat /bin/bash 3.2."""
+    home = _resolved_home()
+    out = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash"]
+    if home:
+        out.append(os.path.join(home, ".local", "bin", "bash"))
+    which = shutil.which("bash")
+    if which:
+        out.append(which)
+    seen = set()
+    uniq = []
+    for path in out:
+        if path not in seen:
+            seen.add(path)
+            uniq.append(path)
+    return uniq
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_cli_bash():
+    """A bash ΓëÑ4 binary for Claude Code's Bash tool, or None.
+
+    macOS ``/bin/bash`` is 3.2 (no associative arrays). Pointing
+    ``CLAUDE_CODE_SHELL`` at it would break ``declare -A``. Claude Code's
+    documented override is ``CLAUDE_CODE_SHELL``; ``$SHELL`` alone is often
+    ignored in favour of zsh auto-detection.
+    """
+    if os.name == "nt":
+        return None
+    for path in _bash_candidates():
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            continue
+        if _bash_major(path) >= 4:
+            return path
+    return None
+
+
+def _agent_bash_prompt():
+    """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
+    return (
+        "Media conversion (Bash tool):\n"
+        "- HEIC/HEIF stills: never ffmpeg -vf on the HEIC itself. ffmpeg 7 "
+        "decodes HEIC through a complex filtergraph; combining that with -vf "
+        "fails with 'Simple and complex filtering cannot be used together'.\n"
+        "- macOS: sips -s format jpeg IN.HEIC --out OUT.jpg, then scale the "
+        "jpeg with -vf if needed.\n"
+        "- Fallback: ffmpeg -i IN.HEIC -filter_complex "
+        "'[0:v:0]scale=W:-2[o]' -map '[o]' -frames:v 1 -update 1 -y OUT.jpg\n"
+        "- This Bash tool may still run zsh on macOS. Never use bash "
+        "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
+        "Iterate a plain path list, or zsh: "
+        'for name in "${(@k)files}"; do ...; done.'
+    )
+
+
 def _cli_child_env(extra=None):
     """Environment for a Windows-native Claude/Codex subprocess.
 
@@ -107,9 +175,33 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+    # Claude Code auto-detects zsh on macOS; bash ΓëÑ4 makes ${!files[@]} work.
+    # Do not clobber a user-set CLAUDE_CODE_SHELL.
+    if "CLAUDE_CODE_SHELL" not in env:
+        bash = _resolve_cli_bash()
+        if bash:
+            env["CLAUDE_CODE_SHELL"] = bash
+            env["SHELL"] = bash
     if extra:
         env.update(extra)
     return env
+
+
+def _add_dir_args():
+    """``--add-dir`` flags for typical footage folders (Desktop, Downloads, ΓÇª).
+
+    cwd stays the project / agent_workspace so the CLI is not rooted at
+    ``$HOME``; these extra dirs let Glob/Read see local media the user points at.
+    """
+    try:
+        from classes.file_drop import media_add_dirs
+        dirs = media_add_dirs(_resolved_home())
+    except Exception:
+        dirs = []
+    args = []
+    for path in dirs:
+        args.extend(["--add-dir", path])
+    return args
 
 
 def _which_cli(binary_name: str):
@@ -140,7 +232,7 @@ def _agent_mcp_dir() -> str:
 
 
 def _project_cwd() -> str:
-    """Working directory for the agent — the current project's folder if any.
+    """Working directory for the agent ΓÇö the current project's folder if any.
 
     With no saved project the fallback is a scratch folder under the user's
     Zenvi data dir, never ``$HOME``: these CLIs run with approvals and sandbox
@@ -207,7 +299,7 @@ def _claude_is_registered() -> bool:
 
     ``claude mcp list`` also reports this, but it live health-checks every
     configured server (including ones needing OAuth) before printing
-    anything — slow and network-dependent, and observed to occasionally
+    anything ΓÇö slow and network-dependent, and observed to occasionally
     exceed a reasonable subprocess timeout right after a fresh registration,
     which would misreport a real registration as absent. Reading the config
     file is instant and has no such race.
@@ -256,7 +348,7 @@ def register_claude(port: int, token: str):
     """Register Zenvi's MCP server with the ``claude`` CLI (user scope).
 
     Idempotent: removes any prior ``zenvi`` registration first (ignoring
-    failure — it's fine if none existed) so re-running this after the port
+    failure ΓÇö it's fine if none existed) so re-running this after the port
     changed (e.g. a fallback-port restart) cleanly replaces the old entry
     rather than erroring on a duplicate name.
 
@@ -296,11 +388,11 @@ def _codex_desired_section(port: int) -> str:
 def register_codex(port: int, token: str):
     """Write/update the ``[mcp_servers.zenvi_editor]`` table in
     ``~/.codex/config.toml`` (Codex has no CLI command for registering an
-    HTTP-transport MCP server — only stdio servers via ``codex mcp add``;
+    HTTP-transport MCP server ΓÇö only stdio servers via ``codex mcp add``;
     confirmed against the current Codex CLI docs).
 
     Validates the file both before and after editing, and writes a
-    ``.zenvi-backup`` copy first — this mutates a config file we don't fully
+    ``.zenvi-backup`` copy first ΓÇö this mutates a config file we don't fully
     control the rest of the schema/contents of, so failing safe matters more
     than convenience here.
 
@@ -370,7 +462,7 @@ class BaseAgentRunner(QObject):
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
     # Declared for signature parity with AIChatWorker so AIChatWindow can
-    # connect the same slots to every backend. CLI backends never emit it —
+    # connect the same slots to every backend. CLI backends never emit it ΓÇö
     # planning mode is a Zenvi-backend feature, and these agents do their own
     # planning internally.
     plan_event = pyqtSignal(str, str)          # event_type, payload_json
@@ -453,7 +545,7 @@ class BaseAgentRunner(QObject):
         if proc and proc.poll() is None:
             # Signal the whole process group, not just the CLI: these agents
             # spawn their own children (shells, language servers, MCP clients),
-            # and terminating the parent alone leaves those running — they keep
+            # and terminating the parent alone leaves those running ΓÇö they keep
             # driving the editor through the MCP server after the user pressed
             # Stop. run_request starts the child in its own session so this
             # group id is ours to kill.
@@ -475,7 +567,7 @@ class BaseAgentRunner(QObject):
 
     # Signature must match AIChatWorker.run_request exactly: AIChatWindow
     # dispatches through QMetaObject.invokeMethod with five Q_ARG(str, ...),
-    # and Qt resolves the slot by its registered signature — a shorter one is
+    # and Qt resolves the slot by its registered signature ΓÇö a shorter one is
     # simply never found and the request silently does nothing.
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
@@ -565,7 +657,7 @@ class BaseAgentRunner(QObject):
                 try:
                     ev = json.loads(line)
                 except Exception:
-                    # Non-JSON log noise (CLI diagnostics) — keep a short tail
+                    # Non-JSON log noise (CLI diagnostics) ΓÇö keep a short tail
                     # so we can surface something useful if the run fails.
                     self._stderr_tail.append(line)
                     self._stderr_tail = self._stderr_tail[-8:]
@@ -628,7 +720,7 @@ class BaseAgentRunner(QObject):
         """Keep *model_id* only if it is one this backend actually offers.
 
         Tabs remember the model the picker last had, and that picker is shared
-        with the other backends — so a tab switched from Zenvi to Claude Code
+        with the other backends ΓÇö so a tab switched from Zenvi to Claude Code
         can arrive holding a Zenvi model id, which the CLI would reject.
         """
         if not model_id or not self.MODELS:
@@ -657,7 +749,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
     DISPLAY_NAME = "Claude Code"
 
     # ``rank`` orders the picker, ``featured`` decides whether an entry shows
-    # before the menu's "show all" toggle — same contract as the Zenvi model
+    # before the menu's "show all" toggle ΓÇö same contract as the Zenvi model
     # list the backend serves (see setModels in chat.js).
     MODELS = [
         {"id": "claude-opus-5",   "name": "Opus 5",   "provider": "anthropic",
@@ -691,10 +783,12 @@ class ClaudeCodeRunner(BaseAgentRunner):
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
             # The agent is driving the editor on the user's behalf from inside
-            # the app — there is no terminal to answer a permission prompt, so
+            # the app ΓÇö there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
+            "--append-system-prompt", _agent_bash_prompt(),
         ]
+        argv += _add_dir_args()
         if self._model_id:
             argv += ["--model", self._model_id]
         if self._cli_started and self._cli_session_id:
@@ -797,6 +891,7 @@ class CodexRunner(BaseAgentRunner):
         ]
         if self._model_id:
             common += ["--model", self._model_id]
+        common += _add_dir_args()
         # Unlike Claude, Codex will not take an id we invent -- it mints its own
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
