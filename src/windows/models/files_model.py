@@ -387,9 +387,11 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.update_model(clear=False)
             elif action.type == "delete" and action.key[0].lower() == "files":
                 # Don't clear the existing items if only deleting things
+                self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, delete_file_id=action.key[1].get('id', ''))
             elif action.type == "update" and action.key[0].lower() == "files":
                 # Update a single file (if found)
+                self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, update_file_id=action.key[1].get('id', ''))
             else:
                 # Clear existing items

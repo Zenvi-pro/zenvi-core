@@ -110,5 +110,36 @@ class QueuedBadgeStatusTests(unittest.TestCase):
         self.assertFalse(model.has_active_indexing())
 
 
+def _files_model_methods(*names):
+    """Compile real FilesModel methods from source, without importing PyQt/openshot."""
+    import ast
+
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "src", "windows", "models", "files_model.py")
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FilesModel")
+    funcs = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    ns = {}
+    exec(compile(ast.Module(body=funcs, type_ignores=[]), path, "exec"), ns)
+    return type("FilesModelMethods", (), {n: ns[n] for n in names})
+
+
+class StatusCacheInvalidationTests(unittest.TestCase):
+    """An updated or deleted file must not keep serving a stale cached badge."""
+
+    def test_update_and_delete_drop_only_that_files_cached_status(self):
+        from types import SimpleNamespace
+
+        model = _files_model_methods("changed", "invalidate_indexing_status")()
+        model.update_model = lambda **kwargs: None
+
+        for action_type in ("update", "delete"):
+            model._status_cache = {"f1": "stale", "f2": "keep"}
+            model.changed(SimpleNamespace(type=action_type, key=["files", {"id": "f1"}]))
+            self.assertNotIn("f1", model._status_cache, action_type)
+            self.assertIn("f2", model._status_cache, action_type)
+
+
 if __name__ == "__main__":
     unittest.main()
