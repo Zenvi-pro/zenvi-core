@@ -23,6 +23,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import uuid
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -549,6 +550,23 @@ class BaseAgentRunner(QObject):
             # driving the editor through the MCP server after the user pressed
             # Stop. run_request starts the child in its own session so this
             # group id is ours to kill.
+            if sys.platform == "win32":
+                try:
+                    subprocess.call(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    pass
+                for send in (proc.terminate, proc.kill):
+                    try:
+                        send()
+                        return
+                    except Exception:
+                        continue
+                return
             for send in (
                 lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
                 proc.terminate,
@@ -622,8 +640,8 @@ class BaseAgentRunner(QObject):
 
         try:
             argv = self._build_argv(text)
-            self._proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            popen_kwargs = dict(
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
                 # can silently resolve to ASCII and crash on the CLI's normal
@@ -632,10 +650,16 @@ class BaseAgentRunner(QObject):
                 # U+FFFD instead of killing the whole read loop.
                 encoding="utf-8", errors="replace",
                 bufsize=1, env=self._build_env(), cwd=cwd,
+            )
+            if sys.platform == "win32":
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                popen_kwargs["creationflags"] = flags | no_window
+            else:
                 # Own process group so cancel() can signal the CLI *and* every
                 # child it spawned (see cancel()).
-                start_new_session=True,
-            )
+                popen_kwargs["start_new_session"] = True
+            self._proc = subprocess.Popen(argv, **popen_kwargs)
         except Exception as e:
             if not self._aborted:
                 self._emit_error("Failed to launch %s: %s" % (self.DISPLAY_NAME, e))
