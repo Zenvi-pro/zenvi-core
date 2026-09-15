@@ -86,3 +86,59 @@ def test_import_files_errors_when_add_files_returns_nothing(monkeypatch, tmp_pat
     out = th.import_files(paths=str(clip))
     assert out.startswith("Error:")
     assert "Nothing was added" in out
+
+
+def test_import_files_dry_run_does_not_call_add_files(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    (footage / "a.mp4").write_bytes(b"v")
+    (footage / "b.wav").write_bytes(b"a")
+    (footage / "c.png").write_bytes(b"i")
+    (footage / "notes.txt").write_bytes(b"n")
+    (footage / "readme.pdf").write_bytes(b"p")
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(footage), dry_run="true")
+    assert out.startswith("dry_run=true")
+    assert "nothing imported" in out
+    assert "would_import=3" in out
+    assert "video=1" in out
+    assert "audio=1" in out
+    assert "image=1" in out
+    assert "skipped_non_media=2" in out
+    assert "a.mp4" in out
+    assert "Ask the user to confirm" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_import_files_real_import_caps_response_at_25(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    folder = tmp_path / "many"
+    folder.mkdir()
+    imported = []
+    for i in range(30):
+        clip = folder / ("clip_%02d.mp4" % i)
+        clip.write_bytes(b"x")
+        imported.append(
+            SimpleNamespace(
+                id="fid%d" % i,
+                data={"name": clip.name, "path": str(clip), "duration": 1.0},
+            )
+        )
+
+    win = MagicMock()
+    win.files_model.add_files.return_value = imported
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+    monkeypatch.setattr(th, "_run_on_main_thread", lambda fn, *a, **kw: fn())
+
+    out = th.import_files(path=str(folder))
+    assert "Imported 30 file(s)" in out
+    assert out.count("file_id=") == 25
+    assert "... and 5 more" in out
+    assert "list_files_tool" in out
+    win.files_model.add_files.assert_called_once()

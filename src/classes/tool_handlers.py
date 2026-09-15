@@ -1634,11 +1634,19 @@ def center_on_playhead(**_kw) -> str:
 
 # Extensions collected when a directory is imported. Explicit file paths are
 # passed through unfiltered — libopenshot decides whether it can read them.
-_IMPORT_MEDIA_EXTS = (
+_IMPORT_VIDEO_EXTS = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv",
+})
+_IMPORT_AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
+})
+_IMPORT_IMAGE_EXTS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp",
-)
+})
+_IMPORT_MEDIA_EXTS = _IMPORT_VIDEO_EXTS | _IMPORT_AUDIO_EXTS | _IMPORT_IMAGE_EXTS
+
+# Cap tool responses so a large folder does not flood the model context.
+_IMPORT_RESULT_LINE_CAP = 25
 
 # A whole folder of media can take minutes to probe; the default 30s budget is
 # for small interactive edits, not a bulk import.
@@ -1668,36 +1676,71 @@ def _coerce_path_list(paths) -> list:
     return [str(p).strip().strip('"').strip("'") for p in items if str(p).strip()]
 
 
+def _import_media_kind(path: str) -> str:
+    """Classify a path by extension for dry-run counts (video/audio/image/other)."""
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext in _IMPORT_VIDEO_EXTS:
+        return "video"
+    if ext in _IMPORT_AUDIO_EXTS:
+        return "audio"
+    if ext in _IMPORT_IMAGE_EXTS:
+        return "image"
+    return "other"
+
+
+def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
+    """Join lines, truncating after *cap* with a remainder note."""
+    if not lines:
+        return ""
+    if len(lines) <= cap:
+        return "\n".join(lines)
+    rest = len(lines) - cap
+    return (
+        "\n".join(lines[:cap])
+        + "\n... and %d more. Use list_files_tool to see the rest." % rest
+    )
+
+
 def _expand_import_paths(entries) -> tuple:
-    """Return (media_paths, missing). Directories are walked for media files."""
+    """Return (media_paths, missing, skipped_non_media).
+
+    Directories are walked for media files only. Explicit file paths are kept
+    unfiltered. *skipped_non_media* counts non-media files seen during dir walks.
+    """
     resolved, missing, seen = [], [], set()
+    skipped_non_media = 0
     for entry in entries:
         path = os.path.expanduser(entry)
         if os.path.isdir(path):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
+                    full = os.path.join(root, name)
                     if os.path.splitext(name)[1].lower() in _IMPORT_MEDIA_EXTS:
-                        full = os.path.join(root, name)
                         if full not in seen:
                             seen.add(full)
                             resolved.append(full)
+                    else:
+                        skipped_non_media += 1
         elif os.path.isfile(path):
             if path not in seen:
                 seen.add(path)
                 resolved.append(path)
         else:
             missing.append(entry)
-    return resolved, missing
+    return resolved, missing, skipped_non_media
 
 
-def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> str:
-    """Import media into the project bin by explicit path, without opening a file dialog.
-
-    ``paths`` / ``path`` / ``folder`` / ``files`` accept files, directories, globs, or
-    file URLs. Directories are searched recursively for media. Indexing starts
-    automatically unless ``skip_indexing`` is true — poll ``analyzed`` via
-    list_files_tool, or block with wait_until_project_indexed_tool. Required: an
-    unattended MCP/harness run has no way to complete a file picker.
+def import_files(
+    paths="", path="", folder="", skip_indexing="false", dry_run="false", **_kw
+) -> str:
+    """Import media by path without a file dialog. Prefer absolute paths or globs
+    (e.g. ~/Desktop/nilay/**/*.mp4). For folders or vague asks, call with
+    dry_run=true first, ask the user to confirm, then call again with
+    dry_run=false. If several candidates match, ask — do not guess.
+    paths/path/folder/files accept files, directories, globs, or file URLs;
+    directories are searched recursively for media. Indexing starts unless
+    skip_indexing is true (poll analyzed via list_files_tool, or
+    wait_until_project_indexed_tool).
     """
     import glob as _glob
     from urllib.parse import unquote, urlparse
@@ -1736,12 +1779,46 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
         else:
             normalized.append(candidate)
 
-    resolved, missing = _expand_import_paths(normalized)
+    resolved, missing, skipped_non_media = _expand_import_paths(normalized)
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
         )
         return f"Error: Nothing to import ({detail})."
+
+    preview = str(dry_run).lower().strip() in ("1", "true", "yes", "y", "on")
+    if preview:
+        counts = {"video": 0, "audio": 0, "image": 0, "other": 0}
+        for media_path in resolved:
+            counts[_import_media_kind(media_path)] += 1
+        roots = []
+        for item in normalized:
+            abs_item = os.path.abspath(os.path.expanduser(item))
+            if os.path.exists(abs_item) and abs_item not in roots:
+                roots.append(abs_item)
+        sample = [os.path.basename(p) for p in resolved]
+        lines = [
+            "dry_run=true — nothing imported.",
+            "resolved=%s" % (", ".join(roots) if roots else ", ".join(entries)),
+            "would_import=%d (video=%d audio=%d image=%d)" % (
+                len(resolved), counts["video"], counts["audio"], counts["image"],
+            ),
+            "sample:",
+        ]
+        sample_body = _format_capped_lines(
+            ["  %s" % name for name in sample], cap=_IMPORT_RESULT_LINE_CAP,
+        )
+        if sample_body:
+            lines.append(sample_body)
+        lines.append("skipped_non_media=%d" % skipped_non_media)
+        if missing:
+            lines.append("not found: %s" % ", ".join(missing))
+        if notes:
+            lines.append("Notes: " + "; ".join(notes))
+        lines.append(
+            "Ask the user to confirm, then call again with dry_run=false."
+        )
+        return "\n".join(lines)
 
     skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
 
@@ -1792,11 +1869,13 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
 
     head = "Imported %d file(s). indexing_started=%s" % (
         len(lines), "false" if skip else "true")
+    if skipped_non_media:
+        head += " skipped_non_media=%d" % skipped_non_media
     if missing:
         head += " (not found: %s)" % ", ".join(missing)
     if notes:
         head += "\nNotes: " + "; ".join(notes)
-    return head + "\n" + "\n".join(lines)
+    return head + "\n" + _format_capped_lines(lines)
 
 
 
