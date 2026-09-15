@@ -628,8 +628,9 @@ class ZenviBackendClient:
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
         media_type: Optional[str] = None,
+        look_for: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Search for clips matching a query."""
+        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
         try:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
@@ -648,6 +649,8 @@ class ZenviBackendClient:
                 payload["page_limit"] = page_limit
             if media_type:
                 payload["media_type"] = media_type
+            if look_for:
+                payload["look_for"] = look_for
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()

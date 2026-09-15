@@ -1,8 +1,11 @@
 """add_clip_to_timeline watches short video / bounded windows before place."""
 
 import os
+import re
 import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
@@ -22,8 +25,9 @@ sys.modules.setdefault("PyQt5.QtWidgets", MagicMock(QApplication=MagicMock))
 from classes import tool_handlers  # noqa: E402
 
 
-def _run_add(file_data, **kwargs):
+def _run_add(file_data, timeline_clips=(), **kwargs):
     watch_calls = []
+    kwargs.setdefault("position_seconds", "0")
 
     def fake_watch(path, start, end, query, **kw):
         watch_calls.append((float(start), float(end), query))
@@ -43,7 +47,7 @@ def _run_add(file_data, **kwargs):
     query_mod = MagicMock()
     query_mod.File.get.return_value = file_obj
     query_mod.Track.get.return_value = MagicMock(data={"number": 1000000})
-    query_mod.Clip.filter.return_value = []
+    query_mod.Clip.filter.return_value = [MagicMock(data=d) for d in timeline_clips]
 
     app = MagicMock()
 
@@ -67,9 +71,7 @@ def _run_add(file_data, **kwargs):
         ):
             with patch.object(tool_handlers, "_get_app", return_value=app):
                 with patch.dict(sys.modules, {"classes.query": query_mod}):
-                    out = tool_handlers.add_clip_to_timeline(
-                        file_id="F1", position_seconds="0", **kwargs
-                    )
+                    out = tool_handlers.add_clip_to_timeline(file_id="F1", **kwargs)
     return out, watch_calls, placed
 
 
@@ -177,3 +179,219 @@ def test_add_clip_skips_watch_on_long_untrimmed_file():
     )
     assert calls == []
     assert "watched" not in out
+
+
+# --- #167: a named keep window must never be what arms the unwatched guard ---
+
+def test_dialogue_heavy_keep_window_places_without_watch():
+    """>= 60% speech skips the watch on purpose - the window is still bounded."""
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 60.0,
+            "start": 0.0,
+            "end": 60.0,
+            "has_video": True,
+            "ai_metadata": {
+                "transcript_cues": [
+                    {"start": 15.0, "end": 17.5},
+                    {"start": 17.6, "end": 20.0},
+                ]
+            },
+        },
+        start_seconds="15",
+        end_seconds="20",
+        query="guy with an iPad appears",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1.0
+    assert abs(placed["end"] - 20.0) < 1.0
+    assert placed["end"] > placed["start"]
+
+
+def test_keep_window_with_explicit_times_in_query_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/b_roll.mp4",
+            "name": "b_roll.mp4",
+            "duration": 60.0,
+            "start": 0.0,
+            "end": 60.0,
+            "has_video": True,
+        },
+        start_seconds="15",
+        end_seconds="20",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1e-6
+    assert abs(placed["end"] - 20.0) < 1e-6
+
+
+def test_keep_window_longer_than_watch_limit_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        start_seconds="0",
+        end_seconds="60",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["end"] - placed["start"] - 60.0) < 1e-6
+
+
+def test_duration_trim_from_an_explicit_in_point_places_without_watch():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        start_seconds="15",
+        duration_seconds="5",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 15.0) < 1e-6
+    assert abs(placed["end"] - 20.0) < 1e-6
+
+
+def test_times_named_only_in_the_query_still_reject_a_first_n_seconds_trim():
+    """The query text never moves the in-point - placing 0..5 here is wrong."""
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        duration_seconds="5",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+
+
+def test_blind_duration_trim_error_does_not_name_an_already_supplied_remedy():
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        duration_seconds="60",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+    # The remedy it names must be something the caller did NOT already do.
+    assert "end_seconds" in out
+
+
+def test_ignored_end_seconds_does_not_exempt_a_first_n_seconds_trim():
+    """duration wins over end_seconds, so end did not bound anything here."""
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        duration_seconds="5",
+        end_seconds="20",
+        query="a person speaking",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+
+
+def test_duration_alone_on_a_dialogue_heavy_window_still_errors():
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        duration_seconds="30",
+        query="a person speaking",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+
+
+# --- #167 item 3: cue snapping changes a clip's length after the agent planned
+# the next position, which left a black gap (or an overlap) between clips. ---
+
+@pytest.mark.parametrize("planned, neighbour_layer, expected", [
+    (5.8, 1000000, 5.3),   # previous clip snapped 0.5s shorter -> close the gap
+    (5.0, 1000000, 5.3),   # previous clip snapped 0.3s longer -> no overlap
+    (10.0, 1000000, 10.0),  # a gap wider than any snap is deliberate
+    (5.8, 2000000, 5.8),   # a clip on another track is not a neighbour
+])
+def test_placement_butts_against_a_neighbour_that_snapping_resized(
+    planned, neighbour_layer, expected,
+):
+    out, _calls, _placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        # Asked for source 2.2-8.0 at 0s; snapping shortened it to end at 5.3s.
+        timeline_clips=[{"position": 0.0, "start": 2.2, "end": 7.5, "layer": neighbour_layer}],
+        start_seconds="30",
+        end_seconds="35",
+        position_seconds=str(planned),
+    )
+    assert not out.startswith("Error:"), out
+    pos = float(re.search(r"at position ([0-9.]+)s", out).group(1))
+    assert abs(pos - expected) < 1e-6, out
+
+
+def test_end_seconds_alone_still_bounds_the_window():
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/interview.mp4",
+            "name": "interview.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+            "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 60.0}]},
+        },
+        end_seconds="50",
+        query="a person speaking",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    # Snapping may widen to the phrase edge, but it must stay a window - not
+    # the whole 600s file.
+    assert placed["start"] < placed["end"]
+    assert placed["end"] - placed["start"] < 100.0

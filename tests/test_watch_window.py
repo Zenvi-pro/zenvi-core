@@ -2,7 +2,7 @@
 
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
@@ -11,6 +11,7 @@ if _ROOT not in sys.path:
 from classes.watch_window import (
     DEFAULT_LONG_EDGE,
     TEXT_LONG_EDGE,
+    confirm_watch_window,
     dedupe_frame_records,
     extract_watch_window,
     is_onscreen_text_query,
@@ -96,6 +97,49 @@ def test_wide_extract_uses_dense_second_pass(tmp_path):
     gaps = [times[i + 1] - times[i] for i in range(len(times) - 1)]
     assert gaps
     assert max(gaps) <= 0.5 + 1e-6
+
+
+def test_short_extract_keeps_both_sides_of_a_shot_cut(tmp_path):
+    """A static talking head dedupes to one frame - the cut must still be seeable."""
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"not-a-real-mp4")
+    with patch("classes.watch_window._probe_duration", return_value=229.0):
+        with patch("classes.watch_window._scene_times", return_value=[70.0]):
+            with patch("classes.watch_window._extract_one_jpeg", return_value=True):
+                with patch("classes.watch_window._fingerprint_jpeg", return_value=b"\x10" * 256):
+                    out = extract_watch_window(str(src), 69.0, 72.0, query="guy with an iPad")
+    stamps = [f["timestamp"] for f in out["frames"]]
+    assert any(69.5 <= t < 70.0 for t in stamps), stamps
+    assert any(70.0 <= t <= 70.5 for t in stamps), stamps
+    assert out["scene_times"] == [70.0]
+
+
+def test_confirm_reports_frames_cuts_and_visible_frames():
+    extracted = {
+        "ok": True,
+        "frames": [{"timestamp": 69.9, "path": "a"}, {"timestamp": 70.0, "path": "b"}],
+        "window_start": 67.0,
+        "window_end": 74.0,
+        "warning": "",
+        "sparse": False,
+        "scene_times": [70.0],
+    }
+    client = MagicMock()
+    client.watch_window.return_value = {
+        "cut_source": 70.0, "in_source": 70.0, "out_source": 72.0,
+        "matched": True, "used_fallback": False, "confidence": 0.9,
+        "reason": "iPad visible", "visible_at": [70.0],
+    }
+    with patch("classes.watch_window.extract_watch_window", return_value=extracted):
+        with patch("classes.watch_window.frames_to_payload", return_value=[]):
+            with patch("classes.watch_window.cleanup_watch_files"):
+                with patch("classes.api_client.get_backend_client", return_value=client):
+                    out = confirm_watch_window(
+                        source_path="/v.mp4", start=69.0, end=72.0, query="iPad",
+                    )
+    assert out["frame_times"] == [69.9, 70.0]
+    assert out["scene_times"] == [70.0]
+    assert out["visible_at"] == [70.0]
 
 
 def test_shot_boundary_snap():

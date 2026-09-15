@@ -1,8 +1,12 @@
 """Desktop chunker + Gemini direct upload unit tests."""
 
 import os
+import shutil
+import subprocess
 import sys
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -20,8 +24,10 @@ def test_cleanup_chunk_dir(tmp_path):
 @patch("classes.index_chunker._ffmpeg_run", return_value=(True, ""))
 @patch("classes.index_chunker.os.path.isfile", return_value=True)
 @patch("classes.index_chunker.os.path.getsize", return_value=123)
-def test_extract_chunks_calls_ffmpeg(mock_size, mock_isfile, mock_ff, tmp_path):
+def test_extract_chunks_calls_ffmpeg(mock_size, mock_isfile, mock_ff, tmp_path, monkeypatch):
     from classes.index_chunker import extract_chunks
+
+    monkeypatch.setenv("ZENVI_INDEX_MIN_HEIGHT", "540")
 
     # Make ffmpeg "create" the output file
     def _run(args):
@@ -39,16 +45,53 @@ def test_extract_chunks_calls_ffmpeg(mock_size, mock_isfile, mock_ff, tmp_path):
     ff_args = mock_ff.call_args[0][0]
     assert "-vf" in ff_args
     vf = ff_args[ff_args.index("-vf") + 1]
-    assert "min(720,ih)" in vf
+    assert "max(ih,540)" in vf
     assert "720" in vf
 
 
-def test_video_scale_filter_never_upsizes_constant():
+def test_video_scale_filter_only_caps_when_min_height_is_off():
     from classes.index_chunker import video_scale_filter
     assert video_scale_filter(720) == "scale=-2:'min(720,ih)'"
-    assert video_scale_filter(480) == "scale=-2:'min(480,ih)'"
-    # 480p source stays 480 via min(720,ih); filter does not force 720x720 upscale.
-    assert "720,720" not in video_scale_filter(720)
+    assert video_scale_filter(480, 0) == "scale=-2:'min(480,ih)'"
+
+
+def test_video_scale_filter_upscales_low_res_up_to_the_cap():
+    from classes.index_chunker import video_scale_filter
+    assert video_scale_filter(720, 540) == "scale=-2:'min(max(ih,540),720)':flags=lanczos"
+    # A minimum above the backend's cap never pushes past the cap.
+    assert video_scale_filter(480, 720) == "scale=-2:'min(max(ih,480),480)':flags=lanczos"
+
+
+@pytest.mark.parametrize("env, expected", [
+    (None, 720), ("540", 540), ("0", 0), ("-5", 0), ("junk", 720),
+])
+def test_index_min_height_reads_env(monkeypatch, env, expected):
+    from classes.index_chunker import index_min_height
+    if env is None:
+        monkeypatch.delenv("ZENVI_INDEX_MIN_HEIGHT", raising=False)
+    else:
+        monkeypatch.setenv("ZENVI_INDEX_MIN_HEIGHT", env)
+    assert index_min_height() == expected
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_low_res_chunk_is_upscaled_for_indexing(tmp_path, monkeypatch):
+    """A 640x320 source (the #167 interview) must reach Gemini at 720p."""
+    from classes.index_chunker import extract_chunk
+
+    src = tmp_path / "low.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+        "-i", "testsrc=size=640x320:rate=25:duration=2", "-pix_fmt", "yuv420p", str(src),
+    ], check=True)
+    monkeypatch.setenv("ZENVI_INDEX_MIN_HEIGHT", "720")
+    path, err = extract_chunk(str(src), start=0.0, end=2.0, out_dir=str(tmp_path / "out"))
+    assert not err, err
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path,
+    ], capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == "1440x720"
 
 
 @patch("classes.gemini_direct_upload.requests.post")

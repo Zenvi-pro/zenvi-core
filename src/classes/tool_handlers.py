@@ -28,6 +28,8 @@ from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
+    blind_trim_rejected,
+    butt_against_previous_clip,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -1718,6 +1720,10 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
             path_part = unquote(parsed.path or "")
             if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
                 path_part = path_part.lstrip("/")
+            elif os.name == "nt" and re.match(r"^[A-Za-z]:", parsed.netloc or ""):
+                # file://C:\clips\a.mp4 - backslashes are not URL separators, so
+                # the whole Windows path parses as the host.
+                path_part = unquote(parsed.netloc) + path_part
             return path_part or text
         return text
 
@@ -2204,7 +2210,10 @@ def add_clip_to_timeline(
         except ValueError as exc:
             return f"Error: {exc}"
         # end_seconds is the keep-window form (place_moment); duration wins if both.
-        if trim_dur is None and trim_end is not None:
+        # Only the winner bounds the out-point - an overridden end_seconds is not
+        # a keep window, it is a leftover arg.
+        end_bounds_window = trim_dur is None and trim_end is not None
+        if end_bounds_window:
             if trim_end <= trim_start:
                 return (
                     f"Error: end_seconds {trim_end} must be greater than "
@@ -2273,18 +2282,20 @@ def add_clip_to_timeline(
                 file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
             )
 
-        if (
-            trim_dur is not None
-            and trim_dur > 0
-            and watched_start is None
-            and not _is_audio_only
-            and not _is_image
-            and not bool(file_data.get("zenvi_subclip"))
+        if blind_trim_rejected(
+            trim_dur=trim_dur,
+            watched_start=watched_start,
+            has_explicit_end=end_bounds_window,
+            has_explicit_start=trim_start > 0,
+            is_audio=_is_audio_only,
+            is_image=_is_image,
+            is_subclip=bool(file_data.get("zenvi_subclip")),
         ):
             return (
-                "Error: cannot trim the first N seconds of an unwatched file. "
-                "Use place_moment with a search keep window (start_seconds/end_seconds) instead of "
-                "add_clip_to_timeline with duration_seconds on the full file."
+                "Error: duration_seconds alone cannot trim the first N seconds of a file "
+                "nothing has looked at. Name both edges of the section you want: pass "
+                "start_seconds and end_seconds (the keep window search_clips returned), "
+                "or place_moment with that window."
             )
 
         result_box = [None]
@@ -2330,8 +2341,20 @@ def add_clip_to_timeline(
                             pos_sec = last_end + _one_frame
                         else:
                             pos_sec = 0.0
-                else:
+                elif _is_audio_only:
                     pos_sec = pos_arg
+                else:
+                    from classes import audio_mix as am
+
+                    pos_sec = butt_against_previous_clip(
+                        pos_arg,
+                        [
+                            (c.data.get("position", 0),
+                             c.data.get("position", 0) + c.data.get("end", 0) - c.data.get("start", 0))
+                            for c in Clip.filter() if c.data.get("layer", 0) == track_num
+                        ],
+                        max_shift=am.MAX_CUE_SHIFT_SEC + am.CHAPTER_MAGNET_SEC,
+                    )
 
                 if QPointF is None:
                     from PyQt5.QtCore import QPointF as _QPointF
@@ -2388,6 +2411,8 @@ def add_clip_to_timeline(
 
         placed, pos_sec, track_num, snapped = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
+        if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
+            _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
@@ -2491,6 +2516,14 @@ _ORDINAL_MAP = {
 }
 
 
+def _search_rank_key(hit):
+    """Sort key that puts the best-ranked hit first; unranked hits sort last."""
+    try:
+        return float(hit.get("rank"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def _detect_ordinal(query: str) -> int:
     words = (query or "").lower().split()
     for word in words:
@@ -2499,7 +2532,7 @@ def _detect_ordinal(query: str) -> int:
     return 0
 
 
-def search_clips(query="", top_k="5", **_kw) -> str:
+def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
     """Project-wide video index search on this project's shared index.
 
     Returns media_bin_file_id + timestamp (deeper than Gemini tags).
@@ -2545,6 +2578,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             top_k=page_limit,
             index_id=index_id,
             page_limit=page_limit,
+            look_for=str(look_for or "").strip() or None,
         )
         if resp.get("error"):
             return f"Error: {resp['error']}"
@@ -2611,17 +2645,29 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 lines.append(
                     f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
                 )
-                for i, r in enumerate(hits_sorted[:8], 1):
+                # Pick WHICH occurrences to show by rank, then show them in time
+                # order. Truncating the chronological list drops the best match
+                # whenever it sits late in the file, and an unmarked rank= is easy
+                # to read past - both send the agent to the wrong window.
+                by_rank = sorted(hits, key=_search_rank_key)
+                best = by_rank[0] if by_rank else None
+                # Number each row by its occurrence index in the FULL chronological
+                # list - that is what an ordinal ("the 3rd time") resolves against,
+                # so rank selection must not renumber the rows it kept.
+                nth_of = {id(h): n for n, h in enumerate(hits_sorted, 1)}
+                for r in sorted(by_rank[:8], key=lambda x: float(x.get("start") or 0)):
                     seg_s = float(r.get("start") or 0)
                     seg_e = float(r.get("end") or 0)
                     win = _format_search_window(r, seg_s, seg_e)
+                    marker = "  <-- best match" if r is best else ""
                     lines.append(
-                        f"      {i}. {win} (rank={r.get('rank')})"
+                        f"      {nth_of.get(id(r), '?')}. {win} "
+                        f"(rank={r.get('rank')}){marker}"
                     )
                 if len(hits_sorted) > 1:
                     lines.append(
-                        "      Multiple matches — specify which occurrence "
-                        "(e.g. 'the 1st time', 'the 2nd time')."
+                        "      Place the best match unless the user asked for a "
+                        "different one (e.g. 'the 2nd time')."
                     )
                 shown += 1
 
@@ -2859,6 +2905,14 @@ def search_clip_scenes(
         return f"Error: {e}"
 
 
+# A time written into a watch query ("visible at 72.5 seconds", "45-62s") that
+# belongs in start/end - left there, the tool silently watched a search hit.
+_QUERY_TIME_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:s|secs?|seconds?)\b|\b\d{1,2}:\d{2}\b|\bat\s+\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+
+
 def watch_clip_window(
     query="",
     start="",
@@ -2869,10 +2923,12 @@ def watch_clip_window(
 ) -> str:
     """Vision-check a window of a placed clip: confirm the query is on screen.
     Call this after you place, slice, trim, or modify a clip to verify your own
-    edit. Read-only: reports in/out/peak in source seconds.
+    edit. Read-only: start/end and every reported time are source seconds.
 
-    Layer-3 watch of a candidate window; distinct from watch_clip_tool, which
-    plays the clip in the editor.
+    Reports the frames watched, the shot cuts in the window, and where the query
+    is visible. Put times in start/end, never in query. A shot boundary is in the
+    shot cuts line - do not re-watch to refine it. Distinct from watch_clip_tool,
+    which plays the clip in the editor.
     """
     try:
         from classes.clip_resolver import _coerce_optional_float
@@ -2900,7 +2956,24 @@ def watch_clip_window(
 
         t0 = _coerce_optional_float(start)
         t1 = _coerce_optional_float(end)
-        if t0 is None or t1 is None:
+        if (t0 is None) != (t1 is None):
+            return (
+                "Error: Pass both start and end (source seconds), or neither to watch "
+                "the best search match."
+            )
+        if t0 is None and _QUERY_TIME_RE.search(query or ""):
+            return (
+                "Error: The query names a time but start/end are empty. Put the window in "
+                "start and end (source seconds) and describe only what to look for in query."
+            )
+        if t0 is not None:
+            lo, hi = min(t0, t1), max(t0, t1)
+            if hi <= ctx.source_start or lo >= ctx.source_end:
+                return (
+                    f"Error: Window {lo:.2f}-{hi:.2f}s is outside this clip's source range "
+                    f"{ctx.source_start:.2f}-{ctx.source_end:.2f}s (start/end are source seconds)."
+                )
+        else:
             search_query = _semantic_search_query(query)
             hit_start = None
             hit_end = None
@@ -2947,16 +3020,29 @@ def watch_clip_window(
         cut = float(watched.get("cut_source") or t0)
         in_s = float(watched.get("in_source") if watched.get("in_source") is not None else t0)
         out_s = float(watched.get("out_source") if watched.get("out_source") is not None else t1)
-        rel = cut - ctx.source_start
+
+        def _secs(times):
+            return ", ".join(f"{float(t):.2f}" for t in times)
+
+        frame_times = watched.get("frame_times") or []
+        scene_times = watched.get("scene_times") or []
         lines = [
-            f"Watch window [{float(watched.get('window_start') or t0):.2f}-"
-            f"{float(watched.get('window_end') or t1):.2f}s] on '{ctx.title or 'clip'}'.",
-            f"Keep {in_s:.3f}s–{out_s:.3f}s source; peak {_fmt_mmss(rel)} (source {cut:.3f}s).",
+            f"Watched {len(frame_times)} frames of '{ctx.title or 'clip'}' "
+            f"(source seconds): {_secs(frame_times) or 'none'}.",
+            f"Shot cuts in window (source s): {_secs(scene_times)}."
+            if scene_times else "Shot cuts in window: none.",
         ]
+        if watched.get("matched") and not watched.get("used_fallback"):
+            visible = watched.get("visible_at") or []
+            lines.append(
+                f"Visible {in_s:.3f}s–{out_s:.3f}s source; peak {cut:.3f}s source "
+                f"({_fmt_mmss(cut - ctx.source_start)} into the clip)."
+                + (f" Seen in frames: {_secs(visible)}." if visible else "")
+            )
+        else:
+            lines.append("Not visible in these frames.")
         if watched.get("reason"):
             lines.append(str(watched.get("reason")))
-        if watched.get("used_fallback"):
-            lines.append("No visual match; used text-index time as fallback.")
         if watched.get("warning"):
             lines.append(str(watched.get("warning")))
         return "\n".join(lines)
@@ -3503,10 +3589,13 @@ def slice_clip_at_best_match(
     occurrence="0",
     clip_query="",
     timeline_clip_id="",
+    start_seconds="",
+    end_seconds="",
     **_kw,
 ) -> str:
     try:
         from classes.api_client import get_backend_client
+        from classes.clip_resolver import _coerce_optional_float
 
         clip_info_box = [None]
         error_box_pre = [None]
@@ -3572,7 +3661,22 @@ def slice_clip_at_best_match(
 
         clip_id_str, clip_start, clip_end, clip_pos, index_id, video_id, layer_num, file_id_str, tw_status, tw_error = clip_info_box[0]
 
+        # Explicit source seconds (from a watch or the user) skip search + watch.
+        t_in = _coerce_optional_float(start_seconds)
+        t_out = _coerce_optional_float(end_seconds)
+        if (t_in is None) != (t_out is None):
+            cut_at = t_in if t_out is None else t_out
+            if not clip_start < cut_at < clip_end:
+                return (
+                    f"Error: Requested cut {cut_at:.2f}s is outside this clip's "
+                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s]."
+                )
+            return _slice_at_source_cut(
+                clip_id_str, clip_start, clip_end, clip_pos, cut_at, label="requested time",
+            )
         time_rng = _parse_explicit_source_time_range_sec(query or "")
+        if t_in is not None:
+            time_rng = (min(t_in, t_out), max(t_in, t_out))
         if time_rng is not None:
             t0, t1 = time_rng
             eps = 1e-3
