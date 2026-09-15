@@ -193,8 +193,19 @@ def _strip_context_blocks(text: str) -> str:
     return _CONTEXT_BLOCK_RE.sub("", text).lstrip()
 
 
+def _short_title(prompt: str, max_words: int = 6) -> str:
+    """The first few words of *prompt*, as a stand-in for a real summary."""
+    words = (prompt or "").split()
+    return " ".join(words[:max_words])[:80]
+
+
 def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
-    """Ask the backend to summarize the user prompt in a few words. Returns empty on failure."""
+    """Ask the backend to summarize the user prompt in a few words.
+
+    Falls back to the opening words of the prompt: with several sessions open,
+    a tab named after the request beats every tab reading "New Chat" because
+    the summariser was offline, out of credits, or simply slow.
+    """
     try:
         client = get_backend_client()
         system = (
@@ -206,9 +217,9 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
             auth_token=client.auth_token(),
         )
         out = (out or "").strip()
-        return out[:80] if out else ""
+        return out[:80] if out else _short_title(prompt, max_words)
     except Exception:
-        return ""
+        return _short_title(prompt, max_words)
 
 
 REQUEST_TIMEOUT_SECONDS = 120
