@@ -43,8 +43,10 @@ from PyQt5.QtCore import pyqtSlot, Qt, QCoreApplication, QTimer, pyqtSignal, QPo
 from PyQt5.QtGui import QCursor, QKeySequence
 from PyQt5.QtWidgets import QDialog
 
+from classes import frame_time as ft
 from classes import info, updates
 from classes.app import get_app
+from classes.clip_utils import project_fps_fraction
 from classes.effect_init import effect_options
 from classes.file_drop import mime_has_file_drop, urls_from_mime
 from classes.logger import log
@@ -256,9 +258,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not objects:
                     return
 
+                fps = project_fps_fraction()
                 left_most_position = min(obj.data.get("position", 0.0) for obj in objects)
                 top_most_layer = max(obj.data.get("layer", 0) for obj in objects)
-                position_diff = target_position - left_most_position
+                # Paste delta in frames so relative spacing stays exact and every
+                # clip lands on a frame boundary.
+                left_f = ft.to_frame(float(left_most_position), fps)
+                target_f = ft.to_frame(float(target_position), fps)
+                delta_f = target_f - left_f
                 layer_diff = target_layer - top_most_layer if target_layer != -1 else 0
 
                 for obj in objects:
@@ -266,7 +273,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     obj.data.pop("id", None)
                     obj.id = None
                     self._assign_new_effect_ids(obj.data)
-                    obj.data["position"] = obj.data.get("position", 0.0) + position_diff
+                    old_f = ft.to_frame(float(obj.data.get("position", 0.0)), fps)
+                    obj.data["position"] = ft.to_seconds(old_f + delta_f, fps)
                     obj.data["layer"] = obj.data.get("layer", 0) + layer_diff
                     obj.save()
 
@@ -2267,11 +2275,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def Nudge_Triggered(self, action, clip_ids, tran_ids):
         """Callback for nudging clips/transitions by a specified number of frames."""
-        # Determine the nudge duration in seconds based on the FPS
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        nudge_duration = float(action) / fps_float  # Nudge duration in seconds
-        log.debug(f"Nudging by {nudge_duration} seconds")
+        fps = project_fps_fraction()
+        nudge_frames = int(action)
+        log.debug("Nudging by %s frames", nudge_frames)
 
         # Nudge all selected clips
         for clip_id in clip_ids:
@@ -2279,8 +2285,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if not clip:
                 continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(clip.data['position'] + nudge_duration, 0.0)
+            pos_f = ft.to_frame(float(clip.data.get("position", 0.0)), fps)
+            new_position = ft.to_seconds(max(pos_f + nudge_frames, 0), fps)
             clip.data['position'] = new_position
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
@@ -2290,8 +2296,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if not tran:
                 continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(tran.data['position'] + nudge_duration, 0.0)
+            pos_f = ft.to_frame(float(tran.data.get("position", 0.0)), fps)
+            new_position = ft.to_seconds(max(pos_f + nudge_frames, 0), fps)
             tran.data['position'] = new_position
             self.update_transition_data(tran.data, only_basic_props=False)
 
@@ -2519,9 +2525,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             )
 
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_num = float(fps["num"])
-        fps_den = float(fps["den"])
+        fps = project_fps_fraction()
+        fps_num = float(fps.numerator)
+        fps_den = float(fps.denominator)
 
         # Get locked tracks from project
         locked_layers = [t.get("number") for t in get_app().project.get("layers") if t.get("lock")]
@@ -2538,9 +2544,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if ViewClass == TimelineWidget:
                 self._flush_pending_clip_overrides(clip_ids)
 
-            # Get the nearest starting frame position to the playhead (snap to frame boundaries)
-            playhead_position = float(round((playhead_position * fps_num) / fps_den) * fps_den) / fps_num
-            if action == MenuSlice.KEEP_LEFT: playhead_position += fps_den / fps_num
+            # Snap playhead once; KEEP_LEFT advances one frame past the cut.
+            playhead_position = ft.snap(float(playhead_position), fps)
+            if action == MenuSlice.KEEP_LEFT:
+                playhead_position = ft.to_seconds(ft.to_frame(playhead_position, fps) + 1, fps)
 
             # Loop through each clip (using the list of ids)
             for clip_id in clip_ids:
@@ -2558,47 +2565,56 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 source_ai_metadata, source_file_data = _source_ai_metadata_for_clip(clip)
 
-                original_position = float(clip.data["position"])  # Original position in timeline seconds
-                start_of_clip = float(clip.data["start"])  # Trim start time in clip seconds
-                end_of_clip = float(clip.data["end"])  # Trim end time in clip seconds
-                original_duration = end_of_clip - start_of_clip  # Duration in media seconds
+                original_position = float(clip.data["position"])
+                start_of_clip = float(clip.data["start"])
+                end_of_clip = float(clip.data["end"])
+                # Frame-domain split so left + right duration equals the original.
+                pos_f = ft.to_frame(original_position, fps)
+                start_f = ft.to_frame(start_of_clip, fps)
+                end_f = ft.to_frame(end_of_clip, fps)
+                play_f = ft.to_frame(playhead_position, fps)
+                cut_f = start_f + (play_f - pos_f)
+                cut_f = min(max(cut_f, start_f + 1), end_f)  # keep both sides non-empty when possible
+                original_duration = ft.to_seconds(end_f - start_f, fps)
 
                 if action == MenuSlice.KEEP_LEFT:
-                    # Keep the left side of the clip, adjust the "end" of the clip
-                    new_end = start_of_clip + (playhead_position - original_position)
+                    new_end = ft.to_seconds(cut_f, fps)
                     clip.data["end"] = new_end
-                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
+                    clip.data["start"] = ft.to_seconds(start_f, fps)
+                    clip.data["position"] = ft.to_seconds(pos_f, fps)
+                    clip.data["duration"] = max(0.0, new_end - clip.data["start"])
 
                     _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
 
                     if ripple:
-                        removed_duration = original_duration - (clip.data["end"] - start_of_clip)
+                        removed_duration = original_duration - clip.data["duration"]
                         self.ripple_delete_gap(playhead_position, clip.data["layer"], removed_duration)
 
                 elif action == MenuSlice.KEEP_RIGHT:
-                    # Keep the right side of the clip, adjust the "start" and "position"
-                    new_start = start_of_clip + (playhead_position - original_position)
-                    clip.data["position"] = playhead_position  # Set new timeline position
+                    new_start = ft.to_seconds(cut_f, fps)
+                    clip.data["position"] = ft.to_seconds(play_f, fps)
                     clip.data["start"] = new_start
-                    clip.data["duration"] = max(0.0, end_of_clip - new_start)
+                    clip.data["end"] = ft.to_seconds(end_f, fps)
+                    clip.data["duration"] = max(0.0, clip.data["end"] - new_start)
 
                     _apply_clip_ai_metadata(
                         clip.data, source_ai_metadata, source_file_data, exclusive_start=True,
                     )
 
                     if ripple:
-                        removed_duration = original_duration - (end_of_clip - new_start)
-                        clip.data["position"] = original_position  # Move right side back to original position
+                        removed_duration = original_duration - clip.data["duration"]
+                        clip.data["position"] = ft.to_seconds(pos_f, fps)
                         self.ripple_delete_gap(playhead_position, clip.data["layer"], removed_duration)
 
                         # Seek to new starting frame
-                        new_starting_frame = original_position * (fps_num / fps_den) + 1
+                        new_starting_frame = pos_f + 1
 
                 elif action == MenuSlice.KEEP_BOTH:
-                    # Update clip data for the left clip
-                    new_end = start_of_clip + (playhead_position - original_position)
+                    new_end = ft.to_seconds(cut_f, fps)
                     clip.data["end"] = new_end
-                    clip.data["duration"] = max(0.0, new_end - start_of_clip)
+                    clip.data["start"] = ft.to_seconds(start_f, fps)
+                    clip.data["position"] = ft.to_seconds(pos_f, fps)
+                    clip.data["duration"] = max(0.0, new_end - clip.data["start"])
 
                     # Left clip gets translated metadata
                     _apply_clip_ai_metadata(clip.data, source_ai_metadata, source_file_data)
@@ -2614,9 +2630,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if len(right_clip_key) > 1:
                         right_clip_key.pop(1)
                     right_clip.key = right_clip_key
-                    right_clip.data["position"] = playhead_position
+                    right_clip.data["position"] = ft.to_seconds(play_f, fps)
                     right_clip.data["start"] = new_end
-                    right_clip.data["end"] = end_of_clip
+                    right_clip.data["end"] = ft.to_seconds(end_f, fps)
                     right_start = float(right_clip.data["start"])
                     right_end = float(right_clip.data.get("end", right_start))
                     right_clip.data["duration"] = max(0.0, right_end - right_start)
@@ -2644,36 +2660,44 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not trans or trans.data.get("layer") in locked_layers:
                     continue
 
-                original_position = float(trans.data["position"])  # Timeline position
-                start_of_tran = float(trans.data["start"])  # Trim start time
-                end_of_tran = float(trans.data["end"])  # Trim end time
-                original_duration = end_of_tran - start_of_tran  # Original duration in seconds
+                original_position = float(trans.data["position"])
+                start_of_tran = float(trans.data["start"])
+                end_of_tran = float(trans.data["end"])
+                pos_f = ft.to_frame(original_position, fps)
+                start_f = ft.to_frame(start_of_tran, fps)
+                end_f = ft.to_frame(end_of_tran, fps)
+                play_f = ft.to_frame(playhead_position, fps)
+                cut_f = start_f + (play_f - pos_f)
+                cut_f = min(max(cut_f, start_f + 1), end_f)
+                original_duration = ft.to_seconds(end_f - start_f, fps)
 
                 if action == MenuSlice.KEEP_LEFT:
-                    # Keep the left side of the transition, adjust the "end"
-                    trans.data["end"] = start_of_tran + (playhead_position - original_position)
+                    trans.data["end"] = ft.to_seconds(cut_f, fps)
+                    trans.data["start"] = ft.to_seconds(start_f, fps)
+                    trans.data["position"] = ft.to_seconds(pos_f, fps)
 
                     if ripple:
-                        removed_duration = original_duration - (trans.data["end"] - start_of_tran)
+                        removed_duration = original_duration - (trans.data["end"] - trans.data["start"])
                         self.ripple_delete_gap(playhead_position, trans.data["layer"], removed_duration)
 
                 elif action == MenuSlice.KEEP_RIGHT:
-                    # Keep the right side of the transition
-                    new_start = start_of_tran + (playhead_position - original_position)
-                    trans.data["position"] = playhead_position
+                    new_start = ft.to_seconds(cut_f, fps)
+                    trans.data["position"] = ft.to_seconds(play_f, fps)
                     trans.data["start"] = new_start
+                    trans.data["end"] = ft.to_seconds(end_f, fps)
                     if ripple:
-                        removed_duration = original_duration - (end_of_tran - new_start)
-                        trans.data["position"] = original_position
+                        removed_duration = original_duration - (trans.data["end"] - new_start)
+                        trans.data["position"] = ft.to_seconds(pos_f, fps)
                         self.ripple_delete_gap(playhead_position, trans.data["layer"], removed_duration)
 
                         # Seek to new starting frame
-                        new_starting_frame = original_position * (fps_num / fps_den) + 1
+                        new_starting_frame = pos_f + 1
 
                 elif action == MenuSlice.KEEP_BOTH:
-                    # Update data for the left transition
-                    new_tran_end = start_of_tran + (playhead_position - original_position)
+                    new_tran_end = ft.to_seconds(cut_f, fps)
                     trans.data["end"] = new_tran_end
+                    trans.data["start"] = ft.to_seconds(start_f, fps)
+                    trans.data["position"] = ft.to_seconds(pos_f, fps)
 
                     right_tran_data = deepcopy(trans.data)
                     right_tran = Transition()
@@ -2685,9 +2709,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if len(right_tran_key) > 1:
                         right_tran_key.pop(1)
                     right_tran.key = right_tran_key
-                    right_tran.data["position"] = playhead_position
+                    right_tran.data["position"] = ft.to_seconds(play_f, fps)
                     right_tran.data["start"] = new_tran_end
-                    right_tran.data["end"] = end_of_tran
+                    right_tran.data["end"] = ft.to_seconds(end_f, fps)
                     right_tran.save()
 
                 # Save changes for the left or right slice
@@ -3736,8 +3760,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         initial_pos = event.posF()
 
         # Get FPS and scaling information
-        fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
 
         # Handle URL-based OS file drop
         if mime_has_file_drop(event.mimeData()):
@@ -3820,8 +3845,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         file_path = file.absolute_path()
 
         # Get FPS and frame precision
-        fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
 
         # Create a new Clip object with the file path
         c = openshot.Clip(file_path)
@@ -3871,24 +3897,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 end_sec = float(end_override)
             except (TypeError, ValueError):
                 end_sec = start_sec
-            end_sec = snap_to_grid(end_sec)
+            _pos, start_sec, end_sec = ft.quantize_span(0.0, start_sec, end_sec, fps)
+            new_clip["start"] = start_sec
             duration_sec = max(0.0, end_sec - start_sec)
         else:
             if duration_sec <= 0.0:
-                duration_sec = 1.0 / fps_float
-            duration_frames = max(1, int(round(duration_sec * fps_float)))
-            duration_sec = duration_frames / fps_float
+                duration_sec = ft.to_seconds(1, fps)
+            duration_frames = max(1, ft.duration_frames(0.0, duration_sec, fps))
+            duration_sec = ft.to_seconds(duration_frames, fps)
             end_sec = start_sec + duration_sec
 
         if duration_sec <= 0.0:
-            duration_sec = 1.0 / fps_float
+            duration_sec = ft.to_seconds(1, fps)
             end_sec = start_sec + duration_sec
 
         new_clip["duration"] = duration_sec
         new_clip["end"] = end_sec
 
-        # Use the passed position and track directly
-        new_clip["position"] = position.x()
+        # Quantize drop position — pixel coords are never frame-aligned.
+        new_clip["position"] = snap_to_grid(position.x())
         new_clip["layer"] = track
 
         # Add the clip to the timeline
@@ -3918,9 +3945,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     # Add Transition
     def addTransition(self, file_path, position, track, ignore_refresh=False, call_manual_move=True):
         # Get FPS from project
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        snap_to_grid = lambda t: round(t * fps_float) / fps_float
+        fps = project_fps_fraction()
+        fps_float = float(fps)
+        snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
         duration = snap_to_grid(get_app().get_settings().get("default-transition-length"))
 
         # Open up QtImageReader for transition Image
@@ -3929,7 +3956,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Create Keyframes for brightness and contrast
         brightness = openshot.Keyframe()
         brightness.AddPoint(1, 1.0, openshot.BEZIER)
-        brightness.AddPoint(round(duration * fps_float) + 1, -1.0, openshot.BEZIER)
+        brightness.AddPoint(ft.keyframe_x(duration, fps), -1.0, openshot.BEZIER)
 
         contrast = openshot.Keyframe(3.0)
 

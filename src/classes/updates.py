@@ -30,8 +30,83 @@
 from classes.logger import log
 from classes.app import get_app
 import json
+import os
+import sys
 import threading
+import traceback
 import uuid
+
+# Dev-only frame-alignment guard: warn once per call site when a mutation
+# writes position/start/end off a project frame boundary. Never raises.
+_FRAME_GUARD_WARNED = set()
+_TIMING_KEYS = ("position", "start", "end")
+
+
+def _frame_guard_enabled():
+    if os.environ.get("ZENVI_FRAME_GUARD", "").strip() in ("1", "true", "True", "yes"):
+        return True
+    if os.environ.get("ZENVI_FRAME_GUARD", "").strip() in ("0", "false", "False", "no"):
+        return False
+    return not getattr(sys, "frozen", False)
+
+
+def _guard_timing_values(action_type, key, values):
+    """Log when clip/transition timing fields are off the project frame grid."""
+    if action_type == "load" or not _frame_guard_enabled():
+        return
+    if not isinstance(values, dict):
+        return
+
+    path0 = ""
+    if isinstance(key, (list, tuple)) and key:
+        path0 = str(key[0]).lower()
+    elif isinstance(key, str):
+        path0 = key.lower()
+    if path0 not in ("clips", "transitions"):
+        return
+    if not any(field in values for field in _TIMING_KEYS):
+        return
+
+    try:
+        from classes.clip_utils import project_fps_fraction
+        from classes import frame_time as ft
+        fps = project_fps_fraction()
+    except Exception:
+        return
+
+    offenders = []
+    for field in _TIMING_KEYS:
+        if field not in values:
+            continue
+        try:
+            seconds = float(values[field])
+        except (TypeError, ValueError):
+            continue
+        if not ft.is_aligned(seconds, fps):
+            offenders.append(f"{field}={seconds!r}")
+    if not offenders:
+        return
+
+    site = "unknown"
+    for frame in reversed(traceback.extract_stack(limit=20)):
+        if "updates.py" in frame.filename:
+            continue
+        site = f"{frame.filename}:{frame.lineno}"
+        break
+    if site in _FRAME_GUARD_WARNED:
+        return
+    _FRAME_GUARD_WARNED.add(site)
+    log.warning(
+        "frame_time guard: off-grid %s write at %s (%s)",
+        "/".join(offenders),
+        site,
+        path0,
+    )
+
+
+def reset_frame_guard_warnings():
+    """Clear the once-per-site warning set (tests only)."""
+    _FRAME_GUARD_WARNED.clear()
 
 
 class UpdateWatcher:
@@ -450,6 +525,7 @@ class UpdateManager:
         """ Insert a new UpdateAction into the UpdateManager
         (this action will then be distributed to all listeners) """
 
+        _guard_timing_values('insert', key, values)
         self.last_action = UpdateAction('insert', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action
@@ -463,6 +539,7 @@ class UpdateManager:
         """ Update the UpdateManager with an UpdateAction
         (this action will then be distributed to all listeners) """
 
+        _guard_timing_values('update', key, values)
         self.last_action = UpdateAction('update', key, values, transaction=self.transaction_id)
         if self.ignore_history:
             self.pending_action = self.last_action

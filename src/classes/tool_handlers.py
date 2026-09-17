@@ -34,6 +34,7 @@ from classes.clip_placement import (
     parse_seconds_arg,
     parse_timecode_token,
     placement_watch_query,
+    quantize_placement_seconds,
     should_watch_placement,
     source_window_for_file,
 )
@@ -2085,8 +2086,9 @@ def split_file_add_clip(
                 new_file.id = None
                 new_file.key = None
                 new_file.type = "insert"
-                new_file.data["start"] = start_sec
-                new_file.data["end"] = end_sec
+                q_start, q_end = quantize_placement_seconds(start_sec, end_sec)
+                new_file.data["start"] = q_start
+                new_file.data["end"] = q_end
                 new_file.data["parent_file_id"] = file_id
 
                 if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
@@ -2096,12 +2098,12 @@ def split_file_add_clip(
                     root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
                     if root_ai:
                         effective = materialize_clip_ai_metadata(
-                            root_ai, start_sec, end_sec, rebased=True,
+                            root_ai, q_start, q_end, rebased=True,
                         )
                     else:
                         effective = get_effective_ai_metadata(
                             f.data,
-                            clip_data={"start": start_sec, "end": end_sec},
+                            clip_data={"start": q_start, "end": q_end},
                             rebased=True,
                         )
                     new_file.data["ai_metadata"] = effective
@@ -2358,6 +2360,7 @@ def add_clip_to_timeline(
                     start_sec, end_sec, snapped = _snap_window_off_boundaries(
                         file_data, start_sec, end_sec,
                     )
+                    start_sec, end_sec = quantize_placement_seconds(start_sec, end_sec)
                     new_clip["start"] = start_sec
                     new_clip["end"] = end_sec
                     new_clip["duration"] = max(0.0, end_sec - start_sec)

@@ -111,7 +111,10 @@ def _fps_fraction(fps_value: Any) -> Optional[Fraction]:
 
 def project_fps_fraction() -> Fraction:
     """Return the current project FPS as a Fraction."""
-    app = get_app()
+    try:
+        app = get_app()
+    except Exception:
+        return Fraction(30, 1)
     project = getattr(app, "project", None) if app else None
     fps_meta = None
     if hasattr(project, "get"):

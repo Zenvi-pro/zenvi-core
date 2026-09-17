@@ -890,20 +890,27 @@ class ClipInteractionMixin:
         if isinstance(item, Clip):
             if self.enable_timing:
                 duration = end - start
-                item.data["start"] = self._timing_original_start
-                item.data["end"] = self._snap_time(self._timing_original_start + duration)
-                item.data["position"] = self._snap_time(position)
+                position, start_q, end_q = self._quantize_span(
+                    position,
+                    self._timing_original_start,
+                    self._timing_original_start + duration,
+                )
+                item.data["start"] = start_q
+                item.data["end"] = end_q
+                item.data["position"] = position
                 self.RetimeClip(item.id, item.data["end"], item.data["position"])
             else:
-                item.data["start"] = self._snap_time(start)
-                item.data["end"] = self._snap_time(end)
-                item.data["position"] = self._snap_time(position)
+                position, start, end = self._quantize_span(position, start, end)
+                item.data["start"] = start
+                item.data["end"] = end
+                item.data["position"] = position
                 self.update_clip_data(item.data, only_basic_props=True, ignore_reader=True)
         else:
-            item.data["position"] = self._snap_time(position)
+            position, _start, end = self._quantize_span(position, 0.0, end)
+            item.data["position"] = position
             item.data["start"] = 0.0
-            item.data["end"] = self._snap_time(end)
-            item.data["duration"] = self._snap_time(end)
+            item.data["end"] = end
+            item.data["duration"] = end
             self.update_transition_data(item.data, only_basic_props=True)
 
         self._resizing_item = None

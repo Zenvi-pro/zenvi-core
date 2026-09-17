@@ -39,6 +39,8 @@ from classes.logger import log
 from classes.image_types import get_media_type
 from classes.path_utils import absolute_path_from_export
 from classes.query import Clip, Track, File
+from classes import frame_time as ft
+from fractions import Fraction
 from classes.time_parts import timecodeToSeconds
 from windows.views.find_file import find_missing_file
 
@@ -61,6 +63,17 @@ param_regexes = [
 ]
 fcm_regex = re.compile(r"FCM:[ ]+(.*)")
 
+
+
+def _snap_clip_timing(clip, fps_num, fps_den):
+    fps = Fraction(int(fps_num), int(fps_den))
+    pos = float(clip.data.get("position", 0.0) or 0.0)
+    start = float(clip.data.get("start", 0.0) or 0.0)
+    end = float(clip.data.get("end", 0.0) or 0.0)
+    pos, start, end = ft.quantize_span(pos, start, end, fps)
+    clip.data["position"] = pos
+    clip.data["start"] = start
+    clip.data["end"] = end
 
 def _interp_from_name(name):
     n = (str(name) if name is not None else "").strip().lower()
@@ -280,6 +293,8 @@ def create_clip(context, track):
                 )
 
     # Save clip
+    _snap_clip_timing(clip, fps_num, fps_den)
+
     clip.save()
 
 
