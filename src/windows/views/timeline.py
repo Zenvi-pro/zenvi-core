@@ -1507,8 +1507,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Force thumbnail image to be refreshed (for a particular frame #)
             GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
 
-            # Pass to javascript timeline (and render)
-            self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
+            if ViewClass == TimelineWidget:
+                TimelineWidget.update_thumbnail(self, clip_id, thumbnail_frame)
+            else:
+                # Pass to javascript timeline (and render)
+                self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
 
     def Split_Audio_Triggered(self, action, clip_ids):
         """Callback for split audio context menus"""
@@ -3561,6 +3564,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @pyqtSlot(int)
     def movePlayhead(self, position_frames):
         """ Move the playhead since the position has changed inside OpenShot (probably due to the video player) """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.update_playhead_pos(self, position_frames)
+            return
         # Get access to timeline scope and set scale to zoom slider value (passed in)
         self.run_js(JS_SCOPE_SELECTOR + ".movePlayheadToFrame(%s);" % (str(position_frames)))
 
@@ -3603,11 +3609,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @pyqtSlot(str)
     def SetPropertyFilter(self, property):
         """ Filter a specific property name """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.set_property_filter(self, property)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".setPropertyFilter('%s');" % property)
 
     @pyqtSlot(int)
     def SetPlayheadFollow(self, enable_follow):
         """ Enable / Disable playhead follow on seek """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.set_playhead_follow(self, enable_follow)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".setFollow({});".format(int(enable_follow)))
 
     @pyqtSlot(str, str, bool)
@@ -3628,6 +3640,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def AddSelectionJS(self, item_id, item_type, clear_existing=False):
         """Invoke JavaScript selection routine"""
+        if ViewClass == TimelineWidget:
+            TimelineWidget._select_timeline_item(self, item_id, item_type, clear_existing)
+            return
         clear_js = 'true' if clear_existing else 'false'
         if item_type == "clip":
             self.run_js(JS_SCOPE_SELECTOR + ".selectClip('{}', {}, null);".format(item_id, clear_js))
@@ -3666,6 +3681,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def update_scroll(self, newScroll):
         """Force a scroll event on the timeline (i.e. the zoom slider is moving, so we need to scroll the timeline)"""
+        if ViewClass == TimelineWidget:
+            # Native also connects TimelineScroll → set_scroll_left; keep an
+            # explicit path so TimelineView.update_scroll stays correct if the
+            # signal wiring changes.
+            TimelineWidget.set_scroll_left(self, newScroll)
+            return
         # Get access to timeline scope and set scale to new computed value
         self.run_js(JS_SCOPE_SELECTOR + ".setScroll(" + str(newScroll) + ");")
 
@@ -4151,6 +4172,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Timer is ready to redraw audio (if any)"""
         log.debug('redraw_audio_onTimeout')
 
+        if ViewClass == TimelineWidget:
+            TimelineWidget.redraw_audio_data(self)
+            return
         # Pass to javascript timeline (and render)
         self.run_js(JS_SCOPE_SELECTOR + ".reDrawAllAudioData();")
 
@@ -4212,6 +4236,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
+        if ViewClass == TimelineWidget:
+            TimelineWidget.handle_selection(self)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
 
     def __init__(self, window):

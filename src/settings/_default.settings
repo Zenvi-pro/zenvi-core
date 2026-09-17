@@ -439,11 +439,11 @@
     "setting": "automatic_transitions"
   },
   {
-    "value": false,
-    "title": "Enable Experimental Timeline",
+    "value": true,
+    "title": "Native timeline",
     "type": "bool",
     "restart": true,
-    "category": "Experimental",
+    "category": "Timeline",
     "setting": "qwidget-based-timeline"
   },
   {
@@ -451,7 +451,7 @@
     "title": "Thumbnail Style",
     "type": "dropdown",
     "restart": false,
-    "category": "Experimental",
+    "category": "Timeline",
     "dependency": "qwidget-based-timeline",
     "setting": "timeline-thumbnail-style",
     "translate_values": true,

@@ -382,7 +382,7 @@ class OpenShotApp(QApplication):
 
         if use_qwidget:
             self.info.WEB_BACKEND = "qwidget"
-            self.log.info("Experimental timeline enabled via preferences; using QWidget backend.")
+            self.log.info("Native timeline enabled via preferences; using QWidget backend.")
 
     def gui(self):
         """
