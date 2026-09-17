@@ -44,6 +44,28 @@ class UpdateHelperScriptTests(unittest.TestCase):
         self.assertIn("/CLOSEAPPLICATIONS", script)
         self.assertNotIn("/CURRENTUSER", script)
 
+    def test_waits_for_parent_pid_before_starting_setup(self):
+        from classes import update_installer as ui
+        script = ui._build_update_helper_script(
+            r"C:\staged\Zenvi-Setup.exe",
+            r"C:\staged\update_manifest.json",
+            r"C:\Program Files\Zenvi\zenvi.exe",
+            r"C:\staged\install.log",
+            parent_pid=4242,
+        )
+        self.assertIn("Wait-Process -Id 4242", script)
+        self.assertIn("External updater started", script)
+
+    def test_omits_wait_when_no_parent_pid(self):
+        from classes import update_installer as ui
+        script = ui._build_update_helper_script(
+            r"C:\staged\Zenvi-Setup.exe",
+            r"C:\staged\update_manifest.json",
+            None,
+            r"C:\staged\install.log",
+        )
+        self.assertNotIn("Wait-Process", script)
+
     def test_omits_relaunch_block_when_no_target(self):
         from classes import update_installer as ui
         script = ui._build_update_helper_script(
@@ -165,7 +187,10 @@ class SpawnExternalUpdaterTests(unittest.TestCase):
         self._manifest_patch.start()
         self.addCleanup(self._manifest_patch.stop)
 
-        ok = self.ui._spawn_external_updater(stub_installer, relaunch_target)
+        # Skip Wait-Process: this unittest process does not exit, and the
+        # real app path always waits via the default parent_pid=os.getpid().
+        ok = self.ui._spawn_external_updater(
+            stub_installer, relaunch_target, parent_pid=None)
         self.assertTrue(ok)
 
         import time
@@ -292,6 +317,89 @@ class ApplyPendingUpdateCleanupTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertTrue(os.path.exists(self.manifest_path))
         self.assertTrue(os.path.exists(self.installer_path))
+
+
+class ParseVersionTests(unittest.TestCase):
+    def test_plain_and_prefixed(self):
+        from classes.update_installer import parse_version, is_version_newer
+        self.assertEqual(parse_version("1.1.0"), (1, 1, 0))
+        self.assertEqual(parse_version("v1.1.0"), (1, 1, 0))
+        self.assertTrue(is_version_newer("1.1.1", "1.1.0"))
+        self.assertFalse(is_version_newer("1.1.0", "1.1.0"))
+
+    def test_strips_prerelease_and_build_metadata(self):
+        from classes.update_installer import parse_version
+        self.assertEqual(parse_version("1.1.0-rc1"), (1, 1, 0))
+        self.assertEqual(parse_version("1.1.0+build.5"), (1, 1, 0))
+        self.assertNotEqual(parse_version("1.1.0-rc1"), (0,))
+
+
+class VerifyIntegrityTests(unittest.TestCase):
+    def test_missing_sha256_fails_closed(self):
+        from classes import update_installer as ui
+        tmp = tempfile.mkdtemp(prefix="zenvi_sha_")
+        try:
+            path = os.path.join(tmp, "pkg.exe")
+            with open(path, "wb") as fh:
+                fh.write(b"abc")
+            self.assertFalse(ui._verify_integrity({"filepath": path, "sha256": ""}))
+            self.assertFalse(ui._verify_integrity({"filepath": path}))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_matching_sha256_passes(self):
+        import hashlib
+        from classes import update_installer as ui
+        tmp = tempfile.mkdtemp(prefix="zenvi_sha_")
+        try:
+            path = os.path.join(tmp, "pkg.exe")
+            data = b"abc"
+            with open(path, "wb") as fh:
+                fh.write(data)
+            digest = hashlib.sha256(data).hexdigest()
+            self.assertTrue(ui._verify_integrity({"filepath": path, "sha256": digest}))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class ApplyMacosSwapTests(unittest.TestCase):
+    def test_copytree_uses_symlinks_and_swaps_via_bak(self):
+        from classes import update_installer as ui
+        recorded = {}
+
+        def fake_copytree(src, dst, symlinks=False):
+            recorded["copy"] = (src, dst, symlinks)
+
+        def fake_exists(path):
+            return path.endswith(".app") and ".new" not in path and ".bak" not in path
+
+        with mock.patch("os.listdir", return_value=["Zenvi.app"]), \
+             mock.patch("os.path.exists", side_effect=fake_exists), \
+             mock.patch("shutil.copytree", side_effect=fake_copytree), \
+             mock.patch("shutil.rmtree"), \
+             mock.patch("os.rename") as renamed, \
+             mock.patch.object(ui, "_relaunch"), \
+             mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+            ok = ui._apply_macos("/tmp/Zenvi.dmg", "Zenvi.dmg")
+        self.assertTrue(ok)
+        self.assertTrue(recorded["copy"][2], "copytree must preserve symlinks")
+        self.assertTrue(recorded["copy"][1].endswith(".new"))
+        dests = [c[0][1] for c in renamed.call_args_list]
+        self.assertTrue(any(d.endswith(".bak") for d in dests))
+
+
+class ApplyDebRelaunchTests(unittest.TestCase):
+    def test_deb_success_relaunches(self):
+        from classes import update_installer as ui
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr="")), \
+             mock.patch("shutil.which", return_value="/usr/bin/zenvi"), \
+             mock.patch("os.path.isfile", return_value=True), \
+             mock.patch.object(ui, "_relaunch") as relaunch:
+            ok = ui._apply_deb("/tmp/Zenvi.deb")
+        self.assertTrue(ok)
+        relaunch.assert_called_once_with(["/usr/bin/zenvi"])
 
 
 if __name__ == "__main__":
