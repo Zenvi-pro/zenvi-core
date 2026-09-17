@@ -184,12 +184,12 @@ class PlayerWorker(QObject):
 
         # Check active sample rate from audio device
         # Parse string as float ("48000.0" -> 48000   OR   NaN)
+        s = get_app().get_settings()
         detected_sample_rate = float(self.player.GetDefaultSampleRate())
         if detected_sample_rate and not math.isnan(detected_sample_rate) and detected_sample_rate > 0.0:
             # Convert float to Integer
             detected_sample_rate_int = round(detected_sample_rate)
 
-            s = get_app().get_settings()
             settings_sample_rate = int(s.get("default-samplerate") or 48000)
             if detected_sample_rate_int != settings_sample_rate:
                 log.warning("Your sample rate (%d) does not match OpenShot (%d). "
@@ -205,9 +205,9 @@ class PlayerWorker(QObject):
                 # audio drift due to mis-matching sample rates
                 get_app().updates.update(["sample_rate"], detected_sample_rate_int)
 
-        # Convert float 'settings' sample rate to Integer, if detected
-        if type(s.get("default-samplerate")) == float:
-            s.set("default-samplerate", detected_sample_rate_int)
+            # Convert float 'settings' sample rate to Integer, if detected
+            if type(s.get("default-samplerate")) == float:
+                s.set("default-samplerate", detected_sample_rate_int)
 
         # Convert float 'project' sample rate to Integer, if detected
         if type(get_app().project.get("sample_rate")) == float:
@@ -392,8 +392,10 @@ class PlayerWorker(QObject):
                 # Add clip for current preview file
                 new_clip = openshot.Clip(path)
                 self.clip_reader.AddClip(new_clip)
-            except:
+            except Exception:
                 log.warning('Failed to load media file into video player: %s' % path)
+                self.clip_reader = None
+                return
 
             # Assign new clip_reader
             self.clip_path = path

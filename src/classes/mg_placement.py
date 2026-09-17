@@ -136,9 +136,6 @@ def file_looks_transparent(file_data: Optional[dict]) -> bool:
     for t in tags:
         if "transparent" in str(t).lower():
             return True
-    path = str(data.get("path") or "").lower()
-    if path.endswith(".webm"):
-        return True
     return False
 
 

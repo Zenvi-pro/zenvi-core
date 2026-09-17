@@ -962,6 +962,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
     def mouseMoveEvent(self, event):
         """Capture mouse events on video preview window """
         self.mutex.lock()
+        try:
+            self._mouseMoveEvent_locked(event)
+        finally:
+            self.mutex.unlock()
+
+    def _mouseMoveEvent_locked(self, event):
+        """Body of mouseMoveEvent; caller holds self.mutex."""
         event.accept()
 
         if self.mouse_pressed:
@@ -1298,7 +1305,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 if not raw_properties.get('visible'):
                     self.mouse_position = event.pos()
-                    self.mutex.unlock()
                     return
 
                 self.checkTransformMode(0, 0, 0, event)
@@ -1445,7 +1451,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         origin_w = width
                         origin_h = height
                     if width <= 0.0001 or height <= 0.0001:
-                        self.mutex.unlock()
                         return
 
                     eff_id = self.transforming_effect.id
@@ -1535,8 +1540,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Update mouse position
         self.mouse_position = event.pos()
-
-        self.mutex.unlock()
 
     def updateClipProperty(self, clip_id, frame_number, property_key, new_value, refresh=True):
         """Update a keyframe property to a new value, adding or updating keyframes as needed"""

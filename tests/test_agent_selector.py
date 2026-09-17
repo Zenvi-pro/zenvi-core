@@ -361,7 +361,8 @@ def test_close_event_guards_the_timeline_shutdown(qapp):
 
     path = os.path.join(os.path.dirname(__file__), "..", "src", "windows", "main_window.py")
     source = open(path).read()
-    body = source[source.index("def closeEvent"):]
+    # Thumbnail shutdown lives in _shutdown_sequence, which closeEvent always calls.
+    body = source[source.index("def _shutdown_sequence"):]
     body = body[:body.index("\n    def ", 1)]
 
     call = body.index("thumbnail_manager.shutdown()")

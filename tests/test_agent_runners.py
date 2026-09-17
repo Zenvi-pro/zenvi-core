@@ -574,6 +574,43 @@ def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     assert not runner._stopping, "cancel is not a shutdown ΓÇö the tab stays usable"
 
 
+def test_cancel_on_windows_uses_taskkill(qapp, monkeypatch):
+    """os.killpg does not exist on Windows; Stop must kill the process tree."""
+    import subprocess
+    from windows.agent_runners import ClaudeCodeRunner
+
+    called = {}
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            called["terminate"] = True
+
+        def kill(self):
+            called["kill"] = True
+
+    monkeypatch.setattr("windows.agent_runners.sys.platform", "win32")
+
+    def fake_call(cmd, **kwargs):
+        called["cmd"] = cmd
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    runner = ClaudeCodeRunner()
+    runner._proc = _Proc()
+    runner.cancel()
+
+    assert called.get("cmd")[:4] == ["taskkill", "/PID", "4242", "/T"]
+    assert "/F" in called["cmd"]
+    assert "terminate" not in called
+    assert runner._cancelled
+
+
 def test_codex_accumulates_several_assistant_messages(qapp):
     """A turn can complete more than one assistant message, and all of them
     stream into the same bubble ΓÇö so the text ``turn.completed`` persists has
