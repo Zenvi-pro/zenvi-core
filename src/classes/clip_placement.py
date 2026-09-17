@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+from classes import frame_time as ft
+
 WATCH_MAX_WINDOW_SEC = 45.0
 DEFAULT_WATCH_QUERY = "the main visible action in this clip"
 _IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"})
+
+
+def quantize_placement_seconds(start_sec, end_sec, fps=None, position=None):
+    """Snap placement start/end (and optional position) to project frames."""
+    if fps is None:
+        try:
+            from classes.clip_utils import project_fps_fraction
+            fps = project_fps_fraction()
+        except Exception:
+            from fractions import Fraction
+            fps = Fraction(30, 1)
+    if position is None:
+        _pos, start_q, end_q = ft.quantize_span(0.0, float(start_sec or 0.0), float(end_sec or 0.0), fps)
+        return start_q, end_q
+    pos_q, start_q, end_q = ft.quantize_span(
+        float(position or 0.0), float(start_sec or 0.0), float(end_sec or 0.0), fps
+    )
+    return pos_q, start_q, end_q
 
 
 def source_window_for_file(file_data, *, eps: float = 1e-3) -> tuple:

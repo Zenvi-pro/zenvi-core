@@ -35,6 +35,8 @@ from PyQt5.QtWidgets import QDialog
 from PyQt5.QtGui import QIcon
 
 from classes import info, ui_util, time_parts
+from classes import frame_time as ft
+from classes.clip_utils import project_fps_fraction
 from classes.clip_placement import apply_audio_only_clip_overrides
 from classes.logger import log
 from classes.query import Clip, Transition
@@ -184,8 +186,8 @@ class AddToTimeline(QDialog):
             random_transition = True
 
         # Get frames per second
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
+        fps = project_fps_fraction()
+        fps_float = float(fps)
 
         # Loop through each file (in the current order)
         for file in self.treeFiles.timeline_model.files:
@@ -204,7 +206,7 @@ class AddToTimeline(QDialog):
 
             # Append missing attributes to Clip JSON
             new_clip = json.loads(c.Json())
-            new_clip["position"] = position
+            new_clip["position"] = ft.snap(float(position), fps)
             new_clip["layer"] = track_num
             new_clip["file_id"] = file.id
             new_clip["title"] = file.data.get("name", filename)
@@ -250,12 +252,12 @@ class AddToTimeline(QDialog):
                     new_clip["position"] = position
 
                 if fade_value in ['Fade In', 'Fade In & Out']:
-                    start = openshot.Point(round(start_time * fps_float) + 1, 0.0, openshot.BEZIER)
+                    start = openshot.Point(ft.keyframe_x(start_time, fps), 0.0, openshot.BEZIER)
                     start_object = json.loads(start.Json())
                     end = openshot.Point(
                         min(
-                            round((start_time + fade_length) * fps_float) + 1,
-                            round(end_time * fps_float) + 1
+                            ft.keyframe_x(start_time + fade_length, fps),
+                            ft.keyframe_x(end_time, fps)
                             ),
                         1.0,
                         openshot.BEZIER)
@@ -266,14 +268,14 @@ class AddToTimeline(QDialog):
                 if fade_value in ['Fade Out', 'Fade In & Out']:
                     start = openshot.Point(
                         max(
-                            round((end_time * fps_float) + 1) - (round(fade_length * fps_float) + 1),
-                            round(start_time * fps_float) + 1
+                            ft.keyframe_x(end_time - fade_length, fps),
+                            ft.keyframe_x(start_time, fps)
                             ),
                         1.0,
                         openshot.BEZIER)
                     start_object = json.loads(start.Json())
                     end = openshot.Point(
-                        round(end_time * fps_float) + 1,
+                        ft.keyframe_x(end_time, fps),
                         0.0,
                         openshot.BEZIER)
                     end_object = json.loads(end.Json())
@@ -314,9 +316,9 @@ class AddToTimeline(QDialog):
                     end_scale = 1.0
 
                 # Add keyframes
-                start = openshot.Point(round(start_time * fps_float) + 1, start_scale, openshot.BEZIER)
+                start = openshot.Point(ft.keyframe_x(start_time, fps), start_scale, openshot.BEZIER)
                 start_object = json.loads(start.Json())
-                end = openshot.Point(round(end_time * fps_float) + 1, end_scale, openshot.BEZIER)
+                end = openshot.Point(ft.keyframe_x(end_time, fps), end_scale, openshot.BEZIER)
                 end_object = json.loads(end.Json())
                 new_clip["gravity"] = openshot.GRAVITY_CENTER
                 new_clip["scale_x"]["Points"].append(start_object)
@@ -325,13 +327,13 @@ class AddToTimeline(QDialog):
                 new_clip["scale_y"]["Points"].append(end_object)
 
                 # Add keyframes
-                start_x = openshot.Point(round(start_time * fps_float) + 1, animate_start_x, openshot.BEZIER)
+                start_x = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_x, openshot.BEZIER)
                 start_x_object = json.loads(start_x.Json())
-                end_x = openshot.Point(round(end_time * fps_float) + 1, animate_end_x, openshot.BEZIER)
+                end_x = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_x, openshot.BEZIER)
                 end_x_object = json.loads(end_x.Json())
-                start_y = openshot.Point(round(start_time * fps_float) + 1, animate_start_y, openshot.BEZIER)
+                start_y = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_y, openshot.BEZIER)
                 start_y_object = json.loads(start_y.Json())
-                end_y = openshot.Point(round(end_time * fps_float) + 1, animate_end_y, openshot.BEZIER)
+                end_y = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_y, openshot.BEZIER)
                 end_y_object = json.loads(end_y.Json())
                 new_clip["gravity"] = openshot.GRAVITY_CENTER
                 new_clip["location_x"]["Points"].append(start_x_object)

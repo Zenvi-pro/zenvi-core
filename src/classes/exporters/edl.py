@@ -31,6 +31,8 @@ from operator import itemgetter
 from PyQt5.QtWidgets import QFileDialog
 
 from classes import info
+from classes import frame_time as ft
+from fractions import Fraction
 from classes.app import get_app
 from classes.logger import log
 from classes.path_utils import relative_export_path, absolute_media_path
@@ -141,7 +143,8 @@ def export_edl():
     # Get FPS info
     fps_num = get_app().project.get("fps").get("num", 24)
     fps_den = get_app().project.get("fps").get("den", 1)
-    fps_float = float(fps_num / fps_den)
+    fps = Fraction(int(fps_num), int(fps_den))
+    fps_float = float(fps)
 
     # Get EDL path
     recommended_path = app.project.current_filepath or ""
@@ -249,7 +252,7 @@ def export_edl():
                     # Loop through Points (remove duplicates)
                     keyframes = {}
                     for point in alpha_points:
-                        keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
+                        keyframeTime = ft.keyframe_x_to_seconds(int(point.get('co', {}).get('X', 1) or 1), fps)
                         keyframeValue = point.get('co', {}).get('Y', 0.0) * 100.0
                         interp_name = _interp_name(point.get("interpolation"))
                         keyframes[keyframeTime] = (keyframeValue, interp_name)
@@ -265,7 +268,7 @@ def export_edl():
                     # Loop through Points (remove duplicates)
                     keyframes = {}
                     for point in volume_points:
-                        keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
+                        keyframeTime = ft.keyframe_x_to_seconds(int(point.get('co', {}).get('X', 1) or 1), fps)
                         keyframeValue = _volume_to_db(point.get('co', {}).get('Y', 0.0))
                         interp_name = _interp_name(point.get("interpolation"))
                         keyframes[keyframeTime] = (keyframeValue, interp_name)
@@ -292,7 +295,7 @@ def export_edl():
                     include_all = len(points) > 1
                     keyframes = {}
                     for point in points:
-                        keyframeTime = (point.get('co', {}).get('X', 1.0) - 1) / fps_float
+                        keyframeTime = ft.keyframe_x_to_seconds(int(point.get('co', {}).get('X', 1) or 1), fps)
                         raw_value = point.get('co', {}).get('Y', default_val)
                         if not include_all and len(points) == 1 and abs(raw_value - default_val) < 1e-6:
                             continue  # single default point: skip
