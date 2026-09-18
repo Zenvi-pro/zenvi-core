@@ -148,6 +148,20 @@
     "setting": "recent_projects"
   },
   {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "restore_project_path"
+  },
+  {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "restore_draft_history_key"
+  },
+  {
     "value": "HD 720p 30 fps",
     "title": "Default Profile",
     "category": "Preview",
