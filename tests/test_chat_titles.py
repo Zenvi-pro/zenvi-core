@@ -66,3 +66,28 @@ def test_a_real_summary_still_wins(chat_ui, monkeypatch):
 
     monkeypatch.setattr(chat_ui, "get_backend_client", lambda: _Client())
     assert chat_ui._summarize_prompt("trim the intro please") == "Trim intro"
+
+
+def test_a_backend_error_is_not_used_as_the_title(chat_ui, monkeypatch, caplog):
+    """The summariser relays upstream failures as its reply; that is not a title."""
+    class _Client:
+        def auth_token(self):
+            return "t"
+
+        def send_message_ws(self, **kw):
+            return "Error: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error'}}"
+
+    monkeypatch.setattr(chat_ui, "get_backend_client", lambda: _Client())
+    with caplog.at_level("WARNING"):
+        assert chat_ui._summarize_prompt("trim the intro") == "trim the intro"
+    assert "Error code: 400" in caplog.text
+
+
+def test_a_summariser_crash_is_logged(chat_ui, monkeypatch, caplog):
+    def boom(*a, **kw):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(chat_ui, "get_backend_client", boom)
+    with caplog.at_level("WARNING"):
+        chat_ui._summarize_prompt("trim the intro")
+    assert "backend down" in caplog.text

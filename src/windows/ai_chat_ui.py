@@ -217,9 +217,12 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
             auth_token=client.auth_token(),
         )
         out = (out or "").strip()
-        return out[:80] if out else _short_title(prompt, max_words)
-    except Exception:
-        return _short_title(prompt, max_words)
+        if out and not out.startswith("Error"):
+            return out[:80]
+        log.warning("Prompt summariser gave no usable title: %r", out[:200])
+    except Exception as exc:
+        log.warning("Prompt summariser failed: %s", exc)
+    return _short_title(prompt, max_words)
 
 
 REQUEST_TIMEOUT_SECONDS = 120
