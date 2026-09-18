@@ -368,6 +368,10 @@ def _headless_export_env(monkeypatch, stored_settings, max_frame, export_type):
     monkeypatch.setattr(export_mod, "File", MagicMock(get=lambda **k: None))
     monkeypatch.setattr(export_mod, "get_app",
                         lambda: MagicMock(_tr=lambda s: s), raising=False)
+    # export_video_headless imports get_app at call time; when an earlier test
+    # already imported the real classes.app, its QApplication is a bare stub.
+    monkeypatch.setattr(sys.modules["classes.app"], "get_app",
+                        lambda: MagicMock(_tr=lambda s: s), raising=False)
     return export_mod, captured
 
 
