@@ -27,6 +27,25 @@ ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 REQUEST_TIMEOUT = 30          # seconds
 MAX_RESPONSE_CHARS = 12_000   # keep a huge payload from swamping the agent's context
 
+# Deny-by-default: only routes the editor itself uses. Anything else (account,
+# billing, admin, arbitrary auth) is refused even on the configured host.
+ALLOWED_PATH_PREFIXES = (
+    "/api/v1/models",
+    "/api/v1/chat/",
+    "/api/v1/indexing/",
+    "/api/v1/credits",
+    "/api/v1/projects",
+    "/api/v1/usage",
+)
+
+
+def _path_allowed(path_only: str) -> bool:
+    for prefix in ALLOWED_PATH_PREFIXES:
+        base = prefix.rstrip("/")
+        if path_only == base or path_only.startswith(base + "/"):
+            return True
+    return False
+
 
 def _backend_url() -> str:
     """The Zenvi backend the app itself is configured to talk to."""
@@ -76,6 +95,14 @@ def zenvi_api_request(method: str = "GET", path: str = "", body: str = "",
         target = parts.path + (("?" + parts.query) if parts.query else "")
     if not target.startswith("/"):
         target = "/" + target
+
+    path_only = urlsplit(target).path or target.split("?", 1)[0]
+    if not _path_allowed(path_only):
+        return (
+            "Error: path %r is not allowed. zenvi_api_request can only call "
+            "chat, models, indexing, credits, projects, or usage routes."
+            % path_only
+        )
 
     params = None
     if query:
