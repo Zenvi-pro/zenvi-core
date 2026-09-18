@@ -14,6 +14,7 @@ PENDING = "pending"
 RUNNING = "running"
 SUCCESS = "success"
 FAILED = "failed"
+SKIPPED = "skipped"
 
 PHASE_LABELS = {
     "uploading": "Uploading for search…",
@@ -77,14 +78,20 @@ def derive_indexing_status(
     if is_queued and not is_active:
         return IndexingStatus(PENDING, "Waiting to index", "Waiting for an indexing slot")
 
-    if is_active or (phase and phase != "done") or block_status in _RUNNING_BLOCK_STATUS:
+    if is_active or (phase and phase != "done"):
         label = phase_label(phase or block_status or "indexing", percent)
         return IndexingStatus(RUNNING, label, label)
+
+    if block_status in _RUNNING_BLOCK_STATUS:
+        # Saved mid-index but no worker owns it any more (app closed or killed).
+        return IndexingStatus(
+            FAILED, "Indexing interrupted", "Indexing was interrupted. Re-index the clip to retry."
+        )
 
     skip_reason = str(meta.get("skip_reason") or "").strip()
     if skip_reason or block_status == "skipped":
         tooltip = skip_reason or str(block.get("error") or "").strip() or "Indexing skipped"
-        return IndexingStatus(PENDING, "Indexing skipped", tooltip)
+        return IndexingStatus(SKIPPED, "Indexing skipped", tooltip)
 
     error = str(meta.get("error") or "").strip()
     if not error and block_status in _FAILED_BLOCK_STATUS:

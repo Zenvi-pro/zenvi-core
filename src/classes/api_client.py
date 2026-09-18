@@ -983,11 +983,19 @@ class ZenviBackendClient:
                         "message": f"Job {job_id} not found on backend",
                     }
             except Exception as e:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                if code is not None and code < 500:
+                    err = f"Indexing status check failed: HTTP {code}"
+                    log.error(err)
+                    return {"success": False, "error": err, "message": err}
                 now = time.time()
                 if unreachable_since is None:
                     unreachable_since = now
                 if now - unreachable_since >= max_unreachable:
-                    err = f"Backend unreachable for {max_unreachable}s while indexing: {e}"
+                    if code is not None:
+                        err = f"Backend returned HTTP {code} for {max_unreachable}s while indexing"
+                    else:
+                        err = f"Backend unreachable for {max_unreachable}s while indexing: {e}"
                     log.error(err)
                     return {"success": False, "error": err, "message": err}
                 log.warning("Indexing poll error (will retry): %s", e)

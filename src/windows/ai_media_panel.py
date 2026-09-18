@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 
 from classes.logger import log
 from classes.app import get_app
-from classes.indexing_status import FAILED, RUNNING, derive_indexing_status, status_source
+from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, derive_indexing_status, status_source
 
 
 def _format_description_text(ai_meta: dict) -> str:
@@ -242,6 +242,11 @@ class AIMediaPanel(QDockWidget):
         elif status.state == FAILED:
             self.indexing_status_label.setProperty("failed", "true")
             self.indexing_status_label.setText(status.tooltip or status.label)
+            self.indexing_status_label.show()
+            self.indexing_progress.hide()
+        elif status.state in (PENDING, SKIPPED):
+            self.indexing_status_label.setProperty("failed", "false")
+            self.indexing_status_label.setText(status.label)
             self.indexing_status_label.show()
             self.indexing_progress.hide()
         else:

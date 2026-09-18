@@ -11,6 +11,7 @@ from classes.indexing_status import (  # noqa: E402
     NONE,
     PENDING,
     RUNNING,
+    SKIPPED,
     SUCCESS,
     derive_indexing_status,
     status_source,
@@ -50,12 +51,12 @@ def test_done_phase_is_not_running():
 
 
 def test_index_block_status_indexing_is_running():
-    st = derive_indexing_status({"index": {"status": "indexing"}})
+    st = derive_indexing_status({"index": {"status": "indexing"}}, is_active=True)
     assert st.state == RUNNING
 
 
 def test_legacy_twelvelabs_block_status_indexing_is_running():
-    st = derive_indexing_status({"twelvelabs": {"status": "indexing"}})
+    st = derive_indexing_status({"twelvelabs": {"status": "indexing"}}, is_active=True)
     assert st.state == RUNNING
 
 
@@ -95,19 +96,19 @@ def test_running_beats_stale_error():
     assert st.state == RUNNING
 
 
-def test_skip_reason_is_pending_not_failed():
+def test_skip_reason_is_skipped_not_failed_or_waiting():
     st = derive_indexing_status(
         {"skip_reason": "Clip duration 41.0 min exceeds the 30-minute limit."}
     )
-    assert st.state == PENDING
+    assert st.state == SKIPPED
     assert "30-minute limit" in st.tooltip
 
 
-def test_credit_blocked_skip_block_is_pending():
+def test_credit_blocked_skip_block_is_skipped():
     st = derive_indexing_status(
         {"index": {"status": "skipped", "error": "Not enough credits"}}
     )
-    assert st.state == PENDING
+    assert st.state == SKIPPED
     assert st.tooltip == "Not enough credits"
 
 
@@ -153,9 +154,26 @@ def test_status_source_falls_back_to_source_when_clip_not_analyzed():
 def test_status_source_surfaces_source_skip_reason():
     source = {"skip_reason": "Clip duration 41.0 min exceeds the 30-minute limit."}
     st = derive_indexing_status(status_source({}, source))
-    assert st.state == PENDING
+    assert st.state == SKIPPED
     assert "30-minute limit" in st.tooltip
 
 
 def test_status_source_without_source_returns_clip_metadata():
     assert status_source({}, None) == {}
+
+
+def test_persisted_running_block_without_a_worker_is_interrupted():
+    """App killed mid-index: the saved block still says "indexing", but nothing
+    is running any more, so the badge must not spin forever."""
+    for key in ("index", "twelvelabs"):
+        for status in ("uploading", "indexing", "processing", "pending", "validating"):
+            st = derive_indexing_status({key: {"status": status}})
+            assert st.state == FAILED, (key, status)
+            assert "interrupted" in st.tooltip.lower()
+
+
+def test_persisted_running_block_with_live_progress_is_still_running():
+    st = derive_indexing_status(
+        {"index": {"status": "indexing"}}, progress={"phase": "indexing", "percent": -1}
+    )
+    assert st.state == RUNNING

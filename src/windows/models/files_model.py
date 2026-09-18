@@ -710,7 +710,8 @@ class FilesModel(QObject, updates.UpdateInterface):
             try:
                 if error:
                     log.warning(f"Background indexing failed for {file_id}: {error}")
-                    return
+                    # Persist it, or the file keeps no status and shows no badge at all.
+                    metadata = dict(metadata or {}, error=str(error))
                 if not metadata or not isinstance(metadata, dict):
                     return
                 f = _File.get(id=file_id)

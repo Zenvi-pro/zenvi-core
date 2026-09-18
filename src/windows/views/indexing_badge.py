@@ -14,7 +14,7 @@ from PyQt5.QtGui import QColor, QPen, QPainterPath
 from PyQt5.QtWidgets import QStyledItemDelegate, QToolTip
 
 from classes.app import get_app
-from classes.indexing_status import FAILED, PENDING, RUNNING, SUCCESS
+from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS
 
 BADGE_SIZE = 12
 BADGE_MARGIN = 3
@@ -24,6 +24,7 @@ _COLORS = {
     FAILED: QColor("#ef4444"),
     RUNNING: QColor("#4d9cf6"),
     PENDING: QColor("#8a8a8a"),
+    SKIPPED: QColor("#f59e0b"),
 }
 
 
@@ -77,6 +78,9 @@ def paint_status_badge(painter, rect, state, angle=0):
         path.moveTo(x + w * 0.27, y + h * 0.52)
         path.lineTo(x + w * 0.44, y + h * 0.70)
         path.lineTo(x + w * 0.75, y + h * 0.32)
+    elif state == SKIPPED:
+        path.moveTo(x + w * 0.28, y + h * 0.5)
+        path.lineTo(x + w * 0.72, y + h * 0.5)
     else:
         path.moveTo(x + w * 0.32, y + h * 0.32)
         path.lineTo(x + w * 0.68, y + h * 0.68)
@@ -166,7 +170,11 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
 
     def helpEvent(self, event, view, option, index):
         status = self._status(index)
-        if status is not None and status.tooltip:
+        if (
+            status is not None
+            and status.tooltip
+            and badge_rect(option.rect).contains(event.pos())
+        ):
             name = str(index.model().data(index.sibling(index.row(), 1), Qt.DisplayRole) or "")
             text = f"{name}\n{status.tooltip}" if name else status.tooltip
             QToolTip.showText(event.globalPos(), text, view)

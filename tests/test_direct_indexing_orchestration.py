@@ -274,3 +274,37 @@ def test_poll_survives_brief_outages_that_recover():
     result, _ = _poll_with_fake_clock(responses)
 
     assert result == {"video_id": "vid-1"}
+
+
+def _http_error(code):
+    import requests
+
+    resp = MagicMock()
+    resp.status_code = code
+    resp.raise_for_status.side_effect = requests.HTTPError(f"{code} Error", response=resp)
+    return resp
+
+
+def test_poll_reports_client_http_errors_immediately_not_as_unreachable(monkeypatch):
+    monkeypatch.delenv("ZENVI_INDEX_UNREACHABLE_SEC", raising=False)
+    result, elapsed = _poll_with_fake_clock(lambda *a, **kw: _http_error(401))
+
+    assert result["success"] is False
+    assert "401" in result["error"]
+    assert "unreachable" not in result["error"].lower()
+    assert elapsed < 10
+
+
+def test_poll_reports_persistent_server_errors_by_status_not_as_unreachable(monkeypatch):
+    monkeypatch.delenv("ZENVI_INDEX_UNREACHABLE_SEC", raising=False)
+    result, _ = _poll_with_fake_clock(lambda *a, **kw: _http_error(500))
+
+    assert result["success"] is False
+    assert "500" in result["error"]
+    assert "unreachable" not in result["error"].lower()
+
+
+def test_poll_rides_out_a_transient_server_error():
+    responses = [_http_error(503)] * 5 + [_job("done", {"video_id": "vid-1"})]
+    result, _ = _poll_with_fake_clock(responses)
+    assert result == {"video_id": "vid-1"}
