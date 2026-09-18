@@ -362,12 +362,16 @@ def _headless_export_env(monkeypatch, stored_settings, max_frame, export_type):
 
     _Win.timeline.GetMaxFrame.return_value = max_frame
 
+    fake_app = MagicMock(_tr=lambda s: s)
+    # export_video_headless re-imports get_app from classes.app inside the
+    # function, so patching export_mod.get_app alone is not enough.
+    monkeypatch.setattr("classes.app.get_app", lambda: fake_app, raising=False)
     monkeypatch.setattr(export_mod, "Export", _Win)
     monkeypatch.setattr(export_mod, "get_default_export_settings",
                         lambda: (stored_settings, {}, export_type, "/tmp/d.mp4"))
     monkeypatch.setattr(export_mod, "File", MagicMock(get=lambda **k: None))
     monkeypatch.setattr(export_mod, "get_app",
-                        lambda: MagicMock(_tr=lambda s: s), raising=False)
+                        lambda: fake_app, raising=False)
     return export_mod, captured
 
 
