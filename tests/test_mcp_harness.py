@@ -445,5 +445,7 @@ def test_tools_list_advertises_the_harness_tools():
 
     imp = defs["import_files_tool"]
     assert "paths" in imp["inputSchema"]["properties"]
+    assert "dry_run" in imp["inputSchema"]["properties"]
     # A harness must be able to tell from tools/list that this needs no GUI.
     assert "dialog" in imp["description"].lower()
+    assert "dry_run" in imp["description"].lower()
