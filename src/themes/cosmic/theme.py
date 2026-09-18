@@ -845,52 +845,39 @@ QWidget#cutting QPushButton#btnAddClip:disabled {
 /* ── Video preview ────────────────────────────────────────── */
 QWidget#videoPreview { background-color: #0d0d0d; }
 
-/* ── AI Media Manager dock ────────────────────────────────── */
-QDockWidget#AIMediaPanel QWidget,
-QDockWidget#AIMediaPanel QTabWidget,
-QDockWidget#AIMediaPanel QTabWidget::pane {
+/* ── Scene Descriptions dock ──────────────────────────────── */
+QDockWidget#AIMediaPanel QWidget {
     background-color: #0d0d0d;
     border: none;
 }
 
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
-    background-color: #0d0d0d;
-    border: none;
-}
-
-QDockWidget#AIMediaPanel QTabBar::tab {
-    color: #d4d4d4;
-    padding: 5px 12px;
-    font-size: 11px;
-    min-width: 0;
-    min-height: 0;
-    max-width: 400px;
-}
-
-/* Make the tag search feel like a real search field */
-QDockWidget#AIMediaPanel QLineEdit {
+QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background: #0d0d0d; }
+QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #d4d4d4; font-size: 12px; font-weight: bold; }
+QDockWidget#AIMediaPanel QLabel#statusLabel { color: #6a9fd8; font-size: 11px; }
+QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #ef4444; }
+QDockWidget#AIMediaPanel QTextEdit#descriptionView {
     background: #0d0d0d;
-    border-radius: 5px;
-    padding: 5px 10px;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 8px;
+    font-size: 12px;
 }
-
-/* Compact list rows in the Tags list */
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress {
+    background: #252525;
+    border: none;
+    border-radius: 1px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #4d9cf6; border-radius: 1px; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+    background: #252525;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 6px;
     font-size: 11px;
 }
-
-QDockWidget#AIMediaPanel QListWidget::item,
-QDockWidget#AIMediaPanel QTreeWidget::item {
-    padding: 3px 4px;
-    border-radius: 3px;
-}
-
-QDockWidget#AIMediaPanel QListWidget::item:selected,
-QDockWidget#AIMediaPanel QTreeWidget::item:selected {
-    background: rgba(77, 156, 246, 0.18);
-}
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
 
 /* ── Tree/List view item height ───────────────────────────── */
 QTreeView::item,

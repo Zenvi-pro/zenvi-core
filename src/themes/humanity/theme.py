@@ -129,6 +129,31 @@ QDockWidget#AIChatWindow QComboBox#modelCombo {
     border: 1px solid #404040;
     border-radius: 0;
 }
+
+/* Scene Descriptions dock: match Humanity dark */
+QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background-color: #191919; }
+QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #ffffff; font-size: 12px; font-weight: bold; }
+QDockWidget#AIMediaPanel QLabel#statusLabel { color: #2a82da; font-size: 11px; }
+QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #e74c3c; }
+QDockWidget#AIMediaPanel QTextEdit#descriptionView {
+    background-color: #191919;
+    color: #ffffff;
+    border: 1px solid #404040;
+    border-radius: 0;
+    padding: 8px;
+    font-size: 12px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress { background: #252525; border: none; }
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+    background-color: #252525;
+    color: #ffffff;
+    border: 1px solid #404040;
+    border-radius: 0;
+    padding: 6px;
+    font-size: 11px;
+}
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
         """
 
     def apply_theme(self):
@@ -224,6 +249,31 @@ QDockWidget#AIChatWindow QComboBox#modelCombo {
     border: 1px solid #ccc;
     border-radius: 0;
 }
+
+/* Scene Descriptions dock: match Retro (light) */
+QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background-color: #f0f0f0; }
+QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #333333; font-size: 12px; font-weight: bold; }
+QDockWidget#AIMediaPanel QLabel#statusLabel { color: #2a82da; font-size: 11px; }
+QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #c0392b; }
+QDockWidget#AIMediaPanel QTextEdit#descriptionView {
+    background-color: #f0f0f0;
+    color: #333333;
+    border: 1px solid #cccccc;
+    border-radius: 0;
+    padding: 8px;
+    font-size: 12px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress { background: #ffffff; border: none; }
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #2a82da; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+    background-color: #ffffff;
+    color: #333333;
+    border: 1px solid #cccccc;
+    border-radius: 0;
+    padding: 6px;
+    font-size: 11px;
+}
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
         """
 
     def apply_theme(self):
