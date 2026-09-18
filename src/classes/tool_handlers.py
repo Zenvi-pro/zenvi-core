@@ -2946,7 +2946,13 @@ def watch_clip_window(
     timeline_clip_id="",
     **_kw,
 ) -> str:
-    """Layer-3 watch of a candidate window. Distinct from watch_clip_tool (play)."""
+    """Vision-check a window of a placed clip: confirm the query is on screen.
+    Call this after you place, slice, trim, or modify a clip to verify your own
+    edit. Read-only: reports in/out/peak in source seconds.
+
+    Layer-3 watch of a candidate window; distinct from watch_clip_tool, which
+    plays the clip in the editor.
+    """
     try:
         from classes.clip_resolver import _coerce_optional_float
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
@@ -3036,15 +3042,6 @@ def watch_clip_window(
     except Exception as e:
         log.error("watch_clip_window: %s", e, exc_info=True)
         return f"Error: {e}"
-
-
-_ORDINAL_MAP = {
-    "first": 1, "1st": 1, "one": 1,
-    "second": 2, "2nd": 2, "two": 2,
-    "third": 3, "3rd": 3, "three": 3,
-    "fourth": 4, "4th": 4, "four": 4,
-    "fifth": 5, "5th": 5, "five": 5,
-}
 
 
 def _parse_occurrence(occurrence_str: str, query: str) -> int:
@@ -6649,9 +6646,9 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) 
 
 
 def resummarize_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run Pegasus audiovisual summary for an already-indexed project file.
+    """Re-run audiovisual summary for an already-indexed project file.
 
-    Requires an existing TwelveLabs video_id. Runs on a worker thread.
+    Gemini indexing has no summarize-only path — callers should reindex instead.
     """
     try:
         if not file_id:
@@ -6664,17 +6661,24 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
             if not f:
                 return None
             ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+            idx = get_index_block(ai)
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
-                "indexed": twelvelabs_is_indexed(tl),
-                "video_id": tl.get("video_id") or "",
+                "indexed": twelvelabs_is_indexed(idx),
+                "video_id": idx.get("video_id") or "",
+                "provider": str(idx.get("provider") or "").lower(),
             }
 
         meta = _run_on_main_thread(_read_file_meta, timeout=10)
         if meta is None:
             return f"Error: File not found (id={file_id})."
+
+        if "gemini" in (meta.get("provider") or ""):
+            return (
+                "Error: Summarize-only is not supported for Gemini indexing. "
+                "Reindex the clip to refresh descriptions."
+            )
 
         MAX_SECONDS = 30 * 60
         if meta["duration"] > MAX_SECONDS:
@@ -6704,7 +6708,7 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
             _kick_off_summarize()
 
         return (
-            f"Pegasus summarize started for file {file_id} "
+            f"Summarize started for file {file_id} "
             f"(video_id={meta.get('video_id')}, {meta['path']})."
         )
     except Exception as e:
@@ -7425,11 +7429,14 @@ def place_motion_graphic(
             extra=region,
         )
 
+        shift_box = [[]]
+
         def _ripple_and_stamp():
             if mode_s == "cut_in":
                 shifts = ripple_positions(
                     clips_raw, layer=int(primary_layer), t=t, delta=dur
                 )
+                shift_box[0] = shifts
                 for cid, new_pos in shifts:
                     app.updates.update(
                         ["clips", {"id": cid}],
@@ -7476,6 +7483,17 @@ def place_motion_graphic(
 
         track_lbl = format_track_label_for_llm(int(track_num), layers)
         if isinstance(result, str) and result.startswith("Error"):
+            if mode_s == "cut_in" and shift_box[0]:
+                def _undo_ripple():
+                    for cid, new_pos in shift_box[0]:
+                        app.updates.update(
+                            ["clips", {"id": cid}],
+                            {"position": float(new_pos) - float(dur)},
+                        )
+                try:
+                    _run_on_main_thread(_undo_ripple)
+                except Exception as undo_exc:
+                    log.warning("cut_in ripple rollback failed: %s", undo_exc)
             return result
         return (
             f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
@@ -8649,6 +8667,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "search_clips_tool",
     "search_clip_scenes_tool",
     "watch_clip_window_tool",
+    "get_project_catalog_tool",
     "slice_clip_at_best_match_tool",
     "split_file_add_clip_tool",
     "add_clip_to_timeline_tool",
