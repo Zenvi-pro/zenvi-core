@@ -193,8 +193,19 @@ def _strip_context_blocks(text: str) -> str:
     return _CONTEXT_BLOCK_RE.sub("", text).lstrip()
 
 
+def _short_title(prompt: str, max_words: int = 6) -> str:
+    """The first few words of *prompt*, as a stand-in for a real summary."""
+    words = (prompt or "").split()
+    return " ".join(words[:max_words])[:80]
+
+
 def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
-    """Ask the backend to summarize the user prompt in a few words. Returns empty on failure."""
+    """Ask the backend to summarize the user prompt in a few words.
+
+    Falls back to the opening words of the prompt: with several sessions open,
+    a tab named after the request beats every tab reading "New Chat" because
+    the summariser was offline, out of credits, or simply slow.
+    """
     try:
         client = get_backend_client()
         system = (
@@ -206,9 +217,12 @@ def _summarize_prompt(prompt: str, max_words: int = 6) -> str:
             auth_token=client.auth_token(),
         )
         out = (out or "").strip()
-        return out[:80] if out else ""
-    except Exception:
-        return ""
+        if out and not out.startswith("Error"):
+            return out[:80]
+        log.warning("Prompt summariser gave no usable title: %r", out[:200])
+    except Exception as exc:
+        log.warning("Prompt summariser failed: %s", exc)
+    return _short_title(prompt, max_words)
 
 
 REQUEST_TIMEOUT_SECONDS = 120
@@ -1158,7 +1172,17 @@ class AIChatWindow(QDockWidget):
                     old_thread.wait(500)
                 except Exception:
                     pass
-        worker, thread = self._make_worker(session_id, backend)
+        restore = None
+        if backend in (BACKEND_CLAUDE, BACKEND_CODEX):
+            try:
+                from classes import chat_history
+                for row in chat_history.load_sessions(self._history_key, include_closed=True):
+                    if row.get("session_id") == session_id:
+                        restore = row
+                        break
+            except Exception:
+                restore = None
+        worker, thread = self._make_worker(session_id, backend, restore=restore)
         sess["worker"] = worker
         sess["thread"] = thread
         sess["backend"] = backend
@@ -1172,6 +1196,8 @@ class AIChatWindow(QDockWidget):
             self._push_models_for_backend(backend)
             if not self._use_web_ui:
                 self._sync_widget_backend_combo()
+        if self._use_web_ui:
+            self._push_tabs_to_js()
         self._notify_agent_selector()
         self._persist_session(session_id, backend=backend)
         self._save_chat_sessions_store()
@@ -3142,6 +3168,8 @@ class AIChatWindow(QDockWidget):
         sess["agent_mode"] = agent_mode if agent_mode in ("planning", "agent") else "agent"
         if self._use_web_ui:
             self._run_js("if(window.setAgentModeUI) window.setAgentModeUI(%s);" % json.dumps(sess["agent_mode"]))
+        if self._active_sid:
+            self._persist_session(self._active_sid, agent_mode=sess["agent_mode"])
         self._save_chat_sessions_store()
 
     def _execute_plan(self, plan_id: str, model_id: str):

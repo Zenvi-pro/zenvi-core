@@ -3657,6 +3657,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Initialize sentry exception tracing (now that we know the current version)
         from classes import sentry
         sentry.init_tracing()
+        # sdk.init() reinstalls Sentry's excepthook on top of crash_handler;
+        # wrap it again so we stay outermost (same as launch.py after tracing).
+        try:
+            from classes import crash_handler
+            crash_handler.install()
+        except Exception:
+            pass
 
     def updateDownloadProgress(self, version, percent, downloaded, total):
         """Handle live download progress from the background auto-updater."""
