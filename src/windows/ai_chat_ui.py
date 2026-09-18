@@ -2270,7 +2270,12 @@ class AIChatWindow(QDockWidget):
         dlg.activateWindow()
 
     def _prepend_editor_snapshot(self, text: str) -> str:
-        """Ground the model with a bounded timeline snapshot (main thread)."""
+        """Ground the model with a bounded timeline snapshot (main thread).
+
+        Attach once per user turn — skip if this payload already includes one.
+        """
+        if text and "[Editor snapshot]" in text:
+            return text
         try:
             from classes.tool_handlers import build_editor_snapshot_for_chat
 
@@ -3663,6 +3668,7 @@ class AIChatWindow(QDockWidget):
                         "if nothing appears in the Plan dock."
                     )
                 self._add_assistant_msg(body)
+            self._fetch_credits_balance()
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
@@ -3677,6 +3683,7 @@ class AIChatWindow(QDockWidget):
                     "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
                     % (json.dumps(sid), json.dumps(html_body))
                 )
+            self._fetch_credits_balance()
             if self._use_web_ui:
                 self._push_tabs_to_js()
             else:

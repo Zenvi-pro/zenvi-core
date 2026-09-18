@@ -236,14 +236,6 @@ class BackendIndexingWorker(QThread):
                     or (idx_result.get("video_id") and not idx_result.get("error"))
                 )
                 if has_payload:
-                    from classes.credits_client import charge_operation_on_success
-                    charge_operation_on_success(
-                        True,
-                        "indexing_per_minute",
-                        provider="gemini",
-                        note=f"import {file_id}",
-                        duration_seconds=duration if media_type != "image" else 60.0,
-                    )
                     ai_meta = idx_result.get("ai_metadata")
                     if isinstance(ai_meta, dict) and ai_meta:
                         metadata = ai_meta
