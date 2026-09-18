@@ -35,16 +35,22 @@ SERVER_NAME = "zenvi-editor"
 # The built-in Zenvi Assistant bakes watch into its place/slice workflows; CLI
 # harnesses do not run those, so they must watch their own edits explicitly.
 SERVER_INSTRUCTIONS = (
-    "These tools drive a live video editor. After any edit that changes what is "
-    "on the timeline (add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
+    "These tools drive a live video editor. Every tool returns a JSON receipt "
+    "with contract=3: status (applied|unchanged|refused|error), summary, clips, "
+    "shifted, removedClipIds, createdTracks, watchSuggested, undoSteps. After a "
+    "successful mutation (status=applied), patch your timeline state from the "
+    "receipt — do not re-call get_timeline_state_tool unless notes say track "
+    "indexes shifted. After any edit that changes what is on screen "
+    "(add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
     "slice_clip_at_playhead_tool, modify_clip_tool, place_motion_graphic_tool, "
-    "apply_transition_tool), call watch_clip_window_tool on the affected clip to "
-    "confirm the result with vision - is the intended moment on screen, did the "
-    "cut land cleanly, is album art covering video. If the edit is wrong, use "
-    "undo_tool and try again. After remove_clip_tool, check get_timeline_state_tool "
-    "instead - a removed clip cannot be watched. watch_clip_window_tool returns an "
-    "Error if the clip cannot be resolved; if vision is unavailable it falls back "
-    "to the text-index time and says so."
+    "apply_transition_tool, add_title_tool, add_effect_tool, set_keyframes_tool), "
+    "call watch_clip_window_tool on the affected clip (or use watchSuggested) to "
+    "confirm with vision. If the edit is wrong, use undo_tool and try again. "
+    "After delete_from_timeline_tool, check the receipt removedClipIds — a "
+    "removed clip cannot be watched. Prefer get_timeline_state_tool only when "
+    "the receipt notes say track indexes shifted. watch_clip_window_tool returns "
+    "Error in summary if the clip cannot be resolved; if vision is unavailable "
+    "it falls back to the text-index time and says so."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
@@ -56,7 +62,7 @@ SERVER_INSTRUCTIONS = (
 PREFERRED_PORT = 7434
 
 # Handler params that should never be exposed to the agent.
-_HIDDEN_PARAMS = {"self", "chat_session_id"}
+_HIDDEN_PARAMS = {"self", "chat_session_id", "transaction_id"}
 
 
 def _param_json_type(param) -> str:
@@ -73,34 +79,24 @@ def _param_json_type(param) -> str:
 
 
 def _build_input_schema(func) -> dict:
-    """Derive a JSON schema for a tool handler from its signature.
-
-    Handlers that only accept ``**kwargs`` (the common case) get a permissive
-    object schema so the agent can pass whatever the tool documents.
-    """
+    """Fallback introspection schema (CI only). Prefer TOOL_SCHEMAS."""
     try:
         sig = inspect.signature(func)
     except (TypeError, ValueError):
-        return {"type": "object", "additionalProperties": True}
+        return {"type": "object", "additionalProperties": False}
 
     props: dict = {}
     required: list = []
-    has_var_keyword = False
     for name, param in sig.parameters.items():
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
-            has_var_keyword = True
+        if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
             continue
-        if param.kind == inspect.Parameter.VAR_POSITIONAL or name in _HIDDEN_PARAMS:
+        if name in _HIDDEN_PARAMS:
             continue
         props[name] = {"type": _param_json_type(param)}
         if param.default is inspect.Parameter.empty:
             required.append(name)
 
-    if not props:
-        return {"type": "object", "additionalProperties": True}
-
-    schema = {"type": "object", "properties": props,
-              "additionalProperties": has_var_keyword}
+    schema = {"type": "object", "properties": props, "additionalProperties": False}
     if required:
         schema["required"] = required
     return schema
@@ -115,18 +111,28 @@ def _first_doc_paragraph(func) -> str:
 def iter_tool_defs() -> list:
     """Build ``{name, description, inputSchema}`` for every tool we expose.
 
-    The editor tools come straight from ``AGENT_TOOL_HANDLERS``; the extras are
-    tools that only make sense for an external agent CLI (see MCP_EXTRA_TOOLS).
+    ``TOOL_SCHEMAS`` is the source of truth. Introspection is only used when a
+    tool is listed in ``UNSCHEMATIZED`` (should be empty in production).
     """
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
+    from classes.agent_tools.schema import TOOL_SCHEMAS, UNSCHEMATIZED, get_schema
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
         description = _first_doc_paragraph(func) or humanize_tool_name(name)
+        schema = get_schema(name)
+        if schema is None:
+            if name in UNSCHEMATIZED or name not in AGENT_TOOL_HANDLERS:
+                # MCP extras may not be in TOOL_SCHEMAS yet — introspect.
+                schema = _build_input_schema(func)
+            else:
+                raise RuntimeError(
+                    f"Tool {name!r} is registered but has no TOOL_SCHEMAS entry"
+                )
         defs.append({
             "name": name,
             "description": description,
-            "inputSchema": _build_input_schema(func),
+            "inputSchema": schema,
         })
     return defs
 

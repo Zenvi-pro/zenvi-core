@@ -38,6 +38,7 @@ from classes.clip_placement import (
     should_watch_placement,
     source_window_for_file,
 )
+from classes.agent_tools.handlers import PHASE3_HANDLERS, PHASE3_DISPLAY_LABELS
 from classes.image_types import is_audio_only_media
 from classes.track_display import (
     format_track_label_for_llm,
@@ -1044,7 +1045,32 @@ def list_clips(layer="", **_kw) -> str:
                 f"source_start={source_start} source_end={source_end}"
                 f"{f' audio_role={audio_role}' if audio_role else ''}"
             )
-        return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
+        from classes.agent_tools.receipt import ToolReceipt
+        structured = []
+        for c in clips:
+            d = c.data if isinstance(c.data, dict) else {}
+            lid = d.get("layer", "")
+            try:
+                lid_int = int(lid) if lid != "" and lid is not None else None
+            except (TypeError, ValueError):
+                lid_int = None
+            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
+            structured.append({
+                "id": str(c.id),
+                "file_id": str(d.get("file_id") or ""),
+                "title": str(d.get("title") or d.get("label") or ""),
+                "layer": lid_int,
+                "track": ui,
+                "position": float(d.get("position") or 0),
+                "start": float(d.get("start") or 0),
+                "end": float(d.get("end") or 0),
+            })
+        return ToolReceipt.applied(
+            "list_clips_tool",
+            f"Timeline clips ({len(clips)}).",
+            undo_steps=0,
+            data={"clips": structured, "legacy_text": f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)},
+        ).to_json()
     except Exception as e:
         return f"Error: {e}"
 
@@ -7649,7 +7675,43 @@ def get_timeline_state(**_kw) -> str:
                 lines.append(f"\nTotal timeline duration: {max(all_ends):.2f}s")
 
         lines.append(f"\nTRACK_STACK_JSON={track_stack_json(layers)}")
-        return "\n".join(lines)
+
+        structured_clips = []
+        for c in clips:
+            d = c.data if isinstance(c.data, dict) else {}
+            layer = int(d.get("layer") or 0)
+            ui = layer_number_to_display_index(layer, layers)
+            structured_clips.append({
+                "id": str(c.id),
+                "file_id": str(d.get("file_id") or ""),
+                "title": str(d.get("title") or d.get("label") or ""),
+                "layer": layer,
+                "track": ui,
+                "position": float(d.get("position") or 0),
+                "start": float(d.get("start") or 0),
+                "end": float(d.get("end") or 0),
+            })
+        structured_tracks = []
+        for L in layers_sorted_by_number(layers):
+            layer_num = int(L.get("number") or 0)
+            structured_tracks.append({
+                "id": str(L.get("id") or ""),
+                "layer": layer_num,
+                "track": layer_number_to_display_index(layer_num, layers),
+                "label": str(L.get("label") or L.get("name") or ""),
+            })
+        from classes.agent_tools.receipt import ToolReceipt
+        return ToolReceipt.applied(
+            "get_timeline_state_tool",
+            f"Timeline: {len(structured_clips)} clip(s), {len(structured_tracks)} track(s).",
+            undo_steps=0,
+            data={
+                "clips": structured_clips,
+                "tracks": structured_tracks,
+                "effects": list(effects_raw),
+                "legacy_text": "\n".join(lines),
+            },
+        ).to_json()
     except Exception as e:
         log.error("get_timeline_state: %s", e, exc_info=True)
         return f"Error: {e}"
@@ -8050,12 +8112,19 @@ def set_clip_volume(
         has_waveform = bool((clip_data.get("ui") or {}).get("audio_data"))
 
         def _do_set():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present; only mint
+            # (and clear) an id when called without one (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 _write_volume_points(clip_obj, points)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, {file_id: [clip_id]} if (has_waveform and file_id) else {}, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
@@ -8351,15 +8420,21 @@ def duck_under_speech(
                     refreshed.setdefault(fid, []).append(entry["id"])
 
         def _do_duck():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 for bed_entry, pts, _w, _g in planned:
                     _write_volume_points(bed_entry["clip"], pts)
                 for speech_entry, pts in boosted:
                     _write_volume_points(speech_entry["clip"], pts)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, refreshed, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
@@ -8451,6 +8526,7 @@ AGENT_TOOL_HANDLERS = {
     "get_timeline_placements_metadata_tool": get_timeline_placements_metadata,
     "get_timeline_state_tool": get_timeline_state,
 }
+AGENT_TOOL_HANDLERS.update(PHASE3_HANDLERS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
@@ -8515,6 +8591,7 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
+TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -8642,49 +8719,19 @@ def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
 
 
 def execute_tool(tool_name: str, tool_args: dict) -> str:
-    """Execute a tool by name with the given arguments. Returns the result string."""
-    handler = TOOL_HANDLERS.get(tool_name)
-    if not handler:
-        return f"Error: Unknown tool '{tool_name}'."
+    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
+    from classes.agent_tools.execute import bind_runtime, execute_tool as _dispatch
 
-    # chat_session_id is used for tool state isolation (e.g. split/import → add clip chains).
-    # Only pass it through to the relevant handlers.
-    if isinstance(tool_args, dict) and "chat_session_id" in tool_args:
-        if tool_name not in (
-            "split_file_add_clip_tool",
-            "add_clip_to_timeline_tool",
-            "place_motion_graphic_tool",
-            "import_stock_media_tool",
-            "import_files_tool",
-        ):
-            tool_args = dict(tool_args)
-            tool_args.pop("chat_session_id", None)
-
-    def _invoke():
-        try:
-            if tool_name in _UNGROUPED_TOOLS:
-                return handler(**tool_args)
-            # One tool call == one undo step, decided here rather than
-            # annotated on ~60 handlers.  Mutations a handler makes across
-            # several main-thread hops join this group too, because
-            # _run_on_main_thread carries the id across the hop.  A handler
-            # that opens its own _transaction/_atomic joins rather than nests.
-            return _atomic(_get_app(), handler)(**tool_args)
-        except Exception as e:
-            log.error("Tool %s execution failed: %s", tool_name, e, exc_info=True)
-            return f"Error: {e}"
-
-    try:
-        if QThread is None:
-            return _invoke()
-        app = _get_app()
-        if QThread.currentThread() is app.thread():
-            return _invoke()
-        if tool_name in READ_ONLY_TOOLS or tool_name in BACKGROUND_SAFE_TOOLS:
-            return _invoke()
-        return _run_on_main_thread(
-            _invoke, timeout=_main_thread_timeout(tool_name, tool_args)
-        )
-    except Exception as e:
-        log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
-        return f"Error: {e}"
+    bind_runtime(
+        handlers=TOOL_HANDLERS,
+        read_only=READ_ONLY_TOOLS,
+        background_safe=BACKGROUND_SAFE_TOOLS,
+        ungrouped=_UNGROUPED_TOOLS,
+        main_thread_timeouts=_MAIN_THREAD_TIMEOUTS,
+        get_app=_get_app,
+        run_on_main_thread=_run_on_main_thread,
+        atomic=_atomic,
+        coerce_steps=_coerce_steps,
+        qthread=QThread,
+    )
+    return _dispatch(tool_name, tool_args or {})
