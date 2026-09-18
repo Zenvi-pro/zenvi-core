@@ -442,13 +442,20 @@ class ZenviBackendClient:
                         # reported to the user as done.
                         result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
-                    if text and not text.startswith("Error"):
+                    from classes.agent_tools.receipt import is_error_result, parse_receipt
+                    if text and not is_error_result(text):
                         last_tool_result_holder[0] = text
+                    # Backend classifies failures by an Error: prefix on `result`
+                    # (no separate error field). Success stays full receipt JSON.
+                    wire = text
+                    receipt = parse_receipt(text)
+                    if receipt and receipt.get("status") in ("error", "refused"):
+                        wire = str(receipt.get("summary") or text)
                     _ws_send({
                         "type": "tool_result",
                         "data": {
                             "call_id": call_data.get("call_id", ""),
-                            "result": text,
+                            "result": wire,
                         },
                     })
 

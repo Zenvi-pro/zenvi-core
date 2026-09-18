@@ -60,6 +60,13 @@ requires_ffmpeg = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _clear_mg_import_cache():
+    th._MG_IMPORTED_URLS.clear()
+    yield
+    th._MG_IMPORTED_URLS.clear()
+
+
 def test_import_generated_video_calls_add_files_with_skip_indexing():
     """MG/AI import must not enqueue Gemini indexing."""
     fake_file = SimpleNamespace(id="F1", data={}, absolute_path=lambda: "/tmp/out.mp4")

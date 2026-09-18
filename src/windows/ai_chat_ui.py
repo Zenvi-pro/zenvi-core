@@ -504,7 +504,8 @@ class AIChatWorker(QObject):
                     capture.uninstall()
 
                 text = str(result) if result is not None else ""
-                ok = bool(text) and not text.startswith("Error")
+                from classes.agent_tools.receipt import is_error_result
+                ok = bool(text) and not is_error_result(text)
                 try:
                     self.tool_completed.emit(call_id or "", ok, text)
                 except Exception:

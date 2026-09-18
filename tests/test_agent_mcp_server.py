@@ -25,14 +25,13 @@ from classes.agent_mcp_server import _build_input_schema
 
 # --- schema derivation (no server / no stubs needed) -----------------------
 
-def test_schema_is_permissive_for_kwargs_only():
+def test_schema_is_strict_for_kwargs_only():
     def handler(**kwargs):
         """List the media files in the current project bin."""
 
     schema = _build_input_schema(handler)
     assert schema["type"] == "object"
-    assert schema["additionalProperties"] is True
-    assert "properties" not in schema
+    assert schema["additionalProperties"] is False
 
 
 def test_schema_extracts_typed_params_and_required():
@@ -43,7 +42,7 @@ def test_schema_extracts_typed_params_and_required():
     assert set(schema["properties"]) == {"name", "label", "count"}
     assert schema["required"] == ["name"]
     assert schema["properties"]["count"]["type"] == "integer"
-    assert schema["additionalProperties"] is True  # has **kwargs
+    assert schema["additionalProperties"] is False
 
 
 # --- a stubbed tool layer so we don't need Qt/libopenshot ------------------
