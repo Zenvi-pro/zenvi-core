@@ -1094,6 +1094,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
+        from windows.chat_web_view import chat_owns_clipboard_keys
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        if chat_owns_clipboard_keys(chat, QApplication.focusWidget(), under_mouse):
+            undo_fn = getattr(chat, "undo_chat_attachments", None)
+            if callable(undo_fn) and undo_fn():
+                return
+
         get_app().updates.undo()
 
         # Update the preview
@@ -3897,8 +3907,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def pasteAll(self):
         """Handle Paste QShortcut (at timeline position, same track as original clip)"""
-        if self._dispatch_chat_edit_action("paste"):
+        from windows.chat_web_view import (
+            attach_chat_media_urls,
+            chat_owns_clipboard_keys,
+        )
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        if chat_owns_clipboard_keys(chat, QApplication.focusWidget(), under_mouse):
+            clipboard = get_app().clipboard()
+            mime_data = clipboard.mimeData() if clipboard else None
+            if mime_data and self.clipboard_contains_media(mime_data):
+                urls, _ = self._collect_clipboard_media_urls(mime_data, create_files=True)
+                if attach_chat_media_urls(chat, urls):
+                    return
+            # Text-only (or no usable media): paste into the chat textarea.
+            if self._dispatch_chat_edit_action("paste"):
+                return
             return
+
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
 

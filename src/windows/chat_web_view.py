@@ -26,11 +26,16 @@ except ImportError:
 
 
 # Standard edit keys the main window also binds as WindowShortcut timeline ops.
-_EDIT_SHORTCUTS = (
-    ("copy", QKeySequence.Copy),
-    ("cut", QKeySequence.Cut),
-    ("paste", QKeySequence.Paste),
-    ("selectAll", QKeySequence.SelectAll),
+# getattr: headless Qt stubs (and some Qt builds) lack these StandardKey attrs.
+_EDIT_SHORTCUTS = tuple(
+    (name, seq)
+    for name, seq in (
+        ("copy", getattr(QKeySequence, "Copy", None)),
+        ("cut", getattr(QKeySequence, "Cut", None)),
+        ("paste", getattr(QKeySequence, "Paste", None)),
+        ("selectAll", getattr(QKeySequence, "SelectAll", None)),
+    )
+    if seq is not None
 )
 _WEB_EDIT_ACTIONS = {
     "copy": "Copy",
@@ -79,6 +84,31 @@ def trigger_web_edit_action(view, name: str) -> bool:
         return False
     trigger(action)
     return True
+
+
+def local_paths_from_urls(urls) -> list:
+    """Existing local file paths from a list of QUrl-like objects."""
+    paths = []
+    seen = set()
+    for url in urls or []:
+        is_local = getattr(url, "isLocalFile", None)
+        to_local = getattr(url, "toLocalFile", None)
+        if not callable(is_local) or not callable(to_local) or not is_local():
+            continue
+        path = to_local() or ""
+        if path and path not in seen and os.path.isfile(path):
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def attach_chat_media_urls(chat, urls) -> bool:
+    """Attach local file URLs on the chat composer. True if any chip was added."""
+    paths = local_paths_from_urls(urls)
+    attach = getattr(chat, "attach_paths", None) if chat is not None else None
+    if not paths or not callable(attach):
+        return False
+    return attach(paths) > 0
 
 
 def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool:

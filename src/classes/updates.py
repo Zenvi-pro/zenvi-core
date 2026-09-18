@@ -29,9 +29,27 @@
 
 from classes.logger import log
 from classes.app import get_app
+import contextlib
 import json
 import threading
 import uuid
+
+
+@contextlib.contextmanager
+def nested_transaction(updates):
+    """Group mutations into one undo step; join an outer tid when already set.
+
+    Yields the active transaction id. Only clears ``transaction_id`` if this
+    call minted it (so timeline drop can wrap process_urls + addClip).
+    """
+    caller_tid = updates.transaction_id
+    tid = caller_tid or str(uuid.uuid4())
+    updates.transaction_id = tid
+    try:
+        yield tid
+    finally:
+        if not caller_tid:
+            updates.transaction_id = None
 
 
 class UpdateWatcher:
