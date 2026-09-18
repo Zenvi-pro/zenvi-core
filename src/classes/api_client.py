@@ -936,15 +936,26 @@ class ZenviBackendClient:
         poll_interval: int = 3,
         progress_callback: Optional[Callable[[str, int], None]] = None,
         session=None,
+        max_unreachable: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Poll /indexing/job/{job_id} until the job finishes or max_wait seconds pass.
+
+        Gives up once every poll has failed for max_unreachable seconds straight
+        (ZENVI_INDEX_UNREACHABLE_SEC, default 180), so a lost backend surfaces an
+        error while a brief network blip or a backend redeploy does not.
 
         Always uses a dedicated HTTP session — the shared client session is not
         safe for concurrent QThread indexing workers.
         """
         import time
+        if max_unreachable is None:
+            try:
+                max_unreachable = int(os.environ.get("ZENVI_INDEX_UNREACHABLE_SEC", "180"))
+            except ValueError:
+                max_unreachable = 180
         s = session or self._new_http_session()
         deadline = time.time() + max_wait
+        unreachable_since = None
         while time.time() < deadline:
             if progress_callback:
                 progress_callback("indexing", -1)
@@ -952,6 +963,7 @@ class ZenviBackendClient:
                 r = s.get(f"{self.api_url}/indexing/job/{job_id}", timeout=15)
                 r.raise_for_status()
                 data = r.json()
+                unreachable_since = None
                 status = data.get("status", "running")
                 if status == "done":
                     result = data.get("result")
@@ -977,6 +989,21 @@ class ZenviBackendClient:
                         "message": f"Job {job_id} not found on backend",
                     }
             except Exception as e:
+                code = getattr(getattr(e, "response", None), "status_code", None)
+                if code is not None and code < 500:
+                    err = f"Indexing status check failed: HTTP {code}"
+                    log.error(err)
+                    return {"success": False, "error": err, "message": err}
+                now = time.time()
+                if unreachable_since is None:
+                    unreachable_since = now
+                if now - unreachable_since >= max_unreachable:
+                    if code is not None:
+                        err = f"Backend returned HTTP {code} for {max_unreachable}s while indexing"
+                    else:
+                        err = f"Backend unreachable for {max_unreachable}s while indexing: {e}"
+                    log.error(err)
+                    return {"success": False, "error": err, "message": err}
                 log.warning("Indexing poll error (will retry): %s", e)
             time.sleep(poll_interval)
         return {
