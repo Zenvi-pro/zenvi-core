@@ -3,6 +3,9 @@ Zenvi billing client — thin Supabase RPC wrapper.
 
 Pricing and point amounts live in Supabase (operation_pricing, llm_model_tiers).
 Clients pass operation keys only, never raw point values.
+
+Backend already meters video/morph/indexing/stock (and related AI routes).
+Desktop must not double-charge those keys; check_operation remains for preflight UX.
 """
 
 import logging
@@ -10,6 +13,14 @@ import threading
 from typing import Any, Dict, Optional, Tuple
 
 log = logging.getLogger(__name__)
+
+# Ops the backend already bills. Desktop charge_operation is a no-op for these.
+BACKEND_METERED_OPS = frozenset({
+    "video_generation",
+    "morph_generation",
+    "indexing_per_minute",
+    "stock_add",
+})
 
 
 class CreditsClient:
@@ -55,20 +66,60 @@ class CreditsClient:
             log.warning("credits_client: RPC %s failed: %s", function_name, exc)
             return None
 
-    def _fire(self, function_name: str, payload: dict) -> None:
-        threading.Thread(
-            target=self._rpc,
-            args=(function_name, payload),
-            daemon=True,
-            name=f"billing-{function_name}",
-        ).start()
-
     def _row(self, result: Any) -> Dict[str, Any]:
         if isinstance(result, dict):
             return result
         if isinstance(result, list) and result:
             return result[0] if isinstance(result[0], dict) else {}
         return {}
+
+    def _log_charge_result(self, operation: str, result: Optional[Any]) -> None:
+        """Surface charge failures (tier_limit / insufficient) instead of discarding them."""
+        if result is None:
+            log.warning(
+                "credits_client: charge_operation failed for %s (no RPC result)",
+                operation,
+            )
+            return
+        row = self._row(result)
+        status = str(
+            row.get("status")
+            or row.get("reason")
+            or row.get("block_reason")
+            or row.get("error")
+            or ""
+        ).lower()
+        denied = (
+            row.get("success") is False
+            or row.get("ok") is False
+            or row.get("charged") is False
+            or row.get("allowed") is False
+        )
+        if any(token in status for token in ("tier_limit", "insufficient", "denied", "failed")):
+            log.warning(
+                "credits_client: charge_operation %s returned %s: %s",
+                operation,
+                status or "denied",
+                row,
+            )
+        elif denied:
+            log.warning(
+                "credits_client: charge_operation %s denied: %s",
+                operation,
+                row,
+            )
+
+    def _fire(self, function_name: str, payload: dict) -> None:
+        def _run() -> None:
+            result = self._rpc(function_name, payload)
+            if function_name == "charge_operation":
+                self._log_charge_result(str(payload.get("p_operation") or ""), result)
+
+        threading.Thread(
+            target=_run,
+            daemon=True,
+            name=f"billing-{function_name}",
+        ).start()
 
     def cached_balance(self) -> Optional[int]:
         """Last known balance from a successful fetch (None if never loaded)."""
@@ -120,6 +171,9 @@ class CreditsClient:
         note: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> None:
+        if operation in BACKEND_METERED_OPS:
+            log.debug("skipped desktop charge — backend meters %s", operation)
+            return
         payload: Dict[str, Any] = {
             "p_operation": operation,
             "p_units": units,
@@ -131,6 +185,36 @@ class CreditsClient:
         if duration_seconds is not None:
             payload["p_duration_seconds"] = float(duration_seconds)
         self._fire("charge_operation", payload)
+
+    def charge_operation_sync(
+        self,
+        operation: str,
+        units: int = 1,
+        duration_seconds: Optional[float] = None,
+        provider: Optional[str] = None,
+        session_id: Optional[str] = None,
+        note: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Synchronous charge; returns RPC row (or None). Skips backend-metered ops."""
+        if operation in BACKEND_METERED_OPS:
+            log.debug("skipped desktop charge — backend meters %s", operation)
+            return None
+        payload: Dict[str, Any] = {
+            "p_operation": operation,
+            "p_units": units,
+            "p_provider": provider,
+            "p_session_id": session_id,
+            "p_note": note,
+            "p_idempotency_key": idempotency_key,
+        }
+        if duration_seconds is not None:
+            payload["p_duration_seconds"] = float(duration_seconds)
+        result = self._rpc("charge_operation", payload)
+        self._log_charge_result(operation, result)
+        if result is None:
+            return None
+        return self._row(result)
 
     def refund(
         self,
@@ -228,12 +312,16 @@ def charge_operation_on_success(
     duration_seconds: Optional[float] = None,
     idempotency_key: Optional[str] = None,
 ) -> None:
-    if success:
-        credits.charge_operation(
-            operation,
-            units=units,
-            duration_seconds=duration_seconds,
-            provider=provider,
-            note=note,
-            idempotency_key=idempotency_key,
-        )
+    if not success:
+        return
+    if operation in BACKEND_METERED_OPS:
+        log.debug("skipped desktop charge — backend meters %s", operation)
+        return
+    credits.charge_operation(
+        operation,
+        units=units,
+        duration_seconds=duration_seconds,
+        provider=provider,
+        note=note,
+        idempotency_key=idempotency_key,
+    )

@@ -474,7 +474,24 @@ class ZenviBackendClient:
             ping_thread.start()
 
             final_response: Optional[str] = None
+            billing_meta: Dict[str, Any] = {}
             saw_done = False
+
+            def _merge_billing(src: dict) -> None:
+                if not isinstance(src, dict):
+                    return
+                for key in ("credits_charged", "run_credits", "usage"):
+                    if key in src and src[key] is not None:
+                        billing_meta[key] = src[key]
+
+            def _emit_response(text: str, sid: str) -> None:
+                if not on_response:
+                    return
+                try:
+                    on_response(text, sid, dict(billing_meta))
+                except TypeError:
+                    on_response(text, sid)
+
             try:
                 while True:
                     try:
@@ -541,8 +558,8 @@ class ZenviBackendClient:
                                 log.debug("on_token handler error: %s", exc)
                     elif msg_type == "assistant_response":
                         final_response = data.get("response", "")
-                        if on_response:
-                            on_response(final_response, data.get("session_id", ""))
+                        _merge_billing(data)
+                        _emit_response(final_response, data.get("session_id", ""))
                     elif msg_type in ("plan_ready", "plan_updated", "plan_step_status", "plan_execution_done", "plan_questions", "mode_changed"):
                         if on_plan_event:
                             try:
@@ -554,6 +571,7 @@ class ZenviBackendClient:
                             on_error(data.get("message", "Unknown error"))
                         break
                     elif msg_type == "done":
+                        _merge_billing(data)
                         saw_done = True
                         break
                     elif msg_type in ("keepalive", "pong"):
@@ -580,6 +598,8 @@ class ZenviBackendClient:
                 ws.close()
             except Exception:
                 pass
+
+            self._last_ws_billing = dict(billing_meta)
 
             if saw_done or final_response is not None:
                 return final_response

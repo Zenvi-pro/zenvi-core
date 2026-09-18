@@ -459,11 +459,13 @@ class AIChatWorker(QObject):
         super().__init__(parent)
         self._backend_session_id = None
         self._stopping = False  # Set to True during app shutdown to suppress fallback/emit
+        self._last_billing = {}
 
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent", action: str = "chat", plan_id: str = ""):
         """Send the user message to the backend via WebSocket (with tool delegation)."""
         self._agent_mode = agent_mode or "agent"
+        self._last_billing = {}
         try:
             from classes.tool_handlers import execute_tool
 
@@ -519,10 +521,12 @@ class AIChatWorker(QObject):
             final_response = None
             final_error = None
 
-            def on_response(response_text, session_id):
+            def on_response(response_text, session_id, meta=None):
                 nonlocal final_response
                 final_response = response_text
                 self._backend_session_id = session_id or self._backend_session_id
+                if isinstance(meta, dict) and meta:
+                    self._last_billing = dict(meta)
 
             def on_error(error_message):
                 nonlocal final_error
@@ -609,6 +613,11 @@ class AIChatWorker(QObject):
                 plan_id=plan_id or None,
                 on_plan_event=on_plan_event,
             )
+            # Prefer billing captured after the full WS turn (done may carry
+            # credits_charged after assistant_response already fired).
+            late_billing = getattr(client, "_last_ws_billing", None)
+            if isinstance(late_billing, dict) and late_billing:
+                self._last_billing = dict(late_billing)
 
             if final_error:
                 # App is shutting down — the WS was closed intentionally.
@@ -2256,7 +2265,12 @@ class AIChatWindow(QDockWidget):
         dlg.activateWindow()
 
     def _prepend_editor_snapshot(self, text: str) -> str:
-        """Ground the model with a bounded timeline snapshot (main thread)."""
+        """Ground the model with a bounded timeline snapshot (main thread).
+
+        Attach once per user turn — skip if this payload already includes one.
+        """
+        if text and "[Editor snapshot]" in text:
+            return text
         try:
             from classes.tool_handlers import build_editor_snapshot_for_chat
 
@@ -3649,6 +3663,8 @@ class AIChatWindow(QDockWidget):
                         "if nothing appears in the Plan dock."
                     )
                 self._add_assistant_msg(body)
+            self._push_request_credits(getattr(self.sender(), "_last_billing", None))
+            self._fetch_credits_balance()
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
@@ -3663,10 +3679,31 @@ class AIChatWindow(QDockWidget):
                     "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
                     % (json.dumps(sid), json.dumps(html_body))
                 )
+            self._fetch_credits_balance()
             if self._use_web_ui:
                 self._push_tabs_to_js()
             else:
                 self._rebuild_widget_tabs()
+
+    def _push_request_credits(self, billing) -> None:
+        """Show per-request cost under the last assistant message when backend sends it."""
+        if not self._use_web_ui or not isinstance(billing, dict):
+            return
+        raw = billing.get("credits_charged")
+        if raw is None:
+            raw = billing.get("run_credits")
+        if raw is None:
+            return
+        try:
+            amount = int(raw)
+        except (TypeError, ValueError):
+            return
+        if amount < 0:
+            return
+        self._run_js(
+            "if(window.showRequestCredits) window.showRequestCredits(%s);"
+            % amount
+        )
 
     @pyqtSlot(str)
     def _on_error(self, text: str):

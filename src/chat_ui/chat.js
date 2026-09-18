@@ -608,6 +608,7 @@
         var cls = 'chat-message chat-message-enter ';
         if (role === 'user') cls += 'chat-message-user ';
         if (role === 'system') cls += 'chat-message-system ';
+        if (isAssistant) cls += 'chat-message-assistant ';
         div.className = cls;
         if (role === 'system') {
             div.innerHTML = '<div class="chat-message-body">' + '<p>' + bodyHtml + '</p>' + '</div>';
@@ -615,6 +616,32 @@
             div.innerHTML = '<div class="chat-message-body">' + (isAssistant ? bodyHtml : '<p>' + bodyHtml + '</p>') + '</div>';
         }
         messagesEl.appendChild(div);
+        scrollToBottomIfPinned();
+    };
+
+    window.showRequestCredits = function (amount) {
+        var n = Number(amount);
+        if (!isFinite(n) || n < 0) return;
+        var nodes = messagesEl ? messagesEl.querySelectorAll('.chat-message') : [];
+        var target = null;
+        for (var i = nodes.length - 1; i >= 0; i--) {
+            var el = nodes[i];
+            if (el.classList.contains('chat-message-user') || el.classList.contains('chat-message-system')) {
+                continue;
+            }
+            target = el;
+            break;
+        }
+        if (!target) return;
+        var existing = target.querySelector('.chat-request-credits');
+        if (existing) {
+            existing.textContent = 'This request: ' + n + ' credits';
+            return;
+        }
+        var line = document.createElement('div');
+        line.className = 'chat-request-credits';
+        line.textContent = 'This request: ' + n + ' credits';
+        target.appendChild(line);
         scrollToBottomIfPinned();
     };
 
@@ -2669,9 +2696,18 @@
     var RING_CIRCUMFERENCE = 2 * Math.PI * 8; // r=8 -> ~50.265
 
     window.updateContextUsage = function (usageJson) {
-        var usage;
-        try { usage = JSON.parse(usageJson); } catch (e) { return; }
-        var fraction = usage.fraction || 0;
+        var usage = usageJson;
+        if (typeof usageJson === 'string') {
+            try { usage = JSON.parse(usageJson); } catch (e) { return; }
+        }
+        if (!usage || typeof usage !== 'object') return;
+
+        var hasDom = !!(contextRingFg || popoverPct || popoverTokens || popoverBarFill || carryForwardBtn);
+        if (!hasDom) return;
+
+        var fraction = Number(usage.fraction) || 0;
+        if (fraction < 0) fraction = 0;
+        if (fraction > 1) fraction = 1;
         var used = usage.used || 0;
         var total = usage.total || 1;
         var pctText = (fraction * 100).toFixed(1) + '%';

@@ -126,6 +126,13 @@
     font-size: 12px;
 }
 .chat-message-body pre code { padding: 0; background: transparent; border-radius: 0; }
+.chat-request-credits {
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--chat-muted, #6b7280);
+    opacity: 0.9;
+}
 
 /* ΓöÇΓöÇ Thought badge ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-thought-badge {
