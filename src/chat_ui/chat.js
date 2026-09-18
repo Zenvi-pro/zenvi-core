@@ -608,7 +608,6 @@
         var cls = 'chat-message chat-message-enter ';
         if (role === 'user') cls += 'chat-message-user ';
         if (role === 'system') cls += 'chat-message-system ';
-        if (isAssistant) cls += 'chat-message-assistant ';
         div.className = cls;
         if (role === 'system') {
             div.innerHTML = '<div class="chat-message-body">' + '<p>' + bodyHtml + '</p>' + '</div>';
@@ -619,31 +618,7 @@
         scrollToBottomIfPinned();
     };
 
-    window.showRequestCredits = function (amount) {
-        var n = Number(amount);
-        if (!isFinite(n) || n < 0) return;
-        var nodes = messagesEl ? messagesEl.querySelectorAll('.chat-message') : [];
-        var target = null;
-        for (var i = nodes.length - 1; i >= 0; i--) {
-            var el = nodes[i];
-            if (el.classList.contains('chat-message-user') || el.classList.contains('chat-message-system')) {
-                continue;
-            }
-            target = el;
-            break;
-        }
-        if (!target) return;
-        var existing = target.querySelector('.chat-request-credits');
-        if (existing) {
-            existing.textContent = 'This request: ' + n + ' credits';
-            return;
-        }
-        var line = document.createElement('div');
-        line.className = 'chat-request-credits';
-        line.textContent = 'This request: ' + n + ' credits';
-        target.appendChild(line);
-        scrollToBottomIfPinned();
-    };
+;
 
     // ── Streaming-token rendering ──────────────────────────────────────────
     var streamingMessageEl = null;
