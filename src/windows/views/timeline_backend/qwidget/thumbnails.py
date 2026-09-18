@@ -25,28 +25,92 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import os
 from collections import deque
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QImage
 
+from classes import info
 from classes.logger import log
 from classes.thumbnail import GetThumbPath
 
+# Cap pending work so fast scroll/zoom cannot unbounded-queue the machine.
+_MAX_PENDING_JOBS = 64
+
+
+def existing_thumb_path(file_id, frame):
+    """Resolve an on-disk thumbnail path without generating a new one."""
+    file_id = str(file_id or "")
+    frame = int(frame or 0)
+    if not file_id or frame <= 0:
+        return ""
+    subdir = os.path.join(info.THUMBNAIL_PATH, file_id)
+    candidates = [
+        os.path.join(subdir, f"{frame}.png"),
+    ]
+    if frame == 1:
+        candidates.append(os.path.join(info.THUMBNAIL_PATH, f"{file_id}.png"))
+    else:
+        candidates.append(os.path.join(info.THUMBNAIL_PATH, f"{file_id}-{frame}.png"))
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
+def load_thumbnail_image(file_id, frame):
+    """Load a thumbnail off the GUI thread as a QImage (thread-safe).
+
+    Tries an existing on-disk file first, then asks GetThumbPath to generate.
+    """
+    path = existing_thumb_path(file_id, frame)
+    if not path:
+        try:
+            path = GetThumbPath(file_id, frame) or ""
+        except Exception:
+            log.warning(
+                "Thumbnail request failed for file_id=%s frame=%s",
+                file_id,
+                frame,
+                exc_info=1,
+            )
+            path = ""
+    if not path or not os.path.exists(path):
+        return QImage(), ""
+    image = QImage(path)
+    if image.isNull():
+        return QImage(), path
+    return image, path
+
 
 class _ThumbnailWorker(QObject):
-    """Worker object that resolves thumbnail paths on a background thread."""
+    """Worker object that resolves thumbnail images on a background thread."""
 
-    thumbnail_ready = pyqtSignal(str, int, str, int)
+    thumbnail_ready = pyqtSignal(str, int, object, int)
 
     def __init__(self):
         super().__init__()
         self._queue = deque()
         self._processing = False
+        self._current_generation = 0
 
     @pyqtSlot(str, str, int, int)
     def request_thumbnail(self, clip_id, file_id, frame, generation):
-        """Queue a thumbnail request."""
+        """Queue a thumbnail request; drop stale / overflow jobs."""
+        generation = int(generation or 0)
+        if generation < self._current_generation:
+            return
+        if generation > self._current_generation:
+            self._current_generation = generation
+            # Drop jobs from older generations.
+            self._queue = deque(
+                job for job in self._queue if job[3] >= self._current_generation
+            )
         self._queue.append((clip_id, file_id, frame, generation))
+        while len(self._queue) > _MAX_PENDING_JOBS:
+            self._queue.popleft()
         if not self._processing:
             self._process_next()
 
@@ -59,26 +123,20 @@ class _ThumbnailWorker(QObject):
     def _process_next(self):
         while self._queue:
             clip_id, file_id, frame, generation = self._queue.popleft()
+            if generation < self._current_generation:
+                continue
             self._processing = True
-            path = ""
+            image = QImage()
             if clip_id and file_id and frame > 0:
-                try:
-                    path = GetThumbPath(file_id, frame)
-                except Exception:
-                    log.warning(
-                        "Thumbnail request failed for file_id=%s frame=%s",
-                        file_id,
-                        frame,
-                        exc_info=1,
-                    )
-            self.thumbnail_ready.emit(clip_id, frame, path or "", generation)
+                image, _path = load_thumbnail_image(file_id, frame)
+            self.thumbnail_ready.emit(clip_id, frame, image, generation)
         self._processing = False
 
 
 class TimelineThumbnailManager(QObject):
     """Qt helper that forwards thumbnail requests to a worker thread."""
 
-    thumbnail_ready = pyqtSignal(str, int, str, int)
+    thumbnail_ready = pyqtSignal(str, int, object, int)
     _request_job = pyqtSignal(str, str, int, int)
     _clear_jobs = pyqtSignal()
 

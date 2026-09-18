@@ -115,10 +115,20 @@ class QueryObject:
             object_cache = cls._cache.setdefault(OBJECT_TYPE.object_name, {})
             child_id = child.get("id")
 
-            # Cache deep copies by id; reuse within the same project version
+            # Cache deep copies by id; reuse within the same project version.
+            # Waveform sample vectors (ui.audio_data) are shared by reference via
+            # the deepcopy memo — they are large and replaced wholesale, never
+            # mutated in place by the paint path. This keeps drag/edit cheap on
+            # long projects without changing what is written to the project file.
             cached = object_cache.get(child_id)
             if cached is None:
-                cached = copy.deepcopy(child)
+                memo = {}
+                ui = child.get("ui") if isinstance(child, dict) else None
+                if isinstance(ui, dict):
+                    audio = ui.get("audio_data")
+                    if isinstance(audio, list) and audio:
+                        memo[id(audio)] = audio
+                cached = copy.deepcopy(child, memo)
                 object_cache[child_id] = cached
             return cached
 
