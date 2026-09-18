@@ -60,10 +60,10 @@ def test_empty_prompt_does_not_stamp_analyzed():
     f.save.assert_not_called()
 
 
-def _run_generate(place_result="Added clip to track 1 at 3.0s"):
+def _run_generate(place_result="Added clip to track 1 at 3.0s", save=None):
     """generate_video_and_add_to_timeline with generation + download mocked out."""
     fake_file = SimpleNamespace(
-        id="F42", data={"duration": 5.0}, save=MagicMock(),
+        id="F42", data={"duration": 5.0}, save=save or MagicMock(),
         absolute_path=lambda: "/tmp/gen.mp4",
     )
     calls = {}
@@ -135,3 +135,24 @@ def test_place_failure_reports_the_file_id_and_says_do_not_regenerate():
     assert "file_id=F42" in msg
     assert "Do NOT regenerate" in msg
     assert "add_clip_to_timeline_tool" in msg
+
+
+def test_stamp_reports_a_save_failure():
+    f = SimpleNamespace(data={}, id="FILE1", save=MagicMock(side_effect=OSError("disk full")))
+    with patch("classes.tool_handlers._get_app"):
+        assert _stamp_generated_video_metadata(f, "a paper plane") is False
+
+
+def test_stamp_reports_success():
+    f = SimpleNamespace(data={}, id="FILE1", save=MagicMock())
+    with patch("classes.tool_handlers._get_app"):
+        assert _stamp_generated_video_metadata(f, "a paper plane") is True
+
+
+def test_unsaved_metadata_is_a_partial_success_not_a_clean_one():
+    """The clip is placed, but the caller must hear its name/tags/summary were not saved."""
+    msg, _, calls = _run_generate(save=MagicMock(side_effect=OSError("disk full")))
+    assert calls["add_clip"]["file_id"] == "F42"
+    assert msg != "Added clip to track 1 at 3.0s"
+    assert "file_id=F42" in msg
+    assert "metadata" in msg.lower()

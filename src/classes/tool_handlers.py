@@ -4506,10 +4506,12 @@ def _stamp_generated_video_metadata(file_obj, prompt=""):
     Generated media is imported with skip_indexing=True, so without this the
     scene panel and clip search have nothing to show for the clip the agent
     just made. The generation prompt is the summary.
+
+    Returns False when the metadata could not be saved, True otherwise.
     """
     summary = (prompt or "").strip()
     if not file_obj or not summary:
-        return
+        return True
     try:
         tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
         if isinstance(tags, str):
@@ -4538,8 +4540,10 @@ def _stamp_generated_video_metadata(file_obj, prompt=""):
             _get_app().window.FileUpdated.emit(str(file_obj.id))
         except Exception:
             pass
+        return True
     except Exception as exc:
         log.warning("Could not stamp generated-video metadata: %s", exc)
+        return False
 
 
 def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
@@ -5163,7 +5167,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     + (f": {import_err}" if import_err else ".")
                 )
 
-            _stamp_generated_video_metadata(f, prompt)
+            stamped = _stamp_generated_video_metadata(f, prompt)
 
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
@@ -5258,6 +5262,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"{msg or 'unknown'}. "
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
                     f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
                 )
             return msg
         except Exception as e:
