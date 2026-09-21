@@ -63,7 +63,6 @@ try:
     from classes.export_acceleration.export_tuning import (
         export_cache_bytes,
         get_export_pipeline_profile,
-        is_pipelined_export_safe,
         uses_mp4_faststart_preset,
     )
     from classes.export_acceleration.export_pipeline import (
@@ -81,7 +80,6 @@ try:
 except Exception:  # pragma: no cover - import soft-fail for partial installs
     export_cache_bytes = None
     get_export_pipeline_profile = None
-    is_pipelined_export_safe = None
     uses_mp4_faststart_preset = None
     PipelineCancelled = Exception
     run_pipelined_export = None
@@ -1246,16 +1244,6 @@ class Export(QDialog):
             )
             # Image sequences and audio-only keep the serial path.
             if export_type == _("Image Sequence") or export_type == _("Audio Only"):
-                use_pipeline = False
-            # Non-MP4 containers (MOV, MKV, …) are not safe on the overlapped
-            # WriteFrame path — fall back to legacy serial encode.
-            elif is_pipelined_export_safe and not is_pipelined_export_safe(
-                video_settings.get("vformat")
-            ):
-                log.info(
-                    "Pipelined export disabled for container %s; using serial path",
-                    video_settings.get("vformat"),
-                )
                 use_pipeline = False
 
             if use_pipeline:

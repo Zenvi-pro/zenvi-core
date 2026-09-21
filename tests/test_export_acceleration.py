@@ -13,7 +13,6 @@ import pytest
 from classes.export_acceleration.export_tuning import (
     export_cache_bytes,
     get_export_pipeline_profile,
-    is_pipelined_export_safe,
     uses_mp4_faststart_preset,
 )
 from classes.export_acceleration.hw_decode import (
@@ -79,22 +78,17 @@ def test_pipeline_profile_parallel_disabled():
     assert profile.composite_workers == 1
 
 
-def test_pipelined_export_safe_only_mp4_family():
-    assert is_pipelined_export_safe("mp4")
-    assert is_pipelined_export_safe("M4V")
-    assert is_pipelined_export_safe(".mp4")
-    assert not is_pipelined_export_safe("mov")
-    assert not is_pipelined_export_safe("mkv")
-    assert not is_pipelined_export_safe("avi")
-    assert not is_pipelined_export_safe("")
-    assert not is_pipelined_export_safe(None)
-
-
-def test_mp4_faststart_preset_not_applied_to_mov():
+def test_mp4_faststart_preset_only_for_mp4_family():
+    """mp4_faststart is the MOV-crash trigger when applied to non-MP4 containers."""
     assert uses_mp4_faststart_preset("mp4")
-    assert uses_mp4_faststart_preset("m4v")
+    assert uses_mp4_faststart_preset("M4V")
+    assert uses_mp4_faststart_preset(".mp4")
     assert not uses_mp4_faststart_preset("mov")
+    assert not uses_mp4_faststart_preset("mkv")
+    assert not uses_mp4_faststart_preset("avi")
     assert not uses_mp4_faststart_preset("webm")
+    assert not uses_mp4_faststart_preset("")
+    assert not uses_mp4_faststart_preset(None)
 
 
 # ---------------------------------------------------------------------------
