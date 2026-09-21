@@ -907,23 +907,15 @@ jobs:
           codesign -dvvv "$APP" 2>&1 | head -6
           spctl -a -vv "$APP" 2>&1 || true
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Create DMG
         run: |
           DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
-          rm -rf dmgroot && mkdir -p dmgroot
-          ditto "Zenvi.app" "dmgroot/Zenvi.app"
-          ln -s /Applications dmgroot/Applications
-          xattr -cr dmgroot/ 2>/dev/null || true
-
-          for attempt in 1 2 3; do
-            echo "hdiutil attempt $attempt ..."
-            hdiutil create -volname "Zenvi" -srcfolder dmgroot \
-              -ov -format UDZO "$DMG_NAME" && break
-            [ "$attempt" -lt 3 ] && sleep 5
-          done
-
-          [ -f "$DMG_NAME" ] || { echo "::error::DMG not created after 3 attempts"; exit 1; }
-          echo "Created $DMG_NAME ($(du -sh "$DMG_NAME" | cut -f1))"
+          xattr -cr Zenvi.app 2>/dev/null || true
+          bash installer/create-zenvi-dmg.sh Zenvi.app "$DMG_NAME"
+          [ -f "$DMG_NAME" ] || { echo "::error::DMG not created"; exit 1; }
 
       - name: Sign and notarize DMG
         env:
