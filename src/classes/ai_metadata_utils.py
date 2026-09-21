@@ -3,9 +3,9 @@ Utility functions for handling AI metadata on clips, especially for sub-clipping
 
 Scene timestamps are always resolved against **root source-file seconds** for filtering.
 Persisted clip metadata stores:
-  - scene.source_time — absolute seconds in the indexed root file
-  - scene.time — clip-local seconds (0 at clip trim start) when rebased=True
-  - source_window — {start, end} absolute source bounds for this placement
+  - scene.source_time ΓÇö absolute seconds in the indexed root file
+  - scene.time ΓÇö clip-local seconds (0 at clip trim start) when rebased=True
+  - source_window ΓÇö {start, end} absolute source bounds for this placement
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ def materialize_clip_ai_metadata(
     """
     Build clip-local metadata from root file ai_metadata and a source trim window.
 
-    Always filters by absolute source_time — never trusts rebased scene.time alone.
+    Always filters by absolute source_time ΓÇö never trusts rebased scene.time alone.
     """
     if not isinstance(root_ai, dict) or not root_ai.get("analyzed"):
         return {}
@@ -307,6 +307,26 @@ def get_effective_ai_metadata(
     root_ai = root_ai_metadata
     if root_ai is None and isinstance(file_data, dict):
         root_ai = file_data.get("ai_metadata")
+    # Hydrate bulky transcript/scene fields from the fingerprint cache when
+    # project JSON only holds index handles (or a thin stub).
+    if isinstance(file_data, dict):
+        fp = file_data.get("fingerprint")
+        if fp:
+            try:
+                from classes.media_cache import load_ai_metadata
+                cached = load_ai_metadata(fp)
+                if isinstance(cached, dict) and cached:
+                    if not isinstance(root_ai, dict):
+                        root_ai = {}
+                    merged = dict(cached)
+                    merged.update({k: v for k, v in root_ai.items() if v not in (None, "", [], {})})
+                    # Always prefer live index handles from project JSON.
+                    for key in ("index", "twelvelabs"):
+                        if root_ai.get(key):
+                            merged[key] = root_ai[key]
+                    root_ai = merged
+            except Exception:
+                pass
     if not isinstance(root_ai, dict) or not root_ai.get("analyzed"):
         return {}
 
@@ -375,7 +395,7 @@ def build_summary_preview(effective_metadata: Optional[dict], max_items: int = 5
                 parts.extend(str(v).strip() for v in vals[:max_items] if v)
     preview = ", ".join(parts[:max_items])
     if len(preview) > 80:
-        preview = preview[:79].rstrip() + "…"
+        preview = preview[:79].rstrip() + "ΓÇª"
     return preview
 
 

@@ -726,26 +726,11 @@ def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_i
 
 def _output_path_for_generated_video(ext=".mp4"):
     """Return an absolute path for a new generated video (preview-safe)."""
+    from classes.assets import durable_media_path
     ext = ext if str(ext).startswith(".") else f".{ext}"
     if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv"):
         ext = ".mp4"
-    app = _get_app()
-    project_path = getattr(app.project, "current_filepath", None) or ""
-    if project_path and os.path.isabs(os.path.expanduser(str(project_path))):
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(project_path))), "Generated")
-        try:
-            os.makedirs(out_dir, exist_ok=True)
-            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
-        except OSError:
-            pass
-    try:
-        from classes import info
-        out_dir = os.path.join(info.USER_PATH, "Generated")
-        os.makedirs(out_dir, exist_ok=True)
-        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
-    except Exception:
-        pass
-    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}{ext}")
+    return durable_media_path(ext=ext)
 
 
 def _canonical_media_path(path):
@@ -753,6 +738,12 @@ def _canonical_media_path(path):
     if not path:
         return path
     return os.path.normpath(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _cleanup_scratch_parent(path, prefix):
+    """Remove a tempfile.mkdtemp parent when *path* sits under a matching prefix."""
+    from classes.assets import cleanup_scratch_parent
+    cleanup_scratch_parent(path, prefix)
 
 
 def _download_video_url_to_path(video_url: str, dest_path: str, timeout: int = 180) -> Optional[str]:
@@ -2867,7 +2858,13 @@ def watch_clip_window(
     timeline_clip_id="",
     **_kw,
 ) -> str:
-    """Layer-3 watch of a candidate window. Distinct from watch_clip_tool (play)."""
+    """Vision-check a window of a placed clip: confirm the query is on screen.
+    Call this after you place, slice, trim, or modify a clip to verify your own
+    edit. Read-only: reports in/out/peak in source seconds.
+
+    Layer-3 watch of a candidate window; distinct from watch_clip_tool, which
+    plays the clip in the editor.
+    """
     try:
         from classes.clip_resolver import _coerce_optional_float
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
@@ -2957,15 +2954,6 @@ def watch_clip_window(
     except Exception as e:
         log.error("watch_clip_window: %s", e, exc_info=True)
         return f"Error: {e}"
-
-
-_ORDINAL_MAP = {
-    "first": 1, "1st": 1, "one": 1,
-    "second": 2, "2nd": 2, "two": 2,
-    "third": 3, "3rd": 3, "three": 3,
-    "fourth": 4, "4th": 4, "four": 4,
-    "fifth": 5, "5th": 5, "five": 5,
-}
 
 
 def _parse_occurrence(occurrence_str: str, query: str) -> int:
@@ -4120,15 +4108,24 @@ def _normalize_imported_file_path(file_obj, final_path):
 def _refresh_imported_file_thumbnail(file_id, file_path):
     """Pre-generate and refresh the files-panel thumbnail for an imported video."""
     from classes import info
-    from classes.thumbnail import GenerateThumbnail
+    from classes.thumbnail import GenerateThumbnail, preferred_thumbnail_path
 
     file_path = _canonical_media_path(file_path)
     if not file_id or not file_path or not os.path.isfile(file_path):
         return
 
+    fingerprint = None
+    try:
+        from classes.query import File
+        f = File.get(id=file_id)
+        if f and isinstance(getattr(f, "data", None), dict):
+            fingerprint = f.data.get("fingerprint")
+    except Exception:
+        fingerprint = None
+
     mask_path = os.path.join(info.IMAGES_PATH, "mask.png")
     overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
-    thumb_path = os.path.join(info.THUMBNAIL_PATH, file_id, "1.png")
+    thumb_path = preferred_thumbnail_path(file_id, 1, fingerprint=fingerprint)
     GenerateThumbnail(file_path, thumb_path, 1, 98, 64, mask_path, overlay_path)
 
     try:
@@ -4470,7 +4467,21 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
         clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
         if err:
             log.warning("Re-encode failed, using original: %s", err)
-            clean_path = video_path
+            # Copy scratch/original into the durable destination before import so
+            # caller scratch cleanup cannot delete the only project copy.
+            try:
+                if os.path.abspath(video_path) != os.path.abspath(perm_path):
+                    import shutil
+                    os.makedirs(os.path.dirname(perm_path), exist_ok=True)
+                    shutil.copy2(video_path, perm_path)
+                    clean_path = perm_path
+                else:
+                    clean_path = video_path
+            except Exception as copy_err:
+                return None, (
+                    "re-encode failed (%s) and could not copy original: %s"
+                    % (err, copy_err)
+                )
 
     final_path = _canonical_media_path(clean_path)
 
@@ -4663,16 +4674,19 @@ def _download_and_import_one(url, label="", job_transparent=None):
         if dest_path is None:
             return "", 0.0, f"download failed: {last_err}", False, ""
 
-        if job_transparent is True:
-            preserve_alpha = True
-        elif job_transparent is False:
-            preserve_alpha = False
-        else:
-            preserve_alpha = _looks_like_alpha_video(dest_path)
+        try:
+            if job_transparent is True:
+                preserve_alpha = True
+            elif job_transparent is False:
+                preserve_alpha = False
+            else:
+                preserve_alpha = _looks_like_alpha_video(dest_path)
 
-        f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
-        if err:
-            return "", size_mb, f"import failed: {err}", False, ""
+            f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
+            if err:
+                return "", size_mb, f"import failed: {err}", False, ""
+        finally:
+            _cleanup_scratch_parent(dest_path, "zenvi_hyperframes_")
 
         imported_path = None
         try:
@@ -5026,34 +5040,37 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         tmp_dir = tempfile.mkdtemp(prefix="zenvi_url_import_")
         dest_path = os.path.join(tmp_dir, raw_name)
 
-        log.info("Downloading video from URL: %s → %s", video_url, dest_path)
-        req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
-        with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
+        try:
+            log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+            req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
+            with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
 
-        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+            size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+            log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
 
-        # Import into project files (re-encodes for libopenshot compatibility).
-        f, err = _import_generated_video(dest_path)
-        if err:
-            return f"Error importing video: {err}"
-        file_id = f.id if f else ""
-        if not file_id:
-            return "Error: video imported but its file_id could not be resolved."
+            # Import into project files (re-encodes for libopenshot compatibility).
+            f, err = _import_generated_video(dest_path)
+            if err:
+                return f"Error importing video: {err}"
+            file_id = f.id if f else ""
+            if not file_id:
+                return "Error: video imported but its file_id could not be resolved."
 
-        # Place it on the timeline.
-        placement = add_clip_to_timeline(
-            file_id=file_id, position_seconds=position_seconds, track=track, **_kw
-        )
-        return (
-            f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
-            f"{placement}"
-        )
+            # Place it on the timeline.
+            placement = add_clip_to_timeline(
+                file_id=file_id, position_seconds=position_seconds, track=track, **_kw
+            )
+            return (
+                f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
+                f"{placement}"
+            )
+        finally:
+            _cleanup_scratch_parent(dest_path, "zenvi_url_import_")
     except Exception as e:
         log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
         return f"Error importing video from URL: {e}"
@@ -6212,16 +6229,14 @@ def generate_tts_and_add_to_timeline(
             return f"Error: {resp.get('error', 'TTS generation failed')}"
 
         import base64
-        import tempfile
+
+        from classes.assets import durable_media_path
 
         raw = base64.b64decode(resp.get("audio_base64") or "")
         if not raw:
             return "Error: TTS returned empty audio."
 
-        out_path = os.path.join(
-            tempfile.gettempdir(),
-            f"zenvi_tts_{uuid_module.uuid4().hex}.mp3",
-        )
+        out_path = durable_media_path(ext=".mp3")
         with open(out_path, "wb") as f:
             f.write(raw)
 
@@ -6570,9 +6585,9 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) 
 
 
 def resummarize_project_file(file_id: str = "", **kwargs) -> str:
-    """Re-run Pegasus audiovisual summary for an already-indexed project file.
+    """Re-run audiovisual summary for an already-indexed project file.
 
-    Requires an existing TwelveLabs video_id. Runs on a worker thread.
+    Gemini indexing has no summarize-only path — callers should reindex instead.
     """
     try:
         if not file_id:
@@ -6585,17 +6600,24 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
             if not f:
                 return None
             ai = f.data.get("ai_metadata") if isinstance(f.data.get("ai_metadata"), dict) else {}
-            tl = ai.get("twelvelabs") if isinstance(ai.get("twelvelabs"), dict) else {}
+            idx = get_index_block(ai)
             return {
                 "path": f.data.get("path", ""),
                 "duration": f.data.get("duration", 0) or 0,
-                "indexed": twelvelabs_is_indexed(tl),
-                "video_id": tl.get("video_id") or "",
+                "indexed": twelvelabs_is_indexed(idx),
+                "video_id": idx.get("video_id") or "",
+                "provider": str(idx.get("provider") or "").lower(),
             }
 
         meta = _run_on_main_thread(_read_file_meta, timeout=10)
         if meta is None:
             return f"Error: File not found (id={file_id})."
+
+        if "gemini" in (meta.get("provider") or ""):
+            return (
+                "Error: Summarize-only is not supported for Gemini indexing. "
+                "Reindex the clip to refresh descriptions."
+            )
 
         MAX_SECONDS = 30 * 60
         if meta["duration"] > MAX_SECONDS:
@@ -6625,7 +6647,7 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
             _kick_off_summarize()
 
         return (
-            f"Pegasus summarize started for file {file_id} "
+            f"Summarize started for file {file_id} "
             f"(video_id={meta.get('video_id')}, {meta['path']})."
         )
     except Exception as e:
@@ -7346,11 +7368,14 @@ def place_motion_graphic(
             extra=region,
         )
 
+        shift_box = [[]]
+
         def _ripple_and_stamp():
             if mode_s == "cut_in":
                 shifts = ripple_positions(
                     clips_raw, layer=int(primary_layer), t=t, delta=dur
                 )
+                shift_box[0] = shifts
                 for cid, new_pos in shifts:
                     app.updates.update(
                         ["clips", {"id": cid}],
@@ -7397,6 +7422,17 @@ def place_motion_graphic(
 
         track_lbl = format_track_label_for_llm(int(track_num), layers)
         if isinstance(result, str) and result.startswith("Error"):
+            if mode_s == "cut_in" and shift_box[0]:
+                def _undo_ripple():
+                    for cid, new_pos in shift_box[0]:
+                        app.updates.update(
+                            ["clips", {"id": cid}],
+                            {"position": float(new_pos) - float(dur)},
+                        )
+                try:
+                    _run_on_main_thread(_undo_ripple)
+                except Exception as undo_exc:
+                    log.warning("cut_in ripple rollback failed: %s", undo_exc)
             return result
         return (
             f"{result} [mg_place mode={mode_s} layout_region={region or 'n/a'} "
@@ -8570,6 +8606,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "search_clips_tool",
     "search_clip_scenes_tool",
     "watch_clip_window_tool",
+    "get_project_catalog_tool",
     "slice_clip_at_best_match_tool",
     "split_file_add_clip_tool",
     "add_clip_to_timeline_tool",
