@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","session_id":"cur-abc-123","model":"Composer","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"session_id":"cur-abc-123"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Looking "}]},"session_id":"cur-abc-123"}
+{"type":"thinking","subtype":"delta","text":"check the bin","session_id":"cur-abc-123"}
+{"type":"thinking","subtype":"completed","session_id":"cur-abc-123"}
+{"type":"tool_call","subtype":"started","call_id":"call-1","tool_call":{"mcpToolCall":{"args":{"toolName":"mcp__zenvi-editor__list_files","providerIdentifier":"zenvi-editor","args":{"path":"."}}}},"session_id":"cur-abc-123"}
+{"type":"tool_call","subtype":"completed","call_id":"call-1","tool_call":{"mcpToolCall":{"args":{"toolName":"mcp__zenvi-editor__list_files"},"result":{"content":[{"text":"FIXTURE"}]}}},"session_id":"cur-abc-123"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"3 files"}]},"session_id":"cur-abc-123"}
+{"type":"result","subtype":"success","is_error":false,"result":"Looking 3 files","session_id":"cur-abc-123"}

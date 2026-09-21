@@ -6,7 +6,7 @@ Each runner is a ``QObject`` worker (moved onto a ``QThread`` by
 ``AIChatWorker`` ΓÇö so the existing chat rendering works unchanged regardless of
 which backend produced the events.
 
-The CLI runners (Claude Code, Codex) spawn the agent CLI as a headless
+The CLI runners (Claude Code, Codex, Cursor CLI) spawn the agent CLI as a headless
 subprocess in streaming-JSON mode and point it at the in-app MCP server
 (:mod:`classes.agent_mcp_server`) so the agent can drive the editor using the
 same tools the built-in assistant uses. They keep their own file/shell/web
@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # Backend identifiers (kept in sync with ai_chat_ui constants).
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+BACKEND_CURSOR = "cursor_cli"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -50,6 +51,8 @@ def models_for_backend(backend: str) -> list:
         return [dict(m) for m in ClaudeCodeRunner.MODELS]
     if backend == BACKEND_CODEX:
         return [dict(m) for m in CodexRunner.MODELS]
+    if backend == BACKEND_CURSOR:
+        return [dict(m) for m in CursorCliRunner.MODELS]
     return []
 
 
@@ -91,6 +94,39 @@ def _cli_install_dirs() -> list:
     if local:
         dirs.append(os.path.join(local, "Microsoft", "WinGet", "Links"))
     return dirs
+
+
+def _cursor_install_dirs() -> list:
+    """Locations the Cursor agent installer uses when ``cursor-agent`` is not on PATH."""
+    home = _resolved_home()
+    local = os.environ.get("LOCALAPPDATA") or (
+        os.path.join(home, "AppData", "Local") if home else ""
+    )
+    dirs = []
+    if local:
+        dirs.append(os.path.join(local, "cursor-agent"))
+    if home:
+        dirs.append(os.path.join(home, ".local", "share", "cursor-agent"))
+        dirs.append(os.path.join(home, ".local", "bin"))
+    return dirs
+
+
+def _which_cursor_cli():
+    """Find Cursor's CLI, never some other program that happens to be named ``agent``."""
+    for name in ("cursor-agent", "cursor-agent.cmd", "cursor-agent.exe", "cursor-agent.ps1"):
+        found = shutil.which(name)
+        if found:
+            return found
+    names = (
+        "cursor-agent", "cursor-agent.cmd", "cursor-agent.exe", "cursor-agent.ps1",
+        "agent.cmd", "agent.exe", "agent",
+    )
+    for directory in _cursor_install_dirs():
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 def _bash_major(path):
@@ -206,7 +242,9 @@ def _add_dir_args():
 
 
 def _which_cli(binary_name: str):
-    """Locate ``claude`` / ``codex`` on PATH or in known install dirs."""
+    """Locate ``claude`` / ``codex`` / ``cursor-agent`` on PATH or in known install dirs."""
+    if binary_name == "cursor-agent":
+        return _which_cursor_cli()
     found = shutil.which(binary_name)
     if found:
         return found
@@ -288,6 +326,8 @@ def _is_registered(binary_name: str) -> bool:
         return _claude_is_registered()
     if binary_name == "codex":
         return _codex_is_registered()
+    if binary_name == "cursor-agent":
+        return _cursor_is_registered()
     return False
 
 
@@ -450,6 +490,87 @@ def register_codex(port: int, token: str):
         "Updated ~/.codex/config.toml. Before running codex, run:\n"
         "export ZENVI_MCP_TOKEN=%s"
     ) % token
+
+
+_CURSOR_MCP_NAMES = ("zenvi-editor", "zenvi")
+
+
+def _cursor_mcp_path() -> str:
+    return os.path.join(_resolved_home(), ".cursor", "mcp.json")
+
+
+def _cursor_is_registered() -> bool:
+    path = _cursor_mcp_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        servers = data.get("mcpServers") or {}
+        return any(name in servers for name in _CURSOR_MCP_NAMES)
+    except Exception:
+        return False
+
+
+def _cursor_server_entry(port: int, token: str) -> dict:
+    return {
+        "url": "http://127.0.0.1:%d/mcp" % port,
+        "headers": {"Authorization": "Bearer %s" % token},
+    }
+
+
+def register_cursor(port: int, token: str):
+    """Write or replace the Zenvi HTTP server in ``~/.cursor/mcp.json``.
+
+    Cursor's CLI has no ``mcp add`` for an HTTP server; it reads this file.
+    Idempotent: an existing ``zenvi-editor`` or ``zenvi`` entry is updated in
+    place (so a restart that moved the port does not leave a stale URL), and
+    every other server is left alone. Invalid JSON is not touched.
+
+    Returns ``(ok, message)``.
+    """
+    path = _cursor_mcp_path()
+    original = ""
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+        except Exception as e:
+            return False, "Failed to read ~/.cursor/mcp.json: %s" % e
+        if original.strip():
+            try:
+                data = json.loads(original)
+            except Exception as e:
+                return False, "~/.cursor/mcp.json has invalid JSON, not touching it: %s" % e
+            if not isinstance(data, dict):
+                return False, "~/.cursor/mcp.json is not a JSON object, not touching it."
+
+    servers = data.get("mcpServers")
+    if servers is None:
+        servers = {}
+        data["mcpServers"] = servers
+    if not isinstance(servers, dict):
+        return False, "~/.cursor/mcp.json mcpServers is not an object, not touching it."
+
+    entry = _cursor_server_entry(port, token)
+    present = [name for name in _CURSOR_MCP_NAMES if name in servers]
+    if not present:
+        present = ["zenvi-editor"]
+    for name in present:
+        servers[name] = entry
+
+    updated = json.dumps(data, indent=2) + "\n"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if original:
+            with open(path + ".zenvi-backup", "w", encoding="utf-8") as fh:
+                fh.write(original)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(updated)
+    except Exception as e:
+        return False, "Failed to write ~/.cursor/mcp.json: %s" % e
+
+    return True, "Connected. Run `cursor-agent` in your terminal to use it."
 
 
 class BaseAgentRunner(QObject):
@@ -982,6 +1103,149 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_started.emit(rid, "thinking", "{}")
                 self.tool_log.emit(rid, txt)
                 self.tool_completed.emit(rid, True, "")
+
+
+class CursorCliRunner(BaseAgentRunner):
+    """Drives the Cursor agent CLI (`cursor-agent -p --output-format stream-json`)."""
+
+    CLI_NAME = "cursor-agent"
+    DISPLAY_NAME = "Cursor CLI"
+    # The CLI's model list changes with the account (`--list-models`). There is
+    # no stable catalogue to pin, so the picker stays hidden like Codex.
+    MODELS: list = []
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._think_seq = 0
+        self._think_id = ""
+        self._think_open = False
+
+    def _ensure_ready(self):
+        if self._server is None:
+            return "Could not start the editor tool server."
+        ok, message = register_cursor(self._server.port, self._server.token)
+        if not ok:
+            return message
+        return None
+
+    def _build_argv(self, text: str):
+        argv = [
+            self._cli_path or self.CLI_NAME, "-p",
+            "--output-format", "stream-json",
+            "--stream-partial-output",
+            "--force", "--trust", "--approve-mcps",
+            "--workspace", self._cli_cwd or _project_cwd(),
+        ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
+        argv += _add_dir_args()
+        if self._cli_started and self._cli_session_id:
+            argv += ["--resume", self._cli_session_id]
+        argv.append(text)
+        return argv
+
+    def _handle_event(self, ev: dict):
+        etype = ev.get("type")
+        if etype == "system" and ev.get("subtype") == "init":
+            session_id = ev.get("session_id") or ""
+            if session_id:
+                self._cli_session_id = session_id
+                self._cli_id_from_cli = True
+                self._emit_cli_session()
+            return
+        if etype == "assistant":
+            for block in (ev.get("message") or {}).get("content") or []:
+                if block.get("type") == "text":
+                    txt = block.get("text") or ""
+                    if txt:
+                        self._final_text += txt
+                        self.token_received.emit(txt)
+            return
+        if etype == "thinking":
+            self._handle_thinking(ev)
+            return
+        if etype == "tool_call":
+            self._handle_tool_call(ev)
+            return
+        if etype == "result":
+            if ev.get("is_error"):
+                self._last_error = ev.get("result") or "The agent reported an error."
+            else:
+                self._emit_response(ev.get("result") or self._final_text)
+            return
+        if etype == "error":
+            self._last_error = ev.get("message") or self._last_error
+
+    def _handle_thinking(self, ev: dict):
+        subtype = ev.get("subtype")
+        if subtype == "delta":
+            if not self._think_open:
+                self._think_seq += 1
+                self._think_id = "think_%d" % self._think_seq
+                self._think_open = True
+                self.tool_started.emit(self._think_id, "thinking", "{}")
+            self.tool_log.emit(self._think_id, ev.get("text") or "")
+            return
+        if subtype == "completed" and self._think_open:
+            self.tool_completed.emit(self._think_id, True, "")
+            self._think_open = False
+
+    def _handle_tool_call(self, ev: dict):
+        subtype = ev.get("subtype")
+        call_id = ev.get("call_id") or ""
+        name, args, result = _cursor_tool_parts(ev.get("tool_call"))
+        if subtype == "started":
+            self.tool_started.emit(
+                call_id, name, json.dumps(args, default=str) if isinstance(args, dict) else "{}")
+            return
+        if subtype == "completed":
+            ok = ev.get("is_error") is not True
+            self.tool_completed.emit(call_id, ok, result)
+
+
+def _cursor_tool_parts(tool_call):
+    """Name, args, and result text from a Cursor ``tool_call`` payload."""
+    if not isinstance(tool_call, dict):
+        return "tool", {}, ""
+    for key, value in tool_call.items():
+        if not (isinstance(key, str) and key.endswith("ToolCall") and isinstance(value, dict)):
+            continue
+        args = value.get("args") if isinstance(value.get("args"), dict) else {}
+        name = args.get("toolName") or args.get("name") or args.get("command") or ""
+        if not name:
+            name = key[: -len("ToolCall")] or "tool"
+        inner = args.get("args") if isinstance(args.get("args"), dict) else args
+        return _strip_mcp_prefix(str(name)), inner, _cursor_result_text(value.get("result"))
+    tool = tool_call.get("tool")
+    if isinstance(tool, dict) and tool.get("case"):
+        value = tool.get("value") if isinstance(tool.get("value"), dict) else {}
+        args = value.get("args") if isinstance(value.get("args"), dict) else {}
+        name = args.get("toolName") or args.get("name") or args.get("command") or ""
+        if not name:
+            name = str(tool.get("case") or "tool")
+            if name.endswith("ToolCall"):
+                name = name[: -len("ToolCall")] or "tool"
+        inner = args.get("args") if isinstance(args.get("args"), dict) else args
+        return _strip_mcp_prefix(str(name)), inner, _cursor_result_text(value.get("result"))
+    name = tool_call.get("name") or "tool"
+    args = tool_call.get("arguments") or tool_call.get("args") or {}
+    if not isinstance(args, dict):
+        args = {}
+    return _strip_mcp_prefix(str(name)), args, _cursor_result_text(tool_call.get("result"))
+
+
+def _cursor_result_text(result) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        if "content" in result:
+            return _content_to_text(result.get("content"))
+        if result.get("text"):
+            return str(result.get("text"))
+        return json.dumps(result, default=str)
+    return str(result)
 
 
 # ---------------------------------------------------------------------------

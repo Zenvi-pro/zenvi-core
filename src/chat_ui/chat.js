@@ -2306,7 +2306,7 @@
     // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
     // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
     var cliStatus = {};
-    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex', cursor_cli: 'cursor-agent' };
 
     function findBackendName(id) {
         var item = backendItems.find(function (b) { return b.id === id; });
@@ -2314,7 +2314,7 @@
     }
 
     function isCliBackend(id) {
-        return id === 'claude_code' || id === 'codex';
+        return id === 'claude_code' || id === 'codex' || id === 'cursor_cli';
     }
 
     // Empty state (calm, not an error) shown instead of messages when the active

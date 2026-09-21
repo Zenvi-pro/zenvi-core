@@ -484,7 +484,7 @@ def test_claude_argv_omits_model_when_none_picked(qapp, monkeypatch):
 def test_models_for_backend_matches_the_picker_contract(qapp):
     """chat.js reads id/name off every entry and marks exactly one default."""
     from windows.agent_runners import (
-        BACKEND_CLAUDE, BACKEND_CODEX, models_for_backend,
+        BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, models_for_backend,
     )
 
     claude = models_for_backend(BACKEND_CLAUDE)
@@ -494,6 +494,7 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert sum(1 for m in claude if m.get("default")) == 1
 
     assert models_for_backend(BACKEND_CODEX) == []
+    assert models_for_backend(BACKEND_CURSOR) == []
     assert models_for_backend("zenvi") == []
 
     # Callers mutate what they get (the JS bridge tags entries), so the
@@ -845,3 +846,106 @@ def test_resolve_cli_bash_picks_version_4(monkeypatch):
             assert ar._resolve_cli_bash() == "/opt/homebrew/bin/bash"
     finally:
         ar._resolve_cli_bash.cache_clear()
+
+
+def test_cursor_parser_emits_expected_signals(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    runner._session_id = "s1"
+    events = _collect(runner)
+    _feed(runner, "cursor_stream.jsonl")
+
+    assert runner._cli_session_id == "cur-abc-123"
+    assert any(e[0] == "tool_started" and e[1] == "thinking" for e in events)
+    assert any(e[0] == "tool_started" and e[1] == "list_files" for e in events)
+    assert any(e[0] == "tool_completed" and "FIXTURE" in e[3] for e in events)
+    assert any(e[0] == "token" and "3 files" in e[1] for e in events)
+    assert any(e[0] == "response_ready" and "3 files" in e[1] for e in events)
+
+
+def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
+    import windows.agent_runners as ar
+    from windows.agent_runners import CursorCliRunner
+
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: ["--add-dir", "C:/footage"])
+    runner = CursorCliRunner()
+    runner._cli_path = r"C:\cursor-agent\cursor-agent.cmd"
+    runner._cli_cwd = r"C:\proj"
+    runner._cli_session_id = "cur-abc-123"
+    runner._cli_started = True
+    argv = runner._build_argv("make a cut")
+    assert argv[0] == runner._cli_path
+    assert "-p" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--stream-partial-output" in argv
+    assert "--force" in argv
+    assert "--trust" in argv
+    assert "--approve-mcps" in argv
+    assert argv[argv.index("--workspace") + 1] == r"C:\proj"
+    assert argv[argv.index("--resume") + 1] == "cur-abc-123"
+    assert argv[argv.index("--add-dir") + 1] == "C:/footage"
+    assert argv[-1] == "make a cut"
+    assert "--model" not in argv
+    assert runner.MODELS == []
+
+
+def test_which_cursor_cli_prefers_cursor_install_over_other_agent(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    install = tmp_path / "cursor-agent"
+    install.mkdir()
+    exe = install / "cursor-agent.cmd"
+    exe.write_text("@echo off\n")
+    grok = tmp_path / "grok-agent.exe"
+    grok.write_bytes(b"")
+
+    def _which(name):
+        if name == "agent":
+            return str(grok)
+        return None
+
+    monkeypatch.setattr(ar.shutil, "which", _which)
+    monkeypatch.setattr(ar, "_cursor_install_dirs", lambda: [str(install)])
+    assert ar._which_cli("cursor-agent") == str(exe)
+    assert "grok" not in ar._which_cli("cursor-agent")
+
+
+def test_register_cursor_writes_bearer_and_updates_port(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({
+        "mcpServers": {
+            "other": {"command": "npx", "args": ["something"]},
+            "zenvi-editor": {
+                "url": "http://127.0.0.1:9999/mcp",
+                "headers": {"Authorization": "Bearer old"},
+            },
+        }
+    }))
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is True
+    assert "Connected" in message
+
+    data = json.loads(cfg.read_text())
+    server = data["mcpServers"]["zenvi-editor"]
+    assert server["url"] == "http://127.0.0.1:7434/mcp"
+    assert server["headers"]["Authorization"] == "Bearer tok123"
+    assert data["mcpServers"]["other"]["command"] == "npx"
+    assert (tmp_path / "mcp.json.zenvi-backup").exists()
+    assert ar._cursor_is_registered() is True
+
+
+def test_register_cursor_refuses_invalid_json(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    original = "{not json"
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is False
+    assert cfg.read_text() == original
