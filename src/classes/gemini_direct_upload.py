@@ -29,18 +29,17 @@ def upload_file_to_gemini_resumable(
     size = os.path.getsize(file_path)
     try:
         with open(file_path, "rb") as fh:
-            data = fh.read()
-        resp = requests.post(
-            url,
-            data=data,
-            headers={
-                "Content-Length": str(size),
-                "X-Goog-Upload-Offset": "0",
-                "X-Goog-Upload-Command": "upload, finalize",
-                "Content-Type": mime_type or "video/mp4",
-            },
-            timeout=timeout,
-        )
+            resp = requests.post(
+                url,
+                data=fh,
+                headers={
+                    "Content-Length": str(size),
+                    "X-Goog-Upload-Offset": "0",
+                    "X-Goog-Upload-Command": "upload, finalize",
+                    "Content-Type": mime_type or "video/mp4",
+                },
+                timeout=timeout,
+            )
         if resp.status_code >= 400:
             return {}, f"Gemini upload failed ({resp.status_code}): {resp.text[:300]}"
 

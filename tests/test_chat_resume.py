@@ -325,13 +325,13 @@ def _message_window(window_cls, sid="s1"):
 def test_the_message_sink_persists_every_role(window_cls, keyed_store):
     win = _message_window(window_cls)
     win._add_user_msg("trim the first clip")
-    win._add_assistant_msg("Thinking...\nDone — trimmed it.")
+    win._add_assistant_msg("Thinking...\nDone ΓÇö trimmed it.")
     win._add_system_msg("Error: backend unreachable")
 
     stored = [(m["role"], m["content"]) for m in keyed_store.load_messages("s1")]
     assert stored == [
         ("user", "trim the first clip"),
-        ("assistant", "Done — trimmed it."),   # thinking header stripped
+        ("assistant", "Done ΓÇö trimmed it."),   # thinking header stripped
         ("system", "Error: backend unreachable"),
     ]
 
@@ -454,9 +454,9 @@ def test_a_plain_resave_of_the_same_project_is_a_no_op(window_cls, keyed_store, 
 def test_opening_an_existing_project_from_untitled_restores_its_open_chats(
     window_cls, keyed_store, tmp_path
 ):
-    """Launch is always untitled; File→Open must bring back that project's tabs.
+    """Launch is always untitled; FileΓåÆOpen must bring back that project's tabs.
 
-    Rekeying the empty draft into the project used to make live∩stored match,
+    Rekeying the empty draft into the project used to make liveΓê⌐stored match,
     so restore was skipped and the user got a blank New Chat instead.
     """
     path = tmp_path / "a.zvn"
