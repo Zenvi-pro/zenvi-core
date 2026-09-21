@@ -151,7 +151,16 @@ def run_pipelined_export(
                         return
                     next_frame_to_assign += 1
                 frame_obj = timeline.GetFrame(frame_number)
-                pending.put(_CompositedFrame(frame_number, frame_obj))
+                # Timeout so a cancelled encoder (queue full) cannot stall workers.
+                while True:
+                    check_cancel()
+                    try:
+                        pending.put(
+                            _CompositedFrame(frame_number, frame_obj), timeout=0.25
+                        )
+                        break
+                    except queue.Full:
+                        continue
         except PipelineCancelled:
             return
         except Exception as exc:
@@ -207,6 +216,9 @@ def run_pipelined_export(
                     try:
                         item = pending.get(timeout=0.5)
                     except queue.Empty:
+                        if cancel_event.is_set() or is_cancelled():
+                            cancel_event.set()
+                            return
                         # Exit if all compositors died and nothing is pending.
                         if not any(t.is_alive() for t in composite_threads) and pending.empty():
                             if expected <= end_frame and not error_box:
@@ -246,7 +258,7 @@ def run_pipelined_export(
         thread.start()
     encode_thread.start()
 
-    # Watch for UI cancel
+    # Watch for UI cancel (caller should pump Qt events inside is_cancelled).
     while encode_thread.is_alive():
         if is_cancelled():
             cancel_event.set()

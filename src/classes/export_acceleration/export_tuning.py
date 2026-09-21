@@ -14,6 +14,26 @@ class ExportPipelineProfile:
     cache_bytes: int
 
 
+# Pipelined FFmpegWriter.WriteFrame is only validated for MP4-family muxers.
+# Other containers (MOV, MKV, AVI, …) stay on the legacy serial path.
+_PIPELINE_SAFE_FORMATS = frozenset({"mp4", "m4v"})
+_MP4_FASTSTART_FORMATS = frozenset({"mp4", "m4v"})
+
+
+def _normalize_vformat(vformat: Optional[str]) -> str:
+    return (vformat or "").strip().lower().lstrip(".")
+
+
+def is_pipelined_export_safe(vformat: Optional[str]) -> bool:
+    """Return True when overlapping encode is safe for this container."""
+    return _normalize_vformat(vformat) in _PIPELINE_SAFE_FORMATS
+
+
+def uses_mp4_faststart_preset(vformat: Optional[str]) -> bool:
+    """mp4_faststart is an MP4 muxing preset; applying it to MOV/etc can crash natively."""
+    return _normalize_vformat(vformat) in _MP4_FASTSTART_FORMATS
+
+
 def _clamp(value: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, value))
 

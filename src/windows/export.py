@@ -63,6 +63,8 @@ try:
     from classes.export_acceleration.export_tuning import (
         export_cache_bytes,
         get_export_pipeline_profile,
+        is_pipelined_export_safe,
+        uses_mp4_faststart_preset,
     )
     from classes.export_acceleration.export_pipeline import (
         PipelineCancelled,
@@ -79,6 +81,8 @@ try:
 except Exception:  # pragma: no cover - import soft-fail for partial installs
     export_cache_bytes = None
     get_export_pipeline_profile = None
+    is_pipelined_export_safe = None
+    uses_mp4_faststart_preset = None
     PipelineCancelled = Exception
     run_pipelined_export = None
     maybe_apply_hardware_bitrate = None
@@ -1206,9 +1210,15 @@ class Export(QDialog):
                 w.AddSphericalMetadata("equirectangular", 0.0, 0.0, 0.0)
 
             if export_type in [_("Audio Only")]:
-                w.SetOption(openshot.AUDIO_STREAM, "muxing_preset", "mp4_faststart")
+                if not uses_mp4_faststart_preset or uses_mp4_faststart_preset(
+                    video_settings.get("vformat")
+                ):
+                    w.SetOption(openshot.AUDIO_STREAM, "muxing_preset", "mp4_faststart")
             else:
-                w.SetOption(openshot.VIDEO_STREAM, "muxing_preset", "mp4_faststart")
+                if not uses_mp4_faststart_preset or uses_mp4_faststart_preset(
+                    video_settings.get("vformat")
+                ):
+                    w.SetOption(openshot.VIDEO_STREAM, "muxing_preset", "mp4_faststart")
                 if "crf" in video_bitrate_text:
                     w.SetOption(openshot.VIDEO_STREAM, "crf", str(_parse_bitrate_to_bps(video_settings.get("video_bitrate"))))
                 elif "cqp" in video_bitrate_text:
@@ -1236,6 +1246,16 @@ class Export(QDialog):
             )
             # Image sequences and audio-only keep the serial path.
             if export_type == _("Image Sequence") or export_type == _("Audio Only"):
+                use_pipeline = False
+            # Non-MP4 containers (MOV, MKV, …) are not safe on the overlapped
+            # WriteFrame path — fall back to legacy serial encode.
+            elif is_pipelined_export_safe and not is_pipelined_export_safe(
+                video_settings.get("vformat")
+            ):
+                log.info(
+                    "Pipelined export disabled for container %s; using serial path",
+                    video_settings.get("vformat"),
+                )
                 use_pipeline = False
 
             if use_pipeline:
@@ -1283,6 +1303,13 @@ class Export(QDialog):
                         format_of_progress_string,
                     )
 
+                def _is_cancelled():
+                    # Pipeline blocks the dialog thread; pump Qt so Cancel can
+                    # set self.exporting = False (same role as serial processEvents).
+                    if not getattr(self, "_headless", False):
+                        QCoreApplication.processEvents()
+                    return not self.exporting
+
                 try:
                     metrics = run_pipelined_export(
                         writer=w,
@@ -1291,7 +1318,7 @@ class Export(QDialog):
                         audio_settings=audio_settings,
                         start_frame=start_frame_export,
                         end_frame=end_frame_export,
-                        is_cancelled=lambda: not self.exporting,
+                        is_cancelled=_is_cancelled,
                         on_progress=_on_progress,
                         profile=pipeline_profile,
                         existing_timeline=self.timeline,
@@ -1314,6 +1341,12 @@ class Export(QDialog):
                     except Exception:
                         pass
                     export_ok = False
+                    if not getattr(self, "_headless", False):
+                        if getattr(self, "_export_cancel_confirmed", False):
+                            self._export_cancel_confirmed = False
+                            super(Export, self).reject()
+                        else:
+                            self.enableControls()
                     return
                 except Exception as pipe_exc:
                     # Do not fall back mid-write — the file may already contain
@@ -1663,6 +1696,11 @@ class Export(QDialog):
             if result == QMessageBox.No:
                 # Resume export
                 return
+            # Signal cancel before tearing down the timeline/cache so pipelined
+            # workers can stop GetFrame/WriteFrame without racing Close().
+            self.exporting = False
+            self._export_cancel_confirmed = True
+            return
 
         # Stop cache thread and restore project cache
         self._cleanup_export_resources()
@@ -1756,34 +1794,39 @@ def _resolve_audio_codec(preferred):
     Resolve requested audio codec to one that is available on this system.
     Prevents "Could not open audio codec" when the preferred codec (e.g. aac)
     is not available in the current FFmpeg build. Works cross-platform (Linux, Windows, macOS).
-    Uses the same order as the UI profile logic: libfaac, libvo_aacenc, aac, ac3 (first valid wins).
     Returns a string codec name valid for openshot.FFmpegWriter, or None if no codec is available
     (caller should skip SetAudioOptions and export video-only).
     """
     preferred = (preferred or "aac").strip()
     if not preferred:
         preferred = "aac"
-    # AAC first, ac3 only as a last resort. libfaac and libvo_aacenc were dropped
-    # from modern FFmpeg builds, so an order that listed them ahead of ac3 always
-    # landed on ac3 — and AC-3 in an .mp4 is silent in most players (Windows
-    # Films & TV, Chrome, QuickTime), so the export looked fine to ffprobe and to
-    # Whisper while playing back with no sound for a human. Native "aac" is the
-    # stable encoder in current FFmpeg; if it genuinely fails to open, the
-    # audio-codec retry in export_video_headless still yields a video-only file.
-    aac_order = ("libfdk_aac", "aac", "libvo_aacenc", "libfaac", "libmp3lame", "ac3")
-    if preferred.lower() == "aac" or preferred in aac_order:
-        for codec in aac_order:
+    # AAC family aliases only. libmp3lame must NOT be listed here: including it
+    # made "libmp3lame" (MOV default) remap to "aac", which combined with
+    # mp4_faststart / non-MP4 muxers has crashed FFmpegWriter natively on Windows.
+    aac_aliases = ("aac", "libfdk_aac", "libvo_aacenc", "libfaac")
+    # When the user asked for AAC, prefer real AAC encoders; libmp3lame then ac3
+    # are last-resort fallbacks (ac3-in-mp4 plays silent in many players).
+    aac_fallback_order = (
+        "libfdk_aac",
+        "aac",
+        "libvo_aacenc",
+        "libfaac",
+        "libmp3lame",
+        "ac3",
+    )
+    if preferred.lower() in aac_aliases:
+        for codec in aac_fallback_order:
             if openshot.FFmpegWriter.IsValidCodec(codec):
                 if codec != preferred:
                     log.info("Audio codec %s resolved to %s", preferred, codec)
                 return codec
         # No audio codec available; return None so caller skips audio (export video-only).
-        log.info("No audio codec available (tried %s), exporting video only", list(aac_order))
+        log.info("No audio codec available (tried %s), exporting video only", list(aac_fallback_order))
         return None
     preferred_valid = openshot.FFmpegWriter.IsValidCodec(preferred)
     if preferred_valid:
         return preferred
-    for codec in aac_order:
+    for codec in aac_fallback_order:
         if codec != preferred and openshot.FFmpegWriter.IsValidCodec(codec):
             log.info("Audio codec %s not available, using %s", preferred, codec)
             return codec

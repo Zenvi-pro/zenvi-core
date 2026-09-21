@@ -13,6 +13,8 @@ import pytest
 from classes.export_acceleration.export_tuning import (
     export_cache_bytes,
     get_export_pipeline_profile,
+    is_pipelined_export_safe,
+    uses_mp4_faststart_preset,
 )
 from classes.export_acceleration.hw_decode import (
     HW_NONE,
@@ -75,6 +77,24 @@ def test_pipeline_profile_parallel_disabled():
         1280, 720, 30, hardware_concurrency=16, enable_parallel_composite=False
     )
     assert profile.composite_workers == 1
+
+
+def test_pipelined_export_safe_only_mp4_family():
+    assert is_pipelined_export_safe("mp4")
+    assert is_pipelined_export_safe("M4V")
+    assert is_pipelined_export_safe(".mp4")
+    assert not is_pipelined_export_safe("mov")
+    assert not is_pipelined_export_safe("mkv")
+    assert not is_pipelined_export_safe("avi")
+    assert not is_pipelined_export_safe("")
+    assert not is_pipelined_export_safe(None)
+
+
+def test_mp4_faststart_preset_not_applied_to_mov():
+    assert uses_mp4_faststart_preset("mp4")
+    assert uses_mp4_faststart_preset("m4v")
+    assert not uses_mp4_faststart_preset("mov")
+    assert not uses_mp4_faststart_preset("webm")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +278,69 @@ def test_pipelined_export_cancel():
             existing_cache=object(),
             profile=get_export_pipeline_profile(640, 360, 30, enable_parallel_composite=False),
         )
+    # Must stop well before the full range (cancel mid-flight).
+    assert len(writer.written) < 200
+
+
+def test_pipelined_export_cancel_via_shared_flag():
+    """Mirrors dialog cancel: a shared exporting flag flipped while blocked."""
+    timeline = _FakeTimeline(delay=0.02)
+    writer = _FakeWriter()
+    state = {"exporting": True}
+
+    def is_cancelled():
+        return not state["exporting"]
+
+    def flip_later():
+        time.sleep(0.05)
+        state["exporting"] = False
+
+    thread = threading.Thread(target=flip_later, daemon=True)
+    thread.start()
+    with pytest.raises(PipelineCancelled):
+        run_pipelined_export(
+            writer=writer,
+            project_data={},
+            video_settings={"width": 640, "height": 360, "fps": {"num": 30, "den": 1}},
+            audio_settings={"sample_rate": 48000, "channels": 2, "channel_layout": 2},
+            start_frame=1,
+            end_frame=500,
+            is_cancelled=is_cancelled,
+            existing_timeline=timeline,
+            existing_cache=object(),
+            profile=get_export_pipeline_profile(640, 360, 30, enable_parallel_composite=False),
+        )
+    thread.join(timeout=2.0)
+    assert len(writer.written) < 500
+
+
+def test_resolve_audio_codec_keeps_libmp3lame(monkeypatch):
+    """MOV presets request libmp3lame; it must not be remapped into the AAC family."""
+    import sys
+    import types
+
+    # export.py imports metrics, which touches get_app() at import time.
+    metrics_stub = types.ModuleType("classes.metrics")
+    metrics_stub.track_metric_screen = lambda *a, **k: None
+    metrics_stub.track_metric_error = lambda *a, **k: None
+    monkeypatch.setitem(sys.modules, "classes.metrics", metrics_stub)
+
+    # Fresh import so the stub is used (other tests may have imported export).
+    sys.modules.pop("windows.export", None)
+    from windows import export as export_mod
+
+    available = {"aac", "ac3", "libmp3lame"}
+    fake_openshot = types.SimpleNamespace(
+        FFmpegWriter=types.SimpleNamespace(IsValidCodec=lambda c: c in available),
+        LAYOUT_STEREO=2,
+    )
+    monkeypatch.setattr(export_mod, "openshot", fake_openshot)
+
+    assert export_mod._resolve_audio_codec("libmp3lame") == "libmp3lame"
+    assert export_mod._resolve_audio_codec("aac") == "aac"
+    # Prefer AAC still falls back through libmp3lame before ac3 when aac missing.
+    available.discard("aac")
+    assert export_mod._resolve_audio_codec("aac") == "libmp3lame"
 
 
 # ---------------------------------------------------------------------------
