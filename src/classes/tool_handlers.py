@@ -903,7 +903,12 @@ def list_files(**_kw) -> str:
 
         files = File.filter()
         if not files:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with paths= (folder or file; prefer "
+                "C:/Users/... on Windows) and dry_run=true first for folders."
+            )
         lines = []
         visible = 0
         for f in files:
@@ -924,7 +929,11 @@ def list_files(**_kw) -> str:
                 f"path={os.path.basename(d.get('path', ''))}"
             )
         if not lines:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with paths= (folder or file)."
+            )
         return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
@@ -8535,7 +8544,7 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
     "get_project_info_tool": "Read project info",
-    "list_files_tool": "List files",
+    "list_files_tool": "List project media",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
     "list_markers_tool": "List markers",
@@ -8560,7 +8569,7 @@ TOOL_DISPLAY_LABELS = {
     "zoom_in_tool": "Zoom in",
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
-    "import_files_tool": "Import files",
+    "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "export_video_tool": "Export video",
     "get_export_settings_tool": "Read export settings",
