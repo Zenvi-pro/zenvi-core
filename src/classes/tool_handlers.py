@@ -881,6 +881,12 @@ def get_project_info(**_kw) -> str:
 
 
 def list_files(**_kw) -> str:
+    """List media already in the project media bin (does not import from disk).
+
+    To add local folders or files into Project Files, call import_files_tool
+    (dry_run=true first for folders). list_files_tool only reports what is
+    already imported.
+    """
     try:
         import os
         from classes.query import File
@@ -888,7 +894,12 @@ def list_files(**_kw) -> str:
 
         files = File.filter()
         if not files:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with paths= (folder or file; prefer "
+                "C:/Users/... on Windows) and dry_run=true first for folders."
+            )
         lines = []
         visible = 0
         for f in files:
@@ -909,7 +920,11 @@ def list_files(**_kw) -> str:
                 f"path={os.path.basename(d.get('path', ''))}"
             )
         if not lines:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with paths= (folder or file)."
+            )
         return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
@@ -1632,11 +1647,19 @@ def center_on_playhead(**_kw) -> str:
 
 # Extensions collected when a directory is imported. Explicit file paths are
 # passed through unfiltered — libopenshot decides whether it can read them.
-_IMPORT_MEDIA_EXTS = (
+_IMPORT_VIDEO_EXTS = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv",
+})
+_IMPORT_AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
+})
+_IMPORT_IMAGE_EXTS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp",
-)
+})
+_IMPORT_MEDIA_EXTS = _IMPORT_VIDEO_EXTS | _IMPORT_AUDIO_EXTS | _IMPORT_IMAGE_EXTS
+
+# Cap tool responses so a large folder does not flood the model context.
+_IMPORT_RESULT_LINE_CAP = 25
 
 # A whole folder of media can take minutes to probe; the default 30s budget is
 # for small interactive edits, not a bulk import.
@@ -1666,39 +1689,84 @@ def _coerce_path_list(paths) -> list:
     return [str(p).strip().strip('"').strip("'") for p in items if str(p).strip()]
 
 
+def _import_media_kind(path: str) -> str:
+    """Classify a path by extension for dry-run counts (video/audio/image/other)."""
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext in _IMPORT_VIDEO_EXTS:
+        return "video"
+    if ext in _IMPORT_AUDIO_EXTS:
+        return "audio"
+    if ext in _IMPORT_IMAGE_EXTS:
+        return "image"
+    return "other"
+
+
+def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
+    """Join lines, truncating after *cap* with a remainder note."""
+    if not lines:
+        return ""
+    if len(lines) <= cap:
+        return "\n".join(lines)
+    rest = len(lines) - cap
+    return (
+        "\n".join(lines[:cap])
+        + "\n... and %d more. Use list_files_tool to see the rest." % rest
+    )
+
+
 def _expand_import_paths(entries) -> tuple:
-    """Return (media_paths, missing). Directories are walked for media files."""
+    """Return (media_paths, missing, skipped_non_media).
+
+    Directories are walked for media files only. Explicit file paths are kept
+    unfiltered. *skipped_non_media* counts non-media files seen during dir walks.
+    Entries must already be absolute existing paths (or missing strings).
+    """
     resolved, missing, seen = [], [], set()
+    skipped_non_media = 0
     for entry in entries:
-        path = os.path.expanduser(entry)
-        if os.path.isdir(path):
+        path = os.path.abspath(os.path.expanduser(str(entry))) if entry else ""
+        if path and os.path.isdir(path):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
+                    full = os.path.join(root, name)
                     if os.path.splitext(name)[1].lower() in _IMPORT_MEDIA_EXTS:
-                        full = os.path.join(root, name)
                         if full not in seen:
                             seen.add(full)
                             resolved.append(full)
-        elif os.path.isfile(path):
+                    else:
+                        skipped_non_media += 1
+        elif path and os.path.isfile(path):
             if path not in seen:
                 seen.add(path)
                 resolved.append(path)
         else:
-            missing.append(entry)
-    return resolved, missing
+            missing.append(str(entry))
+    return resolved, missing, skipped_non_media
 
 
-def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> str:
-    """Import media into the project bin by explicit path, without opening a file dialog.
+def import_files(
+    paths="", path="", folder="", skip_indexing="false", dry_run="false", **_kw
+) -> str:
+    """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
 
-    ``paths`` / ``path`` / ``folder`` / ``files`` accept files, directories, globs, or
-    file URLs. Directories are searched recursively for media. Indexing starts
-    automatically unless ``skip_indexing`` is true — poll ``analyzed`` via
-    list_files_tool, or block with wait_until_project_indexed_tool. Required: an
-    unattended MCP/harness run has no way to complete a file picker.
+    Call with the user's path immediately (dry_run=true for folders). Do not
+    preflight with Glob/Read or invent /mnt/c mounts — this tool resolves
+    Windows C:/… and Git Bash /c/… paths. Exact match first; slight typos may
+    resolve adjacently (ask if several). Required: paths, path, folder, or
+    files. Prefer forward-slash Windows paths so JSON backslashes cannot
+    mangle them. Directories are walked recursively for media only.
+
+    dry_run (discoverable): pass dry_run=true to preview would_import /
+    skipped_non_media without changing the media bin; ask the user, then call
+    again with dry_run=false. For vague asks or multiple candidates, ask —
+    do not guess. Indexing starts unless skip_indexing is true (poll via
+    list_files_tool or wait_until_project_indexed_tool).
     """
     import glob as _glob
-    from urllib.parse import unquote, urlparse
+    from classes.file_drop import (
+        normalize_agent_fs_path,
+        resolve_agent_import_target,
+    )
 
     entries = []
     for value in (paths, path, folder, _kw.get("files")):
@@ -1706,40 +1774,102 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
             entries.extend(_coerce_path_list(value))
     if not entries:
         return ("Error: paths is required for MCP/harness import. Pass the media "
-                "files or folders to import, e.g. paths=[\"/clips/dialog_test\"]. "
-                "This tool never opens a file dialog.")
-
-    def _normalize_entry(entry: str) -> str:
-        text = str(entry).strip()
-        if text.startswith("file://"):
-            parsed = urlparse(text)
-            path_part = unquote(parsed.path or "")
-            if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
-                path_part = path_part.lstrip("/")
-            return path_part or text
-        return text
+                "files or folders to import, e.g. paths=[\"C:/Users/you/Downloads/clips\"] "
+                "or paths=[\"~/Desktop/clips\"]. This tool never opens a file dialog.")
 
     notes = []
     normalized = []
+    adjacent_notes = []
     for entry in entries:
-        candidate = _normalize_entry(entry)
-        if _glob.has_magic(candidate) or _glob.has_magic(entry):
+        candidate = normalize_agent_fs_path(entry)
+        if _glob.has_magic(candidate) or _glob.has_magic(str(entry)):
             matches = _glob.glob(candidate, recursive=True)
             if not matches:
-                matches = _glob.glob(os.path.expanduser(entry), recursive=True)
+                matches = _glob.glob(os.path.expanduser(str(entry)), recursive=True)
             if not matches:
                 notes.append("No files matched: %s" % entry)
                 continue
             normalized.extend(matches)
-        else:
-            normalized.append(candidate)
+            continue
 
-    resolved, missing = _expand_import_paths(normalized)
+        target = resolve_agent_import_target(entry)
+        if target.get("status") == "ambiguous":
+            cands = target.get("candidates") or []
+            lines = [
+                "Error: Multiple paths match %r — ask the user which one:"
+                % entry,
+            ]
+            for cand in cands:
+                lines.append("  %s" % cand)
+            lines.append(
+                "Call import_files_tool again with the exact path. Do not guess."
+            )
+            return "\n".join(lines)
+        if target.get("status") == "ok":
+            resolved_path = target["path"]
+            normalized.append(resolved_path)
+            if target.get("match") == "adjacent":
+                adjacent_notes.append(
+                    "adjacent: %r → %s" % (entry, resolved_path)
+                )
+            continue
+
+        notes.append(
+            "Not found: %s (tried %s; no adjacent match under parent or "
+            "Desktop/Downloads/Movies/Videos/Documents/Pictures). Ask the "
+            "user for the full path, or Glob those folders then call "
+            "import_files_tool with the path found. Do not invent /mnt/c "
+            "mounts."
+            % (entry, target.get("tried") or entry)
+        )
+
+    resolved, missing, skipped_non_media = _expand_import_paths(normalized)
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
         )
+        if missing and not notes:
+            detail = "not found: %s" % ", ".join(missing)
         return f"Error: Nothing to import ({detail})."
+
+    preview = str(dry_run).lower().strip() in ("1", "true", "yes", "y", "on")
+    if preview:
+        counts = {"video": 0, "audio": 0, "image": 0, "other": 0}
+        for media_path in resolved:
+            counts[_import_media_kind(media_path)] += 1
+        roots = []
+        for item in normalized:
+            abs_item = os.path.abspath(os.path.expanduser(item))
+            if os.path.exists(abs_item) and abs_item not in roots:
+                roots.append(abs_item)
+        sample = [os.path.basename(p) for p in resolved]
+        lines = [
+            "dry_run=true — nothing imported.",
+            "resolved=%s" % (", ".join(roots) if roots else ", ".join(entries)),
+        ]
+        if adjacent_notes:
+            lines.append("match=adjacent")
+            lines.extend(["  %s" % note for note in adjacent_notes])
+        lines.append(
+            "would_import=%d (video=%d audio=%d image=%d)" % (
+                len(resolved), counts["video"], counts["audio"], counts["image"],
+            )
+        )
+        lines.append("sample:")
+        sample_body = _format_capped_lines(
+            ["  %s" % name for name in sample], cap=_IMPORT_RESULT_LINE_CAP,
+        )
+        if sample_body:
+            lines.append(sample_body)
+        lines.append("skipped_non_media=%d" % skipped_non_media)
+        if missing:
+            lines.append("not found: %s" % ", ".join(missing))
+        if notes:
+            lines.append("Notes: " + "; ".join(notes))
+        lines.append(
+            "Ask the user to confirm, then call again with dry_run=false."
+        )
+        return "\n".join(lines)
 
     skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
 
@@ -1790,11 +1920,15 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
 
     head = "Imported %d file(s). indexing_started=%s" % (
         len(lines), "false" if skip else "true")
+    if adjacent_notes:
+        head += "\n" + "\n".join(adjacent_notes)
+    if skipped_non_media:
+        head += " skipped_non_media=%d" % skipped_non_media
     if missing:
         head += " (not found: %s)" % ", ".join(missing)
     if notes:
         head += "\nNotes: " + "; ".join(notes)
-    return head + "\n" + "\n".join(lines)
+    return head + "\n" + _format_capped_lines(lines)
 
 
 
@@ -8479,7 +8613,7 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
     "get_project_info_tool": "Read project info",
-    "list_files_tool": "List files",
+    "list_files_tool": "List project media",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
     "list_markers_tool": "List markers",
@@ -8504,7 +8638,7 @@ TOOL_DISPLAY_LABELS = {
     "zoom_in_tool": "Zoom in",
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
-    "import_files_tool": "Import files",
+    "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "export_video_tool": "Export video",
     "get_export_settings_tool": "Read export settings",

@@ -768,6 +768,13 @@ def test_agent_bash_prompt_covers_heic_and_zsh():
     from windows.agent_runners import _agent_bash_prompt
 
     text = _agent_bash_prompt()
+    assert "dry_run=true" in text
+    assert "import_files_tool" in text
+    assert "list_files_tool only lists" in text
+    assert "C:/Users/" in text or "/c/Users/" in text
+    assert "IMMEDIATELY" in text
+    assert "/mnt/c" in text
+    assert "Do NOT use Glob" in text or "do NOT use Glob" in text
     assert "sips" in text
     assert "filter_complex" in text
     assert "${!" in text

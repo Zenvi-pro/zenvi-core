@@ -142,6 +142,31 @@ def _resolve_cli_bash():
     return None
 
 
+def _agent_import_prompt() -> str:
+    """Shared import steering for Claude (append) and Codex (message prefix)."""
+    return (
+        "Importing local media (import_files_tool):\n"
+        "- To put files into Project Files you MUST call import_files_tool. "
+        "list_files_tool only lists media already in the project — it never "
+        "imports from disk.\n"
+        "- If the user gave a folder/file path (including Windows "
+        "C:/Users/... or Git Bash /c/Users/...), call import_files_tool "
+        "with that path and dry_run=true IMMEDIATELY. Do NOT use Glob, Read, "
+        "Bash, or list_files_tool to check whether the path exists first. "
+        "Zenvi resolves the path; your filesystem tools often cannot see it.\n"
+        "- Never invent workspace mounts such as /mnt/c/... or claim / is "
+        "empty as proof the user's folder is missing.\n"
+        "- Prefer forward-slash Windows paths in tool args "
+        "(C:/Users/.../folder). Git Bash /c/Users/... also works.\n"
+        "- For vague asks inside Desktop/Downloads/Movies/Videos/Documents/"
+        "Pictures only, you may Glob those folders, then call "
+        "import_files_tool with the path you found (dry_run=true first).\n"
+        "- For folders or bulk asks: dry_run=true → show preview → ask the "
+        "user → dry_run=false. If the tool returns multiple candidates or "
+        "not found, ask the user — do not guess."
+    )
+
+
 def _agent_bash_prompt():
     """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
     return (
@@ -156,7 +181,8 @@ def _agent_bash_prompt():
         "- This Bash tool may still run zsh on macOS. Never use bash "
         "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
         "Iterate a plain path list, or zsh: "
-        'for name in "${(@k)files}"; do ...; done.'
+        'for name in "${(@k)files}"; do ...; done.\n'
+        + _agent_import_prompt()
     )
 
 
@@ -920,9 +946,12 @@ class CodexRunner(BaseAgentRunner):
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
+        # Codex has no --append-system-prompt; prefix import steering so it
+        # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
+        steered = _agent_import_prompt() + "\n\n" + (text or "")
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [cli, "exec", "resume", self._cli_session_id, *common, text]
-        return [cli, "exec", *common, text]
+            return [cli, "exec", "resume", self._cli_session_id, *common, steered]
+        return [cli, "exec", *common, steered]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")

@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import glob as _glob
 import os
+import re
 import sys
 
 # Card-view list is fitted to its contents; keep a drop zone when the bin is empty.
 EMPTY_FILES_DROP_MIN_HEIGHT = 120
+
+# Git Bash / MSYS / Cygwin paths agents often paste on Windows.
+_MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(/.*)?$")
+_CYGDRIVE_RE = re.compile(r"^/cygdrive/([A-Za-z])(/.*)?$", re.IGNORECASE)
 
 # Typical footage locations passed to Claude Code as ``--add-dir``.
 _MEDIA_DIR_NAMES = (
@@ -85,6 +90,85 @@ def flatten_path_args(*values) -> list[str]:
     return chunks
 
 
+def msys_path_to_windows(path: str) -> str | None:
+    """Map ``/c/Users/...`` or ``/cygdrive/c/...`` to ``C:\\Users\\...``.
+
+    Returns ``None`` when *path* is not an MSYS/Cygwin drive path. Pure helper —
+    callers decide when to apply it (typically ``os.name == "nt"``).
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return None
+    # Agents often mix separators; normalize before the drive regex.
+    posix = raw.replace("\\", "/")
+    match = _CYGDRIVE_RE.match(posix) or _MSYS_DRIVE_RE.match(posix)
+    if not match:
+        return None
+    drive = match.group(1).upper()
+    rest = (match.group(2) or "").replace("/", "\\")
+    return f"{drive}:{rest}" if rest else f"{drive}:\\"
+
+
+def _running_on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _windows_drive_root_exists(drive: str) -> bool:
+    """True when ``drive`` (e.g. ``C:``) is mounted. Isolated for unit tests."""
+    return bool(drive) and os.path.exists(drive + "\\")
+
+
+def _msys_windows_path_if_usable(path: str) -> str | None:
+    """Convert MSYS/Cygwin paths only when the target drive exists on Windows.
+
+    Avoids turning Unix paths like ``/Users/...`` into ``U:\\sers\\...``.
+    """
+    if not _running_on_windows():
+        return None
+    converted = msys_path_to_windows(path)
+    if not converted:
+        return None
+    # ntpath so drive letters parse correctly on POSIX hosts (unit tests).
+    import ntpath
+
+    drive = ntpath.splitdrive(converted)[0]
+    if _windows_drive_root_exists(drive):
+        return converted
+    return None
+
+
+def normalize_agent_fs_path(path: str, home: str | None = None) -> str:
+    """Normalize an agent-supplied filesystem path for import / exists checks.
+
+    Handles ``file://`` URLs, ``~``, relative media-folder names, native
+    Windows paths, and common Git Bash / MSYS ``/c/...`` forms when running
+    on Windows. Prefer forward-slash Windows paths in tool args
+    (``C:/Users/...``) so JSON backslash escapes cannot mangle them.
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    on_windows = _running_on_windows()
+    if raw.lower().startswith("file:"):
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(raw)
+        path_part = unquote(parsed.path or "")
+        # file:///C:/Users/... → /C:/Users/... on some parsers
+        if on_windows and re.match(r"^/[A-Za-z]:", path_part):
+            path_part = path_part.lstrip("/")
+        elif on_windows:
+            converted = _msys_windows_path_if_usable(path_part)
+            if converted:
+                path_part = converted
+        raw = path_part or raw
+    elif on_windows:
+        converted = _msys_windows_path_if_usable(raw)
+        if converted:
+            raw = converted
+    return resolve_user_path(raw, home=home)
+
+
 def resolve_user_path(path: str, home: str | None = None) -> str:
     """Expand ``~`` and, for relative names, look under home / common media dirs."""
     raw = (path or "").strip().strip("'\"")
@@ -94,6 +178,11 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
         home = os.path.expanduser("~")
         if not home or home == "~":
             home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+
+    # Native Windows paths with backslashes: normalize separators early so
+    # exists/isabs checks are consistent across MSYS and Win32 Python.
+    if os.name == "nt" and re.match(r"^[A-Za-z]:[\\/]", raw):
+        raw = os.path.normpath(raw)
 
     expanded = os.path.expanduser(raw)
     if os.path.exists(expanded):
@@ -111,6 +200,204 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
         if os.path.exists(candidate):
             return os.path.abspath(candidate)
     return os.path.abspath(expanded)
+
+
+# Cap adjacent guesses so import never becomes a whole-disk search.
+_ADJACENT_CANDIDATE_CAP = 5
+_ADJACENT_MAX_DISTANCE = 2
+
+
+def _norm_name_key(name: str) -> str:
+    """Collapse case and hyphen/underscore/space so dirty_test ≈ dirty-test."""
+    return re.sub(r"[-_\s]+", "_", (name or "").strip().lower())
+
+
+def _edit_distance(a: str, b: str, limit: int = _ADJACENT_MAX_DISTANCE) -> int:
+    """Levenshtein distance with early exit when above *limit*."""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    # Ensure a is the shorter row for less memory.
+    if len(a) > len(b):
+        a, b = b, a
+    prev = list(range(len(a) + 1))
+    for j, bj in enumerate(b, start=1):
+        cur = [j]
+        row_min = j
+        for i, ai in enumerate(a, start=1):
+            ins = cur[i - 1] + 1
+            delete = prev[i] + 1
+            sub = prev[i - 1] + (0 if ai == bj else 1)
+            val = min(ins, delete, sub)
+            cur.append(val)
+            if val < row_min:
+                row_min = val
+        if row_min > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
+def names_are_adjacent(wanted: str, actual: str) -> bool:
+    """True when *actual* is a close spelling of *wanted* (typo / separator).
+
+    Uses normalized equality or edit distance ≤ 2. Deliberately does **not**
+    use broad prefix matching (that wrongly maps ``Down`` → ``Downloads``).
+    """
+    w = (wanted or "").strip()
+    a = (actual or "").strip()
+    if not w or not a:
+        return False
+    if w == a or w.lower() == a.lower():
+        return True
+    w_stem, w_ext = os.path.splitext(w)
+    a_stem, a_ext = os.path.splitext(a)
+    # Different extensions → different files (clip.mp4 must not become clip.mov).
+    if w_ext and a_ext and w_ext.lower() != a_ext.lower():
+        return False
+    wk, ak = _norm_name_key(w), _norm_name_key(a)
+    if not wk or not ak:
+        return False
+    if wk == ak:
+        return True
+    if _edit_distance(wk, ak) <= _ADJACENT_MAX_DISTANCE:
+        return True
+    # File typos: compare stems when extensions match (ree.mp4 ≈ reel.mp4).
+    if w_ext and a_ext and w_ext.lower() == a_ext.lower():
+        wsk, ask = _norm_name_key(w_stem), _norm_name_key(a_stem)
+        if wsk and ask and (
+            wsk == ask or _edit_distance(wsk, ask) <= _ADJACENT_MAX_DISTANCE
+        ):
+            return True
+    return False
+
+
+def _adjacent_distance(wanted: str, actual: str) -> int:
+    """Sort key for adjacent candidates (lower is closer)."""
+    wk = _norm_name_key(os.path.basename(wanted))
+    ak = _norm_name_key(os.path.basename(actual))
+    if wk == ak:
+        return 0
+    dist = _edit_distance(wk, ak, limit=8)
+    w_stem, w_ext = os.path.splitext(wanted)
+    a_stem, a_ext = os.path.splitext(actual)
+    if w_ext and a_ext and w_ext.lower() == a_ext.lower():
+        stem_dist = _edit_distance(_norm_name_key(w_stem), _norm_name_key(a_stem), limit=8)
+        dist = min(dist, stem_dist)
+    return dist
+
+
+def _listdir_safe(path: str) -> list[str]:
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
+def find_adjacent_paths(path: str, home: str | None = None) -> list[str]:
+    """After an exact miss: siblings in the parent dir + basename under media dirs.
+
+    Returns at most ``_ADJACENT_CANDIDATE_CAP`` absolute paths, closest first.
+    Does not walk the whole home tree.
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return []
+    if home is None:
+        home = os.path.expanduser("~")
+        if not home or home == "~":
+            home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+
+    # Prefer the normalized absolute form even when it does not exist yet.
+    normalized = normalize_agent_fs_path(raw, home=home) or raw
+    wanted = os.path.basename(normalized.rstrip("\\/"))
+    if not wanted or wanted in (".", ".."):
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+    media_roots = {os.path.abspath(p) for p in media_add_dirs(home)}
+    home_abs = os.path.abspath(home) if home else ""
+
+    def _consider(candidate: str):
+        if not candidate or not os.path.exists(candidate):
+            return
+        abs_path = os.path.abspath(candidate)
+        if abs_path in seen:
+            return
+        # Never remap a typo onto the entire Desktop/Downloads/… root or $HOME
+        # (e.g. Down → Downloads would import a whole user library).
+        if home_abs and abs_path == home_abs:
+            return
+        name = os.path.basename(abs_path)
+        if abs_path in media_roots and _norm_name_key(name) != _norm_name_key(wanted):
+            return
+        if not names_are_adjacent(wanted, name):
+            return
+        seen.add(abs_path)
+        found.append(abs_path)
+
+    parent = os.path.dirname(normalized)
+    if parent and os.path.isdir(parent):
+        for name in _listdir_safe(parent):
+            _consider(os.path.join(parent, name))
+
+    search_roots: list[str] = []
+    if home and os.path.isdir(home):
+        search_roots.append(os.path.abspath(home))
+    for folder in media_add_dirs(home):
+        root = os.path.abspath(folder)
+        if root not in search_roots:
+            search_roots.append(root)
+
+    for root in search_roots:
+        _consider(os.path.join(root, wanted))
+        for name in _listdir_safe(root):
+            _consider(os.path.join(root, name))
+
+    found.sort(key=lambda p: (_adjacent_distance(wanted, os.path.basename(p)), p))
+    return found[:_ADJACENT_CANDIDATE_CAP]
+
+
+def resolve_agent_import_target(path: str, home: str | None = None) -> dict:
+    """Resolve a user/agent path for import: exact first, then adjacent.
+
+    Returns a dict:
+    - ``status``: ``ok`` | ``ambiguous`` | ``missing``
+    - ``path``: absolute path when status is ``ok``
+    - ``match``: ``exact`` or ``adjacent`` when ok
+    - ``from``: original input when match is adjacent
+    - ``candidates``: list when ambiguous
+    - ``tried``: human-readable hint when missing
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return {"status": "missing", "tried": "(empty path)"}
+
+    exact = normalize_agent_fs_path(raw, home=home)
+    if exact and os.path.exists(exact):
+        return {"status": "ok", "path": os.path.abspath(exact), "match": "exact"}
+
+    adjacent = find_adjacent_paths(raw, home=home)
+    # Drop the non-existent exact path if it somehow appeared.
+    adjacent = [p for p in adjacent if os.path.exists(p)]
+    if len(adjacent) == 1:
+        return {
+            "status": "ok",
+            "path": adjacent[0],
+            "match": "adjacent",
+            "from": raw,
+        }
+    if len(adjacent) > 1:
+        return {"status": "ambiguous", "candidates": adjacent, "from": raw}
+
+    tried = exact or raw
+    return {
+        "status": "missing",
+        "tried": tried,
+        "from": raw,
+    }
 
 
 def collect_import_paths(raw_paths, home: str | None = None) -> tuple[list[str], list[str]]:
@@ -141,9 +428,10 @@ def collect_import_paths(raw_paths, home: str | None = None) -> tuple[list[str],
             notes.append(f"Could not read directory {path}: {exc}")
 
     for raw in flatten_path_args(raw_paths):
-        resolved = local_path_from_url(raw)
+        resolved = normalize_agent_fs_path(raw, home=home)
         if not resolved or not os.path.exists(resolved):
-            resolved = resolve_user_path(raw, home=home)
+            # Fall back for non-file:// strings that local_path_from_url handles.
+            resolved = local_path_from_url(raw) or resolve_user_path(raw, home=home)
         magic = _glob.has_magic(raw) or _glob.has_magic(resolved)
         if magic:
             matches = _glob.glob(resolved, recursive=True)

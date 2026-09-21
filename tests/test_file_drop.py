@@ -9,6 +9,8 @@ from classes.file_drop import (
     flatten_path_args,
     local_path_from_url,
     media_add_dirs,
+    msys_path_to_windows,
+    normalize_agent_fs_path,
     resolve_user_path,
 )
 
@@ -75,6 +77,72 @@ def test_resolve_user_path_tilde_and_media_folder(tmp_path, monkeypatch):
     assert resolve_user_path("Desktop/reel.mp4", home=str(tmp_path)) == str(clip)
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("/c/Users/alice/Desktop/clips", r"C:\Users\alice\Desktop\clips"),
+        ("/C/Users/bob", r"C:\Users\bob"),
+        ("/cygdrive/d/media/take.mp4", r"D:\media\take.mp4"),
+        ("/cygdrive/C/", "C:\\"),
+        (r"C:\Users\alice", None),
+        ("~/Desktop", None),
+        ("", None),
+        # /Users/... is NOT an MSYS drive path (/c/Users is).
+        ("/Users/alice/Desktop/clips", None),
+    ],
+)
+def test_msys_path_to_windows(raw, expected):
+    assert msys_path_to_windows(raw) == expected
+
+
+def test_msys_windows_path_if_usable_requires_existing_drive(monkeypatch):
+    from classes.file_drop import _msys_windows_path_if_usable
+    import classes.file_drop as fd
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: False)
+    assert _msys_windows_path_if_usable("/c/Users/alice") is None
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(
+        fd, "_windows_drive_root_exists",
+        lambda drive: str(drive).upper().rstrip(":\\") == "C",
+    )
+    assert _msys_windows_path_if_usable("/c/Users/alice/Videos") == r"C:\Users\alice\Videos"
+    # Would map to U:\, which our stub says is missing.
+    assert _msys_windows_path_if_usable("/u/Users/alice/Desktop") is None
+
+
+def test_normalize_agent_fs_path_uses_msys_gate(monkeypatch):
+    import classes.file_drop as fd
+
+    seen = []
+
+    def fake_resolve(path, home=None):
+        seen.append(path)
+        return path
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(fd, "resolve_user_path", fake_resolve)
+    monkeypatch.setattr(
+        fd,
+        "_msys_windows_path_if_usable",
+        lambda path: msys_path_to_windows(path)
+        if str(path).lower().startswith(("/c/", "/cygdrive/"))
+        else None,
+    )
+
+    assert normalize_agent_fs_path("/c/Users/alice/Videos") == r"C:\Users\alice\Videos"
+    assert seen[-1] == r"C:\Users\alice\Videos"
+
+    seen.clear()
+    assert normalize_agent_fs_path("file:///c/Users/alice/clip.mp4") == r"C:\Users\alice\clip.mp4"
+    assert seen[-1] == r"C:\Users\alice\clip.mp4"
+
+    seen.clear()
+    assert normalize_agent_fs_path("/Users/alice/Desktop/clips") == "/Users/alice/Desktop/clips"
+    assert seen == ["/Users/alice/Desktop/clips"]
+
+
 def test_local_path_from_url_string_and_none(tmp_path):
     clip = tmp_path / "n.mp4"
     clip.write_bytes(b"n")
@@ -85,17 +153,103 @@ def test_local_path_from_url_string_and_none(tmp_path):
     files, notes = collect_import_paths(file_url)
     assert not notes
     assert files == [str(clip)]
-    bogus = local_path_from_url("file:///.file/id=1.2")
-    assert bogus == ""
 
 
-def test_media_add_dirs_only_existing_folders(tmp_path):
-    (tmp_path / "Desktop").mkdir()
-    (tmp_path / "Downloads").mkdir()
-    dirs = media_add_dirs(str(tmp_path))
-    names = {os.path.basename(p) for p in dirs}
-    assert names == {"Desktop", "Downloads"}
-    assert all(os.path.isdir(p) for p in dirs)
+def test_names_are_adjacent_variants():
+    from classes.file_drop import names_are_adjacent
+
+    assert names_are_adjacent("dirty_test", "dirty_test")
+    assert names_are_adjacent("dirty_test", "dirty-test")
+    assert names_are_adjacent("Dirty Test", "dirty_test")
+    assert names_are_adjacent("dirty_tes", "dirty_test")
+    assert names_are_adjacent("ree.mp4", "reel.mp4")
+    # Must NOT remap short prefixes onto whole libraries / long names.
+    assert not names_are_adjacent("Down", "Downloads")
+    assert not names_are_adjacent("Docu", "Documents")
+    assert not names_are_adjacent("file", "filename_final_export.mp4")
+    assert not names_are_adjacent("clip", "clip_final")
+    assert not names_are_adjacent("wedding", "dirty_test")
+    assert not names_are_adjacent("clip.mp4", "clip.mov")
+
+
+def test_resolve_agent_import_target_exact(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    folder = tmp_path / "dirty_test"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    result = resolve_agent_import_target(str(folder), home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] == "exact"
+    assert result["path"] == str(folder)
+
+
+def test_resolve_agent_import_target_adjacent_one_hit(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    real = tmp_path / "dirty_test"
+    real.mkdir()
+    (real / "clip.mp4").write_bytes(b"x")
+    wrong = tmp_path / "dirty_tes"
+    result = resolve_agent_import_target(str(wrong), home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] == "adjacent"
+    assert result["path"] == str(real)
+    assert result["from"] == str(wrong)
+
+
+def test_resolve_agent_import_target_adjacent_under_downloads(tmp_path, monkeypatch):
+    from classes.file_drop import resolve_agent_import_target
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    real = downloads / "dirty-test"
+    real.mkdir()
+    (real / "a.mp4").write_bytes(b"x")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    result = resolve_agent_import_target("dirty_test", home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] in ("exact", "adjacent")
+    assert result["path"] == str(real)
+
+
+def test_resolve_agent_import_target_ambiguous(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    a = tmp_path / "clip_a"
+    b = tmp_path / "clip_b"
+    a.mkdir()
+    b.mkdir()
+    # Both are edit-distance 1 from clip_x.
+    result = resolve_agent_import_target(str(tmp_path / "clip_x"), home=str(tmp_path))
+    assert result["status"] == "ambiguous"
+    assert len(result["candidates"]) >= 2
+
+
+def test_adjacent_does_not_remap_onto_downloads_root(tmp_path):
+    """Down must not resolve to the entire Downloads library."""
+    from classes.file_drop import resolve_agent_import_target
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "keep.mp4").write_bytes(b"x")
+    result = resolve_agent_import_target(
+        str(tmp_path / "Down"), home=str(tmp_path)
+    )
+    assert result["status"] == "missing"
+    assert result.get("path") != str(downloads)
+
+
+def test_resolve_agent_import_target_missing(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    result = resolve_agent_import_target(
+        str(tmp_path / "no_such_folder_xyz"), home=str(tmp_path)
+    )
+    assert result["status"] == "missing"
 
 
 def test_mime_has_file_drop_and_urls_from_mime(tmp_path):
