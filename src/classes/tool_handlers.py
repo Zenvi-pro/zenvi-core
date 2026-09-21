@@ -4514,6 +4514,52 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     return f, None
 
 
+def _stamp_generated_video_metadata(file_obj, prompt=""):
+    """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
+
+    Generated media is imported with skip_indexing=True, so without this the
+    scene panel and clip search have nothing to show for the clip the agent
+    just made. The generation prompt is the summary.
+
+    Returns False when the metadata could not be saved, True otherwise.
+    """
+    summary = (prompt or "").strip()
+    if not file_obj or not summary:
+        return True
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "ai_generated" not in tag_list:
+            tag_list.append("ai_generated")
+        file_obj.data["tags"] = ", ".join(tag_list)
+
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary[:400]
+        ai["description"] = summary[:400]
+        # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
+        ai["analyzed"] = True
+        ai["source"] = "ai_video_generation"
+        file_obj.data["ai_metadata"] = ai
+        if not file_obj.data.get("name"):
+            file_obj.data["name"] = summary[:120]
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        log.warning("Could not stamp generated-video metadata: %s", exc)
+        return False
+
+
 def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
     """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
     import tempfile
@@ -5141,6 +5187,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     + (f": {import_err}" if import_err else ".")
                 )
 
+            stamped = _stamp_generated_video_metadata(f, prompt)
+
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
             # None unless the ripple branch below runs; add_clip_to_timeline
@@ -5234,6 +5282,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"{msg or 'unknown'}. "
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
                     f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
                 )
             return msg
         except Exception as e:
