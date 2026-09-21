@@ -174,6 +174,7 @@ class TimelineWidgetBase(QWidget):
         self.marker_rects = []
         self.current_frame = 0
         self.is_auto_center = True
+        self.keyframe_prop_filter = ""
         self.min_distance = 0.02
         self.track_rects = []
         self.track_list = []
@@ -686,7 +687,77 @@ class TimelineWidgetBase(QWidget):
         return max(0.0, seconds)
 
     def run_js(self, code, callback=None, retries=0):
-        """Placeholder due to webview compatibility"""
+        """No-op on the native backend; log so silent gaps surface in debug logs."""
+        snippet = (code or "")[:120].replace("\n", " ")
+        log.debug("TimelineWidget.run_js ignored (native backend): %s", snippet)
+        if callback:
+            try:
+                callback(None)
+            except Exception:
+                log.debug("TimelineWidget.run_js callback failed", exc_info=True)
+
+    def set_playhead_follow(self, enable_follow):
+        """Enable / disable centering the viewport on the playhead while seeking."""
+        self.is_auto_center = bool(enable_follow)
+
+    def set_property_filter(self, property_name):
+        """Filter which keyframe properties are drawn on clips (substring match)."""
+        self.keyframe_prop_filter = str(property_name or "")
+        self._keyframes_dirty = True
+        self.update()
+
+    def update_thumbnail(self, clip_id, thumbnail_frame=1, force_regen=False):
+        """Drop cached thumbnails for a clip after its frame thumbnail changes."""
+        clip_key = str(clip_id or "")
+        if not clip_key:
+            return
+        painter = getattr(self, "clip_painter", None)
+        file_id = None
+        if painter is not None:
+            # Expire pending requests so the next paint re-queues a load.
+            if hasattr(painter, "expire_thumbnail_requests"):
+                painter.expire_thumbnail_requests(getattr(self, "thumbnail_generation", 0))
+            if hasattr(painter, "_invalidate_clip_cache_for_clip"):
+                painter._invalidate_clip_cache_for_clip(clip_key)
+            # Drop thumb_cache entries for this clip id.
+            thumb_cache = getattr(painter, "thumb_cache", None)
+            if thumb_cache is not None:
+                stale = [
+                    key for key in list(thumb_cache.keys())
+                    if str(key[0]).split(":", 1)[0] == clip_key
+                ]
+                for key in stale:
+                    thumb_cache.pop(key, None)
+        if force_regen:
+            try:
+                from classes.query import Clip as QueryClip
+
+                clip = QueryClip.get(id=clip_key)
+                if clip and isinstance(getattr(clip, "data", None), dict):
+                    file_id = clip.data.get("file_id")
+            except Exception:
+                file_id = None
+            manager = getattr(self, "thumbnail_manager", None)
+            if manager is not None and file_id:
+                frame = int(thumbnail_frame or 1)
+                generation = int(getattr(self, "thumbnail_generation", 0) or 0)
+                # Mark pending so paint does not double-queue a non-forced load.
+                if painter is not None:
+                    key = (clip_key, frame)
+                    painter._thumb_pending[key] = generation
+                manager.request_thumbnail(
+                    clip_key, file_id, frame, generation, clear_cache=True
+                )
+        self._schedule_viewport_thumbnail_reset()
+        self.update()
+
+    def redraw_audio_data(self):
+        """Force clip painters to rebuild after waveform data changes."""
+        painter = getattr(self, "clip_painter", None)
+        if painter is not None and hasattr(painter, "clear_cache"):
+            painter.clear_cache()
+        self.geometry.mark_dirty()
+        self.update()
 
     def apply_theme(self, css=None):
         """Apply CSS theme to this widget."""

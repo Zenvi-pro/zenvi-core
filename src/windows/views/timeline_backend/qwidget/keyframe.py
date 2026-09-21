@@ -139,6 +139,18 @@ class KeyframeMixin:
         markers = {}
 
         skip_keys = {"effects", "ui", "reader", "cache"}
+        prop_filter = (getattr(self, "keyframe_prop_filter", "") or "").lower()
+
+        def _property_matches_filter(path):
+            if not prop_filter:
+                return True
+            # Match any eligible path component (e.g. "color" must hit
+            # color.red.Points, not only the nearest "red" leaf).
+            for kind, part in reversed(path):
+                if kind == "dict" and isinstance(part, str) and part not in skip_keys:
+                    if prop_filter in part.lower():
+                        return True
+            return False
 
         def store(frame_value, interpolation_value, point_obj=None, point_path=None):
             if frame_value is None:
@@ -232,7 +244,7 @@ class KeyframeMixin:
         def walk(obj, path):
             if isinstance(obj, dict):
                 points = obj.get("Points")
-                if isinstance(points, list) and len(points) > 1:
+                if isinstance(points, list) and len(points) > 1 and _property_matches_filter(path):
                     base_path = path + (("dict", "Points"),)
                     for index, point in enumerate(points):
                         co = point.get("co", {}) if isinstance(point, dict) else {}
@@ -243,7 +255,7 @@ class KeyframeMixin:
                             base_path + (("list", index),),
                         )
                 red = obj.get("red")
-                if isinstance(red, dict):
+                if isinstance(red, dict) and _property_matches_filter(path + (("dict", "red"),)):
                     red_points = red.get("Points")
                     if isinstance(red_points, list) and len(red_points) > 1:
                         base_path = path + (("dict", "red"), ("dict", "Points"))
