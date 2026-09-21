@@ -56,7 +56,7 @@ COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
 COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
 COLOR_MISSING = "#6b7280"   # not installed / not probed yet
 
-CLI_BINARIES = {"claude_code": "claude", "codex": "codex"}
+CLI_BINARIES = {"claude_code": "claude", "codex": "codex", "cursor_cli": "cursor-agent"}
 
 _TOOL_COUNT = None
 
@@ -405,8 +405,8 @@ class AgentPanel(QFrame):
                     backend_id, status.get(backend_id))
                 row.set_state(backend_id == active, color, word, desc, connect, danger, tip)
 
-            if active == "codex":
-                self.footer.setText(self._tr("Codex uses the model from its own config"))
+            if active in ("codex", "cursor_cli"):
+                self.footer.setText(self._tr("This agent uses the model from its own config"))
             else:
                 self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:

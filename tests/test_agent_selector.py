@@ -242,6 +242,32 @@ def test_panel_reports_each_status(qapp):
     assert not panel._rows["zenvi"].action.isVisible()
 
 
+def test_cursor_cli_row_follows_install_and_connect_status(qapp):
+    """Cursor CLI is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "cursor_cli" and b["name"] == "Cursor CLI" for b in BACKENDS)
+
+    connected = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": True},
+    }
+    panel = _panel(FakeChat(connected, active="cursor_cli"))
+    assert panel._rows["cursor_cli"].word.text() == "connected"
+    assert "2026.09.10" in panel._rows["cursor_cli"].desc.text()
+
+    missing = {"cursor_cli": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["cursor_cli"].word.text() == "not installed"
+    assert "cursor-agent" in panel._rows["cursor_cli"].desc.text()
+
+    unregistered = {
+        "cursor_cli": {"installed": True, "version": "2026.09.10", "registered": False},
+    }
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["cursor_cli"].word.text() == "not connected"
+    assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
+
+
 def test_selected_row_tracks_the_active_backend(qapp):
     panel = _panel(FakeChat(CONNECTED, active=CODEX))
     assert panel._rows[CODEX].property("selected") is True
