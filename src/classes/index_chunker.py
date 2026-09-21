@@ -116,12 +116,30 @@ def _is_full_file_chunk(start: float, end: float, source_path: str) -> bool:
     return end >= src_dur - 0.5
 
 
-def video_scale_filter(max_height: int = 720) -> str:
-    """Cap height at max_height without upscaling (even width)."""
+DEFAULT_INDEX_MIN_HEIGHT = 720
+
+
+def index_min_height() -> int:
+    """ZENVI_INDEX_MIN_HEIGHT: upscale shorter video to this height for indexing (0 = off)."""
+    try:
+        return max(0, int(os.environ.get("ZENVI_INDEX_MIN_HEIGHT", DEFAULT_INDEX_MIN_HEIGHT)))
+    except ValueError:
+        return DEFAULT_INDEX_MIN_HEIGHT
+
+
+def video_scale_filter(max_height: int = 720, min_height: int = 0) -> str:
+    """Cap height at max_height; lift shorter video to min_height (even width).
+
+    Low-resolution sources index badly, so they are upscaled with lanczos before
+    upload. The cap always wins over the minimum.
+    """
     h = int(max_height or 720)
     if h <= 0:
         h = 720
-    return f"scale=-2:'min({h},ih)'"
+    lo = min(int(min_height or 0), h)
+    if lo <= 0:
+        return f"scale=-2:'min({h},ih)'"
+    return f"scale=-2:'min(max(ih,{lo}),{h})':flags=lanczos"
 
 
 def extract_chunk(
@@ -138,7 +156,8 @@ def extract_chunk(
 
     For audio: prefer the original file when the chunk spans the whole asset;
     otherwise stream-copy or fall back to WAV (Gemini accepts audio/wav).
-    Video is re-encoded with height capped at max_height (never upscaled).
+    Video is re-encoded with height capped at max_height, and upscaled to
+    ZENVI_INDEX_MIN_HEIGHT when shorter.
     """
     if not video_path or not os.path.isfile(video_path):
         return "", f"File not found: {video_path}"
@@ -200,7 +219,7 @@ def extract_chunk(
     out_path = os.path.join(
         dest_dir, f"chunk_{int(chunk_index):04d}_{start_f:.3f}_{end_f:.3f}.mp4"
     )
-    vf = video_scale_filter(max_height)
+    vf = video_scale_filter(max_height, index_min_height())
     ok, err = _ffmpeg_run([
         "ffmpeg", "-y", "-loglevel", "error",
         "-ss", f"{start_f:.3f}",

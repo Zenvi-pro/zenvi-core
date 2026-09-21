@@ -43,8 +43,9 @@ SERVER_INSTRUCTIONS = (
     "cut land cleanly, is album art covering video. If the edit is wrong, use "
     "undo_tool and try again. After remove_clip_tool, check get_timeline_state_tool "
     "instead - a removed clip cannot be watched. watch_clip_window_tool returns an "
-    "Error if the clip cannot be resolved; if vision is unavailable it falls back "
-    "to the text-index time and says so."
+    "Error if the clip cannot be resolved. Its start/end are source seconds; it lists "
+    "the frames watched and the shot cuts, so read a cut from there instead of "
+    "re-watching, and slice at a known time with start_seconds/end_seconds."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.

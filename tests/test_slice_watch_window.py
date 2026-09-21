@@ -4,6 +4,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -196,6 +198,153 @@ def test_slice_explicit_time_skips_watch():
                             )
     assert watch_calls == []
     assert "Sliced" in out
+
+
+def _run_watch_clip_window(watch_result, **kwargs):
+    """watch_clip_window on a clip covering source 60-80s; returns (out, watch_calls, searched)."""
+    from contextlib import ExitStack
+
+    watch_calls = []
+    searched = []
+
+    def fake_watch(path, start, end, query, **kw):
+        watch_calls.append((float(start), float(end), query))
+        return dict(watch_result)
+
+    ctx = MagicMock()
+    ctx.source_start = 60.0
+    ctx.source_end = 80.0
+    ctx.title = "Podcast"
+    ctx.file_id = "file-1"
+    ctx.source_path = "/v.mp4"
+    resolved = MagicMock(ok=True, clip=MagicMock())
+    resolved.clip.data = {"file_id": "file-1", "start": 60.0, "end": 80.0}
+    patches = [
+        patch.object(tool_handlers, "_resolve_timeline_clip_for_tool", lambda **_kw: resolved),
+        patch.object(tool_handlers, "_get_source_file_for_clip", return_value=MagicMock(data={})),
+        patch.object(tool_handlers, "_lookup_watch_meta", return_value=("/v.mp4", 229.0, [])),
+        patch.object(tool_handlers, "_watch_confirm_cut", fake_watch),
+        patch.object(tool_handlers, "_tl_search_items_in_window",
+                     lambda *a, **k: searched.append(a) or ([], None)),
+        patch("classes.timeline_clip_context.build_timeline_clip_context", return_value=ctx),
+        patch("classes.timeline_clip_context.resolve_parent_file_data", return_value={}),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        out = tool_handlers.watch_clip_window(timeline_clip_id="C1", **kwargs)
+    return out, watch_calls, searched
+
+
+def test_watch_clip_window_reports_frames_cuts_and_visibility_in_source_seconds():
+    out, calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 71.0, "in_source": 70.0, "out_source": 72.0,
+            "matched": True, "used_fallback": False, "reason": "iPad on the desk",
+            "window_start": 67.0, "window_end": 74.0,
+            "frame_times": [69.9, 70.0, 71.5, 72.0],
+            "scene_times": [70.0, 72.0],
+            "visible_at": [70.0, 71.5],
+        },
+        query="guy with the iPad", start="69", end="72",
+    )
+    assert calls == [(69.0, 72.0, "guy with the iPad")]
+    assert "69.90, 70.00, 71.50, 72.00" in out
+    assert "Shot cuts" in out and "70.00, 72.00" in out
+    assert "Visible 70.000s–72.000s source" in out
+    assert "source" in out.lower()
+
+
+def test_watch_clip_window_miss_does_not_offer_a_keep_range():
+    """A miss used to print "Keep 64–78s" beside "no match" - the agent re-watched."""
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 69.0, "in_source": 69.0, "out_source": 72.0,
+            "matched": False, "used_fallback": True, "reason": "No iPad in these frames.",
+            "window_start": 67.0, "window_end": 74.0,
+            "frame_times": [67.0, 70.0], "scene_times": [], "visible_at": [],
+        },
+        query="guy with the iPad", start="69", end="72",
+    )
+    assert "Keep" not in out
+    assert "Not visible in these frames" in out
+    assert "Shot cuts in window: none" in out
+
+
+@pytest.mark.parametrize(
+    "kwargs, needle",
+    [
+        ({"query": "is the iPad guy visible at 72.5 seconds"}, "start"),
+        ({"query": "iPad guy between 45-62s"}, "start"),
+        ({"query": "iPad guy", "start": "69"}, "start"),
+        ({"query": "iPad guy", "start": "100", "end": "110"}, "outside"),
+    ],
+)
+def test_watch_clip_window_refuses_instead_of_watching_elsewhere(kwargs, needle):
+    out, calls, searched = _run_watch_clip_window({"cut_source": 0}, **kwargs)
+    assert out.startswith("Error:"), out
+    assert needle in out.lower()
+    assert calls == [] and searched == []
+
+
+def _slice_with_explicit_seconds(**kwargs):
+    from contextlib import ExitStack
+
+    resolved = MagicMock(ok=True, clip=MagicMock())
+    resolved.clip.id = "clip-1"
+    resolved.clip.data = {"file_id": "file-1", "position": 0.0, "start": 60.0, "end": 80.0, "layer": 1}
+    sf = MagicMock()
+    sf.data = {"path": "/v.mp4", "duration": 229}
+    blocked = []
+    time_slices = []
+    cuts = []
+
+    def run_main(fn):
+        if getattr(fn, "__name__", "") == "_do_time_slice":
+            time_slices.append(True)
+            return "Sliced at 0:10 and 0:12 (source). Three segments: before, selected range, after."
+        return fn() if callable(fn) else None
+
+    def cut(clip_id, cs, ce, cp, cut_source, **kw):
+        cuts.append(float(cut_source))
+        return f"Sliced at {cut_source - cs:.0f}s ({kw.get('label')})."
+
+    patches = [
+        patch.object(tool_handlers, "_watch_confirm_cut", lambda *a, **k: blocked.append("watch")),
+        patch.object(tool_handlers, "_twelvelabs_search_in_window",
+                     lambda *a, **k: blocked.append("search") or ([], None)),
+        patch.object(tool_handlers, "_slice_at_source_cut", cut),
+        patch.object(tool_handlers, "_run_on_main_thread", side_effect=run_main),
+        patch.object(tool_handlers, "_get_source_file_for_clip", return_value=sf),
+        patch("classes.clip_resolver.resolve_timeline_clip", return_value=resolved),
+        patch("classes.ai_metadata_utils.get_source_window", return_value=(60.0, 80.0)),
+        patch("classes.timeline_clip_context.resolve_parent_file_data", return_value=sf.data),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        out = tool_handlers.slice_clip_at_best_match(query="guy with the iPad", clip_query="podcast", **kwargs)
+    return out, blocked, time_slices, cuts
+
+
+def test_slice_at_explicit_source_range_skips_search_and_watch():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="70", end_seconds="72")
+    assert blocked == []
+    assert time_slices and not cuts
+    assert "Sliced" in out
+
+
+def test_slice_at_one_explicit_source_second_cuts_there():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="70")
+    assert blocked == []
+    assert cuts == [70.0] and not time_slices
+    assert "Sliced" in out
+
+
+def test_slice_explicit_seconds_outside_the_clip_is_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="10", end_seconds="12")
+    assert out.startswith("Error:")
+    assert blocked == [] and not time_slices and not cuts
 
 
 def test_watch_clip_window_in_handlers():
