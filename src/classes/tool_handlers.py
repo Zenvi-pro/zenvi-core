@@ -38,7 +38,12 @@ from classes.clip_placement import (
     should_watch_placement,
     source_window_for_file,
 )
-from classes.agent_tools.handlers import PHASE3_HANDLERS, PHASE3_DISPLAY_LABELS
+from classes.agent_tools.handlers import (
+    PHASE3_DISPLAY_LABELS,
+    PHASE3_HANDLERS,
+    PHASE4_DISPLAY_LABELS,
+    PHASE4_HANDLERS,
+)
 from classes.image_types import is_audio_only_media
 from classes.track_display import (
     format_track_label_for_llm,
@@ -8527,6 +8532,7 @@ AGENT_TOOL_HANDLERS = {
     "get_timeline_state_tool": get_timeline_state,
 }
 AGENT_TOOL_HANDLERS.update(PHASE3_HANDLERS)
+AGENT_TOOL_HANDLERS.update(PHASE4_HANDLERS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
@@ -8592,6 +8598,7 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_state_tool": "Read timeline state",
 }
 TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
+TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -8639,6 +8646,8 @@ READ_ONLY_TOOLS = frozenset({
     "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
+    "inspect_timeline_tool",
+    "inspect_media_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -8676,6 +8685,8 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # HyperFrames download + alpha re-encode can take a while.
     "fetch_motion_graphics_video_tool",
     "fetch_remotion_video_from_supabase_tool",
+    "inspect_timeline_tool",
+    "inspect_media_tool",
 })
 
 # Tools whose main-thread work can legitimately run far longer than
@@ -8718,9 +8729,8 @@ def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
     return max(_MAIN_THREAD_TIMEOUT_DEFAULT, _MAIN_THREAD_TIMEOUT_PER_STEP * n)
 
 
-def execute_tool(tool_name: str, tool_args: dict) -> str:
-    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
-    from classes.agent_tools.execute import bind_runtime, execute_tool as _dispatch
+def _bind_execute_runtime() -> None:
+    from classes.agent_tools.execute import bind_runtime
 
     bind_runtime(
         handlers=TOOL_HANDLERS,
@@ -8734,4 +8744,19 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         coerce_steps=_coerce_steps,
         qthread=QThread,
     )
+
+
+def execute_tool(tool_name: str, tool_args: dict) -> str:
+    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
+    from classes.agent_tools.execute import execute_tool as _dispatch
+
+    _bind_execute_runtime()
+    return _dispatch(tool_name, tool_args or {})
+
+
+def execute_tool_rich(tool_name: str, tool_args: dict):
+    """Execute a tool; return ToolOutput (receipt + optional images)."""
+    from classes.agent_tools.execute import execute_tool_rich as _dispatch
+
+    _bind_execute_runtime()
     return _dispatch(tool_name, tool_args or {})

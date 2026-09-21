@@ -442,6 +442,7 @@ class ZenviBackendClient:
                         # reported to the user as done.
                         result = f"Error: tool execution failed: {exc}"
                     text = str(result) if result is not None else ""
+                    from classes.agent_tools.output import get_last_output, ws_images
                     from classes.agent_tools.receipt import is_error_result, parse_receipt
                     if text and not is_error_result(text):
                         last_tool_result_holder[0] = text
@@ -451,12 +452,22 @@ class ZenviBackendClient:
                     receipt = parse_receipt(text)
                     if receipt and receipt.get("status") in ("error", "refused"):
                         wire = str(receipt.get("summary") or text)
+                    payload = {
+                        "call_id": call_data.get("call_id", ""),
+                        "result": wire,
+                    }
+                    # Sidecar for Assistant vision (backend forwards when ready).
+                    try:
+                        last = get_last_output()
+                        if last is not None:
+                            images = ws_images(last)
+                            if images:
+                                payload["images"] = images
+                    except Exception:
+                        pass
                     _ws_send({
                         "type": "tool_result",
-                        "data": {
-                            "call_id": call_data.get("call_id", ""),
-                            "result": wire,
-                        },
+                        "data": payload,
                     })
 
                 t = threading.Thread(target=_runner, daemon=True, name="zenvi-tool-worker")
