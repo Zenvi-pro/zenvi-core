@@ -111,83 +111,196 @@ def path_is_under(path, root):
         return False
 
 
-def copy_imported_media(files, clips, project_file_path, app_root=None):
-    """Copy imported/stock media into ``ProjectName_assets/media``.
+def durable_media_path(ext=".mp4", project_file_path=None):
+    """Return a durable absolute path for a new generated media file.
 
-    Mutates *files* and *clips* so their paths point at the copies. Bundled
-    app resources and files already inside this project's assets folder are
-    left in place. Missing files and image-sequence paths (``%``) are skipped.
+    Saved projects write into ``{Project}_assets/media/``. Unsaved projects
+    write into ``{USER_PATH}/generated/``. Never returns an OS temp path.
     """
+    import uuid as _uuid
+
+    ext = ext if str(ext).startswith(".") else f".{ext}"
+    if not ext:
+        ext = ".mp4"
+    name = "generated_%s%s" % (_uuid.uuid4().hex[:12], ext)
+
+    if not project_file_path:
+        try:
+            from classes.app import get_app
+            app = get_app()
+            if app and getattr(app, "project", None):
+                project_file_path = getattr(app.project, "current_filepath", None)
+        except Exception:
+            project_file_path = None
+
+    if project_file_path:
+        asset_path = get_assets_path(project_file_path, create_paths=True)
+        if asset_path:
+            media_dir = os.path.join(asset_path, "media")
+            try:
+                os.makedirs(media_dir, exist_ok=True)
+                return os.path.join(media_dir, name)
+            except OSError:
+                log.error("Could not create media folder %s", media_dir, exc_info=1)
+
+    out_dir = os.path.join(info.USER_PATH, "generated")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        log.error("Could not create generated folder %s", out_dir, exc_info=1)
+        # Last resort: still avoid OS temp by writing under USER_PATH.
+        return os.path.join(info.USER_PATH, name)
+    return os.path.join(out_dir, name)
+
+
+def cleanup_scratch_parent(path, prefix):
+    """Remove a tempfile.mkdtemp parent when *path* sits under a matching prefix."""
+    try:
+        parent = os.path.dirname(os.path.abspath(path or ""))
+        if parent and os.path.basename(parent).startswith(prefix) and os.path.isdir(parent):
+            shutil.rmtree(parent, ignore_errors=True)
+    except Exception:
+        log.debug("Scratch cleanup failed for %s", path, exc_info=1)
+
+
+def _generated_roots():
+    """Directories that hold generated media awaiting project ownership."""
+    return [
+        os.path.join(info.USER_PATH, "generated"),
+        os.path.join(info.USER_PATH, "Generated"),  # legacy sibling name
+    ]
+
+
+def unique_media_dest(media_dir, dest_name, file_id=None, abs_src=None):
+    """Return an unused path under *media_dir*, never overwriting unrelated media."""
+    dest = os.path.join(media_dir, dest_name)
+    if os.path.isfile(dest) and abs_src:
+        try:
+            if os.path.samefile(abs_src, dest):
+                return dest
+        except OSError:
+            pass
+    if not os.path.isfile(dest):
+        return dest
+    stem, ext = os.path.splitext(dest_name)
+    base_id = file_id or "file"
+    n = 0
+    while True:
+        if n == 0:
+            candidate_name = "%s_%s%s" % (stem, base_id, ext)
+        else:
+            candidate_name = "%s_%s_%d%s" % (stem, base_id, n, ext)
+        candidate = os.path.join(media_dir, candidate_name)
+        if not os.path.isfile(candidate):
+            return candidate
+        if abs_src:
+            try:
+                if os.path.samefile(abs_src, candidate):
+                    return candidate
+            except OSError:
+                pass
+        n += 1
+
+
+def relocate_generated_media(files, clips, project_file_path):
+    """Move unsaved generated media into ``{Project}_assets/media``.
+
+    Only relocates files that live under ``USER_PATH/generated`` (or the
+    legacy ``Generated`` folder). Imported user footage is left in place.
+    Returns a move ledger ``[(src, dest), ...]`` for rollback on save failure.
+    """
+    moves = []
     if not project_file_path or not files:
-        return
+        return moves
 
     asset_path = get_assets_path(project_file_path, create_paths=True)
     if not asset_path:
-        return
+        return moves
     media_dir = os.path.join(asset_path, "media")
     try:
         os.makedirs(media_dir, exist_ok=True)
     except OSError:
         log.error("Could not create media folder %s", media_dir, exc_info=1)
-        return
+        return moves
 
+    roots = [os.path.abspath(r) for r in _generated_roots()]
     id_to_new = {}
     src_to_new = {}
+    path_snapshot = snapshot_media_paths(files, clips)
 
-    for file in files:
-        src = file.get("path") or ""
-        if not src or "%" in src:
-            continue
-        if not os.path.isfile(src):
-            continue
-        abs_src = os.path.abspath(src)
-        if path_is_under(abs_src, asset_path):
-            continue
-        if app_root and path_is_under(abs_src, app_root):
-            continue
-
-        dest_name = os.path.basename(abs_src)
-        dest = os.path.join(media_dir, dest_name)
-        if os.path.isfile(dest):
-            try:
-                same = os.path.samefile(abs_src, dest)
-            except OSError:
-                same = False
-            if not same:
-                stem, ext = os.path.splitext(dest_name)
-                dest_name = "%s_%s%s" % (stem, file.get("id") or "file", ext)
-                dest = os.path.join(media_dir, dest_name)
-
-        if not os.path.isfile(dest):
-            try:
-                shutil.copy2(abs_src, dest)
-            except Exception:
-                log.error("Could not copy imported media %s to %s", abs_src, dest, exc_info=1)
+    try:
+        for file in files:
+            src = file.get("path") or ""
+            if not src or "%" in src:
                 continue
-            log.info("Copied imported media %s to %s", abs_src, dest)
+            if not os.path.isfile(src):
+                continue
+            abs_src = os.path.abspath(src)
+            if path_is_under(abs_src, asset_path):
+                continue
+            if not any(path_is_under(abs_src, root) for root in roots):
+                continue
 
-        file["path"] = dest
-        file_id = file.get("id")
-        if file_id:
-            id_to_new[file_id] = dest
-        src_to_new[abs_src] = dest
+            dest = unique_media_dest(
+                media_dir, os.path.basename(abs_src), file.get("id"), abs_src
+            )
 
-    if not id_to_new and not src_to_new:
+            if abs_src != os.path.abspath(dest):
+                try:
+                    shutil.move(abs_src, dest)
+                except Exception:
+                    log.error(
+                        "Could not relocate generated media %s to %s",
+                        abs_src,
+                        dest,
+                        exc_info=1,
+                    )
+                    raise
+                moves.append((abs_src, dest))
+                log.info("Relocated generated media %s to %s", abs_src, dest)
+
+            file["path"] = dest
+            file_id = file.get("id")
+            if file_id:
+                id_to_new[file_id] = dest
+            src_to_new[abs_src] = dest
+
+        if not id_to_new and not src_to_new:
+            return moves
+
+        for clip in clips or []:
+            reader = clip.get("reader")
+            if not isinstance(reader, dict):
+                reader = {}
+                clip["reader"] = reader
+            file_id = clip.get("file_id")
+            rpath = reader.get("path") or ""
+            if file_id and file_id in id_to_new:
+                reader["path"] = id_to_new[file_id]
+            elif rpath:
+                abs_rpath = os.path.abspath(rpath)
+                if abs_rpath in src_to_new:
+                    reader["path"] = src_to_new[abs_rpath]
+
+        return moves
+    except Exception:
+        reverse_media_moves(moves)
+        restore_media_paths(path_snapshot)
+        moves[:] = []
+        raise
+
+
+def reverse_media_moves(moves):
+    """Undo filesystem moves from ``relocate_generated_media`` (dest -> src)."""
+    if not moves:
         return
-
-    for clip in clips or []:
-        reader = clip.get("reader")
-        if not isinstance(reader, dict):
-            reader = {}
-            clip["reader"] = reader
-        file_id = clip.get("file_id")
-        rpath = reader.get("path") or ""
-        if file_id and file_id in id_to_new:
-            reader["path"] = id_to_new[file_id]
-        elif rpath:
-            abs_rpath = os.path.abspath(rpath)
-            if abs_rpath in src_to_new:
-                reader["path"] = src_to_new[abs_rpath]
+    for src, dest in reversed(list(moves)):
+        try:
+            if os.path.isfile(dest):
+                os.makedirs(os.path.dirname(src), exist_ok=True)
+                shutil.move(dest, src)
+        except Exception:
+            log.error("Could not reverse media move %s -> %s", dest, src, exc_info=1)
 
 
 def snapshot_media_paths(files, clips):
@@ -201,7 +314,7 @@ def snapshot_media_paths(files, clips):
 
 
 def restore_media_paths(snapshot):
-    """Undo in-memory path mutations from ``copy_imported_media``."""
+    """Undo in-memory path mutations from ``relocate_generated_media``."""
     if not snapshot:
         return
     file_paths, clip_paths = snapshot

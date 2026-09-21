@@ -148,6 +148,22 @@
     "setting": "recent_projects"
   },
   {
+    "value": [],
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "media-roots"
+  },
+  {
+    "max": 8192,
+    "title": "Media Cache Limit (MB)",
+    "category": "Cache",
+    "min": 64,
+    "setting": "media-cache-limit-mb",
+    "value": 2048,
+    "type": "spinner-int"
+  },
+  {
     "value": "HD 720p 30 fps",
     "title": "Default Profile",
     "category": "Preview",
@@ -262,7 +278,7 @@
     "category": "Autosave",
     "min": 0,
     "setting": "history-limit",
-    "value": 15,
+    "value": 50,
     "type": "spinner-int"
   },
   {
