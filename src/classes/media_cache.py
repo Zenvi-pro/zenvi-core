@@ -6,7 +6,6 @@
 import json
 import os
 import shutil
-import time
 
 from classes import info
 from classes.logger import log
