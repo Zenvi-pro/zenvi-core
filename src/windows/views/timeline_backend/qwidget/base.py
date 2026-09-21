@@ -675,7 +675,23 @@ class TimelineWidgetBase(QWidget):
 
     def _snap_time(self, seconds):
         """Snap a time in seconds to the nearest frame boundary."""
-        return round(seconds * self.fps_float) / self.fps_float
+        from classes import frame_time as ft
+        from classes.clip_utils import project_fps_fraction
+        try:
+            fps = project_fps_fraction()
+        except Exception:
+            fps = float(self.fps_float or 30.0) or 30.0
+        return ft.snap(float(seconds or 0.0), fps)
+
+    def _quantize_span(self, position, start, end):
+        """Quantize position/start/end preserving duration in frames."""
+        from classes import frame_time as ft
+        from classes.clip_utils import project_fps_fraction
+        try:
+            fps = project_fps_fraction()
+        except Exception:
+            fps = float(self.fps_float or 30.0) or 30.0
+        return ft.quantize_span(float(position or 0.0), float(start or 0.0), float(end or 0.0), fps)
 
     def _seconds_from_x(self, x_pos):
         """Convert an x position in widget coordinates to timeline seconds."""

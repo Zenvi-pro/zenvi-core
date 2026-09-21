@@ -29,41 +29,48 @@ import copy
 import json
 import openshot
 from classes.app import get_app
+from classes import frame_time as ft
+from classes.clip_utils import project_fps_fraction
 
 
-def _project_fps_float():
-    proj_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
-    return float(proj_fps.get("num", 30)) / float(proj_fps.get("den", 1))
+def _project_fps():
+    try:
+        return project_fps_fraction()
+    except Exception:
+        return 30
 
 
-def _calculate_retime_metrics(clip, new_end, pfps):
+def _calculate_retime_metrics(clip, new_end, fps):
     start_s = float(clip.data["start"])
     old_end_s = float(clip.data["end"])
     req_end_s = float(new_end)
-    new_dur_s = req_end_s - start_s
-    if new_dur_s <= 0:
+    if req_end_s <= start_s:
         return None
 
-    # Frame snapping and derived X domain
-    new_dur_frames = max(1, int(round(new_dur_s * pfps)))
-    new_dur_s = new_dur_frames / pfps
-    new_end_s = start_s + new_dur_s
+    start_f = ft.to_frame(start_s, fps)
+    old_end_f = ft.to_frame(old_end_s, fps)
+    new_dur_frames = ft.duration_frames(start_s, req_end_s, fps)
+    new_end_f = start_f + new_dur_frames
+    new_dur_s = ft.to_seconds(new_dur_frames, fps)
+    new_end_s = ft.to_seconds(start_f, fps) + new_dur_s
 
-    start_x = int(round(start_s * pfps)) + 1
-    old_end_x = int(round(old_end_s * pfps))
+    # 1-indexed Point X domain
+    start_x = start_f + 1
+    old_end_x = old_end_f  # exclusive-ish upper used by scale math historically
     new_end_x = start_x + new_dur_frames
 
     old_len = max(1, old_end_x - start_x)
     scale = float(new_end_x - start_x) / float(old_len)
 
     return {
-        "start_s": start_s,
+        "start_s": ft.to_seconds(start_f, fps),
         "old_end_s": old_end_s,
         "new_dur_s": new_dur_s,
         "new_end_s": new_end_s,
         "start_x": start_x,
         "new_end_x": new_end_x,
         "scale": scale,
+        "fps": fps,
     }
 
 
@@ -87,20 +94,33 @@ def _iterate_keyframe_lists(clip_dict):
 
 
 def _scale_points(points, start_x, new_end_x, scale):
+    """Scale keyframe X offsets from start_x; first keyframe never moves."""
     if not isinstance(points, list):
         return
+    last_original_x = None
+    for point in points:
+        co = point.get("co", {})
+        x = co.get("X")
+        if x is None:
+            continue
+        if last_original_x is None or x > last_original_x:
+            last_original_x = x
+
     for point in points:
         co = point.get("co", {})
         x = co.get("X")
         if x is None or x < start_x:
             continue
-        nx = start_x + (x - start_x) * scale
-        nx = int(round(nx))
+        # Absorb rounding in the last keyframe so the end lands exactly.
+        if last_original_x is not None and x == last_original_x:
+            nx = new_end_x
+        else:
+            nx = start_x + ft.round_half_up((x - start_x) * scale)
         if nx < start_x:
             nx = start_x
         elif nx > new_end_x:
             nx = new_end_x
-        co["X"] = nx
+        co["X"] = int(nx)
 
 
 def _reverse_time_points(points):
@@ -143,12 +163,12 @@ def _reverse_time_points(points):
     points[:] = mirrored
 
 
-def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, pfps, _direction):
+def _ensure_time_curve(clip, start_x, new_end_x, old_end_s, fps, _direction):
     time_data = clip.data.get("time")
     time_points = time_data.get("Points") if isinstance(time_data, dict) else None
     if not isinstance(time_points, list) or len(time_points) < 2:
         y0 = start_x
-        y1 = int(round(old_end_s * pfps))
+        y1 = ft.to_frame(old_end_s, fps)
         p0 = openshot.Point(start_x, y0, openshot.LINEAR)
         p1 = openshot.Point(new_end_x, y1, openshot.LINEAR)
         clip.data["time"] = {"Points": [json.loads(p0.Json()), json.loads(p1.Json())]}
@@ -220,8 +240,8 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
        - Mirror the time curve's X for reverse.
     """
 
-    pfps = _project_fps_float()
-    metrics = _calculate_retime_metrics(clip, new_end, pfps)
+    fps = _project_fps()
+    metrics = _calculate_retime_metrics(clip, new_end, fps)
     if not metrics:
         return False
 
@@ -233,7 +253,7 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
         metrics["start_x"],
         metrics["new_end_x"],
         metrics["old_end_s"],
-        pfps,
+        fps,
         direction,
     )
     if direction == -1:
@@ -242,7 +262,8 @@ def retime_clip(clip, new_end, new_position=None, direction=1):
 
     clip.data["duration"] = float(metrics["new_dur_s"])
     clip.data["end"] = float(metrics["new_end_s"])
+    clip.data["start"] = float(metrics["start_s"])
     if new_position is not None:
-        clip.data["position"] = float(int(round(float(new_position) * pfps)) / pfps)
+        clip.data["position"] = ft.snap(float(new_position), fps)
 
     return True
