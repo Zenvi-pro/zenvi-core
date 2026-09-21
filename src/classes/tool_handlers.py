@@ -1750,7 +1750,7 @@ def _expand_import_paths(entries) -> tuple:
 def import_files(
     paths="", path="", folder="", skip_indexing="false", dry_run="false", **_kw
 ) -> str:
-    """Import local media by path into Project Files — never opens a file dialog.
+    """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
 
     Required: paths, path, folder, or files (absolute path, folder, glob, or
     file URL). Prefer forward-slash Windows paths (C:/Users/.../folder) so JSON
