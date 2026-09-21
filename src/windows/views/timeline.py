@@ -1471,7 +1471,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         file = File.get(id=file_id)
         if file:
-            file.data = ui_data
+            # Prefer fingerprint cache for file-level waveforms so .zvn stays small.
+            audio_data = None
+            if isinstance(ui_data, dict):
+                audio_data = (ui_data.get("ui") or {}).get("audio_data")
+            fp = file.data.get("fingerprint") if isinstance(file.data, dict) else None
+            if fp and isinstance(audio_data, list):
+                try:
+                    from classes.media_cache import save_waveform
+                    if save_waveform(fp, audio_data):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
+                except Exception:
+                    file.data = ui_data
+            else:
+                file.data = ui_data
             file.save()
 
         # Clear transaction id
