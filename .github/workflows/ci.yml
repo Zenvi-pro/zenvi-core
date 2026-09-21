@@ -52,11 +52,18 @@ jobs:
         sudo apt install python3-pyqt5 python3-pyqt5.qtsvg python3-pyqt5.qtwebengine python3-pyqt5.qtopengl python3-zmq python3-xdg
         pip3 install setuptools wheel sentry-sdk
         pip3 install cx_Freeze==7.0.0 distro defusedxml requests certifi chardet urllib3
+        pip3 install -r requirements-dev.txt
 
     - name: Test
       run: |
         python3 ./src/tests/query_tests.py -platform minimal
         python3 ./src/tests/update_installer_tests.py -v
+        QT_QPA_PLATFORM=offscreen python3 -m pytest \
+          tests/test_path_serialization.py \
+          tests/test_generated_media_paths.py \
+          tests/test_project_media.py \
+          tests/test_media_fingerprint.py \
+          tests/test_media_cache.py -q --tb=line
 
   windows-update-installer-tests:
     # Separate job (not added to the matrix above): the Ubuntu job's

@@ -578,6 +578,14 @@ class FilesModel(QObject, updates.UpdateInterface):
             return
 
         file_obj.data["ai_metadata"] = ai_metadata
+        # Cache bulky transcript/scene payload by fingerprint; keep index handles in project JSON.
+        try:
+            fp = file_obj.data.get("fingerprint")
+            if fp:
+                from classes.media_cache import save_ai_metadata
+                save_ai_metadata(fp, ai_metadata)
+        except Exception:
+            log.debug("Could not cache ai_metadata", exc_info=1)
         self._status_cache.pop(str(file_obj.data.get("id", "")), None)
         # Do not auto-fill legacy file.data["tags"] from AI analysis.
 
@@ -838,6 +846,16 @@ class FilesModel(QObject, updates.UpdateInterface):
                 if not seq_info:
                     # Log our not-an-image-sequence import
                     log.info("Imported media file {}".format(filepath))
+
+                # Stamp a content fingerprint for later relinking (skip sequences).
+                try:
+                    from classes.media_fingerprint import fingerprint as _media_fp
+                    path_for_fp = new_file.data.get("path") or filepath
+                    fp = _media_fp(path_for_fp)
+                    if fp:
+                        new_file.data["fingerprint"] = fp
+                except Exception:
+                    log.debug("Could not stamp media fingerprint for %s", filepath, exc_info=1)
 
                 # Save file
                 new_file.save()
