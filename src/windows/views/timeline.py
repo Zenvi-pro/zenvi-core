@@ -1479,9 +1479,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if fp and isinstance(audio_data, list):
                 try:
                     from classes.media_cache import save_waveform
-                    save_waveform(fp, audio_data)
-                    # Keep a tiny marker in project JSON so UI knows a waveform exists.
-                    file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    if save_waveform(fp, audio_data):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
                 except Exception:
                     file.data = ui_data
             else:

@@ -171,6 +171,37 @@ def _generated_roots():
     ]
 
 
+def unique_media_dest(media_dir, dest_name, file_id=None, abs_src=None):
+    """Return an unused path under *media_dir*, never overwriting unrelated media."""
+    dest = os.path.join(media_dir, dest_name)
+    if os.path.isfile(dest) and abs_src:
+        try:
+            if os.path.samefile(abs_src, dest):
+                return dest
+        except OSError:
+            pass
+    if not os.path.isfile(dest):
+        return dest
+    stem, ext = os.path.splitext(dest_name)
+    base_id = file_id or "file"
+    n = 0
+    while True:
+        if n == 0:
+            candidate_name = "%s_%s%s" % (stem, base_id, ext)
+        else:
+            candidate_name = "%s_%s_%d%s" % (stem, base_id, n, ext)
+        candidate = os.path.join(media_dir, candidate_name)
+        if not os.path.isfile(candidate):
+            return candidate
+        if abs_src:
+            try:
+                if os.path.samefile(abs_src, candidate):
+                    return candidate
+            except OSError:
+                pass
+        n += 1
+
+
 def relocate_generated_media(files, clips, project_file_path):
     """Move unsaved generated media into ``{Project}_assets/media``.
 
@@ -195,67 +226,68 @@ def relocate_generated_media(files, clips, project_file_path):
     roots = [os.path.abspath(r) for r in _generated_roots()]
     id_to_new = {}
     src_to_new = {}
+    path_snapshot = snapshot_media_paths(files, clips)
 
-    for file in files:
-        src = file.get("path") or ""
-        if not src or "%" in src:
-            continue
-        if not os.path.isfile(src):
-            continue
-        abs_src = os.path.abspath(src)
-        if path_is_under(abs_src, asset_path):
-            continue
-        if not any(path_is_under(abs_src, root) for root in roots):
-            continue
+    try:
+        for file in files:
+            src = file.get("path") or ""
+            if not src or "%" in src:
+                continue
+            if not os.path.isfile(src):
+                continue
+            abs_src = os.path.abspath(src)
+            if path_is_under(abs_src, asset_path):
+                continue
+            if not any(path_is_under(abs_src, root) for root in roots):
+                continue
 
-        dest_name = os.path.basename(abs_src)
-        dest = os.path.join(media_dir, dest_name)
-        if os.path.isfile(dest):
-            try:
-                same = os.path.samefile(abs_src, dest)
-            except OSError:
-                same = False
-            if not same:
-                stem, ext = os.path.splitext(dest_name)
-                dest_name = "%s_%s%s" % (stem, file.get("id") or "file", ext)
-                dest = os.path.join(media_dir, dest_name)
+            dest = unique_media_dest(
+                media_dir, os.path.basename(abs_src), file.get("id"), abs_src
+            )
 
-        if abs_src != os.path.abspath(dest):
-            try:
-                shutil.move(abs_src, dest)
-            except Exception:
-                log.error("Could not relocate generated media %s to %s", abs_src, dest, exc_info=1)
-                # Reverse any moves already done in this batch.
-                reverse_media_moves(moves)
-                moves[:] = []
-                raise
-            moves.append((abs_src, dest))
-            log.info("Relocated generated media %s to %s", abs_src, dest)
+            if abs_src != os.path.abspath(dest):
+                try:
+                    shutil.move(abs_src, dest)
+                except Exception:
+                    log.error(
+                        "Could not relocate generated media %s to %s",
+                        abs_src,
+                        dest,
+                        exc_info=1,
+                    )
+                    raise
+                moves.append((abs_src, dest))
+                log.info("Relocated generated media %s to %s", abs_src, dest)
 
-        file["path"] = dest
-        file_id = file.get("id")
-        if file_id:
-            id_to_new[file_id] = dest
-        src_to_new[abs_src] = dest
+            file["path"] = dest
+            file_id = file.get("id")
+            if file_id:
+                id_to_new[file_id] = dest
+            src_to_new[abs_src] = dest
 
-    if not id_to_new and not src_to_new:
+        if not id_to_new and not src_to_new:
+            return moves
+
+        for clip in clips or []:
+            reader = clip.get("reader")
+            if not isinstance(reader, dict):
+                reader = {}
+                clip["reader"] = reader
+            file_id = clip.get("file_id")
+            rpath = reader.get("path") or ""
+            if file_id and file_id in id_to_new:
+                reader["path"] = id_to_new[file_id]
+            elif rpath:
+                abs_rpath = os.path.abspath(rpath)
+                if abs_rpath in src_to_new:
+                    reader["path"] = src_to_new[abs_rpath]
+
         return moves
-
-    for clip in clips or []:
-        reader = clip.get("reader")
-        if not isinstance(reader, dict):
-            reader = {}
-            clip["reader"] = reader
-        file_id = clip.get("file_id")
-        rpath = reader.get("path") or ""
-        if file_id and file_id in id_to_new:
-            reader["path"] = id_to_new[file_id]
-        elif rpath:
-            abs_rpath = os.path.abspath(rpath)
-            if abs_rpath in src_to_new:
-                reader["path"] = src_to_new[abs_rpath]
-
-    return moves
+    except Exception:
+        reverse_media_moves(moves)
+        restore_media_paths(path_snapshot)
+        moves[:] = []
+        raise
 
 
 def reverse_media_moves(moves):

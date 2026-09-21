@@ -6,9 +6,9 @@
 import os
 import shutil
 
-from classes.assets import get_assets_path, path_is_under
+from classes.assets import get_assets_path, path_is_under, unique_media_dest
 from classes.logger import log
-from classes.media_fingerprint import fingerprint, fingerprints_match
+from classes.media_fingerprint import files_identical
 
 
 def collect_media_into_project(files, clips, project_file_path, app_root=None):
@@ -51,17 +51,9 @@ def collect_media_into_project(files, clips, project_file_path, app_root=None):
             skipped.append(abs_src)
             continue
 
-        dest_name = os.path.basename(abs_src)
-        dest = os.path.join(media_dir, dest_name)
-        if os.path.isfile(dest):
-            try:
-                same = os.path.samefile(abs_src, dest)
-            except OSError:
-                same = False
-            if not same:
-                stem, ext = os.path.splitext(dest_name)
-                dest_name = "%s_%s%s" % (stem, file.get("id") or "file", ext)
-                dest = os.path.join(media_dir, dest_name)
+        dest = unique_media_dest(
+            media_dir, os.path.basename(abs_src), file.get("id"), abs_src
+        )
 
         if not os.path.isfile(dest):
             try:
@@ -97,11 +89,14 @@ def collect_media_into_project(files, clips, project_file_path, app_root=None):
     return copied, skipped, errors
 
 
-def reclaim_unused_asset_media(files, project_file_path):
+def reclaim_unused_asset_media(files, clips, project_file_path):
     """Delete ``_assets/media`` copies whose original still exists and matches.
 
     Never deletes a copy whose original is missing — that copy may be the only
     surviving version. Returns ``(removed, kept, errors)``.
+
+    Collect + Reclaim is intentionally reversible: reclaim undoes collect when
+    the external original still exists and is byte-identical.
     """
     removed = []
     kept = []
@@ -133,8 +128,11 @@ def reclaim_unused_asset_media(files, project_file_path):
         # Without a recorded original path we cannot safely delete.
         kept.append(dest)
 
+    id_to_original = {}
+    src_to_original = {}
+
     # Safer reclaim: only remove copies that are still referenced AND whose
-    # fingerprint matches a sibling original path stored as file["original_path"].
+    # full-file hash matches a sibling original path stored as file["original_path"].
     for file in files or []:
         dest = file.get("path") or ""
         original = file.get("original_path") or ""
@@ -145,14 +143,29 @@ def reclaim_unused_asset_media(files, project_file_path):
         if not os.path.isfile(dest) or not os.path.isfile(original):
             continue
         try:
-            if fingerprints_match(fingerprint(dest), fingerprint(original)):
+            if files_identical(dest, original):
                 os.remove(dest)
                 file["path"] = original
                 removed.append(dest)
+                file_id = file.get("id")
+                if file_id:
+                    id_to_original[file_id] = original
+                src_to_original[os.path.abspath(dest)] = original
                 log.info("Reclaimed duplicate media %s (kept %s)", dest, original)
             else:
                 kept.append(dest)
         except Exception as exc:
             errors.append("%s: %s" % (dest, exc))
+
+    for clip in clips or []:
+        reader = clip.get("reader")
+        if not isinstance(reader, dict):
+            continue
+        file_id = clip.get("file_id")
+        rpath = reader.get("path") or ""
+        if file_id and file_id in id_to_original:
+            reader["path"] = id_to_original[file_id]
+        elif rpath and os.path.abspath(rpath) in src_to_original:
+            reader["path"] = src_to_original[os.path.abspath(rpath)]
 
     return removed, kept, errors

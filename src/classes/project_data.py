@@ -1244,7 +1244,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 return index[fp["sha256"]]
             base = os.path.basename(path or "")
             if base in basename_hits:
-                return basename_hits[base]
+                hit = basename_hits[base]
+                # Basename-only matching is legacy fallback; when a fingerprint
+                # exists, require a digest match so duplicate names cannot swap media.
+                if isinstance(fp, dict) and fp.get("sha256"):
+                    stamped = fingerprint(hit)
+                    if stamped and stamped.get("sha256") == fp["sha256"]:
+                        return hit
+                    return None
+                return hit
             return None
 
         for file, path in missing_files:

@@ -39,6 +39,19 @@ def test_same_size_different_content_do_not_match(tmp_path):
     assert not fingerprints_match(fingerprint(str(a)), fingerprint(str(b)))
 
 
+def test_sampled_fingerprint_can_collide_full_hash_does_not(tmp_path):
+    from classes.media_fingerprint import files_identical
+
+    head = b"H" * (1024 * 1024)
+    tail = b"T" * (1024 * 1024)
+    a = tmp_path / "a.mp4"
+    b = tmp_path / "b.mp4"
+    a.write_bytes(head + (b"A" * 4096) + tail)
+    b.write_bytes(head + (b"B" * 4096) + tail)
+    assert fingerprints_match(fingerprint(str(a)), fingerprint(str(b)))
+    assert not files_identical(str(a), str(b))
+
+
 def test_small_file_fingerprint(tmp_path):
     tiny = tmp_path / "tiny.mp4"
     tiny.write_bytes(b"x")

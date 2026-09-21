@@ -80,26 +80,68 @@ def test_relocate_skips_files_already_in_assets(tmp_path, monkeypatch):
     assert files[0]["path"] == str(already)
 
 
-def test_relocate_disambiguates_basename_collisions(tmp_path, monkeypatch):
+def test_relocate_disambiguates_until_unused(tmp_path, monkeypatch):
     monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
     gen_dir = tmp_path / "user" / "generated"
     gen_dir.mkdir(parents=True)
     a = gen_dir / "same.mp4"
     _write(str(a), b"one")
     project = str(tmp_path / "MyProject.zvn")
-    # Pre-seed destination with a different file of the same basename.
     assets_media = tmp_path / "MyProject_assets" / "media"
     assets_media.mkdir(parents=True)
-    existing = assets_media / "same.mp4"
-    _write(str(existing), b"existing")
+    _write(str(assets_media / "same.mp4"), b"existing")
+    _write(str(assets_media / "same_f2.mp4"), b"also-taken")
 
     files = [{"id": "f2", "path": str(a)}]
     moves = relocate_generated_media(files, [], project)
 
     assert len(moves) == 1
-    assert os.path.basename(files[0]["path"]) == "same_f2.mp4"
-    assert os.path.isfile(str(existing))
+    assert os.path.basename(files[0]["path"]) == "same_f2_1.mp4"
+    assert os.path.isfile(str(assets_media / "same.mp4"))
+    assert os.path.isfile(str(assets_media / "same_f2.mp4"))
     assert os.path.isfile(files[0]["path"])
+
+
+def test_relocate_restores_paths_when_later_move_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path / "user"))
+    gen_dir = tmp_path / "user" / "generated"
+    gen_dir.mkdir(parents=True)
+    first = gen_dir / "first.mp4"
+    second = gen_dir / "second.mp4"
+    _write(str(first), b"one")
+    _write(str(second), b"two")
+    project = str(tmp_path / "MyProject.zvn")
+    files = [
+        {"id": "f1", "path": str(first)},
+        {"id": "f2", "path": str(second)},
+    ]
+    clips = [
+        {"id": "c1", "file_id": "f1", "reader": {"path": str(first)}},
+        {"id": "c2", "file_id": "f2", "reader": {"path": str(second)}},
+    ]
+
+    real_move = __import__("shutil").move
+    call_count = {"n": 0}
+
+    def _flaky_move(src, dest):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            raise OSError("disk full")
+        return real_move(src, dest)
+
+    monkeypatch.setattr("classes.assets.shutil.move", _flaky_move)
+
+    import pytest
+
+    with pytest.raises(OSError, match="disk full"):
+        relocate_generated_media(files, clips, project)
+
+    assert files[0]["path"] == str(first)
+    assert files[1]["path"] == str(second)
+    assert clips[0]["reader"]["path"] == str(first)
+    assert clips[1]["reader"]["path"] == str(second)
+    assert os.path.isfile(str(first))
+    assert os.path.isfile(str(second))
 
 
 def test_relocate_skips_missing_and_sequences(tmp_path, monkeypatch):

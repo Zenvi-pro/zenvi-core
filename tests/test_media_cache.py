@@ -113,7 +113,53 @@ def test_collect_and_reclaim(tmp_path, monkeypatch):
     assert os.path.isfile(str(src))
     assert clips[0]["reader"]["path"] == files[0]["path"]
 
-    # Reclaim should move path back to original when fingerprints match.
-    removed, kept, errors = reclaim_unused_asset_media(files, project)
+    # Reclaim should move path back to original when full hashes match.
+    removed, kept, errors = reclaim_unused_asset_media(files, clips, project)
     assert len(removed) == 1
     assert files[0]["path"] == str(src)
+    assert clips[0]["reader"]["path"] == str(src)
+
+
+def test_reclaim_requires_full_file_match(tmp_path, monkeypatch):
+    """Sampled fingerprints can collide; reclaim must use a full-file hash."""
+    from classes.media_collect import collect_media_into_project, reclaim_unused_asset_media
+    from classes import info as info_mod
+
+    monkeypatch.setattr(info_mod, "PATH", str(tmp_path / "app"))
+    # Files larger than 2 MB that share head/tail but differ in the middle.
+    head = b"H" * (1024 * 1024)
+    tail = b"T" * (1024 * 1024)
+    original = tmp_path / "Downloads" / "clip.mp4"
+    original.parent.mkdir()
+    original.write_bytes(head + (b"A" * 1024) + tail)
+
+    project = str(tmp_path / "Proj.zvn")
+    files = [{"id": "f1", "path": str(original)}]
+    clips = [{"id": "c1", "file_id": "f1", "reader": {"path": str(original)}}]
+    copied, _skipped, errors = collect_media_into_project(files, clips, project)
+    assert not errors and len(copied) == 1
+    collected = files[0]["path"]
+
+    # Corrupt only the middle of the external "original" after collect.
+    original.write_bytes(head + (b"B" * 1024) + tail)
+    from classes.media_fingerprint import fingerprint, fingerprints_match
+
+    assert fingerprints_match(fingerprint(collected), fingerprint(str(original)))
+
+    removed, _kept, errors = reclaim_unused_asset_media(files, clips, project)
+    assert not errors
+    assert removed == []
+    assert os.path.isfile(collected)
+    assert files[0]["path"] == collected
+    assert clips[0]["reader"]["path"] == collected
+
+
+def test_entry_dir_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.setattr(info, "CACHE_PATH", str(tmp_path / "cache"))
+    assert entry_dir({"sha256": "../escape"}) == ""
+    assert entry_dir({"sha256": "/tmp/abs"}) == ""
+    assert entry_dir("safekey") != ""
+    assert os.path.isdir(entry_dir("safekey"))
+    assert os.path.commonpath(
+        [os.path.realpath(entry_dir("safekey")), os.path.realpath(media_cache_root())]
+    ) == os.path.realpath(media_cache_root())

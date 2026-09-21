@@ -107,15 +107,20 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         file_data = file.data
         file_audio_data = file_data.get("ui", {}).get("audio_data", [])
         # Hydrate from fingerprint cache when project JSON only has a marker.
+        # Cached waveforms are always all-channel (channel=-1); specific channels
+        # must still extract so Separate Audio / channel filters stay correct.
         if file_audio_data == ["__cached__"]:
-            try:
-                from classes.media_cache import load_waveform
-                cached = load_waveform(file_data.get("fingerprint"))
-                if cached and isinstance(cached.get("audio_data"), list):
-                    return cached["audio_data"]
-            except Exception:
-                log.debug("Could not hydrate cached waveform", exc_info=1)
-            file_audio_data = []
+            if channel != -1:
+                file_audio_data = []
+            else:
+                try:
+                    from classes.media_cache import load_waveform
+                    cached = load_waveform(file_data.get("fingerprint"))
+                    if cached and isinstance(cached.get("audio_data"), list):
+                        return cached["audio_data"]
+                except Exception:
+                    log.debug("Could not hydrate cached waveform", exc_info=1)
+                file_audio_data = []
         if file_audio_data and channel == -1:
             log.info("Audio Data already retrieved (or being retrieved).")
             return

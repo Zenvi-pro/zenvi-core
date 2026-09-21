@@ -4470,7 +4470,21 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
         clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
         if err:
             log.warning("Re-encode failed, using original: %s", err)
-            clean_path = video_path
+            # Copy scratch/original into the durable destination before import so
+            # caller scratch cleanup cannot delete the only project copy.
+            try:
+                if os.path.abspath(video_path) != os.path.abspath(perm_path):
+                    import shutil
+                    os.makedirs(os.path.dirname(perm_path), exist_ok=True)
+                    shutil.copy2(video_path, perm_path)
+                    clean_path = perm_path
+                else:
+                    clean_path = video_path
+            except Exception as copy_err:
+                return None, (
+                    "re-encode failed (%s) and could not copy original: %s"
+                    % (err, copy_err)
+                )
 
     final_path = _canonical_media_path(clean_path)
 

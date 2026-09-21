@@ -66,6 +66,42 @@ def fingerprints_match(a, b, ignore_mtime=True):
     return False
 
 
+def full_file_sha256(path):
+    """Return a full-file SHA-256 hex digest, or None if unreadable."""
+    if not path or "%" in str(path):
+        return None
+    try:
+        if not os.path.isfile(path):
+            return None
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        log.debug("Could not full-hash %s", path, exc_info=1)
+        return None
+
+
+def files_identical(path_a, path_b):
+    """True when both paths exist and their full-file SHA-256 digests match."""
+    if not path_a or not path_b:
+        return False
+    try:
+        if not os.path.isfile(path_a) or not os.path.isfile(path_b):
+            return False
+        if os.path.getsize(path_a) != os.path.getsize(path_b):
+            return False
+    except OSError:
+        return False
+    digest_a = full_file_sha256(path_a)
+    digest_b = full_file_sha256(path_b)
+    return bool(digest_a and digest_b and digest_a == digest_b)
+
+
 def scan_folder_for_fingerprints(folder, wanted=None):
     """Walk *folder* and return ``{sha256: path}`` for files that match *wanted*.
 

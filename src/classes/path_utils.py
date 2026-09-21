@@ -140,34 +140,46 @@ def remember_media_root(folder):
 def resolve_media_path(path_value, fingerprint=None, project_file=None, fingerprint_index=None):
     """Resolve a media path, falling back to remembered roots and fingerprints.
 
-    Order: existing absolute/relative path, basename under media roots,
-    then fingerprint match against *fingerprint_index* ``{sha256: path}``.
+    Order: existing absolute/relative path, basename under media roots
+    (validated against fingerprint when available), then fingerprint match
+    against *fingerprint_index* ``{sha256: path}``.
     """
     resolved = absolute_media_path(path_value, project_file=project_file)
     if resolved and os.path.exists(resolved):
         return resolved
 
+    fp_digest = None
+    if isinstance(fingerprint, dict):
+        fp_digest = fingerprint.get("sha256") or None
+
+    def _candidate_matches(candidate):
+        if not candidate or not os.path.isfile(candidate):
+            return False
+        if not fp_digest:
+            return True
+        from classes.media_fingerprint import fingerprint as fingerprint_file
+        cand_fp = fingerprint_file(candidate)
+        return bool(cand_fp and cand_fp.get("sha256") == fp_digest)
+
     basename = os.path.basename(path_value or "")
     if basename and "%" not in basename:
         for root in _media_roots():
             candidate = os.path.join(root, basename)
-            if os.path.isfile(candidate):
+            if _candidate_matches(candidate):
                 return os.path.normpath(candidate)
             # Also search one level of subdirs for common layouts.
             try:
                 for name in os.listdir(root):
                     sub = os.path.join(root, name, basename)
-                    if os.path.isfile(sub):
+                    if _candidate_matches(sub):
                         return os.path.normpath(sub)
             except OSError:
                 continue
 
-    if fingerprint and isinstance(fingerprint, dict) and fingerprint_index:
-        digest = fingerprint.get("sha256")
-        if digest and digest in fingerprint_index:
-            hit = fingerprint_index[digest]
-            if hit and os.path.isfile(hit):
-                return os.path.normpath(hit)
+    if fp_digest and fingerprint_index:
+        hit = fingerprint_index.get(fp_digest)
+        if hit and os.path.isfile(hit):
+            return os.path.normpath(hit)
 
     return resolved
 

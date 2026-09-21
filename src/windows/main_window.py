@@ -1016,8 +1016,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         from classes.media_collect import reclaim_unused_asset_media
 
         files = project._data.get("files") or []
+        clips = project._data.get("clips") or []
         removed, kept, errors = reclaim_unused_asset_media(
-            files, project.current_filepath
+            files, clips, project.current_filepath
         )
         if removed:
             project.has_unsaved_changes = True

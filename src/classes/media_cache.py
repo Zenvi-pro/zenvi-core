@@ -38,7 +38,26 @@ def entry_dir(fingerprint):
     key = _fingerprint_key(fingerprint)
     if not key:
         return ""
-    path = os.path.join(media_cache_root(), key)
+    # Fingerprint keys are opaque digests — reject path traversal payloads.
+    if (
+        not key
+        or key in (".", "..")
+        or os.path.isabs(key)
+        or os.path.sep in key
+        or (os.path.altsep and os.path.altsep in key)
+    ):
+        log.warning("Rejected unsafe media cache fingerprint key")
+        return ""
+    root = media_cache_root()
+    path = os.path.join(root, key)
+    try:
+        resolved = os.path.realpath(path)
+        root_real = os.path.realpath(root)
+        if os.path.commonpath([resolved, root_real]) != root_real:
+            log.warning("Rejected media cache path outside root: %s", path)
+            return ""
+    except ValueError:
+        return ""
     try:
         os.makedirs(path, exist_ok=True)
     except OSError:
@@ -84,6 +103,8 @@ def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
         candidates.append(os.path.join(root, "%s-%s.png" % (file_id, frame)))
     for path in candidates:
         if path and os.path.exists(path):
+            if entry and path.startswith(entry):
+                _touch(entry)
             return path
     return ""
 
@@ -103,6 +124,9 @@ def load_waveform(fingerprint):
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         _touch(path)
+        entry = entry_dir(fingerprint)
+        if entry:
+            _touch(entry)
         return data
     except Exception:
         log.debug("Could not load waveform cache %s", path, exc_info=1)
@@ -118,6 +142,9 @@ def save_waveform(fingerprint, audio_data):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"audio_data": audio_data}, fh)
         _touch(path)
+        entry = entry_dir(fingerprint)
+        if entry:
+            _touch(entry)
         return True
     except Exception:
         log.error("Could not save waveform cache %s", path, exc_info=1)
@@ -139,6 +166,9 @@ def load_ai_metadata(fingerprint):
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
         _touch(path)
+        entry = entry_dir(fingerprint)
+        if entry:
+            _touch(entry)
         return data
     except Exception:
         log.debug("Could not load ai_metadata cache %s", path, exc_info=1)
@@ -156,6 +186,9 @@ def save_ai_metadata(fingerprint, metadata):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(cached, fh)
         _touch(path)
+        entry = entry_dir(fingerprint)
+        if entry:
+            _touch(entry)
         return True
     except Exception:
         log.error("Could not save ai_metadata cache %s", path, exc_info=1)
@@ -227,7 +260,10 @@ def evict_if_needed(limit_bytes=None):
         if total <= limit:
             break
         try:
-            shutil.rmtree(path, ignore_errors=True)
+            shutil.rmtree(path)
+            if os.path.exists(path):
+                log.error("Media cache entry still present after eviction: %s", path)
+                continue
             total -= size
             removed += 1
             log.info("Evicted media cache entry %s", path)
