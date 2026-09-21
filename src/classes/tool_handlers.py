@@ -5123,14 +5123,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         if dl_err:
             return f"Error: {dl_err}"
 
-        from classes.credits_client import charge_operation_on_success, credits
+        from classes.credits_client import credits
 
-        charge_operation_on_success(
-            True,
-            "video_generation",
-            provider="runware",
-            note=f"txt2v: {prompt[:60]}",
-        )
         credits.award_bonus("first_export")   # idempotent — only fires once ever
 
         try:
@@ -5483,15 +5477,6 @@ def insert_v2v_into_clip(
             if not ok:
                 return f"Error: Failed to bake updated clip: {bake_err}"
 
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "video_generation",
-                provider="runware",
-                note=f"v2v insert: {query[:60]}",
-            )
-
             # ---- Step 5: Import the baked clip and place on timeline ----
             f, import_err = _import_generated_video(output_path)
             if not f:
@@ -5616,15 +5601,6 @@ def replace_object_in_clip(
             dl_err = _download_video_url_to_path(video_url, output_path)
             if dl_err:
                 return f"Error: {dl_err}"
-
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "video_generation",
-                provider="runware",
-                note=f"replace object: {description[:60]}",
-            )
 
             gen_duration = _ffprobe_video_duration(output_path)
             if gen_duration < 0.5:
@@ -5838,15 +5814,6 @@ def generate_transition_clip(
                 _get_app().window.FileUpdated.emit(str(f.id))
             except Exception as exc:
                 log.warning("generate_transition: could not save merged tags: %s", exc)
-
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "morph_generation",
-                provider="runware",
-                note="transition/morph generation",
-            )
 
             baked_duration = _ffprobe_video_duration(
                 f.absolute_path() if hasattr(f, "absolute_path") else baked_path
@@ -6369,7 +6336,7 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
     try:
         if not link:
             return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
-        from classes.credits_client import charge_operation_on_success, check_operation
+        from classes.credits_client import check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
         if blocked:
@@ -6382,9 +6349,6 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
         path = result.get("local_path", "")
         if err or not path:
             return f"Pexels download error: {err or 'no file path'}"
-        charge_operation_on_success(
-            True, "stock_add", "stock_add", provider="pexels", note=f"video {vid}"
-        )
         return f"Downloaded to: {path}"
     except Exception as exc:
         return f"Error downloading Pexels video: {exc}"
@@ -6400,7 +6364,7 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         except (ValueError, TypeError):
             return f"Error: sound_id must be numeric Freesound ID, not '{sound_id}'."
 
-        from classes.credits_client import charge_operation_on_success, check_operation
+        from classes.credits_client import check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
         if blocked:
@@ -6412,9 +6376,6 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         path = result.get("local_path", "")
         if err or not path:
             return f"Freesound download error: {err or 'no file path'}"
-        charge_operation_on_success(
-            True, "stock_add", "stock_add", provider="freesound", note=f"sound {sid}"
-        )
         return f"Downloaded to: {path}"
     except Exception as exc:
         return f"Error downloading Freesound audio: {exc}"
@@ -6713,7 +6674,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             )
 
         from classes.api_client import get_backend_client
-        from classes.credits_client import charge_operation_on_success, check_operation
+        from classes.credits_client import check_operation
 
         client = get_backend_client()
         if not client.is_indexing_configured():
@@ -6740,14 +6701,6 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             force=force_reindex,
         )
         if isinstance(result, dict) and result.get("success"):
-            charge_operation_on_success(
-                True,
-                "indexing_per_minute",
-                provider="gemini",
-                note=f"reindex {file_id}",
-                duration_seconds=duration,
-            )
-
             def _persist_index_metadata():
                 from classes.query import File
                 f = File.get(id=file_id)

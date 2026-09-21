@@ -618,6 +618,8 @@
         scrollToBottomIfPinned();
     };
 
+;
+
     // ── Streaming-token rendering ──────────────────────────────────────────
     var streamingMessageEl = null;
     var streamingBuffer = '';
@@ -2669,9 +2671,18 @@
     var RING_CIRCUMFERENCE = 2 * Math.PI * 8; // r=8 -> ~50.265
 
     window.updateContextUsage = function (usageJson) {
-        var usage;
-        try { usage = JSON.parse(usageJson); } catch (e) { return; }
-        var fraction = usage.fraction || 0;
+        var usage = usageJson;
+        if (typeof usageJson === 'string') {
+            try { usage = JSON.parse(usageJson); } catch (e) { return; }
+        }
+        if (!usage || typeof usage !== 'object') return;
+
+        var hasDom = !!(contextRingFg || popoverPct || popoverTokens || popoverBarFill || carryForwardBtn);
+        if (!hasDom) return;
+
+        var fraction = Number(usage.fraction) || 0;
+        if (fraction < 0) fraction = 0;
+        if (fraction > 1) fraction = 1;
         var used = usage.used || 0;
         var total = usage.total || 1;
         var pctText = (fraction * 100).toFixed(1) + '%';
