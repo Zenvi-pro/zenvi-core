@@ -1094,6 +1094,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
+        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        focus = QApplication.focusWidget()
+        # When the assistant owns focus, undo stays in chat (attachments, then
+        # web text). Never fall through to the timeline from a focused chat.
+        if chat_owns_clipboard_keys(chat, focus, under_mouse):
+            if dispatch_chat_edit_action(chat, "undo", focus, under_mouse):
+                return
+            return
+
         get_app().updates.undo()
 
         # Update the preview
@@ -1101,6 +1114,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionRedo_trigger(self, checked=True):
         log.info('actionRedo_trigger')
+        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        focus = QApplication.focusWidget()
+        if chat_owns_clipboard_keys(chat, focus, under_mouse):
+            if dispatch_chat_edit_action(chat, "redo", focus, under_mouse):
+                return
+            return
+
         get_app().updates.redo()
 
         # Update the preview
@@ -3897,8 +3921,22 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def pasteAll(self):
         """Handle Paste QShortcut (at timeline position, same track as original clip)"""
-        if self._dispatch_chat_edit_action("paste"):
+        from windows.chat_web_view import (
+            chat_owns_clipboard_keys,
+            try_attach_clipboard_media,
+        )
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        if chat_owns_clipboard_keys(chat, QApplication.focusWidget(), under_mouse):
+            if try_attach_clipboard_media(chat):
+                return
+            # Text-only (or no usable media): paste into the chat textarea.
+            if self._dispatch_chat_edit_action("paste"):
+                return
             return
+
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
 
@@ -3967,12 +4005,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         for fmt in mime_data.formats():
             fmt_str = str(fmt)
             lower_fmt = fmt_str.lower()
-            if lower_fmt.startswith(("image/", "video/", "audio/")):
+            # image/*, video/*, audio/*, plus Qt's Windows clipboard image carrier
+            if lower_fmt.startswith(("image/", "video/", "audio/")) or lower_fmt in (
+                "application/x-qt-image",
+                "application/x-qt-windows-mime;value=\"png\"",
+            ):
                 data = mime_data.data(fmt_str)
                 if data and not data.isEmpty():
                     has_binary = True
                     if create_files:
-                        path = self._write_clipboard_bytes(bytes(data), self._extension_for_mime(lower_fmt))
+                        ext = self._extension_for_mime(lower_fmt)
+                        if lower_fmt.startswith("application/x-qt"):
+                            ext = "png"
+                        path = self._write_clipboard_bytes(bytes(data), ext)
                         if path:
                             url = QUrl.fromLocalFile(path)
                             urls.append(url)
@@ -3984,6 +4029,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         clipboard = get_app().clipboard()
         if not urls and create_files and mime_data.hasImage():
             image = clipboard.image() if clipboard else None
+            if (image is None or image.isNull()) and hasattr(mime_data, "imageData"):
+                try:
+                    image = mime_data.imageData()
+                except Exception:
+                    image = None
             if image and not image.isNull():
                 path = self._write_clipboard_image(image)
                 if path:
@@ -3991,6 +4041,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     has_binary = True
         elif not has_binary and mime_data.hasImage():
             image = clipboard.image() if clipboard else None
+            if (image is None or image.isNull()) and hasattr(mime_data, "imageData"):
+                try:
+                    image = mime_data.imageData()
+                except Exception:
+                    image = None
             has_binary = bool(image and not image.isNull())
 
         return urls, has_binary
