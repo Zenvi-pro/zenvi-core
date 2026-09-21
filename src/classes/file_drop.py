@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import glob as _glob
 import os
+import re
 import sys
 
 # Card-view list is fitted to its contents; keep a drop zone when the bin is empty.
 EMPTY_FILES_DROP_MIN_HEIGHT = 120
+
+# Git Bash / MSYS / Cygwin paths agents often paste on Windows.
+_MSYS_DRIVE_RE = re.compile(r"^/([A-Za-z])(/.*)?$")
+_CYGDRIVE_RE = re.compile(r"^/cygdrive/([A-Za-z])(/.*)?$", re.IGNORECASE)
 
 # Typical footage locations passed to Claude Code as ``--add-dir``.
 _MEDIA_DIR_NAMES = (
@@ -85,6 +90,85 @@ def flatten_path_args(*values) -> list[str]:
     return chunks
 
 
+def msys_path_to_windows(path: str) -> str | None:
+    """Map ``/c/Users/...`` or ``/cygdrive/c/...`` to ``C:\\Users\\...``.
+
+    Returns ``None`` when *path* is not an MSYS/Cygwin drive path. Pure helper —
+    callers decide when to apply it (typically ``os.name == "nt"``).
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return None
+    # Agents often mix separators; normalize before the drive regex.
+    posix = raw.replace("\\", "/")
+    match = _CYGDRIVE_RE.match(posix) or _MSYS_DRIVE_RE.match(posix)
+    if not match:
+        return None
+    drive = match.group(1).upper()
+    rest = (match.group(2) or "").replace("/", "\\")
+    return f"{drive}:{rest}" if rest else f"{drive}:\\"
+
+
+def _running_on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _windows_drive_root_exists(drive: str) -> bool:
+    """True when ``drive`` (e.g. ``C:``) is mounted. Isolated for unit tests."""
+    return bool(drive) and os.path.exists(drive + "\\")
+
+
+def _msys_windows_path_if_usable(path: str) -> str | None:
+    """Convert MSYS/Cygwin paths only when the target drive exists on Windows.
+
+    Avoids turning Unix paths like ``/Users/...`` into ``U:\\sers\\...``.
+    """
+    if not _running_on_windows():
+        return None
+    converted = msys_path_to_windows(path)
+    if not converted:
+        return None
+    # ntpath so drive letters parse correctly on POSIX hosts (unit tests).
+    import ntpath
+
+    drive = ntpath.splitdrive(converted)[0]
+    if _windows_drive_root_exists(drive):
+        return converted
+    return None
+
+
+def normalize_agent_fs_path(path: str, home: str | None = None) -> str:
+    """Normalize an agent-supplied filesystem path for import / exists checks.
+
+    Handles ``file://`` URLs, ``~``, relative media-folder names, native
+    Windows paths, and common Git Bash / MSYS ``/c/...`` forms when running
+    on Windows. Prefer forward-slash Windows paths in tool args
+    (``C:/Users/...``) so JSON backslash escapes cannot mangle them.
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    on_windows = _running_on_windows()
+    if raw.lower().startswith("file:"):
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(raw)
+        path_part = unquote(parsed.path or "")
+        # file:///C:/Users/... → /C:/Users/... on some parsers
+        if on_windows and re.match(r"^/[A-Za-z]:", path_part):
+            path_part = path_part.lstrip("/")
+        elif on_windows:
+            converted = _msys_windows_path_if_usable(path_part)
+            if converted:
+                path_part = converted
+        raw = path_part or raw
+    elif on_windows:
+        converted = _msys_windows_path_if_usable(raw)
+        if converted:
+            raw = converted
+    return resolve_user_path(raw, home=home)
+
+
 def resolve_user_path(path: str, home: str | None = None) -> str:
     """Expand ``~`` and, for relative names, look under home / common media dirs."""
     raw = (path or "").strip().strip("'\"")
@@ -94,6 +178,11 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
         home = os.path.expanduser("~")
         if not home or home == "~":
             home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+
+    # Native Windows paths with backslashes: normalize separators early so
+    # exists/isabs checks are consistent across MSYS and Win32 Python.
+    if os.name == "nt" and re.match(r"^[A-Za-z]:[\\/]", raw):
+        raw = os.path.normpath(raw)
 
     expanded = os.path.expanduser(raw)
     if os.path.exists(expanded):
@@ -141,9 +230,10 @@ def collect_import_paths(raw_paths, home: str | None = None) -> tuple[list[str],
             notes.append(f"Could not read directory {path}: {exc}")
 
     for raw in flatten_path_args(raw_paths):
-        resolved = local_path_from_url(raw)
+        resolved = normalize_agent_fs_path(raw, home=home)
         if not resolved or not os.path.exists(resolved):
-            resolved = resolve_user_path(raw, home=home)
+            # Fall back for non-file:// strings that local_path_from_url handles.
+            resolved = local_path_from_url(raw) or resolve_user_path(raw, home=home)
         magic = _glob.has_magic(raw) or _glob.has_magic(resolved)
         if magic:
             matches = _glob.glob(resolved, recursive=True)

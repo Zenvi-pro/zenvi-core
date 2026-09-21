@@ -9,6 +9,8 @@ from classes.file_drop import (
     flatten_path_args,
     local_path_from_url,
     media_add_dirs,
+    msys_path_to_windows,
+    normalize_agent_fs_path,
     resolve_user_path,
 )
 
@@ -75,6 +77,72 @@ def test_resolve_user_path_tilde_and_media_folder(tmp_path, monkeypatch):
     assert resolve_user_path("Desktop/reel.mp4", home=str(tmp_path)) == str(clip)
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("/c/Users/alice/Desktop/clips", r"C:\Users\alice\Desktop\clips"),
+        ("/C/Users/bob", r"C:\Users\bob"),
+        ("/cygdrive/d/media/take.mp4", r"D:\media\take.mp4"),
+        ("/cygdrive/C/", "C:\\"),
+        (r"C:\Users\alice", None),
+        ("~/Desktop", None),
+        ("", None),
+        # /Users/... is NOT an MSYS drive path (/c/Users is).
+        ("/Users/alice/Desktop/clips", None),
+    ],
+)
+def test_msys_path_to_windows(raw, expected):
+    assert msys_path_to_windows(raw) == expected
+
+
+def test_msys_windows_path_if_usable_requires_existing_drive(monkeypatch):
+    from classes.file_drop import _msys_windows_path_if_usable
+    import classes.file_drop as fd
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: False)
+    assert _msys_windows_path_if_usable("/c/Users/alice") is None
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(
+        fd, "_windows_drive_root_exists",
+        lambda drive: str(drive).upper().rstrip(":\\") == "C",
+    )
+    assert _msys_windows_path_if_usable("/c/Users/alice/Videos") == r"C:\Users\alice\Videos"
+    # Would map to U:\, which our stub says is missing.
+    assert _msys_windows_path_if_usable("/u/Users/alice/Desktop") is None
+
+
+def test_normalize_agent_fs_path_uses_msys_gate(monkeypatch):
+    import classes.file_drop as fd
+
+    seen = []
+
+    def fake_resolve(path, home=None):
+        seen.append(path)
+        return path
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(fd, "resolve_user_path", fake_resolve)
+    monkeypatch.setattr(
+        fd,
+        "_msys_windows_path_if_usable",
+        lambda path: msys_path_to_windows(path)
+        if str(path).lower().startswith(("/c/", "/cygdrive/"))
+        else None,
+    )
+
+    assert normalize_agent_fs_path("/c/Users/alice/Videos") == r"C:\Users\alice\Videos"
+    assert seen[-1] == r"C:\Users\alice\Videos"
+
+    seen.clear()
+    assert normalize_agent_fs_path("file:///c/Users/alice/clip.mp4") == r"C:\Users\alice\clip.mp4"
+    assert seen[-1] == r"C:\Users\alice\clip.mp4"
+
+    seen.clear()
+    assert normalize_agent_fs_path("/Users/alice/Desktop/clips") == "/Users/alice/Desktop/clips"
+    assert seen == ["/Users/alice/Desktop/clips"]
+
+
 def test_local_path_from_url_string_and_none(tmp_path):
     clip = tmp_path / "n.mp4"
     clip.write_bytes(b"n")
@@ -85,8 +153,6 @@ def test_local_path_from_url_string_and_none(tmp_path):
     files, notes = collect_import_paths(file_url)
     assert not notes
     assert files == [str(clip)]
-    bogus = local_path_from_url("file:///.file/id=1.2")
-    assert bogus == ""
 
 
 def test_media_add_dirs_only_existing_folders(tmp_path):

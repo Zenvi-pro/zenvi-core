@@ -890,6 +890,12 @@ def get_project_info(**_kw) -> str:
 
 
 def list_files(**_kw) -> str:
+    """List media already in the project media bin (does not import from disk).
+
+    To add local folders or files into Project Files, call import_files_tool
+    (dry_run=true first for folders). list_files_tool only reports what is
+    already imported.
+    """
     try:
         import os
         from classes.query import File
@@ -1707,10 +1713,12 @@ def _expand_import_paths(entries) -> tuple:
     Directories are walked for media files only. Explicit file paths are kept
     unfiltered. *skipped_non_media* counts non-media files seen during dir walks.
     """
+    from classes.file_drop import normalize_agent_fs_path
+
     resolved, missing, seen = [], [], set()
     skipped_non_media = 0
     for entry in entries:
-        path = os.path.expanduser(entry)
+        path = normalize_agent_fs_path(entry)
         if os.path.isdir(path):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
@@ -1733,17 +1741,21 @@ def _expand_import_paths(entries) -> tuple:
 def import_files(
     paths="", path="", folder="", skip_indexing="false", dry_run="false", **_kw
 ) -> str:
-    """Import media by path without a file dialog. Prefer absolute paths or globs
-    (e.g. ~/Desktop/nilay/**/*.mp4). For folders or vague asks, call with
-    dry_run=true first, ask the user to confirm, then call again with
-    dry_run=false. If several candidates match, ask — do not guess.
-    paths/path/folder/files accept files, directories, globs, or file URLs;
-    directories are searched recursively for media. Indexing starts unless
-    skip_indexing is true (poll analyzed via list_files_tool, or
-    wait_until_project_indexed_tool).
+    """Import local media by path into Project Files — never opens a file dialog.
+
+    Required: paths, path, folder, or files (absolute path, folder, glob, or
+    file URL). Prefer forward-slash Windows paths (C:/Users/.../folder) so JSON
+    backslash escapes cannot mangle them; Git Bash /c/Users/... is also
+    accepted on Windows. Directories are walked recursively for media only.
+
+    dry_run (discoverable): pass dry_run=true to preview would_import /
+    skipped_non_media without changing the media bin; ask the user, then call
+    again with dry_run=false. For vague asks or multiple candidates, ask —
+    do not guess. Indexing starts unless skip_indexing is true (poll via
+    list_files_tool or wait_until_project_indexed_tool).
     """
     import glob as _glob
-    from urllib.parse import unquote, urlparse
+    from classes.file_drop import normalize_agent_fs_path
 
     entries = []
     for value in (paths, path, folder, _kw.get("files")):
@@ -1751,27 +1763,17 @@ def import_files(
             entries.extend(_coerce_path_list(value))
     if not entries:
         return ("Error: paths is required for MCP/harness import. Pass the media "
-                "files or folders to import, e.g. paths=[\"/clips/dialog_test\"]. "
-                "This tool never opens a file dialog.")
-
-    def _normalize_entry(entry: str) -> str:
-        text = str(entry).strip()
-        if text.startswith("file://"):
-            parsed = urlparse(text)
-            path_part = unquote(parsed.path or "")
-            if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
-                path_part = path_part.lstrip("/")
-            return path_part or text
-        return text
+                "files or folders to import, e.g. paths=[\"C:/Users/you/Downloads/clips\"] "
+                "or paths=[\"~/Desktop/clips\"]. This tool never opens a file dialog.")
 
     notes = []
     normalized = []
     for entry in entries:
-        candidate = _normalize_entry(entry)
-        if _glob.has_magic(candidate) or _glob.has_magic(entry):
+        candidate = normalize_agent_fs_path(entry)
+        if _glob.has_magic(candidate) or _glob.has_magic(str(entry)):
             matches = _glob.glob(candidate, recursive=True)
             if not matches:
-                matches = _glob.glob(os.path.expanduser(entry), recursive=True)
+                matches = _glob.glob(os.path.expanduser(str(entry)), recursive=True)
             if not matches:
                 notes.append("No files matched: %s" % entry)
                 continue

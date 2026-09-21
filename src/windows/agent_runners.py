@@ -158,8 +158,11 @@ def _agent_bash_prompt():
         "Iterate a plain path list, or zsh: "
         'for name in "${(@k)files}"; do ...; done.\n'
         "Importing local media (import_files_tool):\n"
+        "- To put files into Project Files you MUST call import_files_tool. "
+        "list_files_tool only lists media already in the project.\n"
         "- Prefer absolute paths or globs "
-        "(e.g. ~/Desktop/nilay/**/*.mp4).\n"
+        "(e.g. ~/Desktop/nilay/**/*.mp4). On Windows prefer forward slashes "
+        "(C:/Users/.../folder) or Git Bash /c/Users/... — both work.\n"
         "- For folders or vague asks, call with dry_run=true first, show the "
         "preview, ask the user to confirm, then call again with "
         "dry_run=false.\n"
