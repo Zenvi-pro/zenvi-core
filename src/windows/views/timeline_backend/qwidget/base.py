@@ -1207,46 +1207,50 @@ class TimelineWidgetBase(QWidget):
             return False
         preview_items = []
         current_start = pos_seconds
-        for idx, source_id in enumerate(ids):
-            ignore_refresh = idx < len(ids) - 1
-            if payload.get("type") == "transition":
-                item = self.addTransition(
-                    source_id,
-                    QPointF(current_start, 0),
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if not item:
+        from classes.updates import nested_transaction
+        with nested_transaction(get_app().updates) as tid:
+            self._drag_transaction_id = tid
+            for idx, source_id in enumerate(ids):
+                ignore_refresh = idx < len(ids) - 1
+                if payload.get("type") == "transition":
+                    item = self.addTransition(
+                        source_id,
+                        QPointF(current_start, 0),
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if not item:
+                        continue
+                    model = Transition.get(id=item.get("id"))
+                    duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+                else:
+                    item = self.addClip(
+                        source_id,
+                        QPointF(current_start, 0),
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if not item:
+                        continue
+                    model = Clip.get(id=item.get("id"))
+                    duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+                    log.info("DIAG _ensure_drag_preview: addClip returned id=%s, Clip.get found model.id=%s model=%s",
+                             item.get("id"), getattr(model, "id", None), model)
+                if not model:
                     continue
-                model = Transition.get(id=item.get("id"))
-                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
-            else:
-                item = self.addClip(
-                    source_id,
-                    QPointF(current_start, 0),
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if not item:
-                    continue
-                model = Clip.get(id=item.get("id"))
-                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
-                log.info("DIAG _ensure_drag_preview: addClip returned id=%s, Clip.get found model.id=%s model=%s",
-                         item.get("id"), getattr(model, "id", None), model)
-            if not model:
-                continue
-            offset = current_start - pos_seconds
-            preview_items.append({
-                "model": model,
-                "offset": offset,
-                "duration": duration,
-            })
-            self.item_ids.append(model.id)
-            current_start += duration
+                offset = current_start - pos_seconds
+                preview_items.append({
+                    "model": model,
+                    "offset": offset,
+                    "duration": duration,
+                })
+                self.item_ids.append(model.id)
+                current_start += duration
 
         if not preview_items:
+            self._drag_transaction_id = None
             return False
 
         self._drag_preview_items = preview_items
@@ -1315,6 +1319,7 @@ class TimelineWidgetBase(QWidget):
         self._drag_preview_items = []
         self._drag_preview_type = None
         self._drag_payload = None
+        self._drag_transaction_id = None
         if hasattr(self, "item_ids"):
             self.item_ids = []
         self.new_item = False
@@ -1331,31 +1336,40 @@ class TimelineWidgetBase(QWidget):
         if not total:
             self._reset_drag_preview()
             return
-        for idx, entry in enumerate(self._drag_preview_items):
-            model = entry.get("model")
-            if not model:
-                continue
-            log.info("DIAG _finalize_drag_preview: model.id=%s data.id=%s pos=%s start=%s end=%s",
-                     getattr(model, "id", None), model.data.get("id"),
-                     model.data.get("position"), model.data.get("start"), model.data.get("end"))
-            ignore_refresh = idx < total - 1
-            if isinstance(model, Transition):
-                self.update_transition_data(
-                    model.data,
-                    only_basic_props=False,
-                    ignore_refresh=ignore_refresh,
-                )
+        from classes.updates import nested_transaction
+        tid = self._drag_transaction_id
+        with nested_transaction(get_app().updates) as active_tid:
+            if tid:
+                get_app().updates.transaction_id = tid
             else:
-                self.update_clip_data(
-                    model.data,
-                    only_basic_props=False,
-                    ignore_reader=True,
-                    ignore_refresh=ignore_refresh,
-                )
+                tid = active_tid
+                self._drag_transaction_id = tid
+            for idx, entry in enumerate(self._drag_preview_items):
+                model = entry.get("model")
+                if not model:
+                    continue
+                log.info("DIAG _finalize_drag_preview: model.id=%s data.id=%s pos=%s start=%s end=%s",
+                         getattr(model, "id", None), model.data.get("id"),
+                         model.data.get("position"), model.data.get("start"), model.data.get("end"))
+                ignore_refresh = idx < total - 1
+                if isinstance(model, Transition):
+                    self.update_transition_data(
+                        model.data,
+                        only_basic_props=False,
+                        ignore_refresh=ignore_refresh,
+                    )
+                else:
+                    self.update_clip_data(
+                        model.data,
+                        only_basic_props=False,
+                        ignore_reader=True,
+                        ignore_refresh=ignore_refresh,
+                    )
         self._update_project_duration()
         self._drag_preview_items = []
         self._drag_preview_type = None
         self._drag_payload = None
+        self._drag_transaction_id = None
         if hasattr(self, "item_ids"):
             self.item_ids = []
         self.new_item = False

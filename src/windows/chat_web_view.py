@@ -34,6 +34,8 @@ _EDIT_SHORTCUTS = tuple(
         ("cut", getattr(QKeySequence, "Cut", None)),
         ("paste", getattr(QKeySequence, "Paste", None)),
         ("selectAll", getattr(QKeySequence, "SelectAll", None)),
+        ("undo", getattr(QKeySequence, "Undo", None)),
+        ("redo", getattr(QKeySequence, "Redo", None)),
     )
     if seq is not None
 )
@@ -42,6 +44,8 @@ _WEB_EDIT_ACTIONS = {
     "cut": "Cut",
     "paste": "Paste",
     "selectAll": "SelectAll",
+    "undo": "Undo",
+    "redo": "Redo",
 }
 
 
@@ -111,11 +115,43 @@ def attach_chat_media_urls(chat, urls) -> bool:
     return attach(paths) > 0
 
 
+def try_attach_clipboard_media(chat) -> bool:
+    """Persist clipboard stills/files and attach chips. True if any chip was added.
+
+    Needed for Windows Snipping Tool / unsaved screenshots that only exist as
+    clipboard image bytes (no file URL). The chat webview steals Ctrl+V, so this
+    must run from the chat key path — not only from the main-window Paste action.
+    """
+    if chat is None:
+        return False
+    try:
+        from classes.app import get_app
+        app = get_app()
+        win = getattr(app, "window", None) if app else None
+        if win is None:
+            return False
+        clipboard = app.clipboard()
+        mime = clipboard.mimeData() if clipboard else None
+        if not mime:
+            return False
+        contains = getattr(win, "clipboard_contains_media", None)
+        collect = getattr(win, "_collect_clipboard_media_urls", None)
+        if not callable(contains) or not callable(collect):
+            return False
+        if not contains(mime):
+            return False
+        urls, _ = collect(mime, create_files=True)
+        return attach_chat_media_urls(chat, urls)
+    except Exception:
+        log.debug("try_attach_clipboard_media failed", exc_info=1)
+        return False
+
+
 def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool:
     """True when clipboard shortcuts should go to the assistant chat, not the timeline.
 
-    WebEngine often reports ``focusWidget() is None``; in that case *under_mouse*
-    (the chat view is under the cursor) is the fallback.
+    WebEngine often reports ``focusWidget() is None`` while the page still has
+    keyboard focus; also treat ``hasFocus()`` / focus-proxy ancestry as ownership.
     """
     if chat is None:
         return False
@@ -123,14 +159,34 @@ def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool
     if callable(is_visible) and not is_visible():
         return False
     view = getattr(chat, "_chat_view", None)
-    if focus_widget is not None:
-        widget = focus_widget
+
+    def _widget_in_chat(widget):
         while widget is not None:
             if widget is chat or (view is not None and widget is view):
                 return True
             parent_fn = getattr(widget, "parentWidget", None)
             widget = parent_fn() if callable(parent_fn) else None
         return False
+
+    if focus_widget is not None and _widget_in_chat(focus_widget):
+        return True
+
+    if view is not None:
+        try:
+            if view.hasFocus():
+                return True
+        except Exception:
+            pass
+        try:
+            focus_proxy = view.focusProxy() if callable(getattr(view, "focusProxy", None)) else None
+            if focus_proxy is not None and (
+                (hasattr(focus_proxy, "hasFocus") and focus_proxy.hasFocus())
+                or _widget_in_chat(focus_proxy)
+            ):
+                return True
+        except Exception:
+            pass
+
     return bool(view and under_mouse)
 
 
@@ -138,6 +194,12 @@ def dispatch_chat_edit_action(chat, name: str, focus_widget=None, under_mouse=Fa
     """Send an edit action to the focused chat surface. Returns True if handled."""
     if not name or not chat_owns_clipboard_keys(chat, focus_widget, under_mouse):
         return False
+    if name == "paste" and try_attach_clipboard_media(chat):
+        return True
+    if name == "undo":
+        undo_fn = getattr(chat, "undo_chat_attachments", None)
+        if callable(undo_fn) and undo_fn():
+            return True
     view = getattr(chat, "_chat_view", None)
     if view is not None:
         return trigger_web_edit_action(view, name)
@@ -154,6 +216,19 @@ def dispatch_chat_edit_action(chat, name: str, focus_widget=None, under_mouse=Fa
             fn()
             return True
     return False
+
+
+def _chat_window_for_view(view):
+    """Walk parents to find AIChatWindow (has attach_paths / undo_chat_attachments)."""
+    widget = view
+    while widget is not None:
+        if callable(getattr(widget, "attach_paths", None)) or callable(
+            getattr(widget, "undo_chat_attachments", None)
+        ):
+            return widget
+        parent_fn = getattr(widget, "parentWidget", None)
+        widget = parent_fn() if callable(parent_fn) else None
+    return None
 
 
 class ChatEditShortcutMixin:
@@ -189,9 +264,31 @@ class ChatEditShortcutMixin:
 
     def keyPressEvent(self, event):
         name = edit_shortcut_name(event)
-        if name and trigger_web_edit_action(self, name):
-            event.accept()
-            return
+        if name:
+            chat = _chat_window_for_view(self)
+            if name == "paste" and try_attach_clipboard_media(chat):
+                event.accept()
+                return
+            if name == "undo":
+                undo_fn = getattr(chat, "undo_chat_attachments", None) if chat else None
+                if callable(undo_fn) and undo_fn():
+                    event.accept()
+                    return
+                if trigger_web_edit_action(self, "undo"):
+                    event.accept()
+                    return
+                # Consume so the timeline Undo shortcut does not fire while chat focused.
+                event.accept()
+                return
+            if name == "redo":
+                if trigger_web_edit_action(self, "redo"):
+                    event.accept()
+                    return
+                event.accept()
+                return
+            if trigger_web_edit_action(self, name):
+                event.accept()
+                return
         super().keyPressEvent(event)
 
 

@@ -9,7 +9,11 @@ from classes.chat_attachments import (
     snapshot_attachments,
 )
 from classes.updates import nested_transaction
-from windows.chat_web_view import attach_chat_media_urls, local_paths_from_urls
+from windows.chat_web_view import (
+    attach_chat_media_urls,
+    chat_owns_clipboard_keys,
+    local_paths_from_urls,
+)
 
 
 def test_nested_transaction_joins_outer_tid():
@@ -32,6 +36,17 @@ def test_nested_transaction_mints_and_clears():
     with nested_transaction(u) as tid:
         assert tid
         assert u.transaction_id == tid
+    assert u.transaction_id is None
+
+
+def test_nested_transaction_restores_after_side_effect_clear():
+    class U:
+        transaction_id = None
+
+    u = U()
+    with nested_transaction(u) as tid:
+        u.transaction_id = None  # simulate processEvents wiping the tid
+        assert tid
     assert u.transaction_id is None
 
 
@@ -70,6 +85,26 @@ def test_attach_chat_media_urls_helper(tmp_path):
     chat = Chat()
     assert attach_chat_media_urls(chat, [url]) is True
     assert len(chat.atts) == 1
+
+
+def test_chat_owns_keys_when_view_has_focus():
+    class View:
+        def hasFocus(self):
+            return True
+
+        def focusProxy(self):
+            return None
+
+        def underMouse(self):
+            return False
+
+    class Chat:
+        def isVisible(self):
+            return True
+
+        _chat_view = View()
+
+    assert chat_owns_clipboard_keys(Chat(), focus_widget=None, under_mouse=False) is True
 
 
 def test_encode_chat_images_jpeg_from_png(tmp_path):
@@ -112,3 +147,25 @@ def test_encode_chat_images_caps_at_four(tmp_path):
         Image.new("RGB", (8, 8), color=(i, i, i)).save(p)
         atts.append({"kind": "image", "path": str(p), "name": p.name, "file_id": ""})
     assert len(encode_chat_images(atts)) == 4
+
+
+def test_undo_ignores_reentrant_calls():
+    from classes.updates import UpdateManager
+
+    um = UpdateManager()
+    um._undo_redo_busy = True
+    um.actionHistory.append(
+        type(
+            "A",
+            (),
+            {
+                "transaction": "t1",
+                "type": "update",
+                "values": {},
+                "key": ["x"],
+                "copy": lambda self: self,
+            },
+        )()
+    )
+    um.undo()
+    assert len(um.actionHistory) == 1

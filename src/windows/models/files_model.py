@@ -857,8 +857,13 @@ class FilesModel(QObject, updates.UpdateInterface):
                             }
                     app.window.statusBar.showMessage(message, 15000)
 
-                # Let the event loop run to update the status bar
+                # Let the event loop run to update the status bar. Restore the
+                # active undo transaction afterward — processEvents can run
+                # other code that clears updates.transaction_id, which would
+                # mint a unique undo step per imported file.
+                _tid = get_app().updates.transaction_id
                 get_app().processEvents()
+                get_app().updates.transaction_id = _tid
                 # Update the recent import path
                 if not prevent_recent_folder:
                     settings.setDefaultPath(settings.actionType.IMPORT, dir_path)
