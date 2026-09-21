@@ -202,6 +202,134 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
     return os.path.abspath(expanded)
 
 
+# Cap adjacent guesses so import never becomes a whole-disk search.
+_ADJACENT_CANDIDATE_CAP = 5
+
+
+def _norm_name_key(name: str) -> str:
+    """Collapse case and hyphen/underscore/space so dirty_test ≈ dirty-test."""
+    return re.sub(r"[-_\s]+", "_", (name or "").strip().lower())
+
+
+def names_are_adjacent(wanted: str, actual: str) -> bool:
+    """True when *actual* is a close spelling of *wanted* (not a fuzzy search)."""
+    w = (wanted or "").strip()
+    a = (actual or "").strip()
+    if not w or not a:
+        return False
+    if w == a or w.lower() == a.lower():
+        return True
+    if _norm_name_key(w) == _norm_name_key(a):
+        return True
+    wl, al = w.lower(), a.lower()
+    # Short prefix/typo forgiveness (dirty_tes → dirty_test), min 4 chars.
+    if len(wl) >= 4 and len(al) >= 4 and (al.startswith(wl) or wl.startswith(al)):
+        return True
+    return False
+
+
+def _listdir_safe(path: str) -> list[str]:
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
+def find_adjacent_paths(path: str, home: str | None = None) -> list[str]:
+    """After an exact miss: siblings in the parent dir + basename under media dirs.
+
+    Returns at most ``_ADJACENT_CANDIDATE_CAP`` absolute paths. Empty when nothing
+    close exists. Does not walk the whole home tree.
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return []
+    if home is None:
+        home = os.path.expanduser("~")
+        if not home or home == "~":
+            home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+
+    # Prefer the normalized absolute form even when it does not exist yet.
+    normalized = normalize_agent_fs_path(raw, home=home) or raw
+    wanted = os.path.basename(normalized.rstrip("\\/"))
+    if not wanted or wanted in (".", ".."):
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _consider(candidate: str):
+        if not candidate or not os.path.exists(candidate):
+            return
+        abs_path = os.path.abspath(candidate)
+        if abs_path in seen:
+            return
+        seen.add(abs_path)
+        found.append(abs_path)
+
+    parent = os.path.dirname(normalized)
+    if parent and os.path.isdir(parent):
+        for name in _listdir_safe(parent):
+            if names_are_adjacent(wanted, name):
+                _consider(os.path.join(parent, name))
+
+    search_roots: list[str] = []
+    if home and os.path.isdir(home):
+        search_roots.append(os.path.abspath(home))
+    for folder in media_add_dirs(home):
+        search_roots.append(folder)
+
+    for root in search_roots:
+        _consider(os.path.join(root, wanted))
+        for name in _listdir_safe(root):
+            if names_are_adjacent(wanted, name):
+                _consider(os.path.join(root, name))
+        if len(found) >= _ADJACENT_CANDIDATE_CAP:
+            break
+
+    return found[:_ADJACENT_CANDIDATE_CAP]
+
+
+def resolve_agent_import_target(path: str, home: str | None = None) -> dict:
+    """Resolve a user/agent path for import: exact first, then adjacent.
+
+    Returns a dict:
+    - ``status``: ``ok`` | ``ambiguous`` | ``missing``
+    - ``path``: absolute path when status is ``ok``
+    - ``match``: ``exact`` or ``adjacent`` when ok
+    - ``from``: original input when match is adjacent
+    - ``candidates``: list when ambiguous
+    - ``tried``: human-readable hint when missing
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return {"status": "missing", "tried": "(empty path)"}
+
+    exact = normalize_agent_fs_path(raw, home=home)
+    if exact and os.path.exists(exact):
+        return {"status": "ok", "path": os.path.abspath(exact), "match": "exact"}
+
+    adjacent = find_adjacent_paths(raw, home=home)
+    # Drop the non-existent exact path if it somehow appeared.
+    adjacent = [p for p in adjacent if os.path.exists(p)]
+    if len(adjacent) == 1:
+        return {
+            "status": "ok",
+            "path": adjacent[0],
+            "match": "adjacent",
+            "from": raw,
+        }
+    if len(adjacent) > 1:
+        return {"status": "ambiguous", "candidates": adjacent, "from": raw}
+
+    tried = exact or raw
+    return {
+        "status": "missing",
+        "tried": tried,
+        "from": raw,
+    }
+
+
 def collect_import_paths(raw_paths, home: str | None = None) -> tuple[list[str], list[str]]:
     """Expand files, directories, and globs into existing file paths.
 

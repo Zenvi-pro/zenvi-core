@@ -187,3 +187,69 @@ def test_import_files_doc_advertises_dry_run_and_no_dialog():
     assert "dry_run" in doc
     assert "dialog" in doc
     assert "c:/" in doc or "forward" in doc
+
+
+def test_import_files_adjacent_single_match_dry_run(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    real = tmp_path / "dirty_test"
+    real.mkdir()
+    (real / "clip.mp4").write_bytes(b"v")
+    (real / "notes.txt").write_bytes(b"n")
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(tmp_path / "dirty_tes"), dry_run="true")
+    assert out.startswith("dry_run=true")
+    assert "match=adjacent" in out
+    assert "would_import=1" in out
+    assert "clip.mp4" in out
+    assert "skipped_non_media=1" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_import_files_ambiguous_asks_without_importing(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    (tmp_path / "clip_final").mkdir()
+    (tmp_path / "clip_rough").mkdir()
+    ((tmp_path / "clip_final") / "a.mp4").write_bytes(b"x")
+    ((tmp_path / "clip_rough") / "b.mp4").write_bytes(b"y")
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(tmp_path / "clip"), dry_run="true")
+    assert out.startswith("Error:")
+    assert "Multiple paths match" in out
+    assert "Do not guess" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_import_files_missing_mentions_adjacent_and_no_mnt(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(tmp_path / "totally_missing_xyz"))
+    assert out.startswith("Error:")
+    assert "Nothing to import" in out
+    assert "/mnt/c" in out
+    assert "Ask the user" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_agent_runners_prompt_source_steers_windows_import():
+    """Prompt rules live in agent_runners (Qt-gated tests); assert source here."""
+    from pathlib import Path
+
+    text = Path(__file__).resolve().parents[1].joinpath(
+        "src", "windows", "agent_runners.py"
+    ).read_text(encoding="utf-8")
+    assert "IMMEDIATELY" in text
+    assert "/mnt/c" in text
+    assert "Do NOT use Glob" in text
+    assert "import_files_tool" in text
+    assert "dry_run=true" in text

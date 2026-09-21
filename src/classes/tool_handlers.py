@@ -1721,14 +1721,13 @@ def _expand_import_paths(entries) -> tuple:
 
     Directories are walked for media files only. Explicit file paths are kept
     unfiltered. *skipped_non_media* counts non-media files seen during dir walks.
+    Entries must already be absolute existing paths (or missing strings).
     """
-    from classes.file_drop import normalize_agent_fs_path
-
     resolved, missing, seen = [], [], set()
     skipped_non_media = 0
     for entry in entries:
-        path = normalize_agent_fs_path(entry)
-        if os.path.isdir(path):
+        path = os.path.abspath(os.path.expanduser(str(entry))) if entry else ""
+        if path and os.path.isdir(path):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
                     full = os.path.join(root, name)
@@ -1738,12 +1737,12 @@ def _expand_import_paths(entries) -> tuple:
                             resolved.append(full)
                     else:
                         skipped_non_media += 1
-        elif os.path.isfile(path):
+        elif path and os.path.isfile(path):
             if path not in seen:
                 seen.add(path)
                 resolved.append(path)
         else:
-            missing.append(entry)
+            missing.append(str(entry))
     return resolved, missing, skipped_non_media
 
 
@@ -1755,7 +1754,9 @@ def import_files(
     Required: paths, path, folder, or files (absolute path, folder, glob, or
     file URL). Prefer forward-slash Windows paths (C:/Users/.../folder) so JSON
     backslash escapes cannot mangle them; Git Bash /c/Users/... is also
-    accepted on Windows. Directories are walked recursively for media only.
+    accepted on Windows. Exact path first; if slightly off, adjacent names in
+    the parent folder and Desktop/Downloads/… are considered (ask if several).
+    Directories are walked recursively for media only.
 
     dry_run (discoverable): pass dry_run=true to preview would_import /
     skipped_non_media without changing the media bin; ask the user, then call
@@ -1764,7 +1765,10 @@ def import_files(
     list_files_tool or wait_until_project_indexed_tool).
     """
     import glob as _glob
-    from classes.file_drop import normalize_agent_fs_path
+    from classes.file_drop import (
+        normalize_agent_fs_path,
+        resolve_agent_import_target,
+    )
 
     entries = []
     for value in (paths, path, folder, _kw.get("files")):
@@ -1777,6 +1781,7 @@ def import_files(
 
     notes = []
     normalized = []
+    adjacent_notes = []
     for entry in entries:
         candidate = normalize_agent_fs_path(entry)
         if _glob.has_magic(candidate) or _glob.has_magic(str(entry)):
@@ -1787,14 +1792,46 @@ def import_files(
                 notes.append("No files matched: %s" % entry)
                 continue
             normalized.extend(matches)
-        else:
-            normalized.append(candidate)
+            continue
+
+        target = resolve_agent_import_target(entry)
+        if target.get("status") == "ambiguous":
+            cands = target.get("candidates") or []
+            lines = [
+                "Error: Multiple paths match %r — ask the user which one:"
+                % entry,
+            ]
+            for cand in cands:
+                lines.append("  %s" % cand)
+            lines.append(
+                "Call import_files_tool again with the exact path. Do not guess."
+            )
+            return "\n".join(lines)
+        if target.get("status") == "ok":
+            resolved_path = target["path"]
+            normalized.append(resolved_path)
+            if target.get("match") == "adjacent":
+                adjacent_notes.append(
+                    "adjacent: %r → %s" % (entry, resolved_path)
+                )
+            continue
+
+        notes.append(
+            "Not found: %s (tried %s; no adjacent match under parent or "
+            "Desktop/Downloads/Movies/Videos/Documents/Pictures). Ask the "
+            "user for the full path, or Glob those folders then call "
+            "import_files_tool with the path found. Do not invent /mnt/c "
+            "mounts."
+            % (entry, target.get("tried") or entry)
+        )
 
     resolved, missing, skipped_non_media = _expand_import_paths(normalized)
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
         )
+        if missing and not notes:
+            detail = "not found: %s" % ", ".join(missing)
         return f"Error: Nothing to import ({detail})."
 
     preview = str(dry_run).lower().strip() in ("1", "true", "yes", "y", "on")
@@ -1811,11 +1848,16 @@ def import_files(
         lines = [
             "dry_run=true — nothing imported.",
             "resolved=%s" % (", ".join(roots) if roots else ", ".join(entries)),
+        ]
+        if adjacent_notes:
+            lines.append("match=adjacent")
+            lines.extend(["  %s" % note for note in adjacent_notes])
+        lines.append(
             "would_import=%d (video=%d audio=%d image=%d)" % (
                 len(resolved), counts["video"], counts["audio"], counts["image"],
-            ),
-            "sample:",
-        ]
+            )
+        )
+        lines.append("sample:")
         sample_body = _format_capped_lines(
             ["  %s" % name for name in sample], cap=_IMPORT_RESULT_LINE_CAP,
         )
@@ -1880,6 +1922,8 @@ def import_files(
 
     head = "Imported %d file(s). indexing_started=%s" % (
         len(lines), "false" if skip else "true")
+    if adjacent_notes:
+        head += "\n" + "\n".join(adjacent_notes)
     if skipped_non_media:
         head += " skipped_non_media=%d" % skipped_non_media
     if missing:

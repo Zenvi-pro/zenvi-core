@@ -155,13 +155,81 @@ def test_local_path_from_url_string_and_none(tmp_path):
     assert files == [str(clip)]
 
 
-def test_media_add_dirs_only_existing_folders(tmp_path):
-    (tmp_path / "Desktop").mkdir()
-    (tmp_path / "Downloads").mkdir()
-    dirs = media_add_dirs(str(tmp_path))
-    names = {os.path.basename(p) for p in dirs}
-    assert names == {"Desktop", "Downloads"}
-    assert all(os.path.isdir(p) for p in dirs)
+def test_names_are_adjacent_variants():
+    from classes.file_drop import names_are_adjacent
+
+    assert names_are_adjacent("dirty_test", "dirty_test")
+    assert names_are_adjacent("dirty_test", "dirty-test")
+    assert names_are_adjacent("Dirty Test", "dirty_test")
+    assert names_are_adjacent("dirty_tes", "dirty_test")
+    assert not names_are_adjacent("wedding", "dirty_test")
+    assert not names_are_adjacent("ab", "abc")  # too short for prefix rule
+
+
+def test_resolve_agent_import_target_exact(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    folder = tmp_path / "dirty_test"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    result = resolve_agent_import_target(str(folder), home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] == "exact"
+    assert result["path"] == str(folder)
+
+
+def test_resolve_agent_import_target_adjacent_one_hit(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    real = tmp_path / "dirty_test"
+    real.mkdir()
+    (real / "clip.mp4").write_bytes(b"x")
+    wrong = tmp_path / "dirty_tes"
+    result = resolve_agent_import_target(str(wrong), home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] == "adjacent"
+    assert result["path"] == str(real)
+    assert result["from"] == str(wrong)
+
+
+def test_resolve_agent_import_target_adjacent_under_downloads(tmp_path, monkeypatch):
+    from classes.file_drop import resolve_agent_import_target
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    real = downloads / "dirty-test"
+    real.mkdir()
+    (real / "a.mp4").write_bytes(b"x")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+    result = resolve_agent_import_target("dirty_test", home=str(tmp_path))
+    assert result["status"] == "ok"
+    assert result["match"] in ("exact", "adjacent")
+    assert result["path"] == str(real)
+
+
+def test_resolve_agent_import_target_ambiguous(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    a = tmp_path / "clip_final"
+    b = tmp_path / "clip_rough"
+    a.mkdir()
+    b.mkdir()
+    # Both are adjacent to "clip" via the prefix rule.
+    result = resolve_agent_import_target(str(tmp_path / "clip"), home=str(tmp_path))
+    assert result["status"] == "ambiguous"
+    assert len(result["candidates"]) >= 2
+
+
+def test_resolve_agent_import_target_missing(tmp_path):
+    from classes.file_drop import resolve_agent_import_target
+
+    result = resolve_agent_import_target(
+        str(tmp_path / "no_such_folder_xyz"), home=str(tmp_path)
+    )
+    assert result["status"] == "missing"
 
 
 def test_mime_has_file_drop_and_urls_from_mime(tmp_path):
