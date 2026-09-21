@@ -7,7 +7,6 @@ the source codec/resolution/fps/pixel format exactly match the export target.
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from dataclasses import dataclass, field

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sys
 from functools import lru_cache
-from typing import Optional
 
 from classes.logger import log
 
