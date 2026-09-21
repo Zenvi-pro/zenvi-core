@@ -28,6 +28,11 @@ openshot_qt.egg-info
 !.env.example
 !.env.production
 
+# Generated export benchmark fixtures (see scripts/generate_export_fixtures.py)
+tests/fixtures/media/*.mp4
+tests/fixtures/media/*.mov
+tests/fixtures/media/*.mkv
+
 protobuf_data/
 openshot_qt/
 

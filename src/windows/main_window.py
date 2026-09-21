@@ -296,6 +296,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if self.http_server_thread:
             self.http_server_thread.kill()
 
+        # Stop background render manager (Phase 5)
+        try:
+            mgr = getattr(self, "background_render_manager", None)
+            if mgr is not None:
+                mgr.stop()
+                self.background_render_manager = None
+        except Exception:
+            log.debug("Failed to stop background render manager", exc_info=True)
+
         # Stop ZMQ polling thread (if any); join so it exits before Qt tears down (reduces Windows RPC_E_DISCONNECTED on exit).
         if app.logger_libopenshot:
             app.logger_libopenshot.kill()
@@ -3695,6 +3704,61 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Emit load properties signal with current selection list
         self.propertyTableView.loadProperties.emit(list(self.selected_items))
 
+
+    def _maybe_auto_detect_hw_decode(self, settings_store):
+        """Probe HW decode once libopenshot is ready; never during settings.load()."""
+        try:
+            from classes.export_acceleration.hw_decode import (
+                maybe_auto_detect_hardware_decoder,
+            )
+
+            detected = maybe_auto_detect_hardware_decoder(settings_store)
+            if detected is not None:
+                settings_store.save()
+                log.info("Hardware decode auto-detect persisted: %s", detected)
+        except Exception:
+            log.warning("Hardware decode auto-detect failed", exc_info=True)
+
+    def _start_background_render_manager(self, settings_store):
+        """Start Phase 5 idle-time cache warming (and optional disk index)."""
+        self.background_render_manager = None
+        try:
+            from classes.export_acceleration.background_render import BackgroundRenderManager
+
+            warm = bool(settings_store.get("backgroundCacheWarming"))
+            disk = bool(settings_store.get("backgroundDiskRenders"))
+            if not warm and not disk:
+                return
+
+            def _busy():
+                # Yield while exporting or while the user is actively seeking.
+                if getattr(self, "shutting_down", False):
+                    return True
+                try:
+                    mode = getattr(getattr(self, "preview_thread", None), "player", None)
+                    if mode is not None and hasattr(mode, "Mode"):
+                        import openshot as _os
+
+                        if mode.Mode() == _os.PLAYBACK_PLAY:
+                            return True
+                except Exception:
+                    pass
+                return False
+
+            mgr = BackgroundRenderManager(
+                get_timeline=lambda: getattr(getattr(self, "timeline_sync", None), "timeline", None),
+                get_project_data=lambda: dict(get_app().project._data)
+                if get_app() and get_app().project
+                else {},
+                is_user_busy=_busy,
+                enabled_warm=warm,
+                enabled_disk=disk,
+            )
+            mgr.start()
+            self.background_render_manager = mgr
+        except Exception:
+            log.debug("Background render manager not started", exc_info=True)
+
     def InitCacheSettings(self):
         """Set the correct cache settings for the timeline"""
         # Load user settings
@@ -4576,6 +4640,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         lib_settings = openshot.Settings.Instance()
 
+        # One-time hardware decode auto-detect — must run AFTER openshot is live.
+        self._maybe_auto_detect_hw_decode(s)
+
         # Set encoding method
         if s.get("hw-decoder"):
             lib_settings.HARDWARE_DECODER = int(str(s.get("hw-decoder")))
@@ -4687,3 +4754,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Init all Keyboard shortcuts
         self.initShortcuts()
+
+        # Phase 5: idle-time background cache warming / disk render index.
+        # Ships behind settings; disk path defaults OFF.
+        self._start_background_render_manager(s)
