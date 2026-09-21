@@ -8,7 +8,6 @@ from typing import Callable, Optional
 
 log = logging.getLogger("agent_tools.execute")
 
-# Late-bound: filled by tool_handlers after handlers are defined, to avoid cycles.
 _HANDLERS: dict = {}
 _READ_ONLY: frozenset = frozenset()
 _BACKGROUND_SAFE: frozenset = frozenset()
@@ -78,8 +77,19 @@ def _snapshot_clips(app):
 
 def execute_tool(tool_name: str, tool_args: dict) -> str:
     """Execute a tool by name. Always returns a contract-3 JSON receipt string."""
+    return execute_tool_rich(tool_name, tool_args).receipt.to_json()
+
+
+def execute_tool_rich(tool_name: str, tool_args: dict):
+    """Execute a tool; return ToolOutput (receipt + optional images)."""
     from fractions import Fraction as Fr
 
+    from classes.agent_tools.output import (
+        ToolOutput,
+        clear_last_output,
+        set_last_output,
+        wrap_str_result,
+    )
     from classes.agent_tools.receipt import (
         ToolReceipt,
         from_handler_str,
@@ -88,13 +98,16 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
     from classes.agent_tools.schema import HIDDEN_PARAMS, validate_args
     from classes.agent_tools.snapshot import mutation_result, timeline_snapshot
 
+    clear_last_output()
+
     handler = _HANDLERS.get(tool_name)
     if not handler:
-        return ToolReceipt.error(tool_name, f"Unknown tool '{tool_name}'.").to_json()
+        out = ToolOutput(receipt=ToolReceipt.error(tool_name, f"Unknown tool '{tool_name}'."))
+        set_last_output(out)
+        return out
 
     args = dict(tool_args or {})
 
-    # chat_session_id isolation for split/import → add chains.
     if "chat_session_id" in args:
         if tool_name not in (
             "split_file_add_clip_tool",
@@ -105,15 +118,13 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         ):
             args.pop("chat_session_id", None)
 
-    # Schema validation BEFORE opening an undo transaction.
     schema_err = validate_args(tool_name, args)
     if schema_err:
-        return ToolReceipt.refused(tool_name, schema_err).to_json()
+        out = ToolOutput(receipt=ToolReceipt.refused(tool_name, schema_err))
+        set_last_output(out)
+        return out
 
-    # Strip hidden params from the validated payload (handlers may still accept
-    # transaction_id via explicit kw from internal callers).
     public_args = {k: v for k, v in args.items() if k not in HIDDEN_PARAMS or k == "chat_session_id"}
-    # Re-add chat_session_id when allowed.
     if "chat_session_id" in args and tool_name in (
         "split_file_add_clip_tool",
         "add_clip_to_timeline_tool",
@@ -122,12 +133,10 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
         "import_files_tool",
     ):
         public_args["chat_session_id"] = args["chat_session_id"]
-    # Internal composites may pass transaction_id; keep it off the schema but
-    # forward when present for ripple+place.
     if "transaction_id" in (tool_args or {}):
         public_args["transaction_id"] = tool_args["transaction_id"]
 
-    def _invoke():
+    def _invoke() -> ToolOutput:
         app = _GET_APP()
         before_len = _history_len(app)
         before_clips = _snapshot_clips(app)
@@ -155,32 +164,49 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
             if tool_name in _UNGROUPED:
                 raw = handler(**public_args)
             else:
-                # One tool call == one undo step. Nested _transaction joins.
                 raw = _ATOMIC(app, handler)(**public_args)
         except Exception as e:
             log.error("Tool %s execution failed: %s", tool_name, e, exc_info=True)
-            return ToolReceipt.error(tool_name, str(e)).to_json()
+            return ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))
 
         after_len = _history_len(app)
         mutated = before_len >= 0 and after_len > before_len
 
-        # Already a receipt JSON?
+        if isinstance(raw, ToolOutput):
+            receipt = raw.receipt
+            if not mutated:
+                receipt.undoSteps = 0
+                if (
+                    receipt.status == "applied"
+                    and not receipt.clips
+                    and not receipt.removedClipIds
+                    and not raw.images
+                    and receipt.data is None
+                    and not str(receipt.summary).startswith("Error")
+                ):
+                    receipt.status = "unchanged"
+            return ToolOutput(receipt=receipt, images=list(raw.images))
+
         if isinstance(raw, ToolReceipt):
             receipt = raw
             if not mutated:
                 receipt.undoSteps = 0
-                if receipt.status == "applied" and not receipt.clips and not receipt.removedClipIds:
-                    # Prefer unchanged when nothing hit history.
-                    if not str(receipt.summary).startswith("Error"):
-                        receipt.status = "unchanged"
-            return receipt.to_json()
+                if (
+                    receipt.status == "applied"
+                    and not receipt.clips
+                    and not receipt.removedClipIds
+                    and receipt.data is None
+                    and not str(receipt.summary).startswith("Error")
+                ):
+                    receipt.status = "unchanged"
+            return ToolOutput(receipt=receipt)
 
         text = "" if raw is None else str(raw)
         if text.strip().startswith("{") and '"contract"' in text:
-            return text
+            return wrap_str_result(tool_name, text)
 
         if is_error_result(text) or text.startswith("Error"):
-            return from_handler_str(tool_name, text, mutated=False).to_json()
+            return ToolOutput(receipt=from_handler_str(tool_name, text, mutated=False))
 
         receipt = from_handler_str(tool_name, text, mutated=mutated)
         if mutated and before_snap is not None:
@@ -196,24 +222,31 @@ def execute_tool(tool_name: str, tool_args: dict) -> str:
                         status="applied",
                         undo_steps=1,
                     )
-                    return enriched.to_json()
+                    return ToolOutput(receipt=enriched)
                 except Exception:
                     pass
         if not mutated:
             receipt.undoSteps = 0
-        return receipt.to_json()
+        return ToolOutput(receipt=receipt)
 
     try:
         if _QTHREAD is None:
-            return _invoke()
-        app = _GET_APP()
-        if _QTHREAD.currentThread() is app.thread():
-            return _invoke()
-        if tool_name in _READ_ONLY or tool_name in _BACKGROUND_SAFE:
-            return _invoke()
-        return _RUN_ON_MAIN(
-            _invoke, timeout=_main_thread_timeout(tool_name, public_args)
-        )
+            out = _invoke()
+        else:
+            app = _GET_APP()
+            if _QTHREAD.currentThread() is app.thread():
+                out = _invoke()
+            elif tool_name in _READ_ONLY or tool_name in _BACKGROUND_SAFE:
+                out = _invoke()
+            else:
+                out = _RUN_ON_MAIN(
+                    _invoke, timeout=_main_thread_timeout(tool_name, public_args)
+                )
+                if not isinstance(out, ToolOutput):
+                    out = ToolOutput(receipt=ToolReceipt.error(tool_name, "bad dispatch result"))
     except Exception as e:
         log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
-        return ToolReceipt.error(tool_name, str(e)).to_json()
+        out = ToolOutput(receipt=ToolReceipt.error(tool_name, str(e)))
+
+    set_last_output(out)
+    return out

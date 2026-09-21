@@ -40,17 +40,15 @@ SERVER_INSTRUCTIONS = (
     "shifted, removedClipIds, createdTracks, watchSuggested, undoSteps. After a "
     "successful mutation (status=applied), patch your timeline state from the "
     "receipt — do not re-call get_timeline_state_tool unless notes say track "
-    "indexes shifted. After any edit that changes what is on screen "
-    "(add_clip_to_timeline_tool, slice_clip_at_best_match_tool, "
-    "slice_clip_at_playhead_tool, modify_clip_tool, place_motion_graphic_tool, "
-    "apply_transition_tool, add_title_tool, add_effect_tool, set_keyframes_tool), "
-    "call watch_clip_window_tool on the affected clip (or use watchSuggested) to "
-    "confirm with vision. If the edit is wrong, use undo_tool and try again. "
-    "After delete_from_timeline_tool, check the receipt removedClipIds — a "
-    "removed clip cannot be watched. Prefer get_timeline_state_tool only when "
-    "the receipt notes say track indexes shifted. watch_clip_window_tool returns "
-    "Error in summary if the clip cannot be resolved; if vision is unavailable "
-    "it falls back to the text-index time and says so."
+    "indexes shifted. If watchSuggested is non-null, call inspect_timeline_tool "
+    "with that object (clipId/start/end) — or with startFrame/endFrame — before "
+    "claiming the edit is correct; you will receive composited JPEG frames with "
+    "a 0–1 top-left coordinate grid. Use inspect_media_tool (prefer overview=true "
+    "first on long files) before describing footage; never guess from filenames. "
+    "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
+    "verification — that path is Assistant place/slice backend confirm and does "
+    "not return images to you. After delete_from_timeline_tool, check the receipt "
+    "removedClipIds. If inspect shows the edit is wrong, undo_tool and retry."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
@@ -314,7 +312,8 @@ class ZenviMcpServer:
         # itself report bad args (matching the WebSocket tool path's behaviour).
         @fm._mcp_server.call_tool(validate_input=False)
         async def _call_tool(name: str, arguments: dict):
-            from classes.tool_handlers import execute_tool
+            from classes.agent_tools.output import ToolOutput, mcp_content, wrap_str_result
+            from classes.tool_handlers import execute_tool_rich
             args = dict(arguments or {})
 
             extra = _extra_tools().get(name)
@@ -323,10 +322,18 @@ class ZenviMcpServer:
                 # execute_tool, which marshals to the GUI thread — these tools
                 # do network I/O and would freeze the UI for their duration.
                 result = await anyio.to_thread.run_sync(lambda: extra(**args))
-            else:
-                result = await anyio.to_thread.run_sync(lambda: execute_tool(name, args))
-            text = "" if result is None else str(result)
-            return [types.TextContent(type="text", text=text)]
+                if isinstance(result, ToolOutput):
+                    return mcp_content(result)
+                text = "" if result is None else str(result)
+                return mcp_content(wrap_str_result(name, text))
+
+            output = await anyio.to_thread.run_sync(
+                lambda: execute_tool_rich(name, args)
+            )
+            if isinstance(output, ToolOutput):
+                return mcp_content(output)
+            text = "" if output is None else str(output)
+            return mcp_content(wrap_str_result(name, text))
 
         app = fm.streamable_http_app()
         app.add_middleware(_BearerAuthMiddleware, token=self.token)

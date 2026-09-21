@@ -50,6 +50,18 @@ _GAP_RULES = [
         "if_missing": ("add_title_tool",),
         "capability": "no tool for headless title/text-overlay creation (only via the Title editor dialog)",
     },
+    {
+        "keywords": (
+            "look at the timeline",
+            "does it overlap",
+            "storyboard",
+            "what does this look like",
+            "inspect the timeline",
+            "see the frame",
+        ),
+        "if_missing": ("inspect_timeline_tool",),
+        "capability": "no tool for composited timeline vision (inspect_timeline_tool)",
+    },
 ]
 
 

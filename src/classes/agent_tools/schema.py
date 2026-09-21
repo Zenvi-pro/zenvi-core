@@ -398,6 +398,25 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "height": _int(minimum=16, maximum=8192),
         "sample_rate": _int(minimum=8000, maximum=192000),
     }),
+
+    "inspect_timeline_tool": _obj({
+        "startFrame": _int(minimum=0, description="0-index project frame."),
+        "endFrame": _int(minimum=0, description="Exclusive end in 0-index frames."),
+        "maxFrames": _int(minimum=1, maximum=12, description="Default 6, max 12."),
+        "clipId": {"type": "string", "description": "From watchSuggested.clipId."},
+        "start": _num(description="watchSuggested.start seconds"),
+        "end": _num(description="watchSuggested.end seconds"),
+        "overview": {"type": "boolean", "description": "One storyboard instead of N frames."},
+    }),
+    "inspect_media_tool": _obj({
+        "fileId": {"type": "string", "description": "Zenvi file id from list_files."},
+        "clipId": {"type": "string"},
+        "start": _num(minimum=0),
+        "end": _num(minimum=0),
+        "maxFrames": _int(minimum=1, maximum=12),
+        "overview": {"type": "boolean"},
+    }, required=["fileId"]),
+
 }
 
 
