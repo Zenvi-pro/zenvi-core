@@ -222,19 +222,16 @@ class ClipPainter(BasePainter):
         return start, max(0.0, end - start)
 
     def _existing_thumb_path(self, file_id, frame):
-        subdir = os.path.join(info.THUMBNAIL_PATH, file_id)
-        candidates = [
-            os.path.join(subdir, f"{frame}.png"),
-        ]
-        if frame == 1:
-            candidates.append(os.path.join(info.THUMBNAIL_PATH, f"{file_id}.png"))
-        else:
-            candidates.append(os.path.join(info.THUMBNAIL_PATH, f"{file_id}-{frame}.png"))
-
-        for path in candidates:
-            if path and os.path.exists(path):
-                return path
-        return ""
+        from classes.thumbnail import resolve_thumbnail_path
+        fingerprint = None
+        try:
+            from classes.query import File
+            f = File.get(id=file_id)
+            if f and isinstance(getattr(f, "data", None), dict):
+                fingerprint = f.data.get("fingerprint")
+        except Exception:
+            fingerprint = None
+        return resolve_thumbnail_path(file_id, frame, fingerprint=fingerprint) or ""
 
     def _frame_for_offset(self, offset, fps):
         fps = float(fps or 0.0)

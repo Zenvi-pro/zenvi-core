@@ -1,0 +1,2 @@
+# Dev / test dependencies (not required to run the app)
+pytest>=7.0
