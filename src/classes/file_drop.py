@@ -204,6 +204,7 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
 
 # Cap adjacent guesses so import never becomes a whole-disk search.
 _ADJACENT_CANDIDATE_CAP = 5
+_ADJACENT_MAX_DISTANCE = 2
 
 
 def _norm_name_key(name: str) -> str:
@@ -211,21 +212,80 @@ def _norm_name_key(name: str) -> str:
     return re.sub(r"[-_\s]+", "_", (name or "").strip().lower())
 
 
+def _edit_distance(a: str, b: str, limit: int = _ADJACENT_MAX_DISTANCE) -> int:
+    """Levenshtein distance with early exit when above *limit*."""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    # Ensure a is the shorter row for less memory.
+    if len(a) > len(b):
+        a, b = b, a
+    prev = list(range(len(a) + 1))
+    for j, bj in enumerate(b, start=1):
+        cur = [j]
+        row_min = j
+        for i, ai in enumerate(a, start=1):
+            ins = cur[i - 1] + 1
+            delete = prev[i] + 1
+            sub = prev[i - 1] + (0 if ai == bj else 1)
+            val = min(ins, delete, sub)
+            cur.append(val)
+            if val < row_min:
+                row_min = val
+        if row_min > limit:
+            return limit + 1
+        prev = cur
+    return prev[-1]
+
+
 def names_are_adjacent(wanted: str, actual: str) -> bool:
-    """True when *actual* is a close spelling of *wanted* (not a fuzzy search)."""
+    """True when *actual* is a close spelling of *wanted* (typo / separator).
+
+    Uses normalized equality or edit distance ≤ 2. Deliberately does **not**
+    use broad prefix matching (that wrongly maps ``Down`` → ``Downloads``).
+    """
     w = (wanted or "").strip()
     a = (actual or "").strip()
     if not w or not a:
         return False
     if w == a or w.lower() == a.lower():
         return True
-    if _norm_name_key(w) == _norm_name_key(a):
+    w_stem, w_ext = os.path.splitext(w)
+    a_stem, a_ext = os.path.splitext(a)
+    # Different extensions → different files (clip.mp4 must not become clip.mov).
+    if w_ext and a_ext and w_ext.lower() != a_ext.lower():
+        return False
+    wk, ak = _norm_name_key(w), _norm_name_key(a)
+    if not wk or not ak:
+        return False
+    if wk == ak:
         return True
-    wl, al = w.lower(), a.lower()
-    # Short prefix/typo forgiveness (dirty_tes → dirty_test), min 4 chars.
-    if len(wl) >= 4 and len(al) >= 4 and (al.startswith(wl) or wl.startswith(al)):
+    if _edit_distance(wk, ak) <= _ADJACENT_MAX_DISTANCE:
         return True
+    # File typos: compare stems when extensions match (ree.mp4 ≈ reel.mp4).
+    if w_ext and a_ext and w_ext.lower() == a_ext.lower():
+        wsk, ask = _norm_name_key(w_stem), _norm_name_key(a_stem)
+        if wsk and ask and (
+            wsk == ask or _edit_distance(wsk, ask) <= _ADJACENT_MAX_DISTANCE
+        ):
+            return True
     return False
+
+
+def _adjacent_distance(wanted: str, actual: str) -> int:
+    """Sort key for adjacent candidates (lower is closer)."""
+    wk = _norm_name_key(os.path.basename(wanted))
+    ak = _norm_name_key(os.path.basename(actual))
+    if wk == ak:
+        return 0
+    dist = _edit_distance(wk, ak, limit=8)
+    w_stem, w_ext = os.path.splitext(wanted)
+    a_stem, a_ext = os.path.splitext(actual)
+    if w_ext and a_ext and w_ext.lower() == a_ext.lower():
+        stem_dist = _edit_distance(_norm_name_key(w_stem), _norm_name_key(a_stem), limit=8)
+        dist = min(dist, stem_dist)
+    return dist
 
 
 def _listdir_safe(path: str) -> list[str]:
@@ -238,8 +298,8 @@ def _listdir_safe(path: str) -> list[str]:
 def find_adjacent_paths(path: str, home: str | None = None) -> list[str]:
     """After an exact miss: siblings in the parent dir + basename under media dirs.
 
-    Returns at most ``_ADJACENT_CANDIDATE_CAP`` absolute paths. Empty when nothing
-    close exists. Does not walk the whole home tree.
+    Returns at most ``_ADJACENT_CANDIDATE_CAP`` absolute paths, closest first.
+    Does not walk the whole home tree.
     """
     raw = (path or "").strip().strip("'\"")
     if not raw:
@@ -257,6 +317,8 @@ def find_adjacent_paths(path: str, home: str | None = None) -> list[str]:
 
     found: list[str] = []
     seen: set[str] = set()
+    media_roots = {os.path.abspath(p) for p in media_add_dirs(home)}
+    home_abs = os.path.abspath(home) if home else ""
 
     def _consider(candidate: str):
         if not candidate or not os.path.exists(candidate):
@@ -264,29 +326,37 @@ def find_adjacent_paths(path: str, home: str | None = None) -> list[str]:
         abs_path = os.path.abspath(candidate)
         if abs_path in seen:
             return
+        # Never remap a typo onto the entire Desktop/Downloads/… root or $HOME
+        # (e.g. Down → Downloads would import a whole user library).
+        if home_abs and abs_path == home_abs:
+            return
+        name = os.path.basename(abs_path)
+        if abs_path in media_roots and _norm_name_key(name) != _norm_name_key(wanted):
+            return
+        if not names_are_adjacent(wanted, name):
+            return
         seen.add(abs_path)
         found.append(abs_path)
 
     parent = os.path.dirname(normalized)
     if parent and os.path.isdir(parent):
         for name in _listdir_safe(parent):
-            if names_are_adjacent(wanted, name):
-                _consider(os.path.join(parent, name))
+            _consider(os.path.join(parent, name))
 
     search_roots: list[str] = []
     if home and os.path.isdir(home):
         search_roots.append(os.path.abspath(home))
     for folder in media_add_dirs(home):
-        search_roots.append(folder)
+        root = os.path.abspath(folder)
+        if root not in search_roots:
+            search_roots.append(root)
 
     for root in search_roots:
         _consider(os.path.join(root, wanted))
         for name in _listdir_safe(root):
-            if names_are_adjacent(wanted, name):
-                _consider(os.path.join(root, name))
-        if len(found) >= _ADJACENT_CANDIDATE_CAP:
-            break
+            _consider(os.path.join(root, name))
 
+    found.sort(key=lambda p: (_adjacent_distance(wanted, os.path.basename(p)), p))
     return found[:_ADJACENT_CANDIDATE_CAP]
 
 

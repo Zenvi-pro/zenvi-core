@@ -212,15 +212,15 @@ def test_import_files_adjacent_single_match_dry_run(monkeypatch, tmp_path):
 def test_import_files_ambiguous_asks_without_importing(monkeypatch, tmp_path):
     from classes import tool_handlers as th
 
-    (tmp_path / "clip_final").mkdir()
-    (tmp_path / "clip_rough").mkdir()
-    ((tmp_path / "clip_final") / "a.mp4").write_bytes(b"x")
-    ((tmp_path / "clip_rough") / "b.mp4").write_bytes(b"y")
+    (tmp_path / "clip_a").mkdir()
+    (tmp_path / "clip_b").mkdir()
+    ((tmp_path / "clip_a") / "a.mp4").write_bytes(b"x")
+    ((tmp_path / "clip_b") / "b.mp4").write_bytes(b"y")
 
     win = MagicMock()
     monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
 
-    out = th.import_files(path=str(tmp_path / "clip"), dry_run="true")
+    out = th.import_files(path=str(tmp_path / "clip_x"), dry_run="true")
     assert out.startswith("Error:")
     assert "Multiple paths match" in out
     assert "Do not guess" in out
@@ -253,3 +253,6 @@ def test_agent_runners_prompt_source_steers_windows_import():
     assert "Do NOT use Glob" in text
     assert "import_files_tool" in text
     assert "dry_run=true" in text
+    assert "_agent_import_prompt" in text
+    # Codex must receive the same steering (no --append-system-prompt).
+    assert "steered = _agent_import_prompt()" in text

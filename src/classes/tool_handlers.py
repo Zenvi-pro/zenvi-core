@@ -1751,12 +1751,12 @@ def import_files(
 ) -> str:
     """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
 
-    Required: paths, path, folder, or files (absolute path, folder, glob, or
-    file URL). Prefer forward-slash Windows paths (C:/Users/.../folder) so JSON
-    backslash escapes cannot mangle them; Git Bash /c/Users/... is also
-    accepted on Windows. Exact path first; if slightly off, adjacent names in
-    the parent folder and Desktop/Downloads/… are considered (ask if several).
-    Directories are walked recursively for media only.
+    Call with the user's path immediately (dry_run=true for folders). Do not
+    preflight with Glob/Read or invent /mnt/c mounts — this tool resolves
+    Windows C:/… and Git Bash /c/… paths. Exact match first; slight typos may
+    resolve adjacently (ask if several). Required: paths, path, folder, or
+    files. Prefer forward-slash Windows paths so JSON backslashes cannot
+    mangle them. Directories are walked recursively for media only.
 
     dry_run (discoverable): pass dry_run=true to preview would_import /
     skipped_non_media without changing the media bin; ask the user, then call

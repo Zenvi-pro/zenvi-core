@@ -142,21 +142,9 @@ def _resolve_cli_bash():
     return None
 
 
-def _agent_bash_prompt():
-    """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
+def _agent_import_prompt() -> str:
+    """Shared import steering for Claude (append) and Codex (message prefix)."""
     return (
-        "Media conversion (Bash tool):\n"
-        "- HEIC/HEIF stills: never ffmpeg -vf on the HEIC itself. ffmpeg 7 "
-        "decodes HEIC through a complex filtergraph; combining that with -vf "
-        "fails with 'Simple and complex filtering cannot be used together'.\n"
-        "- macOS: sips -s format jpeg IN.HEIC --out OUT.jpg, then scale the "
-        "jpeg with -vf if needed.\n"
-        "- Fallback: ffmpeg -i IN.HEIC -filter_complex "
-        "'[0:v:0]scale=W:-2[o]' -map '[o]' -frames:v 1 -update 1 -y OUT.jpg\n"
-        "- This Bash tool may still run zsh on macOS. Never use bash "
-        "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
-        "Iterate a plain path list, or zsh: "
-        'for name in "${(@k)files}"; do ...; done.\n'
         "Importing local media (import_files_tool):\n"
         "- To put files into Project Files you MUST call import_files_tool. "
         "list_files_tool only lists media already in the project — it never "
@@ -176,6 +164,25 @@ def _agent_bash_prompt():
         "- For folders or bulk asks: dry_run=true → show preview → ask the "
         "user → dry_run=false. If the tool returns multiple candidates or "
         "not found, ask the user — do not guess."
+    )
+
+
+def _agent_bash_prompt():
+    """Recipes the Claude Code Bash tool has already failed on (HEIC, zsh)."""
+    return (
+        "Media conversion (Bash tool):\n"
+        "- HEIC/HEIF stills: never ffmpeg -vf on the HEIC itself. ffmpeg 7 "
+        "decodes HEIC through a complex filtergraph; combining that with -vf "
+        "fails with 'Simple and complex filtering cannot be used together'.\n"
+        "- macOS: sips -s format jpeg IN.HEIC --out OUT.jpg, then scale the "
+        "jpeg with -vf if needed.\n"
+        "- Fallback: ffmpeg -i IN.HEIC -filter_complex "
+        "'[0:v:0]scale=W:-2[o]' -map '[o]' -frames:v 1 -update 1 -y OUT.jpg\n"
+        "- This Bash tool may still run zsh on macOS. Never use bash "
+        "${!assoc[@]} key expansion (zsh reports 'bad substitution'). "
+        "Iterate a plain path list, or zsh: "
+        'for name in "${(@k)files}"; do ...; done.\n'
+        + _agent_import_prompt()
     )
 
 
@@ -939,9 +946,12 @@ class CodexRunner(BaseAgentRunner):
         # and reports it as ``thread.started``.  Resuming a seeded placeholder
         # would just fail, so wait until we have heard a real one.
         cli = self._cli_path or self.CLI_NAME
+        # Codex has no --append-system-prompt; prefix import steering so it
+        # does not Glob /mnt/c the way Claude did before the Claude prompt fix.
+        steered = _agent_import_prompt() + "\n\n" + (text or "")
         if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
-            return [cli, "exec", "resume", self._cli_session_id, *common, text]
-        return [cli, "exec", *common, text]
+            return [cli, "exec", "resume", self._cli_session_id, *common, steered]
+        return [cli, "exec", *common, steered]
 
     def _handle_event(self, ev: dict):
         etype = ev.get("type")

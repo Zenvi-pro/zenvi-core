@@ -162,8 +162,14 @@ def test_names_are_adjacent_variants():
     assert names_are_adjacent("dirty_test", "dirty-test")
     assert names_are_adjacent("Dirty Test", "dirty_test")
     assert names_are_adjacent("dirty_tes", "dirty_test")
+    assert names_are_adjacent("ree.mp4", "reel.mp4")
+    # Must NOT remap short prefixes onto whole libraries / long names.
+    assert not names_are_adjacent("Down", "Downloads")
+    assert not names_are_adjacent("Docu", "Documents")
+    assert not names_are_adjacent("file", "filename_final_export.mp4")
+    assert not names_are_adjacent("clip", "clip_final")
     assert not names_are_adjacent("wedding", "dirty_test")
-    assert not names_are_adjacent("ab", "abc")  # too short for prefix rule
+    assert not names_are_adjacent("clip.mp4", "clip.mov")
 
 
 def test_resolve_agent_import_target_exact(tmp_path):
@@ -213,14 +219,28 @@ def test_resolve_agent_import_target_adjacent_under_downloads(tmp_path, monkeypa
 def test_resolve_agent_import_target_ambiguous(tmp_path):
     from classes.file_drop import resolve_agent_import_target
 
-    a = tmp_path / "clip_final"
-    b = tmp_path / "clip_rough"
+    a = tmp_path / "clip_a"
+    b = tmp_path / "clip_b"
     a.mkdir()
     b.mkdir()
-    # Both are adjacent to "clip" via the prefix rule.
-    result = resolve_agent_import_target(str(tmp_path / "clip"), home=str(tmp_path))
+    # Both are edit-distance 1 from clip_x.
+    result = resolve_agent_import_target(str(tmp_path / "clip_x"), home=str(tmp_path))
     assert result["status"] == "ambiguous"
     assert len(result["candidates"]) >= 2
+
+
+def test_adjacent_does_not_remap_onto_downloads_root(tmp_path):
+    """Down must not resolve to the entire Downloads library."""
+    from classes.file_drop import resolve_agent_import_target
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "keep.mp4").write_bytes(b"x")
+    result = resolve_agent_import_target(
+        str(tmp_path / "Down"), home=str(tmp_path)
+    )
+    assert result["status"] == "missing"
+    assert result.get("path") != str(downloads)
 
 
 def test_resolve_agent_import_target_missing(tmp_path):
