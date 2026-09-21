@@ -67,8 +67,21 @@ class Preferences(QDialog):
         # Init UI
         ui_util.init_ui(self)
 
-        # Define the custom category order
-        self.custom_order = ["General", "Preview", "Autosave", "Cache", "Debug", "Keyboard", "Performance", "Location", "AI", "Experimental"]
+        # Define the custom category order. Categories with no settings are
+        # skipped when building tabs — keep this list in sync with
+        # _default.settings "category" values (empty names crash Populate).
+        self.custom_order = [
+            "General",
+            "Preview",
+            "Timeline",
+            "Autosave",
+            "Cache",
+            "Debug",
+            "Keyboard",
+            "Performance",
+            "Location",
+            "AI",
+        ]
 
         # Get settings
         self.s = get_app().get_settings()
@@ -187,7 +200,7 @@ class Preferences(QDialog):
                 # Append settings into correct category
                 self.category_names[category].append(item)
 
-        # Create tabs in the predefined order (only add categories present in settings_data)
+        # Create tabs in the predefined order (only categories that have settings)
         for category in self.custom_order:
             if category in self.category_names:
                 # Create scroll area
@@ -210,8 +223,28 @@ class Preferences(QDialog):
                 self.tabCategories.addTab(scroll_area, _(category))
                 self.category_tabs[category] = tabWidget
 
-        # Now populate each tab with settings
-        for category in self.custom_order:
+        # Any settings categories not listed in custom_order still get a tab
+        # (appended), so a new category in _default.settings cannot disappear.
+        for category in sorted(self.category_names.keys()):
+            if category in self.category_tabs:
+                continue
+            scroll_area = QScrollArea(self)
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            scroll_area.setMinimumSize(675, 100)
+            layout = QVBoxLayout()
+            tabWidget = QWidget(self)
+            tabWidget.setObjectName("PreferencePanel")
+            tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            tabWidget.setLayout(layout)
+            scroll_area.setWidget(tabWidget)
+            scroll_area.setObjectName(category)
+            self.tabCategories.addTab(scroll_area, _(category))
+            self.category_tabs[category] = tabWidget
+
+        # Now populate each tab with settings (only tabs that were created)
+        for category in list(self.category_tabs.keys()):
             tabWidget = self.category_tabs[category]
             filterFound = False
 

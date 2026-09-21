@@ -29,8 +29,7 @@
 from PyQt5.QtCore import QSize, Qt, QPoint, QRegExp, QRect, QEvent
 from PyQt5.QtGui import (QDrag, QCursor, QPixmap, QPainter, QIcon,
                          QLinearGradient, QColor, QPen)
-from PyQt5.QtWidgets import (QListView, QAbstractItemView,
-                             QStyledItemDelegate)
+from PyQt5.QtWidgets import QListView, QAbstractItemView
 
 from classes import info
 from classes.app import get_app
@@ -38,9 +37,10 @@ from classes.file_drop import accept_os_file_drag, urls_from_mime
 from classes.logger import log
 from classes.query import File
 from .menu import StyledContextMenu
+from .indexing_badge import IndexingBadgeDelegate
 
 
-class FileCardDelegate(QStyledItemDelegate):
+class FileCardDelegate(IndexingBadgeDelegate):
     """Renders a quick-action overlay (Preview · Add · Remove) when a
     thumbnail is hovered.  Clicks on the overlay buttons trigger the
     corresponding window actions without opening the context menu."""
@@ -310,6 +310,12 @@ class FilesListView(QListView):
     def resize_contents(self):
         pass
 
+    def _on_indexing_progress(self, file_id, phase, percent):
+        self.viewport().update()
+
+    def _on_file_status_changed(self, file_id):
+        self.viewport().update()
+
     def __init__(self, model, *args):
         # Invoke parent init
         super().__init__(*args)
@@ -344,11 +350,13 @@ class FilesListView(QListView):
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
 
-        # Hover-overlay delegate for quick actions
+        # Hover-overlay + indexing-badge delegate
         self._card_delegate = FileCardDelegate(self)
         self.setItemDelegate(self._card_delegate)
 
         self.files_model.ModelRefreshed.connect(self.refresh_view)
+        self.files_model.indexingProgress.connect(self._on_indexing_progress)
+        self.win.FileUpdated.connect(self._on_file_status_changed)
 
         # setup filter events
         app = get_app()

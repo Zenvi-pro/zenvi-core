@@ -1,0 +1,25 @@
+{
+  "include": [
+    "src/classes/agent_gap_log.py",
+    "src/classes/agent_api_proxy.py",
+    "src/classes/auth_manager.py",
+    "src/classes/chat_attachments.py",
+    "src/classes/chat_navigation.py",
+    "src/classes/conversion.py",
+    "src/classes/ffmpeg_cli.py",
+    "src/classes/index_chunker.py",
+    "src/classes/qt_platform.py",
+    "src/classes/track_display.py",
+    "src/classes/zenvi_env.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv"
+  ],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.12",
+  "reportMissingImports": "none",
+  "reportMissingModuleSource": "none",
+  "venvPath": ".",
+  "venv": ".venv"
+}

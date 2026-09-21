@@ -1471,7 +1471,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         file = File.get(id=file_id)
         if file:
-            file.data = ui_data
+            # Prefer fingerprint cache for file-level waveforms so .zvn stays small.
+            audio_data = None
+            if isinstance(ui_data, dict):
+                audio_data = (ui_data.get("ui") or {}).get("audio_data")
+            fp = file.data.get("fingerprint") if isinstance(file.data, dict) else None
+            if fp and isinstance(audio_data, list):
+                try:
+                    from classes.media_cache import save_waveform
+                    if save_waveform(fp, audio_data):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
+                except Exception:
+                    file.data = ui_data
+            else:
+                file.data = ui_data
             file.save()
 
         # Clear transaction id
@@ -1504,13 +1520,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback when thumbnail needs to be updated"""
         clips = Clip.filter(id=clip_id)
         for clip in clips:
-            # Force thumbnail image to be refreshed (for a particular frame #)
-            GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
-
             if ViewClass == TimelineWidget:
-                TimelineWidget.update_thumbnail(self, clip_id, thumbnail_frame)
+                # Force regen on the thumbnail worker — never GetThumbPath
+                # (HTTP + disk) on the GUI thread.
+                TimelineWidget.update_thumbnail(
+                    self, clip_id, thumbnail_frame, force_regen=True
+                )
             else:
-                # Pass to javascript timeline (and render)
+                # Web timeline: refresh disk path, then tell JS to redraw.
+                GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
                 self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
 
     def Split_Audio_Triggered(self, action, clip_ids):

@@ -706,12 +706,13 @@ class TimelineWidgetBase(QWidget):
         self._keyframes_dirty = True
         self.update()
 
-    def update_thumbnail(self, clip_id, thumbnail_frame=1):
+    def update_thumbnail(self, clip_id, thumbnail_frame=1, force_regen=False):
         """Drop cached thumbnails for a clip after its frame thumbnail changes."""
         clip_key = str(clip_id or "")
         if not clip_key:
             return
         painter = getattr(self, "clip_painter", None)
+        file_id = None
         if painter is not None:
             # Expire pending requests so the next paint re-queues a load.
             if hasattr(painter, "expire_thumbnail_requests"):
@@ -727,6 +728,26 @@ class TimelineWidgetBase(QWidget):
                 ]
                 for key in stale:
                     thumb_cache.pop(key, None)
+        if force_regen:
+            try:
+                from classes.query import Clip as QueryClip
+
+                clip = QueryClip.get(id=clip_key)
+                if clip and isinstance(getattr(clip, "data", None), dict):
+                    file_id = clip.data.get("file_id")
+            except Exception:
+                file_id = None
+            manager = getattr(self, "thumbnail_manager", None)
+            if manager is not None and file_id:
+                frame = int(thumbnail_frame or 1)
+                generation = int(getattr(self, "thumbnail_generation", 0) or 0)
+                # Mark pending so paint does not double-queue a non-forced load.
+                if painter is not None:
+                    key = (clip_key, frame)
+                    painter._thumb_pending[key] = generation
+                manager.request_thumbnail(
+                    clip_key, file_id, frame, generation, clear_cache=True
+                )
         self._schedule_viewport_thumbnail_reset()
         self.update()
 

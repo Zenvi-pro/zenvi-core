@@ -856,9 +856,9 @@ class ClipPainter(BasePainter):
             cached = self.thumb_cache[key]
             if not cached.isNull():
                 return cached
-            # Null pixmap means "we tried and failed" — don't request again this generation
-            if self._thumb_pending.get(key) == generation:
-                return None
+            # Null pixmap means "we tried and failed" — do not re-request
+            # until the cache entry is dropped (update_thumbnail / generation).
+            return None
 
         # 2. If already requested this generation → don't request again
         if self._thumb_pending.get(key) == generation:

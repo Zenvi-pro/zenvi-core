@@ -144,10 +144,13 @@ class KeyframeMixin:
         def _property_matches_filter(path):
             if not prop_filter:
                 return True
+            # Match any eligible path component (e.g. "color" must hit
+            # color.red.Points, not only the nearest "red" leaf).
             for kind, part in reversed(path):
                 if kind == "dict" and isinstance(part, str) and part not in skip_keys:
-                    return prop_filter in part.lower()
-            return True
+                    if prop_filter in part.lower():
+                        return True
+            return False
 
         def store(frame_value, interpolation_value, point_obj=None, point_path=None):
             if frame_value is None:

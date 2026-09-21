@@ -118,13 +118,16 @@ def test_ungarded_run_js_set_matches_source():
             if name not in ("handle_js_position", "callback"):
                 raise AssertionError(f"audit method {name} missing from timeline.py")
             continue
-        # After fixes, methods may mention TimelineWidget — drop from found
-        if name in found:
+        # After fixes, methods may mention TimelineWidget — drop from found.
+        # "fixed" entries that are still unguarded are regressions.
+        if PARITY_AUDIT[name] == "fixed" and name in found:
             still_unguarded.add(name)
-        elif PARITY_AUDIT[name] == "fixed":
-            pass  # expected: now has native guard
         elif PARITY_AUDIT[name] in ("covered", "n/a"):
             pass
+    assert not still_unguarded, (
+        f"PARITY_AUDIT 'fixed' methods still lack a TimelineWidget guard: "
+        f"{sorted(still_unguarded)}"
+    )
     # Any method still in `found` that is not in our audit is a NEW gap.
     unexpected = found - UNGARDED_RUN_JS_METHODS
     # Nested defs inside guarded parents may still look unguarded; only flag
