@@ -278,7 +278,7 @@
     "category": "Autosave",
     "min": 0,
     "setting": "history-limit",
-    "value": 15,
+    "value": 50,
     "type": "spinner-int"
   },
   {

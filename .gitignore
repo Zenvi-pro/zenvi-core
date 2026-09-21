@@ -7,17 +7,19 @@ idea/*
 
 # Exclude AI agent scratchpads / internal session state
 # (developer-local context, paths, and credentials notes — not for the repo)
+# AGENTS.md is the shared engineering doctrine and IS committed.
 agent-log.md
-AGENTS.md
 CLAUDE.md
 .cursor/
 .claude/
+
 # Local packaged installers (do not commit)
 *.deb
 
 # Exclude results of the build process
 doc/_build
 **/__pycache__/
+.pytest_cache/
 build
 dist
 openshot_qt.egg-info

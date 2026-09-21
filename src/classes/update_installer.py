@@ -490,6 +490,19 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
     for Setup, then finish the job.
     """
     inno_arg_list = ",".join(_ps_str(a) for a in _INNO_SILENT_ARGS)
+    # Only real Inno Setup .exe installers take silent-mode ArgumentList flags.
+    # Unit-test stubs use a .bat stand-in; passing /VERYSILENT etc. can hang
+    # Start-Process -Wait on some Windows runners.
+    if str(filepath).lower().endswith(".exe"):
+        start_process = (
+            f"    $p = Start-Process -FilePath {_ps_str(filepath)} "
+            f"-ArgumentList {inno_arg_list} -Wait -PassThru -ErrorAction Stop\n"
+        )
+    else:
+        start_process = (
+            f"    $p = Start-Process -FilePath {_ps_str(filepath)} "
+            f"-Wait -PassThru -ErrorAction Stop\n"
+        )
     relaunch_block = ""
     if relaunch_target:
         relaunch_block = (
@@ -521,8 +534,7 @@ def _build_update_helper_script(filepath, manifest_path, relaunch_target, log_pa
         "Log 'External updater started'\n"
         f"{wait_parent_block}"
         "try {\n"
-        f"    $p = Start-Process -FilePath {_ps_str(filepath)} "
-        f"-ArgumentList {inno_arg_list} -Wait -PassThru -ErrorAction Stop\n"
+        f"{start_process}"
         "    $code = $p.ExitCode\n"
         "} catch {\n"
         "    Log \"Failed to launch installer: $_\"\n"
