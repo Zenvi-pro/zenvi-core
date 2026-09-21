@@ -33,7 +33,7 @@ import copy
 import os
 import re
 
-from classes.assets import get_assets_path
+from classes.assets import get_assets_path, path_is_under
 from classes.logger import log
 from classes import info
 from classes.app import get_app
@@ -301,8 +301,15 @@ class JsonDataStore:
         #   /Videos/quote \\"/  instead of  /Videos/quote "/
         path = json.loads('"%s"' % path)
 
+        # Resolve against the project folder, not process CWD, when relative.
+        project_folder = path_context.get("new_project_folder", "") or ""
+        if os.path.isabs(path):
+            abs_path = os.path.normpath(path)
+        else:
+            abs_path = os.path.normpath(os.path.join(project_folder, path))
+
         # Split path into folder and file
-        folder_path, file_path = os.path.split(os.path.abspath(path))
+        folder_path, file_path = os.path.split(abs_path)
 
         # Determine if thumbnail path is found
         if info.THUMBNAIL_PATH in folder_path:
@@ -349,25 +356,34 @@ class JsonDataStore:
 
         # Find absolute path of file (if needed)
         else:
-            # Convert path to the correct relative path (based on the existing folder)
-            orig_abs_path = os.path.abspath(path)
-
             # Determine windows drives that the project and file are on
-            project_win_drive = os.path.splitdrive(path_context.get("new_project_folder", ""))[0]
-            file_win_drive = os.path.splitdrive(path)[0]
+            project_win_drive = os.path.splitdrive(project_folder)[0]
+            file_win_drive = os.path.splitdrive(abs_path)[0]
             if file_win_drive != project_win_drive:
-                log.debug("Drive mismatch, not making path relative: %s", orig_abs_path)
+                log.debug("Drive mismatch, not making path relative: %s", abs_path)
                 # If the file is on different drive. Don't abbreviate the path.
-                clean_path = orig_abs_path.replace("\\", "/")
+                clean_path = abs_path.replace("\\", "/")
+                clean_path = json.dumps(clean_path, ensure_ascii=False)
+                return f"\"{key}\": {clean_path}"
+
+            # Keep paths outside the project folder absolute so moving the
+            # .zvn does not break external media references.
+            if project_folder and not path_is_under(abs_path, project_folder):
+                log.debug("Path outside project folder, keeping absolute: %s", abs_path)
+                clean_path = abs_path.replace("\\", "/")
                 clean_path = json.dumps(clean_path, ensure_ascii=False)
                 return f"\"{key}\": {clean_path}"
 
             # Remove file from abs path
-            orig_abs_folder = os.path.dirname(orig_abs_path)
+            orig_abs_folder = os.path.dirname(abs_path)
 
-            log.debug("Generating new relative path for %s", orig_abs_path)
-            new_rel_path_folder = os.path.relpath(orig_abs_folder, path_context.get("new_project_folder", ""))
-            new_rel_path = os.path.join(new_rel_path_folder, file_path).replace("\\", "/")
+            log.debug("Generating new relative path for %s", abs_path)
+            new_rel_path_folder = os.path.relpath(orig_abs_folder, project_folder)
+            if new_rel_path_folder in (".", ""):
+                new_rel_path = file_path
+            else:
+                new_rel_path = os.path.join(new_rel_path_folder, file_path)
+            new_rel_path = new_rel_path.replace("\\", "/")
             new_rel_path = json.dumps(new_rel_path, ensure_ascii=False)
             return '"%s": %s' % (key, new_rel_path)
 
