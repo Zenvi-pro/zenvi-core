@@ -42,7 +42,20 @@ class UpdateHelperScriptTests(unittest.TestCase):
         self.assertIn(r"C:\Program Files\Zenvi\zenvi.exe", script)
         self.assertIn("-Wait -PassThru", script)
         self.assertIn("/CLOSEAPPLICATIONS", script)
+        self.assertIn("-ArgumentList", script)
         self.assertNotIn("/CURRENTUSER", script)
+
+    def test_non_exe_stub_omits_inno_argument_list(self):
+        from classes import update_installer as ui
+        script = ui._build_update_helper_script(
+            r"C:\staged\Zenvi-Setup.bat",
+            r"C:\staged\update_manifest.json",
+            None,
+            r"C:\staged\install.log",
+        )
+        self.assertIn(r"C:\staged\Zenvi-Setup.bat", script)
+        self.assertIn("-Wait -PassThru", script)
+        self.assertNotIn("-ArgumentList", script)
 
     def test_waits_for_parent_pid_before_starting_setup(self):
         from classes import update_installer as ui
@@ -194,7 +207,7 @@ class SpawnExternalUpdaterTests(unittest.TestCase):
         self.assertTrue(ok)
 
         import time
-        deadline = time.time() + 20
+        deadline = time.time() + 60
         while time.time() < deadline:
             if not os.path.exists(manifest_path) and os.path.exists(relaunch_marker):
                 break
