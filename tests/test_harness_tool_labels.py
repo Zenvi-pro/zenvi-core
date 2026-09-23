@@ -38,6 +38,20 @@ class TestHarnessToolsReadAsProductWork(unittest.TestCase):
         self.assertNotEqual(humanize_tool_name("question"), "Question")
         self.assertNotEqual(humanize_tool_name("todowrite"), "Todowrite")
 
+    def test_web_tools_are_labelled_if_they_ever_appear(self):
+        """Denied in the harness, but a denied call still shows up as a block."""
+        for name in ("webfetch", "websearch"):
+            with self.subTest(tool=name):
+                label = humanize_tool_name(name)
+                self.assertNotEqual(label, name.capitalize())
+                self.assertIn("web", label.lower())
+
+    def test_casing_does_not_change_the_label(self):
+        """The runtime's own names are matched however they are cased."""
+        for name in ("Task", "TASK", "TodoWrite", "Bash", "WebFetch"):
+            with self.subTest(tool=name):
+                self.assertEqual(humanize_tool_name(name), humanize_tool_name(name.lower()))
+
     def test_no_harness_label_is_empty(self):
         for name in ("task", "bash", "edit", "write", "read", "glob", "grep",
                      "question", "todowrite"):

@@ -8567,6 +8567,9 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     "grep": "Searching the motion graphic",
     "question": "Asking you a question",
     "todowrite": "Updating the task list",
+    # Denied to the assistant, but a refused call still lands in the transcript.
+    "webfetch": "Reading a web page",
+    "websearch": "Searching the web",
 }
 
 
@@ -8576,6 +8579,10 @@ def humanize_tool_name(tool_name: str) -> str:
         return TOOL_DISPLAY_LABELS[tool_name]
     if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
+    # The harness runtime's own names are all-lowercase keys here; match them
+    # however they arrive cased ("TodoWrite", "WebFetch").
+    if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
