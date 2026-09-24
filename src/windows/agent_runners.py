@@ -1070,6 +1070,14 @@ class HermesRunner(BaseAgentRunner):
         self._think_id = ""
         self._think_seq = 0
 
+    def _build_env(self):
+        # hermes acp also loads config.yaml, where Connect wrote
+        # ``Bearer ${ZENVI_MCP_TOKEN}`` (see register_hermes).
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
     def _build_argv(self, text: str):
         # The prompt travels over ACP (see _after_launch), never through argv.
         return [self._cli_path or self.CLI_NAME, "acp", "--accept-hooks"]
@@ -1132,6 +1140,10 @@ class HermesRunner(BaseAgentRunner):
 
         kind = self._pending.pop(ev.get("id"), None)
         if kind is None:
+            return
+        if "error" in ev and kind == "session/load":
+            # The stored conversation is gone: start a new one instead.
+            self._new_session()
             return
         if "error" in ev:
             err = ev.get("error") or {}

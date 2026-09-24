@@ -979,6 +979,26 @@ def test_hermes_starts_fresh_when_load_does_not_know_the_session(qapp):
     assert runner._cli_session_id == "ses-new"
 
 
+def test_hermes_starts_fresh_when_load_fails_outright(qapp):
+    runner = _hermes("hello", resume_id="gone")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    load_id = _sent(runner)[-1]["id"]
+    runner._handle_event({"jsonrpc": "2.0", "id": load_id, "error": {
+        "code": -32002, "message": "Resource not found"}})
+    assert _sent(runner)[-1]["method"] == "session/new"
+    assert not runner._last_error
+    assert not runner._proc.stdin.closed
+
+
+def test_hermes_env_carries_the_token_its_config_entry_reads(qapp):
+    """Connect writes ``Bearer ${ZENVI_MCP_TOKEN}`` into config.yaml, which
+    ``hermes acp`` also loads; without the variable that entry gets a 401."""
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._server = _HermesServer()
+    assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
+
+
 def test_hermes_answers_agent_requests_so_a_turn_never_hangs(qapp):
     """No one can click a permission dialog; other client calls get an error."""
     runner = _hermes()
