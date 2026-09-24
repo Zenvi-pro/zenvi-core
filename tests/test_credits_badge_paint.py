@@ -15,11 +15,15 @@ import pytest
 from classes import credits_client as cc
 
 
+_USER = {"id": "user-a"}
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     path = tmp_path / "zenvi_credits.json"
     monkeypatch.setattr(cc, "CREDITS_FILE", str(path))
-    monkeypatch.setattr(cc, "_current_user_id", lambda: "user-a")
+    monkeypatch.setitem(_USER, "id", "user-a")
+    monkeypatch.setattr(cc, "_current_user_id", lambda: _USER["id"])
     return path
 
 
@@ -53,6 +57,37 @@ def test_a_successful_fetch_is_persisted_for_the_next_launch(store, monkeypatch)
 def test_a_failed_fetch_keeps_serving_the_stored_balance(store, monkeypatch):
     store.write_text(json.dumps({"user_id": "user-a", "balance": 420}))
     assert _client(monkeypatch, None).balance() == (True, 420)
+
+
+def test_switching_account_drops_the_previous_accounts_balance(store, monkeypatch):
+    client = _client(monkeypatch, {"total_points": 500})
+    client.balance()
+    _USER["id"] = "user-b"
+    assert client.cached_balance() is None
+
+
+def test_a_fetch_that_finishes_after_an_account_switch_is_discarded(store, monkeypatch):
+    client = cc.CreditsClient()
+    monkeypatch.setattr(client, "_get_auth", lambda: (object(), {}, "u"))
+
+    def rpc(*a, **k):
+        _USER["id"] = "user-b"          # user B signs in while A's fetch is in flight
+        return {"total_points": 500}
+
+    monkeypatch.setattr(client, "_rpc", rpc)
+    heard = []
+    client.add_listener(heard.append)
+    client.balance()
+    assert heard == []
+    assert client.cached_balance() is None
+    assert not store.exists()
+
+
+def test_a_balance_without_a_signed_in_user_is_not_persisted(store, monkeypatch):
+    store.write_text(json.dumps({"user_id": "user-a", "balance": 420}))
+    _USER["id"] = None
+    _client(monkeypatch, {"total_points": 1}).balance()
+    assert json.loads(store.read_text())["balance"] == 420
 
 
 def test_listeners_hear_a_changed_balance(store, monkeypatch):
@@ -136,6 +171,7 @@ def _fake_window(chat_ui, order):
     w._start_restore_chat_histories_async = lambda: None
     w._push_attachments_to_js = lambda: None
     w._on_credits_balance = lambda b: chat_ui.AIChatWindow._on_credits_balance(w, b)
+    w._paint_cached_credits = lambda: chat_ui.AIChatWindow._paint_cached_credits(w)
     return w
 
 
@@ -165,6 +201,22 @@ def test_a_fetch_that_beats_page_ready_is_painted_on_ready(chat_ui, store, monke
     client.balance()                              # fetch lands before loadFinished
     chat_ui.AIChatWindow._inject_web_ready(w)
     assert "updateCreditsBalance(31)" in _credit_calls(order)[0]
+
+
+def test_signing_in_again_repaints_for_the_new_account_and_refetches(chat_ui, store, monkeypatch):
+    """Logout keeps the dock alive, so re-login must not keep the old number."""
+    client = _client(monkeypatch, {"total_points": 500})
+    monkeypatch.setattr(cc, "credits", client)
+    client.balance()                              # user A's balance is showing
+    _USER["id"] = "user-b"
+    order, fetched = [], []
+    w = _fake_window(chat_ui, order)
+    w._fetch_credits_balance = lambda: fetched.append(True)
+    chat_ui.AIChatWindow.refresh_credits_for_account(w)
+    assert _credit_calls(order) == [
+        "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
+    ]
+    assert fetched == [True]
 
 
 def test_first_ever_run_shows_the_loading_placeholder(chat_ui, store, monkeypatch):

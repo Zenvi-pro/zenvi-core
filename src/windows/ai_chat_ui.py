@@ -2685,17 +2685,7 @@ class AIChatWindow(QDockWidget):
         if getattr(self, "_chat_web_initial_sync_done", False):
             return
         # Credits first: last known balance (or placeholder), never behind /models.
-        try:
-            from classes.credits_client import credits as _creds
-            cached = _creds.cached_balance()
-            if cached is not None:
-                self._on_credits_balance(cached)
-            elif self._use_web_ui:
-                self._run_js(
-                    "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
-                )
-        except Exception:
-            pass
+        self._paint_cached_credits()
         try:
             from classes.app import get_app
             app = get_app()
@@ -2727,6 +2717,25 @@ class AIChatWindow(QDockWidget):
                 "if(window.setCliStatus) setCliStatus(%s);" % json.dumps(cached_cli_status)
             )
         self._push_attachments_to_js()
+
+    def _paint_cached_credits(self):
+        """Paint the signed-in account's last known balance, or the placeholder."""
+        try:
+            from classes.credits_client import credits as _creds
+            cached = _creds.cached_balance()
+            if cached is not None:
+                self._on_credits_balance(cached)
+            elif self._use_web_ui:
+                self._run_js(
+                    "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
+                )
+        except Exception:
+            pass
+
+    def refresh_credits_for_account(self):
+        """After a sign-in: drop the previous account's number and refetch now."""
+        self._paint_cached_credits()
+        self._fetch_credits_balance()
 
     def _start_credits_refresh(self):
         """Fetch credits balance once and start a 60-second refresh timer.
