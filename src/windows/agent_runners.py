@@ -83,11 +83,16 @@ def _cli_install_dirs() -> list:
     if home:
         dirs.append(os.path.join(home, ".local", "bin"))
         dirs.append(os.path.join(home, ".codex", "packages", "standalone", "current", "bin"))
+        # OpenCode's official install script.
+        dirs.append(os.path.join(home, ".opencode", "bin"))
     appdata = os.environ.get("APPDATA") or (
         os.path.join(home, "AppData", "Roaming") if home else ""
     )
     if appdata:
         dirs.append(os.path.join(appdata, "npm"))
+    # nvm-windows keeps npm globals in its node folder, not %APPDATA%/npm.
+    if os.environ.get("NVM_SYMLINK"):
+        dirs.append(os.environ["NVM_SYMLINK"])
     local = os.environ.get("LOCALAPPDATA") or (
         os.path.join(home, "AppData", "Local") if home else ""
     )
@@ -215,8 +220,10 @@ def _which_cli(binary_name: str):
         return found
     names = [binary_name]
     if os.name == "nt":
-        names.extend([binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat"])
-        for name in names[1:]:
+        # Launchers first: npm puts an extension-less sh script beside
+        # ``<name>.cmd`` and Windows cannot run it.
+        names = [binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat", binary_name]
+        for name in names[:3]:
             found = shutil.which(name)
             if found:
                 return found
@@ -1095,7 +1102,7 @@ class OpenCodeRunner(BaseAgentRunner):
 
     def _build_argv(self, text: str):
         argv = [
-            self._cli_path or self.CLI_NAME, "run", "--format", "json",
+            _opencode_native(self._cli_path or self.CLI_NAME), "run", "--format", "json",
             # No terminal to answer a permission prompt (see Claude's
             # --dangerously-skip-permissions).
             "--auto", "--thinking",
@@ -1176,6 +1183,20 @@ def _write_claude_mcp_config(server) -> str:
     with os.fdopen(fd, "w") as fh:
         json.dump(cfg, fh)
     return path
+
+
+def _opencode_native(cli: str) -> str:
+    """The binary behind npm's ``opencode.cmd`` shim, when there is one.
+
+    A ``.cmd`` runs through cmd.exe, which re-parses the prompt argument and
+    mangles quotes, ``&`` and ``%`` in it; the npm package ships a native exe.
+    """
+    if cli.lower().endswith(".cmd"):
+        native = os.path.join(os.path.dirname(cli), "node_modules", "opencode-ai",
+                              "bin", "opencode.exe")
+        if os.path.isfile(native):
+            return native
+    return cli
 
 
 def _write_opencode_mcp_config(server) -> str:

@@ -1023,3 +1023,60 @@ def test_register_opencode_refuses_to_touch_invalid_json(monkeypatch, tmp_path):
     ok, _ = ar.register_opencode(7434, "tok123")
     assert ok is False
     assert cfg.read_text() == original
+
+
+def test_which_cli_finds_opencode_outside_path(monkeypatch, tmp_path):
+    """A GUI-launched editor often has a trimmed PATH: find OpenCode in its
+    official installer dir and in an nvm-windows node folder."""
+    import windows.agent_runners as ar
+
+    name = "opencode.exe" if os.name == "nt" else "opencode"
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path / "home"))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    nvm = tmp_path / "nvm4w" / "nodejs"
+    nvm.mkdir(parents=True)
+    (nvm / name).write_bytes(b"")
+    monkeypatch.setenv("NVM_SYMLINK", str(nvm))
+    assert ar._which_cli("opencode") == str(nvm / name)
+
+    official = tmp_path / "home" / ".opencode" / "bin"
+    official.mkdir(parents=True)
+    (official / name).write_bytes(b"")
+    assert ar._which_cli("opencode") == str(official / name)
+
+
+def test_opencode_argv_skips_the_npm_cmd_shim(qapp, monkeypatch, tmp_path):
+    """npm's ``opencode.cmd`` would pass the prompt through cmd.exe, which
+    mangles quotes, ``&`` and ``%``; run the native binary it wraps instead."""
+    from windows.agent_runners import OpenCodeRunner
+
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [])
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text("@echo off\n")
+    native = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"")
+
+    runner = OpenCodeRunner()
+    runner._cli_path = str(shim)
+    assert runner._build_argv('say "a & b" 100%')[0] == str(native)
+
+    native.unlink()
+    assert runner._build_argv("hi")[0] == str(shim)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="npm's sh shim only shadows on Windows")
+def test_which_cli_prefers_a_windows_launcher_over_npms_sh_shim(monkeypatch, tmp_path):
+    """npm drops an extension-less sh script next to ``opencode.cmd``; Windows
+    cannot launch it (WinError 193)."""
+    import windows.agent_runners as ar
+
+    (tmp_path / "opencode").write_text("#!/bin/sh\n")
+    (tmp_path / "opencode.cmd").write_text("@echo off\n")
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [str(tmp_path)])
+    assert ar._which_cli("opencode") == str(tmp_path / "opencode.cmd")
