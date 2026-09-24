@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # Backend identifiers (kept in sync with ai_chat_ui constants).
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+BACKEND_OPENCODE = "opencode"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -50,6 +51,8 @@ def models_for_backend(backend: str) -> list:
         return [dict(m) for m in ClaudeCodeRunner.MODELS]
     if backend == BACKEND_CODEX:
         return [dict(m) for m in CodexRunner.MODELS]
+    if backend == BACKEND_OPENCODE:
+        return [dict(m) for m in OpenCodeRunner.MODELS]
     return []
 
 
@@ -288,6 +291,8 @@ def _is_registered(binary_name: str) -> bool:
         return _claude_is_registered()
     if binary_name == "codex":
         return _codex_is_registered()
+    if binary_name == "opencode":
+        return _opencode_is_registered()
     return False
 
 
@@ -450,6 +455,86 @@ def register_codex(port: int, token: str):
         "Updated ~/.codex/config.toml. Before running codex, run:\n"
         "export ZENVI_MCP_TOKEN=%s"
     ) % token
+
+
+def _opencode_config_dir() -> str:
+    """OpenCode's global config folder (it honours ``XDG_CONFIG_HOME`` on every OS)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(_resolved_home(), ".config")
+    return os.path.join(base, "opencode")
+
+
+def _opencode_is_registered() -> bool:
+    """OpenCode merges ``opencode.json`` and ``opencode.jsonc``; the latter may
+    carry comments, so look for the server key rather than parse JSON."""
+    for name in ("opencode.json", "opencode.jsonc"):
+        try:
+            with open(os.path.join(_opencode_config_dir(), name), "r", encoding="utf-8") as fh:
+                if re.search(r'"zenvi_editor"\s*:', fh.read()):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _opencode_server_entry(url: str) -> dict:
+    # ``{env:...}`` is OpenCode's config substitution: the token stays out of
+    # the file and is read from the environment at launch (as Codex does).
+    return {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ZENVI_MCP_TOKEN}"},
+        "enabled": True,
+    }
+
+
+def register_opencode(port: int, token: str):
+    """Upsert ``mcp.zenvi_editor`` in OpenCode's global ``opencode.json``.
+
+    OpenCode has no CLI command for adding a remote MCP server
+    non-interactively. It merges ``opencode.json`` with the user's
+    ``opencode.jsonc``, so we only ever edit the plain-JSON file and leave
+    every other key and server as it was. Refuses to touch a file that does
+    not parse, and writes a ``.zenvi-backup`` copy first.
+
+    Returns ``(ok, message)``.
+    """
+    path = os.path.join(_opencode_config_dir(), "opencode.json")
+    original = ""
+    data = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+        except Exception as e:
+            return False, "Failed to read %s: %s" % (path, e)
+        try:
+            data = json.loads(original) if original.strip() else {}
+        except Exception as e:
+            return False, "%s is not valid JSON, not touching it: %s" % (path, e)
+        if not isinstance(data, dict):
+            return False, "%s is not a JSON object, not touching it." % path
+
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        mcp = {}
+    mcp["zenvi_editor"] = _opencode_server_entry("http://127.0.0.1:%d/mcp" % port)
+    data["mcp"] = mcp
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if original:
+            with open(path + ".zenvi-backup", "w", encoding="utf-8") as fh:
+                fh.write(original)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+    except Exception as e:
+        return False, "Failed to write %s: %s" % (path, e)
+
+    return True, (
+        "Updated %s. Before running opencode, run:\n"
+        "export ZENVI_MCP_TOKEN=%s"
+    ) % (path, token)
 
 
 class BaseAgentRunner(QObject):
@@ -641,6 +726,9 @@ class BaseAgentRunner(QObject):
         try:
             argv = self._build_argv(text)
             popen_kwargs = dict(
+                # No stdin: there is no one to type into it, and ``opencode
+                # run`` blocks reading an inherited one before it starts.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
@@ -984,6 +1072,87 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_completed.emit(rid, True, "")
 
 
+class OpenCodeRunner(BaseAgentRunner):
+    """Drives SST OpenCode (`opencode run --format json`)."""
+
+    CLI_NAME = "opencode"
+    DISPLAY_NAME = "OpenCode"
+    # OpenCode spans many providers; the model comes from the user's own config.
+    MODELS: list = []
+
+    # OpenCode names MCP tools ``<server>_<tool>``.
+    _MCP_PREFIX = "zenvi_editor_"
+
+    def _build_env(self):
+        extra = {}
+        if self._server is not None:
+            # Merged over the user's own config, so their other MCP servers
+            # stay available -- the equivalent of Claude's --mcp-config.
+            extra["OPENCODE_CONFIG"] = _write_opencode_mcp_config(self._server)
+            if self._server.token:
+                extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        argv = [
+            self._cli_path or self.CLI_NAME, "run", "--format", "json",
+            # No terminal to answer a permission prompt (see Claude's
+            # --dangerously-skip-permissions).
+            "--auto", "--thinking",
+        ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
+        # Like Codex, OpenCode mints its own session id ("ses_..."), and
+        # --session with any other id fails with "Session not found".
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+            argv += ["--session", self._cli_session_id]
+        argv.append(text)
+        return argv
+
+    def _handle_event(self, ev: dict):
+        sid = ev.get("sessionID") or ""
+        if sid and not self._cli_id_from_cli:
+            self._cli_session_id = sid
+            self._cli_id_from_cli = True
+            self._emit_cli_session()
+        etype = ev.get("type")
+        part = ev.get("part") or {}
+        if etype == "text":
+            txt = part.get("text") or ""
+            if txt:
+                if self._final_text:
+                    self._final_text += "\n\n"
+                self._final_text += txt
+                self.token_received.emit(txt)
+            return
+        if etype == "reasoning":
+            txt = part.get("text") or ""
+            if txt:
+                rid = "think_%s" % (part.get("id") or "0")
+                self.tool_started.emit(rid, "thinking", "{}")
+                self.tool_log.emit(rid, txt)
+                self.tool_completed.emit(rid, True, "")
+            return
+        if etype == "tool_use":
+            # Emitted once, when the call has already finished.
+            state = part.get("state") or {}
+            call_id = part.get("callID") or part.get("id") or ""
+            name = part.get("tool") or "tool"
+            if name.startswith(self._MCP_PREFIX):
+                name = name[len(self._MCP_PREFIX):]
+            args = state.get("input")
+            self.tool_started.emit(call_id, name,
+                                   json.dumps(args if isinstance(args, dict) else {}, default=str))
+            ok = state.get("status") != "error"
+            out = state.get("output") if ok else state.get("error")
+            self.tool_completed.emit(call_id, ok, str(out or ""))
+            return
+        if etype == "error":
+            err = ev.get("error") or {}
+            self._last_error = ((err.get("data") or {}).get("message")
+                                or err.get("name") or "The agent reported an error.")
+
+
 # ---------------------------------------------------------------------------
 # MCP config helpers
 # ---------------------------------------------------------------------------
@@ -1005,6 +1174,15 @@ def _write_claude_mcp_config(server) -> str:
     # file carries world-readable for the window in between.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
+        json.dump(cfg, fh)
+    return path
+
+
+def _write_opencode_mcp_config(server) -> str:
+    """Write the scoped ``OPENCODE_CONFIG`` file pointing at the in-app MCP server."""
+    cfg = {"mcp": {"zenvi_editor": _opencode_server_entry(server.url())}}
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "opencode_mcp.json"))
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh)
     return path
 

@@ -440,10 +440,12 @@ class _SharedToolHandler(logging.Handler):
 BACKEND_ZENVI = "zenvi"
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+BACKEND_OPENCODE = "opencode"
 BACKENDS = [
     {"id": BACKEND_ZENVI, "name": "Zenvi Assistant"},
     {"id": BACKEND_CLAUDE, "name": "Claude Code"},
     {"id": BACKEND_CODEX, "name": "Codex"},
+    {"id": BACKEND_OPENCODE, "name": "OpenCode"},
 ]
 _VALID_BACKENDS = {b["id"] for b in BACKENDS}
 
@@ -1005,6 +1007,9 @@ class AIChatWindow(QDockWidget):
         elif backend == BACKEND_CODEX:
             from windows.agent_runners import CodexRunner
             worker = CodexRunner()
+        elif backend == BACKEND_OPENCODE:
+            from windows.agent_runners import OpenCodeRunner
+            worker = OpenCodeRunner()
         else:
             worker = AIChatWorker()
         worker._session_id = session_id   # used by signal handlers to route responses
@@ -1173,7 +1178,7 @@ class AIChatWindow(QDockWidget):
                 except Exception:
                     pass
         restore = None
-        if backend in (BACKEND_CLAUDE, BACKEND_CODEX):
+        if backend in (BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_OPENCODE):
             try:
                 from classes import chat_history
                 for row in chat_history.load_sessions(self._history_key, include_closed=True):
@@ -2831,6 +2836,7 @@ class AIChatWindow(QDockWidget):
                 status = {
                     BACKEND_CLAUDE: detect_cli("claude"),
                     BACKEND_CODEX: detect_cli("codex"),
+                    BACKEND_OPENCODE: detect_cli("opencode"),
                 }
                 QMetaObject.invokeMethod(
                     self,
@@ -2894,6 +2900,9 @@ class AIChatWindow(QDockWidget):
                 elif backend_id == BACKEND_CODEX:
                     from windows.agent_runners import register_codex
                     ok, message = register_codex(srv.port, srv.token)
+                elif backend_id == BACKEND_OPENCODE:
+                    from windows.agent_runners import register_opencode
+                    ok, message = register_opencode(srv.port, srv.token)
             except Exception as e:
                 log.debug("connect_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)

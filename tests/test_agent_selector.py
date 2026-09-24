@@ -242,6 +242,28 @@ def test_panel_reports_each_status(qapp):
     assert not panel._rows["zenvi"].action.isVisible()
 
 
+def test_opencode_row_follows_install_and_connect_status(qapp):
+    """OpenCode is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "opencode" and b["name"] == "OpenCode" for b in BACKENDS)
+
+    connected = {"opencode": {"installed": True, "version": "1.18.32", "registered": True}}
+    panel = _panel(FakeChat(connected, active="opencode"))
+    assert panel._rows["opencode"].word.text() == "connected"
+    assert "1.18.32" in panel._rows["opencode"].desc.text()
+    assert "OpenCode" in panel.footer.text()
+
+    missing = {"opencode": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["opencode"].word.text() == "not installed"
+    assert "opencode" in panel._rows["opencode"].desc.text()
+
+    unregistered = {"opencode": {"installed": True, "version": "1.18.32", "registered": False}}
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["opencode"].word.text() == "not connected"
+
+
 def test_selected_row_tracks_the_active_backend(qapp):
     panel = _panel(FakeChat(CONNECTED, active=CODEX))
     assert panel._rows[CODEX].property("selected") is True
