@@ -493,6 +493,8 @@ def register_hermes(port: int, token: str):
             result = subprocess.run(
                 [hermes, "config", "set", key, value],
                 capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                # The home HermesRunner and _hermes_is_registered use.
+                env=_cli_child_env(),
             )
             if result.returncode != 0:
                 return False, (result.stderr or result.stdout or "hermes config set failed").strip()

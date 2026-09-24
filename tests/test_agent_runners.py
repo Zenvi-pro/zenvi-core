@@ -1116,10 +1116,15 @@ def test_register_hermes_writes_url_and_token_header_via_the_cli(monkeypatch):
         stdout = "ok"
         stderr = ""
 
+    envs = []
     monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/hermes")
-    monkeypatch.setattr(ar.subprocess, "run", lambda argv, **kw: calls.append(argv) or _Done())
+    monkeypatch.setattr(ar, "_cli_child_env", lambda extra=None: {"USERPROFILE": "/resolved"})
+    monkeypatch.setattr(ar.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or envs.append(kw.get("env")) or _Done())
     ok, message = ar.register_hermes(7434, "tok123")
     assert ok is True
+    # Same home as the runner and the "connected" check, not the GUI's.
+    assert envs == [{"USERPROFILE": "/resolved"}] * 2
     assert ["/usr/bin/hermes", "config", "set", "mcp_servers.zenvi_editor.url",
             "http://127.0.0.1:7434/mcp"] in calls
     assert ["/usr/bin/hermes", "config", "set",
