@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # Backend identifiers (kept in sync with ai_chat_ui constants).
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
+BACKEND_HERMES = "hermes"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -288,6 +289,8 @@ def _is_registered(binary_name: str) -> bool:
         return _claude_is_registered()
     if binary_name == "codex":
         return _codex_is_registered()
+    if binary_name == "hermes":
+        return _hermes_is_registered()
     return False
 
 
@@ -452,6 +455,57 @@ def register_codex(port: int, token: str):
     ) % token
 
 
+def _hermes_config_path() -> str:
+    home = os.environ.get("HERMES_HOME") or os.path.join(_resolved_home(), ".hermes")
+    return os.path.join(home, "config.yaml")
+
+
+def _hermes_is_registered() -> bool:
+    """Look for ``zenvi_editor`` under the top-level ``mcp_servers`` block of
+    Hermes' ``config.yaml`` (no YAML parser here, and none is needed)."""
+    try:
+        with open(_hermes_config_path(), "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except Exception:
+        return False
+    block = re.search(r"(?m)^mcp_servers:[^\n]*\n((?:[ \t]+[^\n]*\n|[ \t]*\n)*)", text + "\n")
+    return bool(block and re.search(r"(?m)^[ \t]+zenvi_editor:", block.group(1)))
+
+
+def register_hermes(port: int, token: str):
+    """Upsert ``mcp_servers.zenvi_editor`` in Hermes' ``config.yaml``.
+
+    ``hermes mcp add`` is interactive, but ``hermes config set`` edits a
+    dotted key in place and keeps every other server, so Hermes does the YAML
+    editing itself. Re-running it after a port change just overwrites the url.
+    The header uses Hermes' ``${VAR}`` interpolation, so the token never lands
+    in the file (as with Codex).
+
+    Returns ``(ok, message)``.
+    """
+    hermes = _which_cli("hermes") or "hermes"
+    settings = (
+        ("mcp_servers.zenvi_editor.url", "http://127.0.0.1:%d/mcp" % port),
+        ("mcp_servers.zenvi_editor.headers.Authorization", "Bearer ${ZENVI_MCP_TOKEN}"),
+    )
+    try:
+        for key, value in settings:
+            result = subprocess.run(
+                [hermes, "config", "set", key, value],
+                capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                # The home HermesRunner and _hermes_is_registered use.
+                env=_cli_child_env(),
+            )
+            if result.returncode != 0:
+                return False, (result.stderr or result.stdout or "hermes config set failed").strip()
+    except Exception as e:
+        return False, str(e)
+    return True, (
+        "Updated %s. Before running hermes, run:\n"
+        "export ZENVI_MCP_TOKEN=%s"
+    ) % (_hermes_config_path(), token)
+
+
 class BaseAgentRunner(QObject):
     """Common signal surface + subprocess plumbing for CLI agent backends."""
 
@@ -475,6 +529,7 @@ class BaseAgentRunner(QObject):
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
     MODELS: list = []    # model-picker entries; empty = use the CLI's own default
+    _STDIN = None        # inherited; a runner that talks over stdin sets PIPE
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -641,6 +696,7 @@ class BaseAgentRunner(QObject):
         try:
             argv = self._build_argv(text)
             popen_kwargs = dict(
+                stdin=self._STDIN,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
@@ -670,6 +726,7 @@ class BaseAgentRunner(QObject):
         # after a clean turn) is what makes Stop mid-turn recoverable.
         self._cli_started = True
         self._emit_cli_session()
+        self._after_launch(text)
 
         try:
             for line in self._proc.stdout:
@@ -761,6 +818,9 @@ class BaseAgentRunner(QObject):
 
     def _build_argv(self, text: str):
         raise NotImplementedError
+
+    def _after_launch(self, text: str):
+        """Called once the CLI is running (a stdin protocol starts here)."""
 
     def _handle_event(self, ev: dict):
         raise NotImplementedError
@@ -982,6 +1042,208 @@ class CodexRunner(BaseAgentRunner):
                 self.tool_started.emit(rid, "thinking", "{}")
                 self.tool_log.emit(rid, txt)
                 self.tool_completed.emit(rid, True, "")
+
+
+class HermesRunner(BaseAgentRunner):
+    """Drives Nous Research Hermes Agent over ACP (``hermes acp``).
+
+    Hermes has no streaming-JSON print mode (``-z`` prints only the final
+    text), so this speaks the Agent Client Protocol instead: newline-delimited
+    JSON-RPC on stdin/stdout. One process per turn -- initialize, open or
+    reload the session with the editor's MCP server, prompt, then close stdin
+    so Hermes exits and the base read loop ends.
+    """
+
+    CLI_NAME = "hermes"
+    DISPLAY_NAME = "Hermes"
+    # Hermes spans many providers; the model comes from the user's own config.
+    MODELS: list = []
+    _STDIN = subprocess.PIPE
+
+    # Hermes names MCP tools ``mcp_<server>_<tool>``.
+    _MCP_PREFIX = "mcp_zenvi_editor_"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rpc_id = 0
+        self._pending: dict = {}      # request id -> method
+        self._prompt = ""
+        self._prompting = False
+        self._think_id = ""
+        self._think_seq = 0
+
+    def _build_env(self):
+        # hermes acp also loads config.yaml, where Connect wrote
+        # ``Bearer ${ZENVI_MCP_TOKEN}`` (see register_hermes).
+        extra = {}
+        if self._server is not None and self._server.token:
+            extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        # The prompt travels over ACP (see _after_launch), never through argv.
+        return [self._cli_path or self.CLI_NAME, "acp", "--accept-hooks"]
+
+    def _after_launch(self, text: str):
+        self._rpc_id = 0
+        self._pending = {}
+        self._prompt = text
+        self._prompting = False
+        self._think_id = ""
+        self._request("initialize", {"protocolVersion": 1, "clientCapabilities": {}})
+
+    # -- JSON-RPC plumbing -------------------------------------------------
+    def _write(self, msg: dict):
+        try:
+            self._proc.stdin.write(json.dumps(msg) + "\n")
+            self._proc.stdin.flush()
+        except Exception:
+            # Hermes already exited (e.g. missing ACP extras); its output and
+            # exit code are reported by the base read loop.
+            log.debug("hermes stdin write failed", exc_info=True)
+
+    def _request(self, method: str, params: dict):
+        self._rpc_id += 1
+        self._pending[self._rpc_id] = method
+        self._write({"jsonrpc": "2.0", "id": self._rpc_id, "method": method, "params": params})
+
+    def _finish(self):
+        try:
+            self._proc.stdin.close()
+        except Exception:
+            pass
+
+    def _mcp_servers(self) -> list:
+        # Passed per session, so the token only ever travels over the pipe.
+        return [{
+            "type": "http", "name": "zenvi_editor", "url": self._server.url(),
+            "headers": [{"name": "Authorization", "value": "Bearer %s" % self._server.token}],
+        }]
+
+    def _new_session(self):
+        self._request("session/new", {"cwd": self._cli_cwd, "mcpServers": self._mcp_servers()})
+
+    def _send_prompt(self, session_id: str):
+        self._prompting = True
+        self._request("session/prompt", {
+            "sessionId": session_id, "prompt": [{"type": "text", "text": self._prompt}]})
+
+    # -- events ------------------------------------------------------------
+    def _handle_event(self, ev: dict):
+        method = ev.get("method")
+        if method:
+            if "id" in ev:
+                self._answer(ev)
+            elif method == "session/update" and self._prompting:
+                # Updates before the prompt are session/load replaying history
+                # the chat already shows.
+                self._handle_update((ev.get("params") or {}).get("update") or {})
+            return
+
+        kind = self._pending.pop(ev.get("id"), None)
+        if kind is None:
+            return
+        if "error" in ev and kind == "session/load":
+            # The stored conversation is gone: start a new one instead.
+            self._new_session()
+            return
+        if "error" in ev:
+            err = ev.get("error") or {}
+            data = err.get("data")
+            self._last_error = ((data.get("details") if isinstance(data, dict) else "")
+                                or err.get("message") or "Hermes reported an error.")
+            self._finish()
+            return
+        result = ev.get("result") or {}
+        if kind == "initialize":
+            # Like Codex, Hermes mints its own ids; only reload one it gave us.
+            if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+                self._request("session/load", {
+                    "sessionId": self._cli_session_id, "cwd": self._cli_cwd,
+                    "mcpServers": self._mcp_servers()})
+            else:
+                self._new_session()
+        elif kind == "session/load":
+            # An unknown id comes back as an empty result: start over.
+            if result:
+                self._send_prompt(self._cli_session_id)
+            else:
+                self._new_session()
+        elif kind == "session/new":
+            session_id = result.get("sessionId") or ""
+            if not session_id:
+                self._last_error = "Hermes did not start a session."
+                self._finish()
+                return
+            self._cli_session_id = session_id
+            self._cli_id_from_cli = True
+            self._emit_cli_session()
+            self._send_prompt(session_id)
+        elif kind == "session/prompt":
+            self._prompting = False
+            self._close_thinking()
+            if result.get("stopReason") == "refusal" and not self._final_text:
+                self._last_error = "Hermes declined to answer."
+            else:
+                self._emit_response(self._final_text)
+            self._finish()
+
+    def _answer(self, ev: dict):
+        """Reply to a request Hermes makes of us, so the turn never waits on it."""
+        if ev.get("method") == "session/request_permission":
+            # No one is there to click a permission dialog (see Claude's
+            # --dangerously-skip-permissions).
+            options = (ev.get("params") or {}).get("options") or []
+            allow = next((o for o in options
+                          if str(o.get("kind") or "").startswith("allow")), None)
+            outcome = ({"outcome": "selected", "optionId": allow.get("optionId")}
+                       if allow else {"outcome": "cancelled"})
+            self._write({"jsonrpc": "2.0", "id": ev.get("id"), "result": {"outcome": outcome}})
+            return
+        self._write({"jsonrpc": "2.0", "id": ev.get("id"),
+                     "error": {"code": -32601, "message": "Method not found"}})
+
+    def _close_thinking(self):
+        if self._think_id:
+            self.tool_completed.emit(self._think_id, True, "")
+            self._think_id = ""
+
+    def _handle_update(self, update: dict):
+        kind = update.get("sessionUpdate")
+        if kind == "agent_thought_chunk":
+            txt = (update.get("content") or {}).get("text") or ""
+            if txt:
+                if not self._think_id:
+                    self._think_seq += 1
+                    self._think_id = "think_%d" % self._think_seq
+                    self.tool_started.emit(self._think_id, "thinking", "{}")
+                self.tool_log.emit(self._think_id, txt)
+            return
+        if kind == "agent_message_chunk":
+            self._close_thinking()
+            txt = (update.get("content") or {}).get("text") or ""
+            if txt:
+                self._final_text += txt
+                self.token_received.emit(txt)
+            return
+        if kind == "tool_call":
+            self._close_thinking()
+            # The title is the tool name, or "<tool>: <detail>" for built-ins.
+            name = (update.get("title") or "tool").split(":", 1)[0].strip()
+            if name.startswith(self._MCP_PREFIX):
+                name = name[len(self._MCP_PREFIX):]
+            args = update.get("rawInput")
+            self.tool_started.emit(update.get("toolCallId") or "", name,
+                                   json.dumps(args if isinstance(args, dict) else {}, default=str))
+            return
+        if kind == "tool_call_update":
+            status = update.get("status")
+            if status in ("completed", "failed"):
+                out = "\n".join(
+                    (c.get("content") or {}).get("text") or ""
+                    for c in update.get("content") or [] if isinstance(c, dict))
+                self.tool_completed.emit(update.get("toolCallId") or "",
+                                         status == "completed", out)
 
 
 # ---------------------------------------------------------------------------

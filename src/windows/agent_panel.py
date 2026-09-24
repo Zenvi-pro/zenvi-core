@@ -56,7 +56,7 @@ COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
 COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
 COLOR_MISSING = "#6b7280"   # not installed / not probed yet
 
-CLI_BINARIES = {"claude_code": "claude", "codex": "codex"}
+CLI_BINARIES = {"claude_code": "claude", "codex": "codex", "hermes": "hermes"}
 
 _TOOL_COUNT = None
 
@@ -407,6 +407,8 @@ class AgentPanel(QFrame):
 
             if active == "codex":
                 self.footer.setText(self._tr("Codex uses the model from its own config"))
+            elif active == "hermes":
+                self.footer.setText(self._tr("Hermes uses the model from its own config"))
             else:
                 self.footer.setText(self._tr("Model is set in the chat panel  →"))
         finally:

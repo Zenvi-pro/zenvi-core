@@ -845,3 +845,295 @@ def test_resolve_cli_bash_picks_version_4(monkeypatch):
             assert ar._resolve_cli_bash() == "/opt/homebrew/bin/bash"
     finally:
         ar._resolve_cli_bash.cache_clear()
+
+
+# ── Hermes (ACP over stdio) ─────────────────────────────────────────────────
+
+class _HermesServer:
+    token = "tok"
+    port = 7434
+
+    def start(self):
+        return self
+
+    def url(self):
+        return "http://127.0.0.1:7434/mcp"
+
+
+class _Pipe:
+    def __init__(self):
+        self.lines = []
+        self.closed = False
+
+    def write(self, data):
+        self.lines.extend(l for l in data.splitlines() if l.strip())
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class _HermesProc:
+    def __init__(self):
+        self.stdin = _Pipe()
+
+    def poll(self):
+        return None
+
+
+def _hermes(text="hi", resume_id=""):
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._session_id = "ui-1"
+    runner._server = _HermesServer()
+    runner._cli_cwd = "/proj"
+    if resume_id:
+        runner._cli_started = True
+        runner._cli_id_from_cli = True
+        runner._cli_session_id = resume_id
+    runner._proc = _HermesProc()
+    runner._after_launch(text)
+    return runner
+
+
+def _sent(runner):
+    return [json.loads(l) for l in runner._proc.stdin.lines]
+
+
+def test_hermes_parser_drives_a_new_acp_session(qapp):
+    """hermes_acp_stream.jsonl mirrors a real ``hermes acp`` (v0.15.2) turn
+    against the in-app MCP server: initialize -> session/new -> prompt."""
+    runner = _hermes("count the files")
+    sessions = []
+    runner.cli_session_changed.connect(lambda ui, cli, started, cwd: sessions.append(cli))
+    events = _collect(runner)
+    _feed(runner, "hermes_acp_stream.jsonl")
+
+    sent = _sent(runner)
+    assert [m["method"] for m in sent] == ["initialize", "session/new", "session/prompt"]
+    new = sent[1]["params"]
+    assert new["cwd"] == "/proj"
+    assert new["mcpServers"] == [{
+        "type": "http", "name": "zenvi_editor", "url": "http://127.0.0.1:7434/mcp",
+        "headers": [{"name": "Authorization", "value": "Bearer tok"}],
+    }]
+    prompt = sent[2]["params"]
+    assert prompt["sessionId"] == "fixture-hermes-session-1"
+    assert prompt["prompt"] == [{"type": "text", "text": "count the files"}]
+
+    # Hermes mints the id; it is kept for the next turn's session/load.
+    assert runner._cli_session_id == "fixture-hermes-session-1"
+    assert runner._cli_id_from_cli
+    assert sessions == ["fixture-hermes-session-1"]
+
+    started = [e for e in events if e[0] == "tool_started"]
+    assert [e[1] for e in started] == ["list_files_tool", "terminal", "read"]
+    done = {e[1]: e for e in events if e[0] == "tool_completed"}
+    assert done["tc-list"][2] is True and "FIXTURE: 3 files" in done["tc-list"][3]
+    assert done["tc-read"][2] is False and "File not found" in done["tc-read"][3]
+
+    text = ("I'll list the files and run the command."
+            "There are **3 files** and the shell printed `zenvi-ok`.")
+    assert "".join(e[1] for e in events if e[0] == "token") == text
+    assert events[-1] == ("response_ready", text)
+    # End of turn: stdin closes so ``hermes acp`` exits and the read loop ends.
+    assert runner._proc.stdin.closed
+
+
+def test_hermes_resumes_with_session_load_and_hides_the_replay(qapp):
+    runner = _hermes("again", resume_id="ses-old")
+    events = _collect(runner)
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": 1}})
+    load = _sent(runner)[-1]
+    assert load["method"] == "session/load"
+    assert load["params"]["sessionId"] == "ses-old"
+    assert load["params"]["mcpServers"][0]["name"] == "zenvi_editor"
+
+    # session/load replays the old transcript before it answers.
+    runner._handle_event({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": "ses-old", "update": {"sessionUpdate": "agent_message_chunk",
+                                           "content": {"type": "text", "text": "OLD"}}}})
+    runner._handle_event({"jsonrpc": "2.0", "id": load["id"], "result": {"models": {}}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "ses-old"
+    assert not [e for e in events if e[0] == "token"], "replayed history must not re-render"
+
+
+def test_hermes_starts_fresh_when_load_does_not_know_the_session(qapp):
+    """Hermes answers session/load for an unknown id with an empty result."""
+    runner = _hermes("hello", resume_id="gone")
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    load_id = _sent(runner)[-1]["id"]
+    runner._handle_event({"jsonrpc": "2.0", "id": load_id, "result": {}})
+    new = _sent(runner)[-1]
+    assert new["method"] == "session/new"
+    runner._handle_event({"jsonrpc": "2.0", "id": new["id"], "result": {"sessionId": "ses-new"}})
+    prompt = _sent(runner)[-1]
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "ses-new"
+    assert runner._cli_session_id == "ses-new"
+
+
+def test_hermes_starts_fresh_when_load_fails_outright(qapp):
+    runner = _hermes("hello", resume_id="gone")
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    load_id = _sent(runner)[-1]["id"]
+    runner._handle_event({"jsonrpc": "2.0", "id": load_id, "error": {
+        "code": -32002, "message": "Resource not found"}})
+    assert _sent(runner)[-1]["method"] == "session/new"
+    assert not runner._last_error
+    assert not runner._proc.stdin.closed
+
+
+def test_hermes_env_carries_the_token_its_config_entry_reads(qapp):
+    """Connect writes ``Bearer ${ZENVI_MCP_TOKEN}`` into config.yaml, which
+    ``hermes acp`` also loads; without the variable that entry gets a 401."""
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._server = _HermesServer()
+    assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
+
+
+def test_hermes_answers_agent_requests_so_a_turn_never_hangs(qapp):
+    """No one can click a permission dialog; other client calls get an error."""
+    runner = _hermes()
+    runner._handle_event({"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                          "params": {"sessionId": "s", "options": [
+                              {"optionId": "deny", "kind": "reject_once", "name": "Deny"},
+                              {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}]}})
+    reply = _sent(runner)[-1]
+    assert reply["id"] == 7
+    assert reply["result"] == {"outcome": {"outcome": "selected", "optionId": "allow_once"}}
+
+    runner._handle_event({"jsonrpc": "2.0", "id": 8, "method": "fs/read_text_file", "params": {}})
+    reply = _sent(runner)[-1]
+    assert reply["id"] == 8 and reply["error"]["code"] == -32601
+
+
+def test_hermes_setup_error_is_reported_and_ends_the_run(qapp):
+    runner = _hermes()
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "error": {
+        "code": -32603, "message": "Internal error", "data": {
+            "details": "No LLM provider configured. Run `hermes model` to select a provider."}}})
+    assert "No LLM provider configured" in runner._last_error
+    assert runner._proc.stdin.closed
+
+
+def test_hermes_thoughts_become_one_thinking_block(qapp):
+    runner = _hermes()
+    events = _collect(runner)
+    runner._handle_event({"jsonrpc": "2.0", "id": 1, "result": {}})
+    runner._handle_event({"jsonrpc": "2.0", "id": 2, "result": {"sessionId": "s"}})
+
+    def update(kind, text):
+        runner._handle_event({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s", "update": {"sessionUpdate": kind,
+                                         "content": {"type": "text", "text": text}}}})
+
+    update("agent_thought_chunk", "let me ")
+    update("agent_thought_chunk", "think")
+    update("agent_message_chunk", "Done.")
+    assert [e[0] for e in events] == [
+        "tool_started", "tool_log", "tool_log", "tool_completed", "token"]
+    assert events[0][1] == "thinking"
+
+
+def test_hermes_run_request_talks_acp_over_stdin_and_exits(qapp, monkeypatch, tmp_path):
+    """End to end against a stand-in ``hermes acp`` that only exits once its
+    stdin closes, like the real one."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import HermesRunner
+
+    fake = tmp_path / "fake_hermes.py"
+    fake.write_text(
+        "import json, sys\n"
+        "def out(m):\n"
+        "    sys.stdout.write(json.dumps(m) + '\\n'); sys.stdout.flush()\n"
+        "for line in sys.stdin:\n"
+        "    m = json.loads(line)\n"
+        "    if m.get('method') == 'initialize':\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'protocolVersion': 1}})\n"
+        "    elif m.get('method') == 'session/new':\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'sessionId': 'ses-1'}})\n"
+        "    elif m.get('method') == 'session/prompt':\n"
+        "        out({'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 'ses-1',\n"
+        "             'update': {'sessionUpdate': 'agent_message_chunk',\n"
+        "                        'content': {'type': 'text', 'text': 'done'}}}})\n"
+        "        out({'jsonrpc': '2.0', 'id': m['id'], 'result': {'stopReason': 'end_turn'}})\n"
+    )
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _HermesServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+    monkeypatch.setattr(HermesRunner, "_build_env", lambda self: dict(os.environ))
+    monkeypatch.setattr(HermesRunner, "_build_argv",
+                        lambda self, text: [sys.executable, str(fake)])
+
+    runner = HermesRunner()
+    runner._session_id = "s9"
+    events = _collect(runner)
+    runner.run_request("hello", "")
+    assert ("response_ready", "done") in events
+    assert runner._proc.returncode == 0
+    assert runner._cli_session_id == "ses-1"
+
+
+def test_hermes_argv_runs_the_acp_adapter(qapp):
+    from windows.agent_runners import HermesRunner
+    runner = HermesRunner()
+    runner._cli_path = "/usr/bin/hermes"
+    argv = runner._build_argv("hi")
+    assert argv[:2] == ["/usr/bin/hermes", "acp"]
+    assert "hi" not in argv, "the prompt travels over ACP, not argv"
+
+
+def test_hermes_is_registered_reads_its_config_yaml(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert ar._is_registered("hermes") is False
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\n  zenvi_editor: nope\n")
+    assert ar._is_registered("hermes") is False, "only an mcp_servers entry counts"
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: anthropic\nmcp_servers:\n  other:\n    command: npx\n"
+        "  zenvi_editor:\n    url: http://127.0.0.1:7434/mcp\n")
+    assert ar._is_registered("hermes") is True
+
+
+def test_register_hermes_writes_url_and_token_header_via_the_cli(monkeypatch):
+    import windows.agent_runners as ar
+
+    calls = []
+
+    class _Done:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    envs = []
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/hermes")
+    monkeypatch.setattr(ar, "_cli_child_env", lambda extra=None: {"USERPROFILE": "/resolved"})
+    monkeypatch.setattr(ar.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv) or envs.append(kw.get("env")) or _Done())
+    ok, message = ar.register_hermes(7434, "tok123")
+    assert ok is True
+    # Same home as the runner and the "connected" check, not the GUI's.
+    assert envs == [{"USERPROFILE": "/resolved"}] * 2
+    assert ["/usr/bin/hermes", "config", "set", "mcp_servers.zenvi_editor.url",
+            "http://127.0.0.1:7434/mcp"] in calls
+    assert ["/usr/bin/hermes", "config", "set",
+            "mcp_servers.zenvi_editor.headers.Authorization",
+            "Bearer ${ZENVI_MCP_TOKEN}"] in calls
+    assert "ZENVI_MCP_TOKEN=tok123" in message
+    assert not any("tok123" in " ".join(c) for c in calls), "token stays out of the file"
+
+    _Done.returncode = 1
+    _Done.stderr = "config.yaml is not valid YAML"
+    ok, message = ar.register_hermes(7434, "tok123")
+    assert ok is False and "not valid YAML" in message
