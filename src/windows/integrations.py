@@ -49,6 +49,7 @@ class IntegrationsDialog(QDialog):
             grid.addWidget(status, row * 2 + 1, 1, 1, 3)
             self._rows[pid] = (key_edit, status)
             self._show_stored(pid)
+        grid.setColumnStretch(1, 1)
         layout.addLayout(grid)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
