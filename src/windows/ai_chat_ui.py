@@ -2684,6 +2684,18 @@ class AIChatWindow(QDockWidget):
         """Push theme colors, models, preamble and welcome message to the CEP UI."""
         if getattr(self, "_chat_web_initial_sync_done", False):
             return
+        # Credits first: last known balance (or placeholder), never behind /models.
+        try:
+            from classes.credits_client import credits as _creds
+            cached = _creds.cached_balance()
+            if cached is not None:
+                self._on_credits_balance(cached)
+            elif self._use_web_ui:
+                self._run_js(
+                    "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
+                )
+        except Exception:
+            pass
         try:
             from classes.app import get_app
             app = get_app()
@@ -2716,21 +2728,21 @@ class AIChatWindow(QDockWidget):
             )
         self._push_attachments_to_js()
 
-        # Push prefetched balance (or loading placeholder) when the web UI is ready.
-        try:
-            from classes.credits_client import credits as _creds
-            cached = _creds.cached_balance()
-            if cached is not None:
-                self._on_credits_balance(cached)
-            elif self._use_web_ui:
-                self._run_js(
-                    "if(window.updateCreditsBalance) updateCreditsBalance(-1);"
-                )
-        except Exception:
-            pass
-
     def _start_credits_refresh(self):
-        """Fetch credits balance once and start a 60-second refresh timer."""
+        """Fetch credits balance once and start a 60-second refresh timer.
+
+        Any balance change (fetch, check, charge, refund) repaints the badge.
+        """
+        if not getattr(self, "_credits_listener", None):
+            from classes.credits_client import credits as _creds
+
+            def _listener(balance):
+                QMetaObject.invokeMethod(
+                    self, "_on_credits_balance", Qt.QueuedConnection, Q_ARG(int, balance)
+                )
+
+            self._credits_listener = _listener
+            _creds.add_listener(_listener)
         self._fetch_credits_balance()
         if not getattr(self, "_credits_timer", None):
             self._credits_timer = QTimer(self)
@@ -2738,19 +2750,11 @@ class AIChatWindow(QDockWidget):
             self._credits_timer.start(60_000)   # refresh every 60 seconds
 
     def _fetch_credits_balance(self):
-        """Fetch balance in a background thread; push result to JS on main thread."""
+        """Fetch balance in a background thread; the credits listener repaints."""
         def run():
             try:
                 from classes.credits_client import credits as _creds
-                authed, balance = _creds.balance()
-                if not authed:
-                    return
-                QMetaObject.invokeMethod(
-                    self,
-                    "_on_credits_balance",
-                    Qt.QueuedConnection,
-                    Q_ARG(int, balance),
-                )
+                _creds.balance()
             except Exception as exc:
                 log.debug("credits refresh failed: %s", exc)
 
@@ -3295,6 +3299,10 @@ class AIChatWindow(QDockWidget):
                 self._credits_timer.stop()
             except Exception:
                 pass
+        if getattr(self, "_credits_listener", None):
+            from classes.credits_client import credits as _creds
+            _creds.remove_listener(self._credits_listener)
+            self._credits_listener = None
         # closeEvent leaves the dock object alive, so an armed timer keeps
         # firing: each tick spawns a thread that shells out to the agent CLIs
         # for --version and then posts back into a closed dock.
