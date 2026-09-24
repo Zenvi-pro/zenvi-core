@@ -181,3 +181,20 @@ def test_an_unreadable_stored_key_fails_instead_of_billing_zenvi(vault):
     from classes import tool_handlers as th
     kwargs, err = th._byok_generation_kwargs()
     assert kwargs == {} and "could not be read" in err
+
+
+def test_an_unusable_keyring_backend_falls_back_to_the_file_store(monkeypatch):
+    import sys
+    import types
+
+    class FailKeyring:
+        pass
+
+    fail_mod = types.ModuleType("keyring.backends.fail")
+    fail_mod.Keyring = FailKeyring
+    fake = types.ModuleType("keyring")
+    fake.get_keyring = lambda: FailKeyring()
+    monkeypatch.setitem(sys.modules, "keyring", fake)
+    monkeypatch.setitem(sys.modules, "keyring.backends", types.ModuleType("keyring.backends"))
+    monkeypatch.setitem(sys.modules, "keyring.backends.fail", fail_mod)
+    assert provider_keys._keyring() is None

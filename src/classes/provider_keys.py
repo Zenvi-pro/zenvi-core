@@ -30,8 +30,12 @@ class KeyUnreadable(Exception):
 
 
 def _keyring():
+    """The keyring module when it has a usable backend, else None (file store)."""
     try:
         import keyring
+        from keyring.backends import fail
+        if isinstance(keyring.get_keyring(), fail.Keyring):
+            return None
         return keyring
     except Exception:
         return None
