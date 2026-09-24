@@ -1028,18 +1028,32 @@ class ZenviBackendClient:
             r.raise_for_status()
             return r.json()
         except Exception as e:
-            log.error("Video generation failed: %s", e)
-            return {"error": str(e)}
+            from classes.provider_keys import redact
+            err = redact(str(e), provider_key or "")
+            log.error("Video generation failed: %s", err)
+            return {"error": err}
 
     def validate_provider_key(self, provider: str, key: str) -> Dict[str, Any]:
         """Test a user's own provider key against the provider (write-only; never echoed)."""
+        import requests
+        from classes.provider_keys import redact
+
         try:
             r = self.session.post(
                 f"{self.api_url}/generation/providers/{provider}/validate",
-                headers={PROVIDER_KEY_HEADER: key}, timeout=30,
+                json={}, headers={PROVIDER_KEY_HEADER: key}, timeout=30,
             )
             r.raise_for_status()
             return r.json()
+        except requests.HTTPError as e:
+            try:
+                body = e.response.json()
+                detail = body.get("error") or body.get("detail")
+            except Exception:
+                detail = None
+            status = getattr(e.response, "status_code", "?")
+            msg = f"Zenvi backend returned {status}" + (f": {detail}" if detail else "")
+            return {"ok": False, "error": redact(msg, key)}
         except Exception as e:
             log.error("Provider key validation failed for %s: %s", provider, type(e).__name__)
             return {"ok": False, "error": f"Could not reach the Zenvi backend ({type(e).__name__})"}

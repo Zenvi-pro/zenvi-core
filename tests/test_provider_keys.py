@@ -126,3 +126,34 @@ def test_test_and_save_only_activates_a_key_the_provider_accepts(vault):
     ok, msg = provider_keys.test_and_save("higgsfield", "  ", lambda p, k: {"ok": True})
     assert ok is False
     assert provider_keys.get_key("higgsfield") == KEY  # blank input never wipes a working key
+
+
+def test_errors_that_echo_the_key_never_reach_ui_or_tool_output(vault):
+    ok, msg = provider_keys.test_and_save(
+        "higgsfield", KEY, lambda p, k: {"ok": False, "error": f"nope {KEY}"},
+    )
+    assert ok is False and "secret-456" not in msg
+
+    c = ZenviBackendClient.__new__(ZenviBackendClient)
+    c.api_url = "http://x/api/v1"
+    c._session = MagicMock()
+    c._session.post.side_effect = RuntimeError(f"boom {KEY}")
+    out = c.generate_video("ocean", provider="higgsfield", provider_key=KEY)
+    assert "secret-456" not in out["error"]
+
+
+def test_validate_sends_a_json_body_and_reads_4xx_errors():
+    import requests
+
+    c = ZenviBackendClient.__new__(ZenviBackendClient)
+    c.api_url = "http://x/api/v1"
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.return_value = {"detail": "Not authenticated"}
+    resp.raise_for_status.side_effect = requests.HTTPError("401", response=resp)
+    c._session = MagicMock()
+    c._session.post.return_value = resp
+    out = c.validate_provider_key("higgsfield", KEY)
+    assert c._session.post.call_args.kwargs["json"] == {}
+    assert out["ok"] is False
+    assert "Not authenticated" in out["error"]

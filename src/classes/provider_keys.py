@@ -130,6 +130,17 @@ def clear_key(provider: str) -> None:
         _write_file(data)
 
 
+def redact(text: str, key: str) -> str:
+    """Remove ``key`` and its id/secret halves from text shown in UI, logs, or tool output."""
+    if not text or not key:
+        return text
+    kid, _, secret = key.partition(":")
+    for part in sorted({key, kid, secret}, key=len, reverse=True):
+        if part and len(part) >= 4:
+            text = text.replace(part, "••••")
+    return text
+
+
 def mask(key: str) -> str:
     key = (key or "").strip()
     return f"••••{key[-4:]}" if key else ""
@@ -147,6 +158,7 @@ def test_and_save(provider: str, key: str, validate) -> tuple:
         return False, f"Paste your {name} key ({PROVIDERS[provider]['key_hint']})."
     result = validate(provider, key) or {}
     if not result.get("ok"):
-        return False, f"{name} rejected the key: {result.get('error') or 'unknown error'}"
+        err = redact(str(result.get("error") or "unknown error"), key)
+        return False, f"{name} rejected the key: {err}"
     set_key(provider, key)
     return True, f"Connected ({mask(key)})"

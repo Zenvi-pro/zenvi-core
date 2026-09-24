@@ -23,9 +23,9 @@ class IntegrationsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         intro = QLabel(_(
-            "Use your own provider keys. Generation with your key is billed to your "
-            "provider account instead of Zenvi credits. Remove the key to go back to "
-            "Zenvi-managed generation."
+            "Use your own provider keys. Text-to-video and transitions made with your key "
+            "are billed to your provider account instead of Zenvi credits (video-to-video "
+            "edits still use Zenvi credits). Remove the key to go back to Zenvi-managed generation."
         ))
         intro.setWordWrap(True)
         layout.addWidget(intro)
