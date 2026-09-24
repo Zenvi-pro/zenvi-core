@@ -34,7 +34,7 @@ class CreditsClient:
     """Singleton billing client using AuthManager JWT."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # listeners run under it and may read back
         self._cached_balance: Optional[int] = None
         self._cached_user: Optional[str] = None
         self._cache_loaded = False
@@ -73,22 +73,24 @@ class CreditsClient:
         if not user_id or user_id != _current_user_id():
             return
         self.cached_balance()  # seed from disk so an unchanged value is not "new"
+        # Check, cache, persist and notify as one step so a sign-in landing
+        # mid-commit can never interleave with the old account's result.
         with self._lock:
-            changed = self._cached_user != user_id or self._cached_balance != total
+            if user_id != _current_user_id():
+                return
+            if self._cached_user == user_id and self._cached_balance == total:
+                return
             self._cached_user, self._cached_balance = user_id, total
-            listeners = list(self._listeners)
-        if not changed:
-            return
-        try:
-            with open(CREDITS_FILE, "w", encoding="utf-8") as fh:
-                json.dump({"user_id": user_id, "balance": total}, fh)
-        except Exception as exc:
-            log.debug("credits_client: could not persist balance: %s", exc)
-        for callback in listeners:
             try:
-                callback(total)
+                with open(CREDITS_FILE, "w", encoding="utf-8") as fh:
+                    json.dump({"user_id": user_id, "balance": total}, fh)
             except Exception as exc:
-                log.debug("credits_client: listener failed: %s", exc)
+                log.debug("credits_client: could not persist balance: %s", exc)
+            for callback in list(self._listeners):
+                try:
+                    callback(total)
+                except Exception as exc:
+                    log.debug("credits_client: listener failed: %s", exc)
 
     def _get_auth(self):
         try:

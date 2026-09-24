@@ -83,6 +83,22 @@ def test_a_fetch_that_finishes_after_an_account_switch_is_discarded(store, monke
     assert not store.exists()
 
 
+def test_an_account_switch_after_the_rpc_returns_is_still_caught(store, monkeypatch):
+    """The switch can land while the result is being committed, not only mid-RPC."""
+    client = _client(monkeypatch, {"total_points": 500})
+
+    def switch_during_seed(user_id):
+        _USER["id"] = "user-b"
+        return None
+
+    monkeypatch.setattr(client, "_read_stored", switch_during_seed)
+    heard = []
+    client.add_listener(heard.append)
+    client.balance()
+    assert heard == []
+    assert not store.exists()
+
+
 def test_a_balance_without_a_signed_in_user_is_not_persisted(store, monkeypatch):
     store.write_text(json.dumps({"user_id": "user-a", "balance": 420}))
     _USER["id"] = None
