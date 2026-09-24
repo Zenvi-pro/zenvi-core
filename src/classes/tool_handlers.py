@@ -8553,6 +8553,23 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     "render_product_demo_tool": "Render product demo",
     "check_motion_graphics_health_tool": "Motion graphics health",
     "get_motion_graphics_job_status_tool": "Motion job status",
+    # The assistant harness contributes its own tool names to the transcript.
+    # `task` is the orchestrator handing work to a specialist; the file and
+    # shell tools only ever run inside the motion-graphics sandbox, on
+    # session/draft.html. Left to the generic fallback these read as "Task",
+    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    "task": "Handing off to a specialist",
+    "bash": "Building the motion graphic",
+    "edit": "Editing the motion graphic",
+    "write": "Writing the motion graphic",
+    "read": "Reading the motion graphic",
+    "glob": "Looking through motion graphic files",
+    "grep": "Searching the motion graphic",
+    "question": "Asking you a question",
+    "todowrite": "Updating the task list",
+    # Denied to the assistant, but a refused call still lands in the transcript.
+    "webfetch": "Reading a web page",
+    "websearch": "Searching the web",
 }
 
 
@@ -8562,6 +8579,10 @@ def humanize_tool_name(tool_name: str) -> str:
         return TOOL_DISPLAY_LABELS[tool_name]
     if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
+    # The harness runtime's own names are all-lowercase keys here; match them
+    # however they arrive cased ("TodoWrite", "WebFetch").
+    if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 
