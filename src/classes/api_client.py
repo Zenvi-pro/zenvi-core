@@ -1026,7 +1026,13 @@ class ZenviBackendClient:
                 f"{self.api_url}/generation/video", json=payload, headers=headers, timeout=600,
             )
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"error": "Unexpected response from the Zenvi backend"}
+            if provider_key and data.get("error"):
+                from classes.provider_keys import redact
+                data["error"] = redact(str(data["error"]), provider_key)
+            return data
         except Exception as e:
             from classes.provider_keys import redact
             err = redact(str(e), provider_key or "")
@@ -1044,7 +1050,10 @@ class ZenviBackendClient:
                 json={}, headers={PROVIDER_KEY_HEADER: key}, timeout=30,
             )
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {"ok": False, "error": "Unexpected response from the Zenvi backend"}
+            return data
         except requests.HTTPError as e:
             try:
                 body = e.response.json()

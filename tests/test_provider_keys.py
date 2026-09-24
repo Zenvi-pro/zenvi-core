@@ -157,3 +157,27 @@ def test_validate_sends_a_json_body_and_reads_4xx_errors():
     assert c._session.post.call_args.kwargs["json"] == {}
     assert out["ok"] is False
     assert "Not authenticated" in out["error"]
+
+
+def test_error_on_a_200_body_is_redacted_and_non_dict_json_is_handled():
+    c = ZenviBackendClient.__new__(ZenviBackendClient)
+    c.api_url = "http://x/api/v1"
+    c._session = _fake_session({"error": f"echo {KEY}"})
+    out = c.generate_video("ocean", provider="higgsfield", provider_key=KEY)
+    assert "secret-456" not in out["error"]
+
+    c._session = _fake_session(["not", "a", "dict"])
+    assert "error" in c.generate_video("ocean")
+    assert c.validate_provider_key("higgsfield", KEY)["ok"] is False
+
+
+def test_an_unreadable_stored_key_fails_instead_of_billing_zenvi(vault):
+    provider_keys.set_key("higgsfield", KEY)
+    vault.write_text(json.dumps({"higgsfield": "////"}))  # undecryptable / not UTF-8 anywhere
+    with pytest.raises(provider_keys.KeyUnreadable):
+        provider_keys.get_key("higgsfield", strict=True)
+    assert provider_keys.get_key("higgsfield") == ""  # UI path stays forgiving
+
+    from classes import tool_handlers as th
+    kwargs, err = th._byok_generation_kwargs()
+    assert kwargs == {} and "could not be read" in err

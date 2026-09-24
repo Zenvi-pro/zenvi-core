@@ -5083,15 +5083,23 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         return f"Error importing video from URL: {e}"
 
 
-def _byok_generation_kwargs() -> dict:
+def _byok_generation_kwargs():
     """Route generation through the user's own Higgsfield key when one is stored (#60).
 
-    BYOK calls bill the user's provider account, so Zenvi credits are skipped.
+    Returns (kwargs, error). BYOK calls bill the user's provider account, so Zenvi
+    credits are skipped. A stored key that cannot be read is an error, never a
+    silent fall-back to billed Zenvi generation.
     """
-    from classes.provider_keys import get_key
+    from classes.provider_keys import KeyUnreadable, get_key
 
-    key = get_key("higgsfield")
-    return {"provider": "higgsfield", "provider_key": key} if key else {}
+    try:
+        key = get_key("higgsfield", strict=True)
+    except KeyUnreadable:
+        return {}, (
+            "Your Higgsfield key could not be read. Re-enter or remove it in "
+            "Preferences → AI → Integrations."
+        )
+    return ({"provider": "higgsfield", "provider_key": key} if key else {}), None
 
 
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
@@ -5120,7 +5128,9 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     try:
         from classes.credits_client import check_operation, credits
 
-        byok = _byok_generation_kwargs()
+        byok, byok_err = _byok_generation_kwargs()
+        if byok_err:
+            return f"Error: {byok_err}"
         if not byok:
             _, _, blocked = check_operation("video_generation", "video generation")
             if blocked:
@@ -5783,7 +5793,9 @@ def generate_transition_clip(
 
             from classes.credits_client import check_operation
 
-            byok = _byok_generation_kwargs()
+            byok, byok_err = _byok_generation_kwargs()
+            if byok_err:
+                return f"Error: {byok_err}"
             if not byok:
                 _, _, blocked = check_operation("morph_generation", "morph generation")
                 if blocked:

@@ -25,6 +25,10 @@ PROVIDERS = {
 }
 
 
+class KeyUnreadable(Exception):
+    """A key is stored but could not be read (keychain error, DPAPI failure)."""
+
+
 def _keyring():
     try:
         import keyring
@@ -97,22 +101,21 @@ def set_key(provider: str, key: str) -> None:
     _write_file(data)
 
 
-def get_key(provider: str) -> str:
+def get_key(provider: str, strict: bool = False) -> str:
+    """Stored key or "". With ``strict``, a stored-but-unreadable key raises KeyUnreadable."""
     _check(provider)
-    kr = _keyring()
-    if kr is not None:
-        try:
-            return kr.get_password(KEYRING_SERVICE, provider) or ""
-        except Exception as exc:
-            log.warning("Keychain read failed for %s: %s", provider, type(exc).__name__)
-            return ""
-    blob = _read_file().get(provider)
-    if not blob:
-        return ""
     try:
+        kr = _keyring()
+        if kr is not None:
+            return kr.get_password(KEYRING_SERVICE, provider) or ""
+        blob = _read_file().get(provider)
+        if not blob:
+            return ""
         return _dpapi(base64.b64decode(blob), False).decode("utf-8")
     except Exception as exc:
-        log.warning("Stored %s key could not be decrypted: %s", provider, type(exc).__name__)
+        log.warning("Stored %s key could not be read: %s", provider, type(exc).__name__)
+        if strict:
+            raise KeyUnreadable(provider) from None
         return ""
 
 
