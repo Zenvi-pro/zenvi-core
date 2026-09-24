@@ -5083,6 +5083,17 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         return f"Error importing video from URL: {e}"
 
 
+def _byok_generation_kwargs() -> dict:
+    """Route generation through the user's own Higgsfield key when one is stored (#60).
+
+    BYOK calls bill the user's provider account, so Zenvi credits are skipped.
+    """
+    from classes.provider_keys import get_key
+
+    key = get_key("higgsfield")
+    return {"provider": "higgsfield", "provider_key": key} if key else {}
+
+
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
         return "Error: Requires PyQt5."
@@ -5109,9 +5120,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
     try:
         from classes.credits_client import check_operation, credits
 
-        _, _, blocked = check_operation("video_generation", "video generation")
-        if blocked:
-            return blocked
+        byok = _byok_generation_kwargs()
+        if not byok:
+            _, _, blocked = check_operation("video_generation", "video generation")
+            if blocked:
+                return blocked
         from classes.api_client import get_backend_client
         client = get_backend_client()
         result = client.generate_video(
@@ -5120,6 +5133,7 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
             width=t2v_w,
             height=t2v_h,
             mode="t2v",
+            **byok,
         )
         video_url = result.get("video_url", "")
         err = result.get("error", "")
@@ -5132,12 +5146,13 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
 
         from classes.credits_client import charge_operation_on_success, credits
 
-        charge_operation_on_success(
-            True,
-            "video_generation",
-            provider="runware",
-            note=f"txt2v: {prompt[:60]}",
-        )
+        if not byok:
+            charge_operation_on_success(
+                True,
+                "video_generation",
+                provider="runware",
+                note=f"txt2v: {prompt[:60]}",
+            )
         credits.award_bonus("first_export")   # idempotent — only fires once ever
 
         try:
@@ -5768,9 +5783,11 @@ def generate_transition_clip(
 
             from classes.credits_client import check_operation
 
-            _, _, blocked = check_operation("morph_generation", "morph generation")
-            if blocked:
-                return blocked
+            byok = _byok_generation_kwargs()
+            if not byok:
+                _, _, blocked = check_operation("morph_generation", "morph generation")
+                if blocked:
+                    return blocked
 
             from classes.api_client import get_backend_client
             client = get_backend_client()
@@ -5790,6 +5807,7 @@ def generate_transition_clip(
                 duration_seconds=int(morph_duration),
                 frame_images_paths=frame_images_paths,
                 mode="frame_morph",
+                **byok,
             )
 
             video_url = result.get("video_url", "")
@@ -5848,12 +5866,13 @@ def generate_transition_clip(
 
             from classes.credits_client import charge_operation_on_success
 
-            charge_operation_on_success(
-                True,
-                "morph_generation",
-                provider="runware",
-                note="transition/morph generation",
-            )
+            if not byok:
+                charge_operation_on_success(
+                    True,
+                    "morph_generation",
+                    provider="runware",
+                    note="transition/morph generation",
+                )
 
             baked_duration = _ffprobe_video_duration(
                 f.absolute_path() if hasattr(f, "absolute_path") else baked_path

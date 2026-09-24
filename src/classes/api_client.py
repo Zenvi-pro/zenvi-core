@@ -37,6 +37,7 @@ from classes.zenvi_env import load_zenvi_dotenv
 load_zenvi_dotenv()
 
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
+PROVIDER_KEY_HEADER = "X-Zenvi-Provider-Key"
 
 
 class ZenviBackendClient:
@@ -1013,17 +1014,35 @@ class ZenviBackendClient:
         """Generate a video from a text prompt (Kling O1 Pro via Runware).
 
         Supported kwargs: mode, frame_images_paths, seed_video_file_id,
-                          keep_original_sound, width, height, input_video_url.
+                          keep_original_sound, width, height, input_video_url,
+                          provider. ``provider_key`` (BYOK) travels as a header only.
         """
         try:
+            provider_key = kwargs.pop("provider_key", None)
+            headers = {PROVIDER_KEY_HEADER: provider_key} if provider_key else None
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
-            r = self.session.post(f"{self.api_url}/generation/video", json=payload, timeout=600)
+            r = self.session.post(
+                f"{self.api_url}/generation/video", json=payload, headers=headers, timeout=600,
+            )
             r.raise_for_status()
             return r.json()
         except Exception as e:
             log.error("Video generation failed: %s", e)
             return {"error": str(e)}
+
+    def validate_provider_key(self, provider: str, key: str) -> Dict[str, Any]:
+        """Test a user's own provider key against the provider (write-only; never echoed)."""
+        try:
+            r = self.session.post(
+                f"{self.api_url}/generation/providers/{provider}/validate",
+                headers={PROVIDER_KEY_HEADER: key}, timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            log.error("Provider key validation failed for %s: %s", provider, type(e).__name__)
+            return {"ok": False, "error": f"Could not reach the Zenvi backend ({type(e).__name__})"}
 
     def generate_tts(
         self,
