@@ -12,6 +12,11 @@ WT="$(wt_path "$FEATURE")"
 [[ -f "$WT/.port-env" ]] || die "no worktree for $FEATURE; run new-worktree.sh $FEATURE first"
 cd "$WT"; source .port-env
 [[ -x "$CLAUDE_BIN" ]] || die "claude CLI not found (CLAUDE_BIN=$CLAUDE_BIN)"
+# The tmux server may have been started from inside another Claude Code session (or an IDE); its CLAUDE_*/
+# CURSOR_* markers would make the agent think it is a child session (transcript saving off, no resume). Scrub
+# them from this process and from the tmux server's global environment.
+for v in $(env | grep -E '^(CLAUDECODE|CLAUDE_|AI_AGENT|CURSOR_)' | cut -d= -f1); do unset "$v"; done
+for v in $(tmux show-environment -g 2>/dev/null | grep -E '^(CLAUDECODE|CLAUDE_|AI_AGENT|CURSOR_)' | cut -d= -f1); do tmux set-environment -g -u "$v" 2>/dev/null || true; done
 # libopenshot for this feature (the libopenshot-1.0 agent builds its own prefix as part of the feature)
 if [[ "$FEATURE" != "libopenshot-1.0" ]]; then
   bash "$PORT_SCRIPTS/ensure-deps.sh" "$ZENVI_DEPS" "$PORT_LIBOPENSHOT_TAG" "$PORT_LIBOPENSHOT_AUDIO_TAG" || warn "libopenshot not available at $ZENVI_DEPS; the agent must sort this out first"
