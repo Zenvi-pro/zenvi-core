@@ -10,7 +10,7 @@ and final choice to help diagnose environment issues.
 import logging
 import os
 import sys
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -2555,8 +2555,12 @@ def ensure_binding():
     return QT_API
 
 
-def __getattr__(name):
-    """Lazy attribute forwarding so `from qt_api import QIcon` works."""
+def __getattr__(name: str) -> Any:
+    """Lazy attribute forwarding so `from qt_api import QIcon` works.
+
+    Typed as Any so static checkers do not narrow every lazily exported Qt
+    name to the union of this function's early returns.
+    """
     global QSignalTransition, QState, QStateMachine
     if QT_API is None:
         _select_binding()
