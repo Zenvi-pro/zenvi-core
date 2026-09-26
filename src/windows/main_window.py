@@ -184,6 +184,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self._restart_for_update = False
                 event.ignore()
                 return
+            else:
+                # Don't Save — discard untitled crash recovery so the next
+                # clean launch does not resurrect this work.
+                if not app.project.current_filepath:
+                    self._set_restore_draft_history_key("")
+                    if os.path.exists(info.BACKUP_FILE):
+                        try:
+                            os.unlink(info.BACKUP_FILE)
+                        except Exception:
+                            log.warning(
+                                "Could not delete backup after discard: %s",
+                                info.BACKUP_FILE, exc_info=True)
 
         # If already shutting down, ignore
         # Some versions of Qt fire this CloseEvent() method twice
@@ -325,19 +337,160 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.timeline_sync.timeline.Clear()
             self.timeline_sync.timeline = None
 
-    def recover_backup(self):
-        """Recover the backup file (if any)"""
-        log.info("recover_backup")
+    def _set_restore_project_path(self, file_path):
+        """Remember which named project to reopen on the next launch.
 
-        # Automatic backup recovery is disabled - user can manually open backup if needed.
-        # Always load a blank project to initialize the JS timeline with proper project data
-        # (layers, fps, etc.). Without this, the JS uses hardcoded defaults (layers 0-4)
-        # that don't match the Python project state (layers 1000000-5000000).
+        Crash cannot flush settings, so this must be written immediately on
+        open/save/new — not only on quit. Untitled backups live in
+        ``info.BACKUP_FILE`` and must never be stored here.
+        """
+        from classes import session_restore
+        session_restore.set_restore_project_path(get_app().get_settings(), file_path)
+
+    def _set_restore_draft_history_key(self, draft_key):
+        """Remember the untitled chat bucket while a crash backup may exist."""
+        from classes import session_restore
+        session_restore.set_restore_draft_history_key(
+            get_app().get_settings(), draft_key
+        )
+
+    def _load_blank_project(self):
+        """Load a blank project so the timeline has real project data."""
         get_app().project.load("")
         self.actionUndo.setEnabled(False)
         self.actionRedo.setEnabled(False)
         self.actionClearHistory.setEnabled(False)
         self.SetWindowTitle()
+
+    def flush_project_to_disk(self):
+        """Overwrite the live .zvn or backup.zvn without a Recovery zip.
+
+        Used after indexing finishes so index_id / summaries hit disk before
+        the idle autosave timer. Must not call save_project() — that creates
+        a new File → Recovery zip per clip.
+        """
+        from classes import session_restore
+        app = get_app()
+        if not session_restore.should_flush_after_indexing(
+            app.project.needs_save(),
+            getattr(app, "_generation_in_progress", False),
+        ):
+            return
+        path, backup_only = session_restore.flush_target(app.project.current_filepath)
+        try:
+            if backup_only:
+                app.project.save(path, backup_only=True)
+                log.info("Flushed untitled backup after indexing: %s", path)
+                try:
+                    chat = getattr(self, "dockAIChat", None)
+                    draft_key = getattr(chat, "_draft_history_key", "") or ""
+                    if draft_key:
+                        self._set_restore_draft_history_key(draft_key)
+                except Exception:
+                    pass
+            else:
+                with self.lock:
+                    s = app.get_settings()
+                    app.updates.save_history(app.project, s.get("history-limit"))
+                    app.project.save(path)
+                log.info("Flushed project to disk after indexing: %s", path)
+        except Exception:
+            log.warning("Failed to flush project after indexing", exc_info=True)
+
+    def schedule_flush_project_to_disk(self, delay_ms=1000):
+        """Debounce in-place saves when several indexes finish in a burst."""
+        timer = getattr(self, "_flush_project_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self.flush_project_to_disk)
+            self._flush_project_timer = timer
+        timer.start(max(0, int(delay_ms)))
+
+    def _recover_untitled_backup(self):
+        """Load backup.zvn as unsaved untitled work after a crash.
+
+        Must not go through ``open_project``: that clears temporary files,
+        which deletes the backup before it can be read. Must not emit
+        ``projectChanged("")``: that is File → New and wipes the draft chat.
+        """
+        app = get_app()
+        _ = app._tr
+        log.info("Recovering untitled backup: %s", info.BACKUP_FILE)
+        try:
+            app.project.load(info.BACKUP_FILE)
+        except Exception:
+            log.error("Failed to load untitled backup", exc_info=True)
+            self._set_restore_draft_history_key("")
+            self._load_blank_project()
+            return
+
+        # Keep this untitled so Save still prompts; do not treat backup.zvn
+        # as a named project.
+        app.project.current_filepath = None
+        app.project.has_unsaved_changes = True
+
+        app.updates.load_history(app.project)
+        self.refreshFilesSignal.emit()
+        self.refreshFrameSignal.emit()
+        try:
+            self.MaxSizeChanged.emit(self.videoPreview.size())
+        except Exception:
+            pass
+        self.load_recent_menu()
+        self.SetWindowTitle()
+
+        draft_key = app.get_settings().get("restore_draft_history_key") or ""
+        chat = getattr(self, "dockAIChat", None)
+        if chat is not None and draft_key.startswith("draft:"):
+            try:
+                chat.restore_draft(draft_key)
+            except Exception:
+                log.warning("Failed to restore untitled draft chat", exc_info=True)
+
+        status = getattr(self, "statusBar", None)
+        if status is not None:
+            status.showMessage(
+                _("Recovered unsaved project from before Zenvi closed."), 8000)
+
+    def recover_backup(self):
+        """Restore the previous session, or a crash backup of untitled work."""
+        from classes import session_restore
+        log.info("recover_backup")
+
+        kind, path = session_restore.choose_restore_target(
+            get_app().get_settings(),
+            os.path.exists(info.BACKUP_FILE),
+        )
+
+        if kind == "untitled_backup":
+            self._recover_untitled_backup()
+            return
+
+        # Leftover draft key after a clean launch is useless — clear it.
+        self._set_restore_draft_history_key("")
+
+        if kind == "named":
+            log.info("Restoring previous project: %s", path)
+            self.open_project(path)
+            return
+
+        if kind == "missing":
+            log.info("Previous project is missing: %s", path)
+            self._set_restore_project_path("")
+            self.remove_recent_project(path)
+            self.load_recent_menu()
+            status = getattr(self, "statusBar", None)
+            if status is not None:
+                _ = get_app()._tr
+                status.showMessage(
+                    _("Project %s is missing (it may have been moved or deleted). "
+                      "It has been removed from the Recent Projects menu." % path),
+                    5000)
+
+        # Always load a blank project so the timeline gets real project data
+        # (layers, fps, etc.). Without this, the JS uses hardcoded defaults.
+        self._load_blank_project()
 
     def create_lock_file(self):
         """Create a lock file"""
@@ -474,6 +627,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.projectChanged.emit("")
         except Exception:
             pass
+
+        # Next launch should stay on a blank start screen.
+        self._set_restore_project_path("")
+        self._set_restore_draft_history_key("")
 
         # Set Window title
         self.SetWindowTitle()
@@ -648,6 +805,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             def _after_save():
                 self.SetWindowTitle()
                 self.load_recent_menu()
+                self._set_restore_project_path(file_path)
+                self._set_restore_draft_history_key("")
                 try:
                     if (file_path or "") != previous_filepath:
                         self.projectChanged.emit(file_path or "")
@@ -792,6 +951,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
                 log.info("Loaded project {}".format(file_path))
 
+                # Remember this named project for the next launch.
+                self._set_restore_project_path(file_path)
+                self._set_restore_draft_history_key("")
+
                 # Notify listeners (AI chat dock, etc.) so per-project state
                 # can re-bind to the freshly loaded project.
                 try:
@@ -806,6 +969,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     5000)
                 self.remove_recent_project(file_path)
                 self.load_recent_menu()
+                if (get_app().get_settings().get("restore_project_path") or "") == os.path.abspath(file_path):
+                    self._set_restore_project_path("")
 
             # Ensure that playhead, preview thread, and cache all agree that
             # Frame 1 is being previewed
@@ -944,6 +1109,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # No saved project found
             log.info("Creating backup of project file: %s", info.BACKUP_FILE)
             app.project.save(info.BACKUP_FILE, backup_only=True)
+            try:
+                chat = getattr(self, "dockAIChat", None)
+                draft_key = getattr(chat, "_draft_history_key", "") or ""
+                if draft_key:
+                    self._set_restore_draft_history_key(draft_key)
+            except Exception:
+                pass
 
     def actionSaveAs_trigger(self):
         app = get_app()
