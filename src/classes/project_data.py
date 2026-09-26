@@ -83,6 +83,25 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         """Returns if project data has unsaved changes"""
         return self.has_unsaved_changes
 
+    def _effect_has_reader_source(self, effect):
+        """Return True when an effect already has a modern reader payload."""
+        if not isinstance(effect, dict):
+            return False
+        for key in ("mask_reader", "reader"):
+            reader = effect.get(key)
+            if not isinstance(reader, dict):
+                continue
+            if reader.get("path") or reader.get("id") or reader.get("has_single_image"):
+                return True
+        return False
+
+    def _drop_obsolete_effect_resource(self, effect):
+        """Remove legacy resource paths once a reader payload is available."""
+        if not isinstance(effect, dict):
+            return
+        if "resource" in effect and self._effect_has_reader_source(effect):
+            effect.pop("resource", None)
+
     def get(self, key):
         """Get copied value of a given key in data store"""
 
@@ -1148,6 +1167,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         dialog_parent = getattr(app, "window", None)
 
         log.info("checking project files...")
+
+        # Drop the legacy transition/effect "resource" path once a reader payload
+        # exists; it broke project saves on relocatable installs (OpenShot #5962).
+        for effect in self._data.get("effects") or []:
+            self._drop_obsolete_effect_resource(effect)
+        for clip in self._data.get("clips") or []:
+            clip_effects = clip.get("effects") if isinstance(clip, dict) else None
+            if isinstance(clip_effects, list):
+                for effect in clip_effects:
+                    self._drop_obsolete_effect_resource(effect)
         prompt_state = {"cancelled": False}
 
         from classes.media_fingerprint import fingerprint, scan_folder_for_fingerprints
