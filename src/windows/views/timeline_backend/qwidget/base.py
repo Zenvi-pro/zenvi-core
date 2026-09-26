@@ -26,6 +26,8 @@
 """
 
 import json
+import os
+import uuid
 from functools import partial
 from types import SimpleNamespace
 
@@ -74,7 +76,7 @@ from ..state import TimelineStateMachine
 from windows.views.menu import StyledContextMenu
 from classes.ai_metadata_utils import merge_basic_clip_props
 from classes.app import get_app
-from classes.file_drop import mime_has_file_drop, urls_from_mime
+from classes.file_drop import local_path_from_url, mime_has_file_drop, urls_from_mime
 from classes.query import Clip, Transition, File
 from classes.logger import log
 from .thumbnails import TimelineThumbnailManager
@@ -1230,10 +1232,18 @@ class TimelineWidgetBase(QWidget):
                 return
 
         if mime_has_file_drop(mime):
+            urls = urls_from_mime(mime)
+            payload = self._preimport_os_drop_urls(urls)
+            if payload:
+                self._drag_payload = payload
+                self.item_type = payload.get("type")
+                self.new_item = True
+                event.accept()
+                return
             event.accept()
             self.new_item = True
             self.item_type = "os_drop"
-            self._drag_payload = {"type": "os_drop", "urls": urls_from_mime(mime)}
+            self._drag_payload = {"type": "os_drop", "urls": urls}
             return
 
         event.ignore()
@@ -1272,90 +1282,113 @@ class TimelineWidgetBase(QWidget):
         effect_names = []
         mime = event.mimeData()
         mime_html = mime.html()
+        payload = self._drag_payload or {}
+        preimported = (
+            payload.get("type") == "clip"
+            and payload.get("source") == "os_drop"
+            and payload.get("ids")
+        )
+        # OS drops pre-imported on drag-enter carry the transaction that grouped
+        # the file import; join it so import + clip + auto-transition is one undo.
+        os_drop_tid = payload.get("transaction_id") if preimported else None
+        if os_drop_tid:
+            get_app().updates.transaction_id = os_drop_tid
         from classes.updates import nested_transaction
-        with nested_transaction(get_app().updates):
-            if mime_has_file_drop(mime):
-                urls = urls_from_mime(mime)
-                imported = self.win.files_model.process_urls(
-                    urls, import_quietly=True, prevent_image_seq=True
-                ) or []
-                for f in imported:
-                    if f and getattr(f, "id", None):
-                        file_ids.append(f.id)
-            elif mime_html == "clip":
-                try:
-                    ids = json.loads(mime.text())
-                except Exception:
-                    ids = []
-                if not isinstance(ids, list):
-                    ids = [ids]
-                file_ids.extend(ids)
-            elif mime_html == "transition":
-                try:
-                    ids = json.loads(mime.text())
-                except Exception:
-                    ids = []
-                if not isinstance(ids, list):
-                    ids = [ids]
-                file_ids.extend(ids)
-            elif mime_html == "effect":
-                try:
-                    names = json.loads(mime.text())
-                except Exception:
-                    names = []
-                if not isinstance(names, list):
-                    names = [names]
-                effect_names.extend(names)
+        try:
+            with nested_transaction(get_app().updates):
+                if preimported:
+                    file_ids.extend(payload.get("ids") or [])
+                    mime_html = "clip"
+                elif mime_has_file_drop(mime):
+                    urls = urls_from_mime(mime)
+                    imported = self.win.files_model.process_urls(
+                        urls, import_quietly=True, prevent_image_seq=True
+                    ) or []
+                    for f in imported:
+                        if f and getattr(f, "id", None):
+                            file_ids.append(f.id)
+                elif mime_html == "clip":
+                    try:
+                        ids = json.loads(mime.text())
+                    except Exception:
+                        ids = []
+                    if not isinstance(ids, list):
+                        ids = [ids]
+                    file_ids.extend(ids)
+                elif mime_html == "transition":
+                    try:
+                        ids = json.loads(mime.text())
+                    except Exception:
+                        ids = []
+                    if not isinstance(ids, list):
+                        ids = [ids]
+                    file_ids.extend(ids)
+                elif mime_html == "effect":
+                    try:
+                        names = json.loads(mime.text())
+                    except Exception:
+                        names = []
+                    if not isinstance(names, list):
+                        names = [names]
+                    effect_names.extend(names)
 
-            if not file_ids and not effect_names:
-                self._reset_drag_preview()
-                return
+                if not file_ids and not effect_names:
+                    self._reset_drag_preview()
+                    return
 
-            coords = self._event_seconds_track(event)
-            if coords is None:
-                coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
-            pos_seconds, track_num, _ = coords
-            track_num = self._nearest_unlocked_track_number(track_num)
-            if track_num is None:
-                self._reset_drag_preview()
-                return
-            pos = QPointF(pos_seconds, 0)
+                coords = self._event_seconds_track(event)
+                if coords is None:
+                    coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
+                pos_seconds, track_num, _ = coords
+                track_num = self._nearest_unlocked_track_number(track_num)
+                if track_num is None:
+                    self._reset_drag_preview()
+                    return
+                pos = QPointF(pos_seconds, 0)
 
-            if effect_names:
-                self._apply_effect_drop(
-                    effect_names,
-                    pos_seconds,
-                    track_num,
-                    drop_pos=event.pos(),
-                )
-                self._reset_drag_preview()
-                return
-
-            for idx, fid in enumerate(file_ids):
-                ignore_refresh = idx < len(file_ids) - 1
-                if mime_html == "transition":
-                    item = self.addTransition(
-                        fid,
-                        pos,
+                if effect_names:
+                    self._apply_effect_drop(
+                        effect_names,
+                        pos_seconds,
                         track_num,
-                        ignore_refresh=ignore_refresh,
-                        call_manual_move=False,
+                        drop_pos=event.pos(),
                     )
-                    if item:
-                        pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
-                else:
-                    auto_transition = len(file_ids) == 1
-                    clip = self.addClip(
-                        fid,
-                        pos,
-                        track_num,
-                        ignore_refresh=ignore_refresh,
-                        call_manual_move=False,
-                        auto_transition=auto_transition,
-                    )
-                    if clip:
-                        pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
-            self._reset_drag_preview()
+                    self._reset_drag_preview()
+                    return
+
+                for idx, fid in enumerate(file_ids):
+                    ignore_refresh = idx < len(file_ids) - 1
+                    if mime_html == "transition":
+                        item = self.addTransition(
+                            fid,
+                            pos,
+                            track_num,
+                            ignore_refresh=ignore_refresh,
+                            call_manual_move=False,
+                        )
+                        if item:
+                            pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
+                    else:
+                        auto_transition = len(file_ids) == 1
+                        clip = self.addClip(
+                            fid,
+                            pos,
+                            track_num,
+                            ignore_refresh=ignore_refresh,
+                            call_manual_move=False,
+                            auto_transition=auto_transition,
+                        )
+                        if clip:
+                            pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
+        finally:
+            # Close the OS-drop transaction (file import + clip + auto-transition)
+            if os_drop_tid:
+                get_app().updates.transaction_id = None
+
+        # Auto-select newly added clips/transitions
+        self._select_added_items("transition" if mime_html == "transition" else "clip")
+
+        self._reset_drag_preview()
 
     def dragLeaveEvent(self, event):
         event.accept()
@@ -1366,7 +1399,14 @@ class TimelineWidgetBase(QWidget):
             return self._drag_payload
         mime = event.mimeData()
         if mime_has_file_drop(mime):
-            self._drag_payload = {"type": "os_drop", "urls": urls_from_mime(mime)}
+            urls = urls_from_mime(mime)
+            payload = self._preimport_os_drop_urls(urls)
+            if payload:
+                self._drag_payload = payload
+                self.item_type = payload.get("type")
+                self.new_item = True
+                return self._drag_payload
+            self._drag_payload = {"type": "os_drop", "urls": urls}
             return self._drag_payload
         mime_html = mime.html()
         if mime_html in {"clip", "transition"}:
@@ -1740,6 +1780,16 @@ class TimelineWidgetBase(QWidget):
             bbox = bbox.united(rect)
         return bbox
 
+    def _select_added_items(self, item_type):
+        """Auto-select items just added via drag-and-drop."""
+        if not getattr(self, "item_ids", None):
+            return
+        for idx, item_id in enumerate(self.item_ids):
+            self.win.addSelection(str(item_id), item_type, clear_existing=(idx == 0))
+        # Geometry was already rebuilt by changed() before the selection was
+        # set, so mark it dirty so the next repaint reflects the new state.
+        self.geometry.mark_dirty()
+
     def _reset_drag_preview(self):
         self._set_drag_preview_thumbnail_suspension(False)
         self._drag_preview_items = []
@@ -1758,43 +1808,59 @@ class TimelineWidgetBase(QWidget):
         if not total:
             self._reset_drag_preview()
             return
+        payload = self._drag_payload or {}
+        drag_transaction_id = payload.get("transaction_id")
+        if drag_transaction_id:
+            get_app().updates.transaction_id = drag_transaction_id
         committed_any = False
-        # Zenvi: group the deferred inserts so a multi-file drop is one undo step.
+        # Zenvi: group the deferred inserts so a multi-file drop is one undo step
+        # (joins the OS-drop import transaction when there is one).
         from classes.updates import nested_transaction
-        with nested_transaction(get_app().updates):
-            for idx, entry in enumerate(self._drag_preview_items):
-                source_id = entry.get("source_id")
-                if source_id is None:
-                    continue
-                track_num = self.normalize_track_number(entry.get("layer"))
-                if track_num is None:
-                    continue
-                position = max(0.0, float(entry.get("position", 0.0) or 0.0))
-                ignore_refresh = idx < total - 1
-                if entry.get("type") == "transition":
-                    transition = self.addTransition(
-                        source_id,
-                        QPointF(position, 0),
-                        track_num,
-                        ignore_refresh=ignore_refresh,
-                        call_manual_move=False,
-                    )
-                    if transition is None:
-                        log.warning("Deferred transition drop failed for path: %s", source_id)
+        try:
+            with nested_transaction(get_app().updates):
+                for idx, entry in enumerate(self._drag_preview_items):
+                    source_id = entry.get("source_id")
+                    if source_id is None:
                         continue
-                    committed_any = True
-                else:
-                    auto_transition = total == 1
-                    clip = self.addClip(
-                        source_id,
-                        QPointF(position, 0),
-                        track_num,
-                        ignore_refresh=ignore_refresh,
-                        call_manual_move=False,
-                        auto_transition=auto_transition,
-                    )
-                    if clip is not None:
+                    track_num = self.normalize_track_number(entry.get("layer"))
+                    if track_num is None:
+                        continue
+                    position = max(0.0, float(entry.get("position", 0.0) or 0.0))
+                    ignore_refresh = idx < total - 1
+                    if entry.get("type") == "transition":
+                        transition = self.addTransition(
+                            source_id,
+                            QPointF(position, 0),
+                            track_num,
+                            ignore_refresh=ignore_refresh,
+                            call_manual_move=False,
+                        )
+                        if transition is None:
+                            log.warning("Deferred transition drop failed for path: %s", source_id)
+                            continue
                         committed_any = True
+                    else:
+                        auto_transition = total == 1
+                        clip = self.addClip(
+                            source_id,
+                            QPointF(position, 0),
+                            track_num,
+                            ignore_refresh=ignore_refresh,
+                            call_manual_move=False,
+                            auto_transition=auto_transition,
+                        )
+                        if clip is not None:
+                            committed_any = True
+        finally:
+            if drag_transaction_id:
+                get_app().updates.transaction_id = None
+
+        # Auto-select newly added clips/transitions
+        preview_type = "clip"
+        if self._drag_preview_items and self._drag_preview_items[0].get("type") == "transition":
+            preview_type = "transition"
+        self._select_added_items(preview_type)
+
         self._update_project_duration()
         self._drag_preview_items = []
         self._drag_payload = None
@@ -1816,7 +1882,41 @@ class TimelineWidgetBase(QWidget):
         self.changed(None)
         self.update()
 
+    def _preimport_os_drop_urls(self, urls):
+        """Pre-import OS-dropped files so timeline drag preview can render clip shapes."""
+        local_file_urls = []
+        for uri in urls or []:
+            local_path = local_path_from_url(uri)
+            if not local_path or not os.path.isfile(local_path):
+                return None
+            local_file_urls.append(uri)
+        if not local_file_urls:
+            return None
 
+        os_drop_tid = str(uuid.uuid4())
+        get_app().updates.transaction_id = os_drop_tid
+        try:
+            imported = self.win.files_model.process_urls(
+                local_file_urls,
+                import_quietly=True,
+                prevent_image_seq=True,
+            ) or []
+        finally:
+            # The import transaction is reopened only when committing clip
+            # creation on drop (see dropEvent/_finalize_drag_preview).
+            get_app().updates.transaction_id = None
+
+        file_ids = [f.id for f in imported if f and getattr(f, "id", None)]
+        if not file_ids:
+            return None
+
+        return {
+            "type": "clip",
+            "ids": file_ids,
+            "source": "os_drop",
+            "urls": local_file_urls,
+            "transaction_id": os_drop_tid,
+        }
 
     def resizeEvent(self, event):
         """Widget resize event"""
@@ -2564,6 +2664,17 @@ class TimelineWidgetBase(QWidget):
             return
 
         self.unsetCursor()
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.geometry.ensure()
+            pos = event.pos()
+            for rect, item, _selected, _type in self.geometry.iter_items(reverse=True):
+                if rect.contains(pos):
+                    self.win.actionProperties.trigger()
+                    event.accept()
+                    return
+        super().mouseDoubleClickEvent(event)
 
     def mousePressEvent(self, event):
         self._press_marker = None

@@ -176,11 +176,7 @@ class FilesListView(QListView):
         if not index.isValid():
             self.clearSelection()
         else:
-            self.setCurrentIndex(index)
-            self.selectionModel().select(
-                index,
-                QItemSelectionModel.ClearAndSelect,
-            )
+            self.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
 
         # Build menu
         menu = StyledContextMenu(parent=self)

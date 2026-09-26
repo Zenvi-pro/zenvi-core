@@ -1106,7 +1106,8 @@ class FilesModel(QObject, updates.UpdateInterface):
         }
         return parameters
 
-    def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False):
+    def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False,
+                     transaction_id=None):
         """Recursively process QUrls from a QDropEvent.
 
         Returns the list of imported (or already-present) File objects, or an
@@ -1115,11 +1116,16 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         Reuses an existing ``updates.transaction_id`` when the caller already
         opened one (e.g. timeline drop that also places clips), so the whole
-        gesture undoes as a single step.
+        gesture undoes as a single step. ``transaction_id`` lets a caller name
+        that transaction explicitly; it stays active after this call so the
+        caller can group follow-up mutations under it.
         """
         media_paths = []
 
         from classes.updates import nested_transaction
+
+        if transaction_id:
+            get_app().updates.transaction_id = transaction_id
 
         with nested_transaction(get_app().updates):
             for uri in qurl_list or []:

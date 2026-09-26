@@ -1183,6 +1183,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.context_menu_cursor_position = QCursor.pos()
         return menu.show_at(self.context_menu_cursor_position)
 
+    @guarded_slot()
+    def ShowProperties(self):
+        """Show the Properties dock (triggered by double-click on a clip/transition)."""
+        self.window.actionProperties.trigger()
+
     @guarded_slot(str)
     def ShowClipMenu(self, clip_id=None):
         log.debug('ShowClipMenu: %s' % clip_id)

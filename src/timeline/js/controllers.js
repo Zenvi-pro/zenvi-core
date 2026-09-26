@@ -1204,6 +1204,12 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
   };
 
 // Show clip context menu
+  $scope.showProperties = function () {
+    if ($scope.Qt) {
+      timeline.ShowProperties();
+    }
+  };
+
   $scope.showClipMenu = function (clip_id, event) {
     if ($scope.Qt && !$scope.enable_razor) {
       setTimeout(function() {
