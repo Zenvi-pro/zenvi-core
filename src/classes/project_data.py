@@ -1335,17 +1335,30 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
+        updates = get_app().updates
+
+        def mark_dirty():
+            if not self.has_unsaved_changes:
+                log.debug(
+                    "Project dirty flag set: action=%s key=%s ignore_history=%s values=%s",
+                    action.type,
+                    action.key,
+                    updates.ignore_history,
+                    action.values,
+                )
+            self.has_unsaved_changes = True
+
         if action.type == "insert":
             # Insert new item
             old_vals = self._set(action.key, action.values, add=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "update":
             # Update existing item
             old_vals = self._set(action.key, action.values)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
             if len(action.key) == 1 and action.key[0] in ["fps"]:
                 # FPS changed (apply profile)
@@ -1391,7 +1404,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Delete existing item
             old_vals = self._set(action.key, remove=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "load":
             # Don't track unsaved changes when loading a project

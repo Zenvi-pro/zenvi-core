@@ -450,6 +450,15 @@ class UpdateManager:
         # let earlier listeners (or worker threads sharing the QueryObject cache) snapshot
         # stale data under the new version, causing a one-update-behind ("previous drag")
         # desync in downstream consumers such as the timeline overview/zoom slider.
+
+        log.debug(
+            "Dispatch action: type=%s key=%s ignore_history=%s transaction=%s",
+            action.type,
+            action.key,
+            self.ignore_history,
+            action.transaction,
+        )
+
         try:
             # Loop through all listeners
             for listener in self.updateListeners:

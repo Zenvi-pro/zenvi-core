@@ -3835,13 +3835,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Start or restart timer to redraw audio
             self.redraw_audio_timer.start()
 
-        # Only update scale if different
-        current_scale = float(get_app().project.get("scale") or 15.0)
+        # Only update scale if different. Normalize to avoid startup float noise
+        # such as 14.999999999999998 vs 15.0 from dirtying a fresh project.
+        current_scale = round(float(get_app().project.get("scale") or 15.0), 6)
+        new_scale = round(float(newScale), 6)
 
         # Save current zoom
-        if newScale != current_scale:
+        if abs(new_scale - current_scale) > 1e-6:
             get_app().updates.ignore_history = True
-            get_app().updates.update(["scale"], newScale)
+            get_app().updates.update(["scale"], new_scale)
             get_app().updates.ignore_history = False
 
     # An item is being dragged onto the timeline (mouse is entering the timeline now)

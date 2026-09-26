@@ -178,6 +178,15 @@ class PlayerWorker(QObject):
 
     def CheckAudioDevice(self):
         """Check if any audio devices initialization errors, default sample rate, and current open audio device"""
+        s = get_app().get_settings()
+        project = get_app().project
+
+        def update_project_sample_rate_without_dirty(value):
+            """Normalize startup audio settings without changing project dirty state."""
+            previous_dirty = project.has_unsaved_changes
+            get_app().updates.update_untracked(["sample_rate"], value)
+            project.has_unsaved_changes = previous_dirty
+
         # Check audio init error
         audio_error = self.player.GetError()
         if audio_error:
@@ -205,15 +214,15 @@ class PlayerWorker(QObject):
 
                 # Update current project's sample rate, so we don't have some crazy
                 # audio drift due to mis-matching sample rates
-                get_app().updates.update(["sample_rate"], detected_sample_rate_int)
+                update_project_sample_rate_without_dirty(detected_sample_rate_int)
 
             # Convert float 'settings' sample rate to Integer, if detected
             if type(s.get("default-samplerate")) == float:
                 s.set("default-samplerate", detected_sample_rate_int)
 
         # Convert float 'project' sample rate to Integer, if detected
-        if type(get_app().project.get("sample_rate")) == float:
-            get_app().updates.update(["sample_rate"], round(get_app().project.get("sample_rate")))
+        if type(project.get("sample_rate")) == float:
+            update_project_sample_rate_without_dirty(round(project.get("sample_rate")))
 
         # Check active audio device name and type from audio device
         active_audio_device = self.player.GetCurrentAudioDevice()
