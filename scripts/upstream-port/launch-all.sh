@@ -17,9 +17,9 @@ git -C "$PORT_MAIN_REPO" fetch -q origin --prune
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   warn "session $TMUX_SESSION already running; restarting orchestrator window only"
   tmux kill-window -t "$TMUX_SESSION:orchestrator" 2>/dev/null || true
-  tmux new-window -d -t "$TMUX_SESSION" -n orchestrator "bash '$PORT_SCRIPTS/orchestrator.sh' ${ARGS[*]}; echo '[orchestrator exited]'; read -r"
+  tmux new-window -d -t "$TMUX_SESSION" -n orchestrator "bash '$PORT_SCRIPTS/orchestrator.sh' ${ARGS[*]:-}; echo '[orchestrator exited]'; read -r"
 else
-  tmux new-session -d -s "$TMUX_SESSION" -n orchestrator -c "$PORT_MAIN_REPO" "bash '$PORT_SCRIPTS/orchestrator.sh' ${ARGS[*]}; echo '[orchestrator exited]'; read -r"
+  tmux new-session -d -s "$TMUX_SESSION" -n orchestrator -c "$PORT_MAIN_REPO" "bash '$PORT_SCRIPTS/orchestrator.sh' ${ARGS[*]:-}; echo '[orchestrator exited]'; read -r"
   tmux new-window -d -t "$TMUX_SESSION" -n status "while :; do clear; bash '$PORT_SCRIPTS/status.sh'; sleep 30; done"
 fi
 log "session $TMUX_SESSION is up."
