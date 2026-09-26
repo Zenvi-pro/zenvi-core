@@ -306,8 +306,11 @@ class PropertiesModel(updates.UpdateInterface):
                     # Update the preview
                     get_app().window.refreshFrameSignal.emit()
 
-                # Clear selection
+                # Clear selection and restore focus to label column
+                current_row = self.parent.currentIndex().row()
                 self.parent.clearSelection()
+                if current_row >= 0:
+                    self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def color_update(self, item, new_color, interpolation=-1, interpolation_details=[]):
         """Insert/Update a color keyframe for the selected row"""
@@ -439,8 +442,11 @@ class PropertiesModel(updates.UpdateInterface):
                         # Update the preview
                         get_app().window.refreshFrameSignal.emit()
 
-                    # Clear selection
+                    # Clear selection and restore focus to label column
+                    current_row = self.parent.currentIndex().row()
                     self.parent.clearSelection()
+                    if current_row >= 0:
+                        self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def value_updated(self, item, interpolation=-1, value=None, interpolation_details=[]):
         """ Table cell change event - also handles context menu to update interpolation value """
@@ -712,8 +718,11 @@ class PropertiesModel(updates.UpdateInterface):
 
                     log.info("Item %s: changed %s to %s at frame %s (x: %s)" % (item_id, property_key, value, self.frame_number, closest_point_x))
 
-                # Clear selection
+                # Clear selection and restore focus to label column
+                current_row = self.parent.currentIndex().row()
                 self.parent.clearSelection()
+                if current_row >= 0:
+                    self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def set_property(self, property, filter, c, item_type, object_id=None):
         app = get_app()

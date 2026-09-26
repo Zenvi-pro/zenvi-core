@@ -164,7 +164,6 @@ class EmojisListView(QListView):
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)
         self.setWordWrap(False)
-        self.setStyleSheet('QListView::item { padding-top: 2px; }')
 
         # Initialize sort
         self.refresh_view()

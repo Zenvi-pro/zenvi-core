@@ -40,7 +40,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QKeySequence, QIcon
 
-from classes import info, ui_util
+from classes import info, ui_util, tabstops
 from classes import openshot_rc  # noqa
 from classes.app import get_app
 from classes.language import get_all_languages
@@ -110,6 +110,15 @@ class Preferences(QDialog):
         self.btnRestoreDefaults.clicked.connect(self.confirm_restore_defaults)
         self.tabCategories.currentChanged.connect(self.category_tab_changed)
 
+        # Disable autoDefault so ENTER doesn't trigger Restore Defaults from random widgets
+        self.btnRestoreDefaults.setAutoDefault(False)
+        self.btnRestoreDefaults.setDefault(False)
+
+        # Make Close button the default so ENTER closes the dialog
+        close_button = self.buttonBox.button(self.buttonBox.Close)
+        if close_button:
+            close_button.setDefault(True)
+
         self.requires_restart = False
         self.category_names = {}
         self.category_tabs = {}
@@ -141,6 +150,8 @@ class Preferences(QDialog):
         # Update the Restore Defaults button label
         if non_translated_category:
             self.btnRestoreDefaults.setText(f"Restore Defaults: {non_translated_category}")
+
+        self._apply_tab_order()
 
     def txtSearch_changed(self):
         """textChanged event handler for search box"""
@@ -492,6 +503,8 @@ class Preferences(QDialog):
         # Delete all tabs and widgets
         self.DeleteAllTabs(onlyInVisible=True)
 
+        self._apply_tab_order()
+
     def register_setting_widget(self, param, widget, label=None):
         """Store widget references and register dependency relationships."""
         setting_name = param.get("setting")
@@ -504,6 +517,30 @@ class Preferences(QDialog):
         dependency = param.get("dependency")
         if dependency:
             self.dependency_map.setdefault(dependency, []).append((widget, label))
+
+    def _apply_tab_order(self):
+        """Apply a stable tab order for the currently visible preferences tab."""
+        current_tab = self.tabCategories.currentWidget()
+        if not current_tab:
+            tabstops.apply_auto_tab_order_later(self)
+            return
+
+        content_widget = current_tab.widget()
+        if not content_widget:
+            tabstops.apply_auto_tab_order_later(self)
+            return
+
+        ordered = [self.txtSearch, self.tabCategories]
+        ordered.extend(
+            tabstops.collect_focusable_from_layout(
+                content_widget.layout(), self, include_hidden=True
+            )
+        )
+        ordered.extend([self.btnRestoreDefaults, self.buttonBox])
+
+        tabstops.apply_explicit_tab_order_later(
+            ordered, root=self, include_hidden=True
+        )
 
     def apply_all_dependencies(self):
         """Apply dependency state to all registered widgets."""

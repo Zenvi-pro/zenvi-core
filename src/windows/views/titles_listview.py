@@ -26,7 +26,7 @@
  """
 
 from classes import info
-from PyQt5.QtCore import QTimer, Qt, QModelIndex
+from PyQt5.QtCore import QTimer, Qt, QModelIndex, QItemSelectionModel
 from PyQt5.QtWidgets import QListView
 
 from windows.models.titles_model import TitlesModel, TitleRoles
@@ -53,6 +53,22 @@ class TitlesListView(QListView):
 
         # Sort by column 0
         self.title_model.proxy_model.sort(0)
+
+        # Ensure a default selection (top item) to load controls.
+        if not self.selectionModel().hasSelection() and self.model().rowCount() > 0:
+            QTimer.singleShot(0, self._select_first_item)
+
+    def _select_first_item(self):
+        if self.selectionModel().hasSelection() or self.model().rowCount() == 0:
+            return
+        first = self.model().index(0, 0)
+        if not first.isValid():
+            return
+        self.selectionModel().setCurrentIndex(
+            first, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+        )
+        self.selectionModel().select(first, QItemSelectionModel.Select)
+        self.scrollTo(first)
 
     def __init__(self, *args, window=None, **kwargs):
         # Invoke parent init

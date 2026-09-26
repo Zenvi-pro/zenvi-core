@@ -50,7 +50,7 @@ from PyQt5.QtWidgets import (
 
 import openshot
 
-from classes import info, ui_util
+from classes import info, ui_util, tabstops
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
@@ -95,6 +95,8 @@ class TitleEditor(QDialog):
 
         # In your widget's initialization:
         self.lblPreviewLabel.installEventFilter(self)
+        self.lblPreviewLabel.setFocusPolicy(Qt.NoFocus)
+        self.scrollArea.setFocusPolicy(Qt.NoFocus)
 
         # Set up the buttons
         self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -104,6 +106,8 @@ class TitleEditor(QDialog):
         # Set object names (for theme styles)
         self.saveButton.setObjectName("acceptButton")
         self.cancelButton.setObjectName("cancelButton")
+        self.saveButton.setFocusPolicy(Qt.StrongFocus)
+        self.cancelButton.setFocusPolicy(Qt.StrongFocus)
         self.layout().addWidget(self.buttonBox)
 
         # Connect the buttons
@@ -148,6 +152,9 @@ class TitleEditor(QDialog):
 
         # Disable Save button on window load
         self.buttonBox.button(self.buttonBox.Save).setEnabled(False)
+
+        self._apply_tab_order()
+        QTimer.singleShot(0, lambda: self.titlesView.setFocus(Qt.TabFocusReason))
 
         # Connect thumbnail listener
         self.thumbnailReady.connect(self.display_pixmap)
@@ -474,6 +481,44 @@ class TitleEditor(QDialog):
 
         # Enable Save button when a template is selected
         self.buttonBox.button(self.buttonBox.Save).setEnabled(True)
+
+        self._apply_tab_order()
+
+    def _apply_tab_order(self):
+        """Apply explicit tab order for the title editor."""
+        ordered = []
+        titles_view = getattr(self, "titlesView", None)
+        if titles_view:
+            ordered.append(titles_view)
+
+        dynamic_widgets = tabstops.collect_focusable_from_layout(
+            self.settingsContainer.layout(),
+            self,
+            include_hidden=True,
+            include_disabled=True,
+        )
+        if not dynamic_widgets:
+            dynamic_widgets = [
+                w for w in self.settingsContainer.findChildren(QWidget)
+                if w.focusPolicy() != Qt.NoFocus and w.isVisibleTo(self)
+            ]
+        ordered.extend(dynamic_widgets)
+
+        action_buttons = tabstops.sort_widgets_left_to_right(
+            [getattr(self, "saveButton", None), getattr(self, "cancelButton", None)],
+            self,
+        )
+        ordered.extend(action_buttons)
+
+        tabstops.apply_explicit_tab_order_later(
+            ordered,
+            root=self,
+            include_hidden=True,
+            include_disabled=True,
+        )
+
+        if ordered:
+            QTimer.singleShot(0, lambda: QWidget.setTabOrder(ordered[-1], ordered[0]))
 
     def writeToFile(self, xmldoc):
         '''writes a new svg file containing the user edited data'''

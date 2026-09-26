@@ -29,7 +29,7 @@ import os
 
 import openshot
 from PyQt5.QtWidgets import QDialog, QMessageBox
-from classes import ui_util, info
+from classes import ui_util, info, tabstops
 from classes.app import get_app
 from classes.logger import log
 
@@ -63,6 +63,8 @@ class EditProfileDialog(QDialog):
 
         # Populate fields from profile
         self.initialize()
+
+        tabstops.apply_auto_tab_order_later(self)
 
     def initialize(self):
         """Initialize the form fields with data from the profile."""

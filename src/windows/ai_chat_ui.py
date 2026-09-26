@@ -2650,7 +2650,16 @@ class AIChatWindow(QDockWidget):
         if index is None or not index.isValid():
             return
         try:
+            # The thumbnail view sits behind a single-column proxy; walk back
+            # to a model that still exposes the hidden id column (5).
             model = index.model()
+            while (
+                model is not None
+                and model.columnCount(index.parent()) <= 5
+                and hasattr(model, "mapToSource")
+            ):
+                index = model.mapToSource(index)
+                model = index.model()
             id_index = index.sibling(index.row(), 5)
             file_id = model.data(id_index, Qt.DisplayRole)
         except Exception:

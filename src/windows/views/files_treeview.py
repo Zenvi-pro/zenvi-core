@@ -292,7 +292,6 @@ class FilesTreeView(QTreeView):
         self.setIconSize(info.TREE_ICON_SIZE)
         self.setIndentation(0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
 
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
