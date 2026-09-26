@@ -320,6 +320,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             timeline_widget = getattr(self, "timeline", None)
             if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
                 if not isdeleted(timeline_widget.thumbnail_manager):
+                    thread = getattr(timeline_widget.thumbnail_manager, "_thread", None)
+                    log.info(
+                        "Shutdown timeline thumbnail thread running=%s",
+                        thread.isRunning() if thread is not None else None,
+                    )
                     timeline_widget.thumbnail_manager.shutdown()
         except Exception:
             log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
@@ -347,6 +352,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Stop preview thread (and wait for it to end)
         if self.preview_thread:
+            if self.preview_parent and getattr(self.preview_parent, "background", None):
+                log.info(
+                    "Shutdown preview thread running=%s",
+                    self.preview_parent.background.isRunning(),
+                )
             self.preview_thread.player.CloseAudioDevice()
             self.preview_thread.kill()
             from qt_api import isdeleted

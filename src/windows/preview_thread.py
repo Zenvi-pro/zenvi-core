@@ -106,8 +106,11 @@ class PreviewParent(QObject, UpdateInterface):
         # Stop preview thread (and wait for it to end)
         self.worker.Stop()
         self.worker.kill()
-        self.background.exit()
-        self.background.wait(5000)
+        if self.background.isRunning():
+            log.info("Stopping preview thread (running=%s)", self.background.isRunning())
+        self.background.quit()
+        if not self.background.wait(5000):
+            log.warning("Preview thread did not stop within 5 seconds")
 
     @pyqtSlot(object, object)
     def Init(self, parent, timeline, video_widget, max_length=1):
@@ -118,6 +121,7 @@ class PreviewParent(QObject, UpdateInterface):
 
         # Background Worker Thread (for preview video process)
         self.background = QThread(self)
+        self.background.setObjectName("preview_background")
         self.worker = PlayerWorker()  # no parent!
 
         # Init worker variables
