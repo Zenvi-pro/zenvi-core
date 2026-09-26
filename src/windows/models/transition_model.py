@@ -60,6 +60,18 @@ class SingleColumnProxyModel(QSortFilterProxyModel):
                     return root_model.data(root_index, Qt.DisplayRole)
         return super().data(index, role)
 
+    def mimeData(self, indexes):
+        """Forward drag data through TransitionFilterProxyModel for consistent path payloads."""
+        source_proxy = self.sourceModel()
+        if not source_proxy:
+            return super().mimeData(indexes)
+        proxy_indexes = []
+        for index in indexes:
+            mapped = self.mapToSource(index)
+            if mapped.isValid():
+                proxy_indexes.append(mapped)
+        return source_proxy.mimeData(proxy_indexes)
+
 
 class TransitionFilterProxyModel(QSortFilterProxyModel):
     """Proxy class used for sorting and filtering model data"""
@@ -107,10 +119,30 @@ class TransitionFilterProxyModel(QSortFilterProxyModel):
         # Create list from requested transition indexes
         items = []
         for proxy_index in indexes:
-            source_index = self.mapToSource(proxy_index)
-            items.append(source_index.sibling(source_index.row(), 3).data())
+            if not proxy_index.isValid():
+                continue
+            if proxy_index.model() is self:
+                source_index = self.mapToSource(proxy_index)
+            else:
+                source_index = proxy_index
+            if not source_index.isValid():
+                continue
+            path_index = source_index.sibling(source_index.row(), 3)
+            path_value = path_index.data(Qt.DisplayRole)
+            if not path_value:
+                path_value = path_index.data()
+            if not path_value:
+                continue
+            path_value = str(path_value)
+            items.append(path_value)
+            log.debug(
+                "Transition drag payload path: %r (exists=%s)",
+                path_value,
+                os.path.exists(path_value),
+            )
         data.setText(json.dumps(items))
         data.setHtml("transition")
+        log.debug("Transition drag payload items: %d", len(items))
 
         # Return Mimedata
         return data

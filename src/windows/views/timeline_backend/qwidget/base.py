@@ -1244,7 +1244,9 @@ class TimelineWidgetBase(QWidget):
 
     def _event_seconds_track(self, event):
         pos = event.pos()
-        if pos.x() < self.track_name_width or pos.y() < self.ruler_height:
+        if pos.y() < self.ruler_height:
+            return None
+        if not self.rect().contains(pos):
             return None
         if not self.track_list:
             return None
@@ -1255,7 +1257,8 @@ class TimelineWidgetBase(QWidget):
         if vertical_factor <= 0.0:
             return None
         h_offset, v_offset = self._viewport_offsets()
-        pos_seconds = (pos.x() - self.track_name_width + h_offset) / pixels_per_second
+        x_pos = max(0.0, min(float(pos.x()), float(self.width())))
+        pos_seconds = (x_pos - self.track_name_width + h_offset) / pixels_per_second
         pos_seconds = max(0.0, pos_seconds)
         track_idx = int((pos.y() - self.ruler_height + v_offset) / vertical_factor)
         if track_idx < 0 or track_idx >= len(self.track_list):
@@ -2313,6 +2316,7 @@ class TimelineWidgetBase(QWidget):
     def _trigger_clip_menu_icon(self, pos):
         for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self._select_timeline_item(clip.id, "clip", True)
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
         return False
@@ -2770,16 +2774,14 @@ class TimelineWidgetBase(QWidget):
         # Transition context menu (prioritized over clips)
         for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
-                if tran.id not in getattr(self.win, "selected_transitions", []):
-                    self._select_timeline_item(tran.id, "transition", True)
+                self._select_timeline_item(tran.id, "transition", True)
                 self.win.timeline.ShowTransitionMenu(tran.id)
                 return True
 
         # Clip context menu
         for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
-                if clip.id not in getattr(self.win, "selected_clips", []):
-                    self._select_timeline_item(clip.id, "clip", True)
+                self._select_timeline_item(clip.id, "clip", True)
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
 
