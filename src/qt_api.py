@@ -67,7 +67,10 @@ def _load_sip_like():
         try:
             from PyQt5 import sip as sip_mod  # type: ignore
         except Exception:
-            sip_mod = None
+            try:
+                import sip as sip_mod  # type: ignore  # standalone sip (older PyQt5 builds)
+            except Exception:
+                sip_mod = None
         return ("sip", sip_mod)
     if QT_API == "pyside6":
         try:
