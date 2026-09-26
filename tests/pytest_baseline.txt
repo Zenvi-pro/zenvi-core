@@ -1,0 +1,17 @@
+# Pytest baseline — use the project venv (Python 3.11+), not system python3.
+# Correct command:
+#   QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest tests/ -q
+#
+# 2026-09-13 on .venv Python 3.11.15:
+#   715 passed, 25 skipped, 4 failed (unrelated to storage):
+#   - tests/test_mcp_harness.py::test_headless_export_covers_the_whole_timeline
+#   - tests/test_mcp_harness.py::test_headless_export_keeps_audio
+#   - tests/test_motion_graphics_fetch_meta.py::test_fetch_transparent_webm_fail_no_mp4_fallback
+#   - tests/test_motion_graphics_fetch_meta.py::test_fetch_warns_when_summary_generic
+#
+# Storage suites that must stay green:
+#   tests/test_project_media.py
+#   tests/test_path_serialization.py
+#   tests/test_generated_media_paths.py
+#   tests/test_media_fingerprint.py
+#   tests/test_media_cache.py

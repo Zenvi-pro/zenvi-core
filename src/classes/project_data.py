@@ -34,7 +34,7 @@ import random
 import shutil
 import json
 
-from PyQt5.QtWidgets import QMessageBox
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from classes import info
 from classes.app import get_app
@@ -48,12 +48,12 @@ from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
 from classes.assets import (
-    copy_imported_media,
     get_assets_path,
+    relocate_generated_media,
     restore_media_paths,
+    reverse_media_moves,
     snapshot_media_paths,
 )
-from windows.views.find_file import find_missing_file
 from classes.convert_framerate import change_profile
 
 from .keyframe_scaler import KeyframeScaler
@@ -899,18 +899,28 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
         media_snapshot = None
+        media_moves = None
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
             files = self._data.get("files") or []
             clips = self._data.get("clips") or []
+            # Backfill fingerprints for files that lack them (legacy / other insert paths).
+            try:
+                from classes.media_fingerprint import fingerprint as _media_fp
+                for file in files:
+                    if file.get("fingerprint"):
+                        continue
+                    path = file.get("path") or ""
+                    if not path or "%" in path or not os.path.isfile(path):
+                        continue
+                    stamped = _media_fp(path)
+                    if stamped:
+                        file["fingerprint"] = stamped
+            except Exception:
+                log.debug("Fingerprint backfill failed", exc_info=1)
             media_snapshot = snapshot_media_paths(files, clips)
-            copy_imported_media(
-                files,
-                clips,
-                file_path,
-                app_root=info.PATH,
-            )
+            media_moves = relocate_generated_media(files, clips, file_path)
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
@@ -923,6 +933,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 path_mode="ignore" if backup_only else "relative",
                 previous_path=self.current_filepath if not backup_only else None)
         except Exception:
+            reverse_media_moves(media_moves)
             restore_media_paths(media_snapshot)
             raise
 
@@ -938,6 +949,11 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             self.add_to_recent_files(file_path)
             self.has_unsaved_changes = False
+            try:
+                from classes.media_cache import evict_if_needed
+                evict_if_needed()
+            except Exception:
+                log.debug("Media cache eviction skipped", exc_info=1)
 
     def move_temp_paths_to_project_folder(self, file_path, previous_path=None):
         """ Move all temp files (such as Thumbnails, Titles, and Blender animations) to the project asset folder. """
@@ -978,12 +994,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             }
             reader_paths = {}
 
-            # Copy all thumbnail files (if not found in target asset folder)
-            for thumb_path in os.listdir(info.THUMBNAIL_PATH):
-                working_thumb_path = os.path.join(info.THUMBNAIL_PATH, thumb_path)
-                target_thumb_filepath = os.path.join(target_thumb_path, thumb_path)
-                if not os.path.exists(target_thumb_filepath):
-                    shutil.copy2(working_thumb_path, target_thumb_filepath)
+            # Thumbnails live in the global fingerprint cache; do not copy them
+            # into the project assets folder.
 
             # Copy all title files (if not found in target asset folder)
             for title_path in os.listdir(info.TITLE_PATH):
@@ -1019,8 +1031,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 path = file["path"]
                 file_id = file["id"]
 
-                # For now, store thumbnail path for backwards compatibility
-                file["image"] = os.path.join(target_thumb_path, f"{file_id}.png")
+                # Drop legacy per-project thumbnail pointers; runtime resolves via media_cache.
+                file.pop("image", None)
 
                 # Assets which need to be copied
                 new_asset_path = None
@@ -1064,8 +1076,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 file_id = clip["file_id"]
                 clip_id = clip["id"]
 
-                # For now, store thumbnail path for backwards compatibility
-                clip["image"] = os.path.join(target_thumb_path, f"{file_id}.png")
+                # Drop legacy per-project thumbnail pointers.
+                clip.pop("image", None)
 
                 log.info("Checking clip %s path for file %s", clip_id, file_id)
                 # Update paths to files stored in our working space or old path structure
@@ -1117,7 +1129,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
     def check_if_paths_are_valid(self):
         """Check if all paths are valid, and prompt to update them if needed.
-        Shows one dialog: user can skip all missing files at once or locate them."""
+
+        Shows one dialog: skip all, or pick a single folder and fingerprint-match
+        every missing file under it. Cancel keeps files and clips in place.
+        """
         app = get_app()
         settings = app.get_settings()
         _ = app._tr
@@ -1125,14 +1140,45 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         log.info("checking project files...")
 
-        # Collect all missing files and clips (don't prompt yet)
+        from classes.media_fingerprint import fingerprint, scan_folder_for_fingerprints
+        from classes.path_utils import remember_media_root, resolve_media_path
+
+        # Silent resolve via remembered media roots before prompting.
+        for file in self._data.get("files") or []:
+            path = file.get("path") or ""
+            if not path or "%" in path or os.path.exists(path):
+                continue
+            resolved = resolve_media_path(path, fingerprint=file.get("fingerprint"))
+            if resolved and os.path.exists(resolved):
+                file["path"] = resolved
+                log.info("Silently relinked missing file via media roots: %s", resolved)
+
+        for clip in self._data.get("clips") or []:
+            reader = clip.get("reader") if isinstance(clip.get("reader"), dict) else {}
+            path = reader.get("path") or ""
+            if not path or "%" in path or os.path.exists(path):
+                continue
+            # Prefer the parent file fingerprint when available.
+            fp = None
+            file_id = clip.get("file_id")
+            if file_id:
+                for file in self._data.get("files") or []:
+                    if file.get("id") == file_id:
+                        fp = file.get("fingerprint")
+                        break
+            resolved = resolve_media_path(path, fingerprint=fp)
+            if resolved and os.path.exists(resolved):
+                reader["path"] = resolved
+                clip["reader"] = reader
+                log.info("Silently relinked missing clip via media roots: %s", resolved)
+
         missing_files = []
         missing_clips = []
-        for file in self._data["files"]:
-            path = file["path"]
-            if not os.path.exists(path) and "%" not in path:
+        for file in self._data.get("files") or []:
+            path = file.get("path") or ""
+            if path and not os.path.exists(path) and "%" not in path:
                 missing_files.append((file, path))
-        for clip in self._data["clips"]:
+        for clip in self._data.get("clips") or []:
             path = clip.get("reader", {}).get("path", "")
             if path and not os.path.exists(path) and "%" not in path:
                 missing_clips.append((clip, path))
@@ -1141,7 +1187,6 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         if total_missing == 0:
             return
 
-        # One dialog: Skip all or Locate files (so the app isn't blocked by many dialogs)
         sample_names = []
         for _f, p in (missing_files + missing_clips)[:5]:
             sample_names.append(os.path.basename(p))
@@ -1154,38 +1199,96 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         msg.setText(_("This project references %s missing file(s).") % total_missing)
         msg.setInformativeText(sample_text)
         skip_all_btn = msg.addButton(_("Skip all and open project"), QMessageBox.AcceptRole)
-        locate_btn = msg.addButton(_("Locate files..."), QMessageBox.ActionRole)
+        locate_btn = msg.addButton(_("Locate folder..."), QMessageBox.ActionRole)
         msg.exec_()
         skip_all = msg.clickedButton() == skip_all_btn
 
         if skip_all:
-            # Keep missing files and clips so the timeline is not wiped. Playback
-            # of those clips will fail until the media is located on a later open.
             log.info(
                 "Opening with %s missing file(s); leaving files and clips in place",
                 total_missing,
             )
             return
 
-        # User chose "Locate files...": prompt for each missing item with parent so dialogs stay on top
-        for file, path in reversed(missing_files):
-            path, is_modified, is_skipped = find_missing_file(path, parent=dialog_parent)
-            if path and is_modified and not is_skipped:
-                file["path"] = path
-                settings.setDefaultPath(settings.actionType.IMPORT, path)
-                log.info("Auto-updated missing file: %s", path)
-            elif is_skipped:
-                log.info("Removed missing file: %s", os.path.basename(path))
-                self._data["files"].remove(file)
+        # One folder pick; fingerprint-match everything under it.
+        recommended_path = self.current_filepath or info.HOME_PATH
+        if recommended_path and os.path.isfile(recommended_path):
+            recommended_path = os.path.dirname(recommended_path)
+        folder = QFileDialog.getExistingDirectory(
+            dialog_parent,
+            _("Find folder that contains the missing media"),
+            recommended_path or "",
+        )
+        if not folder:
+            # Cancel keeps files and clips — do not remove them.
+            log.info("Locate folder cancelled; leaving %s missing file(s) in place", total_missing)
+            return
 
-        for clip, path in reversed(missing_clips):
-            path, is_modified, is_skipped = find_missing_file(path, parent=dialog_parent)
-            if path and is_modified and not is_skipped:
-                clip["reader"]["path"] = path
-                log.info("Auto-updated missing file: %s", clip["reader"]["path"])
-            elif is_skipped:
-                log.info("Removed missing clip: %s", os.path.basename(path))
-                self._data["clips"].remove(clip)
+        wanted = set()
+        for file, _path in missing_files:
+            fp = file.get("fingerprint")
+            if isinstance(fp, dict) and fp.get("sha256"):
+                wanted.add(fp["sha256"])
+        index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
+        remember_media_root(folder)
+
+        # Also match by basename when fingerprint is missing (legacy projects).
+        basename_hits = {}
+        for root, _dirs, names in os.walk(folder):
+            for name in names:
+                if name not in basename_hits:
+                    basename_hits[name] = os.path.join(root, name)
+
+        def _relink(path, fp):
+            if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
+                return index[fp["sha256"]]
+            base = os.path.basename(path or "")
+            if base in basename_hits:
+                hit = basename_hits[base]
+                # Basename-only matching is legacy fallback; when a fingerprint
+                # exists, require a digest match so duplicate names cannot swap media.
+                if isinstance(fp, dict) and fp.get("sha256"):
+                    stamped = fingerprint(hit)
+                    if stamped and stamped.get("sha256") == fp["sha256"]:
+                        return hit
+                    return None
+                return hit
+            return None
+
+        for file, path in missing_files:
+            hit = _relink(path, file.get("fingerprint"))
+            if hit:
+                file["path"] = hit
+                if not file.get("fingerprint"):
+                    stamped = fingerprint(hit)
+                    if stamped:
+                        file["fingerprint"] = stamped
+                if settings:
+                    settings.setDefaultPath(settings.actionType.IMPORT, hit)
+                log.info("Relinked missing file: %s -> %s", path, hit)
+
+        # Build file_id -> path map after file relinks.
+        file_paths_by_id = {
+            f.get("id"): f.get("path")
+            for f in (self._data.get("files") or [])
+            if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
+        }
+        file_fp_by_id = {
+            f.get("id"): f.get("fingerprint")
+            for f in (self._data.get("files") or [])
+            if f.get("id") and isinstance(f.get("fingerprint"), dict)
+        }
+
+        for clip, path in missing_clips:
+            file_id = clip.get("file_id")
+            if file_id and file_id in file_paths_by_id:
+                clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
+                log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
+                continue
+            hit = _relink(path, file_fp_by_id.get(file_id))
+            if hit:
+                clip.setdefault("reader", {})["path"] = hit
+                log.info("Relinked missing clip: %s -> %s", path, hit)
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """

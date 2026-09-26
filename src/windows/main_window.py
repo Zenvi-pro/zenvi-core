@@ -1145,6 +1145,62 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # Save new project
             threading.Thread(target=self.save_project, args=(file_path,), daemon=True).start()
 
+    def actionCollectMedia_trigger(self, checked=True):
+        """Copy referenced external media into this project's assets folder."""
+        app = get_app()
+        _ = app._tr
+        project = app.project
+        if not getattr(project, "current_filepath", None):
+            QMessageBox.information(
+                self,
+                _("Collect Media"),
+                _("Save the project first, then collect media into it."),
+            )
+            return
+        from classes import info as _info
+        from classes.media_collect import collect_media_into_project
+
+        files = project._data.get("files") or []
+        clips = project._data.get("clips") or []
+        copied, skipped, errors = collect_media_into_project(
+            files, clips, project.current_filepath, app_root=_info.PATH
+        )
+        project.has_unsaved_changes = True
+        QMessageBox.information(
+            self,
+            _("Collect Media"),
+            _("Copied %(copied)d file(s). Skipped %(skipped)d. Errors: %(errors)d.")
+            % {"copied": len(copied), "skipped": len(skipped), "errors": len(errors)},
+        )
+
+    def actionReclaimMedia_trigger(self, checked=True):
+        """Remove asset copies that still have a matching original on disk."""
+        app = get_app()
+        _ = app._tr
+        project = app.project
+        if not getattr(project, "current_filepath", None):
+            QMessageBox.information(
+                self,
+                _("Reclaim Space"),
+                _("Save the project first."),
+            )
+            return
+        from classes.media_collect import reclaim_unused_asset_media
+
+        files = project._data.get("files") or []
+        clips = project._data.get("clips") or []
+        removed, kept, errors = reclaim_unused_asset_media(
+            files, clips, project.current_filepath
+        )
+        if removed:
+            project.has_unsaved_changes = True
+        QMessageBox.information(
+            self,
+            _("Reclaim Space"),
+            _("Removed %(removed)d duplicate(s). Kept %(kept)d. Errors: %(errors)d.")
+            % {"removed": len(removed), "kept": len(kept), "errors": len(errors)},
+        )
+
     def actionImportFiles_trigger(self):
         app = get_app()
         s = app.get_settings()
@@ -1266,6 +1322,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
+        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        focus = QApplication.focusWidget()
+        # When the assistant owns focus, undo stays in chat (attachments, then
+        # web text). Never fall through to the timeline from a focused chat.
+        if chat_owns_clipboard_keys(chat, focus, under_mouse):
+            if dispatch_chat_edit_action(chat, "undo", focus, under_mouse):
+                return
+            return
+
         get_app().updates.undo()
 
         # Update the preview
@@ -1273,6 +1342,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionRedo_trigger(self, checked=True):
         log.info('actionRedo_trigger')
+        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        focus = QApplication.focusWidget()
+        if chat_owns_clipboard_keys(chat, focus, under_mouse):
+            if dispatch_chat_edit_action(chat, "redo", focus, under_mouse):
+                return
+            return
+
         get_app().updates.redo()
 
         # Update the preview
@@ -3274,6 +3354,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Build recovery menu as well
         self.load_restore_menu()
 
+        # Collect / reclaim media (storage tools)
+        if not getattr(self, "_media_storage_actions_added", False):
+            self.menuFile.addSeparator()
+            collect_action = self.menuFile.addAction(_("Collect Media into Project..."))
+            collect_action.triggered.connect(self.actionCollectMedia_trigger)
+            reclaim_action = self.menuFile.addAction(_("Reclaim Duplicate Media..."))
+            reclaim_action.triggered.connect(self.actionReclaimMedia_trigger)
+            self._media_storage_actions_added = True
+
     def time_ago_string(self, timestamp):
         """ Returns a friendly time difference string for the given timestamp. """
         _ = get_app()._tr
@@ -4069,8 +4158,22 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def pasteAll(self):
         """Handle Paste QShortcut (at timeline position, same track as original clip)"""
-        if self._dispatch_chat_edit_action("paste"):
+        from windows.chat_web_view import (
+            chat_owns_clipboard_keys,
+            try_attach_clipboard_media,
+        )
+
+        chat = getattr(self, "dockAIChat", None)
+        view = getattr(chat, "_chat_view", None) if chat is not None else None
+        under_mouse = bool(view is not None and view.underMouse())
+        if chat_owns_clipboard_keys(chat, QApplication.focusWidget(), under_mouse):
+            if try_attach_clipboard_media(chat):
+                return
+            # Text-only (or no usable media): paste into the chat textarea.
+            if self._dispatch_chat_edit_action("paste"):
+                return
             return
+
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
 
@@ -4139,12 +4242,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         for fmt in mime_data.formats():
             fmt_str = str(fmt)
             lower_fmt = fmt_str.lower()
-            if lower_fmt.startswith(("image/", "video/", "audio/")):
+            # image/*, video/*, audio/*, plus Qt's Windows clipboard image carrier
+            if lower_fmt.startswith(("image/", "video/", "audio/")) or lower_fmt in (
+                "application/x-qt-image",
+                "application/x-qt-windows-mime;value=\"png\"",
+            ):
                 data = mime_data.data(fmt_str)
                 if data and not data.isEmpty():
                     has_binary = True
                     if create_files:
-                        path = self._write_clipboard_bytes(bytes(data), self._extension_for_mime(lower_fmt))
+                        ext = self._extension_for_mime(lower_fmt)
+                        if lower_fmt.startswith("application/x-qt"):
+                            ext = "png"
+                        path = self._write_clipboard_bytes(bytes(data), ext)
                         if path:
                             url = QUrl.fromLocalFile(path)
                             urls.append(url)
@@ -4156,6 +4266,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         clipboard = get_app().clipboard()
         if not urls and create_files and mime_data.hasImage():
             image = clipboard.image() if clipboard else None
+            if (image is None or image.isNull()) and hasattr(mime_data, "imageData"):
+                try:
+                    image = mime_data.imageData()
+                except Exception:
+                    image = None
             if image and not image.isNull():
                 path = self._write_clipboard_image(image)
                 if path:
@@ -4163,6 +4278,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     has_binary = True
         elif not has_binary and mime_data.hasImage():
             image = clipboard.image() if clipboard else None
+            if (image is None or image.isNull()) and hasattr(mime_data, "imageData"):
+                try:
+                    image = mime_data.imageData()
+                except Exception:
+                    image = None
             has_binary = bool(image and not image.isNull())
 
         return urls, has_binary

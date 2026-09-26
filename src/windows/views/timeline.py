@@ -1471,7 +1471,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         file = File.get(id=file_id)
         if file:
-            file.data = ui_data
+            # Prefer fingerprint cache for file-level waveforms so .zvn stays small.
+            audio_data = None
+            if isinstance(ui_data, dict):
+                audio_data = (ui_data.get("ui") or {}).get("audio_data")
+            fp = file.data.get("fingerprint") if isinstance(file.data, dict) else None
+            if fp and isinstance(audio_data, list):
+                try:
+                    from classes.media_cache import save_waveform
+                    if save_waveform(fp, audio_data):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
+                except Exception:
+                    file.data = ui_data
+            else:
+                file.data = ui_data
             file.save()
 
         # Clear transaction id
@@ -3713,6 +3729,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Initialize a list to hold file data (either from mime data or newly created files)
         data_list = []
         initial_pos = event.posF()
+        drop_tid = None
 
         # Get FPS and scaling information
         fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
@@ -3723,6 +3740,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.item_type = "clip"
             urls = urls_from_mime(event.mimeData())
 
+            # One gesture: import + place clips share this tid (process_urls nests).
+            drop_tid = self.get_uuid()
+            get_app().updates.transaction_id = drop_tid
             imported = get_app().window.files_model.process_urls(
                 urls, import_quietly=True, prevent_image_seq=True
             ) or []
@@ -3750,8 +3770,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Nested callback to handle JavaScript position response
         def handle_js_position(pos, js_position_data):
-            # Group drag/drop transactions
-            tid = self.get_uuid()
+            # Group drag/drop transactions (reuse OS-drop tid when present)
+            tid = drop_tid if drop_tid else self.get_uuid()
             get_app().updates.transaction_id = tid
 
             js_position = snap_to_grid(js_position_data.get('position', 0.0))
@@ -3776,6 +3796,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Adjust position for the next clip/transition
                 if new_item:
                     pos += QPointF(new_item["end"] - new_item["start"], 0)
+
+            get_app().updates.transaction_id = None
 
             # After all items are added, initialize manual move once for the group
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
