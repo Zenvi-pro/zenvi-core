@@ -1488,8 +1488,6 @@ class KeyframePanelMixin:
             anchor_pending = anchor.get("original_seconds")
 
         self._panel_update_property_points(drag)
-        self._panel_begin_transaction(drag)
-        self._apply_panel_keyframe_delta(drag, ignore_refresh=True)
         # Rebuild clip keyframe markers every drag tick so old pre-snap
         # marker frames are not left in the cached marker list.
         self._keyframes_dirty = True
@@ -1554,6 +1552,9 @@ class KeyframePanelMixin:
         timeline = getattr(self.win, "timeline", None)
         started = drag.get("transaction_started")
         moved = drag.get("moved")
+        if moved:
+            self._panel_begin_transaction(drag)
+            started = drag.get("transaction_started")
         if started:
             self._apply_panel_keyframe_delta(drag, ignore_refresh=False, force=True)
             if timeline:
@@ -1561,8 +1562,12 @@ class KeyframePanelMixin:
                     drag.get("owner_type", "clip") or "clip",
                     drag.get("object_id", "") or "",
                 )
-            if moved and hasattr(self.win, "show_property_timeout"):
+            if hasattr(self.win, "show_property_timeout"):
                 QTimer.singleShot(0, self.win.show_property_timeout)
+            anchor = (drag.get("anchor") or ((drag.get("entries") or [None])[0])) or {}
+            frame_seek = anchor.get("pending_frame")
+            if frame_seek is not None and hasattr(self, "win") and hasattr(self.win, "SeekSignal"):
+                self.win.SeekSignal.emit(max(1, int(frame_seek)), True)
         self._dragging_panel_keyframes = None
         self.mouse_dragging = False
         info = dict(self._panel_press_info or {})

@@ -227,44 +227,6 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
                 )
                 continue
 
-        if time_point_count > 1:
-            # When time curves are present, generate waveform data from the clip instance itself
-            _waveform_retry_counts.pop(clip.id, None)
-            clip_audio_data = []
-            channel = channel_filter if channel_filter != -1 else -1
-            try:
-                waveformer = openshot.AudioWaveformer(clip_instance)
-                clip_wave_data = waveformer.ExtractSamples(
-                    channel, SAMPLES_PER_SECOND, True
-                )
-                sample_vectors = clip_wave_data.vectors()
-                if sample_vectors:
-                    clip_audio_data = list(sample_vectors[0])
-                clip_wave_data.clear()
-            except Exception:
-                log.error(
-                    "Error generating clip waveform data for clip %s", clip.id, exc_info=1
-                )
-
-            if clip_audio_data:
-                get_app().window.timeline.clipAudioDataReady.emit(
-                    clip.id, {"ui": {"audio_data": clip_audio_data}}, tid
-                )
-                continue
-
-            reason = "time curve waveform empty"
-            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
-                log.debug(
-                    "Clip %s waveform generation empty; retry scheduled", clip.id
-                )
-                continue
-
-            log.warning(
-                "Clip %s waveform generation failed after retries; leaving waveform unchanged",
-                clip.id,
-            )
-            continue
-
         _waveform_retry_counts.pop(clip.id, None)
 
         if channel_filter != -1:

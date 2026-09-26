@@ -46,12 +46,121 @@ import math
 import os
 import time
 
+import openshot
+
 from classes.app import get_app
+from classes.keyframe_scaler import KeyframeScaler
 from classes.logger import log
 from classes.time_parts import secondsToTime
 from classes import info
 
 from .base import BasePainter
+
+
+def _frame_for_seconds(seconds, fps):
+    fps = float(fps or 0.0)
+    if fps <= 0.0:
+        fps = 24.0
+    seconds = max(0.0, float(seconds or 0.0))
+    frame_float = seconds * fps
+    frame = int(math.floor(frame_float + 0.5)) + 1
+    return max(1, frame)
+
+
+def _clip_media_frame_count(clip, clip_fps):
+    data = clip.data if isinstance(getattr(clip, "data", None), dict) else {}
+    reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+
+    try:
+        video_length = int(round(float(reader.get("video_length", 0) or 0)))
+    except (TypeError, ValueError):
+        video_length = 0
+    if video_length > 0:
+        return video_length
+
+    try:
+        duration = float(reader.get("duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration > 0.0 and clip_fps > 0.0:
+        return max(1, int(math.floor(duration * clip_fps)))
+
+    return 0
+
+
+def _scaled_time_keyframe_points(clip, clip_fps, project_fps):
+    """Return time keyframe points scaled into clip-fps space."""
+    data = clip.data if isinstance(getattr(clip, "data", None), dict) else {}
+    time_data = data.get("time") if isinstance(data.get("time"), dict) else {}
+    points = time_data.get("Points") if isinstance(time_data.get("Points"), list) else []
+    if len(points) < 2:
+        return []
+
+    clip_fps = float(clip_fps or 0.0)
+    project_fps = float(project_fps or 0.0)
+    if clip_fps <= 0.0:
+        clip_fps = 24.0
+    if project_fps <= 0.0:
+        project_fps = clip_fps
+
+    scaled_time = copy.deepcopy(time_data)
+    if project_fps > 0.0 and abs(project_fps - clip_fps) > 1e-6:
+        payload = {"clips": [{"time": scaled_time}]}
+        KeyframeScaler(clip_fps / project_fps)(payload)
+        scaled_time = payload["clips"][0]["time"]
+    return scaled_time.get("Points", []) if isinstance(scaled_time, dict) else []
+
+
+def resolve_source_frame(clip, clip_time_seconds, clip_fps, project_fps=None, fallback_frame=None):
+    """Resolve a source-media frame for a clip-local timestamp.
+
+    Clips without a multi-point time curve fall back to linear trim mapping.
+    Clips with time keyframes scale that curve into clip-fps space, then
+    query the scaled curve directly to find the source reader frame.
+    """
+    frame = int(fallback_frame or _frame_for_seconds(clip_time_seconds, clip_fps))
+    points = _scaled_time_keyframe_points(clip, clip_fps, project_fps)
+    if len(points) < 2:
+        return max(1, frame)
+
+    clip_fps = float(clip_fps or 0.0)
+    if clip_fps <= 0.0:
+        clip_fps = 24.0
+
+    project_fps = float(project_fps or 0.0)
+    if project_fps <= 0.0:
+        project_fps = clip_fps
+
+    keyframe = openshot.Keyframe()
+    point_count = 0
+    for point in sorted(points, key=lambda value: float(value.get("co", {}).get("X", 0.0))):
+        co = point.get("co") if isinstance(point, dict) else {}
+        if not isinstance(co, dict):
+            continue
+        x_val = co.get("X")
+        y_val = co.get("Y")
+        if x_val is None or y_val is None:
+            continue
+        try:
+            interpolation = int(point.get("interpolation", openshot.LINEAR))
+        except (TypeError, ValueError):
+            interpolation = openshot.LINEAR
+        keyframe.AddPoint(float(x_val), float(y_val), interpolation)
+        point_count += 1
+
+    if point_count < 2:
+        return max(1, frame)
+
+    try:
+        mapped_frame = int(keyframe.GetLong(frame))
+    except Exception:
+        return max(1, frame)
+
+    max_frame = _clip_media_frame_count(clip, clip_fps)
+    if max_frame > 0:
+        mapped_frame = min(mapped_frame, max_frame)
+
+    return max(1, mapped_frame or frame)
 
 
 class ClipPainter(BasePainter):
@@ -65,6 +174,7 @@ class ClipPainter(BasePainter):
         self._last_thumb_request_time = {}
         self._slot_fallback_cache = {}
         self._trim_request_cooldown = 0.12
+        self._retime_preview_cache = {}
 
     MAX_THUMB_SLOTS = 150
 
@@ -128,6 +238,7 @@ class ClipPainter(BasePainter):
         self._thumb_missing_logged.clear()
         self._last_thumb_request_time.clear()
         self._slot_fallback_cache.clear()
+        self._retime_preview_cache.clear()
 
     def invalidate_clip_thumbnails(
         self,
@@ -136,6 +247,7 @@ class ClipPainter(BasePainter):
         drop_cache=True,
         drop_pending=True,
         drop_fallback=True,
+        drop_preview=True,
         invalidate_render_cache=True,
     ):
         """Invalidate thumbnail caches/requests for a single clip."""
@@ -169,8 +281,87 @@ class ClipPainter(BasePainter):
                 self._slot_fallback_cache.pop(key, None)
 
         self._last_thumb_request_time.pop(clip_id, None)
+        if drop_preview:
+            self._retime_preview_cache.pop(clip_id, None)
         if invalidate_render_cache:
             self._invalidate_clip_cache_for_clip(clip_id)
+
+    def clear_retime_preview(self, clip_token):
+        if not clip_token:
+            return
+        clip_id = str(clip_token).split(":", 1)[0]
+        self._retime_preview_cache.pop(clip_id, None)
+
+    def _is_timing_preview_active(self, clip):
+        if not clip or not isinstance(getattr(clip, "id", None), str):
+            return False
+        if not getattr(self.w, "clip_has_pending_override", None):
+            return False
+        if not self.w.clip_has_pending_override(clip):
+            return False
+        overrides = getattr(self.w, "_pending_clip_overrides", {}).get(clip.id, {})
+        if not isinstance(overrides, dict) or not overrides.get("scale"):
+            return False
+        return (
+            getattr(self.w, "_resizing_item", None) is clip
+            and getattr(self.w, "_press_hit", "") == "clip-edge"
+        )
+
+    def _is_trim_preview_active(self, clip):
+        if not clip or not isinstance(getattr(clip, "id", None), str):
+            return False
+        if not getattr(self.w, "clip_has_pending_override", None):
+            return False
+        if not self.w.clip_has_pending_override(clip):
+            return False
+        overrides = getattr(self.w, "_pending_clip_overrides", {}).get(clip.id, {})
+        if not isinstance(overrides, dict) or overrides.get("scale"):
+            return False
+        return (
+            getattr(self.w, "_resizing_item", None) is clip
+            and getattr(self.w, "_press_hit", "") == "clip-edge"
+        )
+
+    def _trim_preview_offset_px(self, clip):
+        overrides = getattr(self.w, "_pending_clip_overrides", {}).get(getattr(clip, "id", ""), {})
+        if not isinstance(overrides, dict):
+            return 0.0
+        current_position = self._to_float(overrides.get("position"), self._clip_timeline_position(clip))
+        initial_position = self._to_float(overrides.get("initial_position"), current_position)
+        return (current_position - initial_position) * float(self.w.pixels_per_second or 0.0)
+
+    def _retime_preview_result(self, clip, segment_rect):
+        entry = self._retime_preview_cache.get(getattr(clip, "id", ""))
+        if not entry:
+            return None
+
+        pix = entry.get("pix")
+        blur = float(entry.get("blur", 0.0) or 0.0)
+        if not isinstance(pix, QPixmap) or pix.isNull():
+            return None
+
+        ratio = 1.0
+        try:
+            ratio = float(pix.devicePixelRatioF())
+        except AttributeError:
+            try:
+                ratio = float(pix.devicePixelRatio())
+            except AttributeError:
+                ratio = 1.0
+        if not math.isfinite(ratio) or ratio <= 0.0:
+            ratio = 1.0
+
+        logical_w = max(1, int(round(float(segment_rect.width()) + (blur * 2.0))))
+        logical_h = max(1, int(round(float(segment_rect.height()) + (blur * 2.0))))
+        target_w = max(1, int(round(logical_w * ratio)))
+        target_h = max(1, int(round(logical_h * ratio)))
+
+        scaled = pix.scaled(target_w, target_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        if not scaled or scaled.isNull():
+            return None
+        if ratio != 1.0:
+            scaled.setDevicePixelRatio(ratio)
+        return (scaled, blur, [], False, None)
 
     def _segment_overdraw(self, view_width):
         """Return the horizontal overdraw (extra pixels) to render beyond the view."""
@@ -288,19 +479,13 @@ class ClipPainter(BasePainter):
         return resolve_thumbnail_path(file_id, frame, fingerprint=fingerprint) or ""
 
     def _frame_for_offset(self, offset, fps):
-        fps = float(fps or 0.0)
-        if fps <= 0.0:
-            fps = 24.0
-        seconds = max(0.0, float(offset or 0.0))
-        frame_float = seconds * fps
-        frame = int(math.floor(frame_float + 0.5)) + 1
-        return max(1, frame)
+        return _frame_for_seconds(offset, fps)
 
     def _frame_rounding_increment(self, fps, interval_seconds):
         """Return frame rounding increment based on frames-per-slot at current zoom.
 
-        - Zoomed out: round to ~frames_per_slot, snapped to FPS multiples when large.
-        - Zoomed in: return 1 for full precision.
+        Keep rounding local enough to reuse nearby thumbnails while avoiding
+        visible multi-second jumps as the zoom level changes.
         """
         fps = float(fps or 0.0)
         if fps <= 0.0 or not interval_seconds or interval_seconds <= 0.0:
@@ -308,11 +493,9 @@ class ClipPainter(BasePainter):
         frames_per_slot = fps * float(interval_seconds)
         if frames_per_slot <= 1.25:
             return 1
-        if frames_per_slot >= fps:
-            # Snap to nearest whole-second-ish multiple to maximize cache hits when far out
-            multiple = max(1, int(round(frames_per_slot / fps)))
-            return max(1, int(multiple * fps))
-        return max(1, int(round(frames_per_slot)))
+        # Cap rounding at roughly a quarter-second so cache reuse stays local.
+        max_increment = max(1, int(round(fps / 4.0)))
+        return max(1, min(int(round(frames_per_slot)), max_increment))
 
     def _segment_timing(self, segment, clip_duration):
         segment = segment or {}
@@ -330,9 +513,11 @@ class ClipPainter(BasePainter):
     def _clip_media_duration(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
         reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        candidate_durations = []
+
         duration = self._to_float(reader.get("duration"))
         if duration > 0.0:
-            return duration
+            candidate_durations.append(duration)
         video_length = self._to_float(reader.get("video_length"))
         if video_length > 0.0:
             fps_meta = reader.get("fps") if isinstance(reader.get("fps"), dict) else {}
@@ -341,14 +526,34 @@ class ClipPainter(BasePainter):
             if fps_num > 0.0 and fps_den > 0.0:
                 fps_value = fps_num / fps_den
                 if fps_value > 0.0:
-                    return video_length / fps_value
+                    candidate_durations.append(video_length / fps_value)
+        project_fps = self._to_float(getattr(self.w, "fps_float", None))
+        time_data = data.get("time") if isinstance(data.get("time"), dict) else {}
+        time_points = time_data.get("Points") if isinstance(time_data.get("Points"), list) else []
+        if project_fps > 0.0 and len(time_points) >= 2:
+            x_values = []
+            for point in time_points:
+                if not isinstance(point, dict):
+                    continue
+                co = point.get("co")
+                if not isinstance(co, dict):
+                    continue
+                x_val = self._to_float(co.get("X"))
+                if x_val > 0.0:
+                    x_values.append(x_val)
+            if len(x_values) >= 2:
+                time_duration = (max(x_values) - min(x_values)) / project_fps
+                if time_duration > 0.0:
+                    candidate_durations.append(time_duration)
         clip_duration = self._to_float(data.get("duration"))
         if clip_duration > 0.0:
-            return clip_duration
+            candidate_durations.append(clip_duration)
         start = self._to_float(data.get("start"))
         end = self._to_float(data.get("end"), start)
         span = end - start
-        return span if span > 0.0 else 0.0
+        if span > 0.0:
+            candidate_durations.append(span)
+        return max(candidate_durations) if candidate_durations else 0.0
 
     def _clip_trim_start(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
@@ -385,6 +590,11 @@ class ClipPainter(BasePainter):
         h = int(segment_rect.height())
         if w <= 0 or h <= 0:
             return None
+
+        if self._is_timing_preview_active(clip):
+            preview = self._retime_preview_result(clip, segment_rect)
+            if preview:
+                return preview
 
         ratio = 1.0
         try:
@@ -477,7 +687,14 @@ class ClipPainter(BasePainter):
         pix = QPixmap.fromImage(img)
         if ratio != 1.0:
             pix.setDevicePixelRatio(ratio)
-        result = (pix, blur, icon_entries, pending_thumbs)
+        result = (pix, blur, icon_entries, pending_thumbs, text_entry)
+        if getattr(clip, "id", None):
+            self._retime_preview_cache[str(clip.id)] = {
+                "pix": pix,
+                "blur": blur,
+                "icons": icon_entries,
+                "text_entry": text_entry,
+            }
         if use_cache and key is not None and not pending_thumbs:
             self.clip_cache[key] = result
         return result
@@ -784,6 +1001,9 @@ class ClipPainter(BasePainter):
         if media_duration <= 0.0:
             media_duration = clip_duration
         media_duration = max(media_duration, clip_duration)
+        time_data = clip.data.get("time") if isinstance(getattr(clip, "data", None), dict) and isinstance(clip.data.get("time"), dict) else {}
+        time_points = time_data.get("Points") if isinstance(time_data.get("Points"), list) else []
+        has_time_curve = len(time_points) >= 2
 
         # Slot spacing in time
         # Entire style keeps spacing tied to nominal thumb width (not the
@@ -848,11 +1068,12 @@ class ClipPainter(BasePainter):
             slot_end_media_time = slot_start_media_time + slot_duration_seconds
 
             # Require overlap with media bounds [0, media_duration] (lenient)
-            if (
-                slot_end_media_time < -epsilon
-                or slot_start_media_time > media_duration + epsilon
-            ):
-                return
+            if not has_time_curve:
+                if (
+                    slot_end_media_time < -epsilon
+                    or slot_start_media_time > media_duration + epsilon
+                ):
+                    return
 
             # X coordinate within the visible segment (lenient for boundary cases)
             local_x = (slot_start_clip_time - segment_start) * pixels_per_second
@@ -888,29 +1109,22 @@ class ClipPainter(BasePainter):
                 add_center_world(clip_end_world)
         else:
             # Full-grid style ("entire", etc.)
-            max_slots = self.MAX_THUMB_SLOTS
-
-            # Find the range of n such that slot centers lie near the segment's
-            # world-time window when expanded by half a slot on each side.
-            # Expand by 2 to catch more boundary cases
+            # Slot starts should cover any thumbnail overlapping the visible
+            # segment, including partials at either edge.
             n_min = int(
                 math.floor(
-                    (segment_start_world - half_interval - anchor_world) / interval_seconds
+                    (segment_start_world - slot_duration_seconds - anchor_world) / interval_seconds
                 )
             ) - 2
             n_max = int(
                 math.ceil(
-                    (segment_end_world + half_interval - anchor_world) / interval_seconds
+                    (segment_end_world - anchor_world) / interval_seconds
                 )
             ) + 2
 
-            count = 0
             for n in range(n_min, n_max + 1):
-                if count >= max_slots:
-                    break
                 center_world = anchor_world + n * interval_seconds
                 add_center_world(center_world)
-                count += 1
 
         if not slots:
             return [], interval_seconds
@@ -933,12 +1147,19 @@ class ClipPainter(BasePainter):
             return False
 
         clip_fps = self._clip_media_fps(clip)
+        project_fps = float(getattr(self.w, "fps_float", clip_fps) or clip_fps or 24.0)
         trim_start = self._clip_trim_start(clip)
         slot_duration_seconds = float(interval_seconds or 0.0)
         half_slot_duration = slot_duration_seconds * 0.5
         segment_offset = float(timing.get("offset", 0.0) or 0.0)
         segment_duration = float(timing.get("duration", 0.0) or 0.0)
         segment_end = segment_offset + segment_duration
+        frame_duration = (1.0 / project_fps) if project_fps and project_fps > 0.0 else 0.0
+        clip_start_frame = _frame_for_seconds(trim_start + segment_offset, clip_fps)
+        if frame_duration > 0.0:
+            clip_end_frame = _frame_for_seconds(max(trim_start + segment_offset, trim_start + segment_end - frame_duration), clip_fps)
+        else:
+            clip_end_frame = _frame_for_seconds(trim_start + segment_end, clip_fps)
         edge_epsilon = 1e-6
         is_resizing_clip = (
             getattr(self.w, "_resizing_item", None) is clip
@@ -949,12 +1170,18 @@ class ClipPainter(BasePainter):
         pending = False
         generation = getattr(self.w, "thumbnail_generation", 0)
         rounding = self._frame_rounding_increment(clip_fps, interval_seconds)
-        frame_duration = (1.0 / clip_fps) if clip_fps and clip_fps > 0.0 else 0.0
-
         static_image = self._has_static_image(clip)
         static_frame = 1 if static_image else None
 
-        for time_offset, rect in slots:
+        for slot_index, (time_offset, rect) in enumerate(slots):
+            if self._clip_is_audio_only(clip):
+                pix = self._audio_thumbnail_pixmap()
+                if pix:
+                    self._paint_thumbnail_pixmap(painter, pix, rect, inner)
+                else:
+                    pending = True
+                continue
+
             slot_start_time = float(time_offset)
             slot_end_time = slot_start_time + slot_duration_seconds
             slot_center_time = slot_start_time + half_slot_duration
@@ -964,12 +1191,16 @@ class ClipPainter(BasePainter):
             elif clamped_center_time > segment_end:
                 clamped_center_time = segment_end
 
-            is_edge = (slot_start_time <= segment_offset + edge_epsilon) or (
-                slot_end_time >= segment_end - edge_epsilon
-            )
-            slot_role = "edge-start" if is_edge and slot_start_time <= segment_offset + edge_epsilon else (
-                "edge-end" if is_edge and slot_end_time >= segment_end - edge_epsilon else "grid"
-            )
+            touches_start = slot_start_time <= segment_offset + edge_epsilon
+            touches_end = slot_end_time >= segment_end - edge_epsilon
+            is_first_slot = slot_index == 0
+            is_last_slot = slot_index == (len(slots) - 1)
+            is_edge = (touches_start and is_first_slot) or (touches_end and is_last_slot)
+            slot_role = "grid"
+            if touches_start and is_first_slot:
+                slot_role = "edge-start"
+            elif touches_end and is_last_slot:
+                slot_role = "edge-end"
 
             # For "start" and "start-end", anchor edge thumbnails to exact trim edges.
             # Keep strip/entire behavior unchanged (centered sampling).
@@ -981,19 +1212,38 @@ class ClipPainter(BasePainter):
                 else:
                     sample_time = segment_end
             elif style == "entire":
-                # Entire style samples from the first frame in each slot for stable
-                # trim behavior and predictable strip thumbnails.
-                sample_time = slot_start_time
+                # Sample the visual center of each strip thumbnail, but clamp the
+                # first/last visible slots to the actual clip edges.
+                if slot_role == "edge-start":
+                    sample_time = segment_offset
+                elif slot_role == "edge-end":
+                    if frame_duration > 0.0:
+                        sample_time = max(segment_offset, segment_end - frame_duration)
+                    else:
+                        sample_time = segment_end
+                else:
+                    sample_time = clamped_center_time
             else:
                 sample_time = clamped_center_time
 
-            # Correct absolute time in source media
             clip_time = trim_start + sample_time
             frame = self._frame_for_offset(clip_time, clip_fps)
-            if static_frame:
-                frame = static_frame
+            pre_round_frame = frame
             if rounding > 1 and (style == "entire" or not is_edge):
                 frame = max(1, int(round((frame - 1) / rounding) * rounding) + 1)
+            frame = min(max(frame, clip_start_frame), clip_end_frame)
+            rounded_frame = frame
+            mapped_frame = resolve_source_frame(
+                clip,
+                clip_time,
+                clip_fps,
+                project_fps,
+                fallback_frame=frame,
+            )
+            frame = mapped_frame
+            if static_frame:
+                frame = static_frame
+
             key = (clip_key, frame)
             cached = self.thumb_cache.get(key)
             if cached and not cached.isNull():
@@ -1402,13 +1652,37 @@ class ClipPainter(BasePainter):
 
 
     def _draw_clip(self, painter, full_rect, segment_rect, clip, pen, selected):
-        result = self._clip_pixmap(full_rect, segment_rect, clip)
-        if not result:
-            return
-        pix, shadow_spread, icons, _ = result
+        style = str(getattr(self.w, "thumbnail_style", "entire") or "").strip().lower()
+        pix = None
+        shadow_spread = 0.0
+        icons = []
+        text_entry = None
+        preview_drawn = False
+        if style in ("entire", "start", "start-end") and self._is_trim_preview_active(clip):
+            preview = self._retime_preview_cache.get(getattr(clip, "id", ""))
+            pix = preview.get("pix") if isinstance(preview, dict) else None
+            blur = float(preview.get("blur", 0.0) or 0.0) if isinstance(preview, dict) else 0.0
+            if isinstance(pix, QPixmap) and not pix.isNull():
+                shadow_spread = blur
+                icons = preview.get("icons") if isinstance(preview.get("icons"), list) else []
+                text_entry = preview.get("text_entry") if isinstance(preview.get("text_entry"), dict) else None
+                offset_x = segment_rect.x() - blur - self._trim_preview_offset_px(clip)
+                offset = QPointF(offset_x, segment_rect.y() - blur)
+                painter.save()
+                painter.setClipRect(segment_rect, Qt.IntersectClip)
+                painter.drawPixmap(offset, pix)
+                painter.restore()
+                preview_drawn = True
+        else:
+            result = self._clip_pixmap(full_rect, segment_rect, clip)
+            if not result:
+                return
+            pix, shadow_spread, icons, _, text_entry = result
+        includes_start = (segment_rect.left() - full_rect.left()) <= 0.5
         if pix:
             offset = QPointF(segment_rect.x() - shadow_spread, segment_rect.y() - shadow_spread)
-            painter.drawPixmap(offset, pix)
+            if not preview_drawn:
+                painter.drawPixmap(offset, pix)
             if icons:
                 for entry in icons:
                     rect_local = entry.get("rect") if isinstance(entry, dict) else None

@@ -49,6 +49,7 @@ class ClipInteractionMixin:
                     drop_cache=False,
                     drop_pending=True,
                     drop_fallback=False,
+                    drop_preview=False,
                     invalidate_render_cache=False,
                 )
             return
@@ -64,6 +65,7 @@ class ClipInteractionMixin:
                 drop_fallback=False,
                 invalidate_render_cache=False,
             )
+            self.clip_painter.clear_retime_preview(clip_key)
 
     def clip_has_pending_override(self, clip):
         if not isinstance(clip, Clip):
@@ -158,7 +160,10 @@ class ClipInteractionMixin:
         ui_data = data.get("ui", {}) if isinstance(data, dict) else {}
         audio_data = ui_data.get("audio_data") if isinstance(ui_data, dict) else None
         if isinstance(audio_data, list):
-            return len(audio_data)
+            return (
+                len(audio_data),
+                ui_data.get("waveform_token"),
+            )
         return 0
 
     def _clip_data_dict(self, clip):
@@ -204,10 +209,15 @@ class ClipInteractionMixin:
     def _clip_reader_duration_seconds(self, clip):
         data = self._clip_data_dict(clip)
         reader = self._clip_reader_dict(clip)
+        start = self._float_or_none(data.get("start"))
+        if start is None:
+            start = 0.0
+
+        candidate_limits = []
 
         duration = self._positive_float(reader.get("duration"))
         if duration is not None:
-            return duration
+            candidate_limits.append(duration)
 
         video_length = self._positive_float(reader.get("video_length"))
         fps_meta = reader.get("fps") if isinstance(reader.get("fps"), dict) else {}
@@ -216,20 +226,39 @@ class ClipInteractionMixin:
         if video_length is not None and fps_num is not None and fps_den is not None and fps_den > 0.0:
             fps_value = fps_num / fps_den
             if fps_value > 0.0:
-                return video_length / fps_value
+                candidate_limits.append(video_length / fps_value)
+
+        project_fps = self._positive_float(getattr(self, "fps_float", None))
+        time_data = data.get("time") if isinstance(data.get("time"), dict) else {}
+        time_points = time_data.get("Points") if isinstance(time_data.get("Points"), list) else []
+        if project_fps is not None and len(time_points) >= 2:
+            x_values = []
+            for point in time_points:
+                if not isinstance(point, dict):
+                    continue
+                co = point.get("co")
+                if not isinstance(co, dict):
+                    continue
+                x_val = self._float_or_none(co.get("X"))
+                if x_val is not None:
+                    x_values.append(x_val)
+            if len(x_values) >= 2:
+                time_duration = (max(x_values) - min(x_values)) / project_fps
+                if time_duration > 0.0:
+                    candidate_limits.append(start + time_duration)
 
         clip_duration = self._positive_float(data.get("duration"))
         if clip_duration is not None:
-            return clip_duration
+            candidate_limits.append(start + clip_duration)
 
-        start = self._float_or_none(data.get("start"))
         end = self._float_or_none(data.get("end"))
-        if start is None:
-            start = 0.0
         if end is None:
             end = start
         span = end - start
-        return span if span > 0.0 else None
+        if span > 0.0:
+            candidate_limits.append(end)
+
+        return max(candidate_limits) if candidate_limits else None
 
     def _startClipDrag(self):
         """Begin a drag operation on one or many selected clips/transitions."""
@@ -764,6 +793,7 @@ class ClipInteractionMixin:
                 "position": self._resize_initial["position"],
                 "initial_start": self._resize_initial["start"],
                 "initial_end": self._resize_initial["end"],
+                "initial_position": self._resize_initial["position"],
                 "scale": bool(self.enable_timing),
             }
             sel_type = "clip"
@@ -807,6 +837,7 @@ class ClipInteractionMixin:
                     "position": position,
                     "initial_start": self._resize_initial.get("start", start),
                     "initial_end": self._resize_initial.get("end", end),
+                    "initial_position": self._resize_initial.get("position", position),
                 },
             )
             override["start"] = start
@@ -920,15 +951,15 @@ class ClipInteractionMixin:
 
             max_start = end - min_len
             overflow = 0.0
-            if new_start < 0.0:
+            if new_start < 0.0 and not self.enable_timing:
                 overflow = -new_start
                 new_start = 0.0
-                if not allow_left_overflow:
+                if not allow_left_overflow and not self.enable_timing:
                     new_position = pos - start
             if new_start > max_start:
                 new_start = max_start
                 new_position = pos + (max_start - start)
-            if new_position < 0.0:
+            if new_position < 0.0 and not self.enable_timing:
                 diff = -new_position
                 new_position = 0.0
                 new_start += diff

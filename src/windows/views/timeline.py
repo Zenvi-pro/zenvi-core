@@ -201,6 +201,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 obj.save()
                 if original:
                     get_app().updates.apply_last_action_to_history(original)
+                    if (
+                        object_type == "clip"
+                        and self._clip_volume_curve_changed(original, getattr(obj, "data", None))
+                        and self._clip_has_visible_waveform(obj)
+                    ):
+                        self.Show_Waveform_Triggered(
+                            [obj.id],
+                            transaction_id=self.keyframe_transaction_id,
+                        )
             # Only drop the pre-drag snapshot once history has taken it
             self.keyframe_drag_original.pop(object_id, None)
         finally:
@@ -244,6 +253,19 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if isinstance(item, (dict, list)) and self._payload_contains_waveform(item):
                     return True
         return False
+
+    def _clip_has_visible_waveform(self, clip):
+        """Return True when a clip currently has waveform samples displayed."""
+        if not clip or not isinstance(getattr(clip, "data", None), dict):
+            return False
+        audio_data = clip.data.get("ui", {}).get("audio_data")
+        return isinstance(audio_data, list) and len(audio_data) > 0
+
+    def _clip_volume_curve_changed(self, original_data, current_data):
+        """Return True when a clip's volume keyframe payload changed."""
+        if not isinstance(original_data, dict) or not isinstance(current_data, dict):
+            return False
+        return original_data.get("volume") != current_data.get("volume")
 
     def _assign_new_effect_ids(self, clip_data):
         """Assign new unique IDs to each effect on the provided clip data."""
@@ -1775,6 +1797,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         clip = Clip.get(id=clip_id)
         if clip:
+            existing_ui = clip.data.get("ui", {}) if isinstance(clip.data, dict) else {}
+            incoming_ui = ui_data.get("ui") if isinstance(ui_data, dict) else None
+            incoming_audio = incoming_ui.get("audio_data") if isinstance(incoming_ui, dict) else None
+            preserve_existing_waveform = (
+                incoming_audio is None and isinstance(existing_ui.get("audio_data"), list)
+            )
+
+            # Preserve the current waveform preview while fresh waveform samples
+            # are still being generated in the background.
+            if preserve_existing_waveform:
+                merged_ui = dict(existing_ui)
+                if isinstance(incoming_ui, dict):
+                    merged_ui.update(incoming_ui)
+                merged_ui["audio_data"] = existing_ui.get("audio_data")
+                ui_data = dict(ui_data or {})
+                ui_data["ui"] = merged_ui
+
+            if isinstance(ui_data, dict):
+                clip_ui = ui_data.get("ui")
+                if not isinstance(clip_ui, dict):
+                    clip_ui = {}
+                    ui_data["ui"] = clip_ui
+                if not preserve_existing_waveform and isinstance(clip_ui.get("audio_data"), list):
+                    clip_ui["waveform_token"] = str(tid or self.get_uuid())
             clip.data = ui_data
             clip.save()
             if hasattr(self, "clip_painter"):

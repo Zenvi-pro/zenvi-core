@@ -1634,10 +1634,8 @@ class KeyframeMixin:
             drag_paths=drag.get("data_paths"),
         )
         if new_frame != drag.get("current_frame"):
-            self._begin_keyframe_transaction()
-            if drag.get("transaction_started") and new_frame is not None:
-                self._apply_keyframe_delta(drag, ignore_refresh=True)
-        self._seek_to_marker_frame(marker, new_frame)
+            drag["moved"] = True
+        self._seek_to_marker_frame(marker, new_frame, start_preroll=False)
         self._keyframes_dirty = True
         self.update()
 
@@ -1800,7 +1798,7 @@ class KeyframeMixin:
         self._active_keyframe_marker = marker
         self._select_marker_owner(marker, seek=True, clear_existing=clear_existing)
 
-    def _seek_to_marker_frame(self, marker, frame):
+    def _seek_to_marker_frame(self, marker, frame, start_preroll=True):
         if marker is None or frame is None:
             return
         fps = self.fps_float or 1.0
@@ -1830,19 +1828,22 @@ class KeyframeMixin:
         moved = drag.get("moved")
         marker = drag.get("marker")
         timeline = getattr(self.win, "timeline", None)
-        if started:
-            if moved:
-                if changed:
-                    self._apply_keyframe_delta(drag)
-                else:
-                    self._apply_keyframe_delta(drag, force=True)
-            if timeline:
-                timeline.FinalizeKeyframeDrag(
-                    drag.get("object_type", "clip"),
-                    drag.get("object_id", ""),
-                )
-            if moved and hasattr(self.win, "show_property_timeout"):
-                QTimer.singleShot(0, self.win.show_property_timeout)
+        if moved:
+            if changed:
+                self._begin_keyframe_transaction()
+                started = drag.get("transaction_started")
+            if started:
+                self._apply_keyframe_delta(drag, force=True)
+                if timeline:
+                    timeline.FinalizeKeyframeDrag(
+                        drag.get("object_type", "clip"),
+                        drag.get("object_id", ""),
+                    )
+                if hasattr(self.win, "show_property_timeout"):
+                    QTimer.singleShot(0, self.win.show_property_timeout)
+            pending_frame = drag.get("pending_frame")
+            if pending_frame is not None:
+                self._seek_to_marker_frame(marker, pending_frame, start_preroll=True)
         else:
             clear_existing = drag.get("clear_existing", True)
             self._handle_keyframe_click(marker, clear_existing=clear_existing)
