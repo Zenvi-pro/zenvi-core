@@ -133,9 +133,8 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             log.info(f"file: {file_data['path']} has no audio_data. Skipping")
             return
 
-        # Show waiting cursor (must run on the GUI thread)
-        invoke_on_gui(lambda: get_app().setOverrideCursor(QCursor(Qt.WaitCursor)))
-
+        # Show waiting cursor on the GUI thread
+        get_app().window.WaitCursorSignal.emit(True)
         try:
             # Extract audio waveform data (for all channels)
             # Use max RMS (root mean squared) value for each sample
@@ -153,11 +152,12 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             # Update file with audio data (only if all channels requested)
             if channel == -1:
                 get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
-        finally:
-            invoke_on_gui(lambda: get_app().restoreOverrideCursor())
 
-        # Return audio sample dataset
-        return max_samples_vector
+            # Return audio sample dataset
+            return max_samples_vector
+        finally:
+            # Restore cursor on the GUI thread even if extraction fails
+            get_app().window.WaitCursorSignal.emit(False)
 
     # Get file query object
     file = File.get(id=file_id)

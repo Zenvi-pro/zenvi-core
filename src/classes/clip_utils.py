@@ -327,6 +327,11 @@ def _is_single_image(source: Any) -> bool:
     return isinstance(media_type, str) and media_type.lower() == "image"
 
 
+def is_single_image_media(source: Any) -> bool:
+    """Public helper to identify still-image media metadata."""
+    return _is_single_image(source)
+
+
 def _clip_has_single_image(reader: Any, clip_data: Any, existing_clip: Any) -> bool:
     """Return True if any metadata indicates a single-image clip."""
     if _is_single_image(reader):

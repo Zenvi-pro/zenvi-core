@@ -159,6 +159,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
     SetKeyframeFilter = pyqtSignal(str)     # Signal to only show keyframes for the selected property
     IgnoreUpdates = pyqtSignal(bool, bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
+    WaitCursorSignal = pyqtSignal(bool)
     ThemeChangedSignal = pyqtSignal(object)     # Signal when theme is changed
 
     # Docks are closable, movable and floatable
@@ -1395,12 +1396,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
 
-        # Set cursor to waiting
-        get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
-
-        # Show dialog
-        from windows.preferences import Preferences
-        win = Preferences()
+        get_app().window.WaitCursorSignal.emit(True)
+        try:
+            # Show dialog
+            from windows.preferences import Preferences
+            win = Preferences()
+        finally:
+            get_app().window.WaitCursorSignal.emit(False)
         # Run the dialog event loop - blocking interaction on this window during this time
         result = win.exec_()
         if result == QDialog.Accepted:
@@ -1411,9 +1413,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Save settings
         s = get_app().get_settings()
         s.save()
-
-        # Restore normal cursor
-        get_app().restoreOverrideCursor()
 
     def actionSignOut_trigger(self, checked=True):
         """Sign out of the Zenvi account and prompt re-login."""
@@ -4685,27 +4684,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
-        app = get_app()
-
         if ignore and not self.ignore_updates:
             if show_wait:
-                # Wait for mass updates to finish
-                app.setOverrideCursor(QCursor(Qt.WaitCursor))
-                self._wait_cursor_requests += 1
+                self._acquire_wait_cursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
-            app.processEvents()
+            get_app().processEvents()
         elif not ignore and self.ignore_updates:
-            if self._wait_cursor_requests:
-                # Ensure we unwind any wait cursors that we previously applied
-                while self._wait_cursor_requests and app.overrideCursor():
-                    app.restoreOverrideCursor()
-                    self._wait_cursor_requests -= 1
-                if self._wait_cursor_requests:
-                    # Cursor stack unexpectedly empty; reset our counter to keep it accurate
-                    self._wait_cursor_requests = 0
-            elif show_wait and app.overrideCursor():
-                # Fallback for callers expecting an unconditional restore
-                app.restoreOverrideCursor()
+            if show_wait:
+                self._release_wait_cursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:
@@ -4717,6 +4703,30 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Keep track of ignore / not ignore
         self.ignore_updates = ignore
+
+    def _acquire_wait_cursor(self):
+        """Push a wait cursor request on the GUI thread."""
+        app = get_app()
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        self._wait_cursor_requests += 1
+
+    def _release_wait_cursor(self):
+        """Release a wait cursor request on the GUI thread."""
+        app = get_app()
+        if self._wait_cursor_requests:
+            if app.overrideCursor():
+                app.restoreOverrideCursor()
+            self._wait_cursor_requests -= 1
+            return
+        if app.overrideCursor():
+            app.restoreOverrideCursor()
+
+    def handle_wait_cursor_signal(self, enabled):
+        """Handle cross-thread wait cursor requests safely on the GUI thread."""
+        if enabled:
+            self._acquire_wait_cursor()
+        else:
+            self._release_wait_cursor()
 
     def style_dock_widgets(self):
         """Apply the title bar each dock widget should have for its current state.
@@ -5181,6 +5191,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.ignore_updates = False
         self._wait_cursor_requests = 0
         self.IgnoreUpdates.connect(self.ignore_updates_callback)
+        self.WaitCursorSignal.connect(self.handle_wait_cursor_signal)
 
         # Connect playhead moved signals
         self.SeekSignal.connect(self.handleSeek)

@@ -63,7 +63,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media
+from classes.clip_utils import clamp_timing_to_media, is_single_image_media
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
@@ -824,6 +824,102 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
                 point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
 
+    def _anchor_transition_endpoint_keyframes(self, transition_data, total_frames):
+        """Keep static transition endpoint keyframes anchored to the clip edges."""
+        if total_frames <= 0 or not isinstance(transition_data, dict):
+            return
+        last_frame = int(total_frames) + 1
+        for prop in ("brightness", "contrast"):
+            keyframe = transition_data.get(prop)
+            points = keyframe.get("Points") if isinstance(keyframe, dict) else None
+            if not isinstance(points, list) or len(points) < 2:
+                continue
+            first = points[0].get("co") if isinstance(points[0], dict) else None
+            last = points[-1].get("co") if isinstance(points[-1], dict) else None
+            if isinstance(first, dict):
+                first["X"] = 1
+            if isinstance(last, dict):
+                last["X"] = last_frame
+
+    def _transition_mask_reader(self, transition_data, fallback_data=None):
+        """Return reader metadata for a transition payload."""
+        if isinstance(transition_data, dict):
+            for key in ("mask_reader", "reader"):
+                reader = transition_data.get(key)
+                if isinstance(reader, dict):
+                    return reader
+        if isinstance(fallback_data, dict):
+            for key in ("mask_reader", "reader"):
+                reader = fallback_data.get(key)
+                if isinstance(reader, dict):
+                    return reader
+        return {}
+
+    def _transition_uses_static_mask(self, transition_data, fallback_data=None):
+        """Return True when a transition uses a static single-image mask."""
+        reader = self._transition_mask_reader(transition_data, fallback_data)
+        if "has_single_image" in reader:
+            return bool(reader.get("has_single_image"))
+        return bool(is_single_image_media(reader))
+
+    def _transition_reader_changed(self, transition_data, fallback_data=None):
+        """Return True when the transition reader source changed."""
+        new_reader = self._transition_mask_reader(transition_data, fallback_data)
+        old_reader = self._transition_mask_reader(fallback_data, None)
+
+        if not isinstance(fallback_data, dict):
+            return False
+        if not new_reader and not old_reader:
+            return False
+
+        for key in ("id", "path", "type", "has_single_image", "video_length", "duration"):
+            if new_reader.get(key) != old_reader.get(key):
+                return True
+        return new_reader != old_reader
+
+    def _build_transition_default_keyframes(self, duration, start_value, end_value, contrast_value):
+        """Build default brightness/contrast keyframes for a transition."""
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        duration = max(0.0, float(duration or 0.0))
+
+        brightness = openshot.Keyframe()
+        brightness.AddPoint(1, float(start_value), openshot.BEZIER)
+        if float(start_value) != float(end_value):
+            brightness.AddPoint(round(duration * fps_float) + 1, float(end_value), openshot.BEZIER)
+        contrast = openshot.Keyframe(float(contrast_value))
+        return json.loads(brightness.Json()), json.loads(contrast.Json())
+
+    def _set_transition_mask_defaults(self, transition_data, fallback_data=None):
+        """Normalize timing/keyframes for static vs animated transition masks."""
+        if not isinstance(transition_data, dict):
+            return transition_data
+
+        start = float(transition_data.get("start", 0.0) or 0.0)
+        end = float(transition_data.get("end", start) or start)
+        if end < start:
+            end = start
+        duration = max(0.0, end - start)
+
+        if self._transition_uses_static_mask(transition_data, fallback_data):
+            transition_data["start"] = 0.0
+            transition_data["end"] = duration
+            brightness, contrast = self._build_transition_default_keyframes(duration, 1.0, -1.0, 3.0)
+            mode = "static"
+        else:
+            transition_data["start"] = start
+            transition_data["end"] = end
+            brightness, contrast = self._build_transition_default_keyframes(duration, 0.0, 0.0, 0.0)
+            mode = "animated"
+
+        transition_data["duration"] = max(
+            0.0,
+            float(transition_data.get("end", 0.0) or 0.0) - float(transition_data.get("start", 0.0) or 0.0),
+        )
+        transition_data["brightness"] = brightness
+        transition_data["contrast"] = contrast
+        return transition_data
+
     def _reverse_keyframes(self, keyframe, total_frames):
         """Reverse keyframe positions, swapping handles"""
         points = keyframe.get("Points", [])
@@ -1008,6 +1104,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 for prop in ("brightness", "contrast"):
                     if prop in existing_item.data:
                         self._scale_keyframes(existing_item.data[prop], scale)
+            if uses_static_mask and new_frames:
+                self._anchor_transition_endpoint_keyframes(existing_item.data, new_frames)
+        elif old_data and self._transition_reader_changed(existing_item.data, old_data):
+            self._set_transition_mask_defaults(existing_item.data, old_data)
 
         if auto_direction:
             self._auto_orient_transition_keyframes(existing_item.data)

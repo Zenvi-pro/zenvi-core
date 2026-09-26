@@ -37,6 +37,29 @@ from ..colors import effect_color_qcolor
 
 
 class KeyframeMixin:
+    def _keyframe_item_position(self, item):
+        """Return the item's timeline position, honoring live preview overrides."""
+        if not item:
+            return 0.0
+
+        data = item.data if isinstance(getattr(item, "data", None), dict) else {}
+        position = data.get("position", 0.0)
+        item_id = getattr(item, "id", None)
+
+        overrides = None
+        if isinstance(item, Clip):
+            overrides = getattr(self, "_pending_clip_overrides", {}).get(item_id)
+        elif isinstance(item, Transition):
+            overrides = getattr(self, "_pending_transition_overrides", {}).get(item_id)
+
+        if isinstance(overrides, dict) and overrides.get("position") is not None:
+            position = overrides.get("position")
+
+        try:
+            return float(position or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _lookup_interpolation(self, value):
         try:
             idx = int(value)
@@ -527,6 +550,9 @@ class KeyframeMixin:
         self._update_keyframe_marker_viewports(state)
 
     def _ensure_keyframe_markers(self):
+        if getattr(self, "_suspend_keyframe_rebuild", False):
+            self._update_keyframe_marker_viewports()
+            return
         if self._keyframes_dirty:
             self._refresh_keyframe_markers()
         else:
@@ -967,17 +993,9 @@ class KeyframeMixin:
 
         base_position = 0.0
         if clip:
-            data = clip.data if isinstance(clip.data, dict) else {}
-            try:
-                base_position = float(data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                base_position = 0.0
+            base_position = self._keyframe_item_position(clip)
         elif transition:
-            data = transition.data if isinstance(transition.data, dict) else {}
-            try:
-                base_position = float(data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                base_position = 0.0
+            base_position = self._keyframe_item_position(transition)
         return base_position
 
     def _marker_absolute_seconds(self, marker):
@@ -1043,10 +1061,7 @@ class KeyframeMixin:
         clip_obj = marker.get("clip") if isinstance(marker, dict) else None
         if isinstance(clip_obj, Clip):
             clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-            try:
-                clip_position = float(clip_data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                clip_position = 0.0
+            clip_position = self._keyframe_item_position(clip_obj)
             try:
                 clip_start = float(clip_data.get("start", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -1065,10 +1080,7 @@ class KeyframeMixin:
         transition_obj = marker.get("transition") if isinstance(marker, dict) else None
         if isinstance(transition_obj, Transition):
             tran_data = transition_obj.data if isinstance(transition_obj.data, dict) else {}
-            try:
-                tran_position = float(tran_data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                tran_position = 0.0
+            tran_position = self._keyframe_item_position(transition_obj)
             try:
                 tran_start = float(tran_data.get("start", 0.0) or 0.0)
             except (TypeError, ValueError):

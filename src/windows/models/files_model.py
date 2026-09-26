@@ -472,6 +472,35 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
     indexingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
+    PLACEHOLDER_PREFIX = "__genjob__:"
+    PROJECT_FILE_THUMB_ATTEMPTS = 3
+
+    def _thumbnail_source_for_file(self, file, clear_cache=False):
+        """Return the thumbnail/artwork source path and display name for a file."""
+        path, filename = os.path.split(file.data["path"])
+        name = file.data.get("name", filename)
+        media_type = file.data.get("media_type")
+
+        if media_type in ["video", "image"]:
+            thumbnail_frame = 1
+            if 'start' in file.data:
+                fps = file.data["fps"]
+                fps_float = float(fps["num"]) / float(fps["den"])
+                thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
+            thumb_source = GetThumbPath(
+                file.id,
+                thumbnail_frame,
+                clear_cache=clear_cache,
+                attempts=self.PROJECT_FILE_THUMB_ATTEMPTS,
+            )
+        else:
+            thumb_source = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
+
+        return thumb_source, name, media_type
+
+    def _project_file_icon_for_file(self, file):
+        thumb_source, name, media_type = self._thumbnail_source_for_file(file)
+        return QIcon(thumb_source), name, media_type
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -566,24 +595,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
             path, filename = os.path.split(file.data["path"])
             tags = file.data.get("tags", "")
-            name = file.data.get("name", filename)
-
-            media_type = file.data.get("media_type")
-
-            # Generate thumbnail for file (if needed)
-            if media_type in ["video", "image"]:
-                # Check for start and end attributes (optional)
-                thumbnail_frame = 1
-                if 'start' in file.data:
-                    fps = file.data["fps"]
-                    fps_float = float(fps["num"]) / float(fps["den"])
-                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-
-                # Get thumb path
-                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
-            else:
-                # Audio file
-                thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+            thumb_icon, name, media_type = self._project_file_icon_for_file(file)
 
             row = []
             flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt. ItemNeverHasChildren
@@ -1163,9 +1175,6 @@ class FilesModel(QObject, updates.UpdateInterface):
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
 
-        fps = file.data["fps"]
-        fps_float = float(fps["num"]) / float(fps["den"])
-
         # Refresh thumbnail for updated file
         self.ignore_updates = True
         m = self.model
@@ -1176,18 +1185,8 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
-            # Generate thumbnail for file (if needed)
-            if file.data.get("media_type") in ["video", "image"]:
-                # Check for start and end attributes (optional)
-                thumbnail_frame = 1
-                if 'start' in file.data:
-                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-
-                # Get thumb path
-                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame, clear_cache=True))
-            else:
-                # Audio file
-                thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+            thumb_source, _, _ = self._thumbnail_source_for_file(file, clear_cache=True)
+            thumb_icon = QIcon(thumb_source)
 
             # Update thumb for file
             thumb_index = id_index.sibling(id_index.row(), 0)
