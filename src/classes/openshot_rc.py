@@ -2,7 +2,7 @@
 
 # Resource object code
 #
-# Created by: The Resource Compiler for PyQt5 (Qt v5.15.3)
+# Created by: The Qt Resource Compiler, pyrcc5 (Qt v5.15.3); imports go through qt_api
 #
 # WARNING! All changes made in this file will be lost!
 

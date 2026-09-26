@@ -33,7 +33,7 @@ sys.argv = _clean_argv
 
 # ── Minimal QApplication setup ────────────────────────────────────────────────
 
-from PyQt5.QtWidgets import QApplication
+from qt_api import QApplication
 
 _app = QApplication.instance() or QApplication(["zenvi-test", "-platform", "minimal"])
 

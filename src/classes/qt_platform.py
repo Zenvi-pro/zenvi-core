@@ -27,7 +27,7 @@
 
 import sys
 
-# Deliberately free of PyQt5 imports: this module runs before PyQt5 is
+# Deliberately free of Qt imports: this module runs before the Qt binding is
 # imported, because QT_QPA_PLATFORM is read when QApplication is constructed.
 
 

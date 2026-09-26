@@ -1,7 +1,7 @@
 """
  @file
  @brief Pre-launch update installer.  Called from launch.py *before* any
-        heavy imports (PyQt5, openshot, etc.) to apply a previously downloaded
+        heavy imports (Qt, openshot, etc.) to apply a previously downloaded
         update that was staged by the AutoUpdater background thread.
  @author Zenvi Team
 
@@ -15,7 +15,7 @@
  the Free Software Foundation, either version 3 of the License, or
  (at your option) any later version.
 
- NOTE: This module intentionally avoids importing PyQt5 or any heavy
+ NOTE: This module intentionally avoids importing Qt or any heavy
  dependency so it can run quickly at the very start of the process.
 """
 

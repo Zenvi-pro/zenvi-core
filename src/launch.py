@@ -423,7 +423,7 @@ def main():
         sys.exit(1)
 
     if gui_ready:
-        # Qt6 bindings expose exec(); PyQt5 has both exec() and exec_().
+        # Qt6 bindings expose exec(); Qt5 bindings have both exec() and exec_().
         exec_fn = getattr(app, "exec", None) or getattr(app, "exec_", None)
         if exec_fn is None or not callable(exec_fn):
             raise AttributeError("OpenShotApp has no exec_/exec method")

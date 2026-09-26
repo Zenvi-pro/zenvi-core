@@ -6,17 +6,17 @@ import re
 import threading
 import time
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QPropertyAnimation, QEasingCurve,
     QObject, QThread, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG,
     QUrl, QFileInfo, QTimer,
 )
-from PyQt5.QtWidgets import (
+from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QComboBox, QMessageBox, QFrame,
     QGraphicsOpacityEffect, QScrollArea, QToolButton, QMenu,
 )
-from PyQt5.QtGui import QColor, QTextCursor
+from qt_api import QColor, QTextCursor
 
 from classes.bridge_guard import guarded_slot
 from classes.logger import log
@@ -963,7 +963,7 @@ class AIChatWindow(QDockWidget):
 
         # Stop all threads on app quit (covers the shutdown path where
         # closeEvent is never called on dock widgets).
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QApplication
         app_instance = QApplication.instance()
         if app_instance:
             app_instance.aboutToQuit.connect(self._stop_all_threads)
@@ -2748,7 +2748,7 @@ class AIChatWindow(QDockWidget):
         """Build embedded HTML chat UI (Qt WebEngine)."""
         from classes import info
         from windows.chat_web_view import ChatWebEngineView
-        from PyQt5.QtWebChannel import QWebChannel
+        from qt_api import QWebChannel
 
         self._chat_embed_backend = "webengine"
         self._chat_fade_done = True
@@ -2804,7 +2804,7 @@ class AIChatWindow(QDockWidget):
     def _init_webkit_ui(self):
         """Embedded HTML chat using Qt WebKit (MSYS2 / Windows WebKit builds)."""
         from classes import info
-        from PyQt5.QtWebKit import QWebSettings
+        from qt_api import QWebSettings
 
         from windows.embedded_web import attach_webkit_window_object, run_js as web_run_js
         from windows import chat_web_view as _cwv
@@ -2834,7 +2834,7 @@ class AIChatWindow(QDockWidget):
             self._chat_view.filesDropped.connect(self._on_chat_files_dropped)
             self._chat_view.fileIdsDropped.connect(self._on_chat_file_ids_dropped)
         else:
-            from PyQt5.QtWebKitWidgets import QWebView
+            from qt_api import QWebView
             self._chat_view = QWebView(self)
         self._chat_view.setObjectName("AIChatWindowContents")
         pal = self._chat_view.palette()

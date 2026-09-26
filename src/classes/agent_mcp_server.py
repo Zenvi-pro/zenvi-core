@@ -281,7 +281,7 @@ class ZenviMcpServer:
 
     def _connect_shutdown_hook(self):
         try:
-            from PyQt5.QtWidgets import QApplication
+            from qt_api import QApplication
             qapp = QApplication.instance()
             if qapp is not None:
                 qapp.aboutToQuit.connect(self.stop)
