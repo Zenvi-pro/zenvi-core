@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import uuid
+from typing import Callable, Optional
 
 from classes.image_types import is_audio_path, is_image
 
@@ -63,7 +64,11 @@ def append_path_attachment(attachments: list, path: str, file_id: str = "", name
     return att
 
 
-def attach_paths_batch(attachments: list, paths, file_id_for_path=None) -> tuple:
+def attach_paths_batch(
+    attachments: list,
+    paths,
+    file_id_for_path: Optional[Callable[[str], Optional[str]]] = None,
+) -> tuple:
     """Attach many paths as one batch.
 
     Returns ``(snapshot_before, added_count)``. ``snapshot_before`` is None when
@@ -78,7 +83,7 @@ def attach_paths_batch(attachments: list, paths, file_id_for_path=None) -> tuple
         file_id = ""
         if callable(file_id_for_path):
             try:
-                file_id = file_id_for_path(path) or ""
+                file_id = str(file_id_for_path(path) or "")
             except Exception:
                 file_id = ""
         if append_path_attachment(attachments, path, file_id=file_id) is not None:
