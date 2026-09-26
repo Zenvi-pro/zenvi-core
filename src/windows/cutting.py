@@ -58,6 +58,7 @@ class Cutting(QDialog):
     PlaySignal = pyqtSignal()
     PauseSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
+    LoadTimelineAndSeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
     StopSignal = pyqtSignal()
 
@@ -237,6 +238,22 @@ class Cutting(QDialog):
         t = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
         return "%s:%s:%s:%s" % (t["hour"], t["min"], t["sec"], t["frame"])
 
+    def frame_to_compact_timestamp(self, frame_number, include_hours=False, include_minutes=False):
+        """Return a compact timecode for split clip names"""
+        seconds = (frame_number - 1) / self.fps
+        t = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
+
+        hours = int(t["hour"])
+        minutes = int(t["min"])
+        secs = int(t["sec"])
+        frames = int(t["frame"])
+
+        if include_hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d};{frames:02d}"
+        if include_minutes:
+            return f"{minutes:02d}:{secs:02d};{frames:02d}"
+        return f"{secs:02d};{frames:02d}"
+
     def movePlayhead(self, frame_number):
         """Update the playhead position"""
 
@@ -415,10 +432,25 @@ class Cutting(QDialog):
         if self.txtName.text():
             new_file.data['name'] = self.txtName.text()
         else:
-            global_frame = round(self.previous_start * self.fps) + self.start_frame
-            timestamp = self.frame_to_timestamp(global_frame)
+            global_start_frame = round(self.previous_start * self.fps) + self.start_frame
+            global_end_frame = round(self.previous_start * self.fps) + self.end_frame
+            start_seconds = (global_start_frame - 1) / self.fps
+            end_seconds = (global_end_frame - 1) / self.fps
+            start_parts = time_parts.secondsToTime(start_seconds, self.fps_num, self.fps_den)
+            end_parts = time_parts.secondsToTime(end_seconds, self.fps_num, self.fps_den)
+
+            include_hours = int(start_parts["hour"]) > 0 or int(end_parts["hour"]) > 0
+            include_minutes = (
+                include_hours
+                or int(start_parts["min"]) > 0
+                or int(end_parts["min"]) > 0
+            )
+            start_timestamp = self.frame_to_compact_timestamp(
+                global_start_frame, include_hours=include_hours, include_minutes=include_minutes)
+            end_timestamp = self.frame_to_compact_timestamp(
+                global_end_frame, include_hours=include_hours, include_minutes=include_minutes)
             base = os.path.splitext(os.path.basename(self.file_path))[0]
-            new_file.data['name'] = f"{base} ({timestamp})"
+            new_file.data['name'] = f"{base} ({start_timestamp} to {end_timestamp})"
 
         new_file.save()
 

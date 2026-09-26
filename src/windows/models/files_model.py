@@ -590,7 +590,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
             # Append thumbnail
             col = QStandardItem(thumb_icon, name)
-            col.setToolTip(filename)
+            col.setToolTip(name)
             col.setFlags(flags)
             col.setAccessibleText(name)
             row.append(col)
@@ -1188,6 +1188,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             item = m.itemFromIndex(thumb_index)
             item.setIcon(thumb_icon)
             item.setText(name)
+            item.setToolTip(name)
             item.setAccessibleText(name)
 
             # Update display name

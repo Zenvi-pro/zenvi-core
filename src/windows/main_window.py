@@ -1560,7 +1560,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionPlay_trigger(self):
         """Toggle play/pause on video preview"""
         player = self.preview_thread.player
-        if player.Mode() == openshot.PLAYBACK_PAUSED:
+        is_actively_playing = (
+            player.Mode() == openshot.PLAYBACK_PLAY and
+            player.Speed() != 0
+        )
+        if not is_actively_playing:
             # Start playback
             if self.should_play():
                 self.PlaySignal.emit()
@@ -1604,7 +1608,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # If paused, fast forward starting at faster than normal playback speed
             requested_speed = 2
 
-        if player.Mode() == openshot.PLAYBACK_PAUSED:
+        if player.Mode() != openshot.PLAYBACK_PLAY:
             self.actionPlay_trigger()
 
         if self.should_play(requested_speed):
@@ -1619,7 +1623,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             requested_speed = -1
 
         if self.should_play(requested_speed):
-            if player.Mode() == openshot.PLAYBACK_PAUSED:
+            if player.Mode() != openshot.PLAYBACK_PLAY:
                 self.actionPlay_trigger()
             self.SpeedSignal.emit(requested_speed)
 
@@ -4218,6 +4222,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if self.filesView.hasFocus():
                 self.actionRemove_from_Project_trigger()
             else:
+                # Prioritize deleting selected keyframes before deleting clips.
+                keyframes_deleted = False
+                timeline_widget = getattr(self, "timeline", None)
+                if timeline_widget and hasattr(timeline_widget, "delete_selected_keyframes"):
+                    try:
+                        keyframes_deleted = bool(timeline_widget.delete_selected_keyframes())
+                    except Exception:
+                        keyframes_deleted = False
+                if keyframes_deleted:
+                    self.refreshFrameSignal.emit()
+                    return
                 # Otherwise, proceed with the normal timeline delete behavior
                 self.actionRemoveClip_trigger(refresh=False)
                 self.actionRemoveTransition_trigger(refresh=False)

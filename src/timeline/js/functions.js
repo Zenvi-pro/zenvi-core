@@ -813,8 +813,6 @@ function updateDraggables(scope, ui, itemType) {
     var vert_scroll_offset = scrolling_tracks.scrollTop();
     var horz_scroll_offset = scrolling_tracks.scrollLeft();
 
-    // Track each dropped clip or transition
-    var dropped_clips = [];
     var position_diff = 0; // The time difference for multiple selections (if any)
     var ui_selected = $(".ui-selected");
 
@@ -881,9 +879,6 @@ function updateDraggables(scope, ui, itemType) {
                 item_data.position = snapToFPSGridTime(scope, item_data.position);
             });
 
-            // Keep track of dropped clips/transitions
-            dropped_clips.push(item_data);
-
             // Collect updates for batch processing
             if (item_type === "clip") {
                 clip_updates.push(item_data);
@@ -896,29 +891,19 @@ function updateDraggables(scope, ui, itemType) {
     // Batch process updates
     clip_updates.forEach(function(item_data, index) {
         var needs_refresh = (index === clip_updates.length - 1);
-        timeline.update_clip_data(JSON.stringify(item_data), true, true, !needs_refresh, tid);
+        var clipPayload = Object.assign({}, item_data, {
+            _auto_transition: clip_updates.length === 1
+        });
+        timeline.update_clip_data(JSON.stringify(clipPayload), true, true, !needs_refresh, tid);
     });
 
     transition_updates.forEach(function(item_data, index) {
         var needs_refresh = (index === transition_updates.length - 1);
-        timeline.update_transition_data(JSON.stringify(item_data), true, !needs_refresh, tid);
+        var transitionPayload = Object.assign({}, item_data, {
+            _auto_direction: true
+        });
+        timeline.update_transition_data(JSON.stringify(transitionPayload), true, !needs_refresh, tid);
     });
-
-    // Add missing transitions (if any)
-    if (dropped_clips.length === 1) {
-        for (var clip_index = 0; clip_index < dropped_clips.length; clip_index++) {
-            var item_data = dropped_clips[clip_index];
-
-            // Check for missing transitions
-            var missing_transition_details = scope.getMissingTransitions(item_data);
-            if (scope.Qt && missing_transition_details !== null) {
-                timeline.add_missing_transition(JSON.stringify(missing_transition_details));
-            }
-        }
-    }
-
-    // Clear dropped clips
-    dropped_clips = [];
 
     // Re-enable sorting and sort items
     scope.enable_sorting = true;

@@ -68,7 +68,7 @@
 
 		<!-- TRACKS NAMES (left of screen) -->
 		<div id="track_controls">
-			<div ng-repeat="layer in project.layers.slice().reverse() track by (layer.id || layer.number || $index)" id="track_static_{{layer.number}}" ng-right-click="showTrackMenu(layer.id)" class="track_name">
+			<div ng-repeat="layer in project.layers.slice().reverse() track by (layer.id || layer.number || $index)" id="track_static_{{layer.number}}" ng-right-click="showTrackMenu(layer.id)" class="track_name" ng-class="getTrackNameStyle(layer.lock)">
 				<div class="track_top">
 					<div tl-clip-menu class="menu track_menu" ng-mousedown="showTrackMenu(layer.id)"></div>
 					 <span class="track_label">{{getTrackName(layer.label, project.layers.length - $index)}}</span>

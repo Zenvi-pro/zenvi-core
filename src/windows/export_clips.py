@@ -34,7 +34,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 from qt_api import QPushButton, QDialog, QDialogButtonBox, QLabel, QFileDialog, QMessageBox
-from qt_api import Qt
+from qt_api import Qt, QTimer
 from classes import ui_util
 from classes import info
 from classes.app import get_app
@@ -53,10 +53,11 @@ def makeLegalFileName(s: str):
 def copyFileToFolder(f , destination_folder: str):
     """Takes a file object, gives it a suffix, and copies it"""
     new_file_path = nameOfExport(f)
-    if os.path.exists(new_file_path):
+    destination_path = os.path.join(destination_folder, new_file_path)
+    if os.path.exists(destination_path):
         return
-    log.info(f"copying {f.data.get('path')} to {os.path.join( destination_folder, new_file_path )}")
-    shutil.copy(f.data.get("path"), os.path.join( destination_folder, new_file_path ))
+    log.info(f"copying {f.data.get('path')} to {destination_path}")
+    shutil.copy(f.data.get("path"), destination_path)
 
 def notClip(file_obj):
     return not isClip(file_obj)
@@ -87,16 +88,18 @@ def nameOfExport(file_obj) -> str:
         return f"{name} {suffix}{ext}"
 
 def framesInClip(cl):
-    fps = cl.data.get("fps").get("num") / cl.data.get("fps").get("den")
-    seconds = cl.data.get('end') - cl.data.get('start')
-    return seconds * fps + 1
+    start_frame, end_frame = startAndEndFrames(cl)
+    return max(0, end_frame - start_frame + 1)
+
 
 def startAndEndFrames(clip):
-    timeToFrame = lambda t, fps: round((t * fps) + 1)
     fps = clip.data.get("fps").get("num") / clip.data.get("fps").get("den")
-    start_time = clip.data.get("start")
-    end_time = clip.data.get("end")
-    return (timeToFrame(start_time, fps), timeToFrame(end_time, fps))
+    start_time = float(clip.data.get("start", 0.0))
+    end_time = float(clip.data.get("end", start_time))
+
+    start_frame = max(1, int(round(start_time * fps)) + 1)
+    end_frame = max(start_frame - 1, int(round(end_time * fps)))
+    return (start_frame, end_frame)
 
 def setupWriter(clip, writer):
     # TODO: allow for audio clips
@@ -142,6 +145,7 @@ class clipExportWindow(QDialog):
         self.file_objs = export_clips_arg
         self._getDestination()
         self._createWidgets()
+        QTimer.singleShot(0, self._exportPressed)
 
     def _getDestination(self):
         settings = get_app().get_settings()
@@ -161,8 +165,6 @@ class clipExportWindow(QDialog):
 
     def _createWidgets(self):
         self.FilePickerArea.addWidget(QLabel(_("Export To %s") % self.export_destination))
-        self.export_button = QPushButton(_("Export"))
-        self.export_button.clicked.connect(self._exportPressed)
         self.done_button = QPushButton(_("Done"))
         self.done_button.clicked.connect(self.done)
         self.cancel_button = QPushButton(_("Cancel"))
@@ -175,7 +177,6 @@ class clipExportWindow(QDialog):
         self.progressExportVideo.setPalette(p)
 
         self.buttonBox.addButton(self.cancel_button, QDialogButtonBox.ActionRole)
-        self.buttonBox.addButton(self.export_button, QDialogButtonBox.ActionRole)
         self.buttonBox.addButton(self.done_button, QDialogButtonBox.ActionRole)
         self.done_button.setHidden(True)
         self.progressExportVideo.setValue(0)
@@ -222,12 +223,11 @@ class clipExportWindow(QDialog):
                 continue
 
             start_frame, end_frame = startAndEndFrames(c)
-
             clip_reader = openshot.Clip(c.data.get("path"))
             clip_reader.Open()
 
             log.info(f"Starting to write frames to {export_path}")
-            for frame in range(start_frame, end_frame):
+            for frame in range(start_frame, end_frame + 1):
                 w.WriteFrame(clip_reader.GetFrame(frame))
                 if frame % 5 == 0:
                     self._updateProgressBar(frames_written, total_frames)
@@ -235,7 +235,8 @@ class clipExportWindow(QDialog):
                 frames_written += 1
                 if self.canceled:
                     log.info("Export Canceled. Deleting partial export")
-                    os.remove(export_path)
+                    if os.path.exists(export_path):
+                        os.remove(export_path)
                     break
             clip_reader.Close()
             w.Close()
@@ -275,5 +276,4 @@ class clipExportWindow(QDialog):
 
     def _updateDialogExportStarting(self):
         self.exporting=True
-        self.export_button.hide()
         self.setWindowTitle(_("Exporting"))

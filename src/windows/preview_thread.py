@@ -82,7 +82,7 @@ class PreviewParent(QObject, UpdateInterface):
     def onModeChanged(self, current_mode):
         log.debug('Playback mode changed to %s', current_mode)
         try:
-            if current_mode is openshot.PLAYBACK_PLAY:
+            if current_mode == openshot.PLAYBACK_PLAY:
                 self.parent.SetPlayheadFollow(False)
             else:
                 self.parent.SetPlayheadFollow(True)
@@ -359,6 +359,11 @@ class PlayerWorker(QObject):
         # Without this, Play+Pause serves stale cached frames from before the clip was added.
         if not self.clip_path:
             self.player.Reader(self.timeline)
+
+        # Selection/UI refresh signals can arrive during active playback.
+        # Avoid seeking while playing, which can perturb frame progression.
+        if self.player.Mode() == openshot.PLAYBACK_PLAY and self.player.Speed() != 0.0:
+            return
 
         # Always load back in the timeline reader
         self.parent.LoadFileSignal.emit('')

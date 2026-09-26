@@ -41,6 +41,8 @@ class EffectInteractionMixin:
             track_num = int(track_num)
         except (TypeError, ValueError):
             return
+        if self._is_track_locked(track_num):
+            return
         candidates = Clip.filter(layer=track_num)
         for clip in candidates:
             data = clip.data if isinstance(clip.data, dict) else {}

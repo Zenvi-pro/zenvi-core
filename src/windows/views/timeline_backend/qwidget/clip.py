@@ -274,6 +274,11 @@ class ClipInteractionMixin:
         ]
         if not self.dragging_items:
             self.dragging_items = [clicked_item]
+        if self._selection_overlaps_locked_tracks(self.dragging_items):
+            self.dragging_items = []
+            self._drag_transaction_id = None
+            self._release_cursor()
+            return
 
         # Map track number → index
         self._track_index_from_num = {
@@ -466,6 +471,10 @@ class ClipInteractionMixin:
             new_pos_sec = self._snap_time(new_pos_sec)
             new_idx = start_idx + delta_idx
             new_idx = max(0, min(new_idx, len(self.track_list) - 1))
+            unlocked_idx = self._nearest_unlocked_track_index(new_idx)
+            if unlocked_idx is None:
+                unlocked_idx = start_idx
+            new_idx = unlocked_idx
             new_layer_num = self._track_num_from_index[new_idx]
 
             if (
@@ -490,9 +499,21 @@ class ClipInteractionMixin:
             # Update cached rect
             rect = self.geometry.calc_item_rect(itm)
             self.geometry.update_item_rect(itm, rect)
-            frame_delta = frame_offset if frame_offset is not None else 0
-            if delta_sec or frame_delta:
-                self._panel_shift_item(itm, delta_sec, frame_delta)
+            # Use the actual applied movement (after per-item clamping/snap-to-frame),
+            # otherwise panel points can lag at the snap threshold while clip visuals
+            # already snapped to the final frame-aligned position.
+            applied_delta_sec = new_pos_sec - start_pos_sec
+            if fps > 0.0:
+                start_frame_for_item = info.get("position_frames")
+                if start_frame_for_item is None:
+                    start_frame_for_item = int(round(start_pos_sec * fps))
+                new_frame_for_item = int(round(new_pos_sec * fps))
+                applied_frame_delta = new_frame_for_item - start_frame_for_item
+            else:
+                applied_frame_delta = 0
+            # Always apply panel shift, even for 0 delta. When snapping returns to
+            # drag origin, skipping this leaves stale panel points until mouse-up.
+            self._panel_shift_item(itm, applied_delta_sec, applied_frame_delta)
 
         # Immediate visual feedback
         self._keyframes_dirty = True
@@ -526,20 +547,27 @@ class ClipInteractionMixin:
                 for idx, itm in enumerate(items):
                     ignore_refresh = idx < total - 1
                     if isinstance(itm, Transition):
+                        transition_data = json.loads(json.dumps(itm.data))
+                        transition_data["_auto_direction"] = True
                         self.update_transition_data(
-                            itm.data,
+                            transition_data,
                             only_basic_props=True,
                             ignore_refresh=ignore_refresh,
                             transaction_id=transaction_id,
                         )
+                        itm.data = transition_data
                     else:
+                        clip_data = json.loads(json.dumps(itm.data))
+                        if total == 1:
+                            clip_data["_auto_transition"] = True
                         self.update_clip_data(
-                            itm.data,
+                            clip_data,
                             only_basic_props=True,
                             ignore_reader=True,
                             ignore_refresh=ignore_refresh,
                             transaction_id=transaction_id,
                         )
+                        itm.data = clip_data
             if moved:
                 self._update_project_duration()
                 self.changed(None)
@@ -706,6 +734,11 @@ class ClipInteractionMixin:
         item = self._resizing_item
         if not item:
             return
+        if self._is_track_locked((item.data if isinstance(item.data, dict) else {}).get("layer")):
+            self._resizing_item = None
+            self._resize_edge = None
+            self._release_cursor()
+            return
         self.snap.reset()
         self._fix_cursor(self.cursors["resize_x"])
         world_rect = self.geometry.calc_item_rect(item)
@@ -750,6 +783,15 @@ class ClipInteractionMixin:
             sel_type = "clip"
         else:
             sel_type = "transition"
+            self._pending_transition_overrides[item.id] = {
+                "position": self._resize_initial["position"],
+                "start": self._resize_initial["start"],
+                "end": self._resize_initial["end"],
+                "initial_start": self._resize_initial["start"],
+                "initial_end": self._resize_initial["end"],
+                # Transition keyframes should preview as scaled while trimming.
+                "scale": True,
+            }
             self._snap_keyframe_seconds = []
         # Ensure item is selected
         self.win.addSelection(item.id, sel_type, False)
@@ -799,6 +841,22 @@ class ClipInteractionMixin:
                 self._update_snap_keyframe_targets(item)
             else:
                 self._snap_keyframe_seconds = []
+        else:
+            override = self._pending_transition_overrides.setdefault(
+                item.id,
+                {
+                    "position": position,
+                    "start": start,
+                    "end": end,
+                    "initial_start": self._resize_initial.get("start", start),
+                    "initial_end": self._resize_initial.get("end", end),
+                },
+            )
+            override["position"] = position
+            override["start"] = start
+            override["end"] = end
+            override["scale"] = True
+            self._keyframes_dirty = True
         self.update()
 
     def _compute_transition_resize(self, item):
@@ -925,6 +983,10 @@ class ClipInteractionMixin:
         if not hasattr(self, "_resize_new_start"):
             if isinstance(item, Clip):
                 self._set_trim_thumbnail_suspension(False, item.id)
+            elif isinstance(item, Transition):
+                # Resize can start/end without a move event; clear any preview
+                # override seeded in _startItemResize().
+                self._pending_transition_overrides.pop(item.id, None)
             self._resizing_item = None
             self._snap_keyframe_seconds = []
             self.snap.reset()
@@ -947,11 +1009,17 @@ class ClipInteractionMixin:
                 self.update_clip_data(item.data, only_basic_props=True, ignore_reader=True)
         else:
             setattr(self.win, "_trim_refresh_pending", True)
-            item.data["position"] = self._snap_time(position)
-            item.data["start"] = 0.0
-            item.data["end"] = self._snap_time(end)
-            item.data["duration"] = self._snap_time(end)
-            self.update_transition_data(item.data, only_basic_props=True)
+            # Use a copied payload so update_transition_data() can compare
+            # existing transition timing against the new timing and scale
+            # keyframes correctly during trim/resize.
+            transition_data = json.loads(json.dumps(item.data))
+            transition_data["position"] = self._snap_time(position)
+            transition_data["start"] = 0.0
+            transition_data["end"] = self._snap_time(end)
+            transition_data["duration"] = self._snap_time(end)
+            transition_data["_auto_direction"] = True
+            self.update_transition_data(transition_data, only_basic_props=True)
+            item.data = transition_data
 
         if isinstance(item, (Clip, Transition)):
             if hasattr(self, "RefreshTrimmedTimelineItem"):
@@ -959,6 +1027,8 @@ class ClipInteractionMixin:
 
         if isinstance(item, Clip):
             self._set_trim_thumbnail_suspension(False, item.id)
+        elif isinstance(item, Transition):
+            self._pending_transition_overrides.pop(item.id, None)
 
         self._resizing_item = None
         self._snap_keyframe_seconds = []
@@ -991,8 +1061,9 @@ class ClipInteractionMixin:
         ctrl_down = bool(e.modifiers() & Qt.ControlModifier)
         self.box_start = e.position() if hasattr(e, "position") else QPointF(e.pos())
         panel_lane = self._panel_lane_at(self.box_start)
-        if panel_lane:
-            self._panel_box_track = panel_lane.get("track")
+        panel_track = panel_lane.get("track") if panel_lane else self._panel_track_at_pos(self.box_start)
+        if panel_track is not None:
+            self._panel_box_track = panel_track
             self._panel_box_bounds = self._panel_bounds_for_track(self._panel_box_track)
             if not ctrl_down:
                 self._clear_panel_selection(self._panel_box_track)
@@ -1043,12 +1114,21 @@ class ClipInteractionMixin:
                     lane_rect = lane.get("lane_rect", QRectF())
                     lane_padding = lane.get("lane_padding", self._panel_lane_padding())
                     selected_frames = set()
+                    selected_context = None
                     for point in points:
                         seconds = point.get("seconds")
                         if seconds is None:
                             continue
                         marker_rect = self._panel_marker_rect(lane_rect, lane_padding, seconds)
                         if marker_rect.intersects(selection_rect):
+                            point_context = None
+                            if hasattr(self, "_panel_property_context"):
+                                point_context = self._panel_property_context(
+                                    {"context": point.get("_panel_context")},
+                                    lane.get("context"),
+                                )
+                            if selected_context is None and point_context:
+                                selected_context = self._panel_context_signature(point_context)
                             frame_val = point.get("frame")
                             if frame_val is not None:
                                 try:
@@ -1056,7 +1136,11 @@ class ClipInteractionMixin:
                                 except (TypeError, ValueError):
                                     continue
                     if selected_frames:
-                        frames_by_prop[prop.get("key")] = selected_frames
+                        selector = self._panel_selection_selector(
+                            selected_frames,
+                            context_signature=selected_context,
+                        )
+                        frames_by_prop[prop.get("key")] = selector
             if ctrl_down:
                 if frames_by_prop:
                     self._panel_merge_selection_map(track_num, frames_by_prop)
