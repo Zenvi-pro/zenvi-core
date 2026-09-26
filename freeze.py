@@ -718,9 +718,9 @@ build_exe_options["excludes"] = ["distutils",
                                  "pydoc_data",
                                  "pycparser",
                                  "pkg_resources",
-                                 "PyQt5.QtQml",
-                                 "PyQt5.QtQuick",
-                                 "PyQt5.QtQuickWidgets"]
+                                 "{}.QtQml".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuick".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuickWidgets".format(QT_BINDING_PACKAGE)]
 if sys.platform == "darwin":
     # sentry_sdk.integrations.django must NOT be excluded — sentry's DEFAULT_INTEGRATIONS
     # auto-imports it via importlib at runtime and crashes with ModuleNotFoundError when

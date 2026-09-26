@@ -1,7 +1,10 @@
 # OpenShot Video Editor - pip-installable dependencies
 # libopenshot must be installed separately (PPA on Ubuntu or build from source)
 
-# Qt GUI (required)
+# Qt GUI (required). PyQt5 is the default binding (src/qt_api.py).
+# Opt-in alternatives, selected at runtime with OPENSHOT_QT_API=pyqt6|pyside6:
+#   PyQt6>=6.5 and PyQt6-WebEngine>=6.5   (or PySide6>=6.5)
+# Install exactly one binding into the venv; freeze.py packages whichever qt_api picks.
 PyQt5>=5.15
 PyQtWebEngine>=5.15
 
