@@ -52,6 +52,7 @@ from qt_api import (
     QCursor,
     QIcon,
     QColor,
+    QPixmap,
 )
 from qt_api import QSizePolicy, QWidget
 
@@ -362,6 +363,7 @@ class TimelineWidgetBase(QWidget):
                 self.cursors[cursor_name] = QCursor(cursor_fallbacks[cursor_name])
             else:
                 self.cursors[cursor_name] = QCursor(pixmap)
+        self.cursors["razor"] = self._load_razor_cursor()
 
         # Init Qt widget's properties (background repainting, etc...)
         super().setAttribute(Qt.WA_OpaquePaintEvent)
@@ -728,6 +730,13 @@ class TimelineWidgetBase(QWidget):
     def setRazorMode(self, enable):
         """Enable or disable razor tool mode."""
         self.enable_razor = bool(enable)
+        if self._fixed_cursor is not None:
+            return
+        pos = self.mapFromGlobal(QCursor.pos())
+        if self.rect().contains(pos):
+            self._updateCursor(pos)
+        elif not self.enable_razor:
+            self.unsetCursor()
 
     def setTimingMode(self, enable):
         """Enable or disable timing (retime) mode."""
@@ -741,6 +750,21 @@ class TimelineWidgetBase(QWidget):
 
     def _release_cursor(self):
         self._fixed_cursor = None
+
+    def _load_razor_cursor(self):
+        """Load the native razor cursor used by the legacy timeline."""
+        asset_path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "../../../../timeline/media/images/razor_line_with_razor.png",
+            )
+        )
+        pixmap = QPixmap(asset_path)
+        if pixmap.isNull():
+            return QCursor(Qt.CrossCursor)
+        hot_x = min(max(pixmap.width() // 2, 0), max(0, pixmap.width() - 1))
+        hot_y = min(2, max(0, pixmap.height() - 1))
+        return QCursor(pixmap, hot_x, hot_y)
 
     def _snap_time(self, seconds):
         """Snap a time in seconds to the nearest frame boundary."""
@@ -2639,6 +2663,12 @@ class TimelineWidgetBase(QWidget):
         if panel_marker:
             self.setCursor(self.cursors.get("resize_x", Qt.SizeHorCursor))
             return
+
+        if self.enable_razor:
+            for rect, _item, _selected, _type in self.geometry.iter_items(reverse=True):
+                if rect.contains(pos):
+                    self.setCursor(self.cursors.get("razor", Qt.CrossCursor))
+                    return
 
         # Clip menu icons
         for rect, _clip, _selected in self.geometry.iter_clips(reverse=True):

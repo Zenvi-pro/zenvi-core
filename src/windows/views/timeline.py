@@ -2950,7 +2950,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 if action == MenuSlice.KEEP_LEFT:
                     # Keep the left side of the transition, adjust the "end"
-                    trans.data["end"] = start_of_tran + (playhead_position - original_position)
+                    new_end = start_of_tran + (playhead_position - original_position)
+                    trans.data["end"] = new_end
+                    trans.data["duration"] = max(0.0, new_end - start_of_tran)
 
                     if ripple:
                         removed_duration = original_duration - (trans.data["end"] - start_of_tran)
@@ -2961,6 +2963,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     new_start = start_of_tran + (playhead_position - original_position)
                     trans.data["position"] = playhead_position
                     trans.data["start"] = new_start
+                    trans.data["duration"] = max(0.0, end_of_tran - new_start)
                     if ripple:
                         removed_duration = original_duration - (end_of_tran - new_start)
                         trans.data["position"] = original_position
@@ -2973,6 +2976,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Update data for the left transition
                     new_tran_end = start_of_tran + (playhead_position - original_position)
                     trans.data["end"] = new_tran_end
+                    trans.data["duration"] = max(0.0, new_tran_end - start_of_tran)
 
                     right_tran_data = deepcopy(trans.data)
                     right_tran = Transition()
@@ -2987,6 +2991,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     right_tran.data["position"] = playhead_position
                     right_tran.data["start"] = new_tran_end
                     right_tran.data["end"] = end_of_tran
+                    right_tran.data["duration"] = max(0.0, float(end_of_tran) - float(new_tran_end))
                     right_tran.save()
 
                 # Save changes for the left or right slice
