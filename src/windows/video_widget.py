@@ -1065,9 +1065,36 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     location_x = raw_properties.get('location_x').get('value')
                     location_y = raw_properties.get('location_y').get('value')
 
-                    # Calculate new location coordinates
-                    location_x += x_motion / viewport_rect.width()
-                    location_y += y_motion / viewport_rect.height()
+                    base_w, base_h = self._clip_source_dimensions(
+                        self.transforming_clip, self.transforming_clip_object, clip_frame_number)
+                    (
+                        _source_w,
+                        _source_h,
+                        scaled_w,
+                        scaled_h,
+                        anchored_x,
+                        anchored_y,
+                        layout_x,
+                        layout_y,
+                        layout_width,
+                        layout_height) = self._clip_location_geometry(
+                            base_w, base_h, self.transforming_clip, raw_properties, viewport_rect)
+
+                    # Match libopenshot's location contract: Crop uses the
+                    # distance to the offscreen edge, while all other scale
+                    # modes retain canvas-relative coordinates.
+                    if self.transforming_clip.data['scale'] == openshot.SCALE_CROP:
+                        current_x_offset = self._location_offset(
+                            location_x, anchored_x - layout_x, layout_width, scaled_w)
+                        current_y_offset = self._location_offset(
+                            location_y, anchored_y - layout_y, layout_height, scaled_h)
+                        location_x = self._location_value_from_offset(
+                            current_x_offset + x_motion, anchored_x - layout_x, layout_width, scaled_w)
+                        location_y = self._location_value_from_offset(
+                            current_y_offset + y_motion, anchored_y - layout_y, layout_height, scaled_h)
+                    else:
+                        location_x += x_motion / viewport_rect.width()
+                        location_y += y_motion / viewport_rect.height()
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -1779,9 +1806,45 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         return width, height
 
-    def _clip_display_rect(self, base_width, base_height, clip, raw_properties, viewport_rect):
+    @staticmethod
+    def _location_offset(location, anchored_position, canvas_size, clip_size):
+        """Match libopenshot normalized location semantics for one axis."""
+        location = float(location)
+        anchored_position = float(anchored_position)
+        canvas_size = float(canvas_size)
+        clip_size = float(clip_size)
+        if location < 0.0:
+            return location * (anchored_position + clip_size)
+        return location * (canvas_size - anchored_position)
+
+    @staticmethod
+    def _location_value_from_offset(offset, anchored_position, canvas_size, clip_size):
+        """Inverse of _location_offset(), used when dragging transform handles."""
+        offset = float(offset)
+        anchored_position = float(anchored_position)
+        canvas_size = float(canvas_size)
+        clip_size = float(clip_size)
+        if offset < 0.0:
+            basis = anchored_position + clip_size
+        else:
+            basis = canvas_size - anchored_position
+        if abs(basis) < 0.0001:
+            return 0.0
+        return offset / basis
+
+    def _clip_location_geometry(self, base_width, base_height, clip, raw_properties, viewport_rect):
+        """Scaled size and gravity anchor of a clip inside the preview viewport.
+
+        Returns (source_width, source_height, scaled_width, scaled_height,
+        anchored_x, anchored_y, layout_x, layout_y, layout_width, layout_height).
+        Zenvi has no clip margin property, so the layout rect is the viewport.
+        """
         player_width = viewport_rect.width()
         player_height = viewport_rect.height()
+        layout_x = viewport_rect.x()
+        layout_y = viewport_rect.y()
+        layout_width = max(float(player_width), 1.0)
+        layout_height = max(float(player_height), 1.0)
 
         source_size = QSizeF(base_width, base_height)
         scale_mode = clip.data['scale']
@@ -1790,11 +1853,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             scale_mode = openshot.SCALE_STRETCH
 
         if scale_mode == openshot.SCALE_FIT:
-            source_size.scale(player_width, player_height, Qt.KeepAspectRatio)
+            source_size.scale(layout_width, layout_height, Qt.KeepAspectRatio)
         elif scale_mode == openshot.SCALE_STRETCH:
-            source_size.scale(player_width, player_height, Qt.IgnoreAspectRatio)
+            source_size.scale(layout_width, layout_height, Qt.IgnoreAspectRatio)
         elif scale_mode == openshot.SCALE_CROP:
-            source_size.scale(player_width, player_height, Qt.KeepAspectRatioByExpanding)
+            source_size.scale(layout_width, layout_height, Qt.KeepAspectRatioByExpanding)
 
         source_width = max(source_size.width(), 0.0001)
         source_height = max(source_size.height(), 0.0001)
@@ -1807,35 +1870,65 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         scaled_width = source_width * sx
         scaled_height = source_height * sy
 
-        x = viewport_rect.x()
-        y = viewport_rect.y()
+        x = layout_x
+        y = layout_y
 
         gravity = clip.data['gravity']
         if gravity == openshot.GRAVITY_TOP:
-            x += (player_width - scaled_width) / 2.0
+            x += (layout_width - scaled_width) / 2.0
         elif gravity == openshot.GRAVITY_TOP_RIGHT:
-            x += player_width - scaled_width
+            x += layout_width - scaled_width
         elif gravity == openshot.GRAVITY_LEFT:
-            y += (player_height - scaled_height) / 2.0
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_CENTER:
-            x += (player_width - scaled_width) / 2.0
-            y += (player_height - scaled_height) / 2.0
+            x += (layout_width - scaled_width) / 2.0
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_RIGHT:
-            x += player_width - scaled_width
-            y += (player_height - scaled_height) / 2.0
+            x += layout_width - scaled_width
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
-            y += player_height - scaled_height
+            y += layout_height - scaled_height
         elif gravity == openshot.GRAVITY_BOTTOM:
-            x += (player_width - scaled_width) / 2.0
-            y += player_height - scaled_height
+            x += (layout_width - scaled_width) / 2.0
+            y += layout_height - scaled_height
         elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
-            x += player_width - scaled_width
-            y += player_height - scaled_height
+            x += layout_width - scaled_width
+            y += layout_height - scaled_height
+
+        return (
+            source_width, source_height, scaled_width, scaled_height,
+            x, y, layout_x, layout_y, layout_width, layout_height)
+
+    def _clip_display_rect(self, base_width, base_height, clip, raw_properties, viewport_rect):
+        player_width = viewport_rect.width()
+        player_height = viewport_rect.height()
+
+        (
+            source_width,
+            source_height,
+            scaled_width,
+            scaled_height,
+            anchored_x,
+            anchored_y,
+            layout_x,
+            layout_y,
+            layout_width,
+            layout_height) = self._clip_location_geometry(
+                base_width, base_height, clip, raw_properties, viewport_rect)
+        x = anchored_x
+        y = anchored_y
 
         location_x = float(raw_properties.get('location_x', {}).get('value', 0.0))
         location_y = float(raw_properties.get('location_y', {}).get('value', 0.0))
-        x += player_width * location_x
-        y += player_height * location_y
+        # Match libopenshot 1.0's location contract: Crop clips move by the
+        # distance to the offscreen edge, every other scale mode keeps the
+        # historical canvas-relative coordinates.
+        if clip.data['scale'] == openshot.SCALE_CROP:
+            x += self._location_offset(location_x, anchored_x - layout_x, layout_width, scaled_width)
+            y += self._location_offset(location_y, anchored_y - layout_y, layout_height, scaled_height)
+        else:
+            x += player_width * location_x
+            y += player_height * location_y
 
         return QRectF(x, y, source_width, source_height)
 

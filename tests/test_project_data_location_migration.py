@@ -219,3 +219,86 @@ def test_migration_is_idempotent_after_resave(openshot):
     store.upgrade_project_data_structures()
 
     assert store._data["clips"][0]["location_y"]["Points"][0]["co"]["Y"] == migrated_y
+
+
+# --- OpenShot 4.0.0 non-Crop migration (PR #6109) -------------------------
+# Zenvi never stamps "4.0.0", so this only matters when opening a project
+# written by the OpenShot 4.0.0 release, whose libopenshot applied the
+# offscreen-edge math to every scale mode.
+
+
+def test_upgrade_migrates_400_fit_location_to_restored_canvas_units(openshot):
+    fitted_height = 720.0 * 178.0 / 266.0
+    scaled_height = fitted_height / 9.0
+    clip = {
+        "id": "C1",
+        "scale": openshot.SCALE_FIT,
+        "gravity": openshot.GRAVITY_CENTER,
+        "reader": {"width": 266, "height": 178},
+        "scale_x": {"Points": [{"co": {"X": 30, "Y": 1.0 / 9.0}}]},
+        "scale_y": {"Points": [{"co": {"X": 30, "Y": 1.0 / 9.0}}]},
+        "location_x": {"Points": [{"co": {"X": 30, "Y": -0.75}}]},
+        "location_y": {"Points": [{"co": {
+            "X": 30,
+            "Y": -310.0 / ((720.0 + scaled_height) / 2.0),
+        }}]},
+        "effects": [],
+    }
+    store = make_store(_project(
+        openshot, libopenshot="1.0.0", openshot_qt="4.0.0",
+        width=720, height=720, clips=[clip]))
+
+    store.upgrade_project_data_structures()
+
+    clip = store._data["clips"][0]
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == pytest.approx(-5.0 / 12.0)
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == pytest.approx(-31.0 / 72.0)
+
+
+@pytest.mark.parametrize("scale_name, expected", [
+    ("SCALE_FIT", (0.16, -0.18)),
+    ("SCALE_STRETCH", (0.18, -0.18)),
+    ("SCALE_NONE", (0.08, -0.09)),
+])
+def test_upgrade_migrates_400_non_crop_modes_with_gravity_margin_and_scale(openshot, scale_name, expected):
+    clip = {
+        "id": "C1",
+        "scale": getattr(openshot, scale_name),
+        "gravity": openshot.GRAVITY_TOP_RIGHT,
+        "reader": {"width": 80, "height": 40},
+        "margin": {"Points": [{"co": {"X": 10, "Y": 0.1}}]},
+        "scale_x": {"Points": [{"co": {"X": 10, "Y": 0.5}}]},
+        "scale_y": {"Points": [{"co": {"X": 10, "Y": 0.75}}]},
+        "location_x": {"Points": [{"co": {"X": 10, "Y": 0.4}}]},
+        "location_y": {"Points": [{"co": {"X": 10, "Y": -0.3}}]},
+        "effects": [],
+    }
+    store = make_store(_project(
+        openshot, libopenshot="1.0.0", openshot_qt="4.0.0",
+        width=200, height=100, clips=[clip]))
+
+    store.upgrade_project_data_structures()
+    clip = store._data["clips"][0]
+    x = clip["location_x"]["Points"][0]["co"]["Y"]
+    y = clip["location_y"]["Points"][0]["co"]["Y"]
+    assert x == pytest.approx(expected[0])
+    assert y == pytest.approx(expected[1])
+
+    # Re-running the upgrade must not touch a project once its saved version
+    # advances beyond the affected 4.0.0 release.
+    store._data["version"]["openshot-qt"] = "4.0.1"
+    store.upgrade_project_data_structures()
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == x
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == y
+
+
+def test_upgrade_leaves_zenvi_non_crop_locations_alone(openshot):
+    """Zenvi's own 1.0.x stamp is not the OpenShot 4.0.0 release."""
+    clip = _crop_clip(openshot, scale=openshot.SCALE_FIT)
+    store = make_store(_project(openshot, libopenshot="1.0.0", openshot_qt="1.0.190", clips=[clip]))
+
+    store.upgrade_project_data_structures()
+
+    clip = store._data["clips"][0]
+    assert clip["location_x"]["Points"][0]["co"]["Y"] == 0.5
+    assert clip["location_y"]["Points"][0]["co"]["Y"] == -0.5
