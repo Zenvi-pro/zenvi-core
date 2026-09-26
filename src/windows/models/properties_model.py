@@ -464,6 +464,8 @@ class PropertiesModel(updates.UpdateInterface):
         property_type = property[1]["type"]
         property_key = property[0]
         object_id = property[1]["object_id"]
+        property_choices = property[1].get("choices") or []
+        choice_keyframes_use_constant = bool(property_choices) and interpolation == -1
         objects = {}
         item_data = item.data()
 
@@ -563,6 +565,8 @@ class PropertiesModel(updates.UpdateInterface):
                                 # Update or delete point
                                 if value is not None:
                                     point["co"]["Y"] = int(value) if property_key == "time" else float(value)
+                                    if choice_keyframes_use_constant:
+                                        point["interpolation"] = openshot.CONSTANT
                                     log.debug("updating point: co.X = %d to value: %s",
                                               point["co"]["X"], value)
                                 else:
@@ -614,7 +618,7 @@ class PropertiesModel(updates.UpdateInterface):
                             log.debug("Created new point at X=%d", self.frame_number)
                             clip_data[property_key].setdefault('Points', []).append({
                                 'co': {'X': self.frame_number, 'Y': int(value) if property_key == "time" else value},
-                                'interpolation': 1})
+                                'interpolation': openshot.CONSTANT if choice_keyframes_use_constant else openshot.LINEAR})
 
                 if not clip_updated:
                     # If no keyframe was found, set a basic property
