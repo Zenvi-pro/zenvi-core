@@ -53,7 +53,8 @@ while :; do
   started_any=0
   for f in $FEATURES; do
     st="$(feature_state "$f")"
-    [[ -z "$st" ]] || continue                      # already started (any state)
+    case "$st" in in_progress|testing|pr_open|ready|needs_human|failed|merged) continue;; esac   # already running or done
+    tmux list-windows -t "$TMUX_SESSION" -F '#W' 2>/dev/null | grep -qx "$f" && continue           # window already open
     if (( FORCE )); then ok=1; else mf ready "$f" >/dev/null 2>&1 && ok=1 || ok=0; fi
     (( ok )) || continue
     if (( $(active_count) >= MAX )); then log "$f is ready but $MAX agents are active; waiting"; continue; fi
