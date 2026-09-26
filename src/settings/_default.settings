@@ -677,7 +677,7 @@
     "restart": false
   },
   {
-    "value": false,
+    "value": true,
     "title": "Use Blender GPU rendering for Animated Titles (Experimental)",
     "type": "bool",
     "restart": false,
