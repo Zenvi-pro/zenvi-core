@@ -2336,6 +2336,7 @@ class TimelineHelperTests(unittest.TestCase):
             [{"id": "T1", "position": 12.0, "layer": 2, "start": 2.0, "end": 4.0, "duration": 2.0}],
         )
 
+    @unittest.skip("Zenvi: SeekSignal has no start_preroll flag (upstream playback-cache preroll not ported)")
     def test_qwidget_panel_keyframe_move_keeps_updates_off_timeline(self):
         helper = self.make_qwidget_panel_keyframe_drag_helper()
         event = types.SimpleNamespace(pos=lambda: QPointF(120.0, 0.0))

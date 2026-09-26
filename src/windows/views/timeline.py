@@ -1092,6 +1092,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         new_duration = existing_item.data.get("end", 0.0) - existing_item.data.get("start", 0.0)
         old_frames = round(old_duration * fps_float) if old_duration > 0 else 0
         new_frames = round(new_duration * fps_float) if new_duration > 0 else 0
+        uses_static_mask = self._transition_uses_static_mask(existing_item.data, old_data)
 
         if old_data and only_basic_props:
             if "brightness" in old_data:
@@ -1099,7 +1100,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if "contrast" in old_data:
                 existing_item.data["contrast"] = old_data["contrast"]
 
-            if old_frames and new_frames and old_frames != new_frames:
+            if uses_static_mask and old_frames and new_frames and old_frames != new_frames:
                 scale = new_frames / old_frames
                 for prop in ("brightness", "contrast"):
                     if prop in existing_item.data:
@@ -1109,7 +1110,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif old_data and self._transition_reader_changed(existing_item.data, old_data):
             self._set_transition_mask_defaults(existing_item.data, old_data)
 
-        if auto_direction:
+        if auto_direction and uses_static_mask:
             self._auto_orient_transition_keyframes(existing_item.data)
 
         # Only include the basic properties (performance boost)
@@ -2981,7 +2982,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         try:
             if ViewClass == TimelineWidget:
-                self._flush_pending_clip_overrides(clip_ids)
+                flush_overrides = getattr(self, "_flush_pending_clip_overrides", None)
+                if callable(flush_overrides):
+                    flush_overrides(clip_ids)
 
             # Get the nearest starting frame position to the playhead (snap to frame boundaries)
             playhead_position = float(round((playhead_position * fps_num) / fps_den) * fps_den) / fps_num
@@ -3124,13 +3127,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     trans.data["end"] = new_tran_end
                     trans.data["duration"] = max(0.0, new_tran_end - start_of_tran)
 
-                    right_tran_data = deepcopy(trans.data)
-                    right_tran = Transition()
+                    # Split into two transitions (left and right side). Query a
+                    # fresh object and deep-copy its data so the new transition
+                    # does not share references with the left side.
+                    right_tran = Transition.get(id=trans_id)
+                    if not right_tran:
+                        continue
+                    right_tran_data = deepcopy(right_tran.data)
+                    right_tran_key = list(right_tran.key)
                     right_tran.id = None
                     right_tran.type = 'insert'
                     right_tran.data = right_tran_data
                     right_tran.data.pop('id', None)
-                    right_tran_key = list(trans.key)
                     if len(right_tran_key) > 1:
                         right_tran_key.pop(1)
                     right_tran.key = right_tran_key
@@ -3149,7 +3157,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().window.IgnoreUpdates.emit(False, True)
 
             if ViewClass == TimelineWidget:
-                self._sync_timeline_geometry_after_edit()
+                sync_geometry = getattr(self, "_sync_timeline_geometry_after_edit", None)
+                if callable(sync_geometry):
+                    sync_geometry()
 
             if new_starting_frame != -1:
                 # Seek to new position (if needed)

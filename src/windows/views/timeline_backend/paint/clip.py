@@ -53,6 +53,8 @@ from classes.keyframe_scaler import KeyframeScaler
 from classes.logger import log
 from classes.time_parts import secondsToTime
 from classes import info
+from classes.clip_utils import is_single_image_media
+from classes.qt_types import font_metrics_horizontal_advance
 
 from .base import BasePainter
 
@@ -397,6 +399,7 @@ class ClipPainter(BasePainter):
         )
 
         self.w._effect_icon_rects = []
+        self.w._clip_text_rects = []
         painter.save()
         painter.setClipRect(area)
         for rect, clip, selected in self.w.geometry.iter_clips():
@@ -454,12 +457,63 @@ class ClipPainter(BasePainter):
                 return True
             if isinstance(value, (int, float)) and value:
                 return True
+
+        # Audio assets (e.g. mp3/m4a/ogg) should reuse one visual frame
+        # across the timeline even if libopenshot reports dynamic frame counts.
+        if self._clip_is_audio_media(clip):
+            return True
+        return False
+
+    def _clip_is_audio_media(self, clip):
+        """Best-effort audio media detection resilient to reader metadata quirks."""
+        if not clip:
+            return False
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+
+        media_type = str(reader.get("media_type") or data.get("media_type") or "").strip().lower()
+        if media_type == "audio":
+            return True
+
+        source_path = str(
+            reader.get("path")
+            or data.get("path")
+            or reader.get("file_path")
+            or data.get("file_path")
+            or ""
+        ).strip().lower()
+        audio_exts = (".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".wav", ".wma")
+        if source_path.endswith(audio_exts):
+            return True
+
         return False
 
     def _clip_file_id(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
         file_id = data.get("file_id")
         return str(file_id) if file_id else None
+
+    def _clip_is_audio_only(self, clip):
+        data = clip.data if isinstance(clip.data, dict) else {}
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+
+        has_video = reader.get("has_video")
+        has_video = True if has_video is None else bool(has_video)
+
+        has_audio = reader.get("has_audio")
+        has_audio = True if has_audio is None else bool(has_audio)
+        return has_audio and not has_video
+
+    def _audio_thumbnail_pixmap(self):
+        key = ("_fallback_", "audio")
+        cached = self.thumb_cache.get(key)
+        if cached and not cached.isNull():
+            return cached
+
+        path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
+        pix = QPixmap(path) if os.path.exists(path) else QPixmap()
+        self.thumb_cache[key] = pix
+        return pix if not pix.isNull() else None
 
     def _clip_time_bounds(self, clip):
         data = clip.data if isinstance(clip.data, dict) else {}
@@ -478,6 +532,7 @@ class ClipPainter(BasePainter):
         return start, max(0.0, end - start)
 
     def _existing_thumb_path(self, file_id, frame):
+        # Zenvi: thumbnails live in the fingerprint media cache (plus legacy layouts).
         from classes.thumbnail import resolve_thumbnail_path
         fingerprint = None
         try:
@@ -668,7 +723,11 @@ class ClipPainter(BasePainter):
             cached = self.clip_cache[key]
             if isinstance(cached, tuple) and len(cached) == 3:
                 pix, blur, icons = cached
-                cached = (pix, blur, icons, False)
+                cached = (pix, blur, icons, False, None)
+                self.clip_cache[key] = cached
+            elif isinstance(cached, tuple) and len(cached) == 4:
+                pix, blur, icons, pending = cached
+                cached = (pix, blur, icons, pending, None)
                 self.clip_cache[key] = cached
             return cached
 
@@ -695,10 +754,11 @@ class ClipPainter(BasePainter):
         inner_rect = QRectF(blur, blur, w, h)
 
         icon_entries = []
+        text_entry = None
         pending_thumbs = False
         if not tiny:
             self._fill_clip_background(painter, inner_rect, segment_info)
-            icon_entries, pending_thumbs = self._draw_clip_contents(
+            icon_entries, pending_thumbs, text_entry = self._draw_clip_contents(
                 painter, clip, inner_rect, segment_info
             )
 
@@ -850,6 +910,7 @@ class ClipPainter(BasePainter):
         left = inner.x() + self.menu_margin
         right = inner.right() - self.menu_margin
         icon_entries = []
+        text_entry = None
         pending_thumbs = False
 
         has_waveform = self._draw_waveform(painter, clip, inner, segment)
@@ -868,10 +929,10 @@ class ClipPainter(BasePainter):
             content_x = self._draw_effect_icons(
                 painter, clip, inner, content_x, right, icon_entries
             )
-            self._draw_clip_text(painter, clip, inner, content_x, right)
+            text_entry = self._draw_clip_text(painter, clip, inner, content_x, right)
 
         painter.restore()
-        return icon_entries, pending_thumbs
+        return icon_entries, pending_thumbs, text_entry
 
     def _add_slot_if_valid(self, slots, seen, center_clip_time, half_interval, segment_start,
                            segment_end, trim_start, media_duration, inner_x, top,
@@ -926,10 +987,23 @@ class ClipPainter(BasePainter):
             # Clear pending override after update to ensure consistency
             self._pending_clip_overrides.pop(item.id, None)
         else:
+            reader = {}
+            if isinstance(item.data, dict):
+                for key in ("mask_reader", "reader"):
+                    candidate = item.data.get(key)
+                    if isinstance(candidate, dict):
+                        reader = candidate
+                        break
+            static_mask = False
+            if isinstance(reader, dict):
+                static_mask = bool(reader.get("has_single_image")) if "has_single_image" in reader else bool(
+                    is_single_image_media(reader)
+                )
             item.data["position"] = self._snap_time(position)
-            item.data["start"] = 0.0
+            item.data["start"] = self._snap_time(start)
             item.data["end"] = self._snap_time(end)
-            item.data["duration"] = self._snap_time(end)
+            item.data["duration"] = self._snap_time(item.data["end"] - item.data["start"])
+            item.data["_auto_direction"] = static_mask
             self.update_transition_data(item.data, only_basic_props=True)
 
         self._resizing_item = None
@@ -1339,7 +1413,6 @@ class ClipPainter(BasePainter):
             self.w.thumbnail_manager.request_thumbnail(clip_key, file_id, frame, generation)
             if key not in self._thumb_missing_logged:
                 self._thumb_missing_logged.add(key)
-                log.debug("Thumbnail miss queued %s gen=%s", key, generation)
 
         return None
 
@@ -1355,38 +1428,25 @@ class ClipPainter(BasePainter):
         if rect_width <= 0.0:
             return
 
-        width = max(1, int(round(rect_width)))
-        height = max(1, int(round(rect.height())))
-        scaled = pixmap.scaled(
-            width,
-            height,
-            Qt.KeepAspectRatio,
-            Qt.SmoothTransformation,
-        )
-        full_width = float(scaled.width())
-        scaled_height = float(scaled.height())
+        scaled = self.scaled_pixmap(pixmap, rect_width, rect.height())
+        if not scaled or scaled.isNull():
+            return
+        full_width, scaled_height = self.logical_size(scaled)
+        if full_width <= 0.0 or scaled_height <= 0.0:
+            return
 
-        # Compute fractions for source clipping
-        frac_left = max(0.0, (visible_rect.left() - rect.left()) / rect_width)
-        frac_width = visible_rect.width() / rect_width
-
-        source_x = frac_left * full_width
-        draw_width = frac_width * full_width
-
-        # Target rect within visible area
-        target_x = visible_rect.x()
-        target_y = visible_rect.y() + (visible_rect.height() - scaled_height) / 2.0
-        target = QRectF(target_x, target_y, visible_rect.width(), scaled_height)
-
-        # Source rect from scaled pixmap
-        source = QRectF(source_x, 0.0, draw_width, scaled_height)
+        target_x = rect.x()
+        target_y = rect.y() + (rect.height() - scaled_height) / 2.0
 
         had_hint = bool(painter.renderHints() & QPainter.SmoothPixmapTransform)
+        painter.save()
+        painter.setClipRect(visible_rect, Qt.IntersectClip)
         if not had_hint:
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.drawPixmap(target, scaled, source)
+        painter.drawPixmap(QPointF(target_x, target_y), scaled)
         if not had_hint:
             painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        painter.restore()
 
     def _slot_is_visible(self, rect):
         """Return True if a thumbnail slot rect intersects the current viewport."""
@@ -1461,7 +1521,7 @@ class ClipPainter(BasePainter):
             )
             letter = label.strip()[0].upper() if isinstance(label, str) and label.strip() else "?"
 
-            text_width = metrics.horizontalAdvance(letter)
+            text_width = font_metrics_horizontal_advance(metrics, letter)
             badge_width = max(text_width + 6.0, badge_height)
             if badge_width > available:
                 break
@@ -1515,19 +1575,31 @@ class ClipPainter(BasePainter):
 
     def _draw_clip_text(self, painter, clip, inner, x, right):
         text_width = right - x
-        if text_width <= 4:
-            return
-        painter.setPen(self.w.theme.clip.font_color)
+        if text_width <= 0:
+            return None
         text_rect = QRectF(x, inner.y(), text_width, inner.height())
+        title_raw = str((clip.data.get("title", "") if isinstance(clip.data, dict) else "") or "")
+        if text_width <= 4:
+            hit_rect = QRectF(text_rect.adjusted(2, 2, -2, -2))
+            if hit_rect.width() < 1.0:
+                hit_rect.setWidth(1.0)
+            if hit_rect.height() < 1.0:
+                hit_rect.setHeight(1.0)
+            return {"rect": hit_rect, "title": title_raw}
+
+        painter.setPen(self.w.theme.clip.font_color)
         metrics = QFontMetrics(painter.font())
         title = metrics.elidedText(
-            clip.data.get("title", ""), Qt.ElideRight, int(text_width - 4)
+            title_raw, Qt.ElideRight, int(text_width - 4)
         )
-        painter.drawText(
-            text_rect.adjusted(2, 2, -2, -2),
-            self.w._clip_text_flags,
-            title,
-        )
+        text_draw_rect = text_rect.adjusted(2, 2, -2, -2)
+        painter.drawText(text_draw_rect, self.w._clip_text_flags, title)
+
+        # Restrict hover to actual rendered text, not the entire clip region.
+        text_advance = float(font_metrics_horizontal_advance(metrics, title))
+        hit_width = min(max(1.0, text_advance), max(1.0, text_draw_rect.width()))
+        hit_rect = QRectF(text_draw_rect.x(), text_draw_rect.y(), hit_width, max(1.0, text_draw_rect.height()))
+        return {"rect": hit_rect, "title": title_raw}
 
     def _draw_waveform(self, painter, clip, inner, segment=None):
         data = clip.data if isinstance(clip.data, dict) else {}
@@ -1733,7 +1805,34 @@ class ClipPainter(BasePainter):
                             "effect_id": entry.get("effect_id"),
                         }
                     )
-        includes_start = (segment_rect.left() - full_rect.left()) <= 0.5
+            if isinstance(text_entry, dict):
+                rect_local = text_entry.get("rect")
+                if isinstance(rect_local, QRectF):
+                    global_rect = QRectF(rect_local)
+                    global_rect.translate(offset.x(), offset.y())
+                    self.w._clip_text_rects.append(
+                        {
+                            "rect": global_rect,
+                            "clip": clip,
+                            "title": str(text_entry.get("title", "") or ""),
+                        }
+                    )
+        elif includes_start and segment_rect.width() <= 8.0:
+            # Keep tiny clips hoverable even when no text is painted.
+            bw = float(self.border_width or 0.0)
+            self.w._clip_text_rects.append(
+                {
+                    "rect": QRectF(
+                        segment_rect.x() + bw,
+                        segment_rect.y() + bw,
+                        max(1.0, segment_rect.width() - (bw * 2.0)),
+                        max(1.0, segment_rect.height() - (bw * 2.0)),
+                    ),
+                    "clip": clip,
+                    "title": str((clip.data.get("title", "") if isinstance(clip.data, dict) else "") or ""),
+                }
+            )
+
         includes_end = (full_rect.right() - segment_rect.right()) <= 0.5
 
         border_pen = pen if isinstance(pen, QPen) else (self.sel_pen if selected else self.clip_pen)
