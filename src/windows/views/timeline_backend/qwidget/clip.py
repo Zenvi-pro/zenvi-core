@@ -395,23 +395,6 @@ class ClipInteractionMixin:
             if delta_sec < min_delta_sec:
                 delta_sec = min_delta_sec
 
-        project_duration = 0.0
-        project = get_app().project if get_app() else None
-        if project:
-            try:
-                project_duration = float(project.get("duration") or 0.0)
-            except Exception:
-                project_duration = 0.0
-
-        end_positions = [
-            info["position"] + info.get("duration", 0.0)
-            for info in self._drag_initial.values()
-        ]
-        if project_duration > 0.0 and end_positions:
-            max_delta_sec = project_duration - max(end_positions)
-            if delta_sec > max_delta_sec:
-                delta_sec = max_delta_sec
-
         fps = float(self.fps_float or 0.0)
         frame_offset = None
         if fps > 0.0:
@@ -427,37 +410,13 @@ class ClipInteractionMixin:
                 if frame_offset < min_frame_offset:
                     frame_offset = min_frame_offset
 
-            if project_duration > 0.0:
-                timeline_frames = int(round(project_duration * fps))
-            else:
-                timeline_frames = None
-
-            end_frames = []
-            for info in self._drag_initial.values():
-                start_frame = info.get("position_frames")
-                if start_frame is None:
-                    start_frame = int(round(info["position"] * fps))
-                duration_frames = info.get("duration_frames")
-                if duration_frames is None:
-                    duration_frames = int(round(info.get("duration", 0.0) * fps))
-                end_frames.append(start_frame + duration_frames)
-
-            if timeline_frames is not None and end_frames:
-                max_frame_offset = timeline_frames - max(end_frames)
-                if frame_offset > max_frame_offset:
-                    frame_offset = max_frame_offset
-
             delta_sec = frame_offset / fps
 
-        # Reapply second-based bounds to account for frame rounding
+        # Reapply left bound to account for frame rounding
         if start_positions:
             min_delta_sec = -min(start_positions)
             if delta_sec < min_delta_sec:
                 delta_sec = min_delta_sec
-        if project_duration > 0.0 and end_positions:
-            max_delta_sec = project_duration - max(end_positions)
-            if delta_sec > max_delta_sec:
-                delta_sec = max_delta_sec
 
         # -------- Apply identical deltas ------------
         for itm in self.dragging_items:

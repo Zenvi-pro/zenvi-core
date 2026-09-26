@@ -397,6 +397,12 @@ class AddToTimeline(QDialog):
         # Clear transaction
         get_app().updates.transaction_id = None
 
+        # Ensure timeline extension behavior matches all other timeline add/move paths.
+        timeline_view = getattr(get_app().window, "timeline", None)
+        extend_timeline = getattr(timeline_view, "_extend_timeline_to_fit_items", None)
+        if callable(extend_timeline):
+            extend_timeline()
+
         # Auto-select newly added clips
         win = get_app().window
         for idx, clip_id in enumerate(added_clip_ids):

@@ -154,6 +154,10 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     font-size: 11px;
 }
 QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #b8b8b8;
+}
         """
 
     def apply_theme(self):
@@ -211,6 +215,11 @@ QMainWindow::separator:hover {
 
 QWidget#videoPreview {
     background-color: #dedede;
+}
+
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #5a5a5a;
 }
 
 QComboBox {

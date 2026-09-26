@@ -141,6 +141,12 @@ QWidget#tutorial QPushButton#HideTutorial {
     font-size: 12px;
 }
 
+
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #9bb2cc;
+}
+
 /* ── Preference / settings panels ────────────────────────── */
 QWidget#Simple, QWidget#Advanced, QWidget#PreferencePanel,
 QWidget#settingsContainer, QWidget#scrollAreaWidgetContents {
