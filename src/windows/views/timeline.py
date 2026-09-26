@@ -39,9 +39,10 @@ from operator import itemgetter
 from random import uniform
 
 import openshot
-from PyQt5.QtCore import pyqtSlot, Qt, QCoreApplication, QTimer, pyqtSignal, QPointF
-from PyQt5.QtGui import QCursor, QKeySequence
-from PyQt5.QtWidgets import QDialog
+from qt_api import pyqtSlot, Qt, QCoreApplication, QTimer, pyqtSignal, QPointF
+from qt_api import modifiers_has
+from qt_api import QCursor, QKeySequence
+from qt_api import QDialog
 
 from classes import info, updates
 from classes.app import get_app
@@ -92,7 +93,7 @@ else:
             except ImportError as ex:
                 log.error("Import failure loading timeline web backends", exc_info=True)
                 raise RuntimeError(
-                    "Need PyQt5.QtWebKitWidgets (preferred on Windows) or PyQt5.QtWebEngineWidgets"
+                    "Need QtWebKitWidgets (preferred on Windows) or QtWebEngineWidgets for the active Qt binding"
                 ) from ex
     else:
         try:
@@ -103,8 +104,16 @@ else:
             except ImportError as ex:
                 log.error("Import failure loading WebKit backend", exc_info=True)
                 raise RuntimeError(
-                    "Need PyQt5.QtWebEngineWidgets or PyQt5.QtWebKitWidgets"
+                    "Need QtWebEngineWidgets or QtWebKitWidgets for the active Qt binding"
                 ) from ex
+
+log.info("Timeline backend: %s (%s)", info.WEB_BACKEND, getattr(ViewClass, "__name__", "unknown"))
+
+
+def _event_posf(event):
+    if hasattr(event, "posF"):
+        return event.posF()
+    return event.position()
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -249,10 +258,27 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if isinstance(effect, dict):
                 effect["id"] = get_app().project.generate_id()
 
+    def _select_inserted_paste_items(self, inserted_items):
+        """Replace the current selection with newly inserted pasted items."""
+        if not inserted_items:
+            return
+
+        if ViewClass == TimelineWidget:
+            TimelineWidget.clear_all_selections(self)
+            for index, (item_id, item_type) in enumerate(inserted_items):
+                self._select_timeline_item(item_id, item_type, clear_existing=(index == 0))
+            return
+
+        self.ClearAllSelections()
+        for index, (item_id, item_type) in enumerate(inserted_items):
+            self.AddSelectionJS(item_id, item_type, clear_existing=(index == 0))
+
     def _handle_paste_callback(self, clip_ids, tran_ids, callback_data):
         """Handle clipboard data insertion after resolving timeline coordinates."""
         position = callback_data.get("position", 0.0)
         layer_id = callback_data.get("track", 0)
+        inserted_new_items = False
+        inserted_items = []
 
         tid = self.get_uuid()
         get_app().updates.transaction_id = tid
@@ -284,6 +310,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     obj.data["position"] = obj.data.get("position", 0.0) + position_diff
                     obj.data["layer"] = obj.data.get("layer", 0) + layer_diff
                     obj.save()
+                    item_id = getattr(obj, "id", None) or obj.data.get("id")
+                    item_type = None
+                    if isinstance(obj, Clip):
+                        item_type = "clip"
+                    elif isinstance(obj, Transition):
+                        item_type = "transition"
+                    if item_id and item_type:
+                        inserted_items.append((str(item_id), item_type))
 
             def apply_clipboard_data(target_obj, clipboard_data, excluded_keys=None):
                 excluded_keys = excluded_keys or []
@@ -320,6 +354,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             if isinstance(copied_object, list):
                 adjust_positions_and_layers(copied_object, position, layer_id)
+                inserted_new_items = True
 
             for clip_id in clip_ids:
                 clip = Clip.get(id=clip_id)
@@ -344,6 +379,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         copied_object.data,
                         excluded_keys=["id", "position", "layer", "start", "end"],
                     )
+
+            if inserted_new_items:
+                self._extend_timeline_to_fit_items()
+                self._select_inserted_paste_items(inserted_items)
         finally:
             get_app().updates.transaction_id = None
 
@@ -356,11 +395,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if hasattr(self, "_seconds_from_x"):
             seconds = max(0.0, float(self._seconds_from_x(local_pos.x())))
 
+        local_posf = QPointF(local_pos)
         track_number = None
         if hasattr(self, "geometry"):
             self.geometry.ensure()
-            for track_rect, track, _name_rect in getattr(self.geometry, "track_rects", []):
-                if track_rect.contains(local_pos):
+            track_iter = getattr(self.geometry, "iter_tracks", None)
+            if callable(track_iter):
+                track_entries = track_iter()
+            else:
+                track_entries = getattr(self.geometry, "track_rects", [])
+
+            for track_rect, track, _name_rect in track_entries:
+                if track_rect.contains(local_posf):
                     track_number = track.data.get("number")
                     break
 
@@ -793,6 +839,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @guarded_slot(float)
     def ShowPlayheadMenu(self, position=None):
         log.debug('ShowPlayheadMenu: %s' % position)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -830,11 +877,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             # Show context menu
             self.context_menu_cursor_position = QCursor.pos()
-            return menu.popup(self.context_menu_cursor_position)
+            return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot(str)
     def ShowEffectMenu(self, effect_id=None):
         log.debug('ShowEffectMenu: %s' % effect_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -857,11 +905,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot(float, int)
     def ShowTimelineMenu(self, position, layer_number):
         log.debug('ShowTimelineMenu: position: %s, layer: %s' % (position, layer_number))
+        self._context_menu_paste_data = {
+            "position": max(0.0, float(position)),
+            "track": int(layer_number),
+        }
 
         # Get translation method
         _ = get_app()._tr
@@ -943,11 +995,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot(str)
     def ShowClipMenu(self, clip_id=None):
         log.debug('ShowClipMenu: %s' % clip_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -1444,7 +1497,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     def Transform_Triggered(self, action, clip_ids):
         log.debug("Transform_Triggered")
@@ -2295,6 +2348,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback for paste context menus"""
         log.debug(action)
 
+        if ViewClass == TimelineWidget and self._context_menu_paste_data and not clip_ids and not tran_ids:
+            paste_data = dict(self._context_menu_paste_data)
+            self._context_menu_paste_data = None
+            self._handle_paste_callback(clip_ids, tran_ids, paste_data)
+            return
+
         # Get global mouse position
         if self.context_menu_cursor_position:
             global_mouse_pos = self.context_menu_cursor_position
@@ -2519,9 +2578,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Determine slice mode (keep both [default], keep left [shift], keep right [ctrl]
         slice_mode = MenuSlice.KEEP_BOTH
-        if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+        if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
             slice_mode = MenuSlice.KEEP_RIGHT
-        elif int(QCoreApplication.instance().keyboardModifiers() & Qt.ShiftModifier) > 0:
+        elif modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ShiftModifier):
             slice_mode = MenuSlice.KEEP_LEFT
 
         if clip_id:
@@ -3302,6 +3361,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @guarded_slot(str)
     def ShowTransitionMenu(self, tran_id=None):
         log.info('ShowTransitionMenu: %s' % tran_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -3434,11 +3494,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot(str)
     def ShowTrackMenu(self, layer_id=None):
         log.info('ShowTrackMenu: %s', layer_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -3509,11 +3570,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot(str)
     def ShowMarkerMenu(self, marker_id=None):
         log.info('ShowMarkerMenu: %s' % marker_id)
+        self._context_menu_paste_data = None
 
         if marker_id not in self.window.selected_markers:
             self.window.selected_markers = [marker_id]
@@ -3523,7 +3585,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     @guarded_slot()
     def EnableCacheThread(self):
@@ -3860,6 +3922,88 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().updates.update(["scale"], new_scale)
             get_app().updates.ignore_history = False
 
+    def _mime_text_payload(self, mime):
+        """Return text payload from a mime object, if available."""
+        try:
+            text = mime.text()
+        except Exception:
+            text = ""
+        if text:
+            return text
+        for fmt in ("text/plain", "application/json"):
+            try:
+                raw = mime.data(fmt)
+            except Exception:
+                raw = None
+            if not raw:
+                continue
+            try:
+                return bytes(raw).decode("utf-8", "ignore")
+            except Exception:
+                try:
+                    return raw.data().decode("utf-8", "ignore")
+                except Exception:
+                    continue
+        return ""
+
+    def _mime_json_list(self, mime):
+        """Parse a JSON list from mime text, if present."""
+        payload = self._mime_text_payload(mime)
+        if not payload:
+            return []
+        try:
+            data_list = json.loads(payload)
+        except Exception:
+            return []
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+        return data_list
+
+    def _parse_js_position_result(self, result):
+        """Normalize JS position results into a dict."""
+        if isinstance(result, dict):
+            return result
+        if result is None:
+            return None
+        if isinstance(result, (bytes, bytearray)):
+            try:
+                result = result.decode("utf-8", "ignore")
+            except Exception:
+                return None
+        if isinstance(result, str):
+            if not result:
+                return None
+            try:
+                parsed = json.loads(result)
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    def _run_js_position(self, x, y, callback):
+        """Run getJavaScriptPosition and normalize its result."""
+        code = (
+            "(function(){"
+            "try{var r="
+            + JS_SCOPE_SELECTOR
+            + ".getJavaScriptPosition("
+            + str(x)
+            + ","
+            + str(y)
+            + ");return JSON.stringify(r);}catch(e){return JSON.stringify({error:String(e)});}"
+            "})()"
+        )
+
+        def _wrapped(result):
+            parsed = self._parse_js_position_result(result)
+            if parsed is None:
+                log.warning("Timeline js_position: empty result (%s)", result)
+            elif parsed.get("error"):
+                log.warning("Timeline js_position error: %s", parsed.get("error"))
+            callback(parsed)
+
+        self.run_js(code, _wrapped)
+
     # An item is being dragged onto the timeline (mouse is entering the timeline now)
     def dragEnterEvent(self, event):
         if ViewClass == TimelineWidget:
@@ -3874,13 +4018,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Initialize a list to hold file data (either from mime data or newly created files)
         data_list = []
-        initial_pos = event.posF()
+        initial_pos = _event_posf(event)
         drop_tid = None
 
         # Get FPS and scaling information
         fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
 
+        # Handle text-based mime data (clips or transitions)
+        if event.mimeData().html():
+            self.item_type = event.mimeData().html()
+            data_list = self._mime_json_list(event.mimeData())
         # Handle URL-based OS file drop
         if mime_has_file_drop(event.mimeData()):
             self.item_type = "clip"
@@ -3895,14 +4043,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             for file in imported:
                 if file and getattr(file, "id", None):
                     data_list.append(file.id)
-
-        # Handle text-based mime data (clips or transitions)
-        elif event.mimeData().html():
-            self.item_type = event.mimeData().html()
-            data_list = json.loads(event.mimeData().text())
-
-            if not isinstance(data_list, list):
-                data_list = [data_list]
 
         # If no valid item type, return
         if not self.item_type:
@@ -3920,8 +4060,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             tid = drop_tid if drop_tid else self.get_uuid()
             get_app().updates.transaction_id = tid
 
+            if not js_position_data:
+                log.warning("Timeline dragEnter js_position: empty result")
+                return
             js_position = snap_to_grid(js_position_data.get('position', 0.0))
             js_nearest_track = js_position_data.get('track', 0)
+            if not js_nearest_track:
+                try:
+                    js_nearest_track = int(self.timeline_sync.timeline.GetTrackCount())
+                except Exception:
+                    js_nearest_track = 0
 
             pos.setX(js_position)
 
@@ -3949,8 +4097,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
 
         # Get JS position and pass initial position to the callback
-        self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
-                    .format(initial_pos.x(), initial_pos.y()), partial(handle_js_position, initial_pos))
+        def _deferred_js_position():
+            self._run_js_position(
+                initial_pos.x(),
+                initial_pos.y(),
+                partial(handle_js_position, initial_pos),
+            )
+        QTimer.singleShot(0, _deferred_js_position)
 
         # Accept the event
         event.accept()
@@ -3960,6 +4113,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Retrieve File object by file_id
         file = File.get(id=file_id)
         if not file:
+            log.warning("addClip: file_id not found: %s", file_id)
             return  # Skip if the file is not found
 
         # Get file name and path
@@ -4291,7 +4445,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
         # Get cursor position
-        pos = event.posF()
+        pos = _event_posf(event)
 
         # Move clip on timeline
         if self.item_type in ["clip", "transition"]:
@@ -4308,9 +4462,76 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Accept the event
         event.accept()
 
+        def cleanup_drop():
+            self.new_item = False
+            self.item_type = None
+            self.item_ids = []
+            get_app().updates.transaction_id = None
+
+        # If drag enter didn't build item_ids, fall back to parsing drop mime data.
+        if self.item_type in ["clip", "transition"] and not self.item_ids:
+            mime = event.mimeData()
+            data_list = []
+            data_list = self._mime_json_list(mime)
+            if not data_list and mime.hasUrls():
+                urls = mime.urls()
+                get_app().window.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
+                for uri in urls:
+                    filepath = uri.toLocalFile()
+                    if not os.path.exists(filepath) or not os.path.isfile(filepath):
+                        continue
+                    for file in File.filter(path=filepath):
+                        if file:
+                            data_list.append(file.id)
+            if data_list:
+                pos = _event_posf(event)
+
+                def handle_js_position(pos, js_position_data):
+                    tid = self.get_uuid()
+                    get_app().updates.transaction_id = tid
+
+                    fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
+                    snap_to_grid = lambda t: round(t * fps_float) / fps_float
+                    if not js_position_data:
+                        log.warning("Timeline drop fallback js_position: empty result")
+                        cleanup_drop()
+                        return
+                    js_position = snap_to_grid(js_position_data.get('position', 0.0))
+                    js_nearest_track = js_position_data.get('track', 0)
+                    if not js_nearest_track:
+                        try:
+                            js_nearest_track = int(self.timeline_sync.timeline.GetTrackCount())
+                        except Exception:
+                            js_nearest_track = 0
+                    pos.setX(js_position)
+
+                    self.item_ids = []
+                    for index, drag_id in enumerate(data_list):
+                        ignore_refresh = False if index == len(data_list) - 1 else True
+                        if self.item_type == "clip":
+                            self.addClip(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
+                        elif self.item_type == "transition":
+                            self.addTransition(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
+
+                    if self.item_ids:
+                        self.run_js(
+                            JS_SCOPE_SELECTOR + ".updateRecentItemJSON('{}', '{}', '{}');"
+                            .format(self.item_type, json.dumps(self.item_ids), get_app().updates.transaction_id)
+                        )
+                    cleanup_drop()
+
+                def _deferred_drop_position():
+                    self._run_js_position(
+                        pos.x(),
+                        pos.y(),
+                        partial(handle_js_position, pos),
+                    )
+                QTimer.singleShot(0, _deferred_drop_position)
+                return
+
         if self.item_type == "effect":
-            pos = event.posF()
-            data = json.loads(event.mimeData().text())
+            pos = _event_posf(event)
+            data = self._mime_json_list(event.mimeData())
             self.addEffect(data, pos)
 
         elif self.item_type in ["clip", "transition"] and self.item_ids:
@@ -4325,10 +4546,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.setFocus(Qt.OtherFocusReason)
 
         # Cleanup after drop
-        self.new_item = False
-        self.item_type = None
-        self.item_ids = []
-        get_app().updates.transaction_id = None
+        cleanup_drop()
 
     def dragLeaveEvent(self, event):
         """A drag is in-progress and the user moves mouse outside of timeline"""
@@ -4409,6 +4627,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Get the JSON from the cache object (i.e. which frames are cached)
                 cache_json = cache_object.Json()
                 cache_dict = json.loads(cache_json)
+                if not isinstance(cache_dict, dict):
+                    return
                 cache_version = cache_dict["version"]
 
                 if self.cache_renderer_version == cache_version:
@@ -4432,9 +4652,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
 
     def __init__(self, window):
-        super().__init__()
         if ViewClass == TimelineWidget:
             TimelineWidget.__init__(self)
+        else:
+            super().__init__()
         self.setObjectName("TimelineView")
 
         app = get_app()
@@ -4442,6 +4663,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.setAcceptDrops(True)
         self.last_position_frames = None
         self.context_menu_cursor_position = None
+        self._context_menu_paste_data = None
         self._pending_trim_refresh = None
 
         # Get logger

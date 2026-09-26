@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QSize
-from PyQt5.QtWidgets import QTreeView, QAbstractItemView
+from qt_api import QSize
+from qt_api import QTreeView, QAbstractItemView
 
 from classes import info
 from classes.app import get_app

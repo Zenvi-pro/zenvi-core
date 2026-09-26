@@ -6,7 +6,7 @@
 #
 # WARNING! All changes made in this file will be lost!
 
-from PyQt5 import QtCore
+from qt_api import QtCore
 
 # Register Zenvi :/openshot.svg before this module's qInitResources() (Qt: first registration wins).
 from classes import zenvi_brand_rc  # noqa: F401

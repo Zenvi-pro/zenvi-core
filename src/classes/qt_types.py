@@ -27,7 +27,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QByteArray
+from qt_api import QByteArray
 
 
 # Utility functions for handling qt types

@@ -27,8 +27,8 @@
 
 from collections import OrderedDict, deque
 
-from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QImage
+from qt_api import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+from qt_api import QImage
 
 from classes.logger import log
 from classes.thumbnail import GetThumbPath, resolve_thumbnail_path
@@ -247,7 +247,12 @@ class TimelineThumbnailManager(QObject):
 
     def shutdown(self):
         """Stop the worker thread."""
+        if self._thread is None:
+            return
         self.clear_pending()
         if self._thread.isRunning():
             self._thread.quit()
             self._thread.wait(2000)
+        self._worker.deleteLater()
+        self._thread.deleteLater()
+        self._thread = None

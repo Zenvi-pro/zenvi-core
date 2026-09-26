@@ -26,11 +26,12 @@
  """
 
 import time
-import sip
+
 import math
 
-from PyQt5.QtCore import QObject, QThread, QTimer, pyqtSlot, pyqtSignal, QCoreApplication
-from PyQt5.QtWidgets import QMessageBox
+from qt_api import QObject, QThread, QTimer, pyqtSlot, pyqtSignal, QCoreApplication
+from qt_api import QMessageBox
+from qt_api import unwrapinstance, wrapinstance, _is_android_runtime
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes.app import get_app
@@ -218,6 +219,8 @@ class PlayerWorker(QObject):
 
             # Convert float 'settings' sample rate to Integer, if detected
             if type(s.get("default-samplerate")) == float:
+                if detected_sample_rate_int is None:
+                    detected_sample_rate_int = round(s.get("default-samplerate"))
                 s.set("default-samplerate", detected_sample_rate_int)
 
         # Convert float 'project' sample rate to Integer, if detected
@@ -306,11 +309,23 @@ class PlayerWorker(QObject):
             log.error("initPlayer: GetRendererQObject() returned null/zero — frames will not be delivered!")
             return
 
-        self.player.SetQWidget(sip.unwrapinstance(self.videoPreview))
-        log.info("initPlayer: SetQWidget called with ptr=%s", sip.unwrapinstance(self.videoPreview))
+        self.renderer = None
 
-        self.renderer = sip.wrapinstance(self.renderer_address, QObject)
+        if _is_android_runtime():
+            # Pass widget directly; C++ delivers frames via QMetaObject::invokeMethod.
+            self.player.SetQWidget(self.videoPreview)
+            return
+
+        # Pass raw pointer; connect C++ present() signal to Python slot.
+        widget_ptr = unwrapinstance(self.videoPreview)
+        self.player.SetQWidget(widget_ptr)
+        log.info("initPlayer: SetQWidget called with ptr=%s", widget_ptr)
+
+        self.renderer = wrapinstance(self.renderer_address, QObject)
         log.info("initPlayer: renderer wrapped: %s", self.renderer)
+        if self.renderer is None:
+            log.error("initPlayer: wrapinstance() returned None — frames will not be delivered!")
+            return
 
         try:
             self.videoPreview.connectSignals(self.renderer)

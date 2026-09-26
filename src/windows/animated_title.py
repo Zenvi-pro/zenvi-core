@@ -29,8 +29,8 @@
 import os
 import uuid
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from qt_api import Qt
+from qt_api import (
     QApplication, QDialog, QDialogButtonBox, QPushButton
 )
 

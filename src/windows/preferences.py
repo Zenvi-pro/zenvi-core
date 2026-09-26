@@ -31,14 +31,14 @@ import operator
 import functools
 import platform
 
-from PyQt5.QtCore import Qt, QSize, QDir
-from PyQt5.QtWidgets import (
-    QWidget, QDialog, QMessageBox, QFileDialog,
+from qt_api import Qt, QSize, QDir
+from qt_api import (
+    QWidget, QDialog, QMessageBox, QFileDialog, QDialogButtonBox,
     QVBoxLayout, QHBoxLayout, QSizePolicy,
     QScrollArea, QLabel, QLineEdit, QPushButton,
     QDoubleSpinBox, QComboBox, QCheckBox, QSpinBox, QStyle,
 )
-from PyQt5.QtGui import QKeySequence, QIcon
+from qt_api import QKeySequence, QIcon
 
 from classes import info, ui_util, tabstops
 from classes import openshot_rc  # noqa
@@ -60,7 +60,7 @@ class Preferences(QDialog):
     def __init__(self):
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -154,7 +154,7 @@ class Preferences(QDialog):
 
         self._apply_tab_order()
 
-    def txtSearch_changed(self):
+    def txtSearch_changed(self, *_args):
         """textChanged event handler for search box"""
         log.info("Search for %s", self.txtSearch.text())
 

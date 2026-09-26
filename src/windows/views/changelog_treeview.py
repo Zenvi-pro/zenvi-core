@@ -29,9 +29,10 @@
 import webbrowser
 from functools import partial
 
-from PyQt5.QtCore import Qt, QRegExp
-from PyQt5.QtWidgets import QListView, QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
-from PyQt5.QtGui import QCursor
+from qt_api import Qt
+from qt_api import QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
+from qt_api import QCursor
+from qt_api import make_filter_regex, set_proxy_filter
 
 from classes.logger import log
 from classes.app import get_app
@@ -58,7 +59,8 @@ class ChangelogTreeView(QTreeView):
 
     def filter_changed(self, text=""):
         """Apply filter text to proxy model"""
-        self.model().setFilterRegExp(QRegExp(text, Qt.CaseInsensitive))
+        regex = make_filter_regex(text, case_insensitive=True)
+        set_proxy_filter(self.model(), regex)
         self.model().setFilterKeyColumn(-1)
         self.model().sort(1, Qt.AscendingOrder)
 
@@ -89,12 +91,12 @@ class ChangelogTreeView(QTreeView):
 
         try:
             webbrowser.open(self.commit_url % hash)
-        except:
+        except Exception:
             log.warning('Failed to launch web browser to %s' % self.commit_url)
 
     def __init__(self, commits, commit_url, *args):
         # Invoke parent init
-        QListView.__init__(self, *args)
+        QTreeView.__init__(self, *args)
 
         # Get a reference to the window object
         self.win = get_app().window

@@ -26,8 +26,8 @@
  """
 
 from classes import info
-from PyQt5.QtCore import QTimer, Qt, QModelIndex, QItemSelectionModel
-from PyQt5.QtWidgets import QListView
+from qt_api import QTimer, Qt, QModelIndex, QItemSelectionModel
+from qt_api import QListView
 
 from windows.models.titles_model import TitlesModel, TitleRoles
 
