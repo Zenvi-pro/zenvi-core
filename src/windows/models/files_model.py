@@ -54,6 +54,42 @@ from classes.api_client import get_backend_client
 import openshot
 
 
+def inspect_media(path, max_width=0, max_height=0):
+    """Inspect a media file with libopenshot and return (reader_json, duration).
+
+    libopenshot 1.0 exposes Clip.CreateReader(path, inspect_reader). Its cheap
+    first pass can pick the wrong reader (QtImageReader for a .flac), so retry
+    with inspect_reader=True and let libopenshot fall through to the next
+    candidate (OpenShot #5997). Older builds (Zenvi ships 0.5.x today) have no
+    CreateReader: use Clip(path) and, if that fails, an explicit FFmpegReader.
+    """
+    def _inspect(reader):
+        if not reader:
+            raise RuntimeError(f"No reader available for path: {path}")
+        if max_width > 0 and max_height > 0 and hasattr(reader, "SetMaxDecodeSize"):
+            reader.SetMaxDecodeSize(int(max_width), int(max_height))
+        reader.Open()
+        try:
+            return json.loads(reader.Json()), float(reader.info.duration or 0.0)
+        finally:
+            reader.Close()
+
+    create_reader = getattr(openshot.Clip, "CreateReader", None)
+    if callable(create_reader):
+        try:
+            return _inspect(create_reader(path, False))
+        except Exception:
+            # Eager inspection rejects a wrong lightweight reader choice during
+            # construction and falls back to the next candidate (e.g. FFmpeg).
+            return _inspect(create_reader(path, True))
+
+    try:
+        clip = openshot.Clip(path)
+        return _inspect(clip.Reader())
+    except Exception:
+        return _inspect(openshot.FFmpegReader(path))
+
+
 class BackendIndexingWorker(QThread):
     """Background worker: Gemini index + Flash audiovisual summary."""
     completed = pyqtSignal(dict, object, object)  # file_data, metadata, error
@@ -814,12 +850,8 @@ class FilesModel(QObject, updates.UpdateInterface):
                 continue
 
             try:
-                # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-                clip = openshot.Clip(filepath)
-
-                # Get the JSON for the clip's internal reader
-                reader = clip.Reader()
-                file_data = json.loads(reader.Json())
+                # Inspect with libopenshot (tries multiple readers, retries eagerly on failure)
+                file_data, _duration = inspect_media(filepath)
 
                 # Determine media type
                 file_data["media_type"] = get_media_type(file_data)
