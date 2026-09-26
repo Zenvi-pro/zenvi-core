@@ -143,7 +143,6 @@ class TimelineWebEngineView(QWebEngineView):
         # available to JavaScript from the very first document-creation event.
         self.webchannel = QWebChannel(self.page())
         self.page().setWebChannel(self.webchannel)
-        self.setHtml(self.get_html(), QUrl.fromLocalFile(QFileInfo(self.html_path).absoluteFilePath()))
 
         # Load the timeline HTML directly from disk (file:// URL).
         # Using load() instead of setHtml() avoids security restrictions that can block
