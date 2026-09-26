@@ -3162,6 +3162,7 @@ class AIChatWindow(QDockWidget):
         worker = sess.get("worker")
         if worker is None:
             return False
+        self._reset_turn_segments(sess)
         if self.is_processing and action == "chat" and not sess.get("pending_plan_questions"):
             if text:
                 self._run_js("alert('Processing previous message...');")
@@ -3653,6 +3654,7 @@ class AIChatWindow(QDockWidget):
         self._user_cancelled = True
         self._token_buffer.clear()
         self._token_flush_scheduled = False
+        self._reset_turn_segments(self._active_session())
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
@@ -3697,11 +3699,77 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
-        if (self._sessions.get(sid) or {}).get("awaiting_plan_answers"):
+        sess = self._sessions.get(sid) or {}
+        if sess.get("awaiting_plan_answers"):
             return
         if self._use_web_ui:
+            sess["turn_tail"] = (sess.get("turn_tail") or "") + text
             self._token_buffer.append(text)
             self._schedule_token_flush()
+
+    # ------------------------------------------------------------------
+    # Interleaved prose / tool activity within one turn
+    #
+    # An agent turn is text -> tools -> text -> tools -> ... The prose that
+    # streamed before a tool call is kept as its own bubble ("segment"), and
+    # the tool blocks that follow open a fresh Thinking block *below* it, so
+    # the transcript reads in the order the agent actually worked.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reset_turn_segments(sess) -> None:
+        if sess is not None:
+            sess["turn_segments"] = []
+            sess["turn_tail"] = ""
+
+    def _commit_streaming_segment(self, sid: str) -> None:
+        """Freeze the prose streamed so far into a finished assistant bubble."""
+        sess = self._sessions.get(sid)
+        if sess is None:
+            return
+        text = self._strip_thinking(sess.get("turn_tail") or "")
+        sess["turn_tail"] = ""
+        if not text:
+            # Nothing worth keeping (whitespace / leaked headers only).
+            self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+            return
+        sess.setdefault("turn_segments", []).append(text)
+        html_body = _markdown_to_html(text)
+        sess["messages"].append(("assistant", html_body, True))
+        self._record_message(sid, "assistant", text)
+        self._run_js(
+            "if(window.commitStreamingSegment) window.commitStreamingSegment(%s);"
+            % json.dumps(html_body)
+        )
+
+    def _final_segment_text(self, sess, text: str) -> str:
+        """The part of the final reply not already shown as a committed segment.
+
+        Backends disagree on what the end-of-turn text is: Claude reports only
+        the last assistant message, Codex joins every message of the turn. Both
+        must render exactly once, so whatever was already committed is removed.
+        Returns *text* unchanged when nothing was committed or the relation to
+        the committed prose is not recognised.
+        """
+        segments = list((sess or {}).get("turn_segments") or [])
+        if not segments:
+            return text
+        tail = self._strip_thinking((sess or {}).get("turn_tail") or "")
+
+        def norm(value: str) -> str:
+            return " ".join(self._strip_thinking(value or "").split())
+
+        n_text = norm(text)
+        n_joined = norm("\n\n".join(segments))
+        if n_text == norm(tail):
+            return text
+        if n_text == n_joined:
+            return tail
+        if n_text == norm("\n\n".join(segments + [tail])):
+            return tail
+        if n_text.startswith(n_joined + " ") and tail and n_text.endswith(norm(tail)):
+            return tail
+        return text
 
     def _tool_result_summary(self, result: str) -> str:
         if not result:
@@ -3715,19 +3783,23 @@ class AIChatWindow(QDockWidget):
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
         """Render a Cursor-style collapsible terminal block for a tool call."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        # Keep the prose that streamed before this tool as its own bubble. It
+        # must be persisted before the tool event so a restored transcript
+        # anchors the tool block after that prose, not before it.
+        if sid == self._active_sid and self._use_web_ui:
+            self._flush_token_buffer()
+            self._commit_streaming_segment(sid)
         # Recorded for every tab, not just the visible one — a background tab's
         # activity should still be there when the user switches to it.
         self._record_tool_started(sid, call_id, tool_name)
         if sid != self._active_sid:
             return
-        # Drop any pre-tool "thinking" that already streamed into the answer bubble.
-        self._token_buffer.clear()
-        self._token_flush_scheduled = False
         if self._use_web_ui:
-            self._run_js(
-                "if(window.resetStreamingMessage) window.resetStreamingMessage();"
-                "if(window.reopenThinkingForTools) window.reopenThinkingForTools();"
-            )
+            # Continue tool activity in a Thinking block placed after the prose.
+            self._run_js("if(window.reopenThinkingForTools) window.reopenThinkingForTools();")
+        else:
+            self._token_buffer.clear()
+            self._token_flush_scheduled = False
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
@@ -3822,11 +3894,16 @@ class AIChatWindow(QDockWidget):
                 self._user_cancelled = False
                 self._token_buffer.clear()
                 self._token_flush_scheduled = False
+                self._reset_turn_segments(self._sessions.get(sid))
                 if self._use_web_ui:
                     self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
                 self._set_processing_ui(False)
                 return
             self._flush_token_buffer()
+            sess = self._sessions.get(sid)
+            had_segments = bool((sess or {}).get("turn_segments"))
+            text = self._final_segment_text(sess, text)
+            self._reset_turn_segments(sess)
             # If we streamed tokens, replace the streaming bubble with the
             # finalised markdown-rendered message instead of appending a new one.
             if self._use_web_ui:
@@ -3847,26 +3924,35 @@ class AIChatWindow(QDockWidget):
                 if sid in self._sessions:
                     self._sessions[sid]["awaiting_plan_answers"] = False
                 body = (text or "").strip()
-                if not body or body == "Done.":
-                    body = (
-                        "Still working on the plan — say \"continue the plan\" "
-                        "if nothing appears in the Plan dock."
-                    )
-                self._add_assistant_msg(body)
+                if had_segments and not body:
+                    # Every word of this turn is already on screen in its own
+                    # bubble; just drop the empty streaming placeholder.
+                    if self._use_web_ui:
+                        self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+                else:
+                    if not body or body == "Done.":
+                        body = (
+                            "Still working on the plan — say \"continue the plan\" "
+                            "if nothing appears in the Plan dock."
+                        )
+                    self._add_assistant_msg(body)
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
             if sid in self._sessions:
                 # Same normalisation the active path applies, so what we persist
                 # doesn't depend on which tab happened to be in front.
-                text = self._strip_thinking(text)
-                html_body = _markdown_to_html(text)
-                self._sessions[sid]["messages"].append(("assistant", html_body, True))
-                self._record_message(sid, "assistant", text)
-                self._run_js(
-                    "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
-                    % (json.dumps(sid), json.dumps(html_body))
-                )
+                sess = self._sessions[sid]
+                text = self._strip_thinking(self._final_segment_text(sess, text))
+                self._reset_turn_segments(sess)
+                if text:
+                    html_body = _markdown_to_html(text)
+                    sess["messages"].append(("assistant", html_body, True))
+                    self._record_message(sid, "assistant", text)
+                    self._run_js(
+                        "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
+                        % (json.dumps(sid), json.dumps(html_body))
+                    )
             if self._use_web_ui:
                 self._push_tabs_to_js()
             else:
@@ -3877,6 +3963,7 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
+            self._reset_turn_segments(self._sessions[sid])
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False
