@@ -26,6 +26,7 @@ def _is_android_runtime() -> bool:
 
 # Public exports filled in after binding selection
 QtCore = QtGui = QtWidgets = QtSvg = QtWebEngineCore = QtWebEngineWidgets = QtWebChannel = QtWebKitWidgets = None
+QtWebKit = QtWinExtras = None
 Signal = Slot = Property = None
 QRegularExpression = None
 QByteArray = QDir = QLibraryInfo = None
@@ -2135,7 +2136,9 @@ def _binding_order(env_value: str) -> List[str]:
     value = (env_value or "auto").strip().lower()
     if value in ("pyqt6", "pyside6", "pyqt5"):
         return [value]
-    return ["pyqt6", "pyside6", "pyqt5"]
+    # Zenvi ships and tests against PyQt5; keep it the default until the Qt6
+    # builds are qualified. Set OPENSHOT_QT_API=pyqt6|pyside6 to opt in.
+    return ["pyqt5", "pyqt6", "pyside6"]
 
 
 def _import_binding(name: str) -> Tuple:
@@ -2303,6 +2306,33 @@ def _import_binding(name: str) -> Tuple:
     raise ImportError(f"Unknown binding '{name}'")
 
 
+def _load_optional_modules(binding: str):
+    """Import binding-specific optional modules Zenvi uses when present.
+
+    QtWebKit (legacy QWebSettings, Windows chat fallback) and QtWinExtras
+    (taskbar AppUserModelID) only exist for PyQt5; both are best-effort.
+    """
+    global QtWebKit, QtWinExtras
+    QtWebKit = QtWinExtras = None
+    if binding != "pyqt5":
+        return []
+    found = []
+    try:
+        import PyQt5.QtWebKit as QtWebKitMod  # type: ignore
+        QtWebKit = QtWebKitMod
+        found.append(QtWebKitMod)
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import PyQt5.QtWinExtras as QtWinExtrasMod  # type: ignore
+            QtWinExtras = QtWinExtrasMod
+            found.append(QtWinExtrasMod)
+        except Exception:
+            pass
+    return found
+
+
 def _select_binding() -> str:
     """Select and load the first available binding."""
     global QtCore, QtGui, QtWidgets, QtSvg, QtWebEngineCore, QtWebEngineWidgets, QtWebChannel, QtWebKitWidgets
@@ -2365,6 +2395,7 @@ def _select_binding() -> str:
                 )
                 if m is not None
             ]
+            _MODULES.extend(_load_optional_modules(QT_API))
             # Python 3.6 does not support module-level __getattr__ (PEP 562),
             # so expose Qt types eagerly as well as through the lazy fallback
             # below. Preserve the same module precedence used by __getattr__.
@@ -2587,6 +2618,12 @@ __all__ = [
     "QtGui",
     "QtWidgets",
     "QtSvg",
+    "QtWebEngineCore",
+    "QtWebEngineWidgets",
+    "QtWebChannel",
+    "QtWebKitWidgets",
+    "QtWebKit",
+    "QtWinExtras",
     "QtWebEngineCore",
     "QtWebEngineWidgets",
     "QtWebChannel",
