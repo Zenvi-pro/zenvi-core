@@ -228,3 +228,18 @@ def normalize_path(path_value):
     if not path_value:
         return ""
     return path_value.replace("\\", "/")
+
+
+def comparable_media_path(path_value, project_file=None):
+    """Return a normalized absolute media path suitable for equality checks."""
+    resolved = absolute_media_path(path_value, project_file)
+    if not resolved:
+        return ""
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def media_paths_equal(path_a, path_b, project_file=None):
+    """Compare two media paths after token expansion and platform normalization."""
+    if not path_a or not path_b:
+        return False
+    return comparable_media_path(path_a, project_file) == comparable_media_path(path_b, project_file)

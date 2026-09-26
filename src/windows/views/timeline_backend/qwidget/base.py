@@ -1482,6 +1482,15 @@ class TimelineWidgetBase(QWidget):
             self.item_ids = []
         self.new_item = False
         self.item_type = None
+        # A timeline drop should leave timeline items as the sole active selection,
+        # so Delete removes the new clip/transition and not project files (OpenShot #5939).
+        files_model = getattr(self.win, "files_model", None)
+        if files_model:
+            for selection in (getattr(files_model, "selection_model", None),
+                              getattr(files_model, "list_selection_model", None)):
+                if selection is not None:
+                    selection.clearSelection()
+        self.setFocus(Qt.OtherFocusReason)
         self.changed(None)
         self.update()
 

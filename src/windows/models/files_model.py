@@ -420,10 +420,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, update_file_id=action.key[1].get('id', ''))
             else:
-                # Clear existing items
-                self.update_model(clear=True)
+                # Clear existing items. For full project loads, batch updates for faster UI rebuild.
+                self.update_model(clear=True, progressive_ui=False)
 
-    def update_model(self, clear=True, delete_file_id=None, update_file_id=None):
+    def update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
         log.debug("updating files model.")
         app = get_app()
 
@@ -557,14 +557,19 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.model_ids[id] = QPersistentModelIndex(row[5].index())
 
                 row_added_count += 1
-                if row_added_count % 2 == 0:
+                if progressive_ui and row_added_count % 25 == 0:
                     # Update every X items
                     get_app().processEvents(QEventLoop.ExcludeUserInputEvents)
 
-            # Refresh view and filters (to hide or show this new item)
-            get_app().window.resize_contents()
+            # Refresh view/filtering incrementally during interactive updates (i.e. imports)
+            if progressive_ui:
+                get_app().window.resize_contents()
 
         self.ignore_updates = False
+
+        # Single refresh after bulk updates (i.e. opening a project)
+        if not progressive_ui:
+            get_app().window.resize_contents()
 
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
