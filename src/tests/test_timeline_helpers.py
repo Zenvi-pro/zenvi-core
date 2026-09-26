@@ -208,6 +208,67 @@ class TimelineHelperTests(unittest.TestCase):
 
         return Helper()
 
+    def make_qwidget_finish_drag_helper(self):
+        qwidget_clip_module = self.qwidget_clip_module
+
+        class GeometryStub:
+            def __init__(self, helper):
+                self.helper = helper
+
+            def mark_dirty(self):
+                self.helper.geometry_marked_dirty += 1
+
+        class Helper(qwidget_clip_module.ClipInteractionMixin):
+            def __init__(self):
+                self.dragging_items = []
+                self._drag_moved = True
+                self._collapse_selection_on_release = False
+                self._collapse_selection_target = None
+                self._drag_transaction_id = "drag-tx-1"
+                self._drag_commit_in_progress = False
+                self._preserve_overrides_once = False
+                self._pending_transition_overrides = {}
+                self._pending_clip_overrides = {}
+                self._last_event = None
+                self.transition_updates = []
+                self.clip_updates = []
+                self.changed_calls = 0
+                self.update_calls = 0
+                self.release_calls = 0
+                self.project_duration_updates = 0
+                self.geometry_marked_dirty = 0
+                self.cursor_updates = []
+                self.snap_reset_calls = 0
+                self.snap = types.SimpleNamespace(reset=self._reset_snap)
+                self.geometry = GeometryStub(self)
+                self.win = types.SimpleNamespace(addSelection=lambda *_args, **_kwargs: None)
+
+            def _reset_snap(self):
+                self.snap_reset_calls += 1
+
+            def update_transition_data(self, transition_data, **kwargs):
+                self.transition_updates.append((copy.deepcopy(transition_data), dict(kwargs)))
+
+            def update_clip_data(self, clip_data, **kwargs):
+                self.clip_updates.append((copy.deepcopy(clip_data), dict(kwargs)))
+
+            def _update_project_duration(self):
+                self.project_duration_updates += 1
+
+            def changed(self, _value):
+                self.changed_calls += 1
+
+            def update(self):
+                self.update_calls += 1
+
+            def _release_cursor(self):
+                self.release_calls += 1
+
+            def _updateCursor(self, pos):
+                self.cursor_updates.append(pos)
+
+        return Helper()
+
     def make_qwidget_cursor_helper(self):
         class GeometryStub:
             def __init__(self):
@@ -996,6 +1057,80 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertIsNone(helper._dragging_keyframe)
         self.assertFalse(helper.mouse_dragging)
         self.assertEqual(helper.release_calls, 1)
+
+    def test_qwidget_finish_clip_drag_single_transition_keeps_auto_direction(self):
+        helper = self.make_qwidget_finish_drag_helper()
+
+        class DummyTransition:
+            def __init__(self, item_id, data):
+                self.id = item_id
+                self.data = data
+
+        transition = DummyTransition(
+            "T1",
+            {
+                "id": "T1",
+                "position": 4.0,
+                "layer": 1,
+                "start": 0.0,
+                "end": 1.0,
+                "reader": {"has_single_image": True},
+            },
+        )
+        helper.dragging_items = [transition]
+
+        with patch.object(self.qwidget_clip_module, "Transition", DummyTransition):
+            self.qwidget_clip_module.ClipInteractionMixin._finishClipDrag(helper)
+
+        self.assertEqual(helper.clip_updates, [])
+        self.assertEqual(len(helper.transition_updates), 1)
+        transition_payload, transition_kwargs = helper.transition_updates[0]
+        self.assertTrue(transition_payload["_auto_direction"])
+        self.assertEqual(transition_kwargs["transaction_id"], "drag-tx-1")
+
+    def test_qwidget_finish_clip_drag_multi_selection_preserves_transition_direction(self):
+        helper = self.make_qwidget_finish_drag_helper()
+
+        class DummyClip:
+            def __init__(self, item_id, data):
+                self.id = item_id
+                self.data = data
+
+        class DummyTransition:
+            def __init__(self, item_id, data):
+                self.id = item_id
+                self.data = data
+
+        clip = DummyClip(
+            "C1",
+            {"id": "C1", "position": 4.0, "layer": 1, "start": 0.0, "end": 5.0},
+        )
+        transition = DummyTransition(
+            "T1",
+            {
+                "id": "T1",
+                "position": 8.0,
+                "layer": 1,
+                "start": 0.0,
+                "end": 1.0,
+                "reader": {"has_single_image": True},
+            },
+        )
+        helper.dragging_items = [transition, clip]
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.qwidget_clip_module, "Clip", DummyClip))
+            stack.enter_context(patch.object(self.qwidget_clip_module, "Transition", DummyTransition))
+            self.qwidget_clip_module.ClipInteractionMixin._finishClipDrag(helper)
+
+        self.assertEqual(len(helper.clip_updates), 1)
+        self.assertEqual(len(helper.transition_updates), 1)
+        clip_payload, _clip_kwargs = helper.clip_updates[0]
+        transition_payload, _transition_kwargs = helper.transition_updates[0]
+        self.assertEqual(clip_payload["id"], "C1")
+        self.assertEqual(transition_payload["id"], "T1")
+        self.assertNotIn("_auto_transition", clip_payload)
+        self.assertNotIn("_auto_direction", transition_payload)
 
     def test_qwidget_cursor_uses_razor_cursor_for_items_when_enabled(self):
         helper = self.make_qwidget_cursor_helper()

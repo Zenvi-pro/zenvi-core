@@ -555,13 +555,17 @@ class ClipInteractionMixin:
                         "type": "transition" if isinstance(itm, Transition) else "clip",
                         "data": json.loads(json.dumps(itm.data)),
                     })
+                # Persist clips before transitions so any transition logic that
+                # inspects neighboring clips sees the final clip positions.
+                commit_items.sort(key=lambda entry: 1 if entry["type"] == "transition" else 0)
                 try:
                     for idx, entry in enumerate(commit_items):
                         itm = entry["item"]
                         ignore_refresh = idx < total - 1
                         if entry["type"] == "transition":
                             transition_data = entry["data"]
-                            transition_data["_auto_direction"] = True
+                            if total == 1 and self._transition_uses_static_mask(transition_data):
+                                transition_data["_auto_direction"] = True
                             self.update_transition_data(
                                 transition_data,
                                 only_basic_props=True,
