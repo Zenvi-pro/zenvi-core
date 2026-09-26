@@ -337,9 +337,12 @@ class ClipInteractionMixin:
         self.drag_clip_offset -= self.drag_bbox.x()
 
         # Starting track index
-        self._drag_layer_idx_start = int(
-            ((e.position().y() if hasattr(e, "position") else e.pos().y()) - self.ruler_height) / self.vertical_factor
+        start_idx = self._track_index_at_viewport_y(
+            (e.position().y() if hasattr(e, "position") else e.pos().y()),
+            prefer_clip_lane=True,
+            snap_to_nearest=True,
         )
+        self._drag_layer_idx_start = start_idx if start_idx is not None else 0
 
     def _dragMove(self):
         """Apply identical horizontal/vertical deltas to every dragged item."""
@@ -368,9 +371,13 @@ class ClipInteractionMixin:
             delta_sec = self._snap_delta(delta_sec)
 
         # -------- Vertical delta (track indexes) ----
-        new_idx_under_cursor = int(
-            ((e.position().y() if hasattr(e, "position") else e.pos().y()) - self.ruler_height) / self.vertical_factor
+        new_idx_under_cursor = self._track_index_at_viewport_y(
+            (e.position().y() if hasattr(e, "position") else e.pos().y()),
+            prefer_clip_lane=True,
+            snap_to_nearest=True,
         )
+        if new_idx_under_cursor is None:
+            new_idx_under_cursor = self._drag_layer_idx_start
         delta_idx = new_idx_under_cursor - self._drag_layer_idx_start
 
         # Clamp delta_idx so *all* items stay within valid index range

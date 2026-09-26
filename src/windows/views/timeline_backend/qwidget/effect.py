@@ -30,13 +30,38 @@ from classes.query import Clip
 
 
 class EffectInteractionMixin:
-    def _apply_effect_drop(self, effect_names, pos_seconds, track_num):
+    def _apply_effect_drop(self, effect_names, pos_seconds, track_num, drop_pos=None):
         if not effect_names:
             return
         timeline = getattr(self.win, "timeline", None)
         if not timeline:
             return
         pos_seconds = max(0.0, float(pos_seconds))
+
+        if isinstance(drop_pos, QPointF):
+            self.geometry.ensure()
+            for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
+                if not rect.contains(drop_pos):
+                    continue
+                data = clip.data if isinstance(clip.data, dict) else {}
+                clip_track = data.get("layer")
+                try:
+                    clip_track = int(clip_track)
+                except (TypeError, ValueError):
+                    continue
+                if self._is_track_locked(clip_track):
+                    return
+                clip_position = float(data.get("position", 0.0) or 0.0)
+                clip_start = float(data.get("start", 0.0) or 0.0)
+                clip_end = float(data.get("end", clip_start) or clip_start)
+                duration = clip_end - clip_start
+                if duration <= 0.0:
+                    continue
+                clip_finish = clip_position + duration
+                target_seconds = min(max(pos_seconds, clip_position), clip_finish)
+                timeline.addEffect(effect_names, QPointF(target_seconds, clip_track))
+                return
+
         try:
             track_num = int(track_num)
         except (TypeError, ValueError):

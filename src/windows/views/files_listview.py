@@ -28,7 +28,7 @@
 
 import uuid
 
-from qt_api import QSize, Qt, QPoint, QRect, QEvent
+from qt_api import QSize, Qt, QPoint, QRect, QEvent, QItemSelectionModel
 from qt_api import clear_override_cursor
 from qt_api import modifiers_has
 from qt_api import (QDrag, QCursor, QPixmap, QPainter, QIcon,
@@ -173,6 +173,14 @@ class FilesListView(QListView):
         app.context_menu_object = "files"
 
         index = self.indexAt(event.pos())
+        if not index.isValid():
+            self.clearSelection()
+        else:
+            self.setCurrentIndex(index)
+            self.selectionModel().select(
+                index,
+                QItemSelectionModel.ClearAndSelect,
+            )
 
         # Build menu
         menu = StyledContextMenu(parent=self)
@@ -208,8 +216,21 @@ class FilesListView(QListView):
         # Show menu
         menu.show_at(event)
 
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.pos())
+        if not index.isValid() and event.button() in (Qt.LeftButton, Qt.RightButton):
+            self.clearSelection()
+        super().mousePressEvent(event)
+
     def mouseDoubleClickEvent(self, event):
         super(FilesListView, self).mouseDoubleClickEvent(event)
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            self.setCurrentIndex(index)
+            self.selectionModel().select(
+                index,
+                QItemSelectionModel.ClearAndSelect,
+            )
         # Preview File, File Properties, or Split File (depending on Shift/Ctrl)
         if modifiers_has(get_app().keyboardModifiers(), Qt.ShiftModifier):
             get_app().window.actionSplitFile.trigger()

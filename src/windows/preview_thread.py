@@ -99,18 +99,19 @@ class PreviewParent(QObject, UpdateInterface):
         # Only JUCE audio errors bubble up here now
         QMessageBox.warning(self.parent, _("Audio Error"), _("Please fix the following error and restart OpenShot\n%s") % error)
 
-    def Stop(self):
+    def Stop(self, wait_for_thread=True):
         """Disconnect preview parent from update manager and stop worker thread"""
         get_app().updates.disconnect_listener(self)
 
-        # Stop preview thread (and wait for it to end)
+        # Stop preview thread
         self.worker.Stop()
         self.worker.kill()
         if self.background.isRunning():
             log.info("Stopping preview thread (running=%s)", self.background.isRunning())
         self.background.quit()
-        if not self.background.wait(5000):
-            log.warning("Preview thread did not stop within 5 seconds")
+        if wait_for_thread:
+            if not self.background.wait(5000):
+                log.warning("Preview thread did not stop within 5 seconds")
 
     @pyqtSlot(object, object)
     def Init(self, parent, timeline, video_widget, max_length=1):
@@ -130,6 +131,10 @@ class PreviewParent(QObject, UpdateInterface):
         # Hook up signals to Background Worker
         self.worker.position_changed.connect(self.onPositionChanged)
         self.worker.mode_changed.connect(self.onModeChanged)
+        if hasattr(self.parent, "_preview_ready"):
+            self.worker.ready.connect(self.parent._preview_ready)
+        if hasattr(self.parent, "_preview_mode_changed"):
+            self.worker.mode_changed.connect(self.parent._preview_mode_changed)
         self.background.started.connect(self.worker.Start)
         self.worker.finished.connect(self.background.quit)
         self.worker.error_found.connect(self.onError)
@@ -159,6 +164,7 @@ class PlayerWorker(QObject):
     position_changed = pyqtSignal(int)
     mode_changed = pyqtSignal(object)
     error_found = pyqtSignal(object)
+    ready = pyqtSignal()
     finished = pyqtSignal()
 
     @pyqtSlot(object, object)
@@ -268,6 +274,7 @@ class PlayerWorker(QObject):
         except Exception as exc:
             log.error("Start: player init (Reader/Play/Pause) failed: %s", exc, exc_info=True)
             return
+        self.ready.emit()
 
         # Check for any Player initialization errors (only JUCE errors bubble up here now)
         # But slightly delay, to allow for correct audio thread initialization with the

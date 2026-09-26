@@ -2471,20 +2471,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         log.debug('actionRemoveClip_trigger')
 
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
+        created_transaction = False
+        if not get_app().updates.transaction_id:
+            get_app().updates.transaction_id = str(uuid.uuid4())
+            created_transaction = True
 
-        # Loop through selected clips
-        for clip_id in json.loads(json.dumps(self.selected_clips)):
-            # Find matching file
-            clips = Clip.filter(id=clip_id)
-            clips = list(filter(lambda x: x.data.get("layer") not in locked_tracks, clips))
-            for c in clips:
-                # Clear selected clips
-                self.removeSelection(clip_id, "clip")
-                self.emit_selection_signal()
-                self.show_property_timeout()
+        try:
+            # Loop through selected clips
+            for clip_id in json.loads(json.dumps(self.selected_clips)):
+                # Find matching file
+                clips = Clip.filter(id=clip_id)
+                clips = list(filter(lambda x: x.data.get("layer") not in locked_tracks, clips))
+                for c in clips:
+                    # Clear selected clips
+                    self.removeSelection(clip_id, "clip")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
 
-                # Remove clip
-                c.delete()
+                    # Remove clip
+                    c.delete()
+        finally:
+            if created_transaction:
+                get_app().updates.transaction_id = None
 
         # A deleted clip may still be referenced by the preview widget's
         # transform state (e.g. it was the selected/transforming clip) —
@@ -2632,20 +2640,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         locked_tracks = [l.get("number")
                          for l in get_app().project.get('layers')
                          if l.get("lock", False)]
+        created_transaction = False
+        if not get_app().updates.transaction_id:
+            get_app().updates.transaction_id = str(uuid.uuid4())
+            created_transaction = True
 
-        # Loop through selected clips
-        for tran_id in json.loads(json.dumps(self.selected_transitions)):
-            # Find matching file
-            transitions = Transition.filter(id=tran_id)
-            transitions = list(filter(lambda x: x.data.get("layer") not in locked_tracks, transitions))
-            for t in transitions:
-                # Clear selected clips
-                self.removeSelection(tran_id, "transition")
-                self.emit_selection_signal()
-                self.show_property_timeout()
+        try:
+            # Loop through selected clips
+            for tran_id in json.loads(json.dumps(self.selected_transitions)):
+                # Find matching file
+                transitions = Transition.filter(id=tran_id)
+                transitions = list(filter(lambda x: x.data.get("layer") not in locked_tracks, transitions))
+                for t in transitions:
+                    # Clear selected clips
+                    self.removeSelection(tran_id, "transition")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
 
-                # Remove transition
-                t.delete()
+                    # Remove transition
+                    t.delete()
+        finally:
+            if created_transaction:
+                get_app().updates.transaction_id = None
 
         # Refresh preview
         if refresh:

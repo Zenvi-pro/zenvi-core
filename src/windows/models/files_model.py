@@ -1217,13 +1217,25 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def current_file_id(self):
         """ Get the file ID of the current files-view item, or the first selection """
+        # Prefer selected rows first, since currentIndex can become stale when
+        # switching between details/list views with separate selection models.
+        selected_rows = self.selection_model.selectedRows(5)
+        if selected_rows:
+            current = self.selection_model.currentIndex()
+            if current and current.isValid():
+                current_id = current.sibling(current.row(), 5).data()
+                if current_id:
+                    return current_id
+            for row_index in selected_rows:
+                file_id = row_index.data()
+                if file_id:
+                    return file_id
+
         cur = self.selection_model.currentIndex()
-
-        if not cur or not cur.isValid() and self.selection_model.hasSelection():
-            cur = self.selection_model.selectedIndexes()[0]
-
         if cur and cur.isValid():
-            return cur.sibling(cur.row(), 5).data()
+            file_id = cur.sibling(cur.row(), 5).data()
+            if file_id:
+                return file_id
 
     def current_file(self):
         """ Get the File object for the current files-view item, or the first selection """

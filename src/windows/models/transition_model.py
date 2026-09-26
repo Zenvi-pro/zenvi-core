@@ -133,7 +133,7 @@ class TransitionFilterProxyModel(QSortFilterProxyModel):
                 path_value = path_index.data()
             if not path_value:
                 continue
-            path_value = str(path_value)
+            path_value = os.path.normpath(str(path_value))
             items.append(path_value)
             log.debug(
                 "Transition drag payload path: %r (exists=%s)",

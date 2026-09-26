@@ -4295,7 +4295,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
     # Add Clip
-    def addClip(self, file_id, position, track, ignore_refresh=False, call_manual_move=True):
+    def addClip(
+        self,
+        file_id,
+        position,
+        track,
+        ignore_refresh=False,
+        call_manual_move=True,
+        auto_transition=False,
+    ):
         # Retrieve File object by file_id
         file = File.get(id=file_id)
         if not file:
@@ -4377,6 +4385,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Use the passed position and track directly
         new_clip["position"] = position.x()
         new_clip["layer"] = track
+        if auto_transition:
+            new_clip["_auto_transition"] = True
 
         # Add the clip to the timeline
         self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
@@ -4402,18 +4412,49 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().updates.update_untracked(["duration"], new_duration)
         get_app().window.TimelineResize.emit()
 
+    def _get_transition_reader_json(self, file_path, create=True):
+        """Return cached transition reader JSON, creating it when requested."""
+        if not file_path:
+            return None
+        normalized_path = os.path.normpath(str(file_path))
+
+        reader_cache = getattr(self, "_transition_reader_json_cache", None)
+        if reader_cache is None:
+            reader_cache = {}
+            self._transition_reader_json_cache = reader_cache
+
+        cache_key = os.path.abspath(normalized_path)
+        reader_json = reader_cache.get(cache_key)
+        if reader_json is None and create:
+            reader_json = self._load_transition_reader_data(normalized_path)
+            if isinstance(reader_json, dict):
+                reader_cache[cache_key] = deepcopy(reader_json)
+        return deepcopy(reader_json) if isinstance(reader_json, dict) else None
+
     # Add Transition
-    def addTransition(self, file_path, position, track, ignore_refresh=False, call_manual_move=True):
+    def addTransition(
+        self,
+        file_path,
+        position,
+        track,
+        ignore_refresh=False,
+        call_manual_move=True,
+        defer_reader=False,
+    ):
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
         duration = snap_to_grid(get_app().get_settings().get("default-transition-length"))
+        file_path = os.path.normpath(str(file_path))
 
-        reader_data = self._load_transition_reader_data(file_path)
-        if not reader_data:
+        # Defer expensive SVG raster reader creation during drag-preview.
+        reader_json = self._get_transition_reader_json(file_path, create=not defer_reader)
+        if not defer_reader and not isinstance(reader_json, dict):
             log.warning("Unable to add transition, invalid reader path: %s", file_path)
             return None
+        if not isinstance(reader_json, dict):
+            reader_json = {"path": file_path}
 
         # Create Keyframes for brightness and contrast
         brightness = openshot.Keyframe()
@@ -4431,9 +4472,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "position": snap_to_grid(position.x()),
             "start": 0,
             "end": duration,
+            "resource": file_path,
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
-            "reader": reader_data,
+            "reader": deepcopy(reader_json),
             "replace_image": False
         }
 
