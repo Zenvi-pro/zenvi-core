@@ -339,6 +339,7 @@ class TimelineWidgetBase(QWidget):
         self._preserve_overrides_once = False
         self._drag_payload = None
         self._drag_preview_items = []
+        self._drag_commit_in_progress = False
         self._snap_ignore_ids = set()
         self._snap_keyframe_seconds = []
         self._snap_active_targets = {}

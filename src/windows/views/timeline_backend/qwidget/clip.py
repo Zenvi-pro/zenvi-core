@@ -346,6 +346,8 @@ class ClipInteractionMixin:
 
     def _dragMove(self):
         """Apply identical horizontal/vertical deltas to every dragged item."""
+        if getattr(self, "_drag_commit_in_progress", False):
+            return
         if not getattr(self, "dragging_items", None):
             return
         e = self._last_event
@@ -502,38 +504,56 @@ class ClipInteractionMixin:
 
     def _finishClipDrag(self):
         """Persist all moved clips/transitions and refresh geometry."""
-        items = getattr(self, "dragging_items", None) or []
+        items = list(getattr(self, "dragging_items", None) or [])
         moved = bool(getattr(self, "_drag_moved", False))
 
         try:
             if items and moved:
+                # Freeze the drag state before dispatching any updates. Otherwise a
+                # late mouse-move can still mutate the remaining selected items
+                # while this save loop is running, causing them to commit to
+                # different layers/positions within one drag.
+                transaction_id = self._drag_transaction_id
+                self._drag_commit_in_progress = True
+                self.dragging_items = []
+                self._drag_transaction_id = None
                 self._preserve_overrides_once = True
                 total = len(items)
-                transaction_id = self._drag_transaction_id
-                for idx, itm in enumerate(items):
-                    ignore_refresh = idx < total - 1
-                    if isinstance(itm, Transition):
-                        transition_data = json.loads(json.dumps(itm.data))
-                        transition_data["_auto_direction"] = True
-                        self.update_transition_data(
-                            transition_data,
-                            only_basic_props=True,
-                            ignore_refresh=ignore_refresh,
-                            transaction_id=transaction_id,
-                        )
-                        itm.data = transition_data
-                    else:
-                        clip_data = json.loads(json.dumps(itm.data))
-                        if total == 1:
-                            clip_data["_auto_transition"] = True
-                        self.update_clip_data(
-                            clip_data,
-                            only_basic_props=True,
-                            ignore_reader=True,
-                            ignore_refresh=ignore_refresh,
-                            transaction_id=transaction_id,
-                        )
-                        itm.data = clip_data
+                commit_items = []
+                for itm in items:
+                    commit_items.append({
+                        "item": itm,
+                        "type": "transition" if isinstance(itm, Transition) else "clip",
+                        "data": json.loads(json.dumps(itm.data)),
+                    })
+                try:
+                    for idx, entry in enumerate(commit_items):
+                        itm = entry["item"]
+                        ignore_refresh = idx < total - 1
+                        if entry["type"] == "transition":
+                            transition_data = entry["data"]
+                            transition_data["_auto_direction"] = True
+                            self.update_transition_data(
+                                transition_data,
+                                only_basic_props=True,
+                                ignore_refresh=ignore_refresh,
+                                transaction_id=transaction_id,
+                            )
+                            itm.data = transition_data
+                        else:
+                            clip_data = entry["data"]
+                            if total == 1:
+                                clip_data["_auto_transition"] = True
+                            self.update_clip_data(
+                                clip_data,
+                                only_basic_props=True,
+                                ignore_reader=True,
+                                ignore_refresh=ignore_refresh,
+                                transaction_id=transaction_id,
+                            )
+                            itm.data = clip_data
+                finally:
+                    self._drag_commit_in_progress = False
             if moved:
                 self._update_project_duration()
                 self.changed(None)
