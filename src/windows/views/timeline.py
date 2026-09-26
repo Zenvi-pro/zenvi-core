@@ -1925,11 +1925,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     default_zoom_object = json.loads(default_zoom.Json())
                     default_loc = openshot.Point(start_animation, 0.0, openshot.BEZIER)
                     default_loc_object = json.loads(default_loc.Json())
+                    default_origin = openshot.Point(start_animation, 0.5, openshot.BEZIER)
+                    default_origin_object = json.loads(default_origin.Json())
                     clip.data["gravity"] = openshot.GRAVITY_CENTER
                     clip.data["scale_x"] = {"Points": [default_zoom_object]}
                     clip.data["scale_y"] = {"Points": [default_zoom_object]}
+                    clip.data["shear_x"] = {"Points": [default_loc_object]}
+                    clip.data["shear_y"] = {"Points": [default_loc_object]}
+                    clip.data["rotation"] = {"Points": [default_loc_object]}
                     clip.data["location_x"] = {"Points": [default_loc_object]}
                     clip.data["location_y"] = {"Points": [default_loc_object]}
+                    clip.data["origin_x"] = {"Points": [default_origin_object]}
+                    clip.data["origin_y"] = {"Points": [default_origin_object]}
 
                 if action in [
                     MenuAnimate.IN_50_100,
