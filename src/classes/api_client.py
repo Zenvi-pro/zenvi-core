@@ -353,6 +353,7 @@ class ZenviBackendClient:
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -360,6 +361,9 @@ class ZenviBackendClient:
         Each incoming ``tool_call`` is dispatched to its own worker thread so
         the agent can fan out N concurrent tool calls and we ack them as soon
         as each one finishes.  The recv loop never blocks on tool execution.
+
+        *images* (optional) are vision parts for the current turn only
+        (``[{name, mime_type, image_base64, ...}]``).
         """
         try:
             import websocket
@@ -404,6 +408,8 @@ class ZenviBackendClient:
                 payload_data["action"] = action
             if plan_id:
                 payload_data["plan_id"] = plan_id
+            if images:
+                payload_data["images"] = list(images)
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them

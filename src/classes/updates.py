@@ -29,9 +29,27 @@
 
 from classes.logger import log
 from classes.app import get_app
+import contextlib
 import json
 import threading
 import uuid
+
+
+@contextlib.contextmanager
+def nested_transaction(updates):
+    """Group mutations into one undo step; join an outer tid when already set.
+
+    Yields the active transaction id. Restores the previous ``transaction_id``
+    on exit (so nested callers and processEvents side-effects cannot leave a
+    cleared tid that would mint one-step-per-mutation undos).
+    """
+    caller_tid = updates.transaction_id
+    tid = caller_tid or str(uuid.uuid4())
+    updates.transaction_id = tid
+    try:
+        yield tid
+    finally:
+        updates.transaction_id = caller_tid
 
 
 class UpdateWatcher:
@@ -158,6 +176,8 @@ class UpdateManager:
         # other's group apart.  The Qt main thread keeps its own slot, so every
         # GUI path behaves exactly as it did before.
         self._tls = threading.local()
+        # Guard against re-entrant undo/redo while processEvents() runs mid-step.
+        self._undo_redo_busy = False
 
     @property
     def transaction_id(self):
@@ -337,73 +357,88 @@ class UpdateManager:
     def undo(self):
         """ Undo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
-        # Get all actions with the same transaction id as the last one, in reverse order
-        last_transactions = self._tail_transaction(self.actionHistory)
-        remove_selection = any(a.type == "insert" for a in last_transactions)
+        if self._undo_redo_busy:
+            return
+        self._undo_redo_busy = True
+        try:
+            # Snapshot first, then remove from history before any processEvents()
+            # so a nested Ctrl+Z cannot remove the same actions twice.
+            last_transactions = self._tail_transaction(self.actionHistory)
+            if not last_transactions:
+                return
+            remove_selection = any(a.type == "insert" for a in last_transactions)
 
-        if remove_selection:
-            # Remove selections for any items about to be deleted
-            for action in last_transactions:
-                if action.type == "insert":
-                    object_id = action.values.get("id", None)
-                    get_app().window.removeSelection(object_id, None)
+            for last_action in last_transactions:
+                try:
+                    self.actionHistory.remove(last_action)
+                except ValueError:
+                    continue
+                self.redoHistory.append(last_action.copy())
 
-            # Force property and selection timers to fire
-            get_app().window.show_property_timer.stop()
-            get_app().window.show_property_timer.timeout.emit()
-            get_app().window.selection_timer.stop()
-            get_app().window.selection_timer.timeout.emit()
-            get_app().processEvents()
-
-        # Iterate each action in this transaction
-        for index, last_action in enumerate(last_transactions):
-            self.actionHistory.remove(last_action)
-
-            # Copy action
-            last_action = last_action.copy()
-
-            # Add action to redo list
-            self.redoHistory.append(last_action)
             self.pending_action = None
-            # Get reverse of last action and perform it
-            reverse = self.get_reverse_action(last_action)
 
-            # Ignore updates to UI on all actions except last one
-            ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+            if remove_selection:
+                # Remove selections for any items about to be deleted
+                for action in last_transactions:
+                    if action.type == "insert":
+                        object_id = action.values.get("id", None)
+                        get_app().window.removeSelection(object_id, None)
 
-            # Perform next undo action
-            self.dispatch_action(reverse)
+                # Force property and selection timers to fire
+                get_app().window.show_property_timer.stop()
+                get_app().window.show_property_timer.timeout.emit()
+                get_app().window.selection_timer.stop()
+                get_app().window.selection_timer.timeout.emit()
+                get_app().processEvents()
 
-            # Verify selections are still valid objects
-            get_app().window.verifySelections()
+            # Iterate each action in this transaction
+            for index, last_action in enumerate(last_transactions):
+                reverse = self.get_reverse_action(last_action)
+
+                # Ignore updates to UI on all actions except last one
+                ignore_refresh = (index != len(last_transactions) - 1)
+                get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+
+                # Perform next undo action
+                self.dispatch_action(reverse)
+
+                # Verify selections are still valid objects
+                get_app().window.verifySelections()
+        finally:
+            self._undo_redo_busy = False
 
     def redo(self):
         """ Redo the last UpdateAction (and notify all listeners and watchers).
             Continue until all identical transaction ids have been found. """
-        # Get all actions with the same transaction id as the last one, in reverse order
-        last_transactions = self._tail_transaction(self.redoHistory)
+        if self._undo_redo_busy:
+            return
+        self._undo_redo_busy = True
+        try:
+            last_transactions = self._tail_transaction(self.redoHistory)
+            if not last_transactions:
+                return
 
-        # Iterate through each action in this transaction
-        for index, next_action in enumerate(last_transactions):
-            self.redoHistory.remove(next_action)
+            prepared = []
+            for next_action in last_transactions:
+                try:
+                    self.redoHistory.remove(next_action)
+                except ValueError:
+                    continue
+                action = next_action.copy()
+                # Remove ID from insert (if found)
+                if action.type == "insert" and isinstance(action.key[-1], dict) and "id" in action.key[-1]:
+                    action.key = action.key[:-1]
+                self.actionHistory.append(action)
+                prepared.append(action)
 
-            # Copy action
-            next_action = next_action.copy()
-
-            # Remove ID from insert (if found)
-            if next_action.type == "insert" and isinstance(next_action.key[-1], dict) and "id" in next_action.key[-1]:
-                next_action.key = next_action.key[:-1]
-
-            self.actionHistory.append(next_action)
             self.pending_action = None
 
-            # Ignore updates to UI on all actions except last one
-            ignore_refresh = (index != len(last_transactions) - 1)
-            get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
-
-            # Perform next redo action
-            self.dispatch_action(next_action)
+            for index, next_action in enumerate(prepared):
+                ignore_refresh = (index != len(prepared) - 1)
+                get_app().window.IgnoreUpdates.emit(ignore_refresh, True)
+                self.dispatch_action(next_action)
+        finally:
+            self._undo_redo_busy = False
 
     # Carry out an action on all listeners
     def dispatch_action(self, action):
