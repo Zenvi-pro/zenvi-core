@@ -29,6 +29,8 @@
 import os
 import codecs
 import re
+import platform
+import ctypes
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QDialog
@@ -45,6 +47,11 @@ import json
 import datetime
 
 import openshot
+
+try:
+    import distro
+except ImportError:
+    distro = None
 
 
 def parse_changelog(changelog_path):
@@ -182,23 +189,183 @@ class About(QDialog):
             self.copy_version_info()
 
     def copy_version_info(self):
-        """Copy cleaned version info (without HTML <div> and unnecessary links) to clipboard."""
-        # Get the raw HTML text from txtversion
-        raw_html = self.txtversion.text()
-
-        # Step 1: Strip <div> tags
-        clean_text = re.sub(r'<div[^>]*>|</div>', '', raw_html).strip()
-
-        # Step 2: Replace <br/> with newline characters
-        clean_text = clean_text.replace("<br/>", "\n")
-
-        # Step 3: Remove the HTML link after 'Release Date: x-x-x |'
-        # Matches "Release Date: YYYY-MM-DD | <a href=...>Release Notes</a>" and keeps only "Release Date: YYYY-MM-DD"
-        clean_text = re.sub(r'(Release Date: \d{4}-\d{2}-\d{2}) \|.*', r'\1', clean_text)
-
-        # Copy the cleaned text to the clipboard
+        """Copy a compact markdown version info block to the clipboard."""
         clipboard = get_app().clipboard()
-        clipboard.setText(clean_text)
+        clipboard.setText(self.build_version_info_markdown())
+
+    def build_version_info_markdown(self):
+        """Return a compact markdown block with version, system, and performance info."""
+        lines = [f"**{info.PRODUCT_NAME} Version Info**"]
+
+        version_line = f"Version: {info.VERSION} | libopenshot: {openshot.OPENSHOT_VERSION_FULL}"
+        lines.append(version_line)
+
+        build_name, release_date = self.get_build_details()
+        build_parts = []
+        if build_name:
+            build_parts.append(f"Build: {build_name}")
+        if release_date:
+            build_parts.append(f"Released: {release_date}")
+        if build_parts:
+            lines.append(" | ".join(build_parts))
+
+        lines.append(f"OS: {self.get_os_details()}")
+
+        hardware_parts = []
+        cpu_name = self.get_cpu_details()
+        if cpu_name:
+            hardware_parts.append(f"CPU: {cpu_name}")
+        ram_total = self.get_ram_details()
+        if ram_total:
+            hardware_parts.append(f"RAM: {ram_total}")
+        if hardware_parts:
+            lines.append(" | ".join(hardware_parts))
+
+        lines.extend(self.get_performance_details())
+        return "\n".join(lines)
+
+    def get_build_details(self):
+        """Return build name and release date from version.json when available."""
+        version_path = os.path.join(info.PATH, "settings", "version.json")
+        if not os.path.exists(version_path):
+            return "", ""
+
+        try:
+            with open(version_path, "r", encoding="UTF-8") as f:
+                version_info = json.loads(f.read())
+        except Exception:
+            log.warning("Failed to parse build details from %s", version_path, exc_info=1)
+            return "", ""
+
+        build_name = version_info.get("build_name", "")
+        release_date = ""
+        version_date = version_info.get("date")
+        if version_date:
+            try:
+                date_obj = datetime.datetime.strptime(version_date, "%Y-%m-%d %H:%M")
+                release_date = date_obj.strftime("%Y-%m-%d")
+            except Exception:
+                log.warning("Failed to parse release date: %s", version_date, exc_info=1)
+        return build_name, release_date
+
+    def get_os_details(self):
+        """Return a compact OS name/version string."""
+        system_name = platform.system()
+        if system_name == "Linux" and distro:
+            distro_name = " ".join(part for part in distro.linux_distribution()[0:2] if part)
+            return distro_name or "Linux"
+        if system_name == "Windows":
+            version_parts = [part for part in platform.win32_ver()[0:2] if part]
+            return " ".join(version_parts) or "Windows"
+        if system_name == "Darwin":
+            mac_version = platform.mac_ver()[0]
+            return f"macOS {mac_version}" if mac_version else "macOS"
+        return platform.platform()
+
+    def get_cpu_details(self):
+        """Return a compact CPU description when available."""
+        system_name = platform.system()
+        cpu_name = ""
+
+        try:
+            if system_name == "Linux" and os.path.exists("/proc/cpuinfo"):
+                with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as cpuinfo_file:
+                    for line in cpuinfo_file:
+                        if ":" in line and line.lower().startswith("model name"):
+                            cpu_name = line.split(":", 1)[1].strip()
+                            break
+            elif system_name == "Darwin":
+                cpu_name = platform.processor().strip()
+            elif system_name == "Windows":
+                cpu_name = platform.processor().strip()
+        except Exception:
+            log.warning("Failed to gather CPU details", exc_info=1)
+
+        cpu_name = cpu_name or platform.processor().strip() or platform.machine().strip()
+        cpu_count = os.cpu_count()
+        if cpu_name and cpu_count:
+            return f"{cpu_name} ({cpu_count} threads)"
+        return cpu_name
+
+    def get_ram_details(self):
+        """Return total system RAM in GB when available."""
+        total_bytes = 0
+        try:
+            if platform.system() == "Windows":
+                class MEMORYSTATUSEX(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+
+                memory_status = MEMORYSTATUSEX()
+                memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+                if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(memory_status)):
+                    total_bytes = int(memory_status.ullTotalPhys)
+            else:
+                page_size = os.sysconf("SC_PAGE_SIZE")
+                phys_pages = os.sysconf("SC_PHYS_PAGES")
+                total_bytes = int(page_size * phys_pages)
+        except Exception:
+            log.warning("Failed to gather RAM details", exc_info=1)
+
+        if total_bytes <= 0:
+            return ""
+        return f"{round(total_bytes / float(1024 ** 3))} GB"
+
+    def get_performance_details(self):
+        """Return compact cache and thread settings."""
+        settings = get_app().get_settings()
+        cache_mode = settings.get("cache-mode") or "CacheMemory"
+        cache_mode_map = {
+            "CacheMemory": "Memory",
+            "CacheDisk": "Disk",
+        }
+        cache_limit = settings.get("cache-limit-mb")
+        cache_frames = settings.get("cache-max-frames")
+        cache_ahead = settings.get("cache-ahead-percent")
+        cache_preroll_min = settings.get("cache-preroll-min-frames")
+        cache_preroll_max = settings.get("cache-preroll-max-frames")
+        omp_threads = settings.get("omp_threads_number")
+        ff_threads = settings.get("ff_threads_number")
+        hw_decoder = self.get_hardware_decoder_name(settings.get("hw-decoder"))
+        hw_decode_card = settings.get("graca_number_de")
+        hw_encode_card = settings.get("graca_number_en")
+
+        cache_ahead_pct = int(round(float(cache_ahead) * 100))
+
+        return [
+            (
+                f"Cache: {cache_mode_map.get(cache_mode, cache_mode)}, "
+                f"{cache_limit} MB, {cache_frames} frames, "
+                f"ahead {cache_ahead_pct}%, pre-roll {cache_preroll_min}/{cache_preroll_max}"
+            ),
+            (
+                f"Performance: Threads: OMP {omp_threads} | FFmpeg {ff_threads}, "
+                f"Cards: Decode: {hw_decoder} ({hw_decode_card}) | Encode: {hw_encode_card}"
+            ),
+        ]
+
+    def get_hardware_decoder_name(self, decoder_value):
+        """Return a short hardware decoder label for the current setting value."""
+        decoder_map = {
+            "0": "None",
+            "1": "VA-API",
+            "2": "NVDEC",
+            "3": "D3D9",
+            "4": "D3D11",
+            "5": "MacOS",
+            "6": "VDPAU",
+            "7": "QSV",
+        }
+        return decoder_map.get(str(decoder_value), str(decoder_value))
 
     def display_release(self, version_text):
 

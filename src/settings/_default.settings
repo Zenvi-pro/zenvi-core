@@ -573,20 +573,20 @@
     "restart": false
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 128,
     "value": 12,
-    "title": "OMP Threads (0 = Default)",
+    "title": "OMP Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
     "setting": "omp_threads_number"
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 16,
     "value": 8,
-    "title": "FFmpeg Threads (0 = Default)",
+    "title": "FFmpeg Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",

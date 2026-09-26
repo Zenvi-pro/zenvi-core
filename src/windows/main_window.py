@@ -68,6 +68,7 @@ from classes.logger import log
 from classes.metrics import track_metric_session, track_metric_screen
 from classes.path_utils import comparable_local_path, native_display_path, normalized_local_path
 from classes.query import File, Clip, Transition, Marker, Track, Effect
+from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
@@ -5061,19 +5062,29 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Set scaling mode to lower quality scaling (for faster previews)
         lib_settings.HIGH_QUALITY_SCALING = False
 
-        # Set use omp threads number environment variable
-        if s.get("omp_threads_number"):
-            lib_settings.OMP_THREADS = max(
-                2, int(str(s.get("omp_threads_number"))))
-        else:
-            lib_settings.OMP_THREADS = 12
+        # Apply user overrides when present, otherwise use runtime-detected libopenshot defaults.
+        omp_default, ff_default = lib_default_thread_counts()
+        omp_min, omp_max = 2, max(2, omp_default * 3)
+        ff_min, ff_max = 2, max(2, ff_default * 3)
 
-        # Set use ffmpeg threads number environment variable
-        if s.get("ff_threads_number"):
-            lib_settings.FF_THREADS = max(
-                1, int(str(s.get("ff_threads_number"))))
+        omp_source = "libopenshot default"
+        if s.has_user_value("omp_threads_number"):
+            omp_value = int(str(s.get("omp_threads_number")))
+            lib_settings.OMP_THREADS = max(omp_min, min(omp_value, omp_max))
+            omp_source = "user setting"
         else:
-            lib_settings.FF_THREADS = 8
+            lib_settings.OMP_THREADS = omp_default
+        apply_openmp_settings(lib_settings)
+        log.info("Initialized OMP threads to %s (%s)", lib_settings.OMP_THREADS, omp_source)
+
+        ff_source = "libopenshot default"
+        if s.has_user_value("ff_threads_number"):
+            ff_value = int(str(s.get("ff_threads_number")))
+            lib_settings.FF_THREADS = max(ff_min, min(ff_value, ff_max))
+            ff_source = "user setting"
+        else:
+            lib_settings.FF_THREADS = ff_default
+        log.info("Initialized FFmpeg threads to %s (%s)", lib_settings.FF_THREADS, ff_source)
 
         # Set use max width decode hw environment variable
         if s.get("decode_hw_max_width"):
