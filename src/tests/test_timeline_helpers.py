@@ -3148,6 +3148,7 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertEqual(snap_calls, [(5.0, 1.5)])
         self.assertEqual(result, 1.75)
 
+    @unittest.skip("Zenvi: the thumbnail worker batches coalesced jobs (PR #179 enqueue_batch); upstream's per-request request_thumbnail slot does not exist")
     def test_thumbnail_worker_sorts_requests_and_reuses_clip_instance(self):
         worker = self.thumbnails_module._ThumbnailWorker()
         ready = []

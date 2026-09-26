@@ -473,13 +473,13 @@ class TimelineWidgetBase(QWidget):
         self._drag_preview_prev_thumb_suspend = False
 
     @pyqtSlot(str, int, object, int)
-    def _handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
-        """Forward thumbnail ready events to the clip painter on the GUI thread."""
+    def _handle_thumbnail_ready(self, clip_id, frame, image_or_path, generation):
+        """Forward thumbnail ready events (QImage from the worker) to the clip painter on the GUI thread."""
         if hasattr(self, "clip_painter"):
             self.clip_painter.handle_thumbnail_ready(
                 clip_id,
                 frame,
-                thumb_path,
+                image_or_path,
                 generation,
             )
 
