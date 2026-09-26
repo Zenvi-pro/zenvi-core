@@ -163,8 +163,6 @@ class PropertiesModel(updates.UpdateInterface):
                 if self.frame_number > max_frame_number:
                     self.frame_number = max_frame_number
 
-                log.debug("Update frame to %s" % self.frame_number)
-
                 # Update the model data
                 if reload_model:
                     self.update_model(get_app().window.txtPropertyFilter.text())
@@ -304,7 +302,8 @@ class PropertiesModel(updates.UpdateInterface):
                         get_audio_data({waveform_file_id: [c.id]})
 
                     # Update the preview
-                    get_app().window.refreshFrameSignal.emit()
+                    if not self._trim_preview_mode:
+                        get_app().window.refreshFrameSignal.emit()
 
                 # Clear selection and restore focus to label column
                 current_row = self.parent.currentIndex().row()
@@ -440,7 +439,8 @@ class PropertiesModel(updates.UpdateInterface):
                         c.save()
 
                         # Update the preview
-                        get_app().window.refreshFrameSignal.emit()
+                        if not self._trim_preview_mode:
+                            get_app().window.refreshFrameSignal.emit()
 
                     # Clear selection and restore focus to label column
                     current_row = self.parent.currentIndex().row()
@@ -975,7 +975,6 @@ class PropertiesModel(updates.UpdateInterface):
         self.items[name] = {"row": row, "property": property}
 
     def update_model(self, filter=""):
-        log.debug("updating clip properties model.")
         app = get_app()
         _ = app._tr
 
@@ -1098,6 +1097,7 @@ class PropertiesModel(updates.UpdateInterface):
         self.parent = parent
         self.previous_filter = None
         self.filter_base_properties = []
+        self._trim_preview_mode = False
 
         # Create standard model
         self.model = ClipStandardItemModel()
@@ -1116,3 +1116,11 @@ class PropertiesModel(updates.UpdateInterface):
 
         # Add self as listener to project data updates (used to update the timeline)
         get_app().updates.add_listener(self)
+        get_app().window.TrimPreviewMode.connect(self._enter_trim_preview)
+        get_app().window.TimelinePreviewMode.connect(self._exit_trim_preview)
+
+    def _enter_trim_preview(self):
+        self._trim_preview_mode = True
+
+    def _exit_trim_preview(self):
+        self._trim_preview_mode = False

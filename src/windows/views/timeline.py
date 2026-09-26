@@ -431,6 +431,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 TimelineWidget.changed(self, None)
             return
 
+        if ViewClass == TimelineWidget and self._pending_trim_refresh:
+            pending = self._pending_trim_refresh
+            item_id = pending.get("id")
+            if item_id and action and action.key and action.key[0] in ["clips", "transitions"]:
+                if self._action_contains_item_id(action, item_id):
+                    self._apply_pending_trim_refresh()
+
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
             action = action.copy()
@@ -3504,7 +3511,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Refresh frame to ensure our last frame after scrubbing
         # is the final frame shown. Due to some unknown reason, this
         # is required for an accurate end to srubbing
-        QTimer.singleShot(50, self.window.refreshFrameSignal.emit)
+        QTimer.singleShot(50, lambda: self.window.refreshFrameSignal.emit())
 
     @pyqtSlot()
     def DisableCacheThread(self):
@@ -3512,6 +3519,96 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+
+    @pyqtSlot()
+    def TrimPreviewMode(self):
+        self.window.TrimPreviewMode.emit()
+
+    @pyqtSlot()
+    def TimelinePreviewMode(self):
+        self.window.TimelinePreviewMode.emit()
+
+    @pyqtSlot()
+    def BeginTrimRefresh(self):
+        setattr(self.window, "_trim_refresh_pending", True)
+
+    @pyqtSlot(str, str)
+    def RefreshTrimmedTimelineItem(self, item_json, edge):
+        try:
+            item_data = json.loads(item_json) if not isinstance(item_json, dict) else item_json
+        except Exception:
+            log.debug("Failed to parse trim JSON data", exc_info=True)
+            return
+
+        setattr(self.window, "_trim_refresh_pending", True)
+        if ViewClass == TimelineWidget:
+            item_id = item_data.get("id")
+            self._pending_trim_refresh = {
+                "id": item_id,
+                "edge": edge,
+                "data": item_data,
+            }
+            QTimer.singleShot(0, self._apply_pending_trim_refresh)
+            return
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
+
+    def _action_contains_item_id(self, action, item_id):
+        if not action or not item_id:
+            return False
+        for part in action.key or []:
+            if isinstance(part, dict) and part.get("id") == item_id:
+                return True
+        values = getattr(action, "values", None)
+        if isinstance(values, dict) and values.get("id") == item_id:
+            return True
+        return False
+
+    def _apply_pending_trim_refresh(self):
+        pending = self._pending_trim_refresh
+        if not pending:
+            return
+        self._pending_trim_refresh = None
+        item_data = pending.get("data") or {}
+        edge = pending.get("edge")
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
 
     @pyqtSlot(str, int)
     def PreviewClipFrame(self, clip_id, frame_number):
@@ -4280,6 +4377,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.setAcceptDrops(True)
         self.last_position_frames = None
         self.context_menu_cursor_position = None
+        self._pending_trim_refresh = None
 
         # Get logger
         self.log_fn = log.log

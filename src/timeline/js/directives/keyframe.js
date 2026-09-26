@@ -133,6 +133,7 @@ App.directive("tlKeyframe", function () {
           pendingFrame = currentFrame;
           locateObject();
           if (scope.Qt) {
+            timeline.DisableCacheThread();
             timeline.StartKeyframeDrag(objType, objId, transactionId);
           }
           try { window.getSelection() && window.getSelection().removeAllRanges(); } catch (_) {}
@@ -171,6 +172,9 @@ App.directive("tlKeyframe", function () {
         stop: function (e, ui) {
           scope.setDragging(false);
           exitDragMode();
+          if (scope.Qt) {
+            timeline.EnableCacheThread();
+          }
           locateObject();
           if (!obj || typeof obj.start === "undefined") {
             restoreUserSelect();

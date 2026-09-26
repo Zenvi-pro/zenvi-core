@@ -998,21 +998,25 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # into the project assets folder.
 
             # Copy all title files (if not found in target asset folder)
-            for title_path in os.listdir(info.TITLE_PATH):
-                working_title_path = os.path.join(info.TITLE_PATH, title_path)
-                target_title_filepath = os.path.join(target_title_path, title_path)
-                if not os.path.exists(target_title_filepath):
-                    shutil.copy2(working_title_path, target_title_filepath)
+            if os.path.abspath(info.TITLE_PATH) != os.path.abspath(target_title_path):
+                for title_path in os.listdir(info.TITLE_PATH):
+                    working_title_path = os.path.join(info.TITLE_PATH, title_path)
+                    target_title_filepath = os.path.join(target_title_path, title_path)
+                    if not os.path.exists(target_title_filepath):
+                        shutil.copy2(working_title_path, target_title_filepath)
 
             # Copy all blender folders (if not found in target asset folder)
-            for blender_path in os.listdir(info.BLENDER_PATH):
-                working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
-                target_blender_filepath = os.path.join(target_blender_path, blender_path)
-                if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
-                    shutil.copytree(working_blender_path, target_blender_filepath)
+            if os.path.abspath(info.BLENDER_PATH) != os.path.abspath(target_blender_path):
+                for blender_path in os.listdir(info.BLENDER_PATH):
+                    working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
+                    target_blender_filepath = os.path.join(target_blender_path, blender_path)
+                    if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
+                        shutil.copytree(working_blender_path, target_blender_filepath)
 
             # Copy all clipboard files (if not found in target asset folder)
-            if os.path.exists(info.CLIPBOARD_PATH):
+            if os.path.exists(info.CLIPBOARD_PATH) and (
+                os.path.abspath(info.CLIPBOARD_PATH) != os.path.abspath(target_clipboard_path)
+            ):
                 for clipboard_path in os.listdir(info.CLIPBOARD_PATH):
                     working_clipboard_path = os.path.join(info.CLIPBOARD_PATH, clipboard_path)
                     target_clipboard_filepath = os.path.join(target_clipboard_path, clipboard_path)
@@ -1020,11 +1024,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
 
             # Copy all protobuf files (if not found in target asset folder)
-            for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
-                working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
-                target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
-                if not os.path.exists(target_protobuf_filepath):
-                    shutil.copy2(working_protobuf_path, target_protobuf_filepath)
+            if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
+                for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
+                    working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
+                    target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
+                    if not os.path.exists(target_protobuf_filepath):
+                        shutil.copy2(working_protobuf_path, target_protobuf_filepath)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -1038,31 +1043,31 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 new_asset_path = None
                 if info.BLENDER_PATH in path:
                     # Copy directory of blender files
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if os.path.isdir(old_dir) and old_dir not in copied_assets["blender"]:
                         # Copy dir into new folder
                         old_dir_name = os.path.basename(old_dir)
-                        copied_assets["blender"].add(old_dir)
-                        log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_blender_path):
+                            copied_assets["blender"].add(old_dir)
+                            log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
                     new_asset_path = os.path.join(target_blender_path, old_dir_name, asset_name)
 
                 if info.TITLE_PATH in path:
                     # Copy title files into assets folder
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["title"]:
                         # Copy title into assets title folder
-                        copied_assets["title"].add(asset_name)
-                        log.info("Copied title %s to %s", asset_name, target_title_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_title_path):
+                            copied_assets["title"].add(asset_name)
+                            log.info("Copied title %s to %s", asset_name, target_title_path)
                     new_asset_path = os.path.join(target_title_path, asset_name)
 
                 if info.CLIPBOARD_PATH in path:
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["clipboard"]:
-                        copied_assets["clipboard"].add(asset_name)
-                        log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_clipboard_path):
+                            copied_assets["clipboard"].add(asset_name)
+                            log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
 
                 # Update path in File object to new location

@@ -1754,8 +1754,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def _clip_source_dimensions(self, clip, clip_object, frame_number, skip_effect_id=None):
         pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
-        width = float(clip.data['reader']['width'])
-        height = float(clip.data['reader']['height']) * pixel_adjust
+        reader = clip.data.get('reader', {})
+        width = float(reader.get('width', self.width()))
+        height = float(reader.get('height', self.height())) * pixel_adjust
 
         for eff in clip_object.Effects():
             if getattr(getattr(eff, 'info', None), 'class_name', '') != 'Crop':
