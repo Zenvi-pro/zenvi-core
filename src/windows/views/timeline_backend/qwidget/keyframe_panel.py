@@ -1893,7 +1893,7 @@ class KeyframePanelMixin:
                     continue
                 base_path = path + (("dict", prop_key),)
                 points = candidate.get("Points")
-                if isinstance(points, list) and points:
+                if isinstance(points, list):
                     point_paths = [
                         base_path + (("dict", "Points"), ("list", index))
                         for index, _point in enumerate(points)
@@ -1905,7 +1905,7 @@ class KeyframePanelMixin:
                         if not isinstance(channel_data, dict):
                             continue
                         channel_points = channel_data.get("Points")
-                        if isinstance(channel_points, list) and channel_points:
+                        if isinstance(channel_points, list):
                             channel_path = base_path + (("dict", channel), ("dict", "Points"))
                             point_paths = [
                                 channel_path + (("list", index),)
@@ -1979,7 +1979,6 @@ class KeyframePanelMixin:
         for key, prop in props.items():
             if not isinstance(prop, dict):
                 continue
-            metadata_keyframe = bool(prop.get("keyframe"))
             point_count_value = prop.get("points")
             declared_points = None
             if point_count_value is not None:
@@ -1988,7 +1987,9 @@ class KeyframePanelMixin:
                 except (TypeError, ValueError):
                     declared_points = None
             points, min_val, max_val, source_meta, normalized_paths = convert_points(key, prop)
-            if not points and not normalized_paths:
+            has_curve_container = bool(source_meta)
+            metadata_keyframe = bool(prop.get("keyframe")) or has_curve_container
+            if not points and not normalized_paths and not metadata_keyframe:
                 continue
             name = prop.get("name") or str(key)
             if len(points) <= 1:
