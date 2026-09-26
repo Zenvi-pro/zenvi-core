@@ -26,6 +26,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import uuid
+
 from PyQt5.QtCore import QSize, Qt, QPoint, QRegExp, QRect, QEvent
 from PyQt5.QtGui import (QDrag, QCursor, QPixmap, QPainter, QIcon,
                          QLinearGradient, QColor, QPen)
@@ -269,8 +271,15 @@ class FilesListView(QListView):
         # Set the hot spot to the center of the composite pixmap
         drag.setHotSpot(composite_pixmap.rect().center())
 
-        # Execute the drag operation
+        # Start a transaction so all clips are grouped for a single undo
+        tid = str(uuid.uuid4())
+        get_app().updates.transaction_id = tid
+
+        # Execute the drag operation (blocking - dropEvent creates clips during this call)
         drag.exec_(supportedActions)
+
+        # End transaction
+        get_app().updates.transaction_id = None
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):

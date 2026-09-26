@@ -4007,6 +4007,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 ):
                     log.info("Applying effect {} to clip ID {}".format(name, clip.id))
                     log.debug(clip)
+                    original_clip_data = json.loads(json.dumps(clip.data))
 
                     # Handle custom effect dialogs
                     if name in effect_options:
@@ -4055,6 +4056,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                     # Update clip data for project
                     self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                    get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Find position from javascript
         self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
@@ -4093,6 +4095,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not effect_name:
             return
         log.info("Applying effect %s to clip ID %s", effect_name, clip.id)
+        original_clip_data = json.loads(json.dumps(clip.data))
         if effect_name in effect_options:
             effect_params = effect_options.get(effect_name)
             from windows.process_effect import ProcessEffect
@@ -4121,6 +4124,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.data["effects"] = effects
         effects.append(effect_json)
         self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+        get_app().updates.apply_last_action_to_history(original_clip_data)
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):
