@@ -18,6 +18,17 @@ if [[ "$FEATURE" != "libopenshot-1.0" ]]; then
 fi
 cur="$(feature_state "$FEATURE")"
 case "$cur" in ""|queued|bootstrapping) bash "$PORT_SCRIPTS/set-status.sh" in_progress;; esac
+# Pre-trust the worktree folder so the interactive session does not stop at Claude's trust dialog.
+python3 - "$WT" <<'PY'
+import json, os, sys
+p = os.path.expanduser("~/.claude.json"); wt = sys.argv[1]
+try: d = json.load(open(p))
+except Exception: d = {}
+proj = d.setdefault("projects", {}).setdefault(wt, {})
+if not proj.get("hasTrustDialogAccepted"):
+    proj["hasTrustDialogAccepted"] = True; proj.setdefault("allowedTools", [])
+    tmp = p + ".tmp"; json.dump(d, open(tmp, "w"), indent=2); os.replace(tmp, p)
+PY
 EMPTY_MCP="$STATE_DIR/empty-mcp.json"; echo '{"mcpServers":{}}' > "$EMPTY_MCP"
 SESSION_MARK="$STATE_DIR/$FEATURE.session"
 SYS_PROMPT="$(cat "$PORT_SCRIPTS/AGENT_PROMPT.md")"
