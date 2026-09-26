@@ -1,7 +1,37 @@
 #!/usr/bin/env bash
 # MSYS2 UCRT64: unittest-cpp + libopenshot-audio + libopenshot (see README.md "MSYS2 (Windows)").
+#
+# Environment:
+#   LIBOPENSHOT_TAG        libopenshot tag        (default: v1.0.0)
+#   LIBOPENSHOT_AUDIO_TAG  libopenshot-audio tag  (default: $LIBOPENSHOT_TAG)
+#   ZENVI_OPENCV           ON|OFF, OpenCV effects (Tracker, Object Detector,
+#                          Stabilizer) via mingw-w64-ucrt-x86_64-opencv (default: ON)
 set -euo pipefail
 export PATH="/ucrt64/bin:$PATH"
+
+LIBOPENSHOT_TAG="${LIBOPENSHOT_TAG:-v1.0.0}"
+LIBOPENSHOT_AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$LIBOPENSHOT_TAG}"
+ZENVI_OPENCV="${ZENVI_OPENCV:-ON}"
+PATCH_DIR="${GITHUB_WORKSPACE}/installer/mac-patches"
+
+# Apply every installer/mac-patches/<prefix>-*.patch that still applies (the
+# same tag-locked, `git apply --check`-guarded scheme as
+# scripts/build-mac-libopenshot.sh). Mac-only patches simply fail the check
+# here and are skipped.
+apply_patches() {
+  local src_dir="$1" prefix="$2" patch
+  shopt -s nullglob
+  local patches=("${PATCH_DIR}/${prefix}"-*.patch)
+  shopt -u nullglob
+  for patch in "${patches[@]}"; do
+    if git -C "${src_dir}" apply --check --whitespace=nowarn "${patch}" 2>/dev/null; then
+      echo "Applying $(basename "${patch}")"
+      git -C "${src_dir}" apply --whitespace=nowarn "${patch}"
+    else
+      echo "Skipping $(basename "${patch}") (does not apply to ${src_dir##*/} at this tag)"
+    fi
+  done
+}
 
 DEPS="${GITHUB_WORKSPACE}/.ci-deps"
 mkdir -p "${DEPS}"
@@ -20,9 +50,10 @@ if [[ ! -f /usr/lib/libUnitTest++.a ]] && [[ ! -f /usr/lib/libUnitTest++.dll.a ]
   cmake --install build
 fi
 
-# libopenshot-audio v0.6.0 → /usr (pairs with libopenshot 0.7.x OpenShotAudio >= 0.6.0); disable ASIO (no Steinberg SDK on CI)
-git clone --depth 1 --branch v0.6.0 https://github.com/OpenShot/libopenshot-audio.git "${DEPS}/libopenshot-audio"
+# libopenshot-audio → /usr (libopenshot 1.0.0 requires OpenShotAudio >= 1.0.0); disable ASIO (no Steinberg SDK on CI)
+git clone --depth 1 --branch "${LIBOPENSHOT_AUDIO_TAG}" https://github.com/OpenShot/libopenshot-audio.git "${DEPS}/libopenshot-audio"
 AUDIO_SRC="${DEPS}/libopenshot-audio"
+apply_patches "${AUDIO_SRC}" "libopenshot-audio-${LIBOPENSHOT_AUDIO_TAG}"
 APPCONFIG="${AUDIO_SRC}/JuceLibraryCode/AppConfig.h"
 if [[ -f "${APPCONFIG}" ]]; then
   # Projucer emits indented/spaced "#define   JUCE_ASIO 1"; a naive sed misses it.
@@ -36,9 +67,11 @@ cmake -S "${AUDIO_SRC}" -B "${AUDIO_SRC}/build" \
 cmake --build "${AUDIO_SRC}/build" --parallel "$(nproc)"
 cmake --install "${AUDIO_SRC}/build"
 
-# libopenshot v0.7.0 → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
-git clone --depth 1 --branch v0.7.0 https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
+# libopenshot → /ucrt64 + FFmpeg 7+ compat patches (upstream may already include some)
+git clone --depth 1 --branch "${LIBOPENSHOT_TAG}" https://github.com/OpenShot/libopenshot.git "${DEPS}/libopenshot"
 export LOS="${DEPS}/libopenshot"
+# Tag-locked source patches (e.g. the v1.0.0 non-crop location fix from libopenshot develop).
+apply_patches "${LOS}" "libopenshot-${LIBOPENSHOT_TAG}"
 find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   xargs -0 -r grep -l "avresample" 2>/dev/null | while read -r f; do
     sed -i 's/ avresample//g' "$f"
@@ -58,8 +91,9 @@ cmake -S "${LOS}" -B "${LOS}/build" \
   -DENABLE_RUBY=OFF \
   -DENABLE_JAVA=OFF \
   -DENABLE_PYTHON=ON \
-  -DENABLE_OPENCV=OFF \
+  -DENABLE_OPENCV="${ZENVI_OPENCV}" \
   -DENABLE_MAGICK=OFF \
+  -DUSE_QT6=OFF \
   -DPython3_EXECUTABLE=/ucrt64/bin/python.exe
 mkdir -p "${LOS}/build/tests"
 cmake --build "${LOS}/build" --parallel "$(nproc)"
@@ -180,6 +214,20 @@ fi
 if [[ ! -f "${BUNDLE}/ffmpeg.exe" ]]; then
   echo "::error::OpenShot bundle has no ffmpeg.exe — Gemini indexing needs the FFmpeg CLI from /ucrt64/bin."
   exit 1
+fi
+
+# OpenCV runtime arrives through the PE dependency walk above (libopenshot.dll
+# imports libopencv_core/video/dnn/tracking). Warn loudly if it is missing, so a
+# silently OpenCV-less build (find_package(OpenCV 4) not found) is visible.
+if [[ "${ZENVI_OPENCV}" == "ON" ]]; then
+  shopt -s nullglob
+  _ocv=( "${BUNDLE}"/libopencv_*.dll )
+  shopt -u nullglob
+  if [[ ${#_ocv[@]} -eq 0 ]]; then
+    echo "::warning::ZENVI_OPENCV=ON but no libopencv_*.dll in the bundle — libopenshot was built without OpenCV (Tracker / Object Detector / Stabilizer unavailable). Check mingw-w64-ucrt-x86_64-opencv and -protobuf are installed."
+  else
+    echo "Bundled ${#_ocv[@]} OpenCV DLL(s)"
+  fi
 fi
 
 ls -la "${BUNDLE}"
