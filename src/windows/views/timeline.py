@@ -649,6 +649,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
             "reader": reader_data,
+            "fade_audio_hint": True,
             "replace_image": False
         }
 
