@@ -990,6 +990,8 @@ class AIChatWindow(QDockWidget):
         self._start_credits_refresh()
         # Detect claude/codex CLI availability for the agent selector's status dots.
         self._start_cli_detection_refresh()
+        # Model pickers: fetch the live lineups off-thread, then keep them fresh.
+        self._start_model_lineup_refresh()
 
     # ------------------------------------------------------------------
     # Session management
@@ -2931,28 +2933,41 @@ class AIChatWindow(QDockWidget):
         )
 
     def _zenvi_models(self):
-        """Model-picker entries served by the Zenvi backend."""
+        """Model-picker entries served by the Zenvi backend.
+
+        Answers from the last catalog the refresh worker fetched (see
+        ``_start_model_lineup_refresh``); nothing here touches the network,
+        because this runs on the GUI thread on every tab and backend switch.
+        Empty until the first fetch lands, and the worker re-pushes the picker
+        the moment it does.
+        """
+        return [dict(m) for m in getattr(self, "_zenvi_model_rows", None) or []]
+
+    @staticmethod
+    def _zenvi_rows_from_catalog(payload: dict) -> list:
+        """Picker entries from a ``GET /models`` payload (pure; tested)."""
         models = []
-        try:
-            client = get_backend_client()
-            api_models = client.list_models()
-            default_id = client.get_default_model_id()
-            for m in api_models:
-                mid = m.get("model_id", "")
-                # Pass the picker metadata straight through. The JS side
-                # defaults anything missing, so an older backend still works.
-                models.append({
-                    "id": mid,
-                    "name": m.get("display_name", mid),
-                    "default": mid == default_id,
-                    "provider": m.get("provider", ""),
-                    "featured": m.get("featured", True),
-                    "rank": m.get("rank", 500),
-                    "tags": m.get("tags", []),
-                    "available": m.get("available", True),
-                })
-        except Exception:
-            log.debug("Zenvi Assistant: model list unavailable; using empty list")
+        if not isinstance(payload, dict):
+            return models
+        default_id = payload.get("default_model_id") or ""
+        for m in payload.get("models") or []:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("model_id", "")
+            if not mid:
+                continue
+            # Pass the picker metadata straight through. The JS side defaults
+            # anything missing, so an older backend still works.
+            models.append({
+                "id": mid,
+                "name": m.get("display_name", mid),
+                "default": mid == default_id,
+                "provider": m.get("provider", ""),
+                "featured": m.get("featured", True),
+                "rank": m.get("rank", 500),
+                "tags": m.get("tags", []),
+                "available": m.get("available", True),
+            })
         return models
 
     def _models_for_backend(self, backend: str = None):
@@ -2980,6 +2995,83 @@ class AIChatWindow(QDockWidget):
         self._run_js(
             "if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS))
         )
+
+    # Model lineups are re-fetched on this cadence so a release shows up in a
+    # running app without a restart. It matches the backend's own discovery
+    # cache TTL (ZENVI_MODEL_CATALOG_TTL, 15 min), so polling faster would only
+    # re-read the same cached answer.
+    MODEL_LINEUP_REFRESH_MS = 15 * 60 * 1000
+
+    def _start_model_lineup_refresh(self):
+        """Fetch the model lineups once now, then every 15 minutes.
+
+        Two lists come from the backend: the Zenvi Assistant catalog
+        (``GET /models``) and the CLI agents' lineups (``GET /models/cli``),
+        both built from the providers' live model lists. Fetching happens on a
+        worker thread; the result is handed to the GUI thread, installed, and
+        the active tab's picker is re-pushed.
+        """
+        self._refresh_model_lineups()
+        if not getattr(self, "_model_lineup_timer", None):
+            self._model_lineup_timer = QTimer(self)
+            self._model_lineup_timer.timeout.connect(self._refresh_model_lineups)
+            self._model_lineup_timer.start(self.MODEL_LINEUP_REFRESH_MS)
+
+    def _refresh_model_lineups(self):
+        """Fetch both lineups off the GUI thread; deliver via ``_on_model_lineups``."""
+        if getattr(self, "_model_lineup_fetching", False):
+            return
+        self._model_lineup_fetching = True
+
+        def run():
+            payload = {"zenvi": {}, "cli": {}}
+            try:
+                client = get_backend_client()
+                payload["zenvi"] = client.fetch_model_catalog()
+                payload["cli"] = client.list_cli_models()
+            except Exception as exc:
+                log.debug("model lineup fetch failed: %s", exc)
+            try:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_model_lineups",
+                    Qt.QueuedConnection,
+                    Q_ARG(str, json.dumps(payload)),
+                )
+            except Exception as exc:
+                log.debug("model lineup delivery failed: %s", exc)
+
+        threading.Thread(target=run, daemon=True, name="model-lineups").start()
+
+    @pyqtSlot(str)
+    def _on_model_lineups(self, payload_json: str):
+        """Install fetched lineups and refresh the picker (GUI thread)."""
+        self._model_lineup_fetching = False
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+        if self._apply_model_lineups(payload):
+            self._push_models_for_backend()
+
+    def _apply_model_lineups(self, payload: dict) -> bool:
+        """Store what a fetch returned; True when anything usable arrived.
+
+        A failed fetch (empty catalog) keeps whatever the previous one left so
+        a backend blip does not blank the picker mid-session.
+        """
+        from windows.agent_runners import set_live_lineups
+
+        changed = False
+        rows = self._zenvi_rows_from_catalog(payload.get("zenvi") or {})
+        if rows:
+            self._zenvi_model_rows = rows
+            changed = True
+        cli = payload.get("cli") or {}
+        if isinstance(cli, dict) and any(cli.values()):
+            set_live_lineups(cli)
+            changed = True
+        return changed
 
     def _start_cli_detection_refresh(self):
         """Detect claude/codex CLI availability once, then refresh every 60s."""
