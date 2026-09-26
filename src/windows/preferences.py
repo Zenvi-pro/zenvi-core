@@ -67,8 +67,21 @@ class Preferences(QDialog):
         # Init UI
         ui_util.init_ui(self)
 
-        # Define the custom category order
-        self.custom_order = ["General", "Preview", "Autosave", "Cache", "Debug", "Keyboard", "Performance", "Location", "AI", "Experimental"]
+        # Define the custom category order. Categories with no settings are
+        # skipped when building tabs — keep this list in sync with
+        # _default.settings "category" values (empty names crash Populate).
+        self.custom_order = [
+            "General",
+            "Preview",
+            "Timeline",
+            "Autosave",
+            "Cache",
+            "Debug",
+            "Keyboard",
+            "Performance",
+            "Location",
+            "AI",
+        ]
 
         # Get settings
         self.s = get_app().get_settings()
@@ -187,7 +200,7 @@ class Preferences(QDialog):
                 # Append settings into correct category
                 self.category_names[category].append(item)
 
-        # Create tabs in the predefined order (only add categories present in settings_data)
+        # Create tabs in the predefined order (only categories that have settings)
         for category in self.custom_order:
             if category in self.category_names:
                 # Create scroll area
@@ -210,8 +223,28 @@ class Preferences(QDialog):
                 self.tabCategories.addTab(scroll_area, _(category))
                 self.category_tabs[category] = tabWidget
 
-        # Now populate each tab with settings
-        for category in self.custom_order:
+        # Any settings categories not listed in custom_order still get a tab
+        # (appended), so a new category in _default.settings cannot disappear.
+        for category in sorted(self.category_names.keys()):
+            if category in self.category_tabs:
+                continue
+            scroll_area = QScrollArea(self)
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            scroll_area.setMinimumSize(675, 100)
+            layout = QVBoxLayout()
+            tabWidget = QWidget(self)
+            tabWidget.setObjectName("PreferencePanel")
+            tabWidget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+            tabWidget.setLayout(layout)
+            scroll_area.setWidget(tabWidget)
+            scroll_area.setObjectName(category)
+            self.tabCategories.addTab(scroll_area, _(category))
+            self.category_tabs[category] = tabWidget
+
+        # Now populate each tab with settings (only tabs that were created)
+        for category in list(self.category_tabs.keys()):
             tabWidget = self.category_tabs[category]
             filterFound = False
 
@@ -729,27 +762,26 @@ class Preferences(QDialog):
             current_decoder_name, current_decoder, current_decoder_card)
 
         try:
-            # Find reader
-            example_media = os.path.join(info.RESOURCES_PATH, "hardware-example.mp4")
-            clip = openshot.Clip(example_media)
-            reader = clip.Reader()
+            from classes.export_acceleration.hw_decode import probe_hardware_decoder
 
-            # Open reader
-            reader.Open()
-
-            # Test decoded pixel values for a valid decode (based on hardware-example.mp4)
-            if reader.GetFrame(0).CheckPixel(0, 0, 2, 133, 255, 255, 5):
-                is_supported = True
-                log.debug("Successful test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
-                          current_decoder_name, current_decoder, current_decoder_card)
+            is_supported = probe_hardware_decoder(
+                int(current_decoder),
+                device_index=int(current_decoder_card or 0),
+            )
+            if is_supported:
+                log.debug(
+                    "Successful test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
+                    current_decoder_name,
+                    current_decoder,
+                    current_decoder_card,
+                )
             else:
-                log.debug("Failed test of hardware decoder (incorrect pixel color found): "
-                          "%s (Decoder Type: %s, Graphics Card: %s)",
-                          current_decoder_name, current_decoder, current_decoder_card)
-
-            reader.Close()
-            clip.Close()
-
+                log.debug(
+                    "Failed test of hardware decoder: %s (Decoder Type: %s, Graphics Card: %s)",
+                    current_decoder_name,
+                    current_decoder,
+                    current_decoder_card,
+                )
         except Exception as ex:
             log.debug("Exception testing hardware decoder: %s (Decoder Type: %s, Graphics Card: %s) %s",
                       current_decoder_name, current_decoder, current_decoder_card, str(ex))

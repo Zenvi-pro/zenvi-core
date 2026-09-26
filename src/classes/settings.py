@@ -126,6 +126,11 @@ class SettingStore(JsonDataStore):
                 self.set("locationExportType", self.pathType.RECENT.value)
                 self.set("exportDownloadsDefaultApplied", True)
 
+        # Hardware decode auto-detect is intentionally NOT done here.
+        # settings.load() runs before libopenshot/Qt are fully ready, so the
+        # probe can falsely fail and lock in software decode. MainWindow runs
+        # it after openshot.Settings is live (see _maybe_auto_detect_hw_decode).
+
         # Return success of saving user settings file back after merge
         return self.write_to_file(file_path, self._data)
 
@@ -144,7 +149,10 @@ class SettingStore(JsonDataStore):
         Return True if any settings with 'restart: True' are changed.
         """
         log.info(f"Restoring defaults for category: {category_filter or 'all categories'}")
-        preserve_keys = ['unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics', 'recent_projects']
+        preserve_keys = [
+            'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
+            'recent_projects', 'restore_project_path', 'restore_draft_history_key',
+        ]
 
         requires_restart = False  # Track if any setting requires a restart
 
