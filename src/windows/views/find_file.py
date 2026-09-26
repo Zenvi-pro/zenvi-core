@@ -40,6 +40,27 @@ def _get_dialog_parent():
     return getattr(app, "window", None)
 
 
+def _deepest_existing_parent(path_value):
+    """Return the deepest existing directory in a missing file path (OpenShot #5959)."""
+    candidate = os.path.abspath(path_value or "")
+    if not candidate:
+        return ""
+
+    if os.path.isdir(candidate):
+        return candidate
+
+    candidate = os.path.dirname(candidate)
+    while candidate and not os.path.exists(candidate):
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            break
+        candidate = parent
+
+    if candidate and os.path.isdir(candidate):
+        return candidate
+    return ""
+
+
 def find_missing_file(file_path, prompt_state=None, parent=None):
     """Find a missing file name or file path, and return valid path.
 
@@ -72,11 +93,14 @@ def find_missing_file(file_path, prompt_state=None, parent=None):
 
     # Check if path exists
     while not os.path.exists(file_path):
-        recommended_path = get_app().project.current_filepath or ""
+        # Start browsing from the deepest folder of the old path that still exists
+        recommended_path = _deepest_existing_parent(file_path)
         if not recommended_path:
-            recommended_path = info.HOME_PATH
-        else:
-            recommended_path = os.path.dirname(recommended_path)
+            recommended_path = get_app().project.current_filepath or ""
+            if not recommended_path:
+                recommended_path = info.HOME_PATH
+            else:
+                recommended_path = os.path.dirname(recommended_path)
         message_box = QMessageBox(parent)
         message_box.setIcon(QMessageBox.Warning)
         message_box.setWindowTitle(_("Missing File (%s)") % file_name)
