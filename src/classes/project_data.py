@@ -1139,6 +1139,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         dialog_parent = getattr(app, "window", None)
 
         log.info("checking project files...")
+        prompt_state = {"cancelled": False}
 
         from classes.media_fingerprint import fingerprint, scan_folder_for_fingerprints
         from classes.path_utils import remember_media_root, resolve_media_path
@@ -1182,6 +1183,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             path = clip.get("reader", {}).get("path", "")
             if path and not os.path.exists(path) and "%" not in path:
                 missing_clips.append((clip, path))
+
+        # Natural-sort by filename so prompts and logs are predictable (OpenShot #5914)
+        missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
+        missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
         total_missing = len(missing_files) + len(missing_clips)
         if total_missing == 0:

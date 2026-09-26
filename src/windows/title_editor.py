@@ -98,14 +98,17 @@ class TitleEditor(QDialog):
         self.lblPreviewLabel.setFocusPolicy(Qt.NoFocus)
         self.scrollArea.setFocusPolicy(Qt.NoFocus)
 
-        # Set up the buttons
-        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        self.saveButton = self.buttonBox.button(QDialogButtonBox.Save)
-        self.cancelButton = self.buttonBox.button(QDialogButtonBox.Cancel)
-
-        # Set object names (for theme styles)
+        # Set up the buttons (match Animated Title behavior)
+        app = get_app()
+        _ = app._tr
+        self.buttonBox = QDialogButtonBox()
+        self.saveButton = QPushButton(_('Save'))
         self.saveButton.setObjectName("acceptButton")
+        self.cancelButton = QPushButton(_('Cancel'))
         self.cancelButton.setObjectName("cancelButton")
+        self.buttonBox.addButton(self.saveButton, QDialogButtonBox.AcceptRole)
+        self.buttonBox.addButton(self.cancelButton, QDialogButtonBox.RejectRole)
+        # Set focus policy after adding to buttonBox to prevent override
         self.saveButton.setFocusPolicy(Qt.StrongFocus)
         self.cancelButton.setFocusPolicy(Qt.StrongFocus)
         self.layout().addWidget(self.buttonBox)
@@ -151,10 +154,12 @@ class TitleEditor(QDialog):
         self.verticalLayout.addWidget(self.titlesView)
 
         # Disable Save button on window load
-        self.buttonBox.button(self.buttonBox.Save).setEnabled(False)
+        if hasattr(self, "saveButton"):
+            self.saveButton.setEnabled(False)
 
         self._apply_tab_order()
-        QTimer.singleShot(0, lambda: self.titlesView.setFocus(Qt.TabFocusReason))
+        if not self.edit_file_path:
+            QTimer.singleShot(0, lambda: self.titlesView.setFocus(Qt.TabFocusReason))
 
         # Connect thumbnail listener
         self.thumbnailReady.connect(self.display_pixmap)
@@ -480,7 +485,8 @@ class TitleEditor(QDialog):
             self.btnFontColor.setEnabled(False)
 
         # Enable Save button when a template is selected
-        self.buttonBox.button(self.buttonBox.Save).setEnabled(True)
+        if hasattr(self, "saveButton"):
+            self.saveButton.setEnabled(True)
 
         self._apply_tab_order()
 

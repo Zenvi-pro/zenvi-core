@@ -36,6 +36,9 @@ class TitlesListView(QListView):
     """ A QListView QWidget used on the title editor window """
 
     def currentChanged(self, current: QModelIndex, previous: QModelIndex):
+        # When editing/duplicating an existing title, don't override the SVG
+        if getattr(self.win, "edit_file_path", None):
+            return
         # Get current selection (if any)
         current = self.selectionModel().currentIndex()
         if not current.isValid():
@@ -53,6 +56,10 @@ class TitlesListView(QListView):
 
         # Sort by column 0
         self.title_model.proxy_model.sort(0)
+
+        # When editing/duplicating an existing title, keep template selection inactive.
+        if getattr(self.win, "edit_file_path", None):
+            return
 
         # Ensure a default selection (top item) to load controls.
         if not self.selectionModel().hasSelection() and self.model().rowCount() > 0:
