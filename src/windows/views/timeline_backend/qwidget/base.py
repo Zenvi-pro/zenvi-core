@@ -855,6 +855,7 @@ class TimelineWidgetBase(QWidget):
             self.current_frame = frame
             self.update()
         self.win.SeekSignal.emit(frame)
+        self.centerOnPlayhead()
         editor = getattr(self, "playhead_time_editor", None)
         if editor and force:
             editor.hide()
@@ -1127,6 +1128,7 @@ class TimelineWidgetBase(QWidget):
             self.keyframe_panel_painter.paint(painter, mode="overlay")
             self.selection_painter.paint(painter)
             self.ruler_painter.paint(painter)
+            self.playback_cache_painter.paint(painter)
             self.marker_painter.paint(painter)
             self.playhead_painter.paint(painter)
             self.ruler_painter.paint_overlay(painter)

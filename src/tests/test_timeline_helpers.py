@@ -101,6 +101,8 @@ class TimelineHelperTests(unittest.TestCase):
         cls.qwidget_keyframe_panel_module = importlib.import_module("windows.views.timeline_backend.qwidget.keyframe_panel")
         cls.thumbnails_module = importlib.import_module("windows.views.timeline_backend.qwidget.thumbnails")
         cls.waveform_module = importlib.import_module("classes.waveform")
+        cls.ruler_paint_module = importlib.import_module("windows.views.timeline_backend.paint.ruler")
+        cls.qwidget_timecode_module = importlib.import_module("windows.views.timeline_backend.qwidget.timecode")
 
     def make_helper(self):
         timeline_module = self.timeline_module
@@ -1311,6 +1313,31 @@ class TimelineHelperTests(unittest.TestCase):
                 types.SimpleNamespace(),
                 clip_data,
             )
+    def test_playhead_time_edit_commit_seeks_and_centers_on_new_playhead_frame(self):
+        helper = types.SimpleNamespace()
+        helper.current_frame = 1
+        helper.playhead_time_editor = None
+        helper.updated = 0
+        helper.seeks = []
+        helper.center_calls = 0
+        helper.update = lambda: setattr(helper, "updated", helper.updated + 1)
+        helper.win = types.SimpleNamespace(
+            SeekSignal=types.SimpleNamespace(emit=lambda frame: helper.seeks.append(frame))
+        )
+        helper.centerOnPlayhead = lambda: setattr(helper, "center_calls", helper.center_calls + 1)
+
+        self.qwidget_base_module.TimelineWidgetBase._commit_playhead_time_edit(
+            helper,
+            301,
+            start_preroll=False,
+            force=False,
+        )
+
+        self.assertEqual(helper.current_frame, 301)
+        self.assertEqual(helper.updated, 1)
+        self.assertEqual(helper.seeks, [301])
+        self.assertEqual(helper.center_calls, 1)
+
 
         self.assertEqual(
             details,

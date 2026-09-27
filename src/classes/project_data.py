@@ -310,6 +310,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             # Otherwise, set the given index
             elif isinstance(values, dict):
+                if (
+                    isinstance(obj, dict)
+                    and isinstance(obj.get("objects"), dict)
+                    and isinstance(values.get("objects"), dict)
+                ):
+                    values = copy.deepcopy(values)
+                    object_updates = values.pop("objects", {})
+                    tracked_objects = obj.setdefault("objects", {})
+                    for object_id, object_values in object_updates.items():
+                        if (
+                            isinstance(object_values, dict)
+                            and isinstance(tracked_objects.get(object_id), dict)
+                        ):
+                            tracked_objects[object_id].update(object_values)
+                        else:
+                            tracked_objects[object_id] = object_values
                 # Update existing dictionary value
                 obj.update(values)
 

@@ -991,6 +991,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
+        previous_project_loading = getattr(self, "_project_loading", False)
+        self._project_loading = True
+        self._pending_project_open_refresh = False
+        lib_settings = openshot.Settings.Instance()
+        previous_playback_caching = lib_settings.ENABLE_PLAYBACK_CACHING
+        lib_settings.ENABLE_PLAYBACK_CACHING = False
+        loaded_project = False
         try:
             if file_exists(file_path):
                 # Clear any previous thumbnails
@@ -1008,9 +1015,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
                 # Refresh files views
                 self.refreshFilesSignal.emit()
-
-                # Refresh thumbnail
-                self.refreshFrameSignal.emit()
 
                 # Update max size (for fast previews)
                 self.MaxSizeChanged.emit(self.videoPreview.size())
@@ -1030,6 +1034,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self.projectChanged.emit(file_path or "")
                 except Exception:
                     pass
+                loaded_project = True
             else:
                 log.info("File not found at {}".format(file_path))
                 self.statusBar.showMessage(
@@ -1045,10 +1050,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # Frame 1 is being previewed
             self.preview_thread.player.Seek(1)
             self.movePlayhead(1)
+            if loaded_project:
+                self._pending_project_open_refresh = True
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
             QMessageBox.warning(self, _("Error Opening Project"), str(ex))
+        finally:
+            self._project_loading = previous_project_loading
+            if not loaded_project:
+                lib_settings.ENABLE_PLAYBACK_CACHING = previous_playback_caching
+            if self._pending_project_open_refresh:
+                self._pending_project_open_refresh = False
+                QTimer.singleShot(0, lambda: self.refreshFrameSignal.emit())
 
         # Restore normal cursor
         app.restoreOverrideCursor()
@@ -4990,6 +5004,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 tab_bar.currentChanged.connect(self._schedule_tab_order_update)
                 self._connected_dock_tab_bars.add(tab_bar)
 
+    def _finish_pending_preview_resize(self):
+        """Apply a preview resize deferred until the main window is initialized."""
+        if getattr(self, "shutting_down", False):
+            self._pending_preview_size = None
+            return
+        if not getattr(self, "initialized", False):
+            QTimer.singleShot(50, self._finish_pending_preview_resize)
+            return
+        pending_size = getattr(self, "_pending_preview_size", None)
+        self._pending_preview_size = None
+        if pending_size is not None:
+            self.MaxSizeChanged.emit(pending_size)
+
     def set_tab_drawbase(self):
         """Set the drawBase property on all QTabBar objects. This draws a line
         under the tabs, and is not required on all themes."""
@@ -5019,6 +5046,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._restart_for_update = False
         self.lock = threading.Lock()
         self.installEventFilter(self)
+        self._project_loading = False
+        self._pending_project_open_refresh = False
+        self._pending_preview_size = None
 
         # set window on app for reference during initialization of children
         app = get_app()
