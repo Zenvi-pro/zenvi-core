@@ -2,7 +2,7 @@
 <!DOCTYPE openshot-export-option>
 <export-option>
 	<type translatable="True">Web</type>
-	<title translatable="True">Flickr-HD</title>
+	<title translatable="True">Flickr</title>
 	<videoformat>mov</videoformat>
 	<videocodec>libx264</videocodec>
 	<audiocodec>aac</audiocodec>

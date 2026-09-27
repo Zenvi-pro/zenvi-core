@@ -84,8 +84,17 @@ class TimelineSync(UpdateInterface):
             return
 
         with self.timeline_lock:
-            # Enter edit mode — disable video caching until the user seeks or plays
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            # Enter edit mode for property updates — disable caching until the user seeks or plays.
+            # Only "update" actions represent manual property edits; structural changes like
+            # inserting/deleting clips should not interrupt caching. Also skip during playback
+            # so live property tweaks don't kill an in-progress cache fill.
+            if action and action.type == "update":
+                try:
+                    is_playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                except Exception:
+                    is_playing = False
+                if not is_playing:
+                    openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             try:
                 proxy_service = getattr(self.window, "proxy_service", None)

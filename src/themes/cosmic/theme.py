@@ -191,6 +191,10 @@ QMenu::item {
     border-radius: 4px;
 }
 
+QMenu::item:checked {
+    padding: 5px 16px 5px 10px;
+}
+
 QMenu::item:selected {
     background-color: rgba(77, 156, 246, 0.15);
     color: #d4d4d4;

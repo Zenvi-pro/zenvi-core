@@ -558,7 +558,12 @@ class TimelineWidgetBase(QWidget):
         self._sm = sm
 
     def _disable_playback_caching(self):
-        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+        try:
+            is_playing = get_app().window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            is_playing = False
+        if not is_playing:
+            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
     def _event_signal(self, name):
         return self.events, self._event_signal_bytes(name)

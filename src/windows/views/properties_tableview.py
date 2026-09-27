@@ -68,7 +68,6 @@ from windows.color_grade_editor import (
     normalize_wheels_data,
     puck_display_color,
     scope_angle_for_display_hue,
-    wheels_enabled_at_frame,
     wheels_snapshot,
     wheels_summary,
 )
@@ -557,7 +556,33 @@ class PropertiesTableView(QTableView):
         self._update_live_property_preview(value)
         get_app().updates.ignore_history = True
 
-    def preview_curve_property_value(self, item, property_key, value):
+    def _resolve_live_property_item(self, item, property_key, property_type, item_data=None):
+        if item:
+            try:
+                if not isdeleted(item):
+                    row = item.row()
+                    label_item = self.clip_properties_model.model.item(row, 0)
+                    if label_item:
+                        cur_property = label_item.data()
+                        if (
+                            isinstance(cur_property, tuple)
+                            and len(cur_property) == 2
+                            and cur_property[0] == property_key
+                            and cur_property[1].get("type") == property_type
+                        ):
+                            return item
+            except RuntimeError:
+                pass
+
+        resolved_item, _property_meta = self._find_property_value_item(
+            property_key,
+            property_type=property_type,
+            item_data=item_data,
+        )
+        return resolved_item
+
+    def preview_curve_property_value(self, item, property_key, value, item_data=None):
+        item = self._resolve_live_property_item(item, property_key, "colorgrade_curve", item_data)
         if not item:
             return
         self.update_in_progress = True
@@ -699,6 +724,7 @@ class PropertiesTableView(QTableView):
                     dialog.curve_widget().blockSignals(False)
             elif property_type == "colorgrade_wheels":
                 self._update_color_grade_preview_meta(property_meta)
+        self._sync_color_grade_wheels_dock_from_model()
         self.viewport().update()
 
     def property_model_refreshed(self):
@@ -728,8 +754,14 @@ class PropertiesTableView(QTableView):
 
         self._sync_color_grade_editors_to_current_frame()
 
+    def _is_playing(self):
+        try:
+            return get_app().window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            return False
+
     def pause_live_property_caching(self):
-        if self.live_property_cache_paused:
+        if self.live_property_cache_paused or self._is_playing():
             return
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
         self.live_property_cache_paused = True
@@ -739,7 +771,7 @@ class PropertiesTableView(QTableView):
         if not self.live_property_cache_paused:
             return
         self.live_property_cache_paused = False
-        log.debug("resume_live_property_caching")
+        log.debug("resume_live_property_caching: Keep caching disabled until seek/play")
 
     def _wheels_drag_started(self):
         """Open a per-drag undo transaction when user starts dragging a wheel control."""
@@ -785,7 +817,10 @@ class PropertiesTableView(QTableView):
     def _update_color_grade_wheels_enabled(self, selection=None):
         if selection is None:
             selection = getattr(self, "current_selection", [])
-        self.color_grade_wheels_panel.setEnabled(self._selection_is_color_grade(selection))
+        if self._selection_is_color_grade(selection):
+            self.color_grade_wheels_panel.setEnabled(True)
+        else:
+            self._set_color_grade_wheels_unbound()
 
     def _find_color_grade_wheels_item(self):
         model = self.clip_properties_model.model
@@ -800,6 +835,49 @@ class PropertiesTableView(QTableView):
             if cur_property[1].get("type") == "colorgrade_wheels":
                 return value_item, cur_property[0], normalize_wheels_data(cur_property[1].get("wheels"))
         return None, None, None
+
+    def _sync_color_grade_wheels_dock_from_model(self):
+        """Refresh the visible wheels dock from current model data after external edits."""
+        if not hasattr(self, "color_grade_wheels_dock") or not self.color_grade_wheels_dock.isVisible():
+            return
+        if not self._selection_is_color_grade(getattr(self, "current_selection", [])):
+            self._set_color_grade_wheels_unbound()
+            return
+
+        item, property_key, wheels_data = self._find_color_grade_wheels_item()
+        if not item or not property_key:
+            self._set_color_grade_wheels_unbound()
+            return
+
+        self.selected_item = item
+        self.color_grade_wheels_panel.setEnabled(True)
+        self.color_grade_wheels_panel.set_frame_number(self.clip_properties_model.frame_number)
+        self.color_grade_wheels_panel.blockSignals(True)
+        self.color_grade_wheels_panel.set_wheels_data(wheels_data)
+        self.color_grade_wheels_panel.blockSignals(False)
+
+        session = self.live_property_session or {}
+        if session.get("property_type") == "colorgrade_wheels":
+            session["item"] = item
+            session["item_data"] = copy.deepcopy(item.data())
+            session["property_key"] = property_key
+
+    def _disabled_color_grade_wheels_data(self):
+        data = default_wheels_data()
+        points = data.get("enabled_keyframes", {}).get("Points")
+        if points:
+            points[0].setdefault("co", {})["Y"] = 0.0
+        return data
+
+    def _set_color_grade_wheels_unbound(self):
+        """Show neutral disabled wheels when no editable ColorGrade effect is bound."""
+        if not hasattr(self, "color_grade_wheels_panel"):
+            return
+        self.color_grade_wheels_panel.blockSignals(True)
+        self.color_grade_wheels_panel.set_frame_number(self.clip_properties_model.frame_number)
+        self.color_grade_wheels_panel.set_wheels_data(self._disabled_color_grade_wheels_data())
+        self.color_grade_wheels_panel.setEnabled(False)
+        self.color_grade_wheels_panel.blockSignals(False)
 
     def _activate_color_grade_wheels_session(self, item, property_key, wheels_data):
         session = self.live_property_session or {}
@@ -887,6 +965,10 @@ class PropertiesTableView(QTableView):
             return
         self.start_transaction(item)
         get_app().updates.ignore_history = True
+
+    def start_curve_property_change(self, item, property_key, item_data=None):
+        item = self._resolve_live_property_item(item, property_key, "colorgrade_curve", item_data)
+        self.start_property_change(item)
 
     def finish_live_property_change(self):
         self.finish_property_change()
@@ -979,9 +1061,9 @@ class PropertiesTableView(QTableView):
             # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
             get_app().updates.ignore_history = True
 
-            # Disable video caching during drag operation (for performance reasons)
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
-            log.debug('mouseMoveEvent: Stop caching frames on timeline')
+            # Disable video caching during drag (for performance), but not during playback
+            if not self._is_playing():
+                openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             # Get the position of the cursor and % value
             value_column_x = self.columnViewportPosition(1)
@@ -1051,21 +1133,26 @@ class PropertiesTableView(QTableView):
                     # range is unreasonably long (such as position, start, end, etc.... which can be huge #'s)
 
                     # Get the current value and apply fixed adjustments in response to motion
-                    self.new_value = QLocale().system().toDouble(self.selected_item.text())[0]
+                    if self.new_value is None:
+                        self.new_value = QLocale().system().toDouble(self.selected_item.text())[0]
+                    step = 1.0 if property_type == "int" else 0.50
 
                     if drag_diff > 0:
                         # Move to the left by a small amount
-                        self.new_value -= 0.50
+                        self.new_value -= step
                     elif drag_diff < 0:
                         # Move to the right by a small amount
-                        self.new_value += 0.50
+                        self.new_value += step
 
                 # Clamp value between min and max (just incase user drags too big)
                 self.new_value = max(property_min, self.new_value)
                 self.new_value = min(property_max, self.new_value)
 
                 if property_type == "int":
-                    self.new_value = round(self.new_value, 0)
+                    if self.new_value >= 0:
+                        self.new_value = math.floor(self.new_value + 0.5)
+                    else:
+                        self.new_value = math.ceil(self.new_value - 0.5)
 
                 # Update value of this property
                 self.clip_properties_model.value_updated(self.selected_item, -1, self.new_value)
@@ -1099,6 +1186,7 @@ class PropertiesTableView(QTableView):
         # Allow new selection and prepare to set minimum move threshold
         self.lock_selection = False
         self.previous_x = -1
+        self.new_value = None
 
     @pyqtSlot(QColor)
     def color_callback(self, newColor: QColor):
@@ -1191,9 +1279,12 @@ class PropertiesTableView(QTableView):
         self.color_grade_curve_dialogs.add(dialog)
         dialog.destroyed.connect(lambda *_args, dlg=dialog: self.color_grade_curve_dialogs.discard(dlg))
         dialog.curve_widget().curveChanged.connect(
-            lambda value, item=item, key=property_key: self.preview_curve_property_value(item, key, value)
+            lambda value, item=item, key=property_key, dlg=dialog: self.preview_curve_property_value(
+                item, key, value, getattr(dlg, "_item_data", None))
         )
-        dialog.changeStarted.connect(lambda item=item: self.start_property_change(item))
+        dialog.changeStarted.connect(
+            lambda item=item, key=property_key, dlg=dialog: self.start_curve_property_change(
+                item, key, getattr(dlg, "_item_data", None)))
         dialog.changeStarted.connect(self.pause_live_property_caching)
         dialog.changeFinished.connect(self.resume_live_property_caching)
         dialog.changeFinished.connect(self.finish_property_change)
@@ -1776,8 +1867,7 @@ class PropertiesTableView(QTableView):
             self.selected_item = None
 
         if self.selected_item:
-            current_value = QLocale().system().toDouble(self.selected_item.text())[0]
-            self.clip_properties_model.value_updated(self.selected_item, value=current_value)
+            self.clip_properties_model.insert_keyframe(self.selected_item)
 
     def Remove_Action_Triggered(self):
         log.info("Remove_Action_Triggered")
@@ -1913,7 +2003,7 @@ class PropertiesTableView(QTableView):
         self.color_grade_wheels_dock.setWidget(self.color_grade_wheels_scroll)
         self.color_grade_wheels_panel.setEnabled(False)
         self.color_grade_wheels_dock.hide()
-        self.win.addDockWidget(Qt.RightDockWidgetArea, self.color_grade_wheels_dock)
+        self.win.addDocks([self.color_grade_wheels_dock], Qt.RightDockWidgetArea)
         self.color_grade_wheels_panel.wheelsChanged.connect(self.preview_live_property_value)
         self.color_grade_wheels_panel.dragStarted.connect(self._wheels_drag_started)
         self.color_grade_wheels_panel.dragFinished.connect(self._wheels_drag_finished)
@@ -1929,7 +2019,7 @@ class PropertiesTableView(QTableView):
 
     def _ensure_color_grade_wheels_dock_attached(self):
         if self.win.dockWidgetArea(self.color_grade_wheels_dock) == Qt.NoDockWidgetArea:
-            self.win.addDockWidget(Qt.RightDockWidgetArea, self.color_grade_wheels_dock)
+            self.win.addDocks([self.color_grade_wheels_dock], Qt.RightDockWidgetArea)
         if self.color_grade_wheels_dock.isFloating():
             # Only call setFloating(False) when actually floating — calling it
             # unconditionally triggers setWindowFlags → reparentFocusWidgets over
@@ -1939,7 +2029,7 @@ class PropertiesTableView(QTableView):
     def _color_grade_wheels_visibility_changed(self, visible):
         if visible:
             if self.win.dockWidgetArea(self.color_grade_wheels_dock) == Qt.NoDockWidgetArea:
-                self.win.addDockWidget(Qt.RightDockWidgetArea, self.color_grade_wheels_dock)
+                self.win.addDocks([self.color_grade_wheels_dock], Qt.RightDockWidgetArea)
                 # If scope docks are already at bottom-right, split so Wheels sits above them
                 scope_docks = [self.win.dockLumaWaveform,
                                self.win.dockHistogram,

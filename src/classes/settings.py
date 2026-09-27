@@ -222,6 +222,7 @@ class SettingStore(JsonDataStore):
         preserve_keys = [
             'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
             'recent_projects', 'restore_project_path', 'restore_draft_history_key',
+            'custom_views', 'active_custom_view',
         ]
 
         requires_restart = False  # Track if any setting requires a restart

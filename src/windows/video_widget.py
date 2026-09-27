@@ -55,6 +55,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
     regionRectChanged = pyqtSignal()
     scopeRegionCancelled = pyqtSignal()
 
+    def _is_playing(self):
+        try:
+            return get_app().window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            return False
+
     def _snap_angle(self, angle_degrees, step_degrees=15.0):
         """Snap an angle to the nearest increment (degrees)."""
         step = float(step_degrees) if step_degrees else 0.0
@@ -828,7 +834,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             self.mouse_position = event.pos()
             self.middle_pan_active = True
             self.setCursor(Qt.ClosedHandCursor)
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            if not self._is_playing():
+                openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             return
         self.mouse_pressed = True
         self.mouse_dragging = False
@@ -854,7 +861,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.region_press_outside = True
                 self.scope_region_drag_anchor = QPointF(point)
                 self._apply_scope_region_rect(QRectF(point, point), emit_signal=True, enforce_min=False)
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            if not self._is_playing():
+                openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
             log.debug('mousePressEvent: Stop caching frames on timeline')
             return
 
@@ -913,7 +921,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             self.original_effect_data = None
 
         # Disable video caching during drag operation (for performance reasons)
-        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+        if not self._is_playing():
+            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
         log.debug('mousePressEvent: Stop caching frames on timeline')
 
     def mouseReleaseEvent(self, event):
@@ -1212,7 +1221,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 last_point = self._clamp_region_point(self.region_transform_inverted.map(self.mouse_position))
                 diff_x = point.x() - last_point.x()
                 diff_y = point.y() - last_point.y()
-                current_rect = self._scope_region_rect() or QRectF(point, point)
 
                 if self.region_mode == "draw":
                     anchor = self.scope_region_drag_anchor or QPointF(point)
@@ -2116,15 +2124,23 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             source_size.scale(layout_width, layout_height, Qt.IgnoreAspectRatio)
         elif scale_mode == openshot.SCALE_CROP:
             source_size.scale(layout_width, layout_height, Qt.KeepAspectRatioByExpanding)
+        elif scale_mode == openshot.SCALE_NONE:
+            try:
+                project_width = float(get_app().project.get("width") or layout_width)
+                project_height = float(get_app().project.get("height") or layout_height)
+            except Exception:
+                project_width = float(layout_width)
+                project_height = float(layout_height)
+            if project_width > 0.0 and project_height > 0.0:
+                source_size = QSizeF(
+                    source_size.width() * (layout_width / project_width),
+                    source_size.height() * (layout_height / project_height))
 
         source_width = max(source_size.width(), 0.0001)
         source_height = max(source_size.height(), 0.0001)
 
-        # Get per-frame scale factors
         sx = max(float(raw_properties.get('scale_x').get('value')), 0.001)
         sy = max(float(raw_properties.get('scale_y').get('value')), 0.001)
-
-        # Scaled dimensions used for gravity and location offsets
         scaled_width = source_width * sx
         scaled_height = source_height * sy
 
@@ -2132,6 +2148,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         y = layout_y
 
         gravity = clip.data['gravity']
+        anchored_x = 0.0
+        anchored_y = 0.0
         if gravity == openshot.GRAVITY_TOP:
             x += (layout_width - scaled_width) / 2.0
         elif gravity == openshot.GRAVITY_TOP_RIGHT:
