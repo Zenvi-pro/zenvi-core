@@ -33,7 +33,7 @@ import openshot
 
 from classes import info
 from classes.app import get_app
-from classes.path_utils import absolute_media_path
+from classes.path_utils import absolute_media_path, media_paths_equal
 
 
 class QueryObject:
@@ -115,10 +115,20 @@ class QueryObject:
             object_cache = cls._cache.setdefault(OBJECT_TYPE.object_name, {})
             child_id = child.get("id")
 
-            # Cache deep copies by id; reuse within the same project version
+            # Cache deep copies by id; reuse within the same project version.
+            # Waveform sample vectors (ui.audio_data) are shared by reference via
+            # the deepcopy memo — they are large and replaced wholesale, never
+            # mutated in place by the paint path. This keeps drag/edit cheap on
+            # long projects without changing what is written to the project file.
             cached = object_cache.get(child_id)
             if cached is None:
-                cached = copy.deepcopy(child)
+                memo = {}
+                ui = child.get("ui") if isinstance(child, dict) else None
+                if isinstance(ui, dict):
+                    audio = ui.get("audio_data")
+                    if isinstance(audio, list) and audio:
+                        memo[id(audio)] = audio
+                cached = copy.deepcopy(child, memo)
                 object_cache[child_id] = cached
             return cached
 
@@ -274,7 +284,15 @@ class File(QueryObject):
 
     def get(**kwargs):
         """ Take any arguments given as filters, and find the first matching object """
-        return QueryObject.get(File, **kwargs)
+        file_path = kwargs.pop("path", None)
+        if file_path is None:
+            return QueryObject.get(File, **kwargs)
+
+        matching_objects = QueryObject.filter(File, **kwargs)
+        for obj in matching_objects:
+            if media_paths_equal(obj.data.get("path"), file_path):
+                return obj
+        return None
 
     def absolute_path(self):
         """ Get absolute file path of file """

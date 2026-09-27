@@ -185,16 +185,120 @@ class PropertiesTableView(QTableView):
     """ A Properties Table QWidget used on the main window """
     loadProperties = pyqtSignal(list)
 
+    def _is_edit_text(self, event):
+        if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+            return False
+
+        text = event.text()
+        if not text or text.isspace():
+            return False
+
+        return text in "0123456789.,-+"
+
+    def _start_edit_on_key(self, event):
+        key = event.key()
+        is_numeric = self._is_edit_text(event)
+        if key not in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space) and not is_numeric:
+            return False
+
+        index = self.currentIndex()
+        if not index.isValid():
+            return False
+
+        if index.column() != 1:
+            index = index.sibling(index.row(), 1)
+            self.setCurrentIndex(index)
+
+        if not (index.flags() & Qt.ItemIsEditable):
+            return False
+
+        result = self.edit(index, QAbstractItemView.EditKeyPressed, event)
+
+        # For numeric keys, clobber the existing value with the typed character
+        if result and is_numeric:
+            from PyQt5.QtCore import QTimer
+            typed_char = event.text()
+            def set_initial_value():
+                editor = self.indexWidget(index)
+                if editor and hasattr(editor, 'setText'):
+                    editor.setText(typed_char)
+                    editor.setCursorPosition(len(typed_char))
+                elif editor and hasattr(editor, 'lineEdit'):
+                    # For QSpinBox/QDoubleSpinBox
+                    editor.lineEdit().setText(typed_char)
+                    editor.lineEdit().setCursorPosition(len(typed_char))
+            QTimer.singleShot(0, set_initial_value)
+
+        return result
+
     def event(self, event):
-        # intercept the ShortcutOverride so our "." and "," keys
-        # never reach the global QShortcuts when this view has focus
+        # Intercept ShortcutOverride so these keys don't trigger global shortcuts
+        # when this view has focus
         if event.type() == QEvent.ShortcutOverride and self.hasFocus():
             key = event.key()
-            if key in (Qt.Key_Period, Qt.Key_Comma):
+            if key in (Qt.Key_Period, Qt.Key_Comma, Qt.Key_Up, Qt.Key_Down,
+                       Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Escape):
                 event.accept()
                 return True
         # otherwise, default processing
         return super().event(event)
+
+    def closeEditor(self, editor, hint):
+        """Handle editor closing - restore focus to label column."""
+        super().closeEditor(editor, hint)
+        # Restore focus to column 0 (label column) for visible focus indicator
+        current_row = self.currentIndex().row()
+        if current_row >= 0:
+            self.setCurrentIndex(self.clip_properties_model.model.index(current_row, 0))
+
+    def keyPressEvent(self, event):
+        if self._start_edit_on_key(event):
+            return
+
+        # Handle SPACE/ENTER for dropdown properties
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            index = self.currentIndex()
+            if index.isValid():
+                # Ensure we're on the value column
+                if index.column() != 1:
+                    index = index.sibling(index.row(), 1)
+
+                # Check if this is a dropdown/choice property
+                model = self.clip_properties_model.model
+                label_item = model.item(index.row(), 0)
+                if label_item and label_item.data() and isinstance(label_item.data(), tuple):
+                    cur_property = label_item.data()
+                    has_choices = bool(cur_property[1].get("choices"))
+                    property_type = cur_property[1].get("type", "")
+
+                    if has_choices or property_type in ["color", "font"]:
+                        # Show context menu at the center of the value cell
+                        rect = self.visualRect(index)
+                        center = rect.center()
+                        global_pos = self.viewport().mapToGlobal(center)
+                        self._show_property_menu_at(index, global_pos)
+                        return
+
+        super().keyPressEvent(event)
+
+    def _show_property_menu_at(self, index, global_pos):
+        """Show the property context menu at a specific position."""
+        # Create a fake event object that provides the position we want
+        class FakeEvent:
+            def __init__(self, gpos, lpos):
+                self._global_pos = gpos
+                self._local_pos = lpos
+            def globalPos(self):
+                return self._global_pos
+            def pos(self):
+                return self._local_pos
+            def ignore(self):
+                pass
+
+        local_pos = self.viewport().mapFromGlobal(global_pos)
+        fake_event = FakeEvent(global_pos, local_pos)
+        self.contextMenuEvent(fake_event)
 
     def start_transaction(self, item):
         """Start a new undo/redo transaction and cache original values."""
@@ -942,6 +1046,10 @@ class PropertiesTableView(QTableView):
             # There is always at least 1 QAction in an empty menu though
             if len(self.menu.children()) > 1:
                 self.menu.popup(event.globalPos())
+                # Focus the first menu item for keyboard navigation
+                actions = self.menu.actions()
+                if actions:
+                    self.menu.setActiveAction(actions[0])
 
     def build_menu(self, data, parent_menu=None):
         """Build a Context Menu, included nested sub-menus, and divide lists if too large"""
@@ -1064,6 +1172,11 @@ class PropertiesTableView(QTableView):
         self.clip_properties_model.value_updated(self.selected_item, value=choice_value)
         if not self.mouse_pressed:
             self.finalize_transaction()
+
+        # Restore focus to label column (column 0) for visible focus indicator
+        current_row = self.currentIndex().row()
+        if current_row >= 0:
+            self.setCurrentIndex(self.clip_properties_model.model.index(current_row, 0))
 
     def refresh_menu(self):
         """ Ensure we update the menu when our source models change """
@@ -1389,6 +1502,8 @@ class SelectionLabel(QFrame):
         self.lblSelection = QLabel()
         self.lblSelection.setText("<strong>%s</strong>" % _("No Selection"))
         self.btnSelectionName = QPushButton()
+        self.setObjectName("selectionLabel")
+        self.btnSelectionName.setObjectName("btnSelectionName")
         self.btnSelectionName.setVisible(False)
         self.btnSelectionName.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.btnSelectionName.clicked.connect(self.open_menu)

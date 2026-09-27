@@ -446,6 +446,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 TimelineWidget.changed(self, None)
             return
 
+        if ViewClass == TimelineWidget and self._pending_trim_refresh:
+            pending = self._pending_trim_refresh
+            item_id = pending.get("id")
+            if item_id and action and action.key and action.key[0] in ["clips", "transitions"]:
+                if self._action_contains_item_id(action, item_id):
+                    self._apply_pending_trim_refresh()
+
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
             action = action.copy()
@@ -630,9 +637,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Open up QtImageReader for transition Image
-        transition_reader = openshot.QtImageReader(
-            os.path.join(info.PATH, "transitions", "common", "fade.svg"))
+        transition_path = os.path.join(info.PATH, "transitions", "common", "fade.svg")
+        reader_data = self._load_transition_reader_data(transition_path)
+        if not reader_data:
+            log.warning("Unable to load default transition image: %s", transition_path)
+            return
 
         # Generate transition object
         transition_object = openshot.Mask()
@@ -654,7 +663,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "end": transition_details["end"],
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
-            "reader": json.loads(transition_reader.Json()),
+            "reader": reader_data,
+            "fade_audio_hint": True,
             "replace_image": False
         }
 
@@ -1485,7 +1495,23 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         file = File.get(id=file_id)
         if file:
-            file.data = ui_data
+            # Prefer fingerprint cache for file-level waveforms so .zvn stays small.
+            audio_data = None
+            if isinstance(ui_data, dict):
+                audio_data = (ui_data.get("ui") or {}).get("audio_data")
+            fp = file.data.get("fingerprint") if isinstance(file.data, dict) else None
+            if fp and isinstance(audio_data, list):
+                try:
+                    from classes.media_cache import save_waveform
+                    if save_waveform(fp, audio_data):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
+                except Exception:
+                    file.data = ui_data
+            else:
+                file.data = ui_data
             file.save()
 
         # Clear transaction id
@@ -1518,11 +1544,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback when thumbnail needs to be updated"""
         clips = Clip.filter(id=clip_id)
         for clip in clips:
-            # Force thumbnail image to be refreshed (for a particular frame #)
-            GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
-
-            # Pass to javascript timeline (and render)
-            self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
+            if ViewClass == TimelineWidget:
+                # Force regen on the thumbnail worker — never GetThumbPath
+                # (HTTP + disk) on the GUI thread.
+                TimelineWidget.update_thumbnail(
+                    self, clip_id, thumbnail_frame, force_regen=True
+                )
+            else:
+                # Web timeline: refresh disk path, then tell JS to redraw.
+                GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
+                self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
 
     def Split_Audio_Triggered(self, action, clip_ids):
         """Callback for split audio context menus"""
@@ -1908,11 +1939,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     default_zoom_object = json.loads(default_zoom.Json())
                     default_loc = openshot.Point(start_animation, 0.0, openshot.BEZIER)
                     default_loc_object = json.loads(default_loc.Json())
+                    default_origin = openshot.Point(start_animation, 0.5, openshot.BEZIER)
+                    default_origin_object = json.loads(default_origin.Json())
                     clip.data["gravity"] = openshot.GRAVITY_CENTER
                     clip.data["scale_x"] = {"Points": [default_zoom_object]}
                     clip.data["scale_y"] = {"Points": [default_zoom_object]}
+                    clip.data["shear_x"] = {"Points": [default_loc_object]}
+                    clip.data["shear_y"] = {"Points": [default_loc_object]}
+                    clip.data["rotation"] = {"Points": [default_loc_object]}
                     clip.data["location_x"] = {"Points": [default_loc_object]}
                     clip.data["location_y"] = {"Points": [default_loc_object]}
+                    clip.data["origin_x"] = {"Points": [default_origin_object]}
+                    clip.data["origin_y"] = {"Points": [default_origin_object]}
 
                 if action in [
                     MenuAnimate.IN_50_100,
@@ -3497,7 +3535,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Refresh frame to ensure our last frame after scrubbing
         # is the final frame shown. Due to some unknown reason, this
         # is required for an accurate end to srubbing
-        QTimer.singleShot(50, self.window.refreshFrameSignal.emit)
+        QTimer.singleShot(50, lambda: self.window.refreshFrameSignal.emit())
 
     @guarded_slot()
     def DisableCacheThread(self):
@@ -3505,6 +3543,96 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+
+    @guarded_slot()
+    def TrimPreviewMode(self):
+        self.window.TrimPreviewMode.emit()
+
+    @guarded_slot()
+    def TimelinePreviewMode(self):
+        self.window.TimelinePreviewMode.emit()
+
+    @guarded_slot()
+    def BeginTrimRefresh(self):
+        setattr(self.window, "_trim_refresh_pending", True)
+
+    @guarded_slot(str, str)
+    def RefreshTrimmedTimelineItem(self, item_json, edge):
+        try:
+            item_data = json.loads(item_json) if not isinstance(item_json, dict) else item_json
+        except Exception:
+            log.debug("Failed to parse trim JSON data", exc_info=True)
+            return
+
+        setattr(self.window, "_trim_refresh_pending", True)
+        if ViewClass == TimelineWidget:
+            item_id = item_data.get("id")
+            self._pending_trim_refresh = {
+                "id": item_id,
+                "edge": edge,
+                "data": item_data,
+            }
+            QTimer.singleShot(0, self._apply_pending_trim_refresh)
+            return
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
+
+    def _action_contains_item_id(self, action, item_id):
+        if not action or not item_id:
+            return False
+        for part in action.key or []:
+            if isinstance(part, dict) and part.get("id") == item_id:
+                return True
+        values = getattr(action, "values", None)
+        if isinstance(values, dict) and values.get("id") == item_id:
+            return True
+        return False
+
+    def _apply_pending_trim_refresh(self):
+        pending = self._pending_trim_refresh
+        if not pending:
+            return
+        self._pending_trim_refresh = None
+        item_data = pending.get("data") or {}
+        edge = pending.get("edge")
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
 
     @guarded_slot(str, int)
     def PreviewClipFrame(self, clip_id, frame_number):
@@ -3575,6 +3703,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @guarded_slot(int)
     def movePlayhead(self, position_frames):
         """ Move the playhead since the position has changed inside OpenShot (probably due to the video player) """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.update_playhead_pos(self, position_frames)
+            return
         # Get access to timeline scope and set scale to zoom slider value (passed in)
         self.run_js(JS_SCOPE_SELECTOR + ".movePlayheadToFrame(%s);" % (str(position_frames)))
 
@@ -3617,11 +3748,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     @guarded_slot(str)
     def SetPropertyFilter(self, property):
         """ Filter a specific property name """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.set_property_filter(self, property)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".setPropertyFilter('%s');" % property)
 
     @guarded_slot(int)
     def SetPlayheadFollow(self, enable_follow):
         """ Enable / Disable playhead follow on seek """
+        if ViewClass == TimelineWidget:
+            TimelineWidget.set_playhead_follow(self, enable_follow)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".setFollow({});".format(int(enable_follow)))
 
     @guarded_slot(str, str, bool)
@@ -3642,6 +3779,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def AddSelectionJS(self, item_id, item_type, clear_existing=False):
         """Invoke JavaScript selection routine"""
+        if ViewClass == TimelineWidget:
+            TimelineWidget._select_timeline_item(self, item_id, item_type, clear_existing)
+            return
         clear_js = 'true' if clear_existing else 'false'
         if item_type == "clip":
             self.run_js(JS_SCOPE_SELECTOR + ".selectClip('{}', {}, null);".format(item_id, clear_js))
@@ -3680,6 +3820,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def update_scroll(self, newScroll):
         """Force a scroll event on the timeline (i.e. the zoom slider is moving, so we need to scroll the timeline)"""
+        if ViewClass == TimelineWidget:
+            # Native also connects TimelineScroll → set_scroll_left; keep an
+            # explicit path so TimelineView.update_scroll stays correct if the
+            # signal wiring changes.
+            TimelineWidget.set_scroll_left(self, newScroll)
+            return
         # Get access to timeline scope and set scale to new computed value
         self.run_js(JS_SCOPE_SELECTOR + ".setScroll(" + str(newScroll) + ");")
 
@@ -3703,13 +3849,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Start or restart timer to redraw audio
             self.redraw_audio_timer.start()
 
-        # Only update scale if different
-        current_scale = float(get_app().project.get("scale") or 15.0)
+        # Only update scale if different. Normalize to avoid startup float noise
+        # such as 14.999999999999998 vs 15.0 from dirtying a fresh project.
+        current_scale = round(float(get_app().project.get("scale") or 15.0), 6)
+        new_scale = round(float(newScale), 6)
 
         # Save current zoom
-        if newScale != current_scale:
+        if abs(new_scale - current_scale) > 1e-6:
             get_app().updates.ignore_history = True
-            get_app().updates.update(["scale"], newScale)
+            get_app().updates.update(["scale"], new_scale)
             get_app().updates.ignore_history = False
 
     # An item is being dragged onto the timeline (mouse is entering the timeline now)
@@ -3727,6 +3875,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Initialize a list to hold file data (either from mime data or newly created files)
         data_list = []
         initial_pos = event.posF()
+        drop_tid = None
 
         # Get FPS and scaling information
         fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
@@ -3737,6 +3886,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.item_type = "clip"
             urls = urls_from_mime(event.mimeData())
 
+            # One gesture: import + place clips share this tid (process_urls nests).
+            drop_tid = self.get_uuid()
+            get_app().updates.transaction_id = drop_tid
             imported = get_app().window.files_model.process_urls(
                 urls, import_quietly=True, prevent_image_seq=True
             ) or []
@@ -3764,8 +3916,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Nested callback to handle JavaScript position response
         def handle_js_position(pos, js_position_data):
-            # Group drag/drop transactions
-            tid = self.get_uuid()
+            # Group drag/drop transactions (reuse OS-drop tid when present)
+            tid = drop_tid if drop_tid else self.get_uuid()
             get_app().updates.transaction_id = tid
 
             js_position = snap_to_grid(js_position_data.get('position', 0.0))
@@ -3790,6 +3942,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Adjust position for the next clip/transition
                 if new_item:
                     pos += QPointF(new_item["end"] - new_item["start"], 0)
+
+            get_app().updates.transaction_id = None
 
             # After all items are added, initialize manual move once for the group
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
@@ -3916,8 +4070,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
         duration = snap_to_grid(get_app().get_settings().get("default-transition-length"))
 
-        # Open up QtImageReader for transition Image
-        transition_reader = openshot.QtImageReader(file_path)
+        reader_data = self._load_transition_reader_data(file_path)
+        if not reader_data:
+            log.warning("Unable to add transition, invalid reader path: %s", file_path)
+            return None
 
         # Create Keyframes for brightness and contrast
         brightness = openshot.Keyframe()
@@ -3937,7 +4093,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "end": duration,
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
-            "reader": json.loads(transition_reader.Json()),
+            "reader": reader_data,
             "replace_image": False
         }
 
@@ -3951,6 +4107,37 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if call_manual_move:
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}','{}');".format(self.item_type, json.dumps(self.item_ids)))
         return transition_data
+
+    def _load_transition_reader_data(self, file_path):
+        """Build transition reader JSON, with a platform-safe fallback path."""
+        if not file_path:
+            return None
+        if not os.path.exists(file_path):
+            log.warning("Transition file does not exist: %s", file_path)
+            return None
+
+        try:
+            transition_reader = openshot.QtImageReader(file_path)
+            return json.loads(transition_reader.Json())
+        except Exception:
+            log.debug("QtImageReader failed for transition: %s", file_path, exc_info=1)
+
+        clip = None
+        try:
+            clip = openshot.Clip(file_path)
+            reader = clip.Reader()
+            if reader:
+                return json.loads(reader.Json())
+        except Exception:
+            log.debug("Clip reader fallback failed for transition: %s", file_path, exc_info=1)
+        finally:
+            if clip:
+                try:
+                    clip.Close()
+                except Exception:
+                    pass
+
+        return None
 
     # Add Effect
     def addEffect(self, effect_names, event_position):
@@ -3976,6 +4163,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 ):
                     log.info("Applying effect {} to clip ID {}".format(name, clip.id))
                     log.debug(clip)
+                    original_clip_data = json.loads(json.dumps(clip.data))
 
                     # Handle custom effect dialogs
                     if name in effect_options:
@@ -4024,6 +4212,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                     # Update clip data for project
                     self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                    get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Find position from javascript
         self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
@@ -4062,6 +4251,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not effect_name:
             return
         log.info("Applying effect %s to clip ID %s", effect_name, clip.id)
+        original_clip_data = json.loads(json.dumps(clip.data))
         if effect_name in effect_options:
             effect_params = effect_options.get(effect_name)
             from windows.process_effect import ProcessEffect
@@ -4090,6 +4280,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.data["effects"] = effects
         effects.append(effect_json)
         self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+        get_app().updates.apply_last_action_to_history(original_clip_data)
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):
@@ -4126,6 +4317,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Update most recent clip or transition
             self.run_js(JS_SCOPE_SELECTOR + ".updateRecentItemJSON('{}', '{}', '{}');"
                         .format(self.item_type, json.dumps(self.item_ids), get_app().updates.transaction_id))
+            # Keep Delete scoped to timeline items after drop, not project files.
+            files_model = getattr(self.window, "files_model", None)
+            if files_model:
+                files_model.selection_model.clearSelection()
+                files_model.list_selection_model.clearSelection()
+            self.setFocus(Qt.OtherFocusReason)
 
         # Cleanup after drop
         self.new_item = False
@@ -4165,6 +4362,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Timer is ready to redraw audio (if any)"""
         log.debug('redraw_audio_onTimeout')
 
+        if ViewClass == TimelineWidget:
+            TimelineWidget.redraw_audio_data(self)
+            return
         # Pass to javascript timeline (and render)
         self.run_js(JS_SCOPE_SELECTOR + ".reDrawAllAudioData();")
 
@@ -4226,6 +4426,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
+        if ViewClass == TimelineWidget:
+            TimelineWidget.handle_selection(self)
+            return
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
 
     def __init__(self, window):
@@ -4239,6 +4442,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.setAcceptDrops(True)
         self.last_position_frames = None
         self.context_menu_cursor_position = None
+        self._pending_trim_refresh = None
 
         # Get logger
         self.log_fn = log.log

@@ -148,6 +148,36 @@
     "setting": "recent_projects"
   },
   {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "restore_project_path"
+  },
+  {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "restore_draft_history_key"
+  },
+  {
+    "value": [],
+    "title": "",
+    "type": "hidden",
+    "category": "UI",
+    "setting": "media-roots"
+  },
+  {
+    "max": 8192,
+    "title": "Media Cache Limit (MB)",
+    "category": "Cache",
+    "min": 64,
+    "setting": "media-cache-limit-mb",
+    "value": 2048,
+    "type": "spinner-int"
+  },
+  {
     "value": "HD 720p 30 fps",
     "title": "Default Profile",
     "category": "Preview",
@@ -262,7 +292,7 @@
     "category": "Autosave",
     "min": 0,
     "setting": "history-limit",
-    "value": 15,
+    "value": 50,
     "type": "spinner-int"
   },
   {
@@ -314,7 +344,7 @@
     "min": 0.0,
     "max": 1.0,
     "step": 0.1,
-    "value": 0.7,
+    "value": 0.5,
     "title": "Cache Ahead (Percent)",
     "type": "spinner",
     "category": "Cache",
@@ -323,7 +353,7 @@
   {
     "min": 0,
     "max": 1024,
-    "value": 600,
+    "value": 900,
     "title": "Cache Max Frames",
     "type": "spinner-int",
     "category": "Cache",
@@ -332,7 +362,7 @@
   {
     "min": 0,
     "max": 9999999,
-    "value": 512,
+    "value": 768,
     "title": "Cache Limit (MB)",
     "type": "spinner-int",
     "category": "Cache",
@@ -439,11 +469,11 @@
     "setting": "automatic_transitions"
   },
   {
-    "value": false,
-    "title": "Enable Experimental Timeline",
+    "value": true,
+    "title": "Native timeline",
     "type": "bool",
     "restart": true,
-    "category": "Experimental",
+    "category": "Timeline",
     "setting": "qwidget-based-timeline"
   },
   {
@@ -451,7 +481,7 @@
     "title": "Thumbnail Style",
     "type": "dropdown",
     "restart": false,
-    "category": "Experimental",
+    "category": "Timeline",
     "dependency": "qwidget-based-timeline",
     "setting": "timeline-thumbnail-style",
     "translate_values": true,
@@ -543,20 +573,20 @@
     "restart": false
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 128,
     "value": 12,
-    "title": "OMP Threads (0 = Default)",
+    "title": "OMP Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
     "setting": "omp_threads_number"
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 16,
     "value": 8,
-    "title": "FFmpeg Threads (0 = Default)",
+    "title": "FFmpeg Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
@@ -565,7 +595,7 @@
   {
     "min": 0,
     "max": 16000,
-    "value": 1950,
+    "value": 8192,
     "title": "Hardware Decoder Max Width (0 = Default)",
     "type": "spinner-int",
     "restart": true,
@@ -575,7 +605,7 @@
   {
     "min": 0,
     "max": 16000,
-    "value": 1100,
+    "value": 4320,
     "title": "Hardware Decoder Max Height (0 = Default)",
     "type": "spinner-int",
     "restart": true,
@@ -584,6 +614,70 @@
   },
   {
     "value": false,
+    "title": "Hardware Auto Detect Applied",
+    "type": "hidden",
+    "category": "Performance",
+    "setting": "hardwareAutoDetectApplied",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Pipelined Export (overlap composite and encode)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportPipelined",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Parallel Composite Workers (Experimental)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportParallelComposite",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Smart Render (stream-copy untouched clips)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportSmartRender",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Prefer Hardware Encoder for Headless/Agent Export",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "exportPreferHardwareEncoder",
+    "restart": false
+  },
+  {
+    "value": true,
+    "title": "Background Cache Warming While Idle",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundCacheWarming",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Background Disk Render Files (Experimental, Off by Default)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundDiskRenders",
+    "restart": false
+  },
+  {
+    "value": false,
+    "title": "Reuse Background Renders on Export (Experimental)",
+    "type": "bool",
+    "category": "Performance",
+    "setting": "backgroundRenderReuseOnExport",
+    "restart": false
+  },
+  {
+    "value": true,
     "title": "Use Blender GPU rendering for Animated Titles (Experimental)",
     "type": "bool",
     "restart": false,
