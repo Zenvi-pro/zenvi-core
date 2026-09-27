@@ -30,9 +30,9 @@ import functools
 import json
 from copy import deepcopy
 
-from PyQt5.QtCore import pyqtSignal, QTimer
-from PyQt5.QtWidgets import QDialog, QMessageBox, QSizePolicy, QSlider
-from PyQt5.QtCore import Qt, QEvent
+from qt_api import pyqtSignal, QTimer
+from qt_api import QDialog, QMessageBox, QSizePolicy, QSlider
+from qt_api import Qt, QEvent
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info, ui_util, time_parts
@@ -65,7 +65,7 @@ class Cutting(QDialog):
         _ = get_app()._tr
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -207,7 +207,7 @@ class Cutting(QDialog):
         self.initialized = True
 
     def eventFilter(self, obj, event):
-        if event.type() == event.KeyPress and obj is self.txtName:
+        if event.type() == QEvent.KeyPress and obj is self.txtName:
             # Handle ENTER key to create new clip
             if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
                 if self.btnAddClip.isEnabled():

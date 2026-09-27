@@ -28,7 +28,7 @@
 import os
 
 import openshot
-from PyQt5.QtWidgets import QDialog, QMessageBox
+from qt_api import QDialog, QMessageBox
 from classes import ui_util, info, tabstops
 from classes.app import get_app
 from classes.logger import log
@@ -43,7 +43,7 @@ class EditProfileDialog(QDialog):
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'profile-edit.ui')
 
     def __init__(self, profile, duplicate):
-        super(EditProfileDialog, self).__init__()
+        super().__init__()
 
         # Make copy of profile
         self.original_profile = profile.Json()

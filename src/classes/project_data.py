@@ -34,7 +34,7 @@ import random
 import shutil
 import json
 
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from qt_api import QFileDialog, QMessageBox
 
 from classes import info
 from classes.app import get_app

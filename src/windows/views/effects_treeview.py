@@ -25,14 +25,15 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt, QSize, QPoint
-from PyQt5.QtGui import QDrag
-from PyQt5.QtWidgets import QTreeView, QAbstractItemView, QSizePolicy
+from qt_api import Qt, QSize, QPoint
+from qt_api import clear_override_cursor
+from qt_api import QDrag
+from qt_api import QTreeView, QAbstractItemView, QSizePolicy
 
 from classes import info
 from classes.app import get_app
 from classes.logger import log
-from .menu import StyledContextMenu
+from .menu import StyledContextMenu, add_bound_action
 
 
 class EffectsTreeView(QTreeView):
@@ -44,11 +45,12 @@ class EffectsTreeView(QTreeView):
         # Set context menu mode
         event.accept()
         app = get_app()
+        self.win = app.window
         app.context_menu_object = "effects"
 
         menu = StyledContextMenu(parent=self)
-        menu.addAction(self.win.actionThumbnailView)
-        menu.popup(event.globalPos())
+        add_bound_action(menu, self.win, "actionThumbnailView", app._tr("Thumbnail View"), "actionThumbnailView_trigger")
+        menu.show_at(event)
 
     def startDrag(self, supportedActions):
         """ Override startDrag method to display custom icon """
@@ -74,7 +76,11 @@ class EffectsTreeView(QTreeView):
         drag.setMimeData(self.model().mimeData(selected))
         drag.setPixmap(icon.pixmap(self.drag_item_size))
         drag.setHotSpot(self.drag_item_center)
-        drag.exec_()
+        exec_fn = getattr(drag, "exec", None) or getattr(drag, "exec_", None)
+        if exec_fn is None:
+            raise AttributeError("QDrag has no exec_/exec method")
+        exec_fn()
+        clear_override_cursor()
 
     def refresh_columns(self):
         """Hide certain columns"""

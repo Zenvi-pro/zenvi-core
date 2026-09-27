@@ -4,8 +4,8 @@ import os
 import re
 from typing import Callable, Optional, Sequence, Tuple, Union
 
-from PyQt5.QtCore import QFile, QByteArray
-from PyQt5.QtGui import QColor, QPixmap
+from qt_api import QFile, QByteArray
+from qt_api import QColor, QPixmap
 from classes.logger import log
 from classes.info import PATH
 

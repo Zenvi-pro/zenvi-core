@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QState, QStateMachine
+from qt_api import QState, QStateMachine
 
 
 class DragState(QState):

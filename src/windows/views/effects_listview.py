@@ -25,14 +25,15 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QSize, QPoint, Qt, QRegExp
-from PyQt5.QtGui import QDrag
-from PyQt5.QtWidgets import QListView, QAbstractItemView
+from qt_api import QSize, QPoint, Qt
+from qt_api import clear_override_cursor
+from qt_api import QDrag
+from qt_api import QListView, QAbstractItemView
 
 from classes import info
 from classes.app import get_app
 from classes.logger import log
-from .menu import StyledContextMenu
+from .menu import StyledContextMenu, add_bound_action
 
 
 class EffectsListView(QListView):
@@ -43,11 +44,12 @@ class EffectsListView(QListView):
     def contextMenuEvent(self, event):
         # Set context menu mode
         app = get_app()
+        self.win = app.window
         app.context_menu_object = "effects"
 
         menu = StyledContextMenu(parent=self)
-        menu.addAction(self.win.actionDetailsView)
-        menu.popup(event.globalPos())
+        add_bound_action(menu, self.win, "actionDetailsView", app._tr("Details View"), "actionDetailsView_trigger")
+        menu.show_at(event)
 
     def startDrag(self, event):
         """ Override startDrag method to display custom icon """
@@ -73,7 +75,11 @@ class EffectsListView(QListView):
         drag.setMimeData(self.model().mimeData(selected))
         drag.setPixmap(icon.pixmap(self.drag_item_size))
         drag.setHotSpot(self.drag_item_center)
-        drag.exec_()
+        exec_fn = getattr(drag, "exec", None) or getattr(drag, "exec_", None)
+        if exec_fn is None:
+            raise AttributeError("QDrag has no exec_/exec method")
+        exec_fn()
+        clear_override_cursor()
 
     def filter_changed(self):
         self.refresh_view()
@@ -82,9 +88,12 @@ class EffectsListView(QListView):
         """Filter transitions with proxy class"""
         filter_text = self.win.effectsFilter.text()
         # Apply filter to the source proxy model (not the single-column wrapper)
-        self.effects_model.proxy_model.setFilterRegExp(QRegExp(filter_text.replace(' ', '.*')))
+        from qt_api import make_filter_regex, set_proxy_filter
+        pattern = filter_text.replace(' ', '.*')
+        regex = make_filter_regex(pattern, case_insensitive=True)
+        set_proxy_filter(self.effects_model.proxy_model, regex)
         self.effects_model.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.effects_model.proxy_model.sort(Qt.AscendingOrder)
+        self.effects_model.proxy_model.sort(0, Qt.AscendingOrder)
 
     def __init__(self, model):
         # Invoke parent init
@@ -108,6 +117,8 @@ class EffectsListView(QListView):
         self.selectionModel().deleteLater()
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        if hasattr(self, "setSelectionRectVisible"):
+            self.setSelectionRectVisible(False)
         self.setSelectionModel(self.effects_model.list_selection_model)
 
         # Setup header columns

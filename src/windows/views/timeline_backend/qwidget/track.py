@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
+from qt_api import QRectF
 from classes.app import get_app
 
 TRACK_TOOLBAR_SPACING_REDUCTION = 2.0
@@ -185,6 +185,8 @@ class TrackInteractionMixin:
 
     def _track_toolbar_button_at(self, pos):
         self.geometry.ensure()
+        if hasattr(pos, "toPointF"):
+            pos = pos.toPointF()
         for _track_rect, track, name_rect in self.geometry.iter_tracks():
             for button in self._track_toolbar_buttons(track, name_rect):
                 if button["rect"].contains(pos):
@@ -309,6 +311,8 @@ class TrackInteractionMixin:
     def _update_toolbar_pressed_state(self, pos):
         if not self._toolbar_pressed_key:
             return
+        if hasattr(pos, "toPointF"):
+            pos = pos.toPointF()
         button = self._get_toolbar_button(*self._toolbar_pressed_key)
         inside = bool(button and button.get("rect") and button["rect"].contains(pos))
         if inside != self._toolbar_pressed_inside:

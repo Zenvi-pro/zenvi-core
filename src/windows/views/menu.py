@@ -25,11 +25,16 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtWidgets import QMenu
-from PyQt5.QtGui import QPainter, QPen, QColor
-from PyQt5.QtCore import Qt, QRectF
-from classes.app import get_app
+import logging
 import re
+
+from qt_api import QMenu, isdeleted
+from qt_api import QPainter, QPen, QColor
+from qt_api import Qt, QRectF
+from classes.app import get_app
+
+
+logger = logging.getLogger(__name__)
 
 
 class StyledContextMenu(QMenu):
@@ -38,6 +43,25 @@ class StyledContextMenu(QMenu):
         self.app = get_app()
         self.border = self.get_border()
         self.border_radius = self.get_border_radius()
+
+    def show_at(self, event_or_pos):
+        """Show the menu at a position or context menu event."""
+        pos = event_or_pos
+        if hasattr(event_or_pos, "globalPosition"):
+            try:
+                pos = event_or_pos.globalPosition().toPoint()
+            except Exception:
+                pos = event_or_pos
+        if hasattr(event_or_pos, "globalPos"):
+            try:
+                pos = event_or_pos.globalPos()
+            except Exception:
+                pos = event_or_pos
+        exec_fn = getattr(self, "exec", None) or getattr(self, "exec_", None)
+        if exec_fn:
+            exec_fn(pos)
+        else:
+            self.popup(pos)
 
     def get_border(self):
         """Parses border width and color from app.styleSheet()"""
@@ -83,3 +107,49 @@ class StyledContextMenu(QMenu):
             painter.drawRoundedRect(rect, self.border_radius.get('x'), self.border_radius.get('y'), Qt.AbsoluteSize)
 
         painter.end()
+
+
+def _resolve_live_owner(owner):
+    """Resolve a live QObject owner for menu action metadata/trigger lookup."""
+    if owner is None:
+        return get_app().window
+    try:
+        if not isdeleted(owner):
+            return owner
+    except Exception:
+        return get_app().window
+    return get_app().window
+
+
+def add_bound_action(menu, owner, action_name, fallback_text, callback=None, enabled=None):
+    """Add a fresh menu-owned action and resolve the current slot at trigger time."""
+    owner = _resolve_live_owner(owner)
+    source_action = getattr(owner, action_name, None)
+    label = fallback_text
+    icon = None
+    if source_action is not None:
+        try:
+            if not isdeleted(source_action):
+                label = source_action.text() or fallback_text
+                icon = source_action.icon()
+                if enabled is None:
+                    enabled = source_action.isEnabled()
+        except Exception as exc:
+            logger.debug("menu: failed to read source action metadata for %s: %s", action_name, exc, exc_info=True)
+    action = menu.addAction(icon, label) if icon and not icon.isNull() else menu.addAction(label)
+    if enabled is not None:
+        action.setEnabled(bool(enabled))
+
+    def trigger_slot():
+        live_owner = _resolve_live_owner(owner)
+        live_callback = callback
+        if isinstance(callback, str):
+            live_callback = getattr(live_owner, callback, None)
+        if live_callback is None:
+            live_callback = getattr(live_owner, f"{action_name}_trigger", None)
+        if live_callback is None:
+            raise AttributeError(f"Unable to resolve callback for {action_name}")
+        live_callback()
+
+    action.triggered.connect(lambda checked=False: trigger_slot())
+    return action

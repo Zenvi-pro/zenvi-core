@@ -22,7 +22,7 @@ from contextlib import contextmanager
 
 from classes import crash_handler
 
-from PyQt5.QtCore import pyqtSlot
+from qt_api import pyqtSlot
 
 # Value handed back to JS when a slot raises, by declared return type.  Both
 # spellings pyqtSlot accepts are covered: a Python type and a Qt type name.

@@ -28,7 +28,7 @@
 import os
 from classes import info
 from classes.app import get_app
-from PyQt5.QtWidgets import QMessageBox, QFileDialog
+from qt_api import QMessageBox, QFileDialog
 
 # Keep track of all previously checked paths, and keep checking them
 known_paths = [info.HOME_PATH]

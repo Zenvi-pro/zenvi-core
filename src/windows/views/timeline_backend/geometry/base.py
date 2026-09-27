@@ -27,7 +27,7 @@
 
 from bisect import bisect_left
 
-from PyQt5.QtCore import QPointF, QRectF
+from qt_api import QPointF, QRectF
 
 from classes.app import get_app
 from classes.logger import log

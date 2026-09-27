@@ -30,14 +30,15 @@ import math
 import time
 import uuid
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QCoreApplication, QMutex, QTimer,
-    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot,
+    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot, QLineF,
 )
-from PyQt5.QtGui import (
+from qt_api import modifiers_has
+from qt_api import (
     QTransform, QPainter, QIcon, QColor, QPen, QBrush, QCursor, QImage, QRegion
 )
-from PyQt5.QtWidgets import QSizePolicy, QWidget, QPushButton
+from qt_api import QSizePolicy, QWidget, QPushButton
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
@@ -361,7 +362,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             center = origin_rect.center()
             halfW = QPointF(origin_rect.width() * 0.75, 0)
             halfH = QPointF(0, origin_rect.height() * 0.75)
-            painter.drawLines(center - halfW, center + halfW, center - halfH, center + halfH)
+            painter.drawLines([
+                QLineF(center - halfW, center + halfW),
+                QLineF(center - halfH, center + halfH),
+            ])
 
         painter.resetTransform()
 
@@ -655,7 +659,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     cross_h = self.cropOriginHandleScreen.height() * 0.75
                     halfW = QPointF(cross_w / 2.0, 0)
                     halfH = QPointF(0, cross_h / 2.0)
-                    painter.drawLines(c - halfW, c + halfW, c - halfH, c + halfH)
+                    painter.drawLines([
+                        QLineF(c - halfW, c + halfW),
+                        QLineF(c - halfH, c + halfH),
+                    ])
 
             # Region selection UI (also uses global opacity)
             if self.region_enabled:
@@ -717,7 +724,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         return viewport_rect.toAlignedRect()
 
     @pyqtSlot(QImage)
-    def present(self, image):
+    def present(self, image, *args):
         """ Present the current frame (QImage slot for QueuedConnection / invokeMethod). """
 
         # Calculate "render" / "present" FPS
@@ -865,6 +872,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def rotateCursor(self, pixmap, rotation, shear_x, shear_y):
         """Rotate cursor based on the current transform"""
+        fallback = None
+        if isinstance(pixmap, tuple):
+            pixmap, fallback = pixmap
+        if pixmap is None or pixmap.isNull():
+            if fallback is None:
+                fallback = Qt.ArrowCursor
+            return QCursor(fallback)
         rotated_pixmap = pixmap.transformed(
             QTransform().rotate(rotation).shear(shear_x, shear_y).scale(0.8, 0.8),
             Qt.SmoothTransformation)
@@ -1198,7 +1212,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     elif self.transform_mode == 'scale_right':
                         scale_x += x_motion / half_w
 
-                    if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+                    if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
                         # If CTRL key is pressed, fix the scale_y to the correct aspect ratio
                         if scale_x:
                             scale_y = scale_x
@@ -1408,7 +1422,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         elif self.transform_mode == 'scale_right':
                             scale_x += x_motion / half_w
 
-                        if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+                        if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
                             # If CTRL key is pressed, fix the scale_y to the correct aspect ratio
                             if scale_x:
                                 scale_y = scale_x
@@ -2056,7 +2070,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         """watch_project: watch for changes in project size / widget size, and
         continue to match the current project's aspect ratio."""
         # Invoke parent init
-        QWidget.__init__(self, *args)
+        super().__init__(*args)
 
         # Translate object
         _ = get_app()._tr
@@ -2125,6 +2139,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Load icon (using display DPI)
         self.cursors = {}
+        cursor_fallbacks = {
+            "move": Qt.SizeAllCursor,
+            "resize_x": Qt.SizeHorCursor,
+            "resize_y": Qt.SizeVerCursor,
+            "resize_bdiag": Qt.SizeBDiagCursor,
+            "resize_fdiag": Qt.SizeFDiagCursor,
+            "rotate": Qt.CrossCursor,
+            "shear_x": Qt.SizeHorCursor,
+            "shear_y": Qt.SizeVerCursor,
+            "hand": Qt.OpenHandCursor,
+        }
         for cursor_name in ["move",
                             "resize_x",
                             "resize_y",
@@ -2135,7 +2160,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             "shear_y",
                             "hand"]:
             icon = QIcon(":/cursors/cursor_%s.png" % cursor_name)
-            self.cursors[cursor_name] = icon.pixmap(32, 32)
+            pixmap = icon.pixmap(32, 32)
+            if pixmap.isNull() or pixmap.size().isEmpty():
+                pixmap = None
+            self.cursors[cursor_name] = (pixmap, cursor_fallbacks[cursor_name])
 
         # Mutex lock
         self.mutex = QMutex()

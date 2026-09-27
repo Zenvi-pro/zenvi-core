@@ -41,14 +41,14 @@ try:
 except ImportError:
     from xml.dom import minidom as xml
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QObject, pyqtSlot, pyqtSignal, QThread, QTimer, QSize,
 )
-from PyQt5.QtWidgets import (
+from qt_api import (
     QApplication, QListView, QMessageBox,
     QComboBox, QDoubleSpinBox, QLabel, QPushButton, QLineEdit, QPlainTextEdit,
 )
-from PyQt5.QtGui import QColor, QImage, QPixmap, QIcon
+from qt_api import QColor, QImage, QPixmap, QIcon
 
 from classes import info
 from classes.logger import log

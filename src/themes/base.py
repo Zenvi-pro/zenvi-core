@@ -27,10 +27,10 @@
 import os
 import re
 
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
-from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtWidgets import QTabWidget, QWidget, QSizePolicy
+from qt_api import Qt, QSize
+from qt_api import QColor, QIcon, QPixmap, QPainter
+from qt_api import QSvgRenderer
+from qt_api import QTabWidget, QWidget, QSizePolicy
 
 from classes import ui_util
 from classes.info import PATH
@@ -181,8 +181,14 @@ QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_lib
         """Iterate through toolbar button settings, and apply them to each button.
         [{"text": "", "icon": ""},...]
         """
-        # List of colors for demonstration
-        toolbar.clear()
+        from qt_api import QT_API, isdeleted
+
+        # Clear toolbar without deleting actions on PySide6
+        if QT_API == "pyside6":
+            for action in list(toolbar.actions()):
+                toolbar.removeAction(action)
+        else:
+            toolbar.clear()
 
         # Set icon size
         qsize_icon = QSize(icon_size, icon_size)
@@ -230,6 +236,8 @@ QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_lib
 
             # Create button from action
             if button_action:
+                if QT_API == "pyside6" and isdeleted(button_action):
+                    continue
                 toolbar.addAction(button_action)
                 button_action.setVisible(button_visible)
                 button = toolbar.widgetForAction(button_action)
@@ -248,7 +256,7 @@ QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_lib
         # Apply the stylesheet to the entire application
         from classes import info
         from classes.logger import log
-        from PyQt5.QtGui import QFont, QFontDatabase
+        from qt_api import QFont, QFontDatabase
 
         if not self.app.theme_manager:
             log.warning("ThemeManager not initialized yet. Skip applying a theme.")

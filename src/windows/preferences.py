@@ -31,14 +31,14 @@ import operator
 import functools
 import platform
 
-from PyQt5.QtCore import Qt, QSize, QDir
-from PyQt5.QtWidgets import (
-    QWidget, QDialog, QMessageBox, QFileDialog,
+from qt_api import Qt, QSize, QDir
+from qt_api import (
+    QWidget, QDialog, QMessageBox, QFileDialog, QDialogButtonBox,
     QVBoxLayout, QHBoxLayout, QSizePolicy,
     QScrollArea, QLabel, QLineEdit, QPushButton,
     QDoubleSpinBox, QComboBox, QCheckBox, QSpinBox, QStyle,
 )
-from PyQt5.QtGui import QKeySequence, QIcon
+from qt_api import QKeySequence, QIcon
 
 from classes import info, ui_util, tabstops
 from classes import openshot_rc  # noqa
@@ -60,7 +60,7 @@ class Preferences(QDialog):
     def __init__(self):
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -154,7 +154,7 @@ class Preferences(QDialog):
 
         self._apply_tab_order()
 
-    def txtSearch_changed(self):
+    def txtSearch_changed(self, *_args):
         """textChanged event handler for search box"""
         log.info("Search for %s", self.txtSearch.text())
 
@@ -542,7 +542,11 @@ class Preferences(QDialog):
             tabstops.apply_auto_tab_order_later(self)
             return
 
-        ordered = [self.txtSearch, self.tabCategories]
+        # Ensure the scroll area is part of the focus chain (Qt6 is stricter)
+        if current_tab.focusProxy() is None and content_widget is not None:
+            current_tab.setFocusProxy(content_widget)
+
+        ordered = [self.txtSearch, self.tabCategories, current_tab]
         ordered.extend(
             tabstops.collect_focusable_from_layout(
                 content_widget.layout(), self, include_hidden=True

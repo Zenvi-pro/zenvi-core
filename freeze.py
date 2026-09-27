@@ -28,10 +28,10 @@
 # Syntax to build redistributable package:  python3 freeze.py build
 #
 # Troubleshooting: If you encounter an error while attempting to freeze
-# the PyQt5/uic/port_v2, remove the __init__.py in that folder. And if
-# you are manually compiling PyQt5 on Windows, remove the -strip line
+# the Qt binding's uic/port_v2 folder, remove the __init__.py in that folder. And if
+# you are manually compiling the Qt binding on Windows, remove the -strip line
 # from the Makefile. On Mac, just delete the port_v2 folder. Also, you
-# might need to remove the QtTest.so from /usr/local/lib/python3.3/site-packages/PyQt5,
+# might need to remove the QtTest module from the active Qt binding's site-packages,
 # if you get errors while freezing.
 #
 # Mac Syntax to Build App Bundle:
@@ -60,10 +60,12 @@ import json
 from shutil import copytree, rmtree, copy
 from cx_Freeze import setup, Executable
 import cx_Freeze
-from PyQt5.QtCore import QLibraryInfo
 import shutil
 from installer.version_parser import parse_version_info, parse_build_name
 
+PATH = os.path.dirname(os.path.realpath(__file__))  # Primary openshot folder
+sys.path.insert(0, os.path.join(PATH, "src"))
+from qt_api import QLibraryInfo, QT_API
 
 print (str(cx_Freeze))
 
@@ -79,6 +81,12 @@ _zenvi_openshot_pyroot = os.getenv("ZENVI_OPENSHOT_PYROOT")
 # The openshot files are discovered via direct filesystem scan below and copied
 # into the frozen build post-build — no import is needed at build time.
 
+QT_BINDING_PACKAGE = {
+    "pyqt5": "PyQt{}".format(5),
+    "pyqt6": "PyQt{}".format(6),
+    "pyside6": "PySide{}".format(6),
+}.get(QT_API, "PyQt{}".format(5))
+
 # Set '${ARCHLIB}' envvar to override system library path
 ARCHLIB = os.getenv('ARCHLIB', "/usr/lib/x86_64-linux-gnu/")
 if not ARCHLIB.endswith('/'):
@@ -87,7 +95,7 @@ if not ARCHLIB.endswith('/'):
 # Packages to include
 python_packages = ["os",
                    "sys",
-                   "PyQt5",
+                   QT_BINDING_PACKAGE,
                    "time",
                    "uuid",
                    "idna",
@@ -233,9 +241,6 @@ python_modules = ["idna.idnadata",
                   "OpenGL.arrays.numpymodule",
                   "OpenGL.arrays.formathandler",
                   ]
-
-# Determine absolute PATH of OpenShot folder
-PATH = os.path.dirname(os.path.realpath(__file__))  # Primary openshot folder
 
 # Look for optional --git-branch arg, and remove it
 git_branch_name = "develop"
@@ -456,26 +461,26 @@ elif sys.platform == "linux":
     src_files.append((os.path.join(PATH, "installer", "launch-linux.sh"), "launch-linux.sh"))
 
     # Get a list of all openshot.so dependencies (scan these libraries for their dependencies)
-    pyqt5_mod_files = []
+    qt_mod_files = []
     from importlib import import_module
     for submod in ['Qt', 'QtSvg', 'QtWidgets', 'QtCore', 'QtGui', 'QtDBus']:
-        mod_name = "PyQt5.{}".format(submod)
+        mod_name = "{}.{}".format(QT_BINDING_PACKAGE, submod)
         mod = import_module(mod_name)
-        pyqt5_mod_files.append(inspect.getfile(mod))
+        qt_mod_files.append(inspect.getfile(mod))
     # Optional additions
     for mod_name in [
-            'PyQt5.QtWebEngine',
-            'PyQt5.QtWebEngineWidgets',
-            'PyQt5.QtWebKit',
-            'PyQt5.QtWebKitWidgets',
+            '{}.QtWebEngine'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebEngineWidgets'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebKit'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebKitWidgets'.format(QT_BINDING_PACKAGE),
             ]:
         try:
             mod = import_module(mod_name)
-            pyqt5_mod_files.append(inspect.getfile(mod))
+            qt_mod_files.append(inspect.getfile(mod))
         except ImportError as ex:
             log.warning("Skipping {}: {}".format(mod_name, ex))
 
-    lib_list = pyqt5_mod_files
+    lib_list = qt_mod_files
     try:
         import _ssl
         lib_list.append(inspect.getfile(_ssl))
@@ -713,9 +718,9 @@ build_exe_options["excludes"] = ["distutils",
                                  "pydoc_data",
                                  "pycparser",
                                  "pkg_resources",
-                                 "PyQt5.QtQml",
-                                 "PyQt5.QtQuick",
-                                 "PyQt5.QtQuickWidgets"]
+                                 "{}.QtQml".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuick".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuickWidgets".format(QT_BINDING_PACKAGE)]
 if sys.platform == "darwin":
     # sentry_sdk.integrations.django must NOT be excluded — sentry's DEFAULT_INTEGRATIONS
     # auto-imports it via importlib at runtime and crashes with ModuleNotFoundError when

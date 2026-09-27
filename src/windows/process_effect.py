@@ -31,9 +31,9 @@ import json
 import functools
 import webbrowser
 
-from PyQt5.QtCore import Qt, pyqtSignal, QCoreApplication
-from PyQt5.QtGui import QPainter
-from PyQt5.QtWidgets import QPushButton, QDialog, QLabel, QDoubleSpinBox, QSpinBox, QLineEdit, QCheckBox, QComboBox, QDialogButtonBox, QSizePolicy
+from qt_api import Qt, pyqtSignal, QCoreApplication
+from qt_api import QPainter
+from qt_api import QPushButton, QDialog, QLabel, QDoubleSpinBox, QSpinBox, QLineEdit, QCheckBox, QComboBox, QDialogButtonBox, QSizePolicy
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
@@ -75,7 +75,7 @@ class ProcessEffect(QDialog):
             raise ModuleNotFoundError("Openshot not compiled with OpenCV")
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
         # Track effect details
         self.clip_id = clip_id
         self.effect_name = ""

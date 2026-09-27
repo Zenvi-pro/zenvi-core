@@ -27,9 +27,10 @@
  """
 
 import webbrowser
-from PyQt5.QtCore import Qt, QRegExp
-from PyQt5.QtWidgets import QListView, QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
-from PyQt5.QtGui import QCursor
+from qt_api import Qt
+from qt_api import QTreeView, QAbstractItemView, QSizePolicy, QHeaderView, QApplication
+from qt_api import QCursor
+from qt_api import make_filter_regex, set_proxy_filter
 from functools import partial
 
 from classes.logger import log
@@ -64,7 +65,8 @@ class CreditsTreeView(QTreeView):
 
     def filter_changed(self, text=""):
         """Apply filter text to proxy model"""
-        self.model().setFilterRegExp(QRegExp(text, Qt.CaseInsensitive))
+        regex = make_filter_regex(text, case_insensitive=True)
+        set_proxy_filter(self.model(), regex)
         self.model().setFilterKeyColumn(-1)
         self.model().sort(2, Qt.AscendingOrder)
 
@@ -97,12 +99,12 @@ class CreditsTreeView(QTreeView):
         log.info("ViewWebsite")
         try:
             webbrowser.open(website)
-        except:
+        except Exception:
             log.warning('Failed to launch web browser to %s' % website)
 
     def __init__(self, credits, columns, *args):
         # Invoke parent init
-        QListView.__init__(self, *args)
+        QTreeView.__init__(self, *args)
 
         # Get a reference to the window object
         self.win = get_app().window

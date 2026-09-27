@@ -27,9 +27,9 @@
 
 import os
 
-from PyQt5.QtCore import Qt, QSize, QTimer
-from PyQt5.QtGui import QIcon, QPainter, QPixmap, QTransform
-from PyQt5.QtWidgets import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
+from qt_api import Qt, QSize, QTimer
+from qt_api import QIcon, QPainter, QPixmap, QTransform
+from qt_api import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
 
 from classes.info import PATH
 from ..base import BaseTheme
@@ -978,8 +978,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         from classes.app import get_app
         from classes import ui_util
         from classes.logger import log
-        from PyQt5.QtWidgets import QStyleFactory
-        from PyQt5.QtGui import QFont
+        from qt_api import QStyleFactory
+        from qt_api import QFont
 
         _ = get_app()._tr
 
@@ -989,10 +989,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
         # Override palette to absolute black so all unstyled QWidget backgrounds
         # default to #0d0d0d instead of the default medium-gray (53,53,53)
-        from PyQt5.QtGui import QColor as _QColor
+        from qt_api import QColor as _QColor
         _black = _QColor(13, 13, 13)
         _gray  = _QColor(37, 37, 37)
-        from PyQt5.QtGui import QPalette as _QPalette
+        from qt_api import QPalette as _QPalette
         dark_palette.setColor(_QPalette.Window,        _black)
         dark_palette.setColor(_QPalette.Base,          _black)
         dark_palette.setColor(_QPalette.AlternateBase, _black)

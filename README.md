@@ -121,11 +121,15 @@ to be compiled to run. However, be sure you have the following
 dependencies in order to run OpenShot successfully: 
 
 *  Python 3.0+ (http://www.python.org)
-*  PyQt5 (http://www.riverbankcomputing.co.uk/software/pyqt/download5)
+*  PyQt / PySide binding for Qt5 or Qt6 (https://www.riverbankcomputing.com/software/pyqt/ and https://pyside.org/)
 *  libopenshot: OpenShot Library (https://github.com/OpenShot/libopenshot)
 *  libopenshot-audio: OpenShot Audio Library (https://github.com/OpenShot/libopenshot-audio)
 *  FFmpeg or Libav (http://www.ffmpeg.org/ or http://libav.org/)
 *  GCC build tools (or MinGW on Windows)
+
+For packagers and developers: use `OPENSHOT_QT_API=auto|pyqt6|pyside6|pyqt5`
+to select the Python Qt binding. If building `libopenshot`, its Qt major
+version is selected separately with `-DUSE_QT6=AUTO|ON|OFF`.
 
 ## Launch
 

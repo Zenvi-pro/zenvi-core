@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
+from qt_api import Qt
+from qt_api import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
 
 from classes.app import get_app
 

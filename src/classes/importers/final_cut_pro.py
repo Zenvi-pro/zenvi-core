@@ -31,7 +31,7 @@ from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes.app import get_app

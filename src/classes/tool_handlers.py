@@ -46,7 +46,7 @@ from classes.track_display import (
 )
 
 try:
-    from PyQt5.QtCore import (
+    from qt_api import (
         QObject, QThread, pyqtSignal, pyqtSlot,
         QEventLoop, QPointF, QTimer,
     )
@@ -60,7 +60,7 @@ except ImportError:
     QTimer = None
 
 try:
-    from PyQt5.QtWidgets import QApplication
+    from qt_api import QApplication
 except ImportError:
     QApplication = None
 
@@ -99,7 +99,7 @@ if pyqtSignal is not None:
 else:
 
     class _MainThreadDispatcher:
-        """Headless fallback when PyQt5 is unavailable."""
+        """Headless fallback when no Qt binding is available."""
 
         def run(self, fn):
             return fn()
@@ -1143,7 +1143,7 @@ def watch_clip_and_play(file_path: str = "", **_kw) -> str:
             return f"Error: File not found: {resolved_path}"
 
         from classes.query import File as _File
-        from PyQt5.QtCore import QUrl as _QUrl
+        from qt_api import QUrl as _QUrl
 
         app = _get_app()
         win = app.window
@@ -2332,7 +2332,7 @@ def add_clip_to_timeline(
                     pos_sec = pos_arg
 
                 if QPointF is None:
-                    from PyQt5.QtCore import QPointF as _QPointF
+                    from qt_api import QPointF as _QPointF
                     pos = _QPointF(pos_sec, 0.0)
                 else:
                     pos = QPointF(pos_sec, 0.0)
@@ -3990,7 +3990,7 @@ def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
             return any(len(px) >= 4 and px[3] < 250 for px in samples)
         except Exception:
             try:
-                from PyQt5.QtGui import QImage
+                from qt_api import QImage
 
                 img = QImage(tmp_png)
                 if img.isNull():
@@ -4405,7 +4405,7 @@ def _bake_transition_video(
 def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, position, layer):
     """Remove the two source clips and place the baked transition clip on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -4427,7 +4427,7 @@ def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, posi
 def _replace_timeline_clip_with_baked(clip_id, baked_file_id, position, layer):
     """Remove one source clip and place the baked replacement on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -5131,7 +5131,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
     app = _get_app()
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
@@ -5311,7 +5311,7 @@ def insert_v2v_into_clip(
 ) -> str:
     """Find best match in resolved clip, generate a V2V insert via Kling O1 Pro."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
@@ -5586,7 +5586,7 @@ def replace_object_in_clip(
 ) -> str:
     """Replace or update an object/visual element in a timeline clip using Kling O1 Pro V2V edit."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,

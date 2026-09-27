@@ -27,12 +27,12 @@
 
 import os
 
-from PyQt5.QtCore import (
+from qt_api import (
     QObject, QMimeData, Qt, pyqtSignal,
     QSortFilterProxyModel, QPersistentModelIndex, QItemSelectionModel, QItemSelection, QModelIndex,
 )
-from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
-from PyQt5.QtWidgets import QMessageBox
+from qt_api import QIcon, QStandardItemModel, QStandardItem
+from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
@@ -367,7 +367,7 @@ class TransitionsModel(QObject):
         if info.MODEL_TEST:
             try:
                 # Create model tester objects
-                from PyQt5.QtTest import QAbstractItemModelTester
+                from qt_api import QAbstractItemModelTester
                 self.model_tests = []
                 for m in [self.proxy_model, self.model]:
                     self.model_tests.append(

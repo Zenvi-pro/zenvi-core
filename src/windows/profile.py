@@ -30,8 +30,8 @@ import functools
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QDialog, QSizePolicy, QDialogButtonBox
+from qt_api import QTimer
+from qt_api import QDialog, QSizePolicy, QDialogButtonBox
 
 from classes import info, ui_util, tabstops
 from classes.app import get_app
@@ -49,7 +49,7 @@ class Profile(QDialog):
     def __init__(self, initial_profile_desc=None):
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)

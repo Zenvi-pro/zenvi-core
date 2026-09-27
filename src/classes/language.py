@@ -29,7 +29,7 @@
 import os
 import locale
 
-from PyQt5.QtCore import QLocale, QLibraryInfo, QTranslator, QCoreApplication
+from qt_api import QLocale, QLibraryInfo, QTranslator, QCoreApplication
 
 from classes.logger import log
 from classes import info

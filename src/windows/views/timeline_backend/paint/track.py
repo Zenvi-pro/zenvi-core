@@ -25,10 +25,10 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
+from qt_api import QPointF, QRectF, Qt
 import math
 
-from PyQt5.QtGui import (
+from qt_api import (
     QBrush,
     QColor,
     QLinearGradient,
@@ -173,7 +173,7 @@ class TrackPainter(BasePainter):
             bg = self.w.theme.track.background
             bg2 = self.w.theme.track.background2
             if bg2.isValid() and bg2 != bg:
-                grad = QLinearGradient(vis.topLeft(), vis.bottomLeft())
+                grad = QLinearGradient(QPointF(vis.topLeft()), QPointF(vis.bottomLeft()))
                 grad.setColorAt(0, bg)
                 grad.setColorAt(1, bg2)
                 painter.fillRect(vis, QBrush(grad))

@@ -33,8 +33,8 @@
  You should have received a copy of the GNU General Public License
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
-from PyQt5.QtWidgets import QPushButton, QDialog, QDialogButtonBox, QLabel, QFileDialog, QMessageBox
-from PyQt5.QtCore import Qt
+from qt_api import QPushButton, QDialog, QDialogButtonBox, QLabel, QFileDialog, QMessageBox
+from qt_api import Qt
 from classes import ui_util
 from classes import info
 from classes.app import get_app
@@ -169,7 +169,7 @@ class clipExportWindow(QDialog):
         self.cancel_button.clicked.connect(self._cancelButtonClicked)
 
         # Make progress bar look like the one in the export dialog
-        from PyQt5.QtGui import QPalette
+        from qt_api import QPalette
         p = QPalette()
         p.setColor(QPalette.Highlight, Qt.green)
         self.progressExportVideo.setPalette(p)

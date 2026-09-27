@@ -40,11 +40,12 @@ import time
 # Is one even necessary, or is it safe to use xml.dom.minidom for that?
 from xml.dom import minidom
 
-from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal, QRect, QPoint, QSize, QEvent
-from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
-from PyQt5.QtWidgets import (
+from qt_api import Qt, pyqtSlot, QTimer, pyqtSignal, QRect, QPoint, QSize, QEvent
+from qt_api import get_font_dialog_selection
+from qt_api import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
+from qt_api import (
     QWidget,
-    QMessageBox, QDialog, QColorDialog, QFontDialog,
+    QMessageBox, QDialog,
     QPushButton, QLineEdit, QLabel, QDialogButtonBox
 )
 
@@ -71,8 +72,11 @@ class TitleEditor(QDialog):
         # Create dialog class
         super().__init__(*args, **kwargs)
 
-        # Init font DB
-        self.font_db = QFontDatabase()
+        # Init font DB (Qt6 removes the default constructor)
+        try:
+            self.font_db = QFontDatabase()
+        except TypeError:
+            self.font_db = QFontDatabase
 
         # A timer to pause until user input stops before updating the svg
         self.update_timer = QTimer(self)
@@ -215,7 +219,7 @@ class TitleEditor(QDialog):
         """Display pixmap of SVG on UI thread"""
         self.lblPreviewLabel.setPixmap(display_pixmap)
 
-    def txtLine_changed(self, txtWidget):
+    def txtLine_changed(self, txtWidget, *_args):
 
         # Loop through child widgets (and remove them)
         text_list = []
@@ -524,7 +528,9 @@ class TitleEditor(QDialog):
         )
 
         if ordered:
-            QTimer.singleShot(0, lambda: QWidget.setTabOrder(ordered[-1], ordered[0]))
+            QTimer.singleShot(
+                0, lambda: tabstops.safe_set_tab_order(ordered[-1], ordered[0])
+            )
 
     def writeToFile(self, xmldoc):
         '''writes a new svg file containing the user edited data'''
@@ -614,7 +620,7 @@ class TitleEditor(QDialog):
         oldfont = self.qfont
 
         # Get font from user
-        font, ok = QFontDialog.getFont(oldfont, caption=("Change Font"))
+        font, ok = get_font_dialog_selection(oldfont, self, _("Change Font"))
 
         # Update SVG font
         if ok and font is not oldfont:

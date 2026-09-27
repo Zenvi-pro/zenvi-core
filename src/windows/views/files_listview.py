@@ -28,17 +28,19 @@
 
 import uuid
 
-from PyQt5.QtCore import QSize, Qt, QPoint, QRegExp, QRect, QEvent
-from PyQt5.QtGui import (QDrag, QCursor, QPixmap, QPainter, QIcon,
-                         QLinearGradient, QColor, QPen)
-from PyQt5.QtWidgets import QListView, QAbstractItemView
+from qt_api import QSize, Qt, QPoint, QRect, QEvent
+from qt_api import clear_override_cursor
+from qt_api import modifiers_has
+from qt_api import (QDrag, QCursor, QPixmap, QPainter, QIcon,
+                    QLinearGradient, QColor, QPen)
+from qt_api import QListView, QAbstractItemView
 
 from classes import info
 from classes.app import get_app
 from classes.file_drop import accept_os_file_drag, urls_from_mime
 from classes.logger import log
 from classes.query import File
-from .menu import StyledContextMenu
+from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
 
 
@@ -166,6 +168,7 @@ class FilesListView(QListView):
 
         # Set context menu mode
         app = get_app()
+        self.win = app.window
         _ = app._tr
         app.context_menu_object = "files"
 
@@ -173,8 +176,8 @@ class FilesListView(QListView):
 
         # Build menu
         menu = StyledContextMenu(parent=self)
-        menu.addAction(self.win.actionImportFiles)
-        menu.addAction(self.win.actionDetailsView)
+        add_bound_action(menu, self.win, "actionImportFiles", _("Import Files..."), "actionImportFiles_trigger")
+        add_bound_action(menu, self.win, "actionDetailsView", _("Details View"), "actionDetailsView_trigger")
 
         if index.isValid():
             # Look up the model item and our unique ID
@@ -190,27 +193,27 @@ class FilesListView(QListView):
 
             # SVG title editing (rare – keep it)
             if file and file.data.get("path", "").endswith(".svg"):
-                menu.addAction(self.win.actionEditTitle)
+                add_bound_action(menu, self.win, "actionEditTitle", _("Edit Title"), "actionEditTitle_trigger")
                 menu.addSeparator()
 
             # Core actions – the most common workflows
-            menu.addAction(self.win.actionPreview_File)
-            menu.addAction(self.win.actionAdd_to_Timeline)
+            add_bound_action(menu, self.win, "actionPreview_File", _("Preview File"), "actionPreview_File_trigger")
+            add_bound_action(menu, self.win, "actionAdd_to_Timeline", _("Add to Timeline"), "actionAdd_to_Timeline_trigger")
             menu.addSeparator()
-            menu.addAction(self.win.actionSplitFile)
+            add_bound_action(menu, self.win, "actionSplitFile", _("Split Clip"), "actionSplitFile_trigger")
             menu.addSeparator()
-            menu.addAction(self.win.actionFile_Properties)
-            menu.addAction(self.win.actionRemove_from_Project)
+            add_bound_action(menu, self.win, "actionFile_Properties", _("File Properties"), "actionFile_Properties_trigger")
+            add_bound_action(menu, self.win, "actionRemove_from_Project", _("Remove from Project"), "actionRemove_from_Project_trigger")
 
         # Show menu
-        menu.popup(event.globalPos())
+        menu.show_at(event)
 
     def mouseDoubleClickEvent(self, event):
         super(FilesListView, self).mouseDoubleClickEvent(event)
         # Preview File, File Properties, or Split File (depending on Shift/Ctrl)
-        if int(get_app().keyboardModifiers() & Qt.ShiftModifier) > 0:
+        if modifiers_has(get_app().keyboardModifiers(), Qt.ShiftModifier):
             get_app().window.actionSplitFile.trigger()
-        elif int(get_app().keyboardModifiers() & Qt.ControlModifier) > 0:
+        elif modifiers_has(get_app().keyboardModifiers(), Qt.ControlModifier):
             get_app().window.actionFile_Properties.trigger()
         else:
             get_app().window.actionPreview_File.trigger()
@@ -276,7 +279,11 @@ class FilesListView(QListView):
         get_app().updates.transaction_id = tid
 
         # Execute the drag operation (blocking - dropEvent creates clips during this call)
-        drag.exec_(supportedActions)
+        exec_fn = getattr(drag, "exec", None) or getattr(drag, "exec_", None)
+        if exec_fn is None:
+            raise AttributeError("QDrag has no exec_/exec method")
+        exec_fn(supportedActions)
+        clear_override_cursor()
 
         # End transaction
         get_app().updates.transaction_id = None
@@ -314,7 +321,10 @@ class FilesListView(QListView):
         """Filter files with proxy class"""
         filter_text = self.win.filesFilter.text()
         # Apply filter to the source proxy model (not the single-column wrapper)
-        self.files_model.proxy_model.setFilterRegExp(QRegExp(filter_text.replace(' ', '.*'), Qt.CaseInsensitive))
+        from qt_api import make_filter_regex, set_proxy_filter
+        pattern = filter_text.replace(' ', '.*')
+        regex = make_filter_regex(pattern, case_insensitive=True)
+        set_proxy_filter(self.files_model.proxy_model, regex)
 
         col = self.files_model.proxy_model.sortColumn()
         self.files_model.proxy_model.sort(col)

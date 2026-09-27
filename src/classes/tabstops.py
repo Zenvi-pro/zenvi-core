@@ -3,8 +3,8 @@
  @brief Auto-assign tab order based on on-screen widget geometry.
 """
 
-from PyQt5.QtCore import Qt, QPoint, QTimer
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QPoint, QTimer
+from qt_api import (
     QWidget,
     QLayout,
     QToolBar,
@@ -101,6 +101,20 @@ def _is_focusable(widget, root, include_hidden, include_disabled):
     if not include_disabled and not widget.isEnabled():
         return False
     return True
+
+
+def safe_set_tab_order(first, second):
+    """Set tab order only when both widgets share the same window."""
+    if first is None or second is None:
+        return
+    # Call the unbound QWidget method: several Zenvi widgets carry a
+    # ``self.window`` attribute (the main window) that shadows QWidget.window().
+    try:
+        if QWidget.window(first) is not QWidget.window(second):
+            return
+    except (RuntimeError, TypeError):
+        return
+    QWidget.setTabOrder(first, second)
 
 
 def _position_key(widget, root, fallback_index, row_tolerance):
@@ -451,7 +465,7 @@ def apply_auto_tab_order(root, include_hidden=False, include_disabled=False, row
             pass  # Widget may not support dynamic attributes or may be deleted
 
     for first, second in zip(ordered_widgets, ordered_widgets[1:]):
-        QWidget.setTabOrder(first, second)
+        safe_set_tab_order(first, second)
 
 
 def apply_auto_tab_order_later(root, include_hidden=False, include_disabled=False, row_tolerance=8):
@@ -502,7 +516,7 @@ def apply_explicit_tab_order(
             ordered.append(widget)
             seen.add(widget)
     for first, second in zip(ordered, ordered[1:]):
-        QWidget.setTabOrder(first, second)
+        safe_set_tab_order(first, second)
 
 
 def apply_explicit_tab_order_later(
