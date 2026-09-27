@@ -11,7 +11,11 @@ idea/*
 agent-log.md
 CLAUDE.md
 .cursor/
-.claude/
+# .claude/settings.json IS committed (connectors off, port guard hook); everything else stays local.
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
+.claude/worktrees/
 
 # Local packaged installers (do not commit)
 *.deb
@@ -24,6 +28,9 @@ build
 dist
 openshot_qt.egg-info
 .venv/
+.venv
+# per-worktree env written by scripts/upstream-port/new-worktree.sh
+.port-env
 .env*
 !.env.example
 !.env.production
