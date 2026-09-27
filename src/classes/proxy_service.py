@@ -164,8 +164,13 @@ class ProxyService(QObject):
                      )
                      try:
                          os.remove(existing_output_path)
-                     except Exception:
-                         pass
+                     except Exception as cleanup_exc:
+                         log.warning(
+                             "Optimize Preview create_for_files file_id=%s failed to remove invalid existing output=%s (%s)",
+                             file_id,
+                             existing_output_path,
+                             cleanup_exc,
+                         )
              output_path = self._reserve_proxy_output_path(file_id, snapshot)
              with self._lock:
                  self._jobs[file_id] = {

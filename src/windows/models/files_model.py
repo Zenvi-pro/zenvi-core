@@ -38,7 +38,7 @@ from qt_api import (
     QSortFilterProxyModel, QItemSelectionModel, QItemSelection, QPersistentModelIndex, QModelIndex
 )
 from qt_api import (
-    QIcon, QStandardItem, QStandardItemModel
+    QIcon, QPixmap, QStandardItem, QStandardItemModel
 )
 from qt_api import QAbstractItemView
 from classes import updates
@@ -500,7 +500,28 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def _project_file_icon_for_file(self, file):
         thumb_source, name, media_type = self._thumbnail_source_for_file(file)
-        return QIcon(thumb_source), name, media_type
+        return self._thumbnail_icon(thumb_source, media_type), name, media_type
+
+    def _thumbnail_icon(self, thumb_source, media_type):
+        """Icon for a thumbnail source; video/image thumbs reload from disk bytes."""
+        if media_type in ["video", "image"]:
+            return self._icon_from_thumbnail_source(thumb_source)
+        return QIcon(thumb_source)
+
+    @staticmethod
+    def _icon_from_thumbnail_source(thumb_source):
+        """Create an icon from freshly loaded thumbnail bytes when possible.
+
+        QIcon(path) caches by file name, so a thumbnail regenerated on disk
+        (e.g. after Optimize Preview pre-warms it) would keep showing the old
+        image; loading through QPixmap always reads the current bytes.
+        """
+        thumb_source = str(thumb_source or "")
+        if thumb_source:
+            pixmap = QPixmap()
+            if pixmap.load(thumb_source) and not pixmap.isNull():
+                return QIcon(pixmap)
+        return QIcon(thumb_source)
 
     def _proxy_service(self):
         """The window's Optimize Preview service (None before the window creates it)."""
@@ -1228,8 +1249,8 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
-            thumb_source, _, _ = self._thumbnail_source_for_file(file, clear_cache=True)
-            thumb_icon = QIcon(thumb_source)
+            thumb_source, _, media_type = self._thumbnail_source_for_file(file, clear_cache=True)
+            thumb_icon = self._thumbnail_icon(thumb_source, media_type)
 
             # Update thumb for file
             thumb_index = id_index.sibling(id_index.row(), 0)
@@ -1345,7 +1366,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         finally:
             self._syncing_selection = False
 
-    def __init__(self, proxy_service=None, *args):
+    def __init__(self, *args, proxy_service=None):
         # Optimize Preview service (badges, tooltips, per-row repaints)
         self.proxy_service = proxy_service
 
