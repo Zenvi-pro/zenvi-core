@@ -9,12 +9,12 @@
 	<audiochannels>2</audiochannels>
 	<audiochannellayout>3</audiochannellayout>
 	<videobitrate
-	 low="50 crf"
-	 med="23 crf"
+	 low=""
+	 med=""
 	 high="0 crf"></videobitrate>
 	<audiobitrate
-	 low="96 kb/s"
-	 med="128 kb/s"
+	 low=""
+	 med=""
 	 high="192 kb/s"></audiobitrate>
 	<samplerate>48000</samplerate>
 </export-option>

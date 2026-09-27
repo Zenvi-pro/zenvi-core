@@ -106,7 +106,10 @@ class PropertyDelegate(QItemDelegate):
 
             # Calculate current value as % of min/max range
             min_max_range = float(property_max) - float(property_min)
-            value_percent = current_value / min_max_range
+            if abs(min_max_range) <= 1e-12:
+                value_percent = 0.0
+            else:
+                value_percent = current_value / min_max_range
         else:
             value_percent = 0.0
 

@@ -1,0 +1,146 @@
+{
+  "action_icon": "ai-action-restyle.svg",
+  "menu_category": "enhance",
+  "menu_order": 50,
+  "name": "Change Video Style...",
+  "open_dialog": true,
+  "output_type": "video",
+  "template_id": "video2video-basic",
+  "workflow": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "/tmp/input.mp4"
+      }
+    },
+    "10": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "audio": [
+          "3",
+          1
+        ],
+        "fps": [
+          "3",
+          2
+        ],
+        "images": [
+          "9",
+          0
+        ]
+      }
+    },
+    "11": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "codec": "auto",
+        "filename_prefix": "video/openshot_gen",
+        "format": "auto",
+        "video": [
+          "10",
+          0
+        ]
+      }
+    },
+    "2": {
+      "class_type": "Video Slice",
+      "inputs": {
+        "duration": 10.0,
+        "start_time": 0.0,
+        "strict_duration": false,
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "2",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "sd_xl_base_1.0.safetensors"
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "4",
+          1
+        ],
+        "text": "cinematic shot, highly detailed"
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "4",
+          1
+        ],
+        "text": "low quality, blurry"
+      }
+    },
+    "7": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "3",
+          0
+        ],
+        "vae": [
+          "4",
+          2
+        ]
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 6.0,
+        "denoise": 0.55,
+        "latent_image": [
+          "7",
+          0
+        ],
+        "model": [
+          "4",
+          0
+        ],
+        "negative": [
+          "6",
+          0
+        ],
+        "positive": [
+          "5",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "seed": 147747579,
+        "steps": 16
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "4",
+          2
+        ]
+      }
+    }
+  }
+}

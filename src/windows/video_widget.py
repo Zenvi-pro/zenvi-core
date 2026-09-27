@@ -32,7 +32,7 @@ import uuid
 
 from qt_api import (
     Qt, QCoreApplication, QMutex, QTimer,
-    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot, QLineF,
+    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot, QLineF, pyqtSignal,
 )
 from qt_api import modifiers_has
 from qt_api import (
@@ -51,6 +51,7 @@ from classes.query import Clip, Effect
 
 class VideoWidget(QWidget, updates.UpdateInterface):
     """ A QWidget used on the video display widget """
+    regionAnnotationChanged = pyqtSignal()
 
     def _snap_angle(self, angle_degrees, step_degrees=15.0):
         """Snap an angle to the nearest increment (degrees)."""
@@ -530,13 +531,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 if getattr(eff_info, 'has_tracked_object', False):
                     objs = raw_eff.get("objects", {}) or {}
                     if objs:
-                        oid = next(iter(objs))
-                        eprops = objs[oid]
-                        if eprops.get("visible", {}).get("value") == 1:
-                            x1_abs = clip_rect.x() + eprops["x1"]["value"] * clip_rect.width()
-                            y1_abs = clip_rect.y() + eprops["y1"]["value"] * clip_rect.height()
-                            x2_abs = clip_rect.x() + eprops["x2"]["value"] * clip_rect.width()
-                            y2_abs = clip_rect.y() + eprops["y2"]["value"] * clip_rect.height()
+                        oid, eprops = self._resolve_tracked_object(objs)
+                        if oid and eprops and self._tracked_object_visible(eprops):
+                            x1_abs = clip_rect.x() + eprops.get("x1", {}).get("value", 0.0) * clip_rect.width()
+                            y1_abs = clip_rect.y() + eprops.get("y1", {}).get("value", 0.0) * clip_rect.height()
+                            x2_abs = clip_rect.x() + eprops.get("x2", {}).get("value", 0.0) * clip_rect.width()
+                            y2_abs = clip_rect.y() + eprops.get("y2", {}).get("value", 0.0) * clip_rect.height()
                             effect_rect = QRectF(QPointF(x1_abs, y1_abs), QPointF(x2_abs, y2_abs))
                             union_rect = effect_rect if union_rect is None else union_rect.united(effect_rect)
                             first_props = first_props or default_props
@@ -678,7 +678,63 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 painter.setTransform(self.region_transform)
 
                 cs = self.cs
-                if self.regionTopLeftHandle and self.regionBottomRightHandle:
+                if self.region_selection_mode in ("point", "annotate"):
+                    point_radius = max(2.0, (cs * 0.4) / max(self.zoom, 0.001))
+                    if self.region_points_positive:
+                        pos_color = QColor("#53a0ed")
+                        pos_color.setAlphaF(self.handle_opacity)
+                        pos_pen = QPen(QBrush(pos_color), 1.5)
+                        pos_pen.setCosmetic(True)
+                        painter.setPen(pos_pen)
+                        painter.setBrush(QBrush(pos_color))
+                        for pt in self.region_points_positive:
+                            painter.drawEllipse(pt, point_radius, point_radius)
+                    if self.region_points_negative:
+                        neg_color = QColor("#e05757")
+                        neg_color.setAlphaF(self.handle_opacity)
+                        neg_pen = QPen(QBrush(neg_color), 1.5)
+                        neg_pen.setCosmetic(True)
+                        painter.setPen(neg_pen)
+                        painter.setBrush(QBrush(neg_color))
+                        for pt in self.region_points_negative:
+                            painter.drawEllipse(pt, point_radius, point_radius)
+                    # Draw positive rectangles
+                    if self.region_rects_positive:
+                        rect_pos_color = QColor("#53a0ed")
+                        rect_pos_color.setAlphaF(self.handle_opacity)
+                        rect_pos_pen = QPen(QBrush(rect_pos_color), 1.5)
+                        rect_pos_pen.setCosmetic(True)
+                        painter.setPen(rect_pos_pen)
+                        painter.setBrush(Qt.NoBrush)
+                        for rect in self.region_rects_positive:
+                            if isinstance(rect, QRectF):
+                                painter.drawRect(rect.normalized())
+
+                    # Draw negative rectangles
+                    if self.region_rects_negative:
+                        rect_neg_color = QColor("#e05757")
+                        rect_neg_color.setAlphaF(self.handle_opacity)
+                        rect_neg_pen = QPen(QBrush(rect_neg_color), 1.5)
+                        rect_neg_pen.setCosmetic(True)
+                        painter.setPen(rect_neg_pen)
+                        painter.setBrush(Qt.NoBrush)
+                        for rect in self.region_rects_negative:
+                            if isinstance(rect, QRectF):
+                                painter.drawRect(rect.normalized())
+
+                    # Draw current dragging rectangle preview
+                    if self.region_rect_drag_start is not None and self.region_rect_drag_current is not None:
+                        drag_color = QColor("#53a0ed")
+                        if str(self.region_annotation_tool or "").endswith("negative_rect"):
+                            drag_color = QColor("#e05757")
+                        drag_color.setAlphaF(self.handle_opacity)
+                        drag_pen = QPen(QBrush(drag_color), 1.5, Qt.DashLine)
+                        drag_pen.setCosmetic(True)
+                        painter.setPen(drag_pen)
+                        painter.setBrush(Qt.NoBrush)
+                        painter.drawRect(QRectF(self.region_rect_drag_start, self.region_rect_drag_current).normalized())
+
+                elif self.regionTopLeftHandle and self.regionBottomRightHandle:
                     color = QColor("#53a0ed")
                     color.setAlphaF(self.handle_opacity)
                     pen = QPen(QBrush(color), 1.5)
@@ -771,6 +827,47 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.rotation_drag_value = None
         self.setCursor(self.hover_cursor)
 
+        if self.region_enabled and self.region_selection_mode == "point" and event.button() == Qt.LeftButton:
+            self._ensure_region_transform()
+            point = self.region_transform_inverted.map(event.pos())
+            point = self._clamp_region_point(point)
+            mods = int(QCoreApplication.instance().keyboardModifiers())
+            if mods & Qt.ControlModifier:
+                self.region_points_negative.append(point)
+            elif mods & Qt.ShiftModifier:
+                self.region_points_positive.append(point)
+            else:
+                # Default click resets to a single positive point.
+                self.region_points_positive = [point]
+                self.region_points_negative = []
+            self.update()
+        elif self.region_enabled and self.region_selection_mode == "annotate" and event.button() == Qt.LeftButton:
+            self._ensure_region_transform()
+            point = self.region_transform_inverted.map(event.pos())
+            point = self._clamp_region_point(point)
+            if bool(self.region_annotation_inherited):
+                # First edit on a carried frame should replace inherited selections.
+                self.region_points_positive = []
+                self.region_points_negative = []
+                self.region_rects_positive = []
+                self.region_rects_negative = []
+                self.region_rect_drag_start = None
+                self.region_rect_drag_current = None
+                self.region_annotation_inherited = False
+            tool = str(self.region_annotation_tool or "positive_point")
+            if tool == "positive_point":
+                self.region_points_positive.append(point)
+                self.update()
+                self.regionAnnotationChanged.emit()
+            elif tool == "negative_point":
+                self.region_points_negative.append(point)
+                self.update()
+                self.regionAnnotationChanged.emit()
+            elif tool in ("positive_rect", "negative_rect"):
+                self.region_rect_drag_start = QPointF(point)
+                self.region_rect_drag_current = QPointF(point)
+                self.update()
+
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
         get_app().updates.ignore_history = True
 
@@ -797,9 +894,28 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.rotation_drag_value = None
         self.region_mode = None
 
+        if self.region_enabled and self.region_selection_mode == "annotate":
+            if self.region_rect_drag_start is not None and self.region_rect_drag_current is not None:
+                rect = QRectF(self.region_rect_drag_start, self.region_rect_drag_current).normalized()
+                if rect.width() >= 2.0 and rect.height() >= 2.0:
+                    tool = str(self.region_annotation_tool or "positive_rect")
+                    if tool == "negative_rect":
+                        self.region_rects_negative.append(rect)
+                    else:
+                        self.region_rects_positive.append(rect)
+            self.region_rect_drag_start = None
+            self.region_rect_drag_current = None
+            self.update()
+            self.regionAnnotationChanged.emit()
+
         # Save region image data (as QImage)
         # This can be used other widgets to display the selected region
-        if self.region_enabled:
+        if (
+            self.region_enabled
+            and self.region_selection_mode not in ("point", "annotate")
+            and self.regionTopLeftHandle is not None
+            and self.regionBottomRightHandle is not None
+        ):
             # Get region coordinates
             region_rect = QRectF(
                 self.regionTopLeftHandle.x(),
@@ -1071,8 +1187,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'origin_y', origin_y)
-                    self._apply_delta_to_clips('origin_x', origin_x - raw_properties.get('origin_x').get('value'), fps_float)
-                    self._apply_delta_to_clips('origin_y', origin_y - raw_properties.get('origin_y').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'origin_x', origin_x - raw_properties.get('origin_x').get('value'),
+                        fps_float, frame_number=clip_frame_number)
+                    self._apply_delta_to_clips(
+                        'origin_y', origin_y - raw_properties.get('origin_y').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'location':
                     # Get current keyframe value
@@ -1118,8 +1238,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'location_y', location_y)
-                    self._apply_delta_to_clips('location_x', location_x - raw_properties.get('location_x').get('value'), fps_float)
-                    self._apply_delta_to_clips('location_y', location_y - raw_properties.get('location_y').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'location_x', location_x - raw_properties.get('location_x').get('value'),
+                        fps_float, frame_number=clip_frame_number)
+                    self._apply_delta_to_clips(
+                        'location_y', location_y - raw_properties.get('location_y').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'shear_top':
                     # Get current keyframe shear value
@@ -1134,7 +1258,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'shear_x', shear_x)
-                    self._apply_delta_to_clips('shear_x', shear_x - raw_properties.get('shear_x').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'shear_x', shear_x - raw_properties.get('shear_x').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'shear_bottom':
                     # Get current keyframe shear value
@@ -1149,7 +1275,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'shear_x', shear_x)
-                    self._apply_delta_to_clips('shear_x', shear_x - raw_properties.get('shear_x').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'shear_x', shear_x - raw_properties.get('shear_x').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'shear_left':
                     # Get current keyframe shear value
@@ -1164,7 +1292,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'shear_y', shear_y)
-                    self._apply_delta_to_clips('shear_y', shear_y - raw_properties.get('shear_y').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'shear_y', shear_y - raw_properties.get('shear_y').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'shear_right':
                     # Get current keyframe shear value
@@ -1179,7 +1309,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     self.updateClipProperty(
                         self.transforming_clips[0].id, clip_frame_number,
                         'shear_y', shear_y)
-                    self._apply_delta_to_clips('shear_y', shear_y - raw_properties.get('shear_y').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'shear_y', shear_y - raw_properties.get('shear_y').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode == 'rotation':
                     # Get current rotation keyframe value
@@ -1208,7 +1340,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         self.transforming_clips[0].id,
                         clip_frame_number,
                         'rotation', rotation)
-                    self._apply_delta_to_clips('rotation', rotation - raw_properties.get('rotation').get('value'), fps_float)
+                    self._apply_delta_to_clips(
+                        'rotation', rotation - raw_properties.get('rotation').get('value'),
+                        fps_float, frame_number=clip_frame_number)
 
                 elif self.transform_mode.startswith('scale_'):
                     # Get current scale keyframe value
@@ -1253,17 +1387,38 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             self.transforming_clips[0].id, clip_frame_number,
                             'scale_x', scale_x,
                             refresh=(not both_scaled))
-                        self._apply_delta_to_clips('scale_x', scale_x - raw_properties.get('scale_x').get('value'), fps_float)
+                        self._apply_delta_to_clips(
+                            'scale_x', scale_x - raw_properties.get('scale_x').get('value'),
+                            fps_float, frame_number=clip_frame_number)
                     if scale_y != 0.001:
                         self.updateClipProperty(
                             self.transforming_clips[0].id, clip_frame_number,
                             'scale_y', scale_y)
-                        self._apply_delta_to_clips('scale_y', scale_y - raw_properties.get('scale_y').get('value'), fps_float)
+                        self._apply_delta_to_clips(
+                            'scale_y', scale_y - raw_properties.get('scale_y').get('value'),
+                            fps_float, frame_number=clip_frame_number)
 
             # Force re-paint
             self.update()
 
         if self.region_enabled:
+            if self.region_selection_mode == "annotate":
+                self.setCursor(Qt.CrossCursor)
+                self._ensure_region_transform()
+                if self.region_rect_drag_start is not None and self.mouse_pressed:
+                    current = self.region_transform_inverted.map(event.pos())
+                    self.region_rect_drag_current = self._clamp_region_point(current)
+                    self.update()
+                self.mouse_position = event.pos()
+                self.mutex.unlock()
+                return
+
+            if self.region_selection_mode == "point":
+                self.setCursor(Qt.CrossCursor)
+                self.mouse_position = event.pos()
+                self.mutex.unlock()
+                return
+
             # Modify region selection (x, y, width, height)
             # Corner size
             cs = self.cs
@@ -1356,11 +1511,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 if not objects:
                     return
 
-                selected_idx = self.transforming_effect.data.get('selected_object_index')
-                obj_id = str(selected_idx) if selected_idx is not None else list(objects.keys())[0]
-                raw_properties = objects.get(obj_id) or next(iter(objects.values()))
+                obj_id, raw_properties = self._resolve_tracked_object(objects)
+                if not obj_id or not raw_properties:
+                    return
 
-                if not raw_properties.get('visible'):
+                if not self._tracked_object_visible(raw_properties):
                     self.mouse_position = event.pos()
                     return
 
@@ -1622,7 +1777,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         points = c.data.get(property_key, {}).get("Points", [])
         for point in points:
             co = point.get("co", {})
-            log.debug("looping points: co.X = %s" % co.get("X"))
 
             if co.get("X") == frame_number:
                 found_point = True
@@ -1649,6 +1803,30 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             # Update the preview
             if refresh:
                 get_app().window.refreshFrameSignal.emit()
+
+    def _ensure_region_transform(self):
+        if self.region_transform:
+            return
+        viewport = self.centeredViewport(self.width(), self.height())
+        self.region_transform = QTransform()
+        rx = viewport.x()
+        ry = viewport.y()
+        if rx or ry:
+            self.region_transform.translate(rx, ry)
+        if self.zoom:
+            self.region_transform.scale(self.zoom, self.zoom)
+        self.region_transform_inverted = self.region_transform.inverted()[0]
+
+    def _clamp_region_point(self, point):
+        max_w = float(self.curr_frame_size.width()) if self.curr_frame_size else 0.0
+        max_h = float(self.curr_frame_size.height()) if self.curr_frame_size else 0.0
+        if max_w <= 0.0 or max_h <= 0.0:
+            viewport = self.centeredViewport(self.width(), self.height())
+            max_w = float(viewport.width()) / max(self.zoom, 0.001)
+            max_h = float(viewport.height()) / max(self.zoom, 0.001)
+        x = min(max(float(point.x()), 0.0), max(max_w - 1.0, 0.0))
+        y = min(max(float(point.y()), 0.0), max(max_h - 1.0, 0.0))
+        return QPointF(x, y)
 
     def updateEffectProperty(self, effect_id, frame_number, obj_id, property_key, new_value, refresh=True):
         """Update a keyframe property to a new value, adding or updating keyframes as needed"""
@@ -1679,7 +1857,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         for point in points_list:
             co = point.get("co", {})
-            log.debug("looping points: co.X = %s" % co.get("X"))
 
             if co.get("X") == frame_number:
                 found_point = True
@@ -1745,9 +1922,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         return frame
 
-    def _apply_delta_to_clips(self, property_key, delta, fps_float):
+    def _apply_delta_to_clips(self, property_key, delta, fps_float, frame_number=None):
         for clip, obj in zip(self.transforming_clips[1:], self.transforming_clip_objects[1:]):
-            frame = self._get_clip_frame_number(clip, fps_float)
+            if frame_number is None:
+                frame = self._get_clip_frame_number(clip, fps_float)
+            else:
+                frame = max(1, int(round(frame_number)))
             props = json.loads(obj.PropertiesJSON(frame))
             value = props.get(property_key).get('value')
             if self.transaction_id:
@@ -1958,6 +2138,41 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         return rect, raw_properties
 
+    def _tracked_object_visible(self, object_props):
+        visible_prop = object_props.get("visible")
+        if isinstance(visible_prop, dict):
+            return int(visible_prop.get("value", 1)) == 1
+        if visible_prop is None:
+            return True
+        return bool(visible_prop)
+
+    def _resolve_tracked_object(self, objects):
+        """Resolve selected tracked-object key from effect data."""
+        if not objects:
+            return None, None
+
+        selected_idx = None
+        if self.transforming_effect:
+            selected_idx = self.transforming_effect.data.get("selected_object_index")
+
+        if selected_idx not in (None, "", "None"):
+            selected_idx = str(selected_idx)
+            if selected_idx in objects:
+                return selected_idx, objects[selected_idx]
+
+            # Newer object IDs are "<effect-uuid>-<index>".
+            suffix = f"-{selected_idx}"
+            for object_id, object_props in objects.items():
+                if object_id.endswith(suffix):
+                    return object_id, object_props
+
+        for object_id, object_props in objects.items():
+            if self._tracked_object_visible(object_props):
+                return object_id, object_props
+
+        object_id = next(iter(objects))
+        return object_id, objects.get(object_id)
+
     def refreshTriggered(self):
         """Signal to refresh viewport (i.e. a property might have changed that effects the preview)"""
 
@@ -2049,9 +2264,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.transforming_effect_object = None
                 need_refresh = True
 
-        # Update the preview and reselect current frame in properties
+        # Selection/transform changes affect overlay UI, not timeline frame.
         if need_refresh:
-            win.refreshFrameSignal.emit()
+            self.update()
         self.update_title()
 
     def keyFrameTransformTriggered(self, effect_id, clip_id):
@@ -2089,9 +2304,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             need_refresh = True
 
-        # Update the preview and reselct current frame in properties
+        # Transform target changes affect overlay UI, not timeline frame.
         if need_refresh:
-            win.refreshFrameSignal.emit()
+            self.update()
             win.propertyTableView.select_frame(win.preview_thread.player.Position())
         self.update_title()
 
@@ -2099,7 +2314,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         """Handle the 'select region' signal when it's emitted"""
         # Clear transform
         self.region_enabled = bool(clip_id)
-        get_app().window.refreshFrameSignal.emit()
+        if not self.region_enabled:
+            self.region_points = []
+            self.region_points_positive = []
+            self.region_points_negative = []
+            self.region_rects_positive = []
+            self.region_rects_negative = []
+            self.region_rect_drag_start = None
+            self.region_rect_drag_current = None
+            self.regionTopLeftHandle = None
+            self.regionBottomRightHandle = None
+        self.update()
         self.update_title()
 
     def resizeEvent(self, event):
@@ -2213,7 +2438,18 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.original_effect_data = None
         self.region_qimage = None
         self.region_transform = None
+        self.region_transform_inverted = None
         self.region_enabled = False
+        self.region_selection_mode = "rect"
+        self.region_annotation_tool = "positive_point"
+        self.region_points = []
+        self.region_points_positive = []
+        self.region_points_negative = []
+        self.region_rects_positive = []
+        self.region_rects_negative = []
+        self.region_rect_drag_start = None
+        self.region_rect_drag_current = None
+        self.region_annotation_inherited = False
         self.region_mode = None
         self.regionTopLeftHandle = None
         self.regionBottomRightHandle = None

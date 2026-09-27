@@ -107,6 +107,11 @@ def get_assets_path(file_path=None, create_paths=True):
             if not os.path.exists(asset_media_folder):
                 os.mkdir(asset_media_folder)
                 log.info("New media folder: {}".format(asset_media_folder))
+            # Create asset ComfyUI output folder
+            asset_comfy_output_folder = os.path.join(asset_path, "comfyui-output")
+            if not os.path.exists(asset_comfy_output_folder):
+                os.mkdir(asset_comfy_output_folder)
+                log.info("New ComfyUI output folder: {}".format(asset_comfy_output_folder))
 
             # Create asset optimized-preview folder
             asset_proxy_folder = os.path.join(asset_path, "optimized")
