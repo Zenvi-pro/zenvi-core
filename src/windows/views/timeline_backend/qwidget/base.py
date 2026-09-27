@@ -81,6 +81,7 @@ from classes.file_drop import local_path_from_url, mime_has_file_drop, urls_from
 from classes.query import Clip, Transition, File
 from classes.logger import log
 from .thumbnails import TimelineThumbnailManager
+from .timecode import TimecodeLineEdit
 
 
 class TimelineEvents(QObject):
@@ -330,6 +331,11 @@ class TimelineWidgetBase(QWidget):
             self._handle_thumbnail_ready,
             type=Qt.QueuedConnection,
         )
+
+        # In-place editor for the painted playhead time in the ruler header.
+        self.playhead_time_editor = TimecodeLineEdit(self)
+        self.playhead_time_editor.frameCommitted.connect(self._commit_playhead_time_edit)
+        self.playhead_time_editor.editCanceled.connect(self._cancel_playhead_time_edit)
 
         # Keyframe helpers
         self._keyframe_markers = []
@@ -787,6 +793,79 @@ class TimelineWidgetBase(QWidget):
         seconds = (x_pos - self.track_name_width + offset_px) / pps
         return max(0.0, seconds)
 
+    def _playhead_time_panel_rect(self):
+        """Return the header rectangle containing the painted playhead time."""
+        return QRectF(0, 0, self.track_name_width, self.ruler_height)
+
+    def _update_playhead_time_editor_geometry(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return
+        rect = self._playhead_time_panel_rect()
+        editor.setGeometry(
+            int(rect.x()),
+            int(rect.y()),
+            max(0, int(rect.width())),
+            max(0, int(rect.height())),
+        )
+
+    def _update_playhead_time_editor_theme(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        ruler = getattr(self, "ruler_painter", None)
+        if not editor or not ruler:
+            return
+        editor.apply_timeline_theme(
+            self.theme,
+            ruler.play_font,
+            self.theme.ruler_time_pad_left,
+            self.theme.ruler_time_pad_top,
+        )
+
+    def _sync_playhead_time_editor_context(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return
+        fps = get_app().project.get("fps")
+        editor.set_context(
+            fps.get("num", 30),
+            fps.get("den", 1),
+            self.current_frame,
+        )
+
+    def _start_playhead_time_edit(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return False
+        self._sync_playhead_time_editor_context()
+        self._update_playhead_time_editor_geometry()
+        self._update_playhead_time_editor_theme()
+        editor.set_current_frame_text(self.current_frame)
+        editor.show()
+        editor.raise_()
+        editor.setFocus(Qt.MouseFocusReason)
+        editor.selectAll()
+        return True
+
+    def _commit_playhead_time_edit(self, frame, start_preroll=True, force=True):
+        # Zenvi's SeekSignal takes only the frame (upstream also passes a
+        # preroll flag); the preroll/force flags only decide whether the
+        # editor closes after the seek.
+        frame = max(1, int(frame or 1))
+        if frame != self.current_frame:
+            self.current_frame = frame
+            self.update()
+        self.win.SeekSignal.emit(frame)
+        editor = getattr(self, "playhead_time_editor", None)
+        if editor and force:
+            editor.hide()
+
+    def _cancel_playhead_time_edit(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if editor:
+            editor.hide()
+            editor.clearFocus()
+        self.update()
+
     def run_js(self, code, callback=None, retries=0):
         """No-op on the native backend; log so silent gaps surface in debug logs."""
         snippet = (code or "")[:120].replace("\n", " ")
@@ -891,6 +970,8 @@ class TimelineWidgetBase(QWidget):
             p.update_theme()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
+        self._update_playhead_time_editor_theme()
+        self._update_playhead_time_editor_geometry()
         self.update()
 
     def setup_js_data(self):
@@ -1963,6 +2044,7 @@ class TimelineWidgetBase(QWidget):
         event.accept()
         self.geometry.mark_dirty()
         self.delayed_size = self.size()
+        self._update_playhead_time_editor_geometry()
         view_w = max(
             0.0,
             self.width() - self.track_name_width - self.scroll_bar_thickness,
@@ -2713,6 +2795,13 @@ class TimelineWidgetBase(QWidget):
 
         self.geometry.ensure()
 
+        if (
+            getattr(self, "playhead_time_editor", None)
+            and self._playhead_time_panel_rect().contains(pos)
+        ):
+            self.setCursor(Qt.IBeamCursor)
+            return
+
         # Playhead icon
         handle_rect = self._playhead_handle_rect()
         if (self.playhead_painter.icon_pix and not handle_rect.isNull() and handle_rect.contains(pos)):
@@ -2837,6 +2926,10 @@ class TimelineWidgetBase(QWidget):
         self.geometry.ensure()
 
         if event.button() == Qt.LeftButton:
+            if self._playhead_time_panel_rect().contains(pos):
+                if self._start_playhead_time_edit():
+                    event.accept()
+                    return
             toolbar_button = self._track_toolbar_button_at(pos)
             if toolbar_button:
                 self._last_event = event
