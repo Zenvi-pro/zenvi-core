@@ -25,7 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import html
 import os
+import re
 
 from classes import info
 from classes.app import get_app
@@ -228,3 +230,47 @@ def normalize_path(path_value):
     if not path_value:
         return ""
     return path_value.replace("\\", "/")
+
+
+def normalized_local_path(path_value):
+    """Return a normalized local filesystem path for storage/display."""
+    if not path_value:
+        return ""
+    return os.path.normpath(os.path.abspath(path_value))
+
+
+def comparable_local_path(path_value):
+    """Return a normalized local path suitable for equality checks."""
+    normalized = normalized_local_path(path_value)
+    if not normalized:
+        return ""
+    return os.path.normcase(normalized)
+
+
+def native_display_path(path_value):
+    """Return a display path using the current platform's separators."""
+    return normalized_local_path(path_value)
+
+
+def wrapped_path_html(path_value):
+    """Return HTML for a path that wraps cleanly after path separators."""
+    display_path = native_display_path(path_value)
+    if not display_path:
+        return ""
+    escaped_path = html.escape(display_path)
+    return re.sub(r"([/\\\\])", r"\1<wbr/>", escaped_path)
+
+
+def comparable_media_path(path_value, project_file=None):
+    """Return a normalized absolute media path suitable for equality checks."""
+    resolved = absolute_media_path(path_value, project_file)
+    if not resolved:
+        return ""
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def media_paths_equal(path_a, path_b, project_file=None):
+    """Compare two media paths after token expansion and platform normalization."""
+    if not path_a or not path_b:
+        return False
+    return comparable_media_path(path_a, project_file) == comparable_media_path(path_b, project_file)

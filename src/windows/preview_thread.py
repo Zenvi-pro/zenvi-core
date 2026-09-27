@@ -136,6 +136,7 @@ class PreviewParent(QObject, UpdateInterface):
         self.parent.PlaySignal.connect(self.worker.Play)
         self.parent.PauseSignal.connect(self.worker.Pause)
         self.parent.SeekSignal.connect(self.worker.Seek)
+        self.parent.LoadTimelineAndSeekSignal.connect(self.worker.LoadTimelineAndSeek)
         self.parent.SpeedSignal.connect(self.worker.Speed)
         self.parent.StopSignal.connect(self.worker.Stop)
 
@@ -170,12 +171,22 @@ class PlayerWorker(QObject):
         self.number = None
         self.current_frame = None
         self.current_mode = None
+        self.reader_mode = "timeline"
 
         # Create QtPlayer class from libopenshot
         self.player = openshot.QtPlayer()
 
     def CheckAudioDevice(self):
         """Check if any audio devices initialization errors, default sample rate, and current open audio device"""
+        s = get_app().get_settings()
+        project = get_app().project
+
+        def update_project_sample_rate_without_dirty(value):
+            """Normalize startup audio settings without changing project dirty state."""
+            previous_dirty = project.has_unsaved_changes
+            get_app().updates.update_untracked(["sample_rate"], value)
+            project.has_unsaved_changes = previous_dirty
+
         # Check audio init error
         audio_error = self.player.GetError()
         if audio_error:
@@ -203,15 +214,15 @@ class PlayerWorker(QObject):
 
                 # Update current project's sample rate, so we don't have some crazy
                 # audio drift due to mis-matching sample rates
-                get_app().updates.update(["sample_rate"], detected_sample_rate_int)
+                update_project_sample_rate_without_dirty(detected_sample_rate_int)
 
             # Convert float 'settings' sample rate to Integer, if detected
             if type(s.get("default-samplerate")) == float:
                 s.set("default-samplerate", detected_sample_rate_int)
 
         # Convert float 'project' sample rate to Integer, if detected
-        if type(get_app().project.get("sample_rate")) == float:
-            get_app().updates.update(["sample_rate"], round(get_app().project.get("sample_rate")))
+        if type(project.get("sample_rate")) == float:
+            update_project_sample_rate_without_dirty(round(project.get("sample_rate")))
 
         # Check active audio device name and type from audio device
         active_audio_device = self.player.GetCurrentAudioDevice()
@@ -341,7 +352,16 @@ class PlayerWorker(QObject):
     def LoadFile(self, path=None):
         """ Load a media file into the video player """
         # Check to see if this path is already loaded
-        if path == self.clip_path or (not path and not self.clip_path):
+        if path == self.clip_path:
+            if self.reader_mode == "clip":
+                return
+            if self.clip_reader:
+                self.original_position = self.player.Position()
+                self.player.Reader(self.clip_reader)
+                self.reader_mode = "clip"
+                self.Seek(1)
+            return
+        if not path and not self.clip_path and self.reader_mode == "timeline":
             return
 
         log.info("LoadFile %s" % path)
@@ -357,6 +377,7 @@ class PlayerWorker(QObject):
             # Return to self.timeline reader
             log.debug("Set timeline reader again in player: %s" % self.timeline)
             self.player.Reader(self.timeline)
+            self.reader_mode = "timeline"
 
             # Clear clip reader reference
             self.clip_reader = None
@@ -375,6 +396,9 @@ class PlayerWorker(QObject):
             sample_rate = int(project.get("sample_rate"))
             channels = int(project.get("channels"))
             channel_layout = int(project.get("channel_layout"))
+            timeline_sync = getattr(get_app().window, "timeline_sync", None)
+            preview_width = getattr(getattr(timeline_sync, "timeline", None), "preview_width", 0)
+            preview_height = getattr(getattr(timeline_sync, "timeline", None), "preview_height", 0)
 
             # Create an instance of a libopenshot Timeline object
             self.clip_reader = openshot.Timeline(width, height,
@@ -387,10 +411,18 @@ class PlayerWorker(QObject):
             self.clip_reader.info.duration = 999999
             self.clip_reader.info.sample_rate = sample_rate
             self.clip_reader.info.channels = channels
+            if preview_width and preview_height:
+                self.clip_reader.SetMaxSize(int(preview_width), int(preview_height))
 
             try:
                 # Add clip for current preview file
                 new_clip = openshot.Clip(path)
+                try:
+                    if new_clip.Reader().info.has_video:
+                        self.clip_reader.info.has_audio = False
+                        new_clip.Reader().info.has_audio = False
+                except Exception:
+                    log.debug("Failed to check has_video on clip reader for %s", path)
                 self.clip_reader.AddClip(new_clip)
             except Exception:
                 log.warning('Failed to load media file into video player: %s' % path)
@@ -399,6 +431,7 @@ class PlayerWorker(QObject):
 
             # Assign new clip_reader
             self.clip_path = path
+            self.reader_mode = "clip"
 
             # Keep track of previous clip readers (so we can Close it later)
             self.previous_clips.append(new_clip)
@@ -417,7 +450,10 @@ class PlayerWorker(QObject):
             previous_reader.Close()
 
         # Seek to frame 1, and resume speed
-        self.Seek(seek_position)
+        if not path:
+            QTimer.singleShot(0, lambda: self.Seek(seek_position))
+        else:
+            self.Seek(seek_position)
 
     def Play(self):
         """ Start playing the video player """
@@ -452,6 +488,17 @@ class PlayerWorker(QObject):
             if self.player.Mode() != openshot.PLAYBACK_PLAY:
                 self.player.Play()
                 self.player.Pause()
+
+    @pyqtSlot(int)
+    def LoadTimelineAndSeek(self, frame):
+        frame = max(1, int(frame))
+        self.original_position = frame
+        if self.timeline:
+            self.player.Reader(self.timeline)
+            self.reader_mode = "timeline"
+            self.clip_reader = None
+            self.clip_path = None
+        self.Seek(frame)
 
     def Speed(self, new_speed):
         """ Set the speed of the video player """

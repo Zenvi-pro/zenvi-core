@@ -574,6 +574,15 @@ QComboBox {
 QComboBox:hover  { border-color: rgba(255, 255, 255, 0.2); }
 QComboBox:focus  { border-color: #4d9cf6; }
 
+/* ── Keyboard focus (TAB navigation; ported from OpenShot #5912, Zenvi palette) ── */
+QToolBar QToolButton:focus { background-color: #2e2e2e; border: 1px solid #4d9cf6; }
+QToolBar QToolButton:checked:focus { border: 1px solid #4d9cf6; }
+QPushButton:focus { border-color: #4d9cf6; }
+QCheckBox:focus { background-color: #2a2a2a; border-radius: 3px; }
+QTabBar:focus { outline: none; }
+QTabBar::tab:focus { border-bottom: 2px solid #4d9cf6; }
+QToolBox::tab:focus { border-left: 2px solid #4d9cf6; }
+
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
@@ -1005,8 +1014,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         self.set_dock_margins([14, 0, 14, 0])
         self.set_dock_margins([0, 0, 0, 0], [0, 8, 0, 0], "dockTimelineContents")
 
-        # Re-apply the full stylesheet
-        self.app.setStyleSheet(self.style_sheet)
+        # Apply new stylesheet
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # ── Dock nav tab icons (icon-only, text hidden via QSS) ───────
         win = self.app.window
