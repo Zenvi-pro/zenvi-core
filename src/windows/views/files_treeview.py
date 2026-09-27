@@ -308,6 +308,10 @@ class FilesTreeView(QTreeView):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionModel(self.files_model.selection_model)
         self.setSortingEnabled(True)
+        # Keep "sortable" behavior available from the header, but do not apply
+        # an initial forced sort so new imports keep insertion order by default.
+        self.header().setSortIndicator(-1, Qt.AscendingOrder)
+        self.files_model.proxy_model.sort(-1)
 
         self.setAcceptDrops(True)
         self.setDragEnabled(True)

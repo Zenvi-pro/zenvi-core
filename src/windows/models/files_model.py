@@ -1161,9 +1161,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                     import_quietly = True
                     log.info("Recursively importing {}".format(filepath))
                     try:
-                        for r, _, f in os.walk(filepath):
+                        for r, dirs, f in os.walk(filepath):
+                            dirs.sort()
                             media_paths.extend(
-                                [os.path.join(r, p) for p in f])
+                                [os.path.join(r, p) for p in sorted(f)])
                     except OSError:
                         log.warning("Directory recursion failed", exc_info=1)
                 elif os.path.isfile(filepath):
@@ -1171,7 +1172,8 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not media_paths:
                 return []
             # Import all new media files
-            media_paths.sort()
+            # Preserve the incoming path order (selection/drop order) instead of
+            # forcing filename sorting.
             log.debug("Importing file list: {}".format(media_paths))
             return self.add_files(
                 media_paths, quiet=import_quietly, prevent_image_seq=prevent_image_seq

@@ -344,7 +344,8 @@ class FilesListView(QListView):
         set_proxy_filter(self.files_model.proxy_model, regex)
 
         col = self.files_model.proxy_model.sortColumn()
-        self.files_model.proxy_model.sort(col)
+        if col >= 0:
+            self.files_model.proxy_model.sort(col)
 
     def resize_contents(self):
         pass
