@@ -167,7 +167,7 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
         self.app.setStyle(QStyleFactory.create("Fusion"))
         dark_palette = ui_util.make_dark_palette(self.app.palette())
         self.app.setPalette(dark_palette)
-        self.app.setStyleSheet(self.style_sheet)
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # Apply timeline theme
         self.app.window.timeline.apply_theme("")

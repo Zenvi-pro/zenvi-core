@@ -35,6 +35,7 @@ from classes.query import File
 from classes.app import get_app
 from classes.logger import log
 import json
+import uuid
 
 
 class EmojisListView(QListView):
@@ -63,6 +64,11 @@ class EmojisListView(QListView):
 
         # Create emoji file before drag starts
         data = json.loads(drag.mimeData().text())
+
+        # Start a transaction so File + Clip are grouped for undo
+        tid = str(uuid.uuid4())
+        get_app().updates.transaction_id = tid
+
         file = self.add_file(data[0])
 
         # Update mimedata for emoji
@@ -73,6 +79,9 @@ class EmojisListView(QListView):
 
         # Start drag
         drag.exec_()
+
+        # End transaction
+        get_app().updates.transaction_id = None
 
     def add_file(self, filepath):
         # Add file into project
@@ -164,7 +173,6 @@ class EmojisListView(QListView):
         self.setResizeMode(QListView.Adjust)
         self.setUniformItemSizes(True)
         self.setWordWrap(False)
-        self.setStyleSheet('QListView::item { padding-top: 2px; }')
 
         # Initialize sort
         self.refresh_view()

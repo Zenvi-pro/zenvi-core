@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import json
 import uuid
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtWidgets import QApplication
@@ -34,6 +35,36 @@ from classes.waveform import SAMPLES_PER_SECOND as WAVEFORM_SAMPLES_PER_SECOND
 
 
 class ClipInteractionMixin:
+    def _set_trim_thumbnail_suspension(self, enabled, clip_id=None):
+        """Pause thumbnail generation while trimming and drop stale queued work."""
+        self._suspend_thumbnail_requests = bool(enabled)
+        clip_key = str(clip_id or "")
+        if enabled:
+            if self.thumbnail_manager:
+                self.thumbnail_manager.clear_pending()
+            if clip_key and hasattr(self, "clip_painter"):
+                # Keep existing cached thumbs visible while trimming, but drop in-flight requests.
+                self.clip_painter.invalidate_clip_thumbnails(
+                    clip_key,
+                    drop_cache=False,
+                    drop_pending=True,
+                    drop_fallback=False,
+                    invalidate_render_cache=False,
+                )
+            return
+
+        if self.thumbnail_manager:
+            self.thumbnail_manager.clear_pending()
+        if clip_key and hasattr(self, "clip_painter"):
+            # Preserve existing thumbnails until replacements arrive; only drop stale in-flight requests.
+            self.clip_painter.invalidate_clip_thumbnails(
+                clip_key,
+                drop_cache=False,
+                drop_pending=True,
+                drop_fallback=False,
+                invalidate_render_cache=False,
+            )
+
     def clip_has_pending_override(self, clip):
         if not isinstance(clip, Clip):
             return False
@@ -600,6 +631,8 @@ class ClipInteractionMixin:
 
     def _startResize(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
+            if hasattr(self.win, "TrimPreviewMode"):
+                self.win.TrimPreviewMode.emit()
             self._startItemResize()
         elif self._press_hit == "timeline-handle":
             self._startProjectResize()
@@ -620,6 +653,8 @@ class ClipInteractionMixin:
     def _finishResize(self):
         if self._press_hit == "clip-edge" and self._resizing_item:
             self._finishItemResize()
+            if hasattr(self.win, "TimelinePreviewMode"):
+                self.win.TimelinePreviewMode.emit()
         elif self._press_hit == "timeline-handle":
             self._finishProjectResize()
         else:
@@ -691,6 +726,7 @@ class ClipInteractionMixin:
             updated_ignore.add(item_id)
             self._snap_ignore_ids = updated_ignore
         if isinstance(item, Clip):
+            self._set_trim_thumbnail_suspension(True, item.id)
             max_duration = self._clip_reader_duration_seconds(item)
             if max_duration is None:
                 max_duration = self._positive_float(self._resize_initial.get("duration"))
@@ -884,10 +920,18 @@ class ClipInteractionMixin:
         item = self._resizing_item
         if not item:
             return
+        if not hasattr(self, "_resize_new_start"):
+            if isinstance(item, Clip):
+                self._set_trim_thumbnail_suspension(False, item.id)
+            self._resizing_item = None
+            self._snap_keyframe_seconds = []
+            self.snap.reset()
+            return
         start = self._resize_new_start
         end = self._resize_new_end
         position = self._resize_new_position
         if isinstance(item, Clip):
+            setattr(self.win, "_trim_refresh_pending", True)
             if self.enable_timing:
                 duration = end - start
                 item.data["start"] = self._timing_original_start
@@ -900,11 +944,19 @@ class ClipInteractionMixin:
                 item.data["position"] = self._snap_time(position)
                 self.update_clip_data(item.data, only_basic_props=True, ignore_reader=True)
         else:
+            setattr(self.win, "_trim_refresh_pending", True)
             item.data["position"] = self._snap_time(position)
             item.data["start"] = 0.0
             item.data["end"] = self._snap_time(end)
             item.data["duration"] = self._snap_time(end)
             self.update_transition_data(item.data, only_basic_props=True)
+
+        if isinstance(item, (Clip, Transition)):
+            if hasattr(self, "RefreshTrimmedTimelineItem"):
+                self.RefreshTrimmedTimelineItem(json.dumps(item.data), self._resize_edge)
+
+        if isinstance(item, Clip):
+            self._set_trim_thumbnail_suspension(False, item.id)
 
         self._resizing_item = None
         self._snap_keyframe_seconds = []

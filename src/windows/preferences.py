@@ -40,9 +40,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QKeySequence, QIcon
 
-from classes import info, ui_util
+from classes import info, ui_util, tabstops
 from classes import openshot_rc  # noqa
 from classes.app import get_app
+from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.language import get_all_languages
 from classes.logger import log
 from classes.metrics import track_metric_screen
@@ -110,6 +111,15 @@ class Preferences(QDialog):
         self.btnRestoreDefaults.clicked.connect(self.confirm_restore_defaults)
         self.tabCategories.currentChanged.connect(self.category_tab_changed)
 
+        # Disable autoDefault so ENTER doesn't trigger Restore Defaults from random widgets
+        self.btnRestoreDefaults.setAutoDefault(False)
+        self.btnRestoreDefaults.setDefault(False)
+
+        # Make Close button the default so ENTER closes the dialog
+        close_button = self.buttonBox.button(self.buttonBox.Close)
+        if close_button:
+            close_button.setDefault(True)
+
         self.requires_restart = False
         self.category_names = {}
         self.category_tabs = {}
@@ -141,6 +151,8 @@ class Preferences(QDialog):
         # Update the Restore Defaults button label
         if non_translated_category:
             self.btnRestoreDefaults.setText(f"Restore Defaults: {non_translated_category}")
+
+        self._apply_tab_order()
 
     def txtSearch_changed(self):
         """textChanged event handler for search box"""
@@ -288,9 +300,20 @@ class Preferences(QDialog):
                 if param["type"] == "spinner-int":
                     # create QDoubleSpinBox
                     widget = QSpinBox()
-                    widget.setMinimum(int(param["min"]))
-                    widget.setMaximum(int(param["max"]))
-                    widget.setValue(int(param["value"]))
+                    min_value = int(param["min"])
+                    max_value = int(param["max"])
+                    current_value = int(param["value"])
+                    thread_limits = self._get_thread_spinner_limits(param.get("setting"))
+                    if thread_limits:
+                        min_value, max_value = thread_limits
+                        clamped_value = max(min_value, min(current_value, max_value))
+                        if clamped_value != current_value:
+                            self.s.set(param["setting"], clamped_value)
+                            param["value"] = clamped_value
+                            current_value = clamped_value
+                    widget.setMinimum(min_value)
+                    widget.setMaximum(max_value)
+                    widget.setValue(current_value)
                     widget.setSingleStep(param.get("step", 1))
                     widget.setToolTip(param["title"])
                     widget.valueChanged.connect(functools.partial(self.spinner_value_changed, param))
@@ -492,6 +515,8 @@ class Preferences(QDialog):
         # Delete all tabs and widgets
         self.DeleteAllTabs(onlyInVisible=True)
 
+        self._apply_tab_order()
+
     def register_setting_widget(self, param, widget, label=None):
         """Store widget references and register dependency relationships."""
         setting_name = param.get("setting")
@@ -504,6 +529,30 @@ class Preferences(QDialog):
         dependency = param.get("dependency")
         if dependency:
             self.dependency_map.setdefault(dependency, []).append((widget, label))
+
+    def _apply_tab_order(self):
+        """Apply a stable tab order for the currently visible preferences tab."""
+        current_tab = self.tabCategories.currentWidget()
+        if not current_tab:
+            tabstops.apply_auto_tab_order_later(self)
+            return
+
+        content_widget = current_tab.widget()
+        if not content_widget:
+            tabstops.apply_auto_tab_order_later(self)
+            return
+
+        ordered = [self.txtSearch, self.tabCategories]
+        ordered.extend(
+            tabstops.collect_focusable_from_layout(
+                content_widget.layout(), self, include_hidden=True
+            )
+        )
+        ordered.extend([self.btnRestoreDefaults, self.buttonBox])
+
+        tabstops.apply_explicit_tab_order_later(
+            ordered, root=self, include_hidden=True
+        )
 
     def apply_all_dependencies(self):
         """Apply dependency state to all registered widgets."""
@@ -571,6 +620,36 @@ class Preferences(QDialog):
         except Exception:
             log.warning("Failed to apply timeline thumbnail style live", exc_info=1)
 
+    def _get_thread_spinner_limits(self, setting_name):
+        """Return UI bounds for thread-related preference spinners."""
+        omp_default, ff_default = lib_default_thread_counts()
+        if setting_name == "omp_threads_number":
+            default_value = int(omp_default)
+            min_value = 2
+        elif setting_name == "ff_threads_number":
+            default_value = int(ff_default)
+            min_value = 2
+        else:
+            return None
+
+        max_value = max(min_value, default_value * 3)
+        return min_value, max_value
+
+    def _apply_thread_settings(self):
+        """Apply current thread preference values to libopenshot."""
+        lib_settings = openshot.Settings.Instance()
+        omp_value = int(str(self.s.get("omp_threads_number")))
+        ff_value = int(str(self.s.get("ff_threads_number")))
+        omp_min, omp_max = self._get_thread_spinner_limits("omp_threads_number")
+        ff_min, ff_max = self._get_thread_spinner_limits("ff_threads_number")
+        lib_settings.OMP_THREADS = max(omp_min, min(omp_value, omp_max))
+        apply_openmp_settings(lib_settings)
+        lib_settings.FF_THREADS = max(ff_min, min(ff_value, ff_max))
+
+    def _apply_cache_settings(self):
+        """Apply current cache preference values to the active session."""
+        get_app().window.InitCacheSettings()
+
     def bool_value_changed(self, widget, param, state):
         # Save setting
         if state == Qt.Checked:
@@ -613,10 +692,17 @@ class Preferences(QDialog):
             get_app().window.auto_save_timer.setInterval(int(value * 1000 * 60))
 
         elif param["setting"] == "omp_threads_number":
-            openshot.Settings.Instance().OMP_THREADS = max(2, int(str(value)))
+            lib_settings = openshot.Settings.Instance()
+            value = int(str(value))
+            min_value, max_value = self._get_thread_spinner_limits("omp_threads_number")
+            lib_settings.OMP_THREADS = max(min_value, min(value, max_value))
+            apply_openmp_settings(lib_settings)
 
         elif param["setting"] == "ff_threads_number":
-            openshot.Settings.Instance().FF_THREADS = int(str(value))
+            lib_settings = openshot.Settings.Instance()
+            value = int(str(value))
+            min_value, max_value = self._get_thread_spinner_limits("ff_threads_number")
+            lib_settings.FF_THREADS = max(min_value, min(value, max_value))
 
         elif param["setting"] == "decode_hw_max_width":
             openshot.Settings.Instance().DE_LIMIT_WIDTH_MAX = int(str(value))
@@ -820,6 +906,12 @@ class Preferences(QDialog):
             # Restore category settings
             self.requires_restart = self.s.restore(category_filter=category)
             self.settings_data = self.s.get_all_settings()
+
+            if category == "Performance":
+                self._apply_thread_settings()
+                self._apply_cache_settings()
+            elif category == "Cache":
+                self._apply_cache_settings()
 
             # Re-apply thumbnail style to the QWidget timeline if it changed
             self._apply_timeline_thumbnail_style()
