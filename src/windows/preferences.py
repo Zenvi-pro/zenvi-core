@@ -542,7 +542,11 @@ class Preferences(QDialog):
             tabstops.apply_auto_tab_order_later(self)
             return
 
-        ordered = [self.txtSearch, self.tabCategories]
+        # Ensure the scroll area is part of the focus chain (Qt6 is stricter)
+        if current_tab.focusProxy() is None and content_widget is not None:
+            current_tab.setFocusProxy(content_widget)
+
+        ordered = [self.txtSearch, self.tabCategories, current_tab]
         ordered.extend(
             tabstops.collect_focusable_from_layout(
                 content_widget.layout(), self, include_hidden=True

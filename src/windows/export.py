@@ -425,7 +425,7 @@ class Export(QDialog):
                 seen.add(widget)
 
             for first, second in zip(ordered_unique, ordered_unique[1:]):
-                QWidget.setTabOrder(first, second)
+                tabstops.safe_set_tab_order(first, second)
 
             # Wrap back to the first field after the last visible button.
             first_visible = ordered_unique[0] if ordered_unique else None
@@ -436,7 +436,7 @@ class Export(QDialog):
                 last_visible = None
 
             if first_visible and last_visible:
-                QWidget.setTabOrder(last_visible, first_visible)
+                tabstops.safe_set_tab_order(last_visible, first_visible)
 
             self._tab_order_list = [
                 w for w in ordered_unique

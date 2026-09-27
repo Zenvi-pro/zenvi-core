@@ -228,7 +228,7 @@ class PropertiesTableView(QTableView):
 
         # For numeric keys, clobber the existing value with the typed character
         if result and is_numeric:
-            from PyQt5.QtCore import QTimer
+            from qt_api import QTimer
             typed_char = event.text()
             def set_initial_value():
                 editor = self.indexWidget(index)

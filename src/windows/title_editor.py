@@ -528,7 +528,9 @@ class TitleEditor(QDialog):
         )
 
         if ordered:
-            QTimer.singleShot(0, lambda: QWidget.setTabOrder(ordered[-1], ordered[0]))
+            QTimer.singleShot(
+                0, lambda: tabstops.safe_set_tab_order(ordered[-1], ordered[0])
+            )
 
     def writeToFile(self, xmldoc):
         '''writes a new svg file containing the user edited data'''
