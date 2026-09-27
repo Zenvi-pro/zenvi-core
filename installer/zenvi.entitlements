@@ -14,5 +14,11 @@
          DYLD_* env vars by default. -->
     <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
+    <!-- For recording webcam video. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <!-- For recording microphone audio. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>

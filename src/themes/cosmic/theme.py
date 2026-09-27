@@ -1493,4 +1493,6 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         button = self.app.window.videoToolbar.widgetForAction(self.app.window.actionPlay)
         if button:
             icon_name = "tool-media-pause.svg" if isPlay else "tool-media-play.svg"
-            button.setIcon(QIcon(os.path.join(PATH, "themes/cosmic/images", icon_name)))
+            icon_path = os.path.join(PATH, "themes/cosmic/images", icon_name)
+            icon = self.create_svg_icon(icon_path, self.app.window.videoToolbar.iconSize())
+            button.setIcon(icon)

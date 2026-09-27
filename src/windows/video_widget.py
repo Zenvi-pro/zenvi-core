@@ -209,6 +209,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         origin_screen = t.map(QPointF(local_origin_x, local_origin_y))
         return t, (sx, sy, rot, shx, shy, ox, oy), origin_screen
 
+    def _clip_screen_rect(self, rect, props):
+        """Return the on-screen bounds of a clip rect after its clip transform."""
+        transform, _, _ = self._build_clip_transform(
+            rect.x(), rect.y(), rect.width(), rect.height(), props
+        )
+        return transform.mapRect(QRectF(0.0, 0.0, rect.width(), rect.height()))
+
     def _effect_has_margin_box(self, raw_properties=None):
         """Return True when an effect exposes a left/top/right/bottom margin rectangle."""
         if raw_properties is not None:
@@ -613,9 +620,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             union_rect = None
             first_props = None
+            use_group_bounds = len(clip_pairs) > 1
             for clip, obj in clip_pairs:
                 frame = self._get_clip_frame_number(clip, fps_float)
                 rect, props = self._clip_rect(clip, obj, viewport, frame)
+                if use_group_bounds:
+                    rect = self._clip_screen_rect(rect, props)
+                    props = default_props
                 if union_rect is None:
                     union_rect = rect
                     first_props = props

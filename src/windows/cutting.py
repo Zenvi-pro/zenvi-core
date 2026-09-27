@@ -97,8 +97,8 @@ class Cutting(QDialog):
         self.width = int(file.data['width'])
         self.height = int(file.data['height'])
         self.sample_rate = int(get_app().project.get("sample_rate"))
-        self.channels = int(file.data['channels'])
-        self.channel_layout = int(file.data['channel_layout'])
+        self.channels = int(get_app().project.get("channels"))
+        self.channel_layout = int(get_app().project.get("channel_layout"))
 
         self.start_frame = 1
         self.start_image = None
