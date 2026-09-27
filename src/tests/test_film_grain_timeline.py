@@ -483,6 +483,33 @@ class FilmGrainTimelineTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
 
 
+    # Zenvi additions: helpers the ported menu code calls that Zenvi did not previously define.
+
+    def test_transition_reader_json_is_loaded_and_cached(self):
+        helper = types.SimpleNamespace()
+        helper._load_transition_reader_data = types.MethodType(
+            self.timeline_module.TimelineView._load_transition_reader_data, helper)
+        svg_path = os.path.join(PATH, "transitions", "common", "wipe_left_to_right.svg")
+
+        first = self.timeline_module.TimelineView._get_transition_reader_json(helper, svg_path)
+        second = self.timeline_module.TimelineView._get_transition_reader_json(helper, svg_path)
+
+        self.assertIsInstance(first, dict)
+        self.assertEqual(first.get("path"), svg_path)
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)  # callers get their own copy
+        self.assertIn(os.path.abspath(svg_path), helper._transition_reader_json_cache)
+        self.assertIsNone(self.timeline_module.TimelineView._get_transition_reader_json(helper, ""))
+
+    def test_clip_has_visible_waveform_requires_audio_samples(self):
+        view = self.timeline_module.TimelineView
+        self.assertFalse(view._clip_has_visible_waveform(None, None))
+        self.assertFalse(view._clip_has_visible_waveform(None, types.SimpleNamespace(data={})))
+        self.assertFalse(view._clip_has_visible_waveform(
+            None, types.SimpleNamespace(data={"ui": {"audio_data": []}})))
+        self.assertTrue(view._clip_has_visible_waveform(
+            None, types.SimpleNamespace(data={"ui": {"audio_data": [0.1, 0.5]}})))
+
 
 if __name__ == "__main__":
     unittest.main()
