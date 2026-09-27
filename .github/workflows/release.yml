@@ -433,7 +433,7 @@ jobs:
           # Verify the binding is importable (soft check — freeze.py uses filesystem
           # discovery via ZENVI_OPENSHOT_PYROOT, so a dlopen failure here is non-fatal)
           DYLD_LIBRARY_PATH="$INSTALL_PREFIX/lib" PYTHONPATH="$PYROOT" \
-            python3 -c "import json, openshot; print(f'libopenshot version: {openshot.OPENSHOT_VERSION_FULL}'); names = sorted(e.get('class_name', '') for e in json.loads(openshot.EffectInfo.Json())); print('effects:', ', '.join(names)); print('OpenCV effects present:', all(n in names for n in ('Tracker', 'Object Detector', 'Stabilizer')))" \
+            python3 -c "import json, openshot; print(f'libopenshot version: {openshot.OPENSHOT_VERSION_FULL}'); names = sorted(e.get('class_name', '') for e in json.loads(openshot.EffectInfo.Json())); print('effects:', ', '.join(names)); print('OpenCV effects present:', all(n in names for n in ('Tracker', 'ObjectDetection', 'Stabilizer')))" \
             || echo "::warning::openshot import failed (dlopen issue) — freeze.py will use filesystem discovery"
 
           # Stage the OpenCV runtime next to libopenshot so freeze.py bundles it

@@ -249,7 +249,7 @@ print('  ✓ Frame.GetBytes :', hasattr(openshot.Frame, 'GetBytes'))
 print('  ✓ Frame.GetImage :', hasattr(openshot.Frame, 'GetImage'))
 effects = sorted(e.get('class_name', '') for e in json.loads(openshot.EffectInfo.Json()))
 print('  ✓ %d effects     :' % len(effects), ', '.join(effects))
-print('  ✓ OpenCV effects :', all(name in effects for name in ('Tracker', 'Object Detector', 'Stabilizer')))
+print('  ✓ OpenCV effects :', all(name in effects for name in ('Tracker', 'ObjectDetection', 'Stabilizer')))
 t = openshot.Timeline(1280, 720, openshot.Fraction(30,1), 48000, 2, openshot.LAYOUT_STEREO)
 print('  ✓ Timeline construct OK')
 "
