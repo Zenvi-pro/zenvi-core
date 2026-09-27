@@ -436,7 +436,7 @@ class TimelineWidgetBase(QWidget):
         if hasattr(self, "clip_painter"):
             self.clip_painter.expire_thumbnail_requests(self.thumbnail_generation)
 
-    @pyqtSlot(str, int, str, int)
+    @pyqtSlot(str, int, object, int)
     def _handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
         """Forward thumbnail ready events to the clip painter on the GUI thread."""
         if hasattr(self, "clip_painter"):
