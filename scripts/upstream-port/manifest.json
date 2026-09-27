@@ -468,12 +468,6 @@
       "gui": true,
       "commits": [
         {
-          "sha": "930ff9197",
-          "pr": 6014,
-          "title": "refactor-timeline-styles",
-          "note": "drop installer/build-mac-dmg.sh hunks; Zenvi has its own DMG scripts"
-        },
-        {
           "sha": "afeab08f2",
           "pr": 6028,
           "title": "fps-fix"
@@ -537,6 +531,38 @@
         "Export an animated title -> renders",
         "Horizontal tilt-wheel scrolls the timeline; marker navigation scrolls to the marker",
         "Reset clip speed to 1.0 -> no freeze"
+      ],
+      "tasks": [
+        "#6014 refactor-timeline-styles moved to the timeline-styles feature (it needs helpers from the timeline-qwidget-default picks)"
+      ]
+    },
+    "timeline-styles": {
+      "title": "Upstream timeline style refactor (#6014) on top of the native-timeline fixes",
+      "effort": "M",
+      "deps": [
+        "timeline-qwidget-default",
+        "qt-api"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "930ff9197",
+          "pr": 6014,
+          "title": "refactor-timeline-styles",
+          "note": "drop installer/build-mac-dmg.sh hunks (Zenvi has its own DMG scripts); needs drag preview / razor cursor / auto-select helpers from timeline-qwidget-default and qt_api imports"
+        }
+      ],
+      "hotspots": [
+        "src/themes/cosmic/theme.py",
+        "src/windows/views/timeline.py",
+        "src/windows/views/timeline_backend/paint/clip.py",
+        "src/windows/views/timeline_backend/qwidget/base.py",
+        "src/windows/views/zoom_slider.py"
+      ],
+      "human_test": [
+        "./run.sh -> native timeline renders with the restyled clips/tracks; Cosmic theme colours preserved",
+        "Hover a clip -> tooltip; locked track dims; razor cursor shows in razor mode",
+        "Zoom slider / minimap still work"
       ]
     },
     "optimize-preview": {
