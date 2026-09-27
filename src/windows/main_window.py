@@ -1734,7 +1734,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if is_actively_playing:
             self.PauseSignal.emit()
 
-    @pyqtSlot(int, bool)
+    @pyqtSlot(int)  # Zenvi's SeekSignal carries only the frame (no preroll flag)
     def _enter_playback_mode(self, _frame=0, _preroll=False):
         """Re-enable video caching when the user seeks or starts playback."""
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
@@ -1755,8 +1755,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if not self._scope_timer.isActive():
             self._scope_timer.start()
 
-    @pyqtSlot(int, bool)
-    def _on_scope_seek(self, frame_number, _start_preroll):
+    @pyqtSlot(int)  # Zenvi's SeekSignal carries only the frame (no preroll flag)
+    def _on_scope_seek(self, frame_number, _start_preroll=False):
         """Catch manual seeks (scrubbing, step buttons) that may not emit position_changed."""
         self._on_scope_frame(frame_number)
 
@@ -5186,6 +5186,25 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._dock_style_theme_changed = False
         self.style_dock_widgets(theme_changed=theme_changed)
 
+    def _schedule_tab_order_update(self):
+        if not hasattr(self, "_tab_order_timer"):
+            self._tab_order_timer = QTimer(self)
+            self._tab_order_timer.setSingleShot(True)
+            self._tab_order_timer.timeout.connect(self._apply_tab_order_and_connect_dock_tabs)
+        self._tab_order_timer.start(50)
+
+    def _apply_tab_order_and_connect_dock_tabs(self):
+        """Apply tab order and connect dock tab bar signals."""
+        tabstops.apply_auto_tab_order(self, include_hidden=True, include_disabled=True)
+        self._connect_dock_tab_bar_signals()
+
+    def _connect_dock_tab_bar_signals(self):
+        """Connect currentChanged signals on dock tab bars to update tab order."""
+        if not hasattr(self, "_connected_dock_tab_bars"):
+            self._connected_dock_tab_bars = set()
+
+        dock_titles = {dock.windowTitle() for dock in self.getDocks()}
+
         for tab_bar in self.findChildren(QTabBar):
             if tab_bar in self._connected_dock_tab_bars:
                 continue
@@ -5196,6 +5215,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if any(title in dock_titles for title in tabs):
                 tab_bar.currentChanged.connect(self._schedule_tab_order_update)
                 self._connected_dock_tab_bars.add(tab_bar)
+
     def _mark_dock_interaction_active(self, *_args):
         """Suppress expensive preview/cache churn while docks are being rearranged."""
         self._dock_interaction_active = True
