@@ -540,8 +540,8 @@
       "title": "Upstream timeline style refactor (#6014) on top of the native-timeline fixes",
       "effort": "M",
       "deps": [
-        "timeline-qwidget-default",
-        "qt-api"
+        "qt-api",
+        "timeline-qwidget-default"
       ],
       "gui": true,
       "commits": [
@@ -563,7 +563,9 @@
         "./run.sh -> native timeline renders with the restyled clips/tracks; Cosmic theme colours preserved",
         "Hover a clip -> tooltip; locked track dims; razor cursor shows in razor mode",
         "Zoom slider / minimap still work"
-      ]
+      ],
+      "hold": true,
+      "notes": "HOLD until #205 (qt-api) and #206 (timeline-qwidget-default) are both merged into develop: #6014 needs code from both and they are independent branches, so there is no single stack base. Start with launch-all.sh --only timeline-styles --force once develop contains both."
     },
     "optimize-preview": {
       "title": "Optimized preview proxies for heavy media",
