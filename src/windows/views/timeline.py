@@ -2285,6 +2285,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def Color_Triggered(self, preset_name, clip_ids):
         """Apply or reset Color Grade presets for selected clips."""
+        # One undo step for the whole selection (Zenvi: one intent = one transaction)
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+        try:
+            self._apply_color_preset(preset_name, clip_ids)
+        finally:
+            get_app().updates.transaction_id = None
+
+    def _apply_color_preset(self, preset_name, clip_ids):
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_video(clip):
@@ -2334,6 +2343,20 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def Adjust_Colors_Triggered(self, clip_ids):
         """Ensure a Color Grade effect exists and open the video scopes."""
+        # Adding the effect to several clips is one undo step
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+        try:
+            first_effect_id, first_clip_id = self._ensure_color_grade_effects(clip_ids)
+        finally:
+            get_app().updates.transaction_id = None
+
+        get_app().window.show_color_grading_docks()
+        if first_effect_id:
+            self.addSelection(first_effect_id, "effect", True)
+            self.window.KeyFrameTransformSignal.emit(first_effect_id, first_clip_id)
+
+    def _ensure_color_grade_effects(self, clip_ids):
         first_effect_id = None
         first_clip_id = None
         for clip_id in clip_ids:
@@ -2349,11 +2372,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if changed:
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
                 get_app().updates.apply_last_action_to_history(original_clip_data)
-
-        get_app().window.show_color_grading_docks()
-        if first_effect_id:
-            self.addSelection(first_effect_id, "effect", True)
-            self.window.KeyFrameTransformSignal.emit(first_effect_id, first_clip_id)
+        return first_effect_id, first_clip_id
 
     def Layout_Triggered(self, action, clip_ids):
         """Callback for the layout context menus"""
