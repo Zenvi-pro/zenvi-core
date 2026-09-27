@@ -860,6 +860,87 @@ QWidget#cutting QPushButton#btnAddClip:disabled {
 /* ── Video preview ────────────────────────────────────────── */
 QWidget#videoPreview { background-color: #0d0d0d; }
 
+/* ── Recording dock (source cards, sections, segment buttons) ── */
+QFrame#recordingCard {
+    background-color: #1a1a1a;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+}
+QFrame#recordingCard[checked="true"] {
+    border: 2px solid #4d9cf6;
+    background-color: rgba(77, 156, 246, 0.14);
+}
+QFrame#recordingCard[available="false"] {
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background-color: #141414;
+}
+QLabel#recordingCardIcon {
+    color: #4d9cf6;
+    font-size: 22px;
+}
+QLabel#recordingCardTitle {
+    color: #f0f0f0;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#recordingCardSubtitle {
+    color: #8a8a8a;
+    font-size: 11px;
+}
+QFrame#recordingSection {
+    background-color: #141414;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}
+QFrame#recordingSection[active="true"] {
+    border: 1px solid rgba(77, 156, 246, 0.45);
+}
+QFrame#recordingSection[active="false"] {
+    color: #6b6b6b;
+    background-color: #101010;
+}
+QLabel#recordingSectionIcon {
+    color: #4d9cf6;
+    font-size: 16px;
+}
+QLabel#recordingSectionTitle {
+    color: #f0f0f0;
+    font-weight: 700;
+}
+QPushButton#recordingAdvancedLink {
+    color: #4d9cf6;
+    background: transparent;
+    border: none;
+    padding: 0;
+    min-height: 0;
+    text-align: right;
+}
+QPushButton#recordingAdvancedLink:hover {
+    color: #9dccff;
+    text-decoration: underline;
+}
+QPushButton#recordingSegment {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 7px 10px;
+    color: #c8c8c8;
+    background-color: #1a1a1a;
+}
+QPushButton#recordingSegment[position="left"] {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QPushButton#recordingSegment[position="right"] {
+    border-left: none;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+QPushButton#recordingSegment:checked {
+    color: #9dccff;
+    border: 1px solid #4d9cf6;
+    background-color: rgba(77, 156, 246, 0.22);
+}
+
 /* ── Scene Descriptions dock ──────────────────────────────── */
 QDockWidget#AIMediaPanel QWidget {
     background-color: #0d0d0d;
