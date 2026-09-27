@@ -1310,14 +1310,6 @@
   },
   {
     "category": "Keyboard",
-    "title": "Advanced View",
-    "restart": false,
-    "setting": "actionAdvanced_View",
-    "value": "Alt+Shift+1",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
     "title": "Freeze View",
     "restart": false,
     "setting": "actionFreeze_View",

@@ -2991,52 +2991,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         QCoreApplication.processEvents()
         self._schedule_tab_order_update()
 
-    def actionAdvanced_View_trigger(self):
-        """ Switch to an alternative view """
-        self.removeDocks()
-
-        # Add Docks
-        self.addDocks([self.dockFiles, self.dockVideo], Qt.TopDockWidgetArea)
-        self.addDocks([
-            self.dockEffects,
-            self.dockTransitions,
-            self.dockEmojis,
-            self.dockAIChat,
-            ], Qt.RightDockWidgetArea)
-        self.addDocks([self.dockProperties], Qt.LeftDockWidgetArea)
-
-        self.floatDocks(False)
-        self.tabifyDockWidget(self.dockEmojis, self.dockEffects)
-        self.showDocks([
-            self.dockFiles,
-            self.dockTransitions,
-            self.dockVideo,
-            self.dockEffects,
-            self.dockEmojis,
-            self.dockProperties,
-        ])
-        # Keep AI Chat dock hidden but accessible via menu
-        self.dockAIChat.hide()
-
-        # Set initial size of docks
-        advanced_state = "".join([
-            "AAAA/wAAAAD9AAAAAwAAAAAAAADxAAAC3/wCAAAAAvsAAAAcAGQAbwBjAGsAUAByAG8AcABlAHIAdABpAGUAcw"
-            "EAAAAnAAAC3wAAAKEA/////AAAAl4AAACnAAAAAAD////6AAAAAAIAAAAB+wAAABgAZABvAGMAawBLAGUAeQBm"
-            "AHIAYQBtAGUAAAAAAP////8AAAAAAAAAAAAAAAEAAACZAAAC3/wCAAAAAvsAAAAYAGQAbwBjAGsASwBlAHkAZg"
-            "ByAGEAbQBlAQAAAVgAAAAVAAAAAAAAAAD8AAAAJwAAAt8AAAC1AQAAHPoAAAAAAQAAAAL7AAAAFgBkAG8AYwBr"
-            "AEUAZgBmAGUAYwB0AHMBAAADrQAAAJkAAABYAP////sAAAAiAGQAbwBjAGsAQwBhAHAAdABpAG8AbgBFAGQAaQ"
-            "B0AG8AcgEAAAAA/////wAAAFgA////AAAAAgAAArAAAALY/AEAAAAB/AAAAPcAAAKwAAAA+gD////8AgAAAAL8"
-            "AAAAJwAAAcgAAAFHAP////wBAAAAAvwAAAD3AAAArgAAAIIA/////AIAAAAC+wAAABIAZABvAGMAawBGAGkAbA"
-            "BlAHMBAAAAJwAAAOQAAACSAP////wAAAERAAAA3gAAAK8BAAAc+gAAAAABAAAAAvsAAAAeAGQAbwBjAGsAVABy"
-            "AGEAbgBzAGkAdABpAG8AbgBzAQAAAAD/////AAAAbAD////7AAAAFABkAG8AYwBrAEUAbQBvAGoAaQBzAQAAAP"
-            "cAAAEdAAAAggD////7AAAAEgBkAG8AYwBrAFYAaQBkAGUAbwEAAAGrAAAB/AAAAEcA////+wAAABgAZABvAGMA"
-            "awBUAGkAbQBlAGwAaQBuAGUBAAAB9QAAAQoAAACWAP///wAAArAAAAABAAAAAQAAAAIAAAABAAAAAvwAAAABAA"
-            "AAAgAAAAEAAAAOAHQAbwBvAGwAQgBhAHIBAAAAAP////8AAAAAAAAAAA=="
-            ])
-        self.restoreState(qt_types.str_to_bytes(advanced_state))
-        QCoreApplication.processEvents()
-        self._schedule_tab_order_update()
-
     def actionFreeze_View_trigger(self):
         """ Freeze all dockable widgets on the main screen """
         for dock in self.getDocks():
