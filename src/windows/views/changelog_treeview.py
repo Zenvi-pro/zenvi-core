@@ -114,7 +114,6 @@ class ChangelogTreeView(QTreeView):
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setWordWrap(True)
-        self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
         self.selectionModel().deleteLater()
         self.setSelectionModel(self.changelog_model.selection_model)
         self.commit_url = commit_url

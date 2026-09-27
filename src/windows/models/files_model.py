@@ -35,7 +35,7 @@ import uuid
 
 from PyQt5.QtCore import (
     QMimeData, Qt, pyqtSignal, QEventLoop, QObject, QThread, QTimer,
-    QSortFilterProxyModel, QItemSelectionModel, QPersistentModelIndex, QModelIndex
+    QSortFilterProxyModel, QItemSelectionModel, QItemSelection, QPersistentModelIndex, QModelIndex
 )
 from PyQt5.QtGui import (
     QIcon, QStandardItem, QStandardItemModel
@@ -52,6 +52,42 @@ from classes.thumbnail import GetThumbPath
 from classes.api_client import get_backend_client
 
 import openshot
+
+
+def inspect_media(path, max_width=0, max_height=0):
+    """Inspect a media file with libopenshot and return (reader_json, duration).
+
+    libopenshot 1.0 exposes Clip.CreateReader(path, inspect_reader). Its cheap
+    first pass can pick the wrong reader (QtImageReader for a .flac), so retry
+    with inspect_reader=True and let libopenshot fall through to the next
+    candidate (OpenShot #5997). Older builds (Zenvi ships 0.5.x today) have no
+    CreateReader: use Clip(path) and, if that fails, an explicit FFmpegReader.
+    """
+    def _inspect(reader):
+        if not reader:
+            raise RuntimeError(f"No reader available for path: {path}")
+        if max_width > 0 and max_height > 0 and hasattr(reader, "SetMaxDecodeSize"):
+            reader.SetMaxDecodeSize(int(max_width), int(max_height))
+        reader.Open()
+        try:
+            return json.loads(reader.Json()), float(reader.info.duration or 0.0)
+        finally:
+            reader.Close()
+
+    create_reader = getattr(openshot.Clip, "CreateReader", None)
+    if callable(create_reader):
+        try:
+            return _inspect(create_reader(path, False))
+        except Exception:
+            # Eager inspection rejects a wrong lightweight reader choice during
+            # construction and falls back to the next candidate (e.g. FFmpeg).
+            return _inspect(create_reader(path, True))
+
+    try:
+        clip = openshot.Clip(path)
+        return _inspect(clip.Reader())
+    except Exception:
+        return _inspect(openshot.FFmpegReader(path))
 
 
 class BackendIndexingWorker(QThread):
@@ -311,9 +347,35 @@ class BackendIndexingWorker(QThread):
             pass
 
 
+class SingleColumnProxyModel(QSortFilterProxyModel):
+    """Proxy that exposes only the first column for ListView accessibility"""
+
+    def columnCount(self, parent=QModelIndex()):
+        return 1
+
+    def data(self, index, role=Qt.DisplayRole):
+        """Get text data from the underlying source model (bypassing filter proxy)"""
+        if index.column() == 0 and role in (Qt.DisplayRole, Qt.AccessibleTextRole):
+            # Get the actual text from the root source model (QStandardItemModel)
+            # by traversing through the proxy chain
+            source_index = self.mapToSource(index)
+            filter_proxy = self.sourceModel()
+            if filter_proxy:
+                root_index = filter_proxy.mapToSource(source_index)
+                root_model = filter_proxy.sourceModel()
+                if root_model:
+                    return root_model.data(root_index, Qt.DisplayRole)
+        return super().data(index, role)
+
 
 class FileFilterProxyModel(QSortFilterProxyModel):
     """Proxy class used for sorting and filtering model data"""
+
+    def data(self, index, role=Qt.DisplayRole):
+        """Hide text in column 0 for TreeView - name is shown in column 1"""
+        if index.column() == 0 and role in (Qt.DisplayRole, Qt.AccessibleTextRole):
+            return ""
+        return super().data(index, role)
 
     def filterAcceptsRow(self, sourceRow, sourceParent):
         """Filter for text"""
@@ -394,10 +456,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, update_file_id=action.key[1].get('id', ''))
             else:
-                # Clear existing items
-                self.update_model(clear=True)
+                # Clear existing items. For full project loads, batch updates for faster UI rebuild.
+                self.update_model(clear=True, progressive_ui=False)
 
-    def update_model(self, clear=True, delete_file_id=None, update_file_id=None):
+    def update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
         log.debug("updating files model.")
         app = get_app()
 
@@ -445,8 +507,11 @@ class FilesModel(QObject, updates.UpdateInterface):
             self.model.clear()
             self._status_cache.clear()
 
-        # Add Headers
-        self.model.setHorizontalHeaderLabels(["", _("Name"), _("Tags")])
+        # Add Headers (all 6 columns - last 3 are hidden but must exist for proper layout)
+        self.model.setHorizontalHeaderLabels([
+            _("Thumb"), _("Name"), _("Tags"),
+            "media_type", "path", "id"
+        ])
 
         # Get list of files in project
         files = File.filter()  # get all files
@@ -492,11 +557,13 @@ class FilesModel(QObject, updates.UpdateInterface):
             col = QStandardItem(thumb_icon, name)
             col.setToolTip(filename)
             col.setFlags(flags)
+            col.setAccessibleText(name)
             row.append(col)
 
             # Append Filename
             col = QStandardItem(name)
             col.setFlags(flags | Qt.ItemIsEditable)
+            col.setAccessibleText(name)
             row.append(col)
 
             # Append Tags
@@ -526,14 +593,19 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.model_ids[id] = QPersistentModelIndex(row[5].index())
 
                 row_added_count += 1
-                if row_added_count % 2 == 0:
+                if progressive_ui and row_added_count % 25 == 0:
                     # Update every X items
                     get_app().processEvents(QEventLoop.ExcludeUserInputEvents)
 
-            # Refresh view and filters (to hide or show this new item)
-            get_app().window.resize_contents()
+            # Refresh view/filtering incrementally during interactive updates (i.e. imports)
+            if progressive_ui:
+                get_app().window.resize_contents()
 
         self.ignore_updates = False
+
+        # Single refresh after bulk updates (i.e. opening a project)
+        if not progressive_ui:
+            get_app().window.resize_contents()
 
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
@@ -711,6 +783,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self._apply_ai_metadata(f, metadata)
                 f.save()
                 get_app().window.FileUpdated.emit(str(fid))
+                try:
+                    get_app().window.schedule_flush_project_to_disk()
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning(f"Failed to apply intermediate indexing result: {exc}")
 
@@ -728,6 +804,10 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self._apply_ai_metadata(f, metadata)
                 f.save()
                 get_app().window.FileUpdated.emit(str(file_id))
+                try:
+                    get_app().window.schedule_flush_project_to_disk()
+                except Exception:
+                    pass
             except Exception as exc:
                 log.warning(f"Failed to apply background indexing result: {exc}")
 
@@ -770,12 +850,8 @@ class FilesModel(QObject, updates.UpdateInterface):
                 continue
 
             try:
-                # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-                clip = openshot.Clip(filepath)
-
-                # Get the JSON for the clip's internal reader
-                reader = clip.Reader()
-                file_data = json.loads(reader.Json())
+                # Inspect with libopenshot (tries multiple readers, retries eagerly on failure)
+                file_data, _duration = inspect_media(filepath)
 
                 # Determine media type
                 file_data["media_type"] = get_media_type(file_data)
@@ -875,8 +951,13 @@ class FilesModel(QObject, updates.UpdateInterface):
                             }
                     app.window.statusBar.showMessage(message, 15000)
 
-                # Let the event loop run to update the status bar
+                # Let the event loop run to update the status bar. Restore the
+                # active undo transaction afterward — processEvents can run
+                # other code that clears updates.transaction_id, which would
+                # mint a unique undo step per imported file.
+                _tid = get_app().updates.transaction_id
                 get_app().processEvents()
+                get_app().updates.transaction_id = _tid
                 # Update the recent import path
                 if not prevent_recent_folder:
                     settings.setDefaultPath(settings.actionType.IMPORT, dir_path)
@@ -996,14 +1077,16 @@ class FilesModel(QObject, updates.UpdateInterface):
         Returns the list of imported (or already-present) File objects, or an
         empty list when nothing was imported. Opening a dropped project file
         emits OpenProjectSignal and returns [].
+
+        Reuses an existing ``updates.transaction_id`` when the caller already
+        opened one (e.g. timeline drop that also places clips), so the whole
+        gesture undoes as a single step.
         """
         media_paths = []
 
-        # Transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
+        from classes.updates import nested_transaction
 
-        try:
+        with nested_transaction(get_app().updates):
             for uri in qurl_list or []:
                 filepath = local_path_from_url(uri)
                 if not filepath or not os.path.exists(filepath):
@@ -1031,8 +1114,6 @@ class FilesModel(QObject, updates.UpdateInterface):
             return self.add_files(
                 media_paths, quiet=import_quietly, prevent_image_seq=prevent_image_seq
             ) or []
-        finally:
-            get_app().updates.transaction_id = None
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
@@ -1072,6 +1153,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             item = m.itemFromIndex(thumb_index)
             item.setIcon(thumb_icon)
             item.setText(name)
+            item.setAccessibleText(name)
 
             # Update display name
             text_index = id_index.sibling(id_index.row(), 1)
@@ -1126,6 +1208,44 @@ class FilesModel(QObject, updates.UpdateInterface):
                 f.data["tags"] = tags_value
                 f.save()
 
+    def _sync_tree_to_list_selection(self, selected, deselected):
+        """Sync selection from TreeView (proxy_model) to ListView (list_proxy_model)"""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            # Map selected indexes from proxy_model to list_proxy_model
+            list_selection = QItemSelection()
+            for index in self.selection_model.selectedRows(0):
+                list_index = self.list_proxy_model.mapFromSource(index)
+                if list_index.isValid():
+                    list_selection.select(list_index, list_index)
+            self.list_selection_model.select(
+                list_selection,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
+        finally:
+            self._syncing_selection = False
+
+    def _sync_list_to_tree_selection(self, selected, deselected):
+        """Sync selection from ListView (list_proxy_model) to TreeView (proxy_model)"""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            # Map selected indexes from list_proxy_model to proxy_model
+            tree_selection = QItemSelection()
+            for index in self.list_selection_model.selectedRows(0):
+                tree_index = self.list_proxy_model.mapToSource(index)
+                if tree_index.isValid():
+                    tree_selection.select(tree_index, tree_index)
+            self.selection_model.select(
+                tree_selection,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
+        finally:
+            self._syncing_selection = False
+
     def __init__(self, *args):
 
         # Add self as listener to project data updates
@@ -1150,7 +1270,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         except Exception:
             pass
 
-        # Create proxy model (for sorting and filtering)
+        # Create proxy model (for sorting and filtering) - used by TreeView
         self.proxy_model = FileFilterProxyModel(parent=self)
         self.proxy_model.setDynamicSortFilter(True)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -1158,11 +1278,21 @@ class FilesModel(QObject, updates.UpdateInterface):
         self.proxy_model.setSourceModel(self.model)
         self.proxy_model.setSortLocaleAware(True)
 
+        # Create single-column proxy for ListView (wraps proxy_model for accessibility)
+        self.list_proxy_model = SingleColumnProxyModel()
+        self.list_proxy_model.setSourceModel(self.proxy_model)
+
         # Connect data changed signal
         self.model.itemChanged.connect(self.value_updated)
 
-        # Create selection model to share between views
+        # Create selection models for each view
         self.selection_model = QItemSelectionModel(self.proxy_model)
+        self.list_selection_model = QItemSelectionModel(self.list_proxy_model)
+
+        # Sync selections between the two selection models
+        self._syncing_selection = False
+        self.selection_model.selectionChanged.connect(self._sync_tree_to_list_selection)
+        self.list_selection_model.selectionChanged.connect(self._sync_list_to_tree_selection)
 
         # Connect signal
         app.window.FileUpdated.connect(self.update_file_thumbnail)

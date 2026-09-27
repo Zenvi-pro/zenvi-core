@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>407</width>
+    <width>470</width>
     <height>446</height>
    </rect>
   </property>
@@ -373,6 +373,33 @@
             </layout>
            </item>
            <item row="5" column="0">
+            <layout class="QHBoxLayout" name="horizontalLayout_duration">
+             <item>
+              <widget class="QLabel" name="lblDuration">
+               <property name="minimumSize">
+                <size>
+                 <width>100</width>
+                 <height>0</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>Duration:</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QLineEdit" name="txtDuration">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="readOnly">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item row="6" column="0">
             <layout class="QHBoxLayout" name="horizontalLayout_14">
              <item>
               <widget class="QLabel" name="lblFrameRate">
@@ -399,7 +426,7 @@
                 <number>1</number>
                </property>
                <property name="maximum">
-                <number>99999</number>
+                <number>2147483647</number>
                </property>
               </widget>
              </item>
@@ -415,13 +442,35 @@
                 <number>1</number>
                </property>
                <property name="maximum">
-                <number>9999</number>
+                <number>2147483647</number>
+               </property>
+              </widget>
+             </item>
+             <item>
+             <widget class="QLabel" name="lblFrameRateValueDisplay">
+               <property name="sizePolicy">
+                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
+                 <verstretch>0</verstretch>
+                </sizepolicy>
+               </property>
+               <property name="minimumSize">
+                <size>
+                 <width>48</width>
+                 <height>0</height>
+                </size>
+               </property>
+               <property name="text">
+                <string>= 0.00</string>
+               </property>
+               <property name="alignment">
+                <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
                </property>
               </widget>
              </item>
             </layout>
            </item>
-           <item row="6" column="0">
+           <item row="7" column="0">
             <layout class="QHBoxLayout" name="horizontalLayout_15">
              <property name="bottomMargin">
               <number>0</number>

@@ -28,6 +28,8 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
 
+from classes.app import get_app
+
 
 class HiddenTitleBar(QWidget):
     """A Qt-drawn title bar for a QDockWidget.
@@ -45,6 +47,8 @@ class HiddenTitleBar(QWidget):
         super().__init__()
         self.dock_widget = dock_widget
         self.floating = floating
+        self._tr = None
+        self.close_btn = None
         self.setObjectName("dock-title-bar")
 
         # Set up a horizontal layout
@@ -75,13 +79,14 @@ class HiddenTitleBar(QWidget):
 
             # Close button (only for docks the user is allowed to close)
             if dock_widget.features() & QDockWidget.DockWidgetClosable:
-                close_btn = QPushButton("✕")
-                close_btn.setObjectName("dock-close-button")
-                close_btn.setFixedSize(18, 18)
-                close_btn.setFlat(True)
-                close_btn.setToolTip("Close")
-                close_btn.clicked.connect(dock_widget.hide)
-                layout.addWidget(close_btn)
+                self.close_btn = QPushButton("✕")
+                self.close_btn.setObjectName("dock-close-button")
+                self.close_btn.setFixedSize(18, 18)
+                self.close_btn.setFlat(True)
+                self.close_btn.setToolTip("Close")
+                self.close_btn.clicked.connect(dock_widget.hide)
+                layout.addWidget(self.close_btn)
+            self._update_accessible_labels()
 
         if floating:
             self.setToolTip("Drag or double-click this bar to dock the panel")
@@ -99,12 +104,26 @@ class HiddenTitleBar(QWidget):
         """Update label text when dock title changes."""
         self.title_label.setText(text)
 
+    def _update_accessible_labels(self):
+        """Name the buttons for screen readers (upstream tabstops, OpenShot #5912)."""
+        if self._tr is None:
+            self._tr = get_app()._tr
+        _ = self._tr
+        if self.close_btn is not None:
+            self.close_btn.setAccessibleName(_("Close"))
+        if self.float_btn is not None:
+            if self.dock_widget.isFloating():
+                self.float_btn.setAccessibleName(_("Dock"))
+            else:
+                self.float_btn.setAccessibleName(_("Float"))
+
     def toggle_floating(self):
         """Float the panel, or dock it back if it's already floating."""
         if self.dock_widget.isFloating():
             self.redock()
         else:
             self.dock_widget.setFloating(True)
+        self._update_accessible_labels()
 
     def redock(self):
         """Dock the panel back into the main window."""
