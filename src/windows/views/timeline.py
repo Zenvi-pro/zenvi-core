@@ -3401,13 +3401,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     elif action == MenuAnimate.CREDITS_UP:
                         clip.data["scale"] = openshot.SCALE_CROP
                         add("location_y",
-                            kf(s,  1.5, openshot.LINEAR),
-                            kf(e, -1.5, openshot.LINEAR))
+                            kf(s,  1.0, openshot.LINEAR),
+                            kf(e, -1.0, openshot.LINEAR))
                     elif action == MenuAnimate.CREDITS_DOWN:
                         clip.data["scale"] = openshot.SCALE_CROP
                         add("location_y",
-                            kf(s, -1.5, openshot.LINEAR),
-                            kf(e,  1.5, openshot.LINEAR))
+                            kf(s, -1.0, openshot.LINEAR),
+                            kf(e,  1.0, openshot.LINEAR))
 
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
         finally:
