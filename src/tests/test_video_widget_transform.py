@@ -123,10 +123,6 @@ class FakePropertiesParent:
 
 
 class VideoWidgetTransformTests(unittest.TestCase):
-    """Upstream's test_video_widget_transform.py minus the motion-preset location
-    geometry cases (_clip_location_geometry, SCALE_NONE), which live with the port
-    that brings those features."""
-
     def setUp(self):
         self.widget = VideoWidget.__new__(VideoWidget)
         self.viewport = QRect(0, 0, 160, 90)
@@ -527,6 +523,56 @@ class VideoWidgetTransformTests(unittest.TestCase):
             self.assertIs(urlopen.call_args.kwargs["context"], context_stub)
         finally:
             os.remove(test_path)
+
+    def test_location_offset_inverse_round_trips_drag_motion(self):
+        # Crop square in a 16:9 viewport renders as 160x160, centered at y=-35.
+        source_w, source_h, scaled_w, scaled_h, anchor_x, anchor_y = (
+            VideoWidget._clip_location_geometry(
+                self.widget,
+                40,
+                40,
+                clip_with(openshot.SCALE_CROP),
+                props(),
+                self.viewport,
+            )
+        )
+        self.assertEqual((source_w, source_h, scaled_w, scaled_h, anchor_x, anchor_y),
+                         (160.0, 160.0, 160.0, 160.0, 0.0, -35.0))
+
+        for location in (-1.0, -0.5, 0.0, 0.5, 1.0):
+            with self.subTest(location=location):
+                offset = VideoWidget._location_offset(location, anchor_y, self.viewport.height(), scaled_h)
+                restored = VideoWidget._location_value_from_offset(
+                    offset, anchor_y, self.viewport.height(), scaled_h)
+                self.assertAlmostEqual(restored, location, places=6)
+
+
+    def test_scale_none_uses_project_to_viewport_pixel_ratio(self):
+        fake_app = types.SimpleNamespace(
+            project=types.SimpleNamespace(get={"width": 320, "height": 180}.get)
+        )
+        with patch("windows.video_widget.get_app", return_value=fake_app):
+            center = self.rect_for(openshot.SCALE_NONE)
+            self.assertAlmostEqual(center.width(), 20.0)
+            self.assertAlmostEqual(center.height(), 20.0)
+            self.assertAlmostEqual(center.x(), 70.0)
+            self.assertAlmostEqual(center.y(), 35.0)
+
+            top = self.rect_for(openshot.SCALE_NONE, location_y=-1.0)
+            bottom = self.rect_for(openshot.SCALE_NONE, location_y=1.0)
+            self.assertLessEqual(top.y() + top.height(), 0.0)
+            self.assertGreaterEqual(bottom.y(), self.viewport.height())
+
+
+    def test_square_clip_location_y_endpoints_are_offscreen_for_fit_and_crop(self):
+        for scale_mode in (openshot.SCALE_FIT, openshot.SCALE_CROP):
+            with self.subTest(scale_mode=scale_mode):
+                top = self.rect_for(scale_mode, location_y=-1.0)
+                bottom = self.rect_for(scale_mode, location_y=1.0)
+
+                self.assertLessEqual(top.y() + top.height(), 0.0)
+                self.assertGreaterEqual(bottom.y(), self.viewport.height())
+
 
     def test_margin_box_norm_converts_effect_margins_to_region(self):
         raw = {
