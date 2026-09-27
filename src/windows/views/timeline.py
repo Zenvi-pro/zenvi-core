@@ -3387,6 +3387,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 freeze_seconds = float(speed)
 
                 original_duration = clip.data["duration"]
+                original_end = float(clip.data["end"])
                 log.info('Updating timing for clip ID {}, original duration: {}'.format(clip.id, original_duration))
                 log.debug(clip.data)
 
@@ -3400,9 +3401,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 start_animation_frames_value = start_animation_frames
                 end_animation_seconds = start_animation_seconds + freeze_seconds
                 end_animation_frames = round(end_animation_seconds * fps_float) + 1
-                end_of_clip_seconds = float(clip.data["duration"])
+                end_of_clip_seconds = float(clip.data["end"])
                 end_of_clip_frames = round((end_of_clip_seconds) * fps_float) + 1
-                end_of_clip_frames_value = round((original_duration) * fps_float) + 1
+                end_of_clip_frames_value = round((original_end) * fps_float) + 1
 
                 # Determine volume start and end
                 start_volume_value = 1.0
