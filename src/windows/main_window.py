@@ -4417,8 +4417,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.menuAITools = QMenu(_("AI Tools"), self.menuBar())
         self.menuAITools.setObjectName("menuAITools")
         self.menuBar().insertMenu(self.menuHelp.menuAction(), self.menuAITools)
+        # Built lazily: the Project Files model and ComfyUI status do not exist yet.
         self.menuAITools.aboutToShow.connect(self._populate_ai_tools_menu)
-        self._populate_ai_tools_menu()
 
     def _populate_ai_tools_menu(self):
         from windows.views.ai_tools_menu import add_ai_tools_menu
@@ -4427,7 +4427,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         menu = self.menuAITools
         menu.clear()
         menu.addAction(self.actionGenerate)
-        self.actionGenerate.setEnabled(self.can_open_generate_dialog())
+        if getattr(self, "files_model", None) is not None:
+            self.actionGenerate.setEnabled(self.can_open_generate_dialog())
         menu.addSeparator()
 
         service = getattr(self, "generation_service", None)
