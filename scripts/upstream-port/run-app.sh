@@ -8,11 +8,15 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 [[ -f .port-env ]] || die "run from a feature worktree (no .port-env here)"
 source .port-env
-MODE="headless"; TIMEOUT=45; SHOT=""
+MODE="headless"; TIMEOUT=45; SHOT=""; KEEP_SETTINGS=0
 while [[ $# -gt 0 ]]; do case "$1" in
   --headless) MODE=headless; shift;; --gui) MODE=gui; TIMEOUT=0; shift;;
-  --timeout) TIMEOUT="$2"; shift 2;; --screenshot) SHOT="$2"; shift 2;; --) shift; break;; *) break;; esac; done
+  --timeout) TIMEOUT="$2"; shift 2;; --keep-settings) KEEP_SETTINGS=1; shift;; --screenshot) SHOT="$2"; shift 2;; --) shift; break;; *) break;; esac; done
 ISO_HOME="$HOME_DIR/$PORT_FEATURE"; mkdir -p "$ISO_HOME/.openshot_qt"
+# Always start from default settings: a stale openshot.settings from an earlier run (e.g. written before the
+# native timeline became the default) would silently test a different configuration than a fresh install.
+# Pass --keep-settings to test with the settings left by a previous run.
+if [[ "${KEEP_SETTINGS:-0}" == 0 ]]; then rm -f "$ISO_HOME/.openshot_qt/openshot.settings" "$ISO_HOME/.openshot_qt/"*.osp "$ISO_HOME/.openshot_qt/recovery"/* 2>/dev/null; fi
 # carry the login session over so the auth gate does not block a test launch
 [[ -f "$HOME/.openshot_qt/zenvi_auth.json" && ! -f "$ISO_HOME/.openshot_qt/zenvi_auth.json" ]] && cp "$HOME/.openshot_qt/zenvi_auth.json" "$ISO_HOME/.openshot_qt/"
 [[ -f "$ZENVI_DEPS/python/_openshot.so" ]] || die "libopenshot missing at $ZENVI_DEPS (run ensure-deps.sh $ZENVI_DEPS $PORT_LIBOPENSHOT_TAG)"
