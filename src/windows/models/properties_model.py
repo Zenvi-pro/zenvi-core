@@ -528,6 +528,14 @@ class PropertiesModel(updates.UpdateInterface):
                         log.debug("No clip data found for this object id")
                         return
 
+                if (
+                    property_key not in clip_data
+                    and item_type == "effect"
+                    and property_key in {"left", "top", "right", "bottom"}
+                    and property_type == "float"
+                ):
+                    clip_data[property_key] = {"Points": []}
+
                 # Update clip attribute
                 if property_key in clip_data:
                     log_id = "{}/{}".format(item_id, object_id) if object_id else item_id
@@ -800,8 +808,6 @@ class PropertiesModel(updates.UpdateInterface):
             elif type == "caption":
                 # Use caption value
                 col.setText(memo)
-                # Load caption editor also
-                get_app().window.CaptionTextLoaded.emit(memo, row)
             elif type == "bool":
                 # Use boolean value
                 if value:
@@ -878,6 +884,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
+            if type == "caption":
+                # Load caption editor after both label/value cells exist.
+                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
@@ -974,6 +983,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Update helper dictionary
             row.append(col)
+            if type == "caption":
+                # Keep the editor enabled and synchronized on property refreshes.
+                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         # Keep track of items in a dictionary (for quick look up)
         self.items[name] = {"row": row, "property": property}

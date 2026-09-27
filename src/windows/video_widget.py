@@ -48,6 +48,8 @@ from classes.logger import log
 from classes.app import get_app
 from classes.query import Clip, Effect
 
+MARGIN_BOX_EFFECTS = {"Bars", "Blur", "Caption", "Crop", "Pixelate"}
+
 
 class VideoWidget(QWidget, updates.UpdateInterface):
     """ A QWidget used on the video display widget """
@@ -194,6 +196,56 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         origin_screen = t.map(QPointF(local_origin_x, local_origin_y))
         return t, (sx, sy, rot, shx, shy, ox, oy), origin_screen
 
+    def _effect_has_margin_box(self, raw_properties=None):
+        """Return True when an effect exposes a left/top/right/bottom margin rectangle."""
+        if raw_properties is not None:
+            return all(prop in raw_properties for prop in ("left", "top", "right", "bottom"))
+        if self.transforming_effect_object:
+            class_name = getattr(self.transforming_effect_object.info, 'class_name', '')
+            if class_name in MARGIN_BOX_EFFECTS:
+                return True
+        if self.transforming_effect:
+            if self.transforming_effect.data.get("class_name") in MARGIN_BOX_EFFECTS:
+                return True
+            return all(prop in self.transforming_effect.data for prop in ("left", "top", "right", "bottom"))
+        return False
+
+    @staticmethod
+    def _margin_box_norm(raw_properties):
+        """Return normalized x1/y1/x2/y2 from left/top/right/bottom margin properties."""
+        left = float(raw_properties.get('left', {}).get('value', 0.0))
+        top = float(raw_properties.get('top', {}).get('value', 0.0))
+        right = float(raw_properties.get('right', {}).get('value', 0.0))
+        bottom = float(raw_properties.get('bottom', {}).get('value', 0.0))
+        left = min(max(left, 0.0), 1.0)
+        top = min(max(top, 0.0), 1.0)
+        right = min(max(right, 0.0), 1.0)
+        bottom = min(max(bottom, 0.0), 1.0)
+        if left + right > 1.0:
+            right = 1.0 - left
+        if top + bottom > 1.0:
+            bottom = 1.0 - top
+        return left, top, 1.0 - right, 1.0 - bottom
+
+    @staticmethod
+    def _clamp_margin_values(left, top, right, bottom, prefer_left=False, prefer_top=False):
+        """Clamp margin values while preserving the dragged edge when opposing margins collide."""
+        left = min(max(float(left), 0.0), 1.0)
+        top = min(max(float(top), 0.0), 1.0)
+        right = min(max(float(right), 0.0), 1.0)
+        bottom = min(max(float(bottom), 0.0), 1.0)
+        if left + right > 1.0:
+            if prefer_left:
+                left = 1.0 - right
+            else:
+                right = 1.0 - left
+        if top + bottom > 1.0:
+            if prefer_top:
+                top = 1.0 - bottom
+            else:
+                bottom = 1.0 - top
+        return left, top, right, bottom
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
         # Handle change
@@ -244,10 +296,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform_mode = None
         self.transform = None
         self.clipBounds = None
+        self.marginBoxFullBounds = None
         self.originHandle = None
         self.original_effect_data = None
         self.hover_transform_mode = None
         self.rotation_drag_value = None
+        self.margin_box_drag_anchor = None
         self.hover_cursor = Qt.ArrowCursor
         self.setCursor(Qt.ArrowCursor)
         self.update()
@@ -267,6 +321,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Accept 0.0 values; only treat None as missing
         has_crop_box = (x1 is not None and y1 is not None and x2 is not None and y2 is not None)
+        self.marginBoxFullBounds = QRectF(0.0, 0.0, source_width, source_height)
 
         # Build bounds in local (clip) coords
         if has_crop_box:
@@ -395,6 +450,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         if (self.transforming_effect and self.transforming_effect_object and
                 getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
             transform_label = _("Crop")
+        elif self.transforming_effect and self._effect_has_margin_box():
+            transform_label = _("Region")
         elif self.transforming_effect or self.transforming_clips:
             transform_label = _("Transform")
         elif self.region_enabled:
@@ -513,6 +570,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
             crop_params = None
             crop_norm = None
+            margin_box_norm = None
 
             # Effect overlays
             if (self.transforming_effect
@@ -588,6 +646,12 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     first_props = clip_props
                     crop_params = (left, top, right, bottom, resize, x_off, y_off, frame_w, frame_h)
+                    margin_box_norm = crop_norm
+
+                elif self._effect_has_margin_box(raw_eff):
+                    margin_box_norm = self._margin_box_norm(raw_eff)
+                    union_rect = clip_rect
+                    first_props = clip_props
 
             # Draw handler(s)
             if union_rect and first_props:
@@ -610,11 +674,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 is_crop = crop_params is not None
                 if is_crop and crop_norm:
                     x1, y1, x2, y2 = crop_norm
+                elif margin_box_norm:
+                    x1, y1, x2, y2 = margin_box_norm
                 else:
                     x1 = y1 = x2 = y2 = None
                 self.drawTransformHandler(
                     painter, sx, sy, sw, sh, ox, oy,
-                    x1, y1, x2, y2, skip_origin=is_crop
+                    x1, y1, x2, y2, skip_origin=(is_crop or margin_box_norm is not None)
                 )
 
                 # Crop origin glyph (screen space; constant size; with opacity)
@@ -770,6 +836,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform_mode = self.hover_transform_mode
         self.rotation_drag_value = None
         self.setCursor(self.hover_cursor)
+        self.margin_box_drag_anchor = None
 
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
         get_app().updates.ignore_history = True
@@ -779,6 +846,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             self.original_clip_data_map = {c.id: json.loads(json.dumps(c.data)) for c in self.transforming_clips} if self.transforming_clips else {}
             self.original_effect_data = json.loads(json.dumps(self.transforming_effect.data)) if self.transforming_effect else None
             get_app().updates.transaction_id = self.transaction_id
+            if self.transform_mode == 'draw_margin_box' and self.transform:
+                self.margin_box_drag_anchor = self.transform.inverted()[0].map(event.pos())
         else:
             self.transaction_id = None
             self.original_clip_data_map = {}
@@ -796,6 +865,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform_mode = None
         self.rotation_drag_value = None
         self.region_mode = None
+        self.margin_box_drag_anchor = None
 
         # Save region image data (as QImage)
         # This can be used other widgets to display the selected region
@@ -931,10 +1001,21 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             "outside": {"mode": 'rotation', "cursor": "rotate"},
         }
 
-        if (self.transforming_effect and self.transforming_effect_object and
-            getattr(self.transforming_effect_object.info, 'class_name', '') == 'Crop'):
+        effect_class_name = (
+            getattr(self.transforming_effect_object.info, 'class_name', '')
+            if self.transforming_effect_object else ''
+        )
+        is_margin_box_effect = (
+            self.transforming_effect and self.transforming_effect_object
+            and self._effect_has_margin_box()
+        )
+        is_crop_effect = effect_class_name == 'Crop'
+        if is_margin_box_effect:
             handle_uis = [h for h in handle_uis if not h["mode"].startswith('shear_') and h["mode"] != 'origin']
-            non_handle_uis["outside"] = {"mode": None, "cursor": None}
+            non_handle_uis["outside"] = (
+                {"mode": None, "cursor": None}
+                if is_crop_effect else {"mode": 'draw_margin_box', "cursor": "cross"}
+            )
 
         # Ignore any handles that were not drawn
         handle_uis = [h for h in handle_uis if h["handle"]]
@@ -965,14 +1046,24 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 self.setCursor(cursor)
                 return
 
-        # If not over any handles, determine inside/outside clip rectangle
+        # If not over any handles, determine inside/outside active rectangle
         r = non_handle_uis.get("region")
         if self.transform.mapToPolygon(r.toRect()).containsPoint(event.pos(), Qt.OddEvenFill):
             nh = non_handle_uis.get("inside", {})
         else:
             nh = non_handle_uis.get("outside", {})
+            if is_margin_box_effect and not is_crop_effect:
+                try:
+                    local_point = self.transform.inverted()[0].map(event.pos())
+                    full_bounds = getattr(self, "marginBoxFullBounds", None)
+                    if not full_bounds or not full_bounds.contains(local_point):
+                        nh = {"mode": None, "cursor": None}
+                except Exception:
+                    nh = {"mode": None, "cursor": None}
         cursor_name = nh.get("cursor")
-        if cursor_name:
+        if cursor_name == "cross":
+            cursor = Qt.CrossCursor
+        elif cursor_name:
             cursor = self.rotateCursor(self.cursors.get(cursor_name), rotation, shear_x, shear_y)
         else:
             cursor = Qt.ArrowCursor
@@ -1597,6 +1688,118 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             refresh=(i == len(updates) - 1),
                         )
 
+            elif self._effect_has_margin_box():
+                raw_properties = json.loads(
+                    self.transforming_effect_object.PropertiesJSON(clip_frame_number))
+                if not self._effect_has_margin_box(raw_properties):
+                    self.mouse_position = event.pos()
+                    self.mutex.unlock()
+                    return
+
+                clip_props_for_cursors = json.loads(self.transforming_clip_object.PropertiesJSON(clip_frame_number))
+                clip_rot = clip_props_for_cursors.get('rotation', {}).get('value', 0.0)
+                clip_sx = clip_props_for_cursors.get('shear_x', {}).get('value', 0.0)
+                clip_sy = clip_props_for_cursors.get('shear_y', {}).get('value', 0.0)
+
+                margin_left = raw_properties.get('left', {}).get('value', 0.0)
+                margin_top = raw_properties.get('top', {}).get('value', 0.0)
+                margin_right = raw_properties.get('right', {}).get('value', 0.0)
+                margin_bottom = raw_properties.get('bottom', {}).get('value', 0.0)
+
+                self.checkTransformMode(clip_rot, clip_sx, clip_sy, event)
+
+                if self.transform_mode:
+                    full_bounds = getattr(self, "marginBoxFullBounds", None)
+                    if not full_bounds:
+                        self.mouse_position = event.pos()
+                        self.mutex.unlock()
+                        return
+                    inverted_transform = self.transform.inverted()[0]
+                    current = inverted_transform.map(event.pos())
+                    previous = inverted_transform.map(self.mouse_position)
+                    x_motion = current.x() - previous.x()
+                    y_motion = current.y() - previous.y()
+                    width = max(full_bounds.width(), 0.0001)
+                    height = max(full_bounds.height(), 0.0001)
+
+                    eff_id = self.transforming_effect.id
+
+                    new_left = margin_left
+                    new_top = margin_top
+                    new_right = margin_right
+                    new_bottom = margin_bottom
+
+                    if self.transform_mode == 'draw_margin_box':
+                        if self.margin_box_drag_anchor is None:
+                            self.margin_box_drag_anchor = previous
+                        anchor = self.margin_box_drag_anchor
+                        left_px = min(max(min(anchor.x(), current.x()), 0.0), width)
+                        top_px = min(max(min(anchor.y(), current.y()), 0.0), height)
+                        right_px = min(max(max(anchor.x(), current.x()), 0.0), width)
+                        bottom_px = min(max(max(anchor.y(), current.y()), 0.0), height)
+                        new_left = left_px / width
+                        new_top = top_px / height
+                        new_right = 1.0 - (right_px / width)
+                        new_bottom = 1.0 - (bottom_px / height)
+                    elif self.transform_mode == 'location':
+                        dx = x_motion / width
+                        dy = y_motion / height
+                        dx = max(-margin_left, min(dx, margin_right))
+                        dy = max(-margin_top, min(dy, margin_bottom))
+                        new_left += dx
+                        new_top += dy
+                        new_right -= dx
+                        new_bottom -= dy
+                    elif self.transform_mode == 'scale_left':
+                        new_left += x_motion / width
+                    elif self.transform_mode == 'scale_right':
+                        new_right -= x_motion / width
+                    elif self.transform_mode == 'scale_top':
+                        new_top += y_motion / height
+                    elif self.transform_mode == 'scale_bottom':
+                        new_bottom -= y_motion / height
+                    elif self.transform_mode == 'scale_top_left':
+                        new_left += x_motion / width
+                        new_top += y_motion / height
+                    elif self.transform_mode == 'scale_top_right':
+                        new_top += y_motion / height
+                        new_right -= x_motion / width
+                    elif self.transform_mode == 'scale_bottom_left':
+                        new_left += x_motion / width
+                        new_bottom -= y_motion / height
+                    elif self.transform_mode == 'scale_bottom_right':
+                        new_right -= x_motion / width
+                        new_bottom -= y_motion / height
+
+                    new_left, new_top, new_right, new_bottom = self._clamp_margin_values(
+                        new_left,
+                        new_top,
+                        new_right,
+                        new_bottom,
+                        prefer_left=('left' in self.transform_mode or self.transform_mode == 'location'),
+                        prefer_top=('top' in self.transform_mode or self.transform_mode == 'location'),
+                    )
+
+                    updates = {}
+                    if abs(new_left - margin_left) > 0.0001:
+                        updates['left'] = new_left
+                    if abs(new_top - margin_top) > 0.0001:
+                        updates['top'] = new_top
+                    if abs(new_right - margin_right) > 0.0001:
+                        updates['right'] = new_right
+                    if abs(new_bottom - margin_bottom) > 0.0001:
+                        updates['bottom'] = new_bottom
+
+                    for i, (prop, val) in enumerate(updates.items()):
+                        self.updateEffectProperty(
+                            eff_id,
+                            clip_frame_number,
+                            None,
+                            prop,
+                            val,
+                            refresh=(i == len(updates) - 1),
+                        )
+
             # Force re-paint
             self.update()
             # ==================================================================================
@@ -1669,6 +1872,8 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                 props = c.data['objects'][obj_id]
             else:
                 props = c.data
+            if property_key not in props and property_key in {'left', 'top', 'right', 'bottom'}:
+                props[property_key] = {"Points": []}
             points_list = props[property_key]["Points"]
         except (TypeError, KeyError):
             log.error("Corrupted project data!", exc_info=1)
@@ -2200,6 +2405,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.rightShearHandle = None
         self.bottomShearHandle = None
         self.clipBounds = None
+        self.marginBoxFullBounds = None
         self.originHandle = None
         self.mouse_pressed = False
         self.mouse_dragging = False
@@ -2207,6 +2413,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.transform_mode = None
         self.hover_transform_mode = None
         self.rotation_drag_value = None
+        self.margin_box_drag_anchor = None
         self.hover_cursor = Qt.ArrowCursor
         self.original_clip_data = None
         self.original_clip_data_map = {}

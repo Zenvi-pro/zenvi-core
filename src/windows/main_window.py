@@ -148,6 +148,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     ThumbnailUpdated = pyqtSignal(str, int)
     FileUpdated = pyqtSignal(str)
     CaptionTextUpdated = pyqtSignal(str, object)
+    CaptionTextCommitted = pyqtSignal(object)
     CaptionTextLoaded = pyqtSignal(str, object)
     TimelineZoom = pyqtSignal(float)     # Signal to zoom into timeline from zoom slider
     TimelineScrolled = pyqtSignal(list)  # Scrollbar changed signal from timeline
@@ -3166,10 +3167,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionInsertTimestamp_trigger(self, event):
         """Insert the current timestamp into the caption editor
-        In the format: 00:00:23,000 --> 00:00:24,500. first click to set the initial timestamp,
-        move the playehad, second click to set the end timestamp.
+        In the format: 00:00:23:000 --> 00:00:26:000.
 
-        If beginning and ending timestamps would be the same, add 5 seconds to the second.
+        When the cursor is on an incomplete timestamp line, use the current playhead position
+        as the missing end timestamp. Otherwise, insert a complete caption cue using a short
+        default duration.
         """
         # Get translation function
         app = get_app()
@@ -3191,10 +3193,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 if effect.get("id") == effect_id:
                     clip_data = clip.data
                     break
-            if clip_data != None:
+            if clip_data is not None:
                 break
 
-        if clip_data == None:
+        if clip_data is None:
             log.info("No clip owns this caption effect")
             return
 
@@ -3202,70 +3204,150 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             return
 
         # Calculate fps / current seconds
+        default_caption_duration = 3.0
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         current_position = (self.preview_thread.current_frame - 1) / fps_float
         relative_position = current_position - clip_data.get("position") + clip_data.get("start")
 
         # Prevent captions before or after the clip
-        relative_position = max(clip_data.get('start'), relative_position)
+        clip_start = clip_data.get('start')
+        clip_end = clip_data.get('end')
+        relative_position = max(clip_start, relative_position)
         clip_seconds = clip_data.get("end") - clip_data.get("start")
-        relative_position = min(clip_data.get('end'), relative_position)
+        relative_position = min(clip_end, relative_position)
 
         # Get cursor / current line of text (where cursor is located)
         cursor = self.captionTextEdit.textCursor()
-        self.captionTextEdit.moveCursor(QTextCursor.StartOfLine)
+        cursor.movePosition(QTextCursor.StartOfLine)
         line_text = cursor.block().text()
-        self.captionTextEdit.moveCursor(QTextCursor.EndOfLine)
+        cursor.movePosition(QTextCursor.EndOfLine)
+        self.captionTextEdit.setTextCursor(cursor)
 
         # Convert time in seconds to hours:minutes:seconds:milliseconds
         current_timestamp = secondsToTimecode(relative_position, fps["num"], fps["den"], use_milliseconds=True)
 
-        # If this line only has one timestamp, and both timestamps are the same, default to 5 second duration
-        if "-->"  in line_text and line_text.count(':') == 3 and current_timestamp in line_text:
-            # prevent caption with 0 duration
-            relative_position += 5.0
-            # recalculate the timestamp string
-            current_timestamp = secondsToTimecode(relative_position, fps["num"], fps["den"], use_milliseconds=True)
-
         if "-->" in line_text and line_text.count(':') == 3:
             # Current line has only one timestamp. Add the second and go to the line below it.
+            timestamp_parts = line_text.split("-->", 1)
+            starting_timestamp = timestamp_parts[0].strip()
+            if starting_timestamp == current_timestamp:
+                relative_position = min(relative_position + default_caption_duration, clip_end)
+                current_timestamp = secondsToTimecode(relative_position, fps["num"], fps["den"], use_milliseconds=True)
             self.captionTextEdit.insertPlainText(current_timestamp)
             self.captionTextEdit.moveCursor(QTextCursor.Down)
             self.captionTextEdit.moveCursor(QTextCursor.EndOfLine)
         else:
             # Current line isn't a starting timestamp, so add a starting timestamp
+            caption_start = relative_position
+            caption_end = min(caption_start + default_caption_duration, clip_end)
+            if caption_end <= caption_start:
+                caption_start = max(clip_start, clip_end - min(default_caption_duration, clip_seconds))
+                caption_end = clip_end
+                current_timestamp = secondsToTimecode(caption_start, fps["num"], fps["den"], use_milliseconds=True)
+            end_timestamp = secondsToTimecode(caption_end, fps["num"], fps["den"], use_milliseconds=True)
 
-            # If the current line isn't blank, go to end and add two blank lines
-            if (self.captionTextEdit.textCursor().block().text().strip() != ""):
-                self.captionTextEdit.moveCursor(QTextCursor.End)
-                self.captionTextEdit.insertPlainText("\n\n")
-            # Add timestamp, and placeholder caption
-            self.captionTextEdit.insertPlainText("%s --> \n%s" % (current_timestamp, _("Enter caption text...")))
-            # Return to timestamp line, to await ending timestamp
-            self.captionTextEdit.moveCursor(QTextCursor.Up)
+            placeholder_text = _("Enter caption text...")
+            cue_header = "%s --> %s\n" % (current_timestamp, end_timestamp)
+
+            if self.captionTextEdit.textCursor().block().text().strip() != "":
+                cursor.movePosition(QTextCursor.End)
+                cursor.insertText("\n\n")
+
+            placeholder_start = cursor.position() + len(cue_header)
+            cursor.insertText("%s%s" % (cue_header, placeholder_text))
+            cursor.setPosition(placeholder_start)
+            cursor.setPosition(placeholder_start + len(placeholder_text), QTextCursor.KeepAnchor)
+            self.captionTextEdit.setTextCursor(cursor)
+
+        self._focus_caption_editor()
 
     def captionTextEdit_TextChanged(self):
         """Caption text was edited, start the save timer (to prevent spamming saves)"""
         self.caption_save_timer.start()
+        self.caption_commit_timer.start()
 
     def caption_editor_save(self):
         """Emit the CaptionTextUpdated signal (and if that property is active/selected, it will be saved)"""
         self.CaptionTextUpdated.emit(self.captionTextEdit.toPlainText(), self.caption_model_row)
 
+    def caption_editor_commit(self):
+        """Finalize the current caption edit as a single undoable transaction."""
+        self.caption_save_timer.stop()
+        self.caption_editor_save()
+        self.CaptionTextCommitted.emit(self.caption_model_row)
+
+    def _configure_caption_editor(self, editable):
+        """Apply the Caption dock's editable/read-only state in one place."""
+        focus_widgets = [self.captionTextEdit]
+        viewport = self.captionTextEdit.viewport()
+        if viewport is not None:
+            focus_widgets.append(viewport)
+        for widget in focus_widgets:
+            widget.setEnabled(True)
+            widget.setFocusPolicy(Qt.StrongFocus)
+            widget.setProperty("_original_focus_policy", None)
+        self.captionTextEdit.setTextInteractionFlags(Qt.TextEditorInteraction)
+        self.captionTextEdit.setReadOnly(not editable)
+
+    def _focus_caption_editor(self):
+        """Return keyboard focus to the Caption text editor after toolbar actions."""
+        self.captionTextEdit.setFocus(Qt.OtherFocusReason)
+        QTimer.singleShot(0, lambda: self.captionTextEdit.setFocus(Qt.OtherFocusReason))
+
+    def _caption_editor_has_focus(self):
+        """Return True if the Caption editor or its viewport currently owns focus."""
+        viewport = self.captionTextEdit.viewport()
+        return self.captionTextEdit.hasFocus() or (viewport is not None and viewport.hasFocus())
+
+    def _same_caption_model_row(self, first_row, second_row):
+        """Return True when two Caption model row handles reference the same property."""
+        if first_row is None or second_row is None:
+            return first_row is second_row
+        return bool(first_row and second_row and first_row[0] is second_row[0])
+
     def caption_editor_load(self, new_caption_text, caption_model_row):
         """Load the caption editor with text, or disable it if empty string detected"""
+        if (
+            self.caption_commit_timer.isActive()
+            and self.caption_model_row is not None
+            and not self._same_caption_model_row(self.caption_model_row, caption_model_row)
+        ):
+            self.caption_commit_timer.stop()
+            self.caption_editor_commit()
+
         self.caption_model_row = caption_model_row
         if self.captionTextEdit is None:
             self.captionTextEdit = QTextEdit()
-            self.captionTextEdit.setReadOnly(True)
+            self._configure_caption_editor(False)
             self.tabCaptions.layout().addWidget(self.captionTextEdit)
             self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
-        self.captionTextEdit.setPlainText(new_caption_text.strip())
-        if not caption_model_row:
-            self.captionTextEdit.setReadOnly(True)
+
+        new_caption_text = new_caption_text or ""
+        if self.captionTextEdit.toPlainText() != new_caption_text:
+            current_cursor = self.captionTextEdit.textCursor()
+            restore_cursor = caption_model_row is not None and self._caption_editor_has_focus()
+            cursor_position = current_cursor.position()
+            selection_start = current_cursor.selectionStart()
+            selection_end = current_cursor.selectionEnd()
+
+            self.captionTextEdit.blockSignals(True)
+            self.captionTextEdit.setPlainText(new_caption_text)
+            self.captionTextEdit.blockSignals(False)
+
+            if restore_cursor:
+                doc_length = len(new_caption_text)
+                cursor = self.captionTextEdit.textCursor()
+                cursor.setPosition(min(selection_start, doc_length))
+                cursor.setPosition(min(selection_end, doc_length), QTextCursor.KeepAnchor)
+                if selection_start == selection_end:
+                    cursor.setPosition(min(cursor_position, doc_length))
+                self.captionTextEdit.setTextCursor(cursor)
+
+        if caption_model_row is None:
+            self._configure_caption_editor(False)
         else:
-            self.captionTextEdit.setReadOnly(False)
+            self._configure_caption_editor(True)
 
             # Show this dock
             self.dockCaptionEditor.show()
@@ -3394,7 +3476,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     effect = Effect.get(id=sel["id"])
                     if effect and (
                         effect.data.get("has_tracked_object")
-                        or effect.data.get("class_name") == "Crop"
+                        or effect.data.get("class_name") in ("Bars", "Blur", "Caption", "Crop", "Pixelate")
+                        or all(prop in effect.data for prop in ("left", "top", "right", "bottom"))
                     ):
                         clip_id = effect.parent['id']
                         self.KeyFrameTransformSignal.emit(sel["id"], clip_id)
@@ -3815,7 +3898,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add Caption text editor widget
         self.captionTextEdit = QTextEdit()
-        self.captionTextEdit.setReadOnly(True)
+        self.captionTextEdit.setObjectName("captionTextEdit")
+        self._configure_caption_editor(False)
 
         # Playback controls (centered)
         self.captionToolbar.addAction(self.actionInsertTimestamp)
@@ -3825,9 +3909,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Hook up caption editor signal
         self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
         self.caption_save_timer = QTimer(self)
-        self.caption_save_timer.setInterval(1000)
+        self.caption_save_timer.setInterval(250)
         self.caption_save_timer.setSingleShot(True)
         self.caption_save_timer.timeout.connect(self.caption_editor_save)
+        self.caption_commit_timer = QTimer(self)
+        self.caption_commit_timer.setInterval(2500)
+        self.caption_commit_timer.setSingleShot(True)
+        self.caption_commit_timer.timeout.connect(self.caption_editor_commit)
         self.CaptionTextLoaded.connect(self.caption_editor_load)
         self.caption_model_row = None
 

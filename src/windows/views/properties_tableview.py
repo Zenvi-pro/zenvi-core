@@ -629,7 +629,7 @@ class PropertiesTableView(QTableView):
 
     def caption_text_updated(self, new_caption_text, caption_model_row):
         """Caption text has been updated in the caption editor, and needs saving"""
-        if not caption_model_row:
+        if caption_model_row is None:
             # Ignore blank selections
             return
 
@@ -651,8 +651,13 @@ class PropertiesTableView(QTableView):
             self.start_transaction(caption_model_value)
             self.update_in_progress = True
             self.clip_properties_model.value_updated(caption_model_value, value=new_caption_text)
-            if not self.mouse_pressed:
-                self.finalize_transaction()
+
+    def caption_text_committed(self, caption_model_row):
+        """Finalize a batch of live Caption editor updates into one undo action."""
+        if caption_model_row is None:
+            return
+        if self.update_in_progress:
+            self.finalize_transaction()
 
     def select_item(self, selection):
         """Update the selected items in the properties window"""
@@ -879,6 +884,61 @@ class PropertiesTableView(QTableView):
                         self.choices.append({
                             "name": _("Clips"),
                             "value": clip_choices,
+                            "selected": False,
+                            "icon": None
+                        })
+
+                # Handle generated mask source effect options
+                if property_key == "mask_source_id" and not self.choices:
+                    tracked_effect_choices = []
+
+                    for clip in Clip.filter():
+                        file_id = clip.data.get("file_id")
+
+                        clip_icon = None
+                        for row in range(self.files_model.rowCount()):
+                            idx = self.files_model.index(row, 0)
+                            if idx.sibling(row, 5).data() == file_id:
+                                clip_icon = idx.data(Qt.DecorationRole)
+                                break
+
+                        effect_choices = []
+                        for effect in clip.data.get("effects", []):
+                            effect_id = effect.get("id")
+                            if not effect_id:
+                                continue
+                            if effect_id == item_id:
+                                continue
+                            if not effect.get("has_tracked_object"):
+                                continue
+
+                            effect_class = effect.get("class_name", "")
+                            effect_name = effect.get("name") or effect_class or effect.get("id")
+                            effect_icon = None
+                            if effect_class:
+                                effect_icon = QIcon(QPixmap(os.path.join(
+                                    info.PATH, "effects", "icons", "%s.png" % effect_class.lower())))
+
+                            effect_choices.append({
+                                "name": f"{_(effect_name)} ({effect_id})",
+                                "value": effect_id,
+                                "selected": False,
+                                "icon": effect_icon
+                            })
+
+                        if effect_choices:
+                            tracked_effect_choices.append({
+                                "name": clip.data["title"],
+                                "value": effect_choices,
+                                "selected": False,
+                                "icon": clip_icon
+                            })
+
+                    self.choices.append({"name": _("None"), "value": "", "selected": False, "icon": None})
+                    if tracked_effect_choices:
+                        self.choices.append({
+                            "name": _("Tracked Objects"),
+                            "value": tracked_effect_choices,
                             "selected": False,
                             "icon": None
                         })
@@ -1279,6 +1339,7 @@ class PropertiesTableView(QTableView):
         self.doubleClicked.connect(self.doubleClickedCB)
         self.loadProperties.connect(self.select_item)
         get_app().window.CaptionTextUpdated.connect(self.caption_text_updated)
+        get_app().window.CaptionTextCommitted.connect(self.caption_text_committed)
 
 
 class SelectionLabel(QFrame):
