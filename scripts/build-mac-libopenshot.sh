@@ -215,6 +215,9 @@ if [[ ! -d "$PYQT5_QT_LIB" ]]; then
   echo "        Then re-run this script (just step 4 — set SKIP_BREW=1 to skip rebuilds)."
   exit 1
 fi
+# Bake the *resolved* path into the rpath: .venv may be a symlink (git worktrees
+# share the main checkout's venv), and a symlinked rpath dies with the worktree.
+PYQT5_QT_LIB="$(cd "$PYQT5_QT_LIB" && pwd -P)"
 
 # The versioned dylib name follows the tag (libopenshot.0.5.0.dylib,
 # libopenshot.1.0.0.dylib, ...); rewrite every real libopenshot dylib plus the
