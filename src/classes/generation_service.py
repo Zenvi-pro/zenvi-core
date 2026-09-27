@@ -493,7 +493,7 @@ class GenerationService(QObject):
                 loadimage_node_ids.append(str(node_id))
             elif class_flat in ("loadvideo", "load video", "vhs_loadvideo", "vhs_loadvideopath", "vhs_loadvideoffmpegpath"):
                 loadvideo_node_ids.append(str(node_id))
-            elif class_flat in ("loadaudio", "load audio"):
+            elif class_flat in ("loadaudio", "load audio", "vhs_loadaudioupload"):
                 loadaudio_node_ids.append(str(node_id))
 
         def _is_placeholder_value(path_text):
@@ -862,12 +862,12 @@ class GenerationService(QObject):
             elif class_flat == "vhs_loadvideo" and media_type == "video" and node_id in video_bind_nodes:
                 if "video" in inputs:
                     inputs["video"] = source_path
-            elif class_flat in ("loadaudio", "load audio") and media_type == "audio" and node_id in audio_bind_nodes:
+            elif class_flat in ("loadaudio", "load audio", "vhs_loadaudioupload") and media_type == "audio" and node_id in audio_bind_nodes:
                 if "audio" in inputs:
                     inputs["audio"] = source_path
                 elif "file" in inputs:
                     inputs["file"] = source_path
-            elif class_flat in ("loadaudio", "load audio"):
+            elif class_flat in ("loadaudio", "load audio", "vhs_loadaudioupload"):
                 local_audio = _resolve_template_local_file(inputs.get("audio", "") or inputs.get("file", ""))
                 if local_audio:
                     if "audio" in inputs:

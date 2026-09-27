@@ -352,7 +352,7 @@ class ComfyClient:
         return data.get("prompt_id")
 
     def _rewrite_prompt_local_file_inputs(self, prompt_graph):
-        """Rewrite local absolute paths for image/video loader nodes to uploaded Comfy input refs."""
+        """Rewrite local absolute paths for media loader nodes to uploaded Comfy input refs."""
         if not isinstance(prompt_graph, dict):
             return prompt_graph
         rewritten = dict(prompt_graph)
@@ -403,6 +403,30 @@ class ComfyClient:
                         video_path,
                         uploaded,
                     )
+            elif class_type == "LoadAudio":
+                audio_path = str(inputs.get("audio", "") or inputs.get("file", "")).strip()
+                if audio_path and os.path.isabs(audio_path) and os.path.exists(audio_path) and not _annotated(audio_path):
+                    uploaded = self.upload_input_file(audio_path)
+                    # LoadAudio expects the uploaded filename from Comfy's input directory.
+                    if uploaded.endswith(" [input]"):
+                        uploaded = uploaded[:-8].strip()
+                    if "audio" in inputs:
+                        inputs["audio"] = uploaded
+                    elif "file" in inputs:
+                        inputs["file"] = uploaded
+                    node["inputs"] = inputs
+                    rewritten[node_id] = node
+                    log.debug("ComfyClient rewrote LoadAudio input node=%s path=%s -> %s", str(node_id), audio_path, uploaded)
+            elif class_type == "VHS_LoadAudioUpload":
+                audio_path = str(inputs.get("audio", "")).strip()
+                if audio_path and os.path.isabs(audio_path) and os.path.exists(audio_path) and not _annotated(audio_path):
+                    uploaded = self.upload_input_file(audio_path)
+                    if uploaded.endswith(" [input]"):
+                        uploaded = uploaded[:-8].strip()
+                    inputs["audio"] = uploaded
+                    node["inputs"] = inputs
+                    rewritten[node_id] = node
+                    log.debug("ComfyClient rewrote VHS_LoadAudioUpload input node=%s path=%s -> %s", str(node_id), audio_path, uploaded)
 
         return rewritten
 

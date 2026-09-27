@@ -89,6 +89,9 @@ KNOWN_NODE_TYPES = {
     "stableaudioembedding",
     "kdiffusionsampler",
     "stableaudiovaedecode",
+    # ComfyUI_FL-ClearVoice
+    "fl_clearvoice_modelloader",
+    "fl_clearvoice_process",
     "videocombine",
     "imagescaleby",
     "imagetosimage",
@@ -108,7 +111,9 @@ KNOWN_NODE_TYPES = {
     "zoe_depthanythingpreprocessor",
     # Video Helper Suite
     "vhs_batchmanager",
+    "vhs_loadaudio",
     "vhs_loadvideo",
+    "vhs_loadaudioupload",
     "vhs_loadvideopath",
     "vhs_loadvideoffmpegpath",
     "vhs_videocombine",
@@ -128,6 +133,8 @@ KNOWN_NODE_TYPES = {
     "openshotsam2videosegmentationchunked",
     "openshotimageblurmasked",
     "openshotimagehighlightmasked",
+    "openshotdeepfilternetdenoiseaudio",
+    "openshotlavasrspeechclarity",
 }
 
 
