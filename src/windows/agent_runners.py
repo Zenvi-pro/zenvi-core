@@ -24,6 +24,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import uuid
 
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
@@ -41,11 +42,66 @@ BACKEND_CODEX = "codex"
 # full model name or a latest-alias ("opus", "sonnet"), and we use full names so
 # the picker keeps meaning the same model after a new release ships.
 #
+# The lineup the user sees comes from the Zenvi backend's ``GET /models/cli``
+# whenever it has answered (``set_live_lineups``): the backend builds it from
+# each provider's live model list, so a release shows up in the picker the
+# next time it refreshes, with no desktop update.  Each runner's ``MODELS`` is
+# the built-in fallback for when the backend is unreachable or too old to
+# serve the route.
+#
 # A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects ΓÇö that is the case for Codex, whose model
-# lineup we do not track here.
+# whatever its own config selects. Codex's built-in list is empty because we
+# do not track the OpenAI lineup here; the live one fills it in.
+_live_lineups: dict = {}
+_live_lineups_lock = threading.Lock()
+
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default")
+
+
+def _clean_lineup(rows) -> list:
+    """Keep only well-formed picker entries; the backend payload is data."""
+    out = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not isinstance(mid, str) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        entry = {k: row[k] for k in _PICKER_KEYS if k in row}
+        entry.setdefault("name", mid)
+        out.append(entry)
+    return out
+
+
+def set_live_lineups(lineups: dict) -> None:
+    """Install the backend-served lineups (``{backend_id: [entries]}``).
+
+    An empty or missing list for a backend means "nothing to offer", and the
+    built-in list takes over for it; passing ``{}`` clears everything.
+    """
+    cleaned = {}
+    for backend, rows in (lineups or {}).items():
+        rows = _clean_lineup(rows)
+        if rows:
+            cleaned[backend] = rows
+    with _live_lineups_lock:
+        _live_lineups.clear()
+        _live_lineups.update(cleaned)
+
+
+def live_lineup_for(backend: str) -> list:
+    """The backend-served list for *backend*, or ``[]`` when none has landed."""
+    with _live_lineups_lock:
+        return [dict(m) for m in _live_lineups.get(backend, [])]
+
+
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
+    live = live_lineup_for(backend)
+    if live:
+        return live
     if backend == BACKEND_CLAUDE:
         return [dict(m) for m in ClaudeCodeRunner.MODELS]
     if backend == BACKEND_CODEX:
@@ -474,7 +530,8 @@ class BaseAgentRunner(QObject):
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
-    MODELS: list = []    # model-picker entries; empty = use the CLI's own default
+    BACKEND_ID = ""      # picker/backend id, e.g. BACKEND_CLAUDE
+    MODELS: list = []    # built-in model-picker entries; the live lineup wins
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -747,9 +804,10 @@ class BaseAgentRunner(QObject):
         with the other backends ΓÇö so a tab switched from Zenvi to Claude Code
         can arrive holding a Zenvi model id, which the CLI would reject.
         """
-        if not model_id or not self.MODELS:
+        offered = models_for_backend(self.BACKEND_ID)
+        if not model_id or not offered:
             return ""
-        return model_id if any(m["id"] == model_id for m in self.MODELS) else ""
+        return model_id if any(m["id"] == model_id for m in offered) else ""
 
     # -- subclass hooks ----------------------------------------------------
     def _ensure_ready(self):
@@ -771,10 +829,13 @@ class ClaudeCodeRunner(BaseAgentRunner):
 
     CLI_NAME = "claude"
     DISPLAY_NAME = "Claude Code"
+    BACKEND_ID = BACKEND_CLAUDE
 
-    # ``rank`` orders the picker, ``featured`` decides whether an entry shows
-    # before the menu's "show all" toggle ΓÇö same contract as the Zenvi model
-    # list the backend serves (see setModels in chat.js).
+    # Built-in fallback lineup, used until the backend's live list lands (see
+    # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
+    # whether an entry shows before the menu's "show all" toggle, the same
+    # contract as the Zenvi model list the backend serves (see setModels in
+    # chat.js).
     MODELS = [
         {"id": "claude-opus-5",   "name": "Opus 5",   "provider": "anthropic",
          "rank": 10, "featured": True, "default": True,
@@ -890,7 +951,9 @@ class CodexRunner(BaseAgentRunner):
 
     CLI_NAME = "codex"
     DISPLAY_NAME = "Codex"
-    # Left empty on purpose: we do not track the Codex model lineup, so the
+    BACKEND_ID = BACKEND_CODEX
+    # No built-in lineup: we do not track OpenAI's models here. The backend's
+    # live list (``set_live_lineups``) fills the picker; until it lands the
     # picker stays hidden and the CLI uses whatever its own config selects.
     MODELS: list = []
 

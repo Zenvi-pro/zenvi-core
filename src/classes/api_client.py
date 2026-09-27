@@ -293,6 +293,44 @@ class ZenviBackendClient:
             log.error("Failed to list models: %s", e)
             return []
 
+    def fetch_model_catalog(self) -> Dict[str, Any]:
+        """The whole ``GET /models`` payload: ``models`` plus ``default_model_id``.
+
+        One round trip for callers that want both, instead of ``list_models``
+        followed by ``get_default_model_id`` hitting the endpoint twice.
+        Returns ``{}`` on any failure.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            log.error("Failed to fetch model catalog: %s", e)
+            return {}
+
+    def list_cli_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Model-picker lineups for the CLI agent backends, keyed by backend id
+        (``claude_code``, ``codex``), from ``GET /models/cli``.
+
+        Built by the backend from each provider's live model list, so a new
+        release reaches the picker without a desktop update. Entries follow
+        the picker contract (id/name/featured/rank/tags/default) with bare
+        ids ready for the CLI's ``--model`` flag. ``{}`` on any failure, and
+        an older backend without the route answers the same way; callers keep
+        their built-in list in both cases.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models/cli", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {}
+            return {k: v for k, v in data.items() if isinstance(v, list)}
+        except Exception as e:
+            log.debug("CLI model lineups unavailable: %s", e)
+            return {}
+
     def get_default_model_id(self) -> str:
         """Get the default model ID."""
         try:
