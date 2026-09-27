@@ -42,13 +42,13 @@ except ImportError:
 
 from xml.parsers.expat import ExpatError
 
-from PyQt5.QtCore import Qt, QCoreApplication, QTimer, QSize, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QCoreApplication, QTimer, QSize, QPoint, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
     QMessageBox, QDialog, QFileDialog, QDialogButtonBox, QPushButton, QWidget, QLineEdit, QComboBox, QSpinBox, QCheckBox
 )
 from PyQt5.QtGui import QIcon
 from functools import partial
-from classes import info
+from classes import info, tabstops
 from classes import ui_util
 from classes import openshot_rc  # noqa
 from classes.logger import log
@@ -87,6 +87,8 @@ except Exception:  # pragma: no cover - import soft-fail for partial installs
     force_software_decode = None
     analyze_smart_render_spans = None
     try_smart_render_export = None
+
+MAX_FPS_SPINBOX_VALUE = 2147483647
 
 
 def pause_window_auto_save():
@@ -151,6 +153,8 @@ class Export(QDialog):
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)
         ui_util.init_ui(self)
+        self._setup_toolbox_tab_order()
+        self.exportTabs.tabBar().setFocusPolicy(Qt.StrongFocus)
 
         # get translations & settings
         _ = get_app()._tr
@@ -275,6 +279,9 @@ class Export(QDialog):
             self.channel_layout_choices.append(layout[0])
             self.cboChannelLayout.addItem(layout[1], layout[0])
 
+        self.txtFrameRateNum.setMaximum(MAX_FPS_SPINBOX_VALUE)
+        self.txtFrameRateDen.setMaximum(MAX_FPS_SPINBOX_VALUE)
+
         # Connect signals
         self.btnBrowse.clicked.connect(functools.partial(self.btnBrowse_clicked))
         self.cboSimpleProjectType.currentIndexChanged.connect(
@@ -371,6 +378,73 @@ class Export(QDialog):
         # Load previous settings (if any)
         self.load_settings()
 
+        self.exportTabs.currentChanged.connect(self._apply_tab_order)
+        self.toolBox.currentChanged.connect(self._apply_tab_order)
+        self._apply_tab_order()
+        self.txtFileName.setFocus()
+
+    def _apply_tab_order(self):
+        current_tab = self.exportTabs.currentWidget()
+        if current_tab is None:
+            current_tab = self.exportTabs.widget(self.exportTabs.currentIndex())
+        if current_tab is None:
+            return
+
+        ordered = [
+            self.txtFileName,
+            self.txtExportFolder,
+            self.btnBrowse,
+            self.exportTabs,
+        ]
+
+        if current_tab is self.Advanced:
+            tab_widgets = self._collect_toolbox_tab_order(self.toolBox)
+        else:
+            tab_widgets = tabstops.collect_focusable_from_layout(
+                current_tab.layout(), self, include_hidden=True
+            )
+
+        ordered.extend(tab_widgets)
+
+        ordered.extend(
+            [
+                self.restore_defaults_button,
+                self.cancel_button,
+                self.export_button,
+                self.close_button,
+            ]
+        )
+
+        def _apply_and_wrap():
+            ordered_unique = []
+            seen = set()
+            for widget in ordered:
+                if widget is None or widget in seen:
+                    continue
+                ordered_unique.append(widget)
+                seen.add(widget)
+
+            for first, second in zip(ordered_unique, ordered_unique[1:]):
+                QWidget.setTabOrder(first, second)
+
+            # Wrap back to the first field after the last visible button.
+            first_visible = ordered_unique[0] if ordered_unique else None
+            for last_visible in reversed(ordered_unique):
+                if last_visible.isVisibleTo(self) and last_visible.isEnabled():
+                    break
+            else:
+                last_visible = None
+
+            if first_visible and last_visible:
+                QWidget.setTabOrder(last_visible, first_visible)
+
+            self._tab_order_list = [
+                w for w in ordered_unique
+                if w.isVisibleTo(self) and w.isEnabled() and w.focusPolicy() != Qt.NoFocus
+            ]
+
+        QTimer.singleShot(0, _apply_and_wrap)
+
     def restore_defaults(self):
         """
         Restore defaults by closing and reopening the dialog.
@@ -434,6 +508,8 @@ class Export(QDialog):
 
     def updateFrameRate(self, set_limits=True):
         """Callback for changing the frame rate"""
+        self.update_frame_rate_display()
+
         # Adjust the main timeline reader
         self.timeline.info.width = self.txtWidth.value()
         self.timeline.info.height = self.txtHeight.value()
@@ -474,6 +550,12 @@ class Export(QDialog):
         new_fps_float = float(self.txtFrameRateNum.value()) / float(self.txtFrameRateDen.value())
         self.export_fps_factor = new_fps_float / current_fps_float
         self.original_fps_factor = current_fps_float / new_fps_float
+
+    def update_frame_rate_display(self):
+        """Show the current FPS fraction as a calculated float."""
+        fps_den = self.txtFrameRateDen.value() or 1
+        fps_float = self.txtFrameRateNum.value() / fps_den
+        self.lblFrameRateValueDisplay.setText(f"= {fps_float:.2f}")
 
     def cboSimpleProjectType_index_changed(self, widget, index):
         selected_project = widget.itemData(index)
@@ -1450,6 +1532,84 @@ class Export(QDialog):
             except Exception:
                 log.warning("ExportEnded emit failed", exc_info=True)
             self._show_export_finished()
+
+    def _setup_toolbox_tab_order(self):
+        toolbox = self.toolBox
+        toolbox.setFocusPolicy(Qt.NoFocus)
+
+        for child in toolbox.findChildren(QWidget):
+            if child.metaObject().className() == "QToolBoxButton":
+                child.setFocusPolicy(Qt.TabFocus)
+
+    def focusNextPrevChild(self, forward):
+        tab_list = getattr(self, "_tab_order_list", None)
+        if not tab_list:
+            return super().focusNextPrevChild(forward)
+
+        current = self.focusWidget()
+        if current is self.exportTabs.tabBar():
+            current = self.exportTabs
+
+        if current not in tab_list:
+            target = tab_list[0] if forward else tab_list[-1]
+            if target is self.exportTabs:
+                self.exportTabs.tabBar().setFocus()
+            else:
+                target.setFocus()
+            return True
+
+        index = tab_list.index(current)
+        if forward:
+            index = (index + 1) % len(tab_list)
+        else:
+            index = (index - 1) % len(tab_list)
+        target = tab_list[index]
+        if target is self.exportTabs:
+            self.exportTabs.tabBar().setFocus()
+        else:
+            target.setFocus()
+        return True
+
+    def _collect_toolbox_tab_order(self, toolbox):
+        if toolbox is None:
+            return []
+
+        buttons = []
+        for child in toolbox.findChildren(QWidget):
+            if child.metaObject().className() == "QToolBoxButton":
+                buttons.append(child)
+
+        if not buttons:
+            return []
+
+        buttons.sort(key=lambda button: button.pos().y())
+        ordered = []
+        current_index = toolbox.currentIndex()
+
+        for index, button in enumerate(buttons):
+            ordered.append(button)
+            if index != current_index:
+                continue
+            page = toolbox.widget(index)
+            page_widgets = tabstops.collect_focusable_from_layout(
+                page.layout(), self, include_hidden=True
+            )
+            ordered.extend(self._sort_widgets_by_position(page_widgets))
+
+        return ordered
+
+    def _sort_widgets_by_position(self, widgets):
+        if not widgets:
+            return []
+
+        def _pos_key(widget):
+            try:
+                pos = widget.mapTo(self, QPoint(0, 0))
+                return (pos.y(), pos.x())
+            except Exception:
+                return (0, 0)
+
+        return sorted(widgets, key=_pos_key)
 
     def accept(self):
         """ Start exporting video """

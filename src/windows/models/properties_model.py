@@ -163,8 +163,6 @@ class PropertiesModel(updates.UpdateInterface):
                 if self.frame_number > max_frame_number:
                     self.frame_number = max_frame_number
 
-                log.debug("Update frame to %s" % self.frame_number)
-
                 # Update the model data
                 if reload_model:
                     self.update_model(get_app().window.txtPropertyFilter.text())
@@ -304,10 +302,14 @@ class PropertiesModel(updates.UpdateInterface):
                         get_audio_data({waveform_file_id: [c.id]})
 
                     # Update the preview
-                    get_app().window.refreshFrameSignal.emit()
+                    if not self._trim_preview_mode:
+                        get_app().window.refreshFrameSignal.emit()
 
-                # Clear selection
+                # Clear selection and restore focus to label column
+                current_row = self.parent.currentIndex().row()
                 self.parent.clearSelection()
+                if current_row >= 0:
+                    self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def color_update(self, item, new_color, interpolation=-1, interpolation_details=[]):
         """Insert/Update a color keyframe for the selected row"""
@@ -437,10 +439,14 @@ class PropertiesModel(updates.UpdateInterface):
                         c.save()
 
                         # Update the preview
-                        get_app().window.refreshFrameSignal.emit()
+                        if not self._trim_preview_mode:
+                            get_app().window.refreshFrameSignal.emit()
 
-                    # Clear selection
+                    # Clear selection and restore focus to label column
+                    current_row = self.parent.currentIndex().row()
                     self.parent.clearSelection()
+                    if current_row >= 0:
+                        self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def value_updated(self, item, interpolation=-1, value=None, interpolation_details=[]):
         """ Table cell change event - also handles context menu to update interpolation value """
@@ -458,6 +464,8 @@ class PropertiesModel(updates.UpdateInterface):
         property_type = property[1]["type"]
         property_key = property[0]
         object_id = property[1]["object_id"]
+        property_choices = property[1].get("choices") or []
+        choice_keyframes_use_constant = bool(property_choices) and interpolation == -1
         objects = {}
         item_data = item.data()
 
@@ -557,6 +565,8 @@ class PropertiesModel(updates.UpdateInterface):
                                 # Update or delete point
                                 if value is not None:
                                     point["co"]["Y"] = int(value) if property_key == "time" else float(value)
+                                    if choice_keyframes_use_constant:
+                                        point["interpolation"] = openshot.CONSTANT
                                     log.debug("updating point: co.X = %d to value: %s",
                                               point["co"]["X"], value)
                                 else:
@@ -608,7 +618,7 @@ class PropertiesModel(updates.UpdateInterface):
                             log.debug("Created new point at X=%d", self.frame_number)
                             clip_data[property_key].setdefault('Points', []).append({
                                 'co': {'X': self.frame_number, 'Y': int(value) if property_key == "time" else value},
-                                'interpolation': 1})
+                                'interpolation': openshot.CONSTANT if choice_keyframes_use_constant else openshot.LINEAR})
 
                 if not clip_updated:
                     # If no keyframe was found, set a basic property
@@ -712,8 +722,11 @@ class PropertiesModel(updates.UpdateInterface):
 
                     log.info("Item %s: changed %s to %s at frame %s (x: %s)" % (item_id, property_key, value, self.frame_number, closest_point_x))
 
-                # Clear selection
+                # Clear selection and restore focus to label column
+                current_row = self.parent.currentIndex().row()
                 self.parent.clearSelection()
+                if current_row >= 0:
+                    self.parent.setCurrentIndex(self.model.index(current_row, 0))
 
     def set_property(self, property, filter, c, item_type, object_id=None):
         app = get_app()
@@ -966,7 +979,6 @@ class PropertiesModel(updates.UpdateInterface):
         self.items[name] = {"row": row, "property": property}
 
     def update_model(self, filter=""):
-        log.debug("updating clip properties model.")
         app = get_app()
         _ = app._tr
 
@@ -1089,6 +1101,7 @@ class PropertiesModel(updates.UpdateInterface):
         self.parent = parent
         self.previous_filter = None
         self.filter_base_properties = []
+        self._trim_preview_mode = False
 
         # Create standard model
         self.model = ClipStandardItemModel()
@@ -1107,3 +1120,11 @@ class PropertiesModel(updates.UpdateInterface):
 
         # Add self as listener to project data updates (used to update the timeline)
         get_app().updates.add_listener(self)
+        get_app().window.TrimPreviewMode.connect(self._enter_trim_preview)
+        get_app().window.TimelinePreviewMode.connect(self._exit_trim_preview)
+
+    def _enter_trim_preview(self):
+        self._trim_preview_mode = True
+
+    def _exit_trim_preview(self):
+        self._trim_preview_mode = False

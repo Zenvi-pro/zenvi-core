@@ -29,7 +29,7 @@ import os
 
 from PyQt5.QtCore import (
     QObject, QMimeData, Qt, QSize, pyqtSignal,
-    QSortFilterProxyModel, QPersistentModelIndex, QItemSelectionModel,
+    QSortFilterProxyModel, QPersistentModelIndex, QItemSelectionModel, QItemSelection, QModelIndex,
 )
 from PyQt5.QtGui import QIcon, QPixmap, QStandardItemModel, QStandardItem
 from PyQt5.QtWidgets import QMessageBox
@@ -43,9 +43,34 @@ from classes.app import get_app
 import json
 
 
+class SingleColumnProxyModel(QSortFilterProxyModel):
+    """Proxy that exposes only the first column for ListView accessibility"""
+
+    def columnCount(self, parent=QModelIndex()):
+        return 1
+
+    def data(self, index, role=Qt.DisplayRole):
+        """Get text data from the underlying source model (bypassing filter proxy)"""
+        if index.column() == 0 and role in (Qt.DisplayRole, Qt.AccessibleTextRole):
+            source_index = self.mapToSource(index)
+            filter_proxy = self.sourceModel()
+            if filter_proxy:
+                root_index = filter_proxy.mapToSource(source_index)
+                root_model = filter_proxy.sourceModel()
+                if root_model:
+                    return root_model.data(root_index, Qt.DisplayRole)
+        return super().data(index, role)
+
+
 class EffectsProxyModel(QSortFilterProxyModel):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
+
+    def data(self, index, role=Qt.DisplayRole):
+        """Hide text in column 0 for TreeView - name is shown in column 1"""
+        if index.column() == 0 and role in (Qt.DisplayRole, Qt.AccessibleTextRole):
+            return ""
+        return super().data(index, role)
 
     def filterAcceptsRow(self, sourceRow, sourceParent):
         """Filter for common transitions and text filter"""
@@ -74,7 +99,10 @@ class EffectsProxyModel(QSortFilterProxyModel):
         data = QMimeData()
 
         # Get list of class names for requested effect indexes
-        items = [i.sibling(i.row(), 4).data() for i in indexes]
+        items = []
+        for proxy_index in indexes:
+            source_index = self.mapToSource(proxy_index)
+            items.append(source_index.sibling(source_index.row(), 4).data())
         data.setText(json.dumps(items))
         data.setHtml("effect")
 
@@ -172,6 +200,7 @@ class EffectsModel(QObject):
             col.setText(self.app._tr(title))
             col.setToolTip(self.app._tr(title))
             col.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            col.setAccessibleText(self.app._tr(title))
             row.append(col)
 
             # Append Name
@@ -179,6 +208,7 @@ class EffectsModel(QObject):
             col.setData(self.app._tr(title), Qt.DisplayRole)
             col.setText(self.app._tr(title))
             col.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            col.setAccessibleText(self.app._tr(title))
             row.append(col)
 
             # Append Description
@@ -209,6 +239,42 @@ class EffectsModel(QObject):
         # Emit signal when model is updated
         self.ModelRefreshed.emit()
 
+    def _sync_tree_to_list_selection(self, selected, deselected):
+        """Sync selection from TreeView (proxy_model) to ListView (list_proxy_model)"""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            list_selection = QItemSelection()
+            for index in self.selection_model.selectedRows(0):
+                list_index = self.list_proxy_model.mapFromSource(index)
+                if list_index.isValid():
+                    list_selection.select(list_index, list_index)
+            self.list_selection_model.select(
+                list_selection,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
+        finally:
+            self._syncing_selection = False
+
+    def _sync_list_to_tree_selection(self, selected, deselected):
+        """Sync selection from ListView (list_proxy_model) to TreeView (proxy_model)"""
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            tree_selection = QItemSelection()
+            for index in self.list_selection_model.selectedRows(0):
+                tree_index = self.list_proxy_model.mapToSource(index)
+                if tree_index.isValid():
+                    tree_selection.select(tree_index, tree_index)
+            self.selection_model.select(
+                tree_selection,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows
+            )
+        finally:
+            self._syncing_selection = False
+
     def __init__(self, *args):
         # Init QObject superclass
         super().__init__(*args)
@@ -219,7 +285,7 @@ class EffectsModel(QObject):
         self.model.setColumnCount(5)
         self.model_names = {}
 
-        # Create proxy model (for sorting and filtering)
+        # Create proxy model (for sorting and filtering) - used by TreeView
         self.proxy_model = EffectsProxyModel()
         self.proxy_model.setDynamicSortFilter(True)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
@@ -228,8 +294,18 @@ class EffectsModel(QObject):
         self.proxy_model.setSortLocaleAware(True)
         self.proxy_model.setFilterKeyColumn(-1)
 
-        # Create selection model to share between views
+        # Create single-column proxy for ListView (wraps proxy_model for accessibility)
+        self.list_proxy_model = SingleColumnProxyModel()
+        self.list_proxy_model.setSourceModel(self.proxy_model)
+
+        # Create selection models for each view
         self.selection_model = QItemSelectionModel(self.proxy_model)
+        self.list_selection_model = QItemSelectionModel(self.list_proxy_model)
+
+        # Sync selections between the two selection models
+        self._syncing_selection = False
+        self.selection_model.selectionChanged.connect(self._sync_tree_to_list_selection)
+        self.list_selection_model.selectionChanged.connect(self._sync_list_to_tree_selection)
 
         # Attempt to load model testing interface, if requested
         # (will only succeed with Qt 5.11+)

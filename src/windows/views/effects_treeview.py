@@ -114,7 +114,6 @@ class EffectsTreeView(QTreeView):
         self.setIndentation(0)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setWordWrap(True)
-        self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
         self.effects_model.ModelRefreshed.connect(self.refresh_columns)
 
         self.refresh_columns()

@@ -43,8 +43,57 @@ class BaseTheme:
     foreground-color: #b3b3b3;
     background-color: #343434;
 }
+QTreeView::item, QListView::item {
+    padding-top: 2px;
+}
         """
         self.app = app
+
+    def _debug_focus_styles(self):
+        if not os.environ.get("OPENSHOT_DEBUG_FOCUS"):
+            return ""
+        return """
+QToolButton:focus, QToolBar QToolButton:focus, QToolBar#toolBar QToolButton:focus,
+QToolBar#timelineToolbar QToolButton:focus, QPushButton:focus,
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus,
+QSpinBox:focus, QDoubleSpinBox:focus, QSlider:focus,
+QMenuBar::item:selected,
+QTabBar:focus, QTabBar::tab:focus, QMenu::item:selected,
+QCheckBox:focus, QRadioButton:focus,
+QToolBox::tab:focus {
+    border: 2px solid #ff00ff;
+}
+QToolButton:focus, QToolBar QToolButton:focus {
+    border-style: solid;
+    border-width: 2px;
+}
+QListView::item:focus, QListWidget::item:focus,
+QTreeView::item:focus, QTableView::item:focus {
+    border: 2px solid #ff00ff;
+}
+QListView::item:selected:focus, QListWidget::item:selected:focus,
+QTreeView::item:selected:focus, QTableView::item:selected:focus {
+    border: 2px solid #ff00ff;
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
+QLineEdit#filesFilter:focus, QLineEdit#effectsFilter:focus,
+QLineEdit#transitionsFilter:focus, QLineEdit#emojisFilter:focus,
+QLineEdit#txtPropertyFilter:focus, QLineEdit#txtProfileFilter:focus,
+QLineEdit#txtDeveloperFilter:focus, QLineEdit#txtTranslatorFilter:focus,
+QLineEdit#txtSupporterFilter:focus, QLineEdit#txtChangeLogFilter_openshot_qt:focus,
+QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_libopenshot_audio:focus {
+    border: 2px solid #ff00ff;
+}
+        """
+
+    def _debug_focus_toolbutton_rule(self):
+        if not os.environ.get("OPENSHOT_DEBUG_FOCUS"):
+            return ""
+        return " QToolButton:focus { border: 2px solid #ff00ff; }"
+
+    def compose_stylesheet(self):
+        return self.style_sheet + self._debug_focus_styles()
 
     def create_svg_icon(self, svg_path, size):
         """Create Dynamic High DPI icons"""
@@ -161,6 +210,7 @@ class BaseTheme:
                 # Add spacer and 'New Version Available' toolbar button (default hidden)
                 spacer = QWidget(toolbar)
                 spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                spacer.setFocusPolicy(Qt.NoFocus)
                 toolbar.addWidget(spacer)
                 continue
 
@@ -190,7 +240,9 @@ class BaseTheme:
                 if button_style:
                     button.setToolButtonStyle(button_style)
                 if button_stylesheet:
-                    button.setStyleSheet(button_stylesheet)
+                    button.setStyleSheet(
+                        button_stylesheet + self._debug_focus_toolbutton_rule()
+                    )
 
     def apply_theme(self):
         # Apply the stylesheet to the entire application
@@ -205,7 +257,7 @@ class BaseTheme:
             self.app.setStyle(self.app.theme_manager.original_style)
         if self.app.theme_manager.original_palette:
             self.app.setPalette(self.app.theme_manager.original_palette)
-        self.app.setStyleSheet(self.style_sheet)
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # Hide main window status bar
         if hasattr(self.app, "window") and hasattr(self.app.window, "statusBar"):

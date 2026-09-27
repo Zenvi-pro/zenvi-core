@@ -51,10 +51,11 @@ from PyQt5.QtWidgets import (
     QMessageBox, QDialog, QFileDialog, QInputDialog,
     QAction, QActionGroup, QSizePolicy, QWidgetAction,
     QStatusBar, QToolBar, QToolButton,
-    QLineEdit, QComboBox, QTextEdit, QShortcut, QTabBar
+    QLineEdit, QComboBox, QTextEdit, QShortcut, QTabBar, QAbstractButton,
+    QPlainTextEdit, QSpinBox, QDoubleSpinBox
 )
 
-from classes import exceptions, info, qt_types, sentry, ui_util, updates
+from classes import exceptions, info, qt_types, sentry, ui_util, updates, tabstops
 from classes.auto_updater import AutoUpdater, get_update_manifest
 from classes.update_installer import is_version_newer
 from classes.app import get_app
@@ -65,7 +66,9 @@ from classes.importers.edl import import_edl
 from classes.importers.final_cut_pro import import_xml
 from classes.logger import log
 from classes.metrics import track_metric_session, track_metric_screen
+from classes.path_utils import comparable_local_path, native_display_path, normalized_local_path
 from classes.query import File, Clip, Transition, Marker, Track, Effect
+from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
@@ -116,6 +119,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     PauseSignal = pyqtSignal()
     StopSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
+    LoadTimelineAndSeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
     SeekPreviousFrame = pyqtSignal()
     SeekNextFrame = pyqtSignal()
@@ -146,6 +150,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     TimelineScroll = pyqtSignal(float)   # Signal to force scroll timeline to specific point
     TimelineCenter = pyqtSignal()        # Signal to force center scroll on playhead
     TimelineDragPreview = pyqtSignal(object)  # Live clip-drag overrides for the overview (or None to clear)
+    TrimPreviewMode = pyqtSignal()
+    TimelinePreviewMode = pyqtSignal()
     SelectionAdded = pyqtSignal(str, str, bool)  # Signal to add a selection
     SelectionRemoved = pyqtSignal(str, str)      # Signal to remove a selection
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
@@ -1658,6 +1664,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 if theme:
                     theme.togglePlayIcon(False)
 
+    def onTrimPreviewMode(self):
+        """Pause active playback before entering timeline trim preview."""
+        player = getattr(getattr(self, "preview_thread", None), "player", None)
+        if not player:
+            return
+        is_actively_playing = (
+            player.Mode() == openshot.PLAYBACK_PLAY and
+            player.Speed() != 0
+        )
+        if is_actively_playing:
+            self.PauseSignal.emit()
+
     def actionSaveFrame_trigger(self, checked=True):
         log.info("actionSaveFrame_trigger")
 
@@ -2370,7 +2388,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.SeekSignal.emit(adjusted_frame)
 
             # Refresh frame (since size of preview might have changed)
-            QTimer.singleShot(500, self.refreshFrameSignal.emit)
+            QTimer.singleShot(500, lambda: self.refreshFrameSignal.emit())
             QTimer.singleShot(500, functools.partial(self.MaxSizeChanged.emit,
                                                      self.videoPreview.size()))
 
@@ -2430,7 +2448,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()
 
-    def actionRemoveClip_trigger(self):
+    def actionRemoveClip_trigger(self, checked=True, refresh=True):
         log.debug('actionRemoveClip_trigger')
 
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
@@ -2456,7 +2474,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.videoPreview.clearTransformState()
 
         # Refresh preview
-        get_app().window.refreshFrameSignal.emit()
+        if refresh:
+            get_app().window.refreshFrameSignal.emit()
 
     def actionRippleDelete(self):
         log.debug('actionRippleDelete_trigger')
@@ -2588,7 +2607,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Refresh preview
         self.refreshFrameSignal.emit()
 
-    def actionRemoveTransition_trigger(self):
+    def actionRemoveTransition_trigger(self, checked=True, refresh=True):
         log.debug('actionRemoveTransition_trigger')
 
         locked_tracks = [l.get("number")
@@ -2610,7 +2629,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 t.delete()
 
         # Refresh preview
-        self.refreshFrameSignal.emit()
+        if refresh:
+            self.refreshFrameSignal.emit()
 
     def actionRemoveTrack_trigger(self):
         log.debug('actionRemoveTrack_trigger')
@@ -2775,6 +2795,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.stockSearchView.hide()
             self.filesView = self.filesTreeView
             self.filesView.show()
+            self.filesTreeView.refresh_view()
 
         # Transitions
         elif app.context_menu_object == "transitions":
@@ -2782,6 +2803,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.transitionsListView.hide()
             self.transitionsView = self.transitionsTreeView
             self.transitionsView.show()
+            self.transitionsTreeView.refresh_columns()
 
         # Effects
         elif app.context_menu_object == "effects":
@@ -2789,6 +2811,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.effectsListView.hide()
             self.effectsView = self.effectsTreeView
             self.effectsView.show()
+            self.effectsTreeView.refresh_columns()
 
     def actionThumbnailView_trigger(self):
         log.info("Switch to Thumbnail View")
@@ -2932,6 +2955,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.restoreState(qt_types.str_to_bytes(_DEFAULT_WINDOW_STATE))
         self._apply_default_ai_chat_dock()
         QCoreApplication.processEvents()
+        self._schedule_tab_order_update()
 
     def actionAdvanced_View_trigger(self):
         """ Switch to an alternative view """
@@ -2977,6 +3001,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             ])
         self.restoreState(qt_types.str_to_bytes(advanced_state))
         QCoreApplication.processEvents()
+        self._schedule_tab_order_update()
 
     def actionFreeze_View_trigger(self):
         """ Freeze all dockable widgets on the main screen """
@@ -3332,6 +3357,21 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Get list of recent projects
         recent_projects = s.get("recent_projects")
+        normalized_projects = []
+        seen_projects = set()
+
+        for file_path in recent_projects:
+            normalized_path = normalized_local_path(file_path)
+            comparable_path = comparable_local_path(normalized_path)
+            if not normalized_path or comparable_path in seen_projects:
+                continue
+            seen_projects.add(comparable_path)
+            normalized_projects.append(normalized_path)
+
+        if normalized_projects != recent_projects:
+            s.set("recent_projects", normalized_projects)
+            s.save()
+        recent_projects = normalized_projects
 
         # Add Recent Projects menu (after Open File)
         if not self.recent_menu:
@@ -3352,12 +3392,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         for file_path in reversed(recent_projects):
             # Add each recent project
-            new_action = self.recent_menu.addAction(file_path)
+            native_path = native_display_path(file_path)
+            new_action = self.recent_menu.addAction(native_path)
+            new_action.setToolTip(native_path)
             new_action.triggered.connect(functools.partial(self.recent_project_clicked, file_path))
 
         # Add 'Clear Recent Projects' menu to bottom of list
         self.recent_menu.addSeparator()
         self.recent_menu.addAction(self.actionClearRecents)
+        try:
+            self.actionClearRecents.triggered.disconnect(self.clear_recents_clicked)
+        except TypeError:
+            pass
         self.actionClearRecents.triggered.connect(self.clear_recents_clicked)
 
         # Build recovery menu as well
@@ -3502,8 +3548,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Remove a project from the Recent menu if Zenvi can't find it"""
         s = get_app().get_settings()
         recent_projects = s.get("recent_projects")
-        if file_path in recent_projects:
-            recent_projects.remove(file_path)
+        file_key = comparable_local_path(file_path)
+        recent_projects = [
+            existing_path for existing_path in recent_projects
+            if comparable_local_path(existing_path) != file_key
+        ]
         s.set("recent_projects", recent_projects)
         s.save()
 
@@ -3515,6 +3564,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """Clear all recent projects"""
         s = get_app().get_settings()
         s.set("recent_projects", [])
+        s.save()
 
         # Reload recent project list
         self.load_recent_menu()
@@ -3540,6 +3590,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Build files toolbar (hidden – actions remain available via context menu)
         self.filesToolbar = QToolBar("Files Toolbar")
+        self.filesToolbar.setObjectName("filesToolbar")
         self.filesActionGroup = QActionGroup(self)
         self.filesActionGroup.setExclusive(True)
         self.filesActionGroup.addAction(self.actionFilesShowAll)
@@ -3574,6 +3625,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add transitions toolbar
         self.transitionsToolbar = QToolBar("Transitions Toolbar")
+        self.transitionsToolbar.setObjectName("transitionsToolbar")
         self.transitionsActionGroup = QActionGroup(self)
         self.transitionsActionGroup.setExclusive(True)
         self.transitionsActionGroup.addAction(self.actionTransitionsShowAll)
@@ -3590,6 +3642,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add effects toolbar
         self.effectsToolbar = QToolBar("Effects Toolbar")
+        self.effectsToolbar.setObjectName("effectsToolbar")
         self.effectsFilter = QLineEdit()
         self.effectsActionGroup = QActionGroup(self)
         self.effectsActionGroup.setExclusive(True)
@@ -3608,6 +3661,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add emojis toolbar
         self.emojisToolbar = QToolBar("Emojis Toolbar")
+        self.emojisToolbar.setObjectName("emojisToolbar")
         self.emojiFilterGroup = QComboBox()
         self.emojisFilter = QLineEdit()
         self.emojisFilter.setObjectName("emojisFilter")
@@ -3619,6 +3673,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Add Video Preview toolbar
         self.videoToolbar = QToolBar("Video Toolbar")
+        self.videoToolbar.setObjectName("videoToolbar")
         self.tabVideo.layout().addWidget(self.videoToolbar)
 
         # Add Timeline toolbar
@@ -3881,8 +3936,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.style_dock_widgets()
 
     def _apply_saved_timeline_height(self):
-        """Apply the saved timeline dock height without a visible two-pass resize."""
-        if self._timeline_height_restored or not self.saved_timeline_height:
+        """Apply the saved timeline dock height."""
+        if not self.saved_timeline_height:
             return
 
         dock = getattr(self, "dockTimeline", None)
@@ -3891,8 +3946,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # If height already matches, skip the resize to avoid an extra layout pass.
         if dock.height() != self.saved_timeline_height:
-            self.resizeDocks([dock], [self.saved_timeline_height], Qt.Vertical)
-        self._timeline_height_restored = True
+            # Force the height by temporarily constraining min/max
+            old_min = dock.minimumHeight()
+            old_max = dock.maximumHeight()
+            dock.setFixedHeight(self.saved_timeline_height)
+            # Restore flexibility after layout processes
+            def restore_flex():
+                dock.setMinimumHeight(old_min)
+                dock.setMaximumHeight(old_max)
+            QTimer.singleShot(0, restore_flex)
 
     def show_property_timeout(self):
         """Callback for show property timer"""
@@ -4036,6 +4098,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.filesTreeView.hide()
             self.stockSearchView.show()
         self.filesView.setFocus()
+        if self.filesView == self.filesTreeView:
+            self.filesTreeView.refresh_view()
 
         # Setup transitions tree and list views
         self.transition_model = TransitionsModel()
@@ -4053,6 +4117,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Show our currently-enabled transitions view
         self.transitionsView.show()
         self.transitionsView.setFocus()
+        if self.transitionsView == self.transitionsTreeView:
+            self.transitionsTreeView.refresh_columns()
 
         # Setup effects tree
         self.effects_model = EffectsModel()
@@ -4070,6 +4136,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Show our currently-enabled effects view
         self.effectsView.show()
         self.effectsView.setFocus()
+        if self.effectsView == self.effectsTreeView:
+            self.effectsTreeView.refresh_columns()
 
         # Setup emojis view
         self.emojis_model = EmojisModel()
@@ -4127,8 +4195,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self.actionRemove_from_Project_trigger()
             else:
                 # Otherwise, proceed with the normal timeline delete behavior
-                self.actionRemoveClip_trigger()
-                self.actionRemoveTransition_trigger()
+                self.actionRemoveClip_trigger(refresh=False)
+                self.actionRemoveTransition_trigger(refresh=False)
+                self.refreshFrameSignal.emit()
         finally:
             get_app().updates.transaction_id = None
 
@@ -4469,6 +4538,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Check if event type is a shortcut override (keyboard shortcut triggered)
         if event.type() == QEvent.ShortcutOverride:
+            focused_widget = self.focusWidget()
+            if self._blocks_timeline_shortcuts(focused_widget):
+                for action_name in ignored_actions:
+                    try:
+                        sequences = get_app().window.getShortcutByName(action_name)
+                        for sequence in sequences:
+                            if (sequence == QKeySequence(event.modifiers() | event.key())):
+                                event.accept()
+                                return True
+                    except KeyError:
+                        pass
+
+                return super(MainWindow, self).eventFilter(obj, event)
 
             # If any of these dock widgets have focus, we want to block specific actions
             if self.emojiListView.hasFocus() or self.filesView.hasFocus() or \
@@ -4488,12 +4570,47 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                         pass
 
             # Special handling for propertyTableView with playToggle shortcut
+            # Let SPACE propagate to the property table for dropdown/edit activation
             elif self.propertyTableView.hasFocus() and event.key() == get_app().window.getShortcutByName("playToggle"):
-                event.accept()
-                return True
+                return False
 
         # Allow all other events to propagate normally
         return super(MainWindow, self).eventFilter(obj, event)
+
+    def _blocks_timeline_shortcuts(self, widget):
+        """Return True when focus should block timeline shortcuts like seek/play."""
+        if widget is None:
+            return False
+
+        if hasattr(self, "propertyTableView") and self.propertyTableView:
+            if widget is self.propertyTableView or self.propertyTableView.isAncestorOf(widget):
+                return False
+
+        if isinstance(widget, (QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
+            return True
+
+        if isinstance(widget, (QAbstractButton, QTabBar)):
+            return True
+
+        menubar = self.menuBar()
+        if menubar and (widget is menubar or menubar.isAncestorOf(widget)):
+            return True
+
+        toolbars = [
+            getattr(self, "toolBar", None),
+            getattr(self, "timelineToolbar", None),
+            getattr(self, "videoToolbar", None),
+            getattr(self, "filesToolbar", None),
+            getattr(self, "transitionsToolbar", None),
+            getattr(self, "effectsToolbar", None),
+            getattr(self, "emojisToolbar", None),
+            getattr(self, "captionToolbar", None),
+        ]
+        for toolbar in toolbars:
+            if toolbar and toolbar.isAncestorOf(widget):
+                return True
+
+        return False
 
     def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
@@ -4521,6 +4638,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:
+            if getattr(self, "_trim_refresh_pending", False):
+                self.ignore_updates = ignore
+                return
             self.refreshFrameSignal.emit()
             self.propertyTableView.select_frame(self.preview_thread.player.Position())
 
@@ -4543,6 +4663,37 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Set tab drawBase property
         self.set_tab_drawbase()
+        self._schedule_tab_order_update()
+
+    def _schedule_tab_order_update(self):
+        if not hasattr(self, "_tab_order_timer"):
+            self._tab_order_timer = QTimer(self)
+            self._tab_order_timer.setSingleShot(True)
+            self._tab_order_timer.timeout.connect(self._apply_tab_order_and_connect_dock_tabs)
+        self._tab_order_timer.start(50)
+
+    def _apply_tab_order_and_connect_dock_tabs(self):
+        """Apply tab order and connect dock tab bar signals."""
+        tabstops.apply_auto_tab_order(self, include_hidden=True, include_disabled=True)
+        self._connect_dock_tab_bar_signals()
+
+    def _connect_dock_tab_bar_signals(self):
+        """Connect currentChanged signals on dock tab bars to update tab order."""
+        if not hasattr(self, "_connected_dock_tab_bars"):
+            self._connected_dock_tab_bars = set()
+
+        dock_titles = {dock.windowTitle() for dock in self.getDocks()}
+
+        for tab_bar in self.findChildren(QTabBar):
+            if tab_bar in self._connected_dock_tab_bars:
+                continue
+            if tab_bar.count() == 0:
+                continue
+            # Check if this tab bar contains dock titles
+            tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+            if any(title in dock_titles for title in tabs):
+                tab_bar.currentChanged.connect(self._schedule_tab_order_update)
+                self._connected_dock_tab_bars.add(tab_bar)
 
     def set_tab_drawbase(self):
         """Set the drawBase property on all QTabBar objects. This draws a line
@@ -4797,6 +4948,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Setup properties table
         self.txtPropertyFilter.setPlaceholderText(_("Filter"))
         self.propertyTableView = PropertiesTableView(self)
+        self.propertyTableView.setTabKeyNavigation(False)
         self.selectionLabel = SelectionLabel(self)
         self.dockPropertiesContents.layout().addWidget(self.selectionLabel, 0, 1)
         self.dockPropertiesContents.layout().addWidget(self.propertyTableView, 2, 1)
@@ -4834,7 +4986,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.saved_geometry = None
         self.saved_timeline_height = None
         self._restored_saved_window = False
-        self._timeline_height_restored = False
         self.load_settings()
         
         # Hide AI Chat dock unless using the default layout (shown after restore).
@@ -4855,6 +5006,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Set play/pause callbacks
         self.PauseSignal.connect(self.onPauseCallback)
         self.PlaySignal.connect(self.onPlayCallback)
+        self.TrimPreviewMode.connect(self.onTrimPreviewMode)
 
         # QTimer for Autosave
         minutes = 1000 * 60
@@ -4910,19 +5062,29 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Set scaling mode to lower quality scaling (for faster previews)
         lib_settings.HIGH_QUALITY_SCALING = False
 
-        # Set use omp threads number environment variable
-        if s.get("omp_threads_number"):
-            lib_settings.OMP_THREADS = max(
-                2, int(str(s.get("omp_threads_number"))))
-        else:
-            lib_settings.OMP_THREADS = 12
+        # Apply user overrides when present, otherwise use runtime-detected libopenshot defaults.
+        omp_default, ff_default = lib_default_thread_counts()
+        omp_min, omp_max = 2, max(2, omp_default * 3)
+        ff_min, ff_max = 2, max(2, ff_default * 3)
 
-        # Set use ffmpeg threads number environment variable
-        if s.get("ff_threads_number"):
-            lib_settings.FF_THREADS = max(
-                1, int(str(s.get("ff_threads_number"))))
+        omp_source = "libopenshot default"
+        if s.has_user_value("omp_threads_number"):
+            omp_value = int(str(s.get("omp_threads_number")))
+            lib_settings.OMP_THREADS = max(omp_min, min(omp_value, omp_max))
+            omp_source = "user setting"
         else:
-            lib_settings.FF_THREADS = 8
+            lib_settings.OMP_THREADS = omp_default
+        apply_openmp_settings(lib_settings)
+        log.info("Initialized OMP threads to %s (%s)", lib_settings.OMP_THREADS, omp_source)
+
+        ff_source = "libopenshot default"
+        if s.has_user_value("ff_threads_number"):
+            ff_value = int(str(s.get("ff_threads_number")))
+            lib_settings.FF_THREADS = max(ff_min, min(ff_value, ff_max))
+            ff_source = "user setting"
+        else:
+            lib_settings.FF_THREADS = ff_default
+        log.info("Initialized FFmpeg threads to %s (%s)", lib_settings.FF_THREADS, ff_source)
 
         # Set use max width decode hw environment variable
         if s.get("decode_hw_max_width"):
@@ -4957,6 +5119,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Connect the signals for each dock widget from self.getDocks()
         self.connect_dock_signals()
+        for dock_widget in self.getDocks():
+            dock_widget.dockLocationChanged.connect(self._schedule_tab_order_update)
+            dock_widget.topLevelChanged.connect(self._schedule_tab_order_update)
+            dock_widget.visibilityChanged.connect(lambda _=None: self._schedule_tab_order_update())
 
         # Ensure toolbar is movable when floated (even with docks frozen)
         self.toolBar.topLevelChanged.connect(
@@ -4973,8 +5139,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Save settings
         s.save()
 
+        # Re-apply timeline height after theme settles (theme changes dock sizes)
+        QTimer.singleShot(0, self._apply_saved_timeline_height)
+
         # Refresh frame
-        QTimer.singleShot(100, self.refreshFrameSignal.emit)
+        QTimer.singleShot(100, lambda: self.refreshFrameSignal.emit())
 
         # Main window is initialized
         self.initialized = True
@@ -4985,3 +5154,71 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Phase 5: idle-time background cache warming / disk render index.
         # Ships behind settings; disk path defaults OFF.
         self._start_background_render_manager(s)
+        # Apply accessibility-friendly tab order after layout settles
+        self._schedule_tab_order_update()
+        self._schedule_initial_focus()
+        self._install_focus_debugger()
+
+    def _schedule_initial_focus(self):
+        QTimer.singleShot(0, self._set_initial_focus)
+
+    def _set_initial_focus(self):
+        button = None
+        if getattr(self, "toolBar", None):
+            button = self.toolBar.widgetForAction(getattr(self, "actionNew", None))
+        if button:
+            button.setFocus(Qt.TabFocusReason)
+
+    def _install_focus_debugger(self):
+        if not os.environ.get("OPENSHOT_DEBUG_FOCUS"):
+            return
+        if hasattr(self, "_focus_debug_installed") and self._focus_debug_installed:
+            return
+        self._focus_debug_installed = True
+        qapp = get_app()
+        qapp.focusChanged.connect(self._log_focus_change)
+        self._log_tab_chain()
+
+    def _log_focus_change(self, old, new):
+        def _describe(widget):
+            if widget is None:
+                return "None"
+            name = widget.objectName() or widget.__class__.__name__
+            cls_name = widget.__class__.__name__
+            focus_policy = widget.focusPolicy()
+            dock = getattr(tabstops, "_parent_dock_widget", lambda w: None)(widget)
+            dock_name = dock.objectName() if dock else ""
+            dock_title = dock.windowTitle() if dock else ""
+            dock_visible = ""
+            dock_content_visible = ""
+            if dock:
+                dock_visible = f"dockVisible={dock.isVisible()}"
+                content = dock.widget()
+                if content:
+                    dock_content_visible = f"contentVisible={content.isVisible()}"
+            parts = [name, f"class={cls_name}", f"policy={int(focus_policy)}"]
+            if dock_name:
+                parts.append(f"dock={dock_name}")
+            if dock_title:
+                parts.append(f"title={dock_title}")
+            if dock_visible:
+                parts.append(dock_visible)
+            if dock_content_visible:
+                parts.append(dock_content_visible)
+            return " ".join(parts)
+
+        log.info("Focus changed: %s -> %s", _describe(old), _describe(new))
+
+    def _log_tab_chain(self):
+        chain = []
+        root = self
+        for widget in self.findChildren(QWidget):
+            if widget.focusPolicy() == Qt.NoFocus:
+                continue
+            if not widget.isVisibleTo(root):
+                continue
+            chain.append(widget)
+        chain.sort(key=lambda w: getattr(w, "_tab_order_key", (0, 0, 0, 0)))
+        log.info("Tab chain (debug): %s", " | ".join(
+            [w.objectName() or w.__class__.__name__ for w in chain]
+        ))

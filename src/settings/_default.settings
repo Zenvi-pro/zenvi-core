@@ -344,7 +344,7 @@
     "min": 0.0,
     "max": 1.0,
     "step": 0.1,
-    "value": 0.7,
+    "value": 0.5,
     "title": "Cache Ahead (Percent)",
     "type": "spinner",
     "category": "Cache",
@@ -353,7 +353,7 @@
   {
     "min": 0,
     "max": 1024,
-    "value": 600,
+    "value": 900,
     "title": "Cache Max Frames",
     "type": "spinner-int",
     "category": "Cache",
@@ -362,7 +362,7 @@
   {
     "min": 0,
     "max": 9999999,
-    "value": 512,
+    "value": 768,
     "title": "Cache Limit (MB)",
     "type": "spinner-int",
     "category": "Cache",
@@ -573,20 +573,20 @@
     "restart": false
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 128,
     "value": 12,
-    "title": "OMP Threads (0 = Default)",
+    "title": "OMP Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
     "setting": "omp_threads_number"
   },
   {
-    "min": 0,
+    "min": 2,
     "max": 16,
     "value": 8,
-    "title": "FFmpeg Threads (0 = Default)",
+    "title": "FFmpeg Threads",
     "type": "spinner-int",
     "restart": true,
     "category": "Performance",
@@ -677,7 +677,7 @@
     "restart": false
   },
   {
-    "value": false,
+    "value": true,
     "title": "Use Blender GPU rendering for Animated Titles (Experimental)",
     "type": "bool",
     "restart": false,
