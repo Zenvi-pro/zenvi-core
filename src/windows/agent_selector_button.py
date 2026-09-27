@@ -18,14 +18,14 @@
 import math
 import os
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QEasingCurve, QPointF, QRectF, QSize, QTimer, QVariantAnimation,
 )
-from PyQt5.QtGui import (
+from qt_api import (
     QColor, QCursor, QImage, QPainter, QPainterPath, QPen, QPixmap,
 )
-from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtWidgets import QSizePolicy, QToolBar, QToolButton
+from qt_api import QSvgRenderer
+from qt_api import QSizePolicy, QToolBar, QToolButton
 
 from classes import info
 from classes.logger import log

@@ -18,9 +18,9 @@
 import re
 import time
 
-from PyQt5.QtCore import Qt, QPoint, QSize, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPixmap
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QPoint, QSize, QTimer, pyqtSignal
+from qt_api import QColor, QPainter, QPixmap
+from qt_api import (
     QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
     QVBoxLayout, QWidget,
 )

@@ -25,8 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel
-from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
+from qt_api import Qt, QSortFilterProxyModel, QItemSelectionModel
+from qt_api import QIcon, QStandardItemModel, QStandardItem
+from qt_api import get_proxy_filter_regex, regex_is_empty, regex_matches
 
 from classes.logger import log
 from classes.app import get_app
@@ -45,12 +46,13 @@ class CreditsFilterProxyModel(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, sourceRow, sourceParent):
         """Match filter against name, email, or website columns"""
-        if not self.filterRegExp().isEmpty():
+        regex = get_proxy_filter_regex(self)
+        if not regex_is_empty(regex):
             model = self.sourceModel()
             for column in [2, 3, 4]:
                 index = model.index(sourceRow, column, sourceParent)
                 value = model.data(index)
-                if self.filterRegExp().indexIn(str(value)) >= 0:
+                if regex_matches(regex, str(value)):
                     return True
             return False
         return True
@@ -72,7 +74,6 @@ class CreditsModel():
         self.model.setHorizontalHeaderLabels(["", "", _("Name"), _("Email"), _("Website")])
 
         for person in self.credits_list:
-            log.debug("Processing details for %s", person)
 
             # Remove any person string keys that explicitly contain a value of None
             for field in ["name", "email", "website"]:

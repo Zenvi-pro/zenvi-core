@@ -16,7 +16,7 @@ from collections import deque
 from classes.logger import log
 
 try:
-    from PyQt5.QtCore import QTimer
+    from qt_api import QTimer
 except ImportError:
     QTimer = None
 

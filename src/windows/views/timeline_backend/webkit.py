@@ -32,8 +32,8 @@ from functools import partial
 from classes import info
 from classes.logger import log
 
-from PyQt5.QtCore import QFileInfo, QUrl, Qt, QTimer
-from PyQt5.QtWebKitWidgets import QWebView, QWebPage
+from qt_api import QFileInfo, QUrl, Qt, QTimer
+from qt_api import QWebView, QWebPage
 
 
 class LoggingWebKitPage(QWebPage):

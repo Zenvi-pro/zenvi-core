@@ -29,18 +29,19 @@ import os
 import json
 import functools
 from operator import itemgetter
-import sip
 import uuid
 
-from PyQt5.QtCore import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent, QPoint
-from PyQt5.QtGui import (
+from qt_api import Qt, QRectF, QLocale, pyqtSignal, pyqtSlot, QEvent, QPoint, QPointF
+from qt_api import isdeleted
+from qt_api import get_font_dialog_selection
+from qt_api import (
     QIcon, QColor, QBrush, QPen, QPalette, QPixmap,
     QPainter, QPainterPath, QLinearGradient, QFont, QFontInfo, QCursor,
 )
-from PyQt5.QtWidgets import (
+from qt_api import (
     QTableView, QAbstractItemView, QSizePolicy,
     QHeaderView, QItemDelegate, QStyle, QLabel,
-    QPushButton, QHBoxLayout, QFrame, QFontDialog
+    QPushButton, QHBoxLayout, QFrame
 )
 
 from classes.logger import log
@@ -129,8 +130,13 @@ class PropertyDelegate(QItemDelegate):
             blue = int(cur_property[1]["blue"]["value"])
             painter.setBrush(QColor(red, green, blue))
         else:
-            # Normal Keyframe
-            if option.state & QStyle.State_Selected:
+            # Normal Keyframe (Qt6 uses scoped enums for QStyle.State_Selected)
+            state_selected = getattr(QStyle, "State_Selected", None)
+            if state_selected is None:
+                state_flag = getattr(QStyle, "StateFlag", None)
+                if state_flag:
+                    state_selected = getattr(state_flag, "State_Selected", None)
+            if state_selected and option.state & state_selected:
                 painter.setBrush(background_color)
             else:
                 painter.setBrush(background_color)
@@ -151,7 +157,7 @@ class PropertyDelegate(QItemDelegate):
             painter.setClipRect(mask_rect, Qt.IntersectClip)
 
             # gradient for value box
-            gradient = QLinearGradient(option.rect.topLeft(), option.rect.topRight())
+            gradient = QLinearGradient(QPointF(option.rect.topLeft()), QPointF(option.rect.topRight()))
             gradient.setColorAt(0, foreground_color)
             gradient.setColorAt(1, foreground_color)
 
@@ -179,6 +185,12 @@ class PropertyDelegate(QItemDelegate):
             painter.drawText(option.rect, Qt.AlignCenter, value)
 
         painter.restore()
+
+
+def _event_posf(event):
+    if hasattr(event, "position"):
+        return event.position()
+    return QPointF(event.pos())
 
 
 class PropertiesTableView(QTableView):
@@ -216,7 +228,7 @@ class PropertiesTableView(QTableView):
 
         # For numeric keys, clobber the existing value with the typed character
         if result and is_numeric:
-            from PyQt5.QtCore import QTimer
+            from qt_api import QTimer
             typed_char = event.text()
             def set_initial_value():
                 editor = self.indexWidget(index)
@@ -379,7 +391,8 @@ class PropertiesTableView(QTableView):
 
     def mousePressEvent(self, event):
         self.mouse_pressed = True
-        row = self.indexAt(event.pos()).row()
+        pos = _event_posf(event).toPoint()
+        row = self.indexAt(pos).row()
         model = self.clip_properties_model.model
         if model.item(row, 1):
             self.selected_item = model.item(row, 1)
@@ -390,12 +403,14 @@ class PropertiesTableView(QTableView):
     def mouseMoveEvent(self, event):
         # Get data model and selection
         model = self.clip_properties_model.model
+        posf = _event_posf(event)
 
         # Do not change selected row during mouse move
         if self.lock_selection and self.prev_row:
             row = self.prev_row
         else:
-            row = self.indexAt(event.pos()).row()
+            pos = _event_posf(event).toPoint()
+            row = self.indexAt(pos).row()
             self.prev_row = row
             self.lock_selection = True
 
@@ -409,8 +424,8 @@ class PropertiesTableView(QTableView):
             self.selected_item = model.item(row, 1)
 
         # Verify label has not been deleted
-        if (self.selected_label and sip.isdeleted(self.selected_label)) or \
-                (self.selected_item and sip.isdeleted(self.selected_item)):
+        if (self.selected_label and isdeleted(self.selected_label)) or \
+                (self.selected_item and isdeleted(self.selected_item)):
             log.debug("Property has been deleted, skipping")
             self.selected_label = None
             self.selected_item = None
@@ -427,8 +442,11 @@ class PropertiesTableView(QTableView):
 
             # Get the position of the cursor and % value
             value_column_x = self.columnViewportPosition(1)
-            cursor_value = event.x() - value_column_x
-            cursor_value_percent = cursor_value / self.columnWidth(1)
+            cursor_value = posf.x() - value_column_x
+            value_column_width = self.columnWidth(1)
+            if value_column_width <= 0:
+                return
+            cursor_value_percent = cursor_value / value_column_width
 
             # Get data from selected item
             try:
@@ -466,13 +484,13 @@ class PropertiesTableView(QTableView):
                 if self.previous_x == -1:
                     # Start tracking movement (init diff_length and previous_x)
                     self.diff_length = 10
-                    self.previous_x = event.x()
+                    self.previous_x = posf.x()
 
                 # Calculate # of pixels dragged
-                drag_diff = self.previous_x - event.x()
+                drag_diff = self.previous_x - posf.x()
 
                 # update previous x
-                self.previous_x = event.x()
+                self.previous_x = posf.x()
 
                 # Ignore small initial movements
                 if abs(drag_diff) < self.diff_length:
@@ -527,7 +545,8 @@ class PropertiesTableView(QTableView):
 
         # Get data model and selection
         model = self.clip_properties_model.model
-        row = self.indexAt(event.pos()).row()
+        pos = _event_posf(event).toPoint()
+        row = self.indexAt(pos).row()
         if model.item(row, 0):
             self.selected_label = model.item(row, 0)
             self.selected_item = model.item(row, 1)
@@ -591,7 +610,7 @@ class PropertiesTableView(QTableView):
                 # Get font from user
                 current_font_name = cur_property[1].get("memo", "sans")
                 current_font = QFont(current_font_name)
-                font, ok = QFontDialog.getFont(current_font, caption=("Change Font"))
+                font, ok = get_font_dialog_selection(current_font, self.win, _("Change Font"))
 
                 # Update font
                 if ok and font:
@@ -618,8 +637,8 @@ class PropertiesTableView(QTableView):
         caption_model_value = caption_model_row[1]
 
         # Verify label has not been deleted
-        if (caption_model_label and sip.isdeleted(caption_model_label)) or \
-                (caption_model_value and sip.isdeleted(caption_model_value)):
+        if (caption_model_label and isdeleted(caption_model_label)) or \
+                (caption_model_value and isdeleted(caption_model_value)):
             log.debug("Property has been deleted, skipping")
             return
 
@@ -660,13 +679,14 @@ class PropertiesTableView(QTableView):
     def contextMenuEvent(self, event):
         """ Display context menu """
         # Get property being acted on
-        index = self.indexAt(event.pos())
+        pos = _event_posf(event).toPoint()
+        index = self.indexAt(pos)
         if not index.isValid():
             event.ignore()
             return
 
         # Get data model and selection
-        idx = self.indexAt(event.pos())
+        idx = self.indexAt(pos)
         row = idx.row()
         selected_label = idx.model().item(row, 0)
         selected_value = idx.model().item(row, 1)
@@ -970,7 +990,7 @@ class PropertiesTableView(QTableView):
                 # Get font from user
                 current_font_name = cur_property[1].get("memo", "sans")
                 current_font = QFont(current_font_name)
-                font, ok = QFontDialog.getFont(current_font, caption=("Change Font"))
+                font, ok = get_font_dialog_selection(current_font, self.win, _("Change Font"))
 
                 # Update font
                 if ok and font:
@@ -1045,7 +1065,7 @@ class PropertiesTableView(QTableView):
             # Show context menu (if any options present)
             # There is always at least 1 QAction in an empty menu though
             if len(self.menu.children()) > 1:
-                self.menu.popup(event.globalPos())
+                self.menu.show_at(event)
                 # Focus the first menu item for keyboard navigation
                 actions = self.menu.actions()
                 if actions:
@@ -1142,8 +1162,8 @@ class PropertiesTableView(QTableView):
         log.info("Insert_Action_Triggered")
 
         # Verify label has not been deleted
-        if (self.selected_label and sip.isdeleted(self.selected_label)) or \
-                (self.selected_item and sip.isdeleted(self.selected_item)):
+        if (self.selected_label and isdeleted(self.selected_label)) or \
+                (self.selected_item and isdeleted(self.selected_item)):
             log.debug("Property has been deleted, skipping")
             self.selected_label = None
             self.selected_item = None
@@ -1452,21 +1472,27 @@ class SelectionLabel(QFrame):
             self.btnSelectionName.setIcon(QIcon())
             self.btnSelectionName.setMenu(None)
             return
+        def _set_item_icon(path):
+            if path and isinstance(path, (str, bytes, os.PathLike)) and os.path.exists(path):
+                self.item_icon = QIcon(QPixmap(path))
+            else:
+                self.item_icon = QIcon()
+
         if self.item_type == "clip":
             clip = Clip.get(id=self.item_id)
             if clip:
                 self.item_name = clip.title()
-                self.item_icon = QIcon(QPixmap(clip.data.get('image')))
+                _set_item_icon(clip.data.get('image'))
         elif self.item_type == "transition":
             trans = Transition.get(id=self.item_id)
             if trans:
                 self.item_name = _(trans.title())
-                self.item_icon = QIcon(QPixmap(trans.data.get('reader', {}).get('path')))
+                _set_item_icon(trans.data.get('reader', {}).get('path'))
         elif self.item_type == "effect":
             effect = Effect.get(id=self.item_id)
             if effect:
                 self.item_name = _(effect.title())
-                self.item_icon = QIcon(QPixmap(os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower())))
+                _set_item_icon(os.path.join(info.PATH, "effects", "icons", "%s.png" % effect.data.get('class_name').lower()))
 
         # Truncate long text
         if self.item_name and len(self.item_name) > 25:

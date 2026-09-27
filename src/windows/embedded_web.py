@@ -8,7 +8,7 @@ import os
 import sys
 
 try:
-    from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+    from qt_api import QWebEngineView  # noqa: F401
 
     HAS_WEBENGINE = True
 except ImportError:
@@ -16,7 +16,7 @@ except ImportError:
     QWebEngineView = None  # type: ignore
 
 try:
-    from PyQt5.QtWebKitWidgets import QWebView  # noqa: F401
+    from qt_api import QWebView  # noqa: F401
 
     HAS_WEBKIT = True
 except ImportError:

@@ -4,7 +4,7 @@ updater's PowerShell script, spawning it, and the has_pending_update /
 apply_pending_update cleanup-vs-keep-staged branching in
 classes.update_installer.
 
-No PyQt5 required — classes.update_installer intentionally avoids it so it
+No Qt binding required — classes.update_installer intentionally avoids it so it
 can run at the very top of launch.py before any heavy imports.
 
 Run:

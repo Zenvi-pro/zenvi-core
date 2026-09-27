@@ -5,21 +5,21 @@ from __future__ import annotations
 import json
 import os
 
-from PyQt5.QtCore import QEvent, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QKeySequence
+from qt_api import QEvent, QUrl, pyqtSignal
+from qt_api import QColor, QKeySequence
 
 from classes.chat_navigation import is_allowed_chat_navigation
 from classes.file_drop import accept_os_file_drag, local_path_from_url, urls_from_mime
 from classes.logger import log
 
 try:
-    from PyQt5.QtWebEngineWidgets import QWebEnginePage, QWebEngineView
+    from qt_api import QWebEnginePage, QWebEngineView
 except ImportError:
     QWebEnginePage = None
     QWebEngineView = object
 
 try:
-    from PyQt5.QtWebKitWidgets import QWebView, QWebPage
+    from qt_api import QWebView, QWebPage
 except ImportError:
     QWebView = None
     QWebPage = None

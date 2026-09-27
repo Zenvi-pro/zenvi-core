@@ -9,9 +9,9 @@
  This file is part of OpenShot Video Editor (http://www.openshot.org)
 """
 
-from PyQt5.QtCore import Qt, QRect, QTimer
-from PyQt5.QtGui import QColor, QPen, QPainterPath
-from PyQt5.QtWidgets import QStyledItemDelegate, QToolTip
+from qt_api import Qt, QRect, QTimer
+from qt_api import QColor, QPen, QPainterPath
+from qt_api import QStyledItemDelegate, QToolTip
 
 from classes.app import get_app
 from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS

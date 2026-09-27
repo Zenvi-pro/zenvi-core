@@ -27,7 +27,7 @@
 
 import copy
 import openshot
-from PyQt5.QtWidgets import (
+from qt_api import (
     QDialog, QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox,
     QDialogButtonBox, QHBoxLayout
 )

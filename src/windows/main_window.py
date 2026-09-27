@@ -42,11 +42,12 @@ import zipfile
 import threading
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent, QUrl
 )
-from PyQt5.QtGui import QIcon, QCursor, QKeySequence, QTextCursor
-from PyQt5.QtWidgets import (
+from qt_api import QIcon, QCursor, QKeySequence, QTextCursor
+from qt_api import file_exists, show_open_file_dialog
+from qt_api import (
     QApplication, QMainWindow, QWidget, QDockWidget,
     QMessageBox, QDialog, QFileDialog, QInputDialog,
     QAction, QActionGroup, QSizePolicy, QWidgetAction,
@@ -69,6 +70,7 @@ from classes.metrics import track_metric_session, track_metric_screen
 from classes.path_utils import comparable_local_path, native_display_path, normalized_local_path
 from classes.query import File, Clip, Transition, Marker, Track, Effect
 from classes.settings import apply_openmp_settings, lib_default_thread_counts
+from classes.clipboard import ClipboardManager
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
@@ -208,8 +210,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if self.shutting_down:
             log.debug("Already shutting down, skipping the closeEvent() method")
             return
-        else:
-            self.shutting_down = True
+
+        # Call the class implementation directly so closeEvent() remains usable
+        # with lightweight duck-typed test doubles that don't bind methods.
+        MainWindow._shutdown(self)
+
+    def _shutdown(self):
+        """Perform shutdown without prompting (used by closeEvent and app cleanup)."""
+        app = get_app()
+        if self.shutting_down:
+            log.debug("Already shutting down, skipping the shutdown routine")
+            return
+        self.shutting_down = True
 
         # Tear down in a helper so the lock file is released no matter what.
         try:
@@ -304,9 +316,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # teardown — aborting the process with "QThread: Destroyed while thread
         # is still running".
         try:
+            from qt_api import isdeleted
             timeline_widget = getattr(self, "timeline", None)
             if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
-                timeline_widget.thumbnail_manager.shutdown()
+                if not isdeleted(timeline_widget.thumbnail_manager):
+                    timeline_widget.thumbnail_manager.shutdown()
         except Exception:
             log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
 
@@ -335,9 +349,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if self.preview_thread:
             self.preview_thread.player.CloseAudioDevice()
             self.preview_thread.kill()
-            if self.videoPreview:
+            from qt_api import isdeleted
+            if self.videoPreview and not isdeleted(self.videoPreview):
                 self.videoPreview.deleteLater()
-                self.videoPreview = None
+            self.videoPreview = None
             self.preview_parent.Stop()
             bg = getattr(self.preview_parent, "background", None)
             if bg is not None and bg.isRunning():
@@ -938,7 +953,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
 
         try:
-            if os.path.exists(file_path):
+            if file_exists(file_path):
                 # Clear any previous thumbnails
                 if clear_thumbnails:
                     self.clear_temporary_files()
@@ -1223,30 +1238,20 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         recommended_path = s.getDefaultPath(s.actionType.IMPORT)
 
-        fd = QFileDialog()
-        fd.setDirectory(recommended_path)
-        qurl_list = fd.getOpenFileUrls(
-            self,
-            _("Import Files...")
-        )[0]
+        def _on_files_selected(qurl_list):
+            if not qurl_list:
+                return
+            app.setOverrideCursor(QCursor(Qt.WaitCursor))
+            try:
+                self.dockFiles.setVisible(True)
+                self.dockFiles.raise_()
+                self.dockFiles.activateWindow()
+                self.files_model.process_urls(qurl_list)
+                self.refreshFilesSignal.emit()
+            finally:
+                app.restoreOverrideCursor()
 
-        # Set cursor to waiting
-        app.setOverrideCursor(QCursor(Qt.WaitCursor))
-
-        try:
-            # Switch to Files dock
-            self.dockFiles.setVisible(True)
-            self.dockFiles.raise_()
-            self.dockFiles.activateWindow()
-
-            # Import list of files
-            self.files_model.process_urls(qurl_list)
-
-            # Refresh files views
-            self.refreshFilesSignal.emit()
-        finally:
-            # Restore cursor
-            app.restoreOverrideCursor()
+        show_open_file_dialog(self, _("Import Files..."), recommended_path, "", _on_files_selected)
 
     def invalidImage(self, filename=None):
         """ Show a popup when an image file can't be loaded """
@@ -1402,7 +1407,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionSignOut_trigger(self, checked=True):
         """Sign out of the Zenvi account and prompt re-login."""
-        from PyQt5.QtWidgets import QMessageBox
+        from qt_api import QMessageBox
         reply = QMessageBox.question(
             self, "Sign Out",
             "Are you sure you want to sign out?",
@@ -3135,6 +3140,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def caption_editor_load(self, new_caption_text, caption_model_row):
         """Load the caption editor with text, or disable it if empty string detected"""
         self.caption_model_row = caption_model_row
+        if self.captionTextEdit is None:
+            self.captionTextEdit = QTextEdit()
+            self.captionTextEdit.setReadOnly(True)
+            self.tabCaptions.layout().addWidget(self.captionTextEdit)
+            self.captionTextEdit.textChanged.connect(self.captionTextEdit_TextChanged)
         self.captionTextEdit.setPlainText(new_caption_text.strip())
         if not caption_model_row:
             self.captionTextEdit.setReadOnly(True)
@@ -3324,6 +3334,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     # Get window settings from setting store
     def load_settings(self):
         s = get_app().get_settings()
+        from qt_api import QT_API
 
         # Window state and geometry (also toolbar, dock locations and frozen UI state)
         if s.get('window_geometry_v2'):
@@ -3381,8 +3392,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 _("Recent Projects"))
             self.menuFile.insertMenu(self.actionRecentProjects, self.recent_menu)
         else:
-            # Clear the existing children
-            self.recent_menu.clear()
+            # Remove all actions individually instead of clear() — PySide6's
+            # clear() can delete QActions owned by other parents (e.g. actionClearRecents),
+            # crashing the next load_recent_menu call with "C++ object already deleted".
+            for _action in list(self.recent_menu.actions()):
+                self.recent_menu.removeAction(_action)
 
         # Add recent projects to menu
         # Show just a placeholder menu, if we have no recent projects list
@@ -3633,7 +3647,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.actionTransitionsShowAll.setChecked(True)
         self.transitionsToolbar.addAction(self.actionTransitionsShowAll)
         self.transitionsToolbar.addAction(self.actionTransitionsShowCommon)
-        self.transitionsFilter = QLineEdit()
+        self.transitionsFilter = QLineEdit(self.transitionsToolbar)
         self.transitionsFilter.setObjectName("transitionsFilter")
         self.transitionsFilter.setPlaceholderText(_("Filter"))
         self.transitionsFilter.setClearButtonEnabled(True)
@@ -4309,13 +4323,25 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         clipboard = get_app().clipboard()
         mime_data = clipboard.mimeData() if clipboard else None
+        copied_object = ClipboardManager.from_mime(mime_data) if mime_data else None
 
         if mime_data and not mime_data.hasFormat("application/x-zenvi-generic"):
             if self.import_files_from_clipboard(mime_data):
                 return
 
+        paste_clip_ids = self.selected_clips
+        paste_tran_ids = self.selected_transitions
+        if isinstance(copied_object, (Clip, Transition)):
+            paste_clip_ids = []
+            paste_tran_ids = []
+        elif isinstance(copied_object, list) and copied_object and all(
+            isinstance(obj, (Clip, Transition)) for obj in copied_object
+        ):
+            paste_clip_ids = []
+            paste_tran_ids = []
+
         self.timeline.context_menu_cursor_position = None
-        self.timeline.Paste_Triggered(MenuCopy.PASTE, self.selected_clips, self.selected_transitions)
+        self.timeline.Paste_Triggered(MenuCopy.PASTE, paste_clip_ids, paste_tran_ids)
 
     def clipboard_contains_media(self, mime_data=None):
         """Check if clipboard contains media files or supported media data."""
@@ -4562,7 +4588,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                         # Get the shortcut key sequence
                         sequences = get_app().window.getShortcutByName(action_name)
                         for sequence in sequences:
-                            if (sequence == QKeySequence(event.modifiers() | event.key())):
+                            if hasattr(event, "keyCombination"):
+                                event_sequence = QKeySequence(event.keyCombination())
+                            else:
+                                event_sequence = QKeySequence(event.modifiers() | event.key())
+                            if sequence == event_sequence:
                                 event.accept()
                                 return True
 

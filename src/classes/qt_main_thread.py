@@ -13,7 +13,7 @@
 import threading
 
 try:
-    from PyQt5.QtCore import QCoreApplication, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
+    from qt_api import QCoreApplication, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 except ImportError:
     QCoreApplication = None
     QObject = object
@@ -24,7 +24,7 @@ except ImportError:
 
 
 # QTimer.singleShot(0, fn) from a background thread creates the timer on THAT
-# thread (and the 3-arg context overload is missing from some PyQt5 builds).
+# thread (and the 3-arg context overload is missing from some Qt5 binding builds).
 # A QObject that lives on the GUI thread receives a QueuedConnection instead.
 
 if pyqtSignal is not None:

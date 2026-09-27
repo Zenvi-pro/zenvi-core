@@ -28,7 +28,7 @@
 import json
 import math
 import uuid
-from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer
+from qt_api import QPointF, QRectF, Qt, QTimer
 from classes.app import get_app
 from classes.logger import log
 from classes.query import Clip, Transition, Effect

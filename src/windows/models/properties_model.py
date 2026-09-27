@@ -29,8 +29,8 @@ import os
 from collections import OrderedDict
 from operator import itemgetter
 
-from PyQt5.QtCore import QMimeData, Qt, QLocale, QTimer
-from PyQt5.QtGui import (
+from qt_api import QMimeData, Qt, QLocale, QTimer
+from qt_api import (
     QStandardItemModel, QStandardItem,
     QPixmap, QColor,
     )

@@ -28,8 +28,8 @@
 import json
 import math
 import uuid
-from PyQt5.QtCore import QPointF, QRectF, QTimer, Qt
-from PyQt5.QtGui import QColor
+from qt_api import QPointF, QRectF, QTimer, Qt
+from qt_api import QColor
 from classes.app import get_app
 from classes.query import Clip, Transition, Effect
 from classes.query import Marker

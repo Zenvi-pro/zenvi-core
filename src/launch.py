@@ -8,7 +8,7 @@
 
  @mainpage OpenShot Video Editor 2.0
 
- Welcome to the OpenShot Video Editor 2.0 PyQt5 documentation. OpenShot was developed to
+Welcome to the OpenShot Video Editor 2.0 Qt documentation. OpenShot was developed to
  make high-quality video editing and animation solutions freely available to the world. With a focus
  on stability, performance, and ease-of-use, we believe OpenShot is the best cross-platform,
  open-source video editing application in the world!
@@ -164,7 +164,7 @@ else:
         pass
 
 try:
-    # This needs to be imported before PyQt5
+    # This needs to be imported before the Qt binding
     # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
     import openshot
 except ImportError as _openshot_import_err:
@@ -178,7 +178,7 @@ except ImportError as _openshot_import_err:
     except ImportError:
         pass
 
-# Load user-configured UI scale before importing PyQt
+# Load user-configured UI scale before importing the Qt binding
 scale = 1.0
 logger = logging.getLogger(__name__)
 
@@ -212,8 +212,10 @@ try:
 except Exception as exc:
     logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from qt_api import QtCore, QtWidgets, QtWebEngineWidgets
+
+Qt = QtCore.Qt
+QApplication = QtWidgets.QApplication
 
 try:
     # This apparently has to be done before loading QtQuick
@@ -226,8 +228,8 @@ except Exception:
 try:
     # QtWebEngineWidgets must be loaded prior to creating a QApplication
     # But on systems with only WebKit, this will fail (and we ignore the failure)
-    from PyQt5 import QtWebEngineWidgets
-    WebEngineView = QtWebEngineWidgets.QWebEngineView
+    if QtWebEngineWidgets:
+        WebEngineView = QtWebEngineWidgets.QWebEngineView
 except ImportError:
     pass
 
@@ -421,8 +423,12 @@ def main():
         sys.exit(1)
 
     if gui_ready:
+        # Qt6 bindings expose exec(); Qt5 bindings have both exec() and exec_().
+        exec_fn = getattr(app, "exec", None) or getattr(app, "exec_", None)
+        if exec_fn is None or not callable(exec_fn):
+            raise AttributeError("OpenShotApp has no exec_/exec method")
         try:
-            exit_code = app.exec_()
+            exit_code = exec_fn()
         except Exception:
             _report_startup_failure("failed inside the main event loop")
             exit_code = 1

@@ -27,8 +27,8 @@
 
 import math
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
+from qt_api import QPointF, QRectF, Qt
+from qt_api import QBrush, QColor, QPainter, QPainterPath, QPen
 
 from classes.logger import log
 
