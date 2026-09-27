@@ -4521,6 +4521,52 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
     return f, None
 
 
+def _stamp_generated_video_metadata(file_obj, prompt=""):
+    """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
+
+    Generated media is imported with skip_indexing=True, so without this the
+    scene panel and clip search have nothing to show for the clip the agent
+    just made. The generation prompt is the summary.
+
+    Returns False when the metadata could not be saved, True otherwise.
+    """
+    summary = (prompt or "").strip()
+    if not file_obj or not summary:
+        return True
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "ai_generated" not in tag_list:
+            tag_list.append("ai_generated")
+        file_obj.data["tags"] = ", ".join(tag_list)
+
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary[:400]
+        ai["description"] = summary[:400]
+        # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
+        ai["analyzed"] = True
+        ai["source"] = "ai_video_generation"
+        file_obj.data["ai_metadata"] = ai
+        if not file_obj.data.get("name"):
+            file_obj.data["name"] = summary[:120]
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        log.warning("Could not stamp generated-video metadata: %s", exc)
+        return False
+
+
 def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
     """Download a Supabase video to a fresh temp path. Returns (dest_path, size_mb)."""
     import tempfile
@@ -5148,6 +5194,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     + (f": {import_err}" if import_err else ".")
                 )
 
+            stamped = _stamp_generated_video_metadata(f, prompt)
+
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
             # None unless the ripple branch below runs; add_clip_to_timeline
@@ -5241,6 +5289,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"{msg or 'unknown'}. "
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
                     f"track=<layer_number from list_layers_tool>, position_seconds=...)."
+                )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
                 )
             return msg
         except Exception as e:
@@ -8553,6 +8606,23 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     "render_product_demo_tool": "Render product demo",
     "check_motion_graphics_health_tool": "Motion graphics health",
     "get_motion_graphics_job_status_tool": "Motion job status",
+    # The assistant harness contributes its own tool names to the transcript.
+    # `task` is the orchestrator handing work to a specialist; the file and
+    # shell tools only ever run inside the motion-graphics sandbox, on
+    # session/draft.html. Left to the generic fallback these read as "Task",
+    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    "task": "Handing off to a specialist",
+    "bash": "Building the motion graphic",
+    "edit": "Editing the motion graphic",
+    "write": "Writing the motion graphic",
+    "read": "Reading the motion graphic",
+    "glob": "Looking through motion graphic files",
+    "grep": "Searching the motion graphic",
+    "question": "Asking you a question",
+    "todowrite": "Updating the task list",
+    # Denied to the assistant, but a refused call still lands in the transcript.
+    "webfetch": "Reading a web page",
+    "websearch": "Searching the web",
 }
 
 
@@ -8562,6 +8632,10 @@ def humanize_tool_name(tool_name: str) -> str:
         return TOOL_DISPLAY_LABELS[tool_name]
     if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
+    # The harness runtime's own names are all-lowercase keys here; match them
+    # however they arrive cased ("TodoWrite", "WebFetch").
+    if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 

@@ -28,6 +28,7 @@
 import json
 from functools import partial
 
+import openshot
 from PyQt5.QtCore import (
     Qt,
     QRectF,
@@ -37,6 +38,7 @@ from PyQt5.QtCore import (
     QSignalTransition,
     QByteArray,
     pyqtSignal,
+    pyqtSlot,
     QObject,
     QMetaMethod,
     QVariantAnimation,
@@ -174,6 +176,7 @@ class TimelineWidgetBase(QWidget):
         self.marker_rects = []
         self.current_frame = 0
         self.is_auto_center = True
+        self.keyframe_prop_filter = ""
         self.min_distance = 0.02
         self.track_rects = []
         self.track_list = []
@@ -283,6 +286,7 @@ class TimelineWidgetBase(QWidget):
         # Thumbnail helpers
         self.thumbnail_style = self._load_thumbnail_style()
         self.thumbnail_generation = 0
+        self._suspend_thumbnail_requests = False
         self.thumbnail_manager = TimelineThumbnailManager(self)
         self._viewport_thumbnail_reset_timer = QTimer(self)
         self._viewport_thumbnail_reset_timer.setSingleShot(True)
@@ -305,7 +309,8 @@ class TimelineWidgetBase(QWidget):
         self.selection_painter = SelectionPainter(self)
         self.scrollbar_painter = ScrollbarPainter(self)
         self.thumbnail_manager.thumbnail_ready.connect(
-            self.clip_painter.handle_thumbnail_ready
+            self._handle_thumbnail_ready,
+            type=Qt.QueuedConnection,
         )
 
         # Keyframe helpers
@@ -416,6 +421,17 @@ class TimelineWidgetBase(QWidget):
         if hasattr(self, "clip_painter"):
             self.clip_painter.expire_thumbnail_requests(self.thumbnail_generation)
 
+    @pyqtSlot(str, int, str, int)
+    def _handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
+        """Forward thumbnail ready events to the clip painter on the GUI thread."""
+        if hasattr(self, "clip_painter"):
+            self.clip_painter.handle_thumbnail_ready(
+                clip_id,
+                frame,
+                thumb_path,
+                generation,
+            )
+
     def _buildStateMachine(self):
         sm = TimelineStateMachine(self)
 
@@ -436,6 +452,13 @@ class TimelineWidgetBase(QWidget):
         boxsel.exited.connect(self._finishBoxSelect)
         keydrag.entered.connect(self._startKeyframeDrag)
         keydrag.exited.connect(self._finishKeyframeDrag)
+
+        resize.entered.connect(self._disable_playback_caching)
+        resize.exited.connect(self._enable_playback_caching)
+        playhead.entered.connect(self._disable_playback_caching)
+        playhead.exited.connect(self._enable_playback_caching)
+        keydrag.entered.connect(self._disable_playback_caching)
+        keydrag.exited.connect(self._enable_playback_caching)
 
         sender, pressed_signal = self._event_signal("pressed")
 
@@ -486,6 +509,12 @@ class TimelineWidgetBase(QWidget):
         sm.setInitialState(idle)
         sm.start()
         self._sm = sm
+
+    def _disable_playback_caching(self):
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+
+    def _enable_playback_caching(self):
+        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
     def _event_signal(self, name):
         return self.events, self._event_signal_bytes(name)
@@ -686,7 +715,77 @@ class TimelineWidgetBase(QWidget):
         return max(0.0, seconds)
 
     def run_js(self, code, callback=None, retries=0):
-        """Placeholder due to webview compatibility"""
+        """No-op on the native backend; log so silent gaps surface in debug logs."""
+        snippet = (code or "")[:120].replace("\n", " ")
+        log.debug("TimelineWidget.run_js ignored (native backend): %s", snippet)
+        if callback:
+            try:
+                callback(None)
+            except Exception:
+                log.debug("TimelineWidget.run_js callback failed", exc_info=True)
+
+    def set_playhead_follow(self, enable_follow):
+        """Enable / disable centering the viewport on the playhead while seeking."""
+        self.is_auto_center = bool(enable_follow)
+
+    def set_property_filter(self, property_name):
+        """Filter which keyframe properties are drawn on clips (substring match)."""
+        self.keyframe_prop_filter = str(property_name or "")
+        self._keyframes_dirty = True
+        self.update()
+
+    def update_thumbnail(self, clip_id, thumbnail_frame=1, force_regen=False):
+        """Drop cached thumbnails for a clip after its frame thumbnail changes."""
+        clip_key = str(clip_id or "")
+        if not clip_key:
+            return
+        painter = getattr(self, "clip_painter", None)
+        file_id = None
+        if painter is not None:
+            # Expire pending requests so the next paint re-queues a load.
+            if hasattr(painter, "expire_thumbnail_requests"):
+                painter.expire_thumbnail_requests(getattr(self, "thumbnail_generation", 0))
+            if hasattr(painter, "_invalidate_clip_cache_for_clip"):
+                painter._invalidate_clip_cache_for_clip(clip_key)
+            # Drop thumb_cache entries for this clip id.
+            thumb_cache = getattr(painter, "thumb_cache", None)
+            if thumb_cache is not None:
+                stale = [
+                    key for key in list(thumb_cache.keys())
+                    if str(key[0]).split(":", 1)[0] == clip_key
+                ]
+                for key in stale:
+                    thumb_cache.pop(key, None)
+        if force_regen:
+            try:
+                from classes.query import Clip as QueryClip
+
+                clip = QueryClip.get(id=clip_key)
+                if clip and isinstance(getattr(clip, "data", None), dict):
+                    file_id = clip.data.get("file_id")
+            except Exception:
+                file_id = None
+            manager = getattr(self, "thumbnail_manager", None)
+            if manager is not None and file_id:
+                frame = int(thumbnail_frame or 1)
+                generation = int(getattr(self, "thumbnail_generation", 0) or 0)
+                # Mark pending so paint does not double-queue a non-forced load.
+                if painter is not None:
+                    key = (clip_key, frame)
+                    painter._thumb_pending[key] = generation
+                manager.request_thumbnail(
+                    clip_key, file_id, frame, generation, clear_cache=True
+                )
+        self._schedule_viewport_thumbnail_reset()
+        self.update()
+
+    def redraw_audio_data(self):
+        """Force clip painters to rebuild after waveform data changes."""
+        painter = getattr(self, "clip_painter", None)
+        if painter is not None and hasattr(painter, "clear_cache"):
+            painter.clear_cache()
+        self.geometry.mark_dirty()
+        self.update()
 
     def apply_theme(self, css=None):
         """Apply CSS theme to this widget."""
@@ -790,7 +889,13 @@ class TimelineWidgetBase(QWidget):
         self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
         # Invalidate caches and geometry
-        self.clip_painter.clear_cache()
+        win = getattr(self, "win", None)
+        if getattr(win, "_trim_refresh_pending", False):
+            # Keep thumbnail/fallback caches during trim commit to avoid a blank flicker
+            # while new thumbnails are still being generated.
+            self.clip_painter.clip_cache.clear()
+        else:
+            self.clip_painter.clear_cache()
         self.transition_painter.clear_cache()
         self.geometry.mark_dirty()
 
@@ -1139,7 +1244,9 @@ class TimelineWidgetBase(QWidget):
 
     def _event_seconds_track(self, event):
         pos = event.pos()
-        if pos.x() < self.track_name_width or pos.y() < self.ruler_height:
+        if pos.y() < self.ruler_height:
+            return None
+        if not self.rect().contains(pos):
             return None
         if not self.track_list:
             return None
@@ -1150,7 +1257,8 @@ class TimelineWidgetBase(QWidget):
         if vertical_factor <= 0.0:
             return None
         h_offset, v_offset = self._viewport_offsets()
-        pos_seconds = (pos.x() - self.track_name_width + h_offset) / pixels_per_second
+        x_pos = max(0.0, min(float(pos.x()), float(self.width())))
+        pos_seconds = (x_pos - self.track_name_width + h_offset) / pixels_per_second
         pos_seconds = max(0.0, pos_seconds)
         track_idx = int((pos.y() - self.ruler_height + v_offset) / vertical_factor)
         if track_idx < 0 or track_idx >= len(self.track_list):
@@ -1374,6 +1482,15 @@ class TimelineWidgetBase(QWidget):
             self.item_ids = []
         self.new_item = False
         self.item_type = None
+        # A timeline drop should leave timeline items as the sole active selection,
+        # so Delete removes the new clip/transition and not project files (OpenShot #5939).
+        files_model = getattr(self.win, "files_model", None)
+        if files_model:
+            for selection in (getattr(files_model, "selection_model", None),
+                              getattr(files_model, "list_selection_model", None)):
+                if selection is not None:
+                    selection.clearSelection()
+        self.setFocus(Qt.OtherFocusReason)
         self.changed(None)
         self.update()
 
@@ -2208,6 +2325,7 @@ class TimelineWidgetBase(QWidget):
     def _trigger_clip_menu_icon(self, pos):
         for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if self._clip_menu_rect(rect).contains(pos) and hasattr(self.win, "timeline"):
+                self._select_timeline_item(clip.id, "clip", True)
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
         return False
@@ -2665,16 +2783,14 @@ class TimelineWidgetBase(QWidget):
         # Transition context menu (prioritized over clips)
         for rect, tran, _selected in self.geometry.iter_transitions(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
-                if tran.id not in getattr(self.win, "selected_transitions", []):
-                    self._select_timeline_item(tran.id, "transition", True)
+                self._select_timeline_item(tran.id, "transition", True)
                 self.win.timeline.ShowTransitionMenu(tran.id)
                 return True
 
         # Clip context menu
         for rect, clip, _selected in self.geometry.iter_clips(reverse=True):
             if rect.contains(pos) and hasattr(self.win, "timeline"):
-                if clip.id not in getattr(self.win, "selected_clips", []):
-                    self._select_timeline_item(clip.id, "clip", True)
+                self._select_timeline_item(clip.id, "clip", True)
                 self.win.timeline.ShowClipMenu(clip.id)
                 return True
 

@@ -41,15 +41,14 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 import math
-import os
 import time
 
 from classes.app import get_app
 from classes.logger import log
 from classes.time_parts import secondsToTime
-from classes import info
 
 from .base import BasePainter
+from .byte_lru import ByteBudgetLRU
 
 
 class ClipPainter(BasePainter):
@@ -103,7 +102,7 @@ class ClipPainter(BasePainter):
             self.menu_pix = self.w.theme.menu_icon.scaled(
                 size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-        self.thumb_cache = {}
+        self.thumb_cache = ByteBudgetLRU()
         self._thumb_pending = {}
         self._thumb_regions = {}
         self._thumb_missing_logged = set()
@@ -112,7 +111,7 @@ class ClipPainter(BasePainter):
         self._min_thumb_slot_width = max(6.0, min_visible)
         self._min_clip_thumb_width = max(min_visible * 2.0, clip_min)
         # Cache of fully rendered clip pixmaps keyed by clip id/size/pen color
-        self.clip_cache = {}
+        self.clip_cache = ByteBudgetLRU()
         self.menu_margin = self.w.theme.menu_margin
 
     def clear_cache(self):
@@ -124,6 +123,49 @@ class ClipPainter(BasePainter):
         self._thumb_missing_logged.clear()
         self._last_thumb_request_time.clear()
         self._slot_fallback_cache.clear()
+
+    def invalidate_clip_thumbnails(
+        self,
+        clip_token,
+        *,
+        drop_cache=True,
+        drop_pending=True,
+        drop_fallback=True,
+        invalidate_render_cache=True,
+    ):
+        """Invalidate thumbnail caches/requests for a single clip."""
+        if not clip_token:
+            return
+        clip_id = str(clip_token).split(":", 1)[0]
+        if drop_cache:
+            cache_keys = [
+                key for key in list(self.thumb_cache.keys())
+                if isinstance(key, tuple) and key and str(key[0]).split(":", 1)[0] == clip_id
+            ]
+            for key in cache_keys:
+                self.thumb_cache.pop(key, None)
+
+        if drop_pending:
+            pending_keys = [
+                key for key in list(self._thumb_pending.keys())
+                if isinstance(key, tuple) and key and str(key[0]).split(":", 1)[0] == clip_id
+            ]
+            for key in pending_keys:
+                self._thumb_pending.pop(key, None)
+                self._thumb_regions.pop(key, None)
+                self._thumb_missing_logged.discard(key)
+
+        if drop_fallback:
+            fallback_keys = [
+                key for key in list(self._slot_fallback_cache.keys())
+                if isinstance(key, tuple) and key and str(key[0]).split(":", 1)[0] == clip_id
+            ]
+            for key in fallback_keys:
+                self._slot_fallback_cache.pop(key, None)
+
+        self._last_thumb_request_time.pop(clip_id, None)
+        if invalidate_render_cache:
+            self._invalidate_clip_cache_for_clip(clip_id)
 
     def _segment_overdraw(self, view_width):
         """Return the horizontal overdraw (extra pixels) to render beyond the view."""
@@ -222,16 +264,8 @@ class ClipPainter(BasePainter):
         return start, max(0.0, end - start)
 
     def _existing_thumb_path(self, file_id, frame):
-        from classes.thumbnail import resolve_thumbnail_path
-        fingerprint = None
-        try:
-            from classes.query import File
-            f = File.get(id=file_id)
-            if f and isinstance(getattr(f, "data", None), dict):
-                fingerprint = f.data.get("fingerprint")
-        except Exception:
-            fingerprint = None
-        return resolve_thumbnail_path(file_id, frame, fingerprint=fingerprint) or ""
+        """Deprecated paint-path helper — disk lookup moved to the worker thread."""
+        return ""
 
     def _frame_for_offset(self, offset, fps):
         fps = float(fps or 0.0)
@@ -608,9 +642,12 @@ class ClipPainter(BasePainter):
             return [], None
 
         # Slot dimensions
-        thumb_w = float(self.w.theme.clip.thumb_width or inner.height())
+        theme_thumb_w = float(self.w.theme.clip.thumb_width or inner.height())
+        thumb_w = theme_thumb_w
         thumb_h = float(self.w.theme.clip.thumb_height or inner.height())
-        thumb_w = max(self._min_thumb_slot_width, min(thumb_w, clip_width))
+        # Keep slot width at nominal thumbnail width even for small clips.
+        # This allows the clip bounds to crop thumbnails instead of shrinking them.
+        thumb_w = max(self._min_thumb_slot_width, thumb_w)
         thumb_h = max(self._min_thumb_slot_width, min(thumb_h, inner.height()))
         top = inner.y() + (inner.height() - thumb_h) / 2.0
 
@@ -648,10 +685,20 @@ class ClipPainter(BasePainter):
         media_duration = max(media_duration, clip_duration)
 
         # Slot spacing in time
-        interval_pixels = max(thumb_w, self._min_thumb_slot_width)
+        # Entire style keeps spacing tied to nominal thumb width (not the
+        # shrinking clip width), which prevents end-of-trim slot oscillation.
+        if style == "entire":
+            interval_pixels = max(theme_thumb_w, self._min_thumb_slot_width)
+        else:
+            interval_pixels = max(thumb_w, self._min_thumb_slot_width)
         interval_seconds = interval_pixels / pixels_per_second
         if interval_seconds <= 0.0:
             interval_seconds = 0.01
+        if style == "entire":
+            clip_fps = self._clip_media_fps(clip)
+            if clip_fps > 0.0:
+                interval_frames = max(1, int(round(interval_seconds * clip_fps)))
+                interval_seconds = interval_frames / clip_fps
         half_interval = interval_seconds * 0.5
         slot_duration_seconds = interval_seconds
 
@@ -729,7 +776,12 @@ class ClipPainter(BasePainter):
         elif style == "start-end":
             if includes_start:
                 add_center_world(segment_start_world)
-            if includes_end:
+            # If the visible segment cannot fit two full slots, prioritize the
+            # start slot to avoid the end slot covering it on very short clips.
+            allow_end_slot = True
+            if includes_start and includes_end and segment_duration < (slot_duration_seconds * 2.0):
+                allow_end_slot = False
+            if includes_end and allow_end_slot:
                 # Start slot so its right edge aligns with the clip end
                 clip_end_world = clip_pos + max(0.0, clip_duration - slot_duration_seconds)
                 add_center_world(clip_end_world)
@@ -796,8 +848,7 @@ class ClipPainter(BasePainter):
         pending = False
         generation = getattr(self.w, "thumbnail_generation", 0)
         rounding = self._frame_rounding_increment(clip_fps, interval_seconds)
-        clip_width = float(inner.width())
-        clip_left = inner.x()
+        frame_duration = (1.0 / clip_fps) if clip_fps and clip_fps > 0.0 else 0.0
 
         static_image = self._has_static_image(clip)
         static_frame = 1 if static_image else None
@@ -806,25 +857,43 @@ class ClipPainter(BasePainter):
             slot_start_time = float(time_offset)
             slot_end_time = slot_start_time + slot_duration_seconds
             slot_center_time = slot_start_time + half_slot_duration
-            if slot_center_time < segment_offset:
-                slot_center_time = segment_offset
-            elif slot_center_time > segment_end:
-                slot_center_time = segment_end
+            clamped_center_time = slot_center_time
+            if clamped_center_time < segment_offset:
+                clamped_center_time = segment_offset
+            elif clamped_center_time > segment_end:
+                clamped_center_time = segment_end
 
-            # Correct absolute time in source media
-            clip_time = trim_start + slot_center_time
-            frame = self._frame_for_offset(clip_time, clip_fps)
-            if static_frame:
-                frame = static_frame
             is_edge = (slot_start_time <= segment_offset + edge_epsilon) or (
                 slot_end_time >= segment_end - edge_epsilon
             )
-            if rounding > 1 and not is_edge:
-                frame = max(1, int(round((frame - 1) / rounding) * rounding) + 1)
-            key = (clip_key, frame)
             slot_role = "edge-start" if is_edge and slot_start_time <= segment_offset + edge_epsilon else (
                 "edge-end" if is_edge and slot_end_time >= segment_end - edge_epsilon else "grid"
             )
+
+            # For "start" and "start-end", anchor edge thumbnails to exact trim edges.
+            # Keep strip/entire behavior unchanged (centered sampling).
+            if style in ("start", "start-end") and slot_role == "edge-start":
+                sample_time = segment_offset
+            elif style in ("start", "start-end") and slot_role == "edge-end":
+                if frame_duration > 0.0:
+                    sample_time = max(segment_offset, segment_end - frame_duration)
+                else:
+                    sample_time = segment_end
+            elif style == "entire":
+                # Entire style samples from the first frame in each slot for stable
+                # trim behavior and predictable strip thumbnails.
+                sample_time = slot_start_time
+            else:
+                sample_time = clamped_center_time
+
+            # Correct absolute time in source media
+            clip_time = trim_start + sample_time
+            frame = self._frame_for_offset(clip_time, clip_fps)
+            if static_frame:
+                frame = static_frame
+            if rounding > 1 and (style == "entire" or not is_edge):
+                frame = max(1, int(round((frame - 1) / rounding) * rounding) + 1)
+            key = (clip_key, frame)
             cached = self.thumb_cache.get(key)
             if cached and not cached.isNull():
                 pix = cached
@@ -857,6 +926,7 @@ class ClipPainter(BasePainter):
         return pending
 
     def _get_thumbnail_pixmap(self, clip_key, file_id, frame, rect, generation, *, allow_request=True):
+        """Return a cached pixmap or queue a background load. Never touches disk."""
         key = (clip_key, frame)
 
         # 1. If we already have it cached → return it immediately
@@ -864,26 +934,22 @@ class ClipPainter(BasePainter):
             cached = self.thumb_cache[key]
             if not cached.isNull():
                 return cached
-            # Null pixmap means "we tried and failed" — don't request again this generation
-            if self._thumb_pending.get(key) == generation:
-                return None
+            # Null pixmap means "we tried and failed" — do not re-request
+            # until the cache entry is dropped (update_thumbnail / generation).
+            return None
 
         # 2. If already requested this generation → don't request again
         if self._thumb_pending.get(key) == generation:
             return None
 
-        # 3. Load existing on-disk thumbnail if available
-        path = self._existing_thumb_path(file_id, frame)
-        if path:
-            pix = QPixmap(path)
-            if not pix.isNull():
-                self.thumb_cache[key] = pix
-                return pix
+        if getattr(self.w, "_suspend_thumbnail_requests", False):
+            return None
 
         if not allow_request:
             return None
 
-        # Queue the request exactly once per generation (only for visible slots)
+        # Queue the request exactly once per generation (only for visible slots).
+        # Existence checks and PNG decode happen on the thumbnail worker thread.
         self._thumb_pending[key] = generation
         self._thumb_regions[key] = QRectF(rect)
         if self.w.thumbnail_manager:
@@ -1357,20 +1423,27 @@ class ClipPainter(BasePainter):
             self._thumb_regions.pop(key, None)
             self._thumb_missing_logged.discard(key)
 
-    def handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
+    def handle_thumbnail_ready(self, clip_id, frame, image_or_path, generation):
+        """Receive a background-loaded QImage (or legacy path string) on the GUI thread."""
         clip_key = str(clip_id or "")
         key = (clip_key, int(frame or 0))
+        pending_generation = self._thumb_pending.get(key)
 
         # Ignore if not from current generation
-        if self._thumb_pending.get(key) != generation:
+        if pending_generation != generation:
             return
 
         self._thumb_pending.pop(key, None)
-        rect = self._thumb_regions.pop(key, None)
+        self._thumb_regions.pop(key, None)
 
         pix = QPixmap()
-        if thumb_path and os.path.exists(thumb_path):
-            pix = QPixmap(thumb_path)
+        if isinstance(image_or_path, QImage):
+            if not image_or_path.isNull():
+                pix = QPixmap.fromImage(image_or_path)
+        elif image_or_path:
+            # Legacy path-string path (should not run after worker change).
+            log.debug("handle_thumbnail_ready received path string; converting on GUI thread")
+            pix = QPixmap(str(image_or_path))
 
         # Store even empty pixmaps so we don't re-request failed ones
         self.thumb_cache[key] = pix

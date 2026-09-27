@@ -81,16 +81,18 @@ class EffectsListView(QListView):
     def refresh_view(self):
         """Filter transitions with proxy class"""
         filter_text = self.win.effectsFilter.text()
-        self.model().setFilterRegExp(QRegExp(filter_text.replace(' ', '.*')))
-        self.model().setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.model().sort(Qt.AscendingOrder)
+        # Apply filter to the source proxy model (not the single-column wrapper)
+        self.effects_model.proxy_model.setFilterRegExp(QRegExp(filter_text.replace(' ', '.*')))
+        self.effects_model.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
+        self.effects_model.proxy_model.sort(Qt.AscendingOrder)
 
     def __init__(self, model):
         # Invoke parent init
         QListView.__init__(self)
 
         # Get a reference to the window object
-        self.win = get_app().window
+        app = get_app()
+        self.win = app.window
 
         # Get Model data
         self.effects_model = model
@@ -100,13 +102,13 @@ class EffectsListView(QListView):
         self.setDragEnabled(True)
         self.setDropIndicatorShown(True)
 
-        self.setModel(self.effects_model.proxy_model)
+        self.setModel(self.effects_model.list_proxy_model)
 
-        # Remove the default selection model and wire up to the shared one
+        # Remove the default selection model and wire up to the list-specific one
         self.selectionModel().deleteLater()
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionModel(self.effects_model.selection_model)
+        self.setSelectionModel(self.effects_model.list_selection_model)
 
         # Setup header columns
         self.setIconSize(info.LIST_ICON_SIZE)
@@ -116,9 +118,7 @@ class EffectsListView(QListView):
         self.setUniformItemSizes(True)
         self.setWordWrap(False)
         self.setTextElideMode(Qt.ElideRight)
-        self.setStyleSheet('QListView::item { padding-top: 2px; }')
 
         # setup filter events
-        app = get_app()
         app.window.effectsFilter.textChanged.connect(self.filter_changed)
         app.window.refreshEffectsSignal.connect(self.refresh_view)

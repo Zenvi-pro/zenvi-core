@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QColor, QTextCursor
 
+from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
@@ -249,6 +250,30 @@ def _is_planning_tool_allowed(tool_name: str) -> bool:
     if tool_name.startswith("research_") or tool_name.startswith("web_search"):
         return True
     return False
+
+
+# Blocked composite → the plan step name the planner should write instead.
+_PLANNING_STEP_HINTS = {
+    "generate_video_and_add_to_timeline_tool": "video_gen",
+    "generate_video_tool": "video_gen",
+    "generate_tts_and_add_to_timeline_tool": "tts",
+    "modify_clip_tool": "clip_edit",
+    "import_stock_media_tool": "stock_video",
+}
+
+
+def _planning_block_message(tool_name: str) -> str:
+    """Refuse the call and name the step, so the plan still gets written."""
+    hint = _PLANNING_STEP_HINTS.get(tool_name or "")
+    if hint:
+        return (
+            f"Error: Planning mode — {tool_name} is blocked. Add a '{hint}' plan step "
+            "instead (with prompt/query plus track and position_seconds)."
+        )
+    return (
+        "Error: Planning mode — this tool is blocked. "
+        "Add it as a plan step instead."
+    )
 
 
 def _format_tool_command(tool_name: str, args: dict) -> str:
@@ -493,10 +518,7 @@ class AIChatWorker(QObject):
                 """Execute a tool locally and return the result."""
                 nonlocal last_tool_result
                 if getattr(self, "_agent_mode", "agent") == "planning" and not _is_planning_tool_allowed(tool_name):
-                    return (
-                        "Error: Planning mode — this tool is blocked. "
-                        "Add it as a plan step instead."
-                    )
+                    return _planning_block_message(tool_name)
                 log.info("Tool delegated from backend: %s", tool_name)
                 args = dict(tool_args or {})
                 # Args displayed to the user shouldn't leak the chat session id.
@@ -701,28 +723,28 @@ class ChatBridge(QObject):
         super().__init__(parent)
         self.window = window
 
-    @pyqtSlot(str, str, str)
+    @guarded_slot(str, str, str)
     def sendMessage(self, text: str, model_id: str, agent_mode: str = ""):
         if self.window:
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(text.strip(), model_id or "", mode)
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
             self.window._execute_plan(plan_id or "", model_id or "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def executePlanNoArgs(self):
         if self.window:
             self.window._execute_plan("", "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def editPlanInPlanningMode(self):
         if self.window:
             self.window._edit_plan_in_planning_mode()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openPlanDock(self):
         if not self.window:
             return
@@ -739,12 +761,12 @@ class ChatBridge(QObject):
             dock.show()
             dock.raise_()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openAgentTrace(self):
         if self.window:
             self.window.open_agent_trace()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
         if not self.window:
             return
@@ -770,86 +792,98 @@ class ChatBridge(QObject):
             model_id = self.window.model_combo.currentData() or ""
         # Always treat as answering pending questions so the processing gate cannot block Skip/Submit.
         sess = self.window._active_session()
+        prev = None
         if sess is not None:
+            prev = (sess.get("pending_plan_questions"), sess.get("awaiting_plan_answers"))
             sess["pending_plan_questions"] = sess.get("pending_plan_questions") or [{"id": "_"}]
             sess["awaiting_plan_answers"] = False
         # If a prior planning turn is still winding down, force-clear processing so answers can send.
-        if self.window.is_processing:
+        was_processing = bool(self.window.is_processing)
+        if was_processing:
             self.window._set_processing_ui(False)
-        self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        try:
+            self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        except Exception:
+            # Leave the answer gate exactly as it was, or Skip/Submit stops
+            # working for the rest of the session.
+            if sess is not None and prev is not None:
+                sess["pending_plan_questions"], sess["awaiting_plan_answers"] = prev
+            if was_processing:
+                self.window._set_processing_ui(True)
+            raise
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setAgentMode(self, agent_mode: str):
         if self.window:
             self.window._set_agent_mode(agent_mode or "agent")
 
-    @pyqtSlot()
+    @guarded_slot()
     def cancelRequest(self):
         if self.window:
             self.window.cancel_request()
 
-    @pyqtSlot()
+    @guarded_slot()
     def clearChat(self):
         if self.window:
             self.window.clear_chat()
 
-    @pyqtSlot()
+    @guarded_slot()
     def ready(self):
         """Called from JS when QWebChannel is ready; push initial state."""
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def createSession(self, model_id: str, backend: str = ""):
         if self.window:
             self.window._create_session(model_id, backend or "zenvi")
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def setBackend(self, session_id: str, backend: str):
         if self.window:
             self.window._set_session_backend(session_id, backend)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def switchSession(self, session_id: str):
         if self.window:
             self.window._switch_session(session_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def closeSession(self, session_id: str):
         if self.window:
             self.window._close_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getClosedSessions(self):
         if self.window:
             self.window._push_closed_sessions()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def reopenSession(self, session_id: str):
         if self.window:
             self.window._reopen_closed_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getGaps(self):
         if self.window:
             self.window._push_gap_list()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def resolveGap(self, entry_id: str):
         if self.window:
             self.window._resolve_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def deleteGap(self, entry_id: str):
         if self.window:
             self.window._delete_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def connectCli(self, backend_id: str):
         if self.window:
             self.window._connect_cli(backend_id)
 
-    @pyqtSlot(str, result=str)
+    @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
             return "[]"
@@ -858,18 +892,18 @@ class ChatBridge(QObject):
         except Exception:
             return "[]"
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setMentionArmed(self, armed: str):
         if self.window:
             self.window._mention_armed = str(armed).lower() in ("1", "true", "yes")
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def addMention(self, file_id: str):
         if self.window:
             self.window._attach_project_file_id(file_id, insert_mention=False)
             self.window._mention_armed = False
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def removeAttachment(self, attach_id: str):
         if self.window:
             self.window._remove_chat_attachment(attach_id)
@@ -2652,7 +2686,16 @@ class AIChatWindow(QDockWidget):
         if index is None or not index.isValid():
             return
         try:
+            # The thumbnail view sits behind a single-column proxy; walk back
+            # to a model that still exposes the hidden id column (5).
             model = index.model()
+            while (
+                model is not None
+                and model.columnCount(index.parent()) <= 5
+                and hasattr(model, "mapToSource")
+            ):
+                index = model.mapToSource(index)
+                model = index.model()
             id_index = index.sibling(index.row(), 5)
             file_id = model.data(id_index, Qt.DisplayRole)
         except Exception:
@@ -3247,6 +3290,7 @@ class AIChatWindow(QDockWidget):
         worker = sess.get("worker")
         if worker is None:
             return False
+        self._reset_turn_segments(sess)
         if self.is_processing and action == "chat" and not sess.get("pending_plan_questions"):
             if text:
                 self._run_js("alert('Processing previous message...');")
@@ -3738,6 +3782,7 @@ class AIChatWindow(QDockWidget):
         self._user_cancelled = True
         self._token_buffer.clear()
         self._token_flush_scheduled = False
+        self._reset_turn_segments(self._active_session())
         try:
             from classes.api_client import get_backend_client
             get_backend_client().cancel_current_request()
@@ -3782,11 +3827,77 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid != self._active_sid:
             return
-        if (self._sessions.get(sid) or {}).get("awaiting_plan_answers"):
+        sess = self._sessions.get(sid) or {}
+        if sess.get("awaiting_plan_answers"):
             return
         if self._use_web_ui:
+            sess["turn_tail"] = (sess.get("turn_tail") or "") + text
             self._token_buffer.append(text)
             self._schedule_token_flush()
+
+    # ------------------------------------------------------------------
+    # Interleaved prose / tool activity within one turn
+    #
+    # An agent turn is text -> tools -> text -> tools -> ... The prose that
+    # streamed before a tool call is kept as its own bubble ("segment"), and
+    # the tool blocks that follow open a fresh Thinking block *below* it, so
+    # the transcript reads in the order the agent actually worked.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _reset_turn_segments(sess) -> None:
+        if sess is not None:
+            sess["turn_segments"] = []
+            sess["turn_tail"] = ""
+
+    def _commit_streaming_segment(self, sid: str) -> None:
+        """Freeze the prose streamed so far into a finished assistant bubble."""
+        sess = self._sessions.get(sid)
+        if sess is None:
+            return
+        text = self._strip_thinking(sess.get("turn_tail") or "")
+        sess["turn_tail"] = ""
+        if not text:
+            # Nothing worth keeping (whitespace / leaked headers only).
+            self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+            return
+        sess.setdefault("turn_segments", []).append(text)
+        html_body = _markdown_to_html(text)
+        sess["messages"].append(("assistant", html_body, True))
+        self._record_message(sid, "assistant", text)
+        self._run_js(
+            "if(window.commitStreamingSegment) window.commitStreamingSegment(%s);"
+            % json.dumps(html_body)
+        )
+
+    def _final_segment_text(self, sess, text: str) -> str:
+        """The part of the final reply not already shown as a committed segment.
+
+        Backends disagree on what the end-of-turn text is: Claude reports only
+        the last assistant message, Codex joins every message of the turn. Both
+        must render exactly once, so whatever was already committed is removed.
+        Returns *text* unchanged when nothing was committed or the relation to
+        the committed prose is not recognised.
+        """
+        segments = list((sess or {}).get("turn_segments") or [])
+        if not segments:
+            return text
+        tail = self._strip_thinking((sess or {}).get("turn_tail") or "")
+
+        def norm(value: str) -> str:
+            return " ".join(self._strip_thinking(value or "").split())
+
+        n_text = norm(text)
+        n_joined = norm("\n\n".join(segments))
+        if n_text == norm(tail):
+            return text
+        if n_text == n_joined:
+            return tail
+        if n_text == norm("\n\n".join(segments + [tail])):
+            return tail
+        if n_text.startswith(n_joined + " ") and tail and n_text.endswith(norm(tail)):
+            return tail
+        return text
 
     def _tool_result_summary(self, result: str) -> str:
         if not result:
@@ -3800,19 +3911,23 @@ class AIChatWindow(QDockWidget):
     def _on_tool_started(self, call_id: str, tool_name: str, args_json: str):
         """Render a Cursor-style collapsible terminal block for a tool call."""
         sid = getattr(self.sender(), "_session_id", self._active_sid)
+        # Keep the prose that streamed before this tool as its own bubble. It
+        # must be persisted before the tool event so a restored transcript
+        # anchors the tool block after that prose, not before it.
+        if sid == self._active_sid and self._use_web_ui:
+            self._flush_token_buffer()
+            self._commit_streaming_segment(sid)
         # Recorded for every tab, not just the visible one — a background tab's
         # activity should still be there when the user switches to it.
         self._record_tool_started(sid, call_id, tool_name)
         if sid != self._active_sid:
             return
-        # Drop any pre-tool "thinking" that already streamed into the answer bubble.
-        self._token_buffer.clear()
-        self._token_flush_scheduled = False
         if self._use_web_ui:
-            self._run_js(
-                "if(window.resetStreamingMessage) window.resetStreamingMessage();"
-                "if(window.reopenThinkingForTools) window.reopenThinkingForTools();"
-            )
+            # Continue tool activity in a Thinking block placed after the prose.
+            self._run_js("if(window.reopenThinkingForTools) window.reopenThinkingForTools();")
+        else:
+            self._token_buffer.clear()
+            self._token_flush_scheduled = False
         try:
             args = json.loads(args_json) if args_json else {}
         except Exception:
@@ -3907,11 +4022,16 @@ class AIChatWindow(QDockWidget):
                 self._user_cancelled = False
                 self._token_buffer.clear()
                 self._token_flush_scheduled = False
+                self._reset_turn_segments(self._sessions.get(sid))
                 if self._use_web_ui:
                     self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
                 self._set_processing_ui(False)
                 return
             self._flush_token_buffer()
+            sess = self._sessions.get(sid)
+            had_segments = bool((sess or {}).get("turn_segments"))
+            text = self._final_segment_text(sess, text)
+            self._reset_turn_segments(sess)
             # If we streamed tokens, replace the streaming bubble with the
             # finalised markdown-rendered message instead of appending a new one.
             if self._use_web_ui:
@@ -3932,26 +4052,35 @@ class AIChatWindow(QDockWidget):
                 if sid in self._sessions:
                     self._sessions[sid]["awaiting_plan_answers"] = False
                 body = (text or "").strip()
-                if not body or body == "Done.":
-                    body = (
-                        "Still working on the plan — say \"continue the plan\" "
-                        "if nothing appears in the Plan dock."
-                    )
-                self._add_assistant_msg(body)
+                if had_segments and not body:
+                    # Every word of this turn is already on screen in its own
+                    # bubble; just drop the empty streaming placeholder.
+                    if self._use_web_ui:
+                        self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+                else:
+                    if not body or body == "Done.":
+                        body = (
+                            "Still working on the plan — say \"continue the plan\" "
+                            "if nothing appears in the Plan dock."
+                        )
+                    self._add_assistant_msg(body)
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
             if sid in self._sessions:
                 # Same normalisation the active path applies, so what we persist
                 # doesn't depend on which tab happened to be in front.
-                text = self._strip_thinking(text)
-                html_body = _markdown_to_html(text)
-                self._sessions[sid]["messages"].append(("assistant", html_body, True))
-                self._record_message(sid, "assistant", text)
-                self._run_js(
-                    "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
-                    % (json.dumps(sid), json.dumps(html_body))
-                )
+                sess = self._sessions[sid]
+                text = self._strip_thinking(self._final_segment_text(sess, text))
+                self._reset_turn_segments(sess)
+                if text:
+                    html_body = _markdown_to_html(text)
+                    sess["messages"].append(("assistant", html_body, True))
+                    self._record_message(sid, "assistant", text)
+                    self._run_js(
+                        "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
+                        % (json.dumps(sid), json.dumps(html_body))
+                    )
             if self._use_web_ui:
                 self._push_tabs_to_js()
             else:
@@ -3962,6 +4091,7 @@ class AIChatWindow(QDockWidget):
         sid = getattr(self.sender(), "_session_id", self._active_sid)
         if sid in self._sessions:
             self._sessions[sid]["processing"] = False
+            self._reset_turn_segments(self._sessions[sid])
         if sid == self._active_sid:
             if self._user_cancelled:
                 self._user_cancelled = False

@@ -54,6 +54,7 @@ from classes.assets import (
     reverse_media_moves,
     snapshot_media_paths,
 )
+from classes.path_utils import comparable_local_path, normalized_local_path
 from classes.convert_framerate import change_profile
 
 from .keyframe_scaler import KeyframeScaler
@@ -81,6 +82,25 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
     def needs_save(self):
         """Returns if project data has unsaved changes"""
         return self.has_unsaved_changes
+
+    def _effect_has_reader_source(self, effect):
+        """Return True when an effect already has a modern reader payload."""
+        if not isinstance(effect, dict):
+            return False
+        for key in ("mask_reader", "reader"):
+            reader = effect.get(key)
+            if not isinstance(reader, dict):
+                continue
+            if reader.get("path") or reader.get("id") or reader.get("has_single_image"):
+                return True
+        return False
+
+    def _drop_obsolete_effect_resource(self, effect):
+        """Remove legacy resource paths once a reader payload is available."""
+        if not isinstance(effect, dict):
+            return
+        if "resource" in effect and self._effect_has_reader_source(effect):
+            effect.pop("resource", None)
 
     def get(self, key):
         """Get copied value of a given key in data store"""
@@ -998,21 +1018,25 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # into the project assets folder.
 
             # Copy all title files (if not found in target asset folder)
-            for title_path in os.listdir(info.TITLE_PATH):
-                working_title_path = os.path.join(info.TITLE_PATH, title_path)
-                target_title_filepath = os.path.join(target_title_path, title_path)
-                if not os.path.exists(target_title_filepath):
-                    shutil.copy2(working_title_path, target_title_filepath)
+            if os.path.abspath(info.TITLE_PATH) != os.path.abspath(target_title_path):
+                for title_path in os.listdir(info.TITLE_PATH):
+                    working_title_path = os.path.join(info.TITLE_PATH, title_path)
+                    target_title_filepath = os.path.join(target_title_path, title_path)
+                    if not os.path.exists(target_title_filepath):
+                        shutil.copy2(working_title_path, target_title_filepath)
 
             # Copy all blender folders (if not found in target asset folder)
-            for blender_path in os.listdir(info.BLENDER_PATH):
-                working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
-                target_blender_filepath = os.path.join(target_blender_path, blender_path)
-                if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
-                    shutil.copytree(working_blender_path, target_blender_filepath)
+            if os.path.abspath(info.BLENDER_PATH) != os.path.abspath(target_blender_path):
+                for blender_path in os.listdir(info.BLENDER_PATH):
+                    working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
+                    target_blender_filepath = os.path.join(target_blender_path, blender_path)
+                    if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
+                        shutil.copytree(working_blender_path, target_blender_filepath)
 
             # Copy all clipboard files (if not found in target asset folder)
-            if os.path.exists(info.CLIPBOARD_PATH):
+            if os.path.exists(info.CLIPBOARD_PATH) and (
+                os.path.abspath(info.CLIPBOARD_PATH) != os.path.abspath(target_clipboard_path)
+            ):
                 for clipboard_path in os.listdir(info.CLIPBOARD_PATH):
                     working_clipboard_path = os.path.join(info.CLIPBOARD_PATH, clipboard_path)
                     target_clipboard_filepath = os.path.join(target_clipboard_path, clipboard_path)
@@ -1020,11 +1044,12 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
 
             # Copy all protobuf files (if not found in target asset folder)
-            for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
-                working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
-                target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
-                if not os.path.exists(target_protobuf_filepath):
-                    shutil.copy2(working_protobuf_path, target_protobuf_filepath)
+            if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
+                for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
+                    working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
+                    target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
+                    if not os.path.exists(target_protobuf_filepath):
+                        shutil.copy2(working_protobuf_path, target_protobuf_filepath)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -1038,31 +1063,31 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 new_asset_path = None
                 if info.BLENDER_PATH in path:
                     # Copy directory of blender files
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if os.path.isdir(old_dir) and old_dir not in copied_assets["blender"]:
                         # Copy dir into new folder
                         old_dir_name = os.path.basename(old_dir)
-                        copied_assets["blender"].add(old_dir)
-                        log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_blender_path):
+                            copied_assets["blender"].add(old_dir)
+                            log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
                     new_asset_path = os.path.join(target_blender_path, old_dir_name, asset_name)
 
                 if info.TITLE_PATH in path:
                     # Copy title files into assets folder
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["title"]:
                         # Copy title into assets title folder
-                        copied_assets["title"].add(asset_name)
-                        log.info("Copied title %s to %s", asset_name, target_title_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_title_path):
+                            copied_assets["title"].add(asset_name)
+                            log.info("Copied title %s to %s", asset_name, target_title_path)
                     new_asset_path = os.path.join(target_title_path, asset_name)
 
                 if info.CLIPBOARD_PATH in path:
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["clipboard"]:
-                        copied_assets["clipboard"].add(asset_name)
-                        log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_clipboard_path):
+                            copied_assets["clipboard"].add(asset_name)
+                            log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
 
                 # Update path in File object to new location
@@ -1109,19 +1134,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         s = get_app().get_settings()
         recent_projects = s.get("recent_projects")
 
-        # Make sure file_path is absolute
-        file_path = os.path.abspath(file_path)
+        normalized_path = normalized_local_path(file_path)
+        normalized_key = comparable_local_path(normalized_path)
 
-        # Remove existing project
-        if file_path in recent_projects:
-            recent_projects.remove(file_path)
+        # Remove existing project entries, including mixed-separator duplicates.
+        recent_projects = [
+            normalized_local_path(existing_path)
+            for existing_path in recent_projects
+            if comparable_local_path(existing_path) != normalized_key
+        ]
 
         # Remove oldest item (if needed)
-        if len(recent_projects) > 10:
+        if len(recent_projects) >= 10:
             del recent_projects[0]
 
         # Append file path to end of recent files
-        recent_projects.append(file_path)
+        recent_projects.append(normalized_path)
 
         # Save setting
         s.set("recent_projects", recent_projects)
@@ -1139,6 +1167,17 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         dialog_parent = getattr(app, "window", None)
 
         log.info("checking project files...")
+
+        # Drop the legacy transition/effect "resource" path once a reader payload
+        # exists; it broke project saves on relocatable installs (OpenShot #5962).
+        for effect in self._data.get("effects") or []:
+            self._drop_obsolete_effect_resource(effect)
+        for clip in self._data.get("clips") or []:
+            clip_effects = clip.get("effects") if isinstance(clip, dict) else None
+            if isinstance(clip_effects, list):
+                for effect in clip_effects:
+                    self._drop_obsolete_effect_resource(effect)
+        prompt_state = {"cancelled": False}
 
         from classes.media_fingerprint import fingerprint, scan_folder_for_fingerprints
         from classes.path_utils import remember_media_root, resolve_media_path
@@ -1182,6 +1221,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             path = clip.get("reader", {}).get("path", "")
             if path and not os.path.exists(path) and "%" not in path:
                 missing_clips.append((clip, path))
+
+        # Natural-sort by filename so prompts and logs are predictable (OpenShot #5914)
+        missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
+        missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
         total_missing = len(missing_files) + len(missing_clips)
         if total_missing == 0:
@@ -1292,17 +1335,30 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
+        updates = get_app().updates
+
+        def mark_dirty():
+            if not self.has_unsaved_changes:
+                log.debug(
+                    "Project dirty flag set: action=%s key=%s ignore_history=%s values=%s",
+                    action.type,
+                    action.key,
+                    updates.ignore_history,
+                    action.values,
+                )
+            self.has_unsaved_changes = True
+
         if action.type == "insert":
             # Insert new item
             old_vals = self._set(action.key, action.values, add=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "update":
             # Update existing item
             old_vals = self._set(action.key, action.values)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
             if len(action.key) == 1 and action.key[0] in ["fps"]:
                 # FPS changed (apply profile)
@@ -1348,7 +1404,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Delete existing item
             old_vals = self._set(action.key, remove=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "load":
             # Don't track unsaved changes when loading a project

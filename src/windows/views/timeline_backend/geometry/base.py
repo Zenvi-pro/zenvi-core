@@ -237,14 +237,6 @@ class GeometryBase:
             track_height = base_height + extra
             track_heights[track_num] = track_height
             cumulative += track_height
-            if extra > 0.0:
-                log.debug(
-                    "Geometry: track %s base=%.2f extra=%.2f total=%.2f",
-                    track_num,
-                    base_height,
-                    extra,
-                    track_height,
-                )
         content_h = max(cumulative, 0.0)
         spacing = base_height + track_gap
         content_h = max(content_h, 0.0) + top_margin

@@ -27,7 +27,7 @@
 
 import os
 
-from PyQt5.QtCore import QMimeData, Qt, QSortFilterProxyModel
+from PyQt5.QtCore import QMimeData, Qt, QSortFilterProxyModel, QModelIndex
 from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon
 from PyQt5.QtWidgets import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
@@ -58,6 +58,11 @@ class EmojiStandardItemModel(QStandardItemModel):
 
         # Return Mimedata
         return data
+
+
+class EmojiProxyModel(QSortFilterProxyModel):
+    def columnCount(self, parent=QModelIndex()):
+        return 1
 
 
 class EmojisModel():
@@ -190,7 +195,7 @@ class EmojisModel():
         self.group_model.setSortLocaleAware(True)
         self.group_model.setFilterKeyColumn(1)
 
-        self.proxy_model = QSortFilterProxyModel()
+        self.proxy_model = EmojiProxyModel()
         self.proxy_model.setDynamicSortFilter(True)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy_model.setSortCaseSensitivity(Qt.CaseSensitive)
