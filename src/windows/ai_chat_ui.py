@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QColor, QTextCursor
 
+from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
@@ -722,28 +723,28 @@ class ChatBridge(QObject):
         super().__init__(parent)
         self.window = window
 
-    @pyqtSlot(str, str, str)
+    @guarded_slot(str, str, str)
     def sendMessage(self, text: str, model_id: str, agent_mode: str = ""):
         if self.window:
             mode = agent_mode if agent_mode in ("planning", "agent") else None
             self.window._handle_web_send_message(text.strip(), model_id or "", mode)
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def executePlan(self, plan_id: str, model_id: str):
         if self.window:
             self.window._execute_plan(plan_id or "", model_id or "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def executePlanNoArgs(self):
         if self.window:
             self.window._execute_plan("", "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def editPlanInPlanningMode(self):
         if self.window:
             self.window._edit_plan_in_planning_mode()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openPlanDock(self):
         if not self.window:
             return
@@ -760,12 +761,12 @@ class ChatBridge(QObject):
             dock.show()
             dock.raise_()
 
-    @pyqtSlot()
+    @guarded_slot()
     def openAgentTrace(self):
         if self.window:
             self.window.open_agent_trace()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def submitPlanAnswers(self, answers_json: str):
         if not self.window:
             return
@@ -791,86 +792,98 @@ class ChatBridge(QObject):
             model_id = self.window.model_combo.currentData() or ""
         # Always treat as answering pending questions so the processing gate cannot block Skip/Submit.
         sess = self.window._active_session()
+        prev = None
         if sess is not None:
+            prev = (sess.get("pending_plan_questions"), sess.get("awaiting_plan_answers"))
             sess["pending_plan_questions"] = sess.get("pending_plan_questions") or [{"id": "_"}]
             sess["awaiting_plan_answers"] = False
         # If a prior planning turn is still winding down, force-clear processing so answers can send.
-        if self.window.is_processing:
+        was_processing = bool(self.window.is_processing)
+        if was_processing:
             self.window._set_processing_ui(False)
-        self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        try:
+            self.window._dispatch_user_message(text, model_id, agent_mode="planning")
+        except Exception:
+            # Leave the answer gate exactly as it was, or Skip/Submit stops
+            # working for the rest of the session.
+            if sess is not None and prev is not None:
+                sess["pending_plan_questions"], sess["awaiting_plan_answers"] = prev
+            if was_processing:
+                self.window._set_processing_ui(True)
+            raise
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setAgentMode(self, agent_mode: str):
         if self.window:
             self.window._set_agent_mode(agent_mode or "agent")
 
-    @pyqtSlot()
+    @guarded_slot()
     def cancelRequest(self):
         if self.window:
             self.window.cancel_request()
 
-    @pyqtSlot()
+    @guarded_slot()
     def clearChat(self):
         if self.window:
             self.window.clear_chat()
 
-    @pyqtSlot()
+    @guarded_slot()
     def ready(self):
         """Called from JS when QWebChannel is ready; push initial state."""
         if self.window and getattr(self.window, "_chat_web_ready", None):
             self.window._chat_web_ready()
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def createSession(self, model_id: str, backend: str = ""):
         if self.window:
             self.window._create_session(model_id, backend or "zenvi")
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def setBackend(self, session_id: str, backend: str):
         if self.window:
             self.window._set_session_backend(session_id, backend)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def switchSession(self, session_id: str):
         if self.window:
             self.window._switch_session(session_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def closeSession(self, session_id: str):
         if self.window:
             self.window._close_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getClosedSessions(self):
         if self.window:
             self.window._push_closed_sessions()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def reopenSession(self, session_id: str):
         if self.window:
             self.window._reopen_closed_session(session_id)
 
-    @pyqtSlot()
+    @guarded_slot()
     def getGaps(self):
         if self.window:
             self.window._push_gap_list()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def resolveGap(self, entry_id: str):
         if self.window:
             self.window._resolve_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def deleteGap(self, entry_id: str):
         if self.window:
             self.window._delete_gap(entry_id)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def connectCli(self, backend_id: str):
         if self.window:
             self.window._connect_cli(backend_id)
 
-    @pyqtSlot(str, result=str)
+    @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
             return "[]"
@@ -879,18 +892,18 @@ class ChatBridge(QObject):
         except Exception:
             return "[]"
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def setMentionArmed(self, armed: str):
         if self.window:
             self.window._mention_armed = str(armed).lower() in ("1", "true", "yes")
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def addMention(self, file_id: str):
         if self.window:
             self.window._attach_project_file_id(file_id, insert_mention=False)
             self.window._mention_armed = False
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def removeAttachment(self, attach_id: str):
         if self.window:
             self.window._remove_chat_attachment(attach_id)
@@ -1011,6 +1024,8 @@ class AIChatWindow(QDockWidget):
         self._start_credits_refresh()
         # Detect claude/codex CLI availability for the agent selector's status dots.
         self._start_cli_detection_refresh()
+        # Model pickers: fetch the live lineups off-thread, then keep them fresh.
+        self._start_model_lineup_refresh()
 
     # ------------------------------------------------------------------
     # Session management
@@ -2961,28 +2976,41 @@ class AIChatWindow(QDockWidget):
         )
 
     def _zenvi_models(self):
-        """Model-picker entries served by the Zenvi backend."""
+        """Model-picker entries served by the Zenvi backend.
+
+        Answers from the last catalog the refresh worker fetched (see
+        ``_start_model_lineup_refresh``); nothing here touches the network,
+        because this runs on the GUI thread on every tab and backend switch.
+        Empty until the first fetch lands, and the worker re-pushes the picker
+        the moment it does.
+        """
+        return [dict(m) for m in getattr(self, "_zenvi_model_rows", None) or []]
+
+    @staticmethod
+    def _zenvi_rows_from_catalog(payload: dict) -> list:
+        """Picker entries from a ``GET /models`` payload (pure; tested)."""
         models = []
-        try:
-            client = get_backend_client()
-            api_models = client.list_models()
-            default_id = client.get_default_model_id()
-            for m in api_models:
-                mid = m.get("model_id", "")
-                # Pass the picker metadata straight through. The JS side
-                # defaults anything missing, so an older backend still works.
-                models.append({
-                    "id": mid,
-                    "name": m.get("display_name", mid),
-                    "default": mid == default_id,
-                    "provider": m.get("provider", ""),
-                    "featured": m.get("featured", True),
-                    "rank": m.get("rank", 500),
-                    "tags": m.get("tags", []),
-                    "available": m.get("available", True),
-                })
-        except Exception:
-            log.debug("Zenvi Assistant: model list unavailable; using empty list")
+        if not isinstance(payload, dict):
+            return models
+        default_id = payload.get("default_model_id") or ""
+        for m in payload.get("models") or []:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("model_id", "")
+            if not mid:
+                continue
+            # Pass the picker metadata straight through. The JS side defaults
+            # anything missing, so an older backend still works.
+            models.append({
+                "id": mid,
+                "name": m.get("display_name", mid),
+                "default": mid == default_id,
+                "provider": m.get("provider", ""),
+                "featured": m.get("featured", True),
+                "rank": m.get("rank", 500),
+                "tags": m.get("tags", []),
+                "available": m.get("available", True),
+            })
         return models
 
     def _models_for_backend(self, backend: str = None):
@@ -3006,10 +3034,89 @@ class AIChatWindow(QDockWidget):
         if not self._use_web_ui:
             return
         models = self._models_for_backend(backend)
-        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        # The first lineup fetch can land before chat.js has defined its
+        # globals; the page's load handler pushes again once it has.
+        self._run_js("if(window.setModels) setModels(%s);" % json.dumps(json.dumps(models)))
         self._run_js(
             "if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS))
         )
+
+    # Model lineups are re-fetched on this cadence so a release shows up in a
+    # running app without a restart. It matches the backend's own discovery
+    # cache TTL (ZENVI_MODEL_CATALOG_TTL, 15 min), so polling faster would only
+    # re-read the same cached answer.
+    MODEL_LINEUP_REFRESH_MS = 15 * 60 * 1000
+
+    def _start_model_lineup_refresh(self):
+        """Fetch the model lineups once now, then every 15 minutes.
+
+        Two lists come from the backend: the Zenvi Assistant catalog
+        (``GET /models``) and the CLI agents' lineups (``GET /models/cli``),
+        both built from the providers' live model lists. Fetching happens on a
+        worker thread; the result is handed to the GUI thread, installed, and
+        the active tab's picker is re-pushed.
+        """
+        self._refresh_model_lineups()
+        if not getattr(self, "_model_lineup_timer", None):
+            self._model_lineup_timer = QTimer(self)
+            self._model_lineup_timer.timeout.connect(self._refresh_model_lineups)
+            self._model_lineup_timer.start(self.MODEL_LINEUP_REFRESH_MS)
+
+    def _refresh_model_lineups(self):
+        """Fetch both lineups off the GUI thread; deliver via ``_on_model_lineups``."""
+        if getattr(self, "_model_lineup_fetching", False):
+            return
+        self._model_lineup_fetching = True
+
+        def run():
+            payload = {"zenvi": {}, "cli": {}}
+            try:
+                client = get_backend_client()
+                payload["zenvi"] = client.fetch_model_catalog()
+                payload["cli"] = client.list_cli_models()
+            except Exception as exc:
+                log.debug("model lineup fetch failed: %s", exc)
+            try:
+                QMetaObject.invokeMethod(
+                    self,
+                    "_on_model_lineups",
+                    Qt.QueuedConnection,
+                    Q_ARG(str, json.dumps(payload)),
+                )
+            except Exception as exc:
+                log.debug("model lineup delivery failed: %s", exc)
+
+        threading.Thread(target=run, daemon=True, name="model-lineups").start()
+
+    @pyqtSlot(str)
+    def _on_model_lineups(self, payload_json: str):
+        """Install fetched lineups and refresh the picker (GUI thread)."""
+        self._model_lineup_fetching = False
+        try:
+            payload = json.loads(payload_json)
+        except Exception:
+            payload = {}
+        if self._apply_model_lineups(payload):
+            self._push_models_for_backend()
+
+    def _apply_model_lineups(self, payload: dict) -> bool:
+        """Store what a fetch returned; True when anything usable arrived.
+
+        A failed fetch (empty catalog) keeps whatever the previous one left so
+        a backend blip does not blank the picker mid-session.
+        """
+        from windows.agent_runners import set_live_lineups
+
+        changed = False
+        rows = self._zenvi_rows_from_catalog(payload.get("zenvi") or {})
+        if rows:
+            self._zenvi_model_rows = rows
+            changed = True
+        cli = payload.get("cli") or {}
+        if isinstance(cli, dict) and any(cli.values()):
+            set_live_lineups(cli)
+            changed = True
+        return changed
 
     def _start_cli_detection_refresh(self):
         """Detect claude/codex CLI availability once, then refresh every 60s."""
