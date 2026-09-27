@@ -2991,7 +2991,9 @@ class AIChatWindow(QDockWidget):
         if not self._use_web_ui:
             return
         models = self._models_for_backend(backend)
-        self._run_js("setModels(%s);" % json.dumps(json.dumps(models)))
+        # The first lineup fetch can land before chat.js has defined its
+        # globals; the page's load handler pushes again once it has.
+        self._run_js("if(window.setModels) setModels(%s);" % json.dumps(json.dumps(models)))
         self._run_js(
             "if(window.setBackends) setBackends(%s);" % json.dumps(json.dumps(BACKENDS))
         )
