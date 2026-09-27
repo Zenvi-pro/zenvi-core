@@ -33,7 +33,7 @@ import unittest
 from unittest.mock import patch
 
 import openshot
-from qt_api import QApplication, QColor, QPoint, QRect, QRectF, QStandardItem, QTransform, Qt, QWidget
+from qt_api import QApplication, QColor, QLabel, QPoint, QPointF, QPushButton, QRect, QRectF, QSize, QStandardItem, QTransform, Qt, QWidget
 
 
 PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -67,7 +67,12 @@ from windows.video_widget import VideoWidget
 from windows.models.properties_model import ClipStandardItemModel, PropertiesModel
 from windows.process_effect import (
     ProcessEffect,
+    CUTIE_MODELS_PATH,
+    EFFICIENT_SAM_MODELS_PATH,
+    compact_model_label,
+    load_model_manifest,
     load_yolo_models_manifest,
+    object_mask_quality_label,
     yolo_classes_path,
     yolo_download_button_label,
     yolo_model_label,
@@ -163,10 +168,44 @@ class VideoWidgetTransformTests(unittest.TestCase):
 
         self.assertEqual(len(recommended), 1)
         self.assertEqual(recommended[0]["id"], "yolo26n-seg")
-        self.assertEqual(yolo_model_label(recommended[0]), "YOLO26: Nano (Recommended, fastest)")
+        self.assertEqual(yolo_model_label(recommended[0]), "YOLO26: Nano (recommended, fast)")
         self.assertEqual(yolo_download_button_label(recommended[0]), "Download (10 MB)")
         self.assertTrue(yolo_model_path(recommended[0]).endswith("yolo26n-seg/model.onnx"))
         self.assertTrue(yolo_classes_path(recommended[0]).endswith("yolo26n-seg/classes.names"))
+
+    def test_ai_model_manifests_use_shared_catalog_shape(self):
+        for manifest in (
+            load_yolo_models_manifest(),
+            load_model_manifest(EFFICIENT_SAM_MODELS_PATH),
+            load_model_manifest(CUTIE_MODELS_PATH),
+        ):
+            self.assertEqual(set(manifest.keys()), {"version", "release", "base_url", "models"})
+            self.assertEqual(manifest["release"], "v0.2.0")
+            for model in manifest["models"]:
+                self.assertLessEqual(
+                    set(model.keys()),
+                    {"id", "name", "description", "asset", "sha256", "bytes", "recommended"},
+                )
+
+    def test_ai_model_manifests_use_ui_copy(self):
+        yolo_models = load_yolo_models_manifest()["models"]
+        cutie_models = load_model_manifest(CUTIE_MODELS_PATH)["models"]
+        efficient_sam_models = load_model_manifest(EFFICIENT_SAM_MODELS_PATH)["models"]
+
+        self.assertNotIn("yolov8n-seg", {model["id"] for model in yolo_models})
+        self.assertEqual(yolo_models[0]["description"], "recommended, fast")
+        self.assertEqual(yolo_models[1]["description"], "balanced")
+        self.assertEqual(yolo_models[2]["description"], "quality")
+        self.assertNotIn("cutie-very-high", {model["id"] for model in cutie_models})
+        self.assertEqual(
+            [(model["name"], model["description"]) for model in cutie_models],
+            [
+                ("Small", "fast"),
+                ("Medium", "recommended, balanced"),
+                ("Large", "quality"),
+            ],
+        )
+        self.assertEqual(efficient_sam_models[0]["description"], "recommended, fast")
 
     def test_yolo5_validation_uses_libopenshot(self):
         process = ProcessEffect.__new__(ProcessEffect)
@@ -210,6 +249,217 @@ class VideoWidgetTransformTests(unittest.TestCase):
         ]
 
         self.assertEqual(generate_masks, [])
+
+    def test_object_detection_model_paths_are_advanced(self):
+        object_detection_options = effect_options["ObjectDetection"]
+        download = next(option for option in object_detection_options if option.get("setting") == "download-yolo")
+        model = next(option for option in object_detection_options if option.get("setting") == "model")
+        classes = next(option for option in object_detection_options if option.get("setting") == "classes_file")
+        device = next(option for option in object_detection_options if option.get("setting") == "processing-device")
+
+        self.assertEqual(download["title"], "Version")
+        self.assertEqual(download["file-settings"], ["model", "classes_file"])
+        self.assertTrue(model["advanced"])
+        self.assertTrue(classes["advanced"])
+        self.assertTrue(device["advanced"])
+        self.assertEqual(device["value"], "CPU")
+
+    def test_object_mask_initializer_defaults_to_efficientsam_downloads(self):
+        object_mask_options = effect_options["ObjectMask"]
+        download = next(option for option in object_mask_options if option.get("setting") == "download-object-mask")
+        efficient_sam = next(option for option in object_mask_options if option.get("setting") == "efficient_sam_model")
+        cutie_key = next(option for option in object_mask_options if option.get("setting") == "cutie_encode_key_model")
+        cutie_value = next(option for option in object_mask_options if option.get("setting") == "cutie_encode_value_model")
+        cutie_readout = next(option for option in object_mask_options if option.get("setting") == "cutie_memory_readout_model")
+        cutie_decode = next(option for option in object_mask_options if option.get("setting") == "cutie_decode_model")
+        selector = next(option for option in object_mask_options if option.get("setting") == "object_mask_selection")
+        device = next(option for option in object_mask_options if option.get("setting") == "processing-device")
+        selector_index = object_mask_options.index(selector)
+        device_index = object_mask_options.index(device)
+
+        self.assertEqual(download["type"], "download-object-mask")
+        self.assertEqual(download["title"], "Quality")
+        self.assertEqual(download["file-settings"], [
+            "efficient_sam_model",
+            "cutie_encode_key_model",
+            "cutie_encode_value_model",
+            "cutie_memory_readout_model",
+            "cutie_decode_model",
+        ])
+        self.assertEqual(efficient_sam["type"], "file")
+        self.assertEqual(cutie_key["type"], "file")
+        self.assertEqual(cutie_value["type"], "file")
+        self.assertEqual(cutie_readout["type"], "file")
+        self.assertEqual(cutie_decode["type"], "file")
+        self.assertTrue(efficient_sam["advanced"])
+        self.assertTrue(cutie_key["advanced"])
+        self.assertTrue(cutie_value["advanced"])
+        self.assertTrue(cutie_readout["advanced"])
+        self.assertTrue(cutie_decode["advanced"])
+        self.assertTrue(device["advanced"])
+        self.assertEqual(device["value"], "CPU")
+        self.assertLess(device_index, selector_index)
+        self.assertTrue(efficient_sam["value"].endswith(
+            ".openshot_qt/yolo/efficient-sam-tiny-1024/image_segmentation_efficientsam_ti_2025april.onnx"))
+        self.assertTrue(cutie_key["value"].endswith(".openshot_qt/yolo/cutie-medium/cutie-encode-key-640x368.onnx"))
+        self.assertTrue(cutie_value["value"].endswith(".openshot_qt/yolo/cutie-medium/cutie-encode-value-640x368.onnx"))
+        self.assertTrue(cutie_readout["value"].endswith(
+            ".openshot_qt/yolo/cutie-medium/cutie-memory-readout-floatmask-valid-640x368-m6-topk30-opencv.onnx"))
+        self.assertTrue(cutie_decode["value"].endswith(".openshot_qt/yolo/cutie-medium/cutie-decode-640x368.onnx"))
+        self.assertEqual(selector["type"], "object-mask-selection")
+        self.assertEqual(selector["title"], "Select Points")
+
+    def test_cutie_quality_dropdown_uses_compact_label(self):
+        manifest = load_model_manifest(CUTIE_MODELS_PATH)
+        recommended = next(model for model in manifest["models"] if model.get("recommended"))
+
+        self.assertEqual(compact_model_label(recommended), "Medium")
+        self.assertEqual(object_mask_quality_label(recommended), "Medium (recommended, balanced)")
+
+    def test_object_mask_selector_is_disabled_until_models_are_ready(self):
+        process = ProcessEffect.__new__(ProcessEffect)
+        process.download_groups = [{"type": "download-object-mask", "ready": False}]
+        button = QPushButton()
+        status = QLabel()
+        process.selection_fields = {
+            "object_mask_selection": {
+                "button": button,
+                "status": status,
+                "valid": False,
+            }
+        }
+
+        with patch("windows.process_effect.get_app") as get_app:
+            get_app.return_value = types.SimpleNamespace(_tr=lambda text: text)
+            valid = ProcessEffect.update_selection_validation(process)
+
+        self.assertFalse(valid)
+        self.assertFalse(button.isEnabled())
+        self.assertEqual(status.toolTip(), "Object Mask model files are not ready.")
+
+    def test_object_mask_partial_archive_blocks_ready_status(self):
+        process = ProcessEffect.__new__(ProcessEffect)
+        status = QLabel()
+        process.download_groups = [{
+            "type": "download-object-mask",
+            "file-settings": ["efficient_sam_model", "cutie_encode_key_model"],
+            "status": status,
+        }]
+        process.selected_download_group_model = lambda group: {"id": "cutie-medium"}
+        process.efficient_sam_model_by_id = lambda: {"id": "efficient-sam-tiny-1024"}
+        file_results = {
+            "efficient_sam_model": {
+                "valid": True,
+                "message": "Valid model file",
+                "path": "/tmp/image_segmentation_efficientsam_ti_2025april.onnx",
+            },
+            "cutie_encode_key_model": {
+                "valid": True,
+                "message": "Valid model file",
+                "path": "/tmp/cutie-encode-key-640x368.onnx",
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as sam_dir, tempfile.TemporaryDirectory() as cutie_dir:
+            open(os.path.join(cutie_dir, "cutie-medium.zip"), "wb").close()
+            with patch("windows.process_effect.get_app") as get_app, \
+                    patch("windows.process_effect.model_install_dir") as install_dir:
+                get_app.return_value = types.SimpleNamespace(_tr=lambda text: text)
+                install_dir.side_effect = (
+                    lambda model: sam_dir
+                    if str(model.get("id", "")).startswith("efficient-sam")
+                    else cutie_dir
+                )
+                ProcessEffect.update_download_group_statuses(process, file_results)
+
+        self.assertFalse(process.download_groups[0]["ready"])
+        self.assertEqual(status.text(), "Not Downloaded")
+        self.assertIn("incomplete", status.toolTip())
+
+    def test_object_mask_payload_converts_to_preprocess_context(self):
+        payload = {
+            "seed_frame": 1,
+            "frames": {
+                "1": {
+                    "positive_points": [{"x": 375.0, "y": 175.0}],
+                    "negative_points": [{"x": 295.0, "y": 65.0}, {"x": 315.0, "y": 75.0}],
+                    "positive_rects": [{"x1": 300.0, "y1": 120.0, "x2": 420.0, "y2": 240.0}],
+                }
+            },
+        }
+
+        context, valid = ProcessEffect.object_mask_context_from_payload(payload)
+
+        self.assertTrue(valid)
+        self.assertEqual(context["positive_x"], 375.0)
+        self.assertEqual(context["positive_y"], 175.0)
+        self.assertEqual(context["negative_x"], 295.0)
+        self.assertEqual(context["negative_y"], 65.0)
+        self.assertEqual(len(context["negative_points"]), 2)
+        self.assertEqual(context["negative_points"][1]["x"], 315.0)
+        self.assertEqual(context["rect_x1"], 300.0)
+        self.assertEqual(context["rect_y1"], 120.0)
+        self.assertEqual(context["rect_x2"], 420.0)
+        self.assertEqual(context["rect_y2"], 240.0)
+
+    def test_object_mask_rect_payload_uses_center_as_positive_prompt(self):
+        payload = {
+            "seed_frame": 1,
+            "frames": {
+                "1": {
+                    "positive_rects": [{"x1": 10.0, "y1": 20.0, "x2": 30.0, "y2": 60.0}],
+                }
+            },
+        }
+
+        context, valid = ProcessEffect.object_mask_context_from_payload(payload)
+
+        self.assertTrue(valid)
+        self.assertEqual(context["positive_x"], 20.0)
+        self.assertEqual(context["positive_y"], 40.0)
+
+    def test_object_mask_payload_scales_preview_pixels_to_source_pixels(self):
+        payload = {
+            "seed_frame": 1,
+            "frames": {
+                "1": {
+                    "positive_points": [{"x": 290.0, "y": 136.0}],
+                    "negative_points": [{"x": 227.0, "y": 50.0}],
+                    "positive_rects": [{"x1": 100.0, "y1": 20.0, "x2": 200.0, "y2": 80.0}],
+                },
+                "300": {
+                    "positive_points": [{"x": 320.0, "y": 140.0}],
+                }
+            },
+        }
+        preview_size = types.SimpleNamespace(width=lambda: 495, height=lambda: 280)
+        source_size = types.SimpleNamespace(width=lambda: 640, height=lambda: 360)
+
+        scaled = ProcessEffect.object_mask_payload_to_source_pixels(payload, preview_size, source_size)
+
+        frame = scaled["frames"]["1"]
+        self.assertAlmostEqual(frame["positive_points"][0]["x"], 374.949, places=3)
+        self.assertAlmostEqual(frame["positive_points"][0]["y"], 174.857, places=3)
+        self.assertAlmostEqual(frame["negative_points"][0]["x"], 293.495, places=3)
+        self.assertAlmostEqual(frame["negative_points"][0]["y"], 64.286, places=3)
+        self.assertAlmostEqual(frame["positive_rects"][0]["x1"], 129.293, places=3)
+        self.assertAlmostEqual(frame["positive_rects"][0]["y2"], 102.857, places=3)
+        self.assertAlmostEqual(scaled["frames"]["300"]["positive_points"][0]["x"], 413.737, places=3)
+
+    def test_display_frame_size_ignores_partial_paint_rect_size(self):
+        frame_size = VideoWidget._scaled_frame_size(QSize(810, 456), QSize(810, 456))
+
+        self.assertEqual(frame_size.width(), 810)
+        self.assertEqual(frame_size.height(), 456)
+
+    def test_region_rect_edges_can_reach_frame_bounds(self):
+        self.widget.curr_frame_size = QSize(640, 360)
+
+        point = VideoWidget._clamp_region_point(self.widget, QPointF(640.0, 360.0))
+        edge = VideoWidget._clamp_region_point(self.widget, QPointF(640.0, 360.0), include_edges=True)
+
+        self.assertEqual(point, QPointF(639.0, 359.0))
+        self.assertEqual(edge, QPointF(640.0, 360.0))
 
     def test_process_effect_disables_editable_controls_while_processing(self):
         process = ProcessEffect.__new__(ProcessEffect)

@@ -1218,6 +1218,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             info.THUMBNAIL_PATH = os.path.join(get_assets_path(self.current_filepath), "thumbnail")
             info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
             info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
+            info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
             info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
             info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
 
@@ -1317,6 +1318,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     target_proxy_filepath = os.path.join(target_proxy_path, proxy_name)
                     if os.path.isfile(working_proxy_path) and not os.path.exists(target_proxy_filepath):
                         shutil.copy2(working_proxy_path, target_proxy_filepath)
+            def relocate_effect_protobuf(effect):
+                """Copy an effect's protobuf file into the project assets folder and
+                point the effect at it (also when the file lives in a stale/previous
+                assets folder rather than the current runtime folder)."""
+                if not isinstance(effect, dict) or "protobuf_data_path" not in effect:
+                    return
+                old_protobuf_path = effect["protobuf_data_path"]
+                old_protobuf_dir, protobuf_name = os.path.split(old_protobuf_path)
+                if not protobuf_name:
+                    return
+                new_protobuf_path = os.path.join(target_protobuf_path, protobuf_name)
+                if os.path.abspath(old_protobuf_dir) != os.path.abspath(target_protobuf_path):
+                    if os.path.exists(old_protobuf_path) and not os.path.exists(new_protobuf_path):
+                        shutil.copy2(old_protobuf_path, new_protobuf_path)
+                    effect["protobuf_data_path"] = new_protobuf_path
+                    log.info("Copied protobuf %s to %s", old_protobuf_path, target_protobuf_path)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -1382,6 +1399,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                 shutil.copy2(source_proxy, target_proxy)
                             log.info("Copied proxy %s to %s", proxy_name, target_proxy_path)
                     proxy_reader["path"] = os.path.join(target_proxy_path, proxy_name)
+            # Copy top-level effect protobuf assets and update paths.
+            for effect in self._data.get("effects", []):
+                relocate_effect_protobuf(effect)
 
             # Copy all Clip thumbnails and update reader paths
             for clip in self._data["clips"]:
@@ -1400,12 +1420,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
                 log.info("Checking effects in clip %s path for protobuf files" % clip_id)
                 for effect in clip.get("effects", []):
-                    if "protobuf_data_path" in effect:
-                        old_protobuf_path = effect["protobuf_data_path"]
-                        old_protobuf_dir, protobuf_name = os.path.split(old_protobuf_path)
-                        if old_protobuf_dir != target_protobuf_path:
-                            effect["protobuf_data_path"] = os.path.join(target_protobuf_path, protobuf_name)
-                            log.info("Copied protobuf %s to %s", old_protobuf_path, target_protobuf_path)
+                    relocate_effect_protobuf(effect)
 
         except Exception:
             log.error(
