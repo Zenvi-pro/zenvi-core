@@ -170,9 +170,10 @@
     </property>
     <widget class="QMenu" name="menuViews">
      <property name="title">
-      <string>Views</string>
+     <string>Views</string>
      </property>
      <addaction name="actionSimple_View"/>
+     <addaction name="actionColor_Grade_View"/>
      <addaction name="actionAdvanced_View"/>
      <addaction name="separator"/>
      <addaction name="actionFreeze_View"/>
@@ -1252,6 +1253,14 @@
    </property>
    <property name="text">
     <string>Advanced View</string>
+   </property>
+  </action>
+  <action name="actionColor_Grade_View">
+   <property name="text">
+    <string>Color View</string>
+   </property>
+   <property name="shortcut">
+    <string>Alt+Shift+2</string>
    </property>
   </action>
   <action name="actionFreeze_View">

@@ -1013,8 +1013,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         font.setPointSizeF(8)
         self.app.setFont(font)
 
-        # Tabs on the left side (vertical menu style)
+        # Tabs on the left side (vertical menu style) for the top area; the other
+        # areas get top tabs explicitly, since restoreState() does not persist
+        # tab positions (upstream #6016)
         self.app.window.setTabPosition(Qt.TopDockWidgetArea, QTabWidget.West)
+        for area in (Qt.BottomDockWidgetArea, Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.app.window.setTabPosition(area, QTabWidget.North)
 
         # Dock content margins
         self.set_dock_margins([14, 0, 14, 0])
@@ -1231,6 +1235,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             },
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)
+
+        self.app.window.actionColor_Grade_View.setIcon(
+            QIcon(os.path.join(PATH, "themes/cosmic/images/view-color.svg"))
+        )
 
         # ── Timeline toolbar (all icon-only) ─────────────────────────
         timeline_buttons = [

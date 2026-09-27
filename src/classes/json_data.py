@@ -236,6 +236,9 @@ class JsonDataStore:
         #   /Videos/quote \\"/  instead of  /Videos/quote "/
         path = json.loads('"%s"' % path)
 
+        if path == "":
+            return '"%s": ""' % key
+
         # Find absolute path of file (if needed)
         if "@transitions" in path:
             new_path = path.replace("@transitions", os.path.join(info.PATH, "transitions"))
@@ -291,6 +294,9 @@ class JsonDataStore:
         # are escaped during the JSON dumps() conversion.
         #   /Videos/quote \\"/  instead of  /Videos/quote "/
         path = json.loads('"%s"' % path)
+
+        if path == "":
+            return '"%s": ""' % key
 
         # Resolve against the project folder, not process CWD, when relative.
         project_folder = path_context.get("new_project_folder", "") or ""

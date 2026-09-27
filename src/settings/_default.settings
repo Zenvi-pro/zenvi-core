@@ -120,6 +120,13 @@
     "setting": "timeline_height"
   },
   {
+    "value": [],
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "hidden_docks"
+  },
+  {
     "value": "thumbnail",
     "title": "",
     "type": "hidden",
@@ -1534,6 +1541,62 @@
     "title": "Export Downloads Default Applied",
     "setting": "exportDownloadsDefaultApplied",
     "value": true,
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Waveform Mode",
+    "setting": "scope-waveform-mode",
+    "value": "luma",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Waveform Color",
+    "setting": "scope-waveform-color",
+    "value": "green",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Waveform IRE Lines",
+    "setting": "scope-waveform-ire",
+    "value": true,
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Histogram Channel",
+    "setting": "scope-histogram-channel",
+    "value": "rgba",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Histogram Scale",
+    "setting": "scope-histogram-scale",
+    "value": "log",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Vectorscope Display",
+    "setting": "scope-vectorscope-display",
+    "value": "colorized",
+    "type": "hidden",
+    "restart": false
+  },
+  {
+    "category": "Scopes",
+    "title": "Vectorscope Zoom",
+    "setting": "scope-vectorscope-zoom",
+    "value": "100",
     "type": "hidden",
     "restart": false
   },
