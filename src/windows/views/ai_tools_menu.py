@@ -50,6 +50,11 @@ def add_ai_tools_menu(win, parent_menu, source_file=None):
 
         parent_labels = {
             "track_object": _("Track an Object"),
+            "extract": _("Extract"),
+        }
+        parent_icons = {
+            "track_object": "tool-generate-sparkle.svg",
+            "extract": "ai-action-create-image.svg",
         }
         parent_menus = {}
 
@@ -74,7 +79,7 @@ def add_ai_tools_menu(win, parent_menu, source_file=None):
                 if template_parent not in parent_menus:
                     submenu_title = parent_labels.get(template_parent, template_parent.replace("_", " ").title())
                     submenu = StyledContextMenu(title=submenu_title, parent=ai_menu)
-                    submenu.setIcon(_icon("tool-generate-sparkle.svg"))
+                    submenu.setIcon(_icon(parent_icons.get(template_parent, "tool-generate-sparkle.svg")))
                     ai_menu.addMenu(submenu)
                     parent_menus[template_parent] = submenu
                 target_menu = parent_menus[template_parent]

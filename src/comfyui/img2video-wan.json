@@ -5,7 +5,7 @@
   "name": "Image to Video...",
   "open_dialog": true,
   "output_type": "video",
-  "template_id": "img2video-svd",
+  "template_id": "img2video-wan",
   "workflow": {
     "2": {
       "class_type": "LoadImage",

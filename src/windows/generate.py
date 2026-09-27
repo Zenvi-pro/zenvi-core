@@ -29,7 +29,7 @@ import os
 import json
 import functools
 
-from qt_api import Qt
+from qt_api import Qt, QSize
 from qt_api import QIcon, QPixmap, QColor
 from qt_api import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit,
@@ -40,6 +40,7 @@ from qt_api import (
 from classes import info
 from classes.logger import log
 from classes.thumbnail import GetThumbPath
+from classes.query import File
 from windows.region import SelectRegion
 from windows.color_picker import ColorPicker
 
@@ -61,6 +62,10 @@ class GenerateMediaDialog(QDialog):
         super().__init__(parent)
         self.source_file = source_file
         self.templates = templates or []
+        self.template_map = {
+            str(t.get("id", "")).strip(): (t.get("template") or {})
+            for t in self.templates
+        }
         self.preselected_template_id = str(preselected_template_id or "").strip()
         self._coordinates_positive_text = ""
         self._coordinates_negative_text = ""
@@ -82,9 +87,11 @@ class GenerateMediaDialog(QDialog):
         self.tabs = QTabWidget(self)
         self.tabs.setObjectName("generateTabs")
         self.page_prompt = self._build_prompt_tab()
+        self.page_reference = self._build_reference_tab()
         self.page_points = self._build_points_tab()
         self.page_highlight = self._build_highlight_tab()
         self.prompt_tab_index = self.tabs.addTab(self.page_prompt, "Prompt")
+        self.reference_tab_index = self.tabs.addTab(self.page_reference, "Reference")
         self.points_tab_index = self.tabs.addTab(self.page_points, "Tracking")
         self.highlight_tab_index = self.tabs.addTab(self.page_highlight, "Highlight")
         root.addWidget(self.tabs, 1)
@@ -137,6 +144,7 @@ class GenerateMediaDialog(QDialog):
             "name": self.name_edit.text().strip(),
             "template_id": self.template_combo.currentData() or self.template_combo.currentText(),
             "prompt": prompt_text,
+            "reference_image_file_id": self.reference_image_combo.currentData() if hasattr(self, "reference_image_combo") else "",
             "coordinates_positive": coordinates_positive,
             "coordinates_negative": coordinates_negative,
             "rectangles_positive": rects_positive,
@@ -191,16 +199,26 @@ class GenerateMediaDialog(QDialog):
         self.template_combo.currentIndexChanged.connect(self._on_template_changed)
         setup_form.addRow("Template", self.template_combo)
 
-        if self.source_file:
-            source_path = self.source_file.data.get("path", "")
-            source_label = QLabel(os.path.basename(source_path))
-            source_label.setToolTip(source_path)
-            setup_form.addRow("Source", source_label)
-
         right_container = QWidget(self)
         right_container.setLayout(setup_form)
         block.addWidget(right_container, 1)
         return block
+
+    def _build_reference_tab(self):
+        tab = QWidget(self)
+        tab.setObjectName("pageReference")
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        self.reference_image_combo = QComboBox()
+        self.reference_image_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.reference_image_combo.setIconSize(QSize(96, 96))
+        self.reference_image_combo.addItem("Choose reference image...", "")
+        self._populate_reference_image_combo()
+        layout.addWidget(self.reference_image_combo)
+        layout.addStretch(1)
+        return tab
 
     def _build_prompt_tab(self):
         tab = QWidget(self)
@@ -356,6 +374,14 @@ class GenerateMediaDialog(QDialog):
         if not self.name_edit.text().strip():
             self.name_edit.setFocus(Qt.TabFocusReason)
             return
+        if self._needs_reference_image() and not str(self.reference_image_combo.currentData() or "").strip():
+            QMessageBox.warning(
+                self,
+                "Missing Reference Image",
+                "Choose a reference image from Project Files.",
+            )
+            self.reference_image_combo.setFocus(Qt.TabFocusReason)
+            return
         if self._is_track_object_template():
             coordinates_positive, _coordinates_negative, rects_positive, _rects_negative, auto_mode, _tracking_payload, prompt_text = self._current_coordinates_text()
             if (not auto_mode) and (not coordinates_positive) and (not rects_positive) and (not str(prompt_text or "").strip()):
@@ -383,10 +409,20 @@ class GenerateMediaDialog(QDialog):
         template_id = str(self.template_combo.currentData() or "").strip().lower()
         return template_id in ("video-highlight-anything-sam2", "image-highlight-anything-sam2")
 
+    def _current_template(self):
+        template_id = str(self.template_combo.currentData() or "").strip()
+        return self.template_map.get(template_id, {})
+
+    def _needs_reference_image(self):
+        return bool(self._current_template().get("needs_reference_image", False))
+
     def _on_template_changed(self, index):
         _ = index
         is_track_template = self._is_track_object_template()
         is_highlight_template = self._is_highlight_template()
+        needs_inputs = self._needs_reference_image()
+        self.reference_image_combo.setVisible(needs_inputs)
+        self._set_tab_visible(self.reference_tab_index, needs_inputs)
         self._set_tab_visible(self.prompt_tab_index, is_track_template)
         self._set_tab_visible(self.points_tab_index, is_track_template)
         self._set_tab_visible(self.highlight_tab_index, is_track_template and is_highlight_template)
@@ -400,6 +436,31 @@ class GenerateMediaDialog(QDialog):
             self._set_tab_visible(self.points_tab_index, False)
             self._set_tab_visible(self.highlight_tab_index, False)
             self.tabs.setCurrentWidget(self.page_prompt)
+
+    def _populate_reference_image_combo(self):
+        current_id = str(self.reference_image_combo.currentData() or "").strip()
+        image_files = []
+        for file_obj in File.filter():
+            data = file_obj.data if isinstance(getattr(file_obj, "data", None), dict) else {}
+            if str(data.get("media_type", "")).strip().lower() != "image":
+                continue
+            image_files.append(file_obj)
+
+        image_files.sort(key=lambda f: str((f.data or {}).get("name") or os.path.basename((f.data or {}).get("path", ""))).lower())
+        for file_obj in image_files:
+            data = file_obj.data if isinstance(file_obj.data, dict) else {}
+            display_name = str(data.get("name") or os.path.basename(data.get("path", "")) or "Image").strip()
+            icon = QIcon()
+            thumb_path = GetThumbPath(file_obj.id, 1)
+            if thumb_path and os.path.exists(thumb_path):
+                icon = QIcon(thumb_path)
+            self.reference_image_combo.addItem(icon, display_name, file_obj.id)
+            self.reference_image_combo.setItemData(self.reference_image_combo.count() - 1, str(data.get("path", "")), Qt.ToolTipRole)
+
+        if current_id:
+            index = self.reference_image_combo.findData(current_id)
+            if index >= 0:
+                self.reference_image_combo.setCurrentIndex(index)
 
     def _choose_tracking_clicked(self):
         if not self.source_file:

@@ -62,10 +62,14 @@ KNOWN_NODE_TYPES = {
     "saveimage",
     "savevideo",
     "saveaudio",
+    "getimagesize",
+    "vhs_getimagecount",
     "save srt",
     "emptylatentimage",
     "emptyhunyuanlatentvideo",
     "wan22imagetovideolatent",
+    "wanimagetoimageapi",
+    "wantexttoimageapi",
     "imageonlycheckpointloader",
     "modelsamplingsd3",
     "svd_img2vid_conditioning",
@@ -92,6 +96,16 @@ KNOWN_NODE_TYPES = {
     "imagescaleto",
     "imageblur",
     "imagecompositemasked",
+    "imageblend",
+    "controlnetloader",
+    "controlnetapply",
+    "controlnetapplyadvanced",
+    "canny",
+    "depthanythingpreprocessor",
+    "depthanythingv2preprocessor",
+    "midas-depthmappreprocessor",
+    "zoe-depthmappreprocessor",
+    "zoe_depthanythingpreprocessor",
     # Video Helper Suite
     "vhs_batchmanager",
     "vhs_loadvideo",
@@ -247,9 +261,11 @@ class ComfyTemplateRegistry:
 
         override_category = str(payload.get("menu_category") or payload.get("category") or "").strip().lower()
         override_menu_parent = str(payload.get("menu_parent") or "").strip()
+        override_input_type = str(payload.get("input_type") or payload.get("source_type") or "").strip().lower()
         override_output_type = str(payload.get("output_type") or payload.get("media_output") or "").strip().lower()
         override_icon = str(payload.get("action_icon") or payload.get("icon") or "").strip()
         override_open_dialog = payload.get("open_dialog", None)
+        needs_reference_image = bool(payload.get("needs_reference_image", False))
 
         inferred_category = "unknown"
         requires_source = bool(input_types)
@@ -263,6 +279,8 @@ class ComfyTemplateRegistry:
                 )
         if override_category in ("create", "enhance", "unknown"):
             inferred_category = override_category
+        if override_input_type in ("image", "video", "audio"):
+            input_types = {override_input_type}
 
         template_id = str(payload.get("template_id") or payload.get("id") or "").strip()
         if not template_id:
@@ -308,6 +326,7 @@ class ComfyTemplateRegistry:
             "action_icon": override_icon,
             "open_dialog": open_dialog,
             "menu_parent": override_menu_parent,
+            "needs_reference_image": needs_reference_image,
         }
 
     def _primary_output_type(self, output_types):
