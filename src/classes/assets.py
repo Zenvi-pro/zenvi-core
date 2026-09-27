@@ -193,6 +193,8 @@ def _generated_roots():
     return [
         os.path.join(info.USER_PATH, "generated"),
         os.path.join(info.USER_PATH, "Generated"),  # legacy sibling name
+        # Recording dock output for projects that have not been saved yet
+        os.path.join(info.USER_PATH, "recordings"),
     ]
 
 

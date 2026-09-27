@@ -9,6 +9,7 @@ timeline, thumbnail and cache layers gained with it:
 * the media-cache waveform payload now carrying RMS/format/rate
 """
 
+import os
 import types
 from unittest.mock import patch
 
@@ -105,3 +106,31 @@ def test_waveform_cache_without_extra_reads_back_as_legacy(tmp_path, monkeypatch
     loaded = load_waveform(fp)
     assert waveform.waveform_data_format(loaded) == waveform.LEGACY_WAVEFORM_FORMAT
     assert waveform.waveform_sample_rate(loaded) == waveform.LEGACY_SAMPLES_PER_SECOND
+
+
+def test_unsaved_recordings_move_into_project_assets_on_save(tmp_path, monkeypatch):
+    """Recordings made before the project is saved live under the user folder;
+    the first save must adopt them like other generated media."""
+    from classes.assets import relocate_generated_media
+
+    user = tmp_path / "user"
+    monkeypatch.setattr(info, "USER_PATH", str(user))
+    recordings = user / "recordings"
+    recordings.mkdir(parents=True)
+    src = recordings / "Mic-20260926-120000.wav"
+    src.write_bytes(b"RIFF")
+
+    project = tmp_path / "Voice.zvn"
+    project.write_text("{}")
+    files = [{"id": "F1", "path": str(src)}]
+    clips = [{"file_id": "F1", "reader": {"path": str(src)}}]
+
+    moves = relocate_generated_media(files, clips, str(project))
+
+    assert len(moves) == 1
+    dest = files[0]["path"]
+    assert os.path.basename(os.path.dirname(dest)) == "media"
+    assert "Voice_assets" in dest
+    assert os.path.isfile(dest)
+    assert not src.exists()
+    assert clips[0]["reader"]["path"] == dest
