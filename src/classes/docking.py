@@ -28,8 +28,8 @@
 import functools
 import sys
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QApplication, QDockWidget, QWidget
+from qt_api import Qt, QTimer
+from qt_api import QApplication, QDockWidget, QWidget
 
 from classes.logger import log
 from classes.title_bar import HiddenTitleBar

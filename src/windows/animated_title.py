@@ -29,8 +29,8 @@
 import os
 import uuid
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from qt_api import Qt
+from qt_api import (
     QApplication, QDialog, QDialogButtonBox, QPushButton
 )
 
@@ -95,8 +95,7 @@ class AnimatedTitle(QDialog):
 
     def _apply_tab_order(self):
         """Apply explicit tab order for animated title dialog."""
-        from PyQt5.QtWidgets import QWidget
-        from PyQt5.QtCore import QTimer
+        from qt_api import QTimer
 
         def do_tab_order():
             # Force focus policies on buttons (something is resetting Cancel to NoFocus)
@@ -119,9 +118,9 @@ class AnimatedTitle(QDialog):
 
             # Apply tab order directly
             for first, second in zip(ordered, ordered[1:]):
-                QWidget.setTabOrder(first, second)
+                tabstops.safe_set_tab_order(first, second)
             if len(ordered) >= 2:
-                QWidget.setTabOrder(ordered[-1], ordered[0])
+                tabstops.safe_set_tab_order(ordered[-1], ordered[0])
 
         QTimer.singleShot(0, do_tab_order)
 

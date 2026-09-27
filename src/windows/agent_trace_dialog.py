@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QThread, pyqtSignal, pyqtSlot
+from qt_api import QFont
+from qt_api import (
     QComboBox,
     QDialog,
     QHBoxLayout,

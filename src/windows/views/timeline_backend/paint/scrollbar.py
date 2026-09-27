@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
-from PyQt5.QtGui import QBrush, QColor, QPainter
+from qt_api import QRectF
+from qt_api import QBrush, QColor, QPainter
 
 from .base import BasePainter
 

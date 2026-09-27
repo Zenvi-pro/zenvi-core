@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
-# Canonical list from Phase 1 audit. Update verdicts when fixing gaps.
+# Canonical list from Phase 1 audit (+ upstream helpers). Update verdicts when fixing gaps.
 PARITY_AUDIT = {
     # Web document.ready — native has no HTML page.
     "page_ready": "n/a",
@@ -42,6 +42,9 @@ PARITY_AUDIT = {
     # Nested helpers only reached from the web dragEnterEvent path.
     "handle_js_position": "covered",
     "callback": "covered",
+    # Upstream (OpenShot #5885) helper that wraps getJavaScriptPosition; only
+    # called from the web drop / context-menu paths, which guard on TimelineWidget.
+    "_run_js_position": "covered",
 }
 
 UNGARDED_RUN_JS_METHODS = frozenset(PARITY_AUDIT.keys())
@@ -93,7 +96,7 @@ def _methods_calling_run_js_without_native_guard(source: str) -> set[str]:
 
 def test_parity_audit_covers_every_known_gap():
     assert set(PARITY_AUDIT) == UNGARDED_RUN_JS_METHODS
-    assert len(PARITY_AUDIT) == 13
+    assert len(PARITY_AUDIT) == 14
 
 
 def test_parity_verdicts_are_known_labels():

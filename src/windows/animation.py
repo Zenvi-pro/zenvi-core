@@ -28,7 +28,7 @@
 
 import os
 
-from PyQt5.QtWidgets import QDialog
+from qt_api import QDialog
 
 from classes import info, ui_util
 from classes.app import get_app
@@ -42,7 +42,7 @@ class Animation(QDialog):
 
     def __init__(self):
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)

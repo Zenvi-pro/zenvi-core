@@ -34,7 +34,7 @@ from uuid import uuid1
 from xml.dom import minidom
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes.app import get_app

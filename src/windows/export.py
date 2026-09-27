@@ -42,11 +42,11 @@ except ImportError:
 
 from xml.parsers.expat import ExpatError
 
-from PyQt5.QtCore import Qt, QCoreApplication, QTimer, QSize, QPoint, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QCoreApplication, QTimer, QSize, QPoint, pyqtSignal, pyqtSlot
+from qt_api import (
     QMessageBox, QDialog, QFileDialog, QDialogButtonBox, QPushButton, QWidget, QLineEdit, QComboBox, QSpinBox, QCheckBox
 )
-from PyQt5.QtGui import QIcon
+from qt_api import QIcon
 from functools import partial
 from classes import info, tabstops
 from classes import ui_util
@@ -425,7 +425,7 @@ class Export(QDialog):
                 seen.add(widget)
 
             for first, second in zip(ordered_unique, ordered_unique[1:]):
-                QWidget.setTabOrder(first, second)
+                tabstops.safe_set_tab_order(first, second)
 
             # Wrap back to the first field after the last visible button.
             first_visible = ordered_unique[0] if ordered_unique else None
@@ -436,7 +436,7 @@ class Export(QDialog):
                 last_visible = None
 
             if first_visible and last_visible:
-                QWidget.setTabOrder(last_visible, first_visible)
+                tabstops.safe_set_tab_order(last_visible, first_visible)
 
             self._tab_order_list = [
                 w for w in ordered_unique
@@ -486,7 +486,7 @@ class Export(QDialog):
         self.progressExportVideo.setFormat(percentage_string)
         self.setWindowTitle("%s %s" % (percentage_string, title_message))
 
-    def updateChannels(self):
+    def updateChannels(self, *_args):
         """Update the # of channels to match the channel layout"""
         log.info("updateChannels")
         channels = self.txtChannels.value()
@@ -506,8 +506,16 @@ class Export(QDialog):
         # Update channels to match layout
         self.txtChannels.setValue(channels)
 
-    def updateFrameRate(self, set_limits=True):
+    def updateFrameRate(self, *args, set_limits=True):
         """Callback for changing the frame rate"""
+        # Qt change signals may pass the new value/index. Treat those as
+        # signal payloads, not as the internal set_limits flag.
+        if args and isinstance(args[0], bool):
+            set_limits = args[0]
+            args = args[1:]
+        elif not isinstance(set_limits, bool):
+            set_limits = True
+
         self.update_frame_rate_display()
 
         # Adjust the main timeline reader
@@ -1053,7 +1061,7 @@ class Export(QDialog):
                 self.cancel_button.setVisible(False)
                 self.export_button.setVisible(False)
                 self.close_button.setVisible(True)
-                from PyQt5.QtGui import QPalette
+                from qt_api import QPalette
                 p = QPalette()
                 p.setColor(QPalette.Highlight, Qt.green)
                 self.progressExportVideo.setPalette(p)

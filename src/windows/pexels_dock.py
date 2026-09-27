@@ -8,12 +8,12 @@ duration overlay) → click a card to download and import into Project Files.
 import os
 from typing import List, Dict, Any
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QThread, pyqtSignal, QSize, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen, QBrush
-from PyQt5.QtWidgets import (
+from qt_api import QPixmap, QColor, QPainter, QFont, QPen, QBrush
+from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
     QLabel, QSizePolicy, QFrame, QProgressBar, QApplication,

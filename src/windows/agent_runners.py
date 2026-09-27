@@ -27,7 +27,7 @@ import sys
 import threading
 import uuid
 
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+from qt_api import QObject, pyqtSignal, pyqtSlot
 
 log = logging.getLogger(__name__)
 

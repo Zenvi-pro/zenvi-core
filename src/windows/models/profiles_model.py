@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt, QSortFilterProxyModel
-from PyQt5.QtGui import QStandardItemModel, QStandardItem
+from qt_api import Qt, QSortFilterProxyModel
+from qt_api import QStandardItemModel, QStandardItem
 
 from classes.logger import log
 from classes.app import get_app
@@ -45,9 +45,16 @@ class ProfilesProxyModel(QSortFilterProxyModel):
         profile_dar = self.sourceModel().data(self.sourceModel().index(sourceRow, 5, sourceParent))
 
         # Return, if regExp match in displayed format.
-        return self.filterRegExp().indexIn(profile_key.lower()) >= 0 or \
-               self.filterRegExp().indexIn(profile_desc.lower()) >= 0 or \
-               self.filterRegExp().indexIn(profile_dar) >= 0
+        filter_re = None
+        if hasattr(self, "filterRegularExpression"):
+            filter_re = self.filterRegularExpression()
+        elif hasattr(self, "filterRegExp"):
+            filter_re = self.filterRegExp()
+        if filter_re is None:
+            return True
+        return filter_re.match(profile_key.lower()).hasMatch() or \
+               filter_re.match(profile_desc.lower()).hasMatch() or \
+               filter_re.match(profile_dar).hasMatch()
 
 
 class ProfilesStandardItemModel(QStandardItemModel):

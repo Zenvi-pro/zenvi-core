@@ -27,7 +27,7 @@
 
 from typing import Any, Dict
 
-from PyQt5.QtGui import QColor
+from qt_api import QColor
 
 # Mapping of known effect names to their representative colors. These values
 # mirror the existing web timeline so both backends stay consistent.

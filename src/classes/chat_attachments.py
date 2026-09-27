@@ -177,8 +177,8 @@ def _encode_image_file(path: str, long_edge: int, max_bytes: int, quality: int):
             pass
 
     try:
-        from PyQt5.QtGui import QImage
-        from PyQt5.QtCore import QBuffer, QIODevice
+        from qt_api import QImage
+        from qt_api import QBuffer, QIODevice
     except Exception:
         QImage = None
 
