@@ -2,7 +2,7 @@
 
 import types
 
-from PyQt5.QtWidgets import QApplication
+from qt_api import QApplication
 
 
 def get_or_create_app(factory):
