@@ -174,6 +174,7 @@ class TimelineWidgetBase(QWidget):
         self.marker_rects = []
         self.current_frame = 0
         self.is_auto_center = True
+        self.keyframe_prop_filter = ""
         self.min_distance = 0.02
         self.track_rects = []
         self.track_list = []
@@ -686,7 +687,77 @@ class TimelineWidgetBase(QWidget):
         return max(0.0, seconds)
 
     def run_js(self, code, callback=None, retries=0):
-        """Placeholder due to webview compatibility"""
+        """No-op on the native backend; log so silent gaps surface in debug logs."""
+        snippet = (code or "")[:120].replace("\n", " ")
+        log.debug("TimelineWidget.run_js ignored (native backend): %s", snippet)
+        if callback:
+            try:
+                callback(None)
+            except Exception:
+                log.debug("TimelineWidget.run_js callback failed", exc_info=True)
+
+    def set_playhead_follow(self, enable_follow):
+        """Enable / disable centering the viewport on the playhead while seeking."""
+        self.is_auto_center = bool(enable_follow)
+
+    def set_property_filter(self, property_name):
+        """Filter which keyframe properties are drawn on clips (substring match)."""
+        self.keyframe_prop_filter = str(property_name or "")
+        self._keyframes_dirty = True
+        self.update()
+
+    def update_thumbnail(self, clip_id, thumbnail_frame=1, force_regen=False):
+        """Drop cached thumbnails for a clip after its frame thumbnail changes."""
+        clip_key = str(clip_id or "")
+        if not clip_key:
+            return
+        painter = getattr(self, "clip_painter", None)
+        file_id = None
+        if painter is not None:
+            # Expire pending requests so the next paint re-queues a load.
+            if hasattr(painter, "expire_thumbnail_requests"):
+                painter.expire_thumbnail_requests(getattr(self, "thumbnail_generation", 0))
+            if hasattr(painter, "_invalidate_clip_cache_for_clip"):
+                painter._invalidate_clip_cache_for_clip(clip_key)
+            # Drop thumb_cache entries for this clip id.
+            thumb_cache = getattr(painter, "thumb_cache", None)
+            if thumb_cache is not None:
+                stale = [
+                    key for key in list(thumb_cache.keys())
+                    if str(key[0]).split(":", 1)[0] == clip_key
+                ]
+                for key in stale:
+                    thumb_cache.pop(key, None)
+        if force_regen:
+            try:
+                from classes.query import Clip as QueryClip
+
+                clip = QueryClip.get(id=clip_key)
+                if clip and isinstance(getattr(clip, "data", None), dict):
+                    file_id = clip.data.get("file_id")
+            except Exception:
+                file_id = None
+            manager = getattr(self, "thumbnail_manager", None)
+            if manager is not None and file_id:
+                frame = int(thumbnail_frame or 1)
+                generation = int(getattr(self, "thumbnail_generation", 0) or 0)
+                # Mark pending so paint does not double-queue a non-forced load.
+                if painter is not None:
+                    key = (clip_key, frame)
+                    painter._thumb_pending[key] = generation
+                manager.request_thumbnail(
+                    clip_key, file_id, frame, generation, clear_cache=True
+                )
+        self._schedule_viewport_thumbnail_reset()
+        self.update()
+
+    def redraw_audio_data(self):
+        """Force clip painters to rebuild after waveform data changes."""
+        painter = getattr(self, "clip_painter", None)
+        if painter is not None and hasattr(painter, "clear_cache"):
+            painter.clear_cache()
+        self.geometry.mark_dirty()
+        self.update()
 
     def apply_theme(self, css=None):
         """Apply CSS theme to this widget."""
@@ -1018,77 +1089,79 @@ class TimelineWidgetBase(QWidget):
         effect_names = []
         mime = event.mimeData()
         mime_html = mime.html()
-        if mime_has_file_drop(mime):
-            urls = urls_from_mime(mime)
-            imported = self.win.files_model.process_urls(
-                urls, import_quietly=True, prevent_image_seq=True
-            ) or []
-            for f in imported:
-                if f and getattr(f, "id", None):
-                    file_ids.append(f.id)
-        elif mime_html == "clip":
-            try:
-                ids = json.loads(mime.text())
-            except Exception:
-                ids = []
-            if not isinstance(ids, list):
-                ids = [ids]
-            file_ids.extend(ids)
-        elif mime_html == "transition":
-            try:
-                ids = json.loads(mime.text())
-            except Exception:
-                ids = []
-            if not isinstance(ids, list):
-                ids = [ids]
-            file_ids.extend(ids)
-        elif mime_html == "effect":
-            try:
-                names = json.loads(mime.text())
-            except Exception:
-                names = []
-            if not isinstance(names, list):
-                names = [names]
-            effect_names.extend(names)
+        from classes.updates import nested_transaction
+        with nested_transaction(get_app().updates):
+            if mime_has_file_drop(mime):
+                urls = urls_from_mime(mime)
+                imported = self.win.files_model.process_urls(
+                    urls, import_quietly=True, prevent_image_seq=True
+                ) or []
+                for f in imported:
+                    if f and getattr(f, "id", None):
+                        file_ids.append(f.id)
+            elif mime_html == "clip":
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                file_ids.extend(ids)
+            elif mime_html == "transition":
+                try:
+                    ids = json.loads(mime.text())
+                except Exception:
+                    ids = []
+                if not isinstance(ids, list):
+                    ids = [ids]
+                file_ids.extend(ids)
+            elif mime_html == "effect":
+                try:
+                    names = json.loads(mime.text())
+                except Exception:
+                    names = []
+                if not isinstance(names, list):
+                    names = [names]
+                effect_names.extend(names)
 
-        if not file_ids and not effect_names:
+            if not file_ids and not effect_names:
+                self._reset_drag_preview()
+                return
+
+            coords = self._event_seconds_track(event)
+            if coords is None:
+                coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
+            pos_seconds, track_num, _ = coords
+            pos = QPointF(pos_seconds, 0)
+
+            if effect_names:
+                self._apply_effect_drop(effect_names, pos_seconds, track_num)
+                self._reset_drag_preview()
+                return
+
+            for idx, fid in enumerate(file_ids):
+                ignore_refresh = idx < len(file_ids) - 1
+                if mime_html == "transition":
+                    item = self.addTransition(
+                        fid,
+                        pos,
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if item:
+                        pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
+                else:
+                    clip = self.addClip(
+                        fid,
+                        pos,
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if clip:
+                        pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
             self._reset_drag_preview()
-            return
-
-        coords = self._event_seconds_track(event)
-        if coords is None:
-            coords = (0.0, self.track_list[0].data.get("number") if self.track_list else 0, 0)
-        pos_seconds, track_num, _ = coords
-        pos = QPointF(pos_seconds, 0)
-
-        if effect_names:
-            self._apply_effect_drop(effect_names, pos_seconds, track_num)
-            self._reset_drag_preview()
-            return
-
-        for idx, fid in enumerate(file_ids):
-            ignore_refresh = idx < len(file_ids) - 1
-            if mime_html == "transition":
-                item = self.addTransition(
-                    fid,
-                    pos,
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if item:
-                    pos.setX(pos.x() + (item.get("end", 0.0) - item.get("start", 0.0)))
-            else:
-                clip = self.addClip(
-                    fid,
-                    pos,
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if clip:
-                    pos.setX(pos.x() + (clip.get("end", 0.0) - clip.get("start", 0.0)))
-        self._reset_drag_preview()
 
     def dragLeaveEvent(self, event):
         event.accept()
@@ -1205,46 +1278,50 @@ class TimelineWidgetBase(QWidget):
             return False
         preview_items = []
         current_start = pos_seconds
-        for idx, source_id in enumerate(ids):
-            ignore_refresh = idx < len(ids) - 1
-            if payload.get("type") == "transition":
-                item = self.addTransition(
-                    source_id,
-                    QPointF(current_start, 0),
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if not item:
+        from classes.updates import nested_transaction
+        with nested_transaction(get_app().updates) as tid:
+            self._drag_transaction_id = tid
+            for idx, source_id in enumerate(ids):
+                ignore_refresh = idx < len(ids) - 1
+                if payload.get("type") == "transition":
+                    item = self.addTransition(
+                        source_id,
+                        QPointF(current_start, 0),
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if not item:
+                        continue
+                    model = Transition.get(id=item.get("id"))
+                    duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+                else:
+                    item = self.addClip(
+                        source_id,
+                        QPointF(current_start, 0),
+                        track_num,
+                        ignore_refresh=ignore_refresh,
+                        call_manual_move=False,
+                    )
+                    if not item:
+                        continue
+                    model = Clip.get(id=item.get("id"))
+                    duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
+                    log.info("DIAG _ensure_drag_preview: addClip returned id=%s, Clip.get found model.id=%s model=%s",
+                             item.get("id"), getattr(model, "id", None), model)
+                if not model:
                     continue
-                model = Transition.get(id=item.get("id"))
-                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
-            else:
-                item = self.addClip(
-                    source_id,
-                    QPointF(current_start, 0),
-                    track_num,
-                    ignore_refresh=ignore_refresh,
-                    call_manual_move=False,
-                )
-                if not item:
-                    continue
-                model = Clip.get(id=item.get("id"))
-                duration = max(0.0, float(item.get("end", 0.0)) - float(item.get("start", 0.0)))
-                log.info("DIAG _ensure_drag_preview: addClip returned id=%s, Clip.get found model.id=%s model=%s",
-                         item.get("id"), getattr(model, "id", None), model)
-            if not model:
-                continue
-            offset = current_start - pos_seconds
-            preview_items.append({
-                "model": model,
-                "offset": offset,
-                "duration": duration,
-            })
-            self.item_ids.append(model.id)
-            current_start += duration
+                offset = current_start - pos_seconds
+                preview_items.append({
+                    "model": model,
+                    "offset": offset,
+                    "duration": duration,
+                })
+                self.item_ids.append(model.id)
+                current_start += duration
 
         if not preview_items:
+            self._drag_transaction_id = None
             return False
 
         self._drag_preview_items = preview_items
@@ -1313,6 +1390,7 @@ class TimelineWidgetBase(QWidget):
         self._drag_preview_items = []
         self._drag_preview_type = None
         self._drag_payload = None
+        self._drag_transaction_id = None
         if hasattr(self, "item_ids"):
             self.item_ids = []
         self.new_item = False
@@ -1329,31 +1407,40 @@ class TimelineWidgetBase(QWidget):
         if not total:
             self._reset_drag_preview()
             return
-        for idx, entry in enumerate(self._drag_preview_items):
-            model = entry.get("model")
-            if not model:
-                continue
-            log.info("DIAG _finalize_drag_preview: model.id=%s data.id=%s pos=%s start=%s end=%s",
-                     getattr(model, "id", None), model.data.get("id"),
-                     model.data.get("position"), model.data.get("start"), model.data.get("end"))
-            ignore_refresh = idx < total - 1
-            if isinstance(model, Transition):
-                self.update_transition_data(
-                    model.data,
-                    only_basic_props=False,
-                    ignore_refresh=ignore_refresh,
-                )
+        from classes.updates import nested_transaction
+        tid = self._drag_transaction_id
+        with nested_transaction(get_app().updates) as active_tid:
+            if tid:
+                get_app().updates.transaction_id = tid
             else:
-                self.update_clip_data(
-                    model.data,
-                    only_basic_props=False,
-                    ignore_reader=True,
-                    ignore_refresh=ignore_refresh,
-                )
+                tid = active_tid
+                self._drag_transaction_id = tid
+            for idx, entry in enumerate(self._drag_preview_items):
+                model = entry.get("model")
+                if not model:
+                    continue
+                log.info("DIAG _finalize_drag_preview: model.id=%s data.id=%s pos=%s start=%s end=%s",
+                         getattr(model, "id", None), model.data.get("id"),
+                         model.data.get("position"), model.data.get("start"), model.data.get("end"))
+                ignore_refresh = idx < total - 1
+                if isinstance(model, Transition):
+                    self.update_transition_data(
+                        model.data,
+                        only_basic_props=False,
+                        ignore_refresh=ignore_refresh,
+                    )
+                else:
+                    self.update_clip_data(
+                        model.data,
+                        only_basic_props=False,
+                        ignore_reader=True,
+                        ignore_refresh=ignore_refresh,
+                    )
         self._update_project_duration()
         self._drag_preview_items = []
         self._drag_preview_type = None
         self._drag_payload = None
+        self._drag_transaction_id = None
         if hasattr(self, "item_ids"):
             self.item_ids = []
         self.new_item = False

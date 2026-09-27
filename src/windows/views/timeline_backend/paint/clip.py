@@ -41,15 +41,14 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 import math
-import os
 import time
 
 from classes.app import get_app
 from classes.logger import log
 from classes.time_parts import secondsToTime
-from classes import info
 
 from .base import BasePainter
+from .byte_lru import ByteBudgetLRU
 
 
 class ClipPainter(BasePainter):
@@ -103,7 +102,7 @@ class ClipPainter(BasePainter):
             self.menu_pix = self.w.theme.menu_icon.scaled(
                 size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-        self.thumb_cache = {}
+        self.thumb_cache = ByteBudgetLRU()
         self._thumb_pending = {}
         self._thumb_regions = {}
         self._thumb_missing_logged = set()
@@ -112,7 +111,7 @@ class ClipPainter(BasePainter):
         self._min_thumb_slot_width = max(6.0, min_visible)
         self._min_clip_thumb_width = max(min_visible * 2.0, clip_min)
         # Cache of fully rendered clip pixmaps keyed by clip id/size/pen color
-        self.clip_cache = {}
+        self.clip_cache = ByteBudgetLRU()
         self.menu_margin = self.w.theme.menu_margin
 
     def clear_cache(self):
@@ -222,16 +221,8 @@ class ClipPainter(BasePainter):
         return start, max(0.0, end - start)
 
     def _existing_thumb_path(self, file_id, frame):
-        from classes.thumbnail import resolve_thumbnail_path
-        fingerprint = None
-        try:
-            from classes.query import File
-            f = File.get(id=file_id)
-            if f and isinstance(getattr(f, "data", None), dict):
-                fingerprint = f.data.get("fingerprint")
-        except Exception:
-            fingerprint = None
-        return resolve_thumbnail_path(file_id, frame, fingerprint=fingerprint) or ""
+        """Deprecated paint-path helper — disk lookup moved to the worker thread."""
+        return ""
 
     def _frame_for_offset(self, offset, fps):
         fps = float(fps or 0.0)
@@ -857,6 +848,7 @@ class ClipPainter(BasePainter):
         return pending
 
     def _get_thumbnail_pixmap(self, clip_key, file_id, frame, rect, generation, *, allow_request=True):
+        """Return a cached pixmap or queue a background load. Never touches disk."""
         key = (clip_key, frame)
 
         # 1. If we already have it cached → return it immediately
@@ -864,26 +856,19 @@ class ClipPainter(BasePainter):
             cached = self.thumb_cache[key]
             if not cached.isNull():
                 return cached
-            # Null pixmap means "we tried and failed" — don't request again this generation
-            if self._thumb_pending.get(key) == generation:
-                return None
+            # Null pixmap means "we tried and failed" — do not re-request
+            # until the cache entry is dropped (update_thumbnail / generation).
+            return None
 
         # 2. If already requested this generation → don't request again
         if self._thumb_pending.get(key) == generation:
             return None
 
-        # 3. Load existing on-disk thumbnail if available
-        path = self._existing_thumb_path(file_id, frame)
-        if path:
-            pix = QPixmap(path)
-            if not pix.isNull():
-                self.thumb_cache[key] = pix
-                return pix
-
         if not allow_request:
             return None
 
-        # Queue the request exactly once per generation (only for visible slots)
+        # Queue the request exactly once per generation (only for visible slots).
+        # Existence checks and PNG decode happen on the thumbnail worker thread.
         self._thumb_pending[key] = generation
         self._thumb_regions[key] = QRectF(rect)
         if self.w.thumbnail_manager:
@@ -1357,7 +1342,8 @@ class ClipPainter(BasePainter):
             self._thumb_regions.pop(key, None)
             self._thumb_missing_logged.discard(key)
 
-    def handle_thumbnail_ready(self, clip_id, frame, thumb_path, generation):
+    def handle_thumbnail_ready(self, clip_id, frame, image_or_path, generation):
+        """Receive a background-loaded QImage (or legacy path string) on the GUI thread."""
         clip_key = str(clip_id or "")
         key = (clip_key, int(frame or 0))
 
@@ -1366,11 +1352,16 @@ class ClipPainter(BasePainter):
             return
 
         self._thumb_pending.pop(key, None)
-        rect = self._thumb_regions.pop(key, None)
+        self._thumb_regions.pop(key, None)
 
         pix = QPixmap()
-        if thumb_path and os.path.exists(thumb_path):
-            pix = QPixmap(thumb_path)
+        if isinstance(image_or_path, QImage):
+            if not image_or_path.isNull():
+                pix = QPixmap.fromImage(image_or_path)
+        elif image_or_path:
+            # Legacy path-string path (should not run after worker change).
+            log.debug("handle_thumbnail_ready received path string; converting on GUI thread")
+            pix = QPixmap(str(image_or_path))
 
         # Store even empty pixmaps so we don't re-request failed ones
         self.thumb_cache[key] = pix

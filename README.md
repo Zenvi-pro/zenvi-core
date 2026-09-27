@@ -55,6 +55,11 @@ Zenvi? Build exciting new features, fix bugs, make friends, and become a hero!
 Please read the [step-by-step](https://github.com/OpenShot/openshot-qt/wiki/Become-a-Developer) 
 instructions for getting source code, configuring dependencies, and building Zenvi.
 
+**Python version:** 3.10 is the minimum (the codebase uses `X | None` type
+annotations). CI and `.python-version` pin **3.12**. Install the headless
+unit-suite deps with `pip install -r requirements-dev.txt`, then run
+`pytest` (see `AGENTS.md`).
+
 ### Graphify (codebase knowledge graph)
 
 [`graphify-out/`](graphify-out/) is committed so everyone gets a queryable map of this repo. After cloning and setting up your environment:

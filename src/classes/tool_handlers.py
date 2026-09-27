@@ -1381,28 +1381,28 @@ def _delete_one_clip(app, resolved) -> str:
     track_lbl = format_track_label_for_llm(layer_num, app.project.get("layers") or [])
 
     def _do_delete():
-        # No transaction of its own: execute_tool already opened one for this
-        # tool call. The previous code set a fresh id here and reset it to None
-        # in a finally, which detached whatever the caller did afterwards into
-        # separate undo steps.
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(clip_id, "clip")
-        except Exception:
-            pass
-        clip_obj.delete()
+        # Join execute_tool's transaction when present; otherwise mint one so
+        # direct callers (remove_clip alias / unit tests) still get a single
+        # undo step and a non-None transaction_id during delete.
+        with _transaction(app):
+            try:
+                if hasattr(win, "removeSelection"):
+                    win.removeSelection(clip_id, "clip")
+            except Exception:
+                pass
+            clip_obj.delete()
 
-        # A deleted clip may still be referenced by the preview widget's
-        # transform state; clear it before the next paint dereferences a freed
-        # native object (see main_window.actionRemoveClip_trigger).
-        try:
-            win.videoPreview.clearTransformState()
-        except Exception:
-            pass
-        try:
-            win.refreshFrameSignal.emit()
-        except Exception:
-            pass
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; clear it before the next paint dereferences a freed
+            # native object (see main_window.actionRemoveClip_trigger).
+            try:
+                win.videoPreview.clearTransformState()
+            except Exception:
+                pass
+            try:
+                win.refreshFrameSignal.emit()
+            except Exception:
+                pass
 
     if QThread is not None and QThread.currentThread() is not app.thread():
         _run_on_main_thread(_do_delete)
@@ -1443,28 +1443,35 @@ def _delete_whole_track(app, track, include_transitions) -> str:
     clips = Clip.filter(layer=layer_num)
     transitions = Transition.filter(layer=layer_num) if include_transitions else []
 
-    # Delete transitions first (they may reference clip time ranges).
-    for t in transitions:
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(t.id, "transition")
-        except Exception:
-            pass
-        t.delete()
+    def _do_delete_track():
+        with _transaction(app):
+            # Delete transitions first (they may reference clip time ranges).
+            for t in transitions:
+                try:
+                    if hasattr(win, "removeSelection"):
+                        win.removeSelection(t.id, "transition")
+                except Exception:
+                    pass
+                t.delete()
 
-    for c in clips:
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(c.id, "clip")
-        except Exception:
-            pass
-        c.delete()
+            for c in clips:
+                try:
+                    if hasattr(win, "removeSelection"):
+                        win.removeSelection(c.id, "clip")
+                except Exception:
+                    pass
+                c.delete()
 
-    # Refresh preview frame to reflect the new timeline immediately.
-    try:
-        win.refreshFrameSignal.emit()
-    except Exception:
-        pass
+            # Refresh preview frame to reflect the new timeline immediately.
+            try:
+                win.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+    if QThread is not None and QThread.currentThread() is not app.thread():
+        _run_on_main_thread(_do_delete_track)
+    else:
+        _do_delete_track()
 
     return (
         f"Deleted {len(clips)} clips and {len(transitions)} transitions on "
