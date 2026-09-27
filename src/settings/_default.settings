@@ -120,6 +120,13 @@
     "setting": "timeline_height"
   },
   {
+    "value": 0,
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "video_dock_width"
+  },
+  {
     "value": "thumbnail",
     "title": "",
     "type": "hidden",

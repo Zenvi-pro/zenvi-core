@@ -3313,6 +3313,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         dock = getattr(self, "dockTimeline", None)
         if dock:
             s.set('timeline_height', dock.height())
+        dock = getattr(self, "dockVideo", None)
+        if dock:
+            s.set('video_dock_width', dock.width())
 
     # Get window settings from setting store
     def load_settings(self):
@@ -3328,14 +3331,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.actionFreeze_View_trigger()
         else:
             self.actionUn_Freeze_View_trigger()
-        timeline_height = s.get('timeline_height')
-        if timeline_height:
-            try:
-                height_value = int(timeline_height)
-            except (TypeError, ValueError):
-                height_value = None
-            if height_value and height_value > 0:
-                self.saved_timeline_height = height_value
+        self.saved_timeline_height = self._positive_int(s.get('timeline_height'))
+        self.saved_video_dock_width = self._positive_int(s.get('video_dock_width'))
 
         # Load Recent Projects
         self.load_recent_menu()
@@ -3903,6 +3900,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if self._restored_saved_window:
             return
         self._restored_saved_window = True
+        self._capture_missing_dock_size_fallbacks()
         if self.saved_geometry:
             self.restoreGeometry(self.saved_geometry)
         if self.saved_state:
@@ -3923,35 +3921,74 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.resizeDocks([self.dockAIChat], [360], Qt.Horizontal)
 
     def _restore_state_and_timeline(self):
-        """Restore saved dock state and then apply timeline height."""
+        """Restore saved dock state and then apply stable logical dock sizes."""
         if self.saved_state:
             self.restoreState(self.saved_state)
-        self._apply_saved_timeline_height()
+        self._apply_saved_dock_sizes()
         if self._is_first_launch or self._is_default_window_state():
             self._apply_default_ai_chat_dock()
         # Panels restored as floating need their dockable title bar back
         self.style_dock_widgets()
 
-    def _apply_saved_timeline_height(self):
-        """Apply the saved timeline dock height."""
-        if not self.saved_timeline_height:
-            return
+    def _capture_missing_dock_size_fallbacks(self):
+        """Use the initial shown layout as a fallback for newly introduced dock sizes."""
+        video_dock = getattr(self, "dockVideo", None)
+        if (video_dock
+                and not getattr(self, "saved_video_dock_width", None)
+                and video_dock.width() > 0):
+            self.saved_video_dock_width = video_dock.width()
 
-        dock = getattr(self, "dockTimeline", None)
+    @staticmethod
+    def _positive_int(value):
+        """Return value as a positive int, or None."""
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _force_dock_extent_once(self, dock, size, orientation):
+        """Force one saved logical dock splitter extent, then restore flexibility."""
         if not dock:
             return
-
-        # If height already matches, skip the resize to avoid an extra layout pass.
-        if dock.height() != self.saved_timeline_height:
-            # Force the height by temporarily constraining min/max
+        size = self._positive_int(size)
+        if not size:
+            return
+        if orientation == Qt.Horizontal:
+            size = min(size, max(160, int(self.width() * 0.85)))
+            current = dock.width()
+            old_min = dock.minimumWidth()
+            old_max = dock.maximumWidth()
+            set_fixed = dock.setFixedWidth
+            restore = lambda: (dock.setMinimumWidth(old_min), dock.setMaximumWidth(old_max))
+        else:
+            size = min(size, max(100, int(self.height() * 0.85)))
+            current = dock.height()
             old_min = dock.minimumHeight()
             old_max = dock.maximumHeight()
-            dock.setFixedHeight(self.saved_timeline_height)
-            # Restore flexibility after layout processes
-            def restore_flex():
-                dock.setMinimumHeight(old_min)
-                dock.setMaximumHeight(old_max)
-            QTimer.singleShot(0, restore_flex)
+            set_fixed = dock.setFixedHeight
+            restore = lambda: (dock.setMinimumHeight(old_min), dock.setMaximumHeight(old_max))
+        if current != size:
+            set_fixed(size)
+            QTimer.singleShot(0, restore)
+
+    def _apply_saved_dock_sizes(self):
+        """Apply saved logical sizes for docks Qt state commonly drifts."""
+        self._force_dock_extent_once(
+            getattr(self, "dockTimeline", None),
+            self.saved_timeline_height,
+            Qt.Vertical)
+        self._force_dock_extent_once(
+            getattr(self, "dockVideo", None),
+            self.saved_video_dock_width,
+            Qt.Horizontal)
+
+    def _apply_saved_timeline_height(self):
+        """Apply the saved timeline dock height."""
+        self._force_dock_extent_once(
+            getattr(self, "dockTimeline", None),
+            self.saved_timeline_height,
+            Qt.Vertical)
 
     def show_property_timeout(self):
         """Callback for show property timer"""
@@ -5020,6 +5057,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.saved_state = None
         self.saved_geometry = None
         self.saved_timeline_height = None
+        self.saved_video_dock_width = None
         self._restored_saved_window = False
         self.load_settings()
         
@@ -5175,8 +5213,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Save settings
         s.save()
 
-        # Re-apply timeline height after theme settles (theme changes dock sizes)
-        QTimer.singleShot(0, self._apply_saved_timeline_height)
+        # Re-apply saved logical dock sizes after theme settles (theme changes dock sizes)
+        QTimer.singleShot(0, self._apply_saved_dock_sizes)
+        QTimer.singleShot(250, self._apply_saved_dock_sizes)
 
         # Refresh frame
         QTimer.singleShot(100, lambda: self.refreshFrameSignal.emit())
