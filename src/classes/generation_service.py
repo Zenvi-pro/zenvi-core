@@ -119,13 +119,16 @@ class GenerationService(QObject):
         Zenvi ships with this blank: the optional local ComfyUI integration stays
         off (no probes, no AI menus) until a URL is entered in Preferences > AI.
         """
-        url = get_app().get_settings().get("comfy-ui-url") or ""
+        app = get_app()
+        settings = app.get_settings() if app is not None else None
+        url = (settings.get("comfy-ui-url") if settings is not None else "") or ""
         return str(url).strip().rstrip("/")
 
     def is_comfy_configured(self):
         return bool(self.comfy_ui_url())
 
     NOT_CONFIGURED_TEXT = "ComfyUI URL is not configured (Preferences > AI)."
+    SOURCE_CONVERSION_FAILED_PREFIX = "{} could not convert this image into PNG for ComfyUI.".format(info.PRODUCT_NAME)
 
     def shutdown(self):
         if getattr(self, "_comfy_check_thread", None):
@@ -242,13 +245,131 @@ class GenerationService(QObject):
                 pass
             raise
 
+    @staticmethod
+    def _split_generation_suffix(name):
+        text = str(name or "").strip()
+        match = re.match(r"^(.*?)(?:_gen(?:(?:#|_)?(\d+))?)?$", text, re.IGNORECASE)
+        if not match:
+            return text, None
+        root = (match.group(1) or text).rstrip("_") or text
+        number_text = match.group(2)
+        if number_text is not None:
+            try:
+                return root, max(1, int(number_text))
+            except Exception:
+                return root, 1
+        if text.lower().endswith("_gen"):
+            return root, 1
+        return text, None
+
+    @staticmethod
+    def _format_generation_name(root, number):
+        root = str(root or "").strip().rstrip("_") or "generation"
+        try:
+            number = max(1, int(number or 1))
+        except Exception:
+            number = 1
+        return "{}_gen{}".format(root, number)
+
+    @staticmethod
+    def _strip_workflow_display_suffix(name):
+        return re.sub(r"\s*\[[^\[\]]+\]\s*$", "", str(name or "").strip()).strip()
+
+    def _generation_root_name(self, name):
+        root, _number = self._split_generation_suffix(str(name or "").strip())
+        return root or "generation"
+
+    def _reserved_generation_stems(self):
+        reserved = set()
+        for file_obj in File.filter():
+            if not file_obj:
+                continue
+            display_name = str(file_obj.data.get("name") or os.path.basename(file_obj.data.get("path", "")) or "")
+            if not display_name:
+                continue
+            stem = os.path.splitext(self._strip_workflow_display_suffix(display_name))[0]
+            if stem:
+                reserved.add(stem.lower())
+
+        win = self.__dict__.get("win", None)
+        queue = getattr(win, "generation_queue", None) if win is not None else None
+        jobs = getattr(queue, "jobs", {}) if queue else {}
+        if isinstance(jobs, dict):
+            for job in jobs.values():
+                if not isinstance(job, dict):
+                    continue
+                name = str(job.get("name") or "").strip()
+                if name:
+                    reserved.add(name.lower())
+
+        return reserved
+
+    def _next_generation_number(self, root_name):
+        root_name = str(root_name or "").strip()
+        root_key = root_name.lower()
+        max_number = 0
+        for stem_key in self._reserved_generation_stems():
+            existing_root, existing_number = self._split_generation_suffix(stem_key)
+            if str(existing_root or "").lower() != root_key:
+                continue
+            max_number = max(max_number, int(existing_number or 0))
+        return max_number + 1
+
+    def _source_display_root_name(self, source_file):
+        if not source_file:
+            return "generation"
+        data = source_file.data if hasattr(source_file, "data") and isinstance(source_file.data, dict) else {}
+        display_name = str(data.get("name") or os.path.basename(data.get("path", "")) or "generation").strip()
+        stem = os.path.splitext(self._strip_workflow_display_suffix(display_name))[0]
+        return self._generation_root_name(stem) or "generation"
+
+    @staticmethod
+    def _workflow_display_label(template_meta):
+        template_meta = template_meta or {}
+        parent_aliases = {
+            "track_object": "Track",
+            "extract": "Extract",
+            "noise": "Noise",
+            "clarity": "Clarity",
+        }
+        parent = str(template_meta.get("menu_parent") or "").strip().lower()
+        display_name = str(template_meta.get("display_name") or "").strip()
+        display_name = re.sub(r"\.\.\.+$", "", display_name).strip()
+        if parent and display_name:
+            return "{}: {}".format(parent_aliases.get(parent, parent.replace("_", " ").title()), display_name)
+        return display_name
+
+    @staticmethod
+    def _apply_workflow_label(display_name, workflow_label):
+        display_name = str(display_name or "").strip()
+        workflow_label = str(workflow_label or "").strip()
+        if not workflow_label:
+            return display_name
+        return "{} [{}]".format(display_name, workflow_label)
+
     def _default_generation_name(self, source_file):
-        default_name = "generation"
         if source_file:
-            path = source_file.data.get("path", "")
-            if path:
-                default_name = "{}_gen".format(os.path.splitext(os.path.basename(path))[0])
-        return default_name
+            root_name = self._source_display_root_name(source_file)
+            next_number = self._next_generation_number(root_name)
+            return self._format_generation_name(root_name, next_number)
+        root_name = "generation"
+        next_number = self._next_generation_number(root_name)
+        return self._format_generation_name(root_name, next_number)
+
+    @staticmethod
+    def _output_local_name(base_name, index, total_outputs, ext):
+        base_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(base_name or "").strip()).strip("._") or "generation"
+        try:
+            total_outputs = int(total_outputs or 0)
+        except Exception:
+            total_outputs = 0
+        try:
+            index = int(index or 1)
+        except Exception:
+            index = 1
+        if total_outputs <= 1:
+            return "{}{}".format(base_name, ext)
+        return "{}_{}{}".format(base_name, str(index).zfill(3), ext)
 
     def _get_source_dimensions(self, source_file):
         if not source_file:
@@ -920,79 +1041,39 @@ class GenerationService(QObject):
                 save_nodes.append(str(node_id))
         return save_nodes
 
-    def action_generate_trigger(self, checked=True, source_file=None, template_id=None, open_dialog=True):
-        selected_files = [source_file] if source_file else self.win.selected_files()
-        if len(selected_files) > 1:
-            return
+    def _selected_generation_targets(self, source_file=None):
+        if source_file is None:
+            return list(self.win.selected_files() or [])
 
-        if not self.is_comfy_configured():
-            msg = QMessageBox(self.win)
-            msg.setWindowTitle("ComfyUI Not Configured")
-            msg.setText(
-                "ComfyUI is optional and currently not configured.\n\n"
-                "To use the AI Tools, run a local ComfyUI server and enter its URL "
-                "(for example http://127.0.0.1:8188) under Preferences > AI > ComfyUI URL."
-            )
-            msg.exec_()
-            return
+        selected_files = list(self.win.selected_files() or [])
+        source_file_id = str(getattr(source_file, "id", "") or "")
+        if not source_file_id:
+            return [source_file]
 
-        if not self.is_comfy_available(force=True):
-            msg = QMessageBox(self.win)
-            msg.setWindowTitle("ComfyUI Unavailable")
-            msg.setText(
-                "{} could not connect to ComfyUI at:\n{}\n\n"
-                "Start ComfyUI or update the URL in Preferences > AI.".format(info.PRODUCT_NAME, self.comfy_ui_url())
-            )
-            msg.exec_()
-            return
+        selected_ids = {str(getattr(f, "id", "") or "") for f in selected_files if getattr(f, "id", None)}
+        if source_file_id in selected_ids:
+            return selected_files
+        return [source_file]
 
-        source_file = selected_files[0] if selected_files else None
-        templates = self.templates_for_context(source_file=source_file)
-        available_template_ids = {str(t.get("id", "")).strip() for t in templates}
-        if open_dialog:
-            dialog_title = "Enhance with AI" if source_file else "Create with AI"
-            win = GenerateMediaDialog(
-                source_file=source_file,
-                templates=templates,
-                preselected_template_id=template_id,
-                dialog_title=dialog_title,
-                parent=self.win,
-            )
-            if win.exec_() != QDialog.Accepted:
-                return
-            payload = win.get_payload()
-        else:
-            selected_template_id = str(template_id or "").strip()
-            if not selected_template_id:
-                return
-            if selected_template_id not in available_template_ids:
-                QMessageBox.information(
-                    self.win,
-                    "Invalid Input",
-                    "The selected AI action is not available for this source type.",
-                )
-                return
-            payload = {
-                "name": self._default_generation_name(source_file),
-                "template_id": selected_template_id,
-                "prompt": "",
-            }
-
+    def _enqueue_generation_for_file(self, source_file, payload):
         payload_name = self._next_generation_name(payload.get("name"))
         source_file_id = source_file.id if source_file else None
         template_meta = self.template_registry.get_template(payload.get("template_id"))
         if not template_meta:
-            QMessageBox.information(self.win, "Invalid Input", "The selected AI template was not found.")
-            return
+            return False, "The selected AI template was not found."
+        _payload_name_root, payload_name_number = self._split_generation_suffix(payload_name)
+        workflow_label = self._workflow_display_label(template_meta)
+        if source_file:
+            display_root_name = self._source_display_root_name(source_file)
+            display_number = int(payload_name_number or self._next_generation_number(display_root_name))
+            display_name = self._format_generation_name(display_root_name, display_number)
+        else:
+            display_name = payload_name
         try:
             source_path = self._prepare_generation_source_path(source_file, payload.get("template_id"))
         except Exception as ex:
-            QMessageBox.warning(
-                self.win,
-                "Source Conversion Failed",
-                "{} could not convert this image into PNG for ComfyUI.\n\n{}".format(info.PRODUCT_NAME, ex),
-            )
-            return
+            return False, self.SOURCE_CONVERSION_FAILED_PREFIX + "\n\n{}".format(ex)
+
         reference_image_path = ""
         reference_image_file_id = str(payload.get("reference_image_file_id") or "").strip()
         if reference_image_file_id:
@@ -1021,8 +1102,8 @@ class GenerationService(QObject):
                 background_brightness=payload.get("background_brightness"),
             )
         except Exception as ex:
-            QMessageBox.information(self.win, "Invalid Input", str(ex))
-            return
+            return False, str(ex)
+
         request = {
             "comfy_url": self.comfy_ui_url(),
             "workflow": workflow,
@@ -1030,6 +1111,8 @@ class GenerationService(QObject):
             "timeout_s": 21600,
             "save_node_ids": self._save_nodes_for_workflow(workflow, template_id=payload.get("template_id")),
             "template_id": str(payload.get("template_id") or ""),
+            "display_name": display_name,
+            "workflow_label": workflow_label,
         }
         job_id = self.win.generation_queue.enqueue(
             payload_name,
@@ -1039,14 +1122,83 @@ class GenerationService(QObject):
             request=request,
         )
         if not job_id:
-            QMessageBox.information(
-                self.win,
-                "Generation Already Active",
-                "Only one active generation is allowed per source file.",
-            )
+            return False, "Only one active generation is allowed per source file."
+        return True, ""
+
+    def action_generate_trigger(self, checked=True, source_file=None, template_id=None, open_dialog=True):
+        selected_files = self._selected_generation_targets(source_file=source_file)
+
+        if not self.is_comfy_available(force=True):
+            msg = QMessageBox(self.win)
+            if not self.is_comfy_configured():
+                msg.setWindowTitle("ComfyUI Not Configured")
+                msg.setText(
+                    "ComfyUI is optional and currently not configured.\n\n"
+                    "To use the AI Tools, run a local ComfyUI server and enter its URL "
+                    "(for example http://127.0.0.1:8188) under Preferences > AI > ComfyUI URL."
+                )
+            else:
+                msg.setWindowTitle("ComfyUI Unavailable")
+                msg.setText(
+                    "{} could not connect to ComfyUI at:\n{}\n\n"
+                    "Start ComfyUI or update the URL in Preferences > AI.".format(info.PRODUCT_NAME, self.comfy_ui_url())
+                )
+            msg.exec_()
             return
 
-        self.win.statusBar.showMessage("Queued generation job", 3000)
+        primary_source_file = selected_files[0] if selected_files else None
+        templates = self.templates_for_context(source_file=primary_source_file)
+        available_template_ids = {str(t.get("id", "")).strip() for t in templates}
+        if open_dialog:
+            dialog_title = "Enhance with AI" if primary_source_file else "Create with AI"
+            win = GenerateMediaDialog(
+                source_file=primary_source_file,
+                templates=templates,
+                preselected_template_id=template_id,
+                dialog_title=dialog_title,
+                parent=self.win,
+                default_name=self._default_generation_name(primary_source_file),
+            )
+            if win.exec_() != QDialog.Accepted:
+                return
+            payload = win.get_payload()
+        else:
+            selected_template_id = str(template_id or "").strip()
+            if not selected_template_id:
+                return
+            if selected_template_id not in available_template_ids:
+                QMessageBox.information(
+                    self.win,
+                    "Invalid Input",
+                    "The selected AI action is not available for this source type.",
+                )
+                return
+            payload = {
+                "name": self._default_generation_name(primary_source_file),
+                "template_id": selected_template_id,
+                "prompt": "",
+            }
+
+        queued_count = 0
+        for target_file in selected_files or [None]:
+            target_payload = dict(payload or {})
+            if not open_dialog:
+                target_payload["name"] = self._default_generation_name(target_file)
+            ok, error_text = self._enqueue_generation_for_file(target_file, target_payload)
+            if not ok:
+                if error_text == "Only one active generation is allowed per source file.":
+                    QMessageBox.information(self.win, "Generation Already Active", error_text)
+                elif error_text.startswith(self.SOURCE_CONVERSION_FAILED_PREFIX):
+                    QMessageBox.warning(self.win, "Source Conversion Failed", error_text)
+                else:
+                    QMessageBox.information(self.win, "Invalid Input", error_text)
+                return
+            queued_count += 1
+
+        if queued_count == 1:
+            self.win.statusBar.showMessage("Queued generation job", 3000)
+        elif queued_count > 1:
+            self.win.statusBar.showMessage("Queued {} generation jobs".format(queued_count), 3000)
 
     def on_generation_job_finished(self, job_id, status):
         job = self.win.generation_queue.get_job(job_id) if getattr(self.win, "generation_queue", None) else None
@@ -1115,6 +1267,7 @@ class GenerationService(QObject):
         scene_splits_created = 0
         video_path_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
         seen_video_payload_paths = set()
+        total_outputs = len(outputs)
         for index, output_ref in enumerate(outputs, start=1):
             text_payload = str(output_ref.get("text", "")).strip()
             if text_payload:
@@ -1144,7 +1297,7 @@ class GenerationService(QObject):
                     video_ref = self._comfy_output_ref_from_path(norm_video_path)
                     if not video_ref:
                         continue
-                    local_name = "{}_{}{}".format(safe_name, str(index).zfill(3), payload_ext)
+                    local_name = self._output_local_name(safe_name, index, total_outputs, payload_ext)
                     local_path = self._next_available_path(os.path.join(output_dir, local_name))
                     try:
                         client.download_output_file(video_ref, local_path)
@@ -1164,7 +1317,7 @@ class GenerationService(QObject):
                 if text_payload.lower().endswith(".srt"):
                     srt_ref = self._comfy_output_ref_from_path(text_payload)
                     if srt_ref:
-                        local_name = "{}_{}{}".format(safe_name, str(index).zfill(3), ".srt")
+                        local_name = self._output_local_name(safe_name, index, total_outputs, ".srt")
                         local_path = self._next_available_path(os.path.join(output_dir, local_name))
                         try:
                             client.download_output_file(srt_ref, local_path)
@@ -1182,7 +1335,7 @@ class GenerationService(QObject):
                         continue
 
                 ext = ".srt" if str(output_ref.get("format", "")).lower() == "srt" else ".txt"
-                local_name = "{}_{}{}".format(safe_name, str(index).zfill(3), ext)
+                local_name = self._output_local_name(safe_name, index, total_outputs, ext)
                 local_path = self._next_available_path(os.path.join(output_dir, local_name))
                 try:
                     with open(local_path, "w", encoding="utf-8") as handle:
@@ -1195,7 +1348,7 @@ class GenerationService(QObject):
 
             original_name = str(output_ref.get("filename", "output.png"))
             ext = os.path.splitext(original_name)[1] or ".png"
-            local_name = "{}_{}{}".format(safe_name, str(index).zfill(3), ext)
+            local_name = self._output_local_name(safe_name, index, total_outputs, ext)
             local_path = self._next_available_path(os.path.join(output_dir, local_name))
             try:
                 client.download_output_file(output_ref, local_path)
@@ -1210,6 +1363,20 @@ class GenerationService(QObject):
                 prevent_image_seq=True,
                 prevent_recent_folder=True,
             )
+            workflow_label = str(request.get("workflow_label") or "").strip()
+            display_name = str(request.get("display_name") or "").strip()
+            for saved_path in saved_paths:
+                imported_file = File.get(path=saved_path)
+                if not imported_file:
+                    continue
+                imported_stem = os.path.splitext(os.path.basename(saved_path))[0]
+                if len(saved_paths) <= 1 and display_name:
+                    imported_name = self._apply_workflow_label(display_name, workflow_label)
+                else:
+                    imported_name = self._apply_workflow_label(imported_stem, workflow_label)
+                imported_file.data.update({"name": imported_name})
+                imported_file.save()
+                self.win.FileUpdated.emit(imported_file.id)
 
         if not saved_paths and scene_splits_created <= 0:
             return {"imported": 0, "caption_saved": False, "scene_splits_created": 0}
@@ -1533,28 +1700,26 @@ class GenerationService(QObject):
         if not base:
             base = "generation"
 
-        existing_names = set()
-        for file_obj in File.filter():
-            if not file_obj:
-                continue
-            display_name = str(file_obj.data.get("name") or os.path.basename(file_obj.data.get("path", "")) or "")
-            if display_name:
-                stem = os.path.splitext(display_name)[0]
-                existing_names.add(stem.lower())
+        requested_root, requested_number = self._split_generation_suffix(base)
+        requested_root = requested_root or "generation"
+        existing_names = self._reserved_generation_stems()
+        max_number = 0
+        for stem_key in existing_names:
+            existing_root, existing_number = self._split_generation_suffix(stem_key)
+            if str(existing_root or "").lower() == requested_root.lower():
+                max_number = max(max_number, int(existing_number or 0))
 
-        if base.lower() not in existing_names:
+        normalized_base = self._format_generation_name(requested_root, int(requested_number or 1))
+        if requested_number and normalized_base.lower() not in existing_names:
+            return normalized_base
+
+        if requested_number is None and max_number > 0 and base.lower() == requested_root.lower():
+            return self._format_generation_name(requested_root, max_number + 1)
+
+        if base.lower() not in existing_names and requested_number is None:
             return base
 
-        name_root = base
-        m = re.match(r"^(.*?)(?:_gen(\d+))?$", base, re.IGNORECASE)
-        if m:
-            name_root = (m.group(1) or base).rstrip("_") or "generation"
-        n = 1
-        while True:
-            candidate = "{}_gen{}".format(name_root, n)
-            if candidate.lower() not in existing_names:
-                return candidate
-            n += 1
+        return self._format_generation_name(requested_root, max_number + 1)
 
     def _next_available_path(self, path):
         if not os.path.exists(path):

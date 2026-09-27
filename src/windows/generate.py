@@ -58,10 +58,12 @@ class GenerateMediaDialog(QDialog):
         preselected_template_id=None,
         dialog_title=None,
         parent=None,
+        default_name=None,
     ):
         super().__init__(parent)
         self.source_file = source_file
         self.templates = templates or []
+        self.default_name = str(default_name or "").strip()
         self.template_map = {
             str(t.get("id", "")).strip(): (t.get("template") or {})
             for t in self.templates
@@ -175,11 +177,7 @@ class GenerateMediaDialog(QDialog):
         setup_form.setContentsMargins(0, 0, 0, 0)
         setup_form.setVerticalSpacing(8)
 
-        default_name = "generation"
-        if self.source_file:
-            path = self.source_file.data.get("path", "")
-            if path:
-                default_name = "{}_gen".format(os.path.splitext(os.path.basename(path))[0])
+        default_name = self.default_name or "generation"
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Output file name")
