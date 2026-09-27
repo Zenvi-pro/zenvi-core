@@ -148,6 +148,19 @@ def test_legacy_libopenshot_uses_single_clip_reader_and_rotation(fake_openshot):
     assert call[-1] == 90.0
 
 
+def test_reader_applied_orientation_skips_metadata_rotation(fake_openshot):
+    """libopenshot >= 1.0 readers rotate frames themselves; do not rotate twice."""
+    reader = _Reader(metadata={"rotate": "90"})
+    reader.ApplyOrientationMetadata = lambda: True
+    _install_create_reader(fake_openshot, [reader])
+
+    thumbnail.GenerateThumbnail("portrait.mov", "/tmp/thumb.png", 1, 100, 65, None, None)
+
+    call = reader.frame.calls[0]
+    assert call[9] == 0.0
+    assert call[-1] == fake_openshot.SCALE_CROP
+
+
 def test_ffmpeg_fallback_runs_before_placeholder(fake_openshot, monkeypatch):
     _install_create_reader(fake_openshot, [_Reader(open_error=RuntimeError("x"))] * 2)
     calls = []

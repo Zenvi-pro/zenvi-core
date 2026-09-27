@@ -195,7 +195,20 @@ def _thumb_device_scale():
 
 
 def _reader_rotation(reader, source_path):
-    """Rotation (degrees) recorded in the source metadata, or 0.0."""
+    """Rotation (degrees) the thumbnail must still apply, or 0.0.
+
+    libopenshot >= 1.0 readers apply the source orientation metadata to the
+    frames they decode (OpenShot #6037), so rotating again here would turn
+    portrait media twice. Older readers hand out unrotated frames and the
+    'rotate' metadata still has to be honoured.
+    """
+    applies_orientation = getattr(reader, "ApplyOrientationMetadata", None)
+    if applies_orientation is not None:
+        try:
+            if applies_orientation():
+                return 0.0
+        except Exception:
+            log.debug("Could not query reader orientation handling for %s", source_path, exc_info=1)
     rotate_data = None
     try:
         if reader.info.metadata.count("rotate"):
