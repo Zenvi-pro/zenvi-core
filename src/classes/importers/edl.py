@@ -153,7 +153,7 @@ def create_clip(context, track):
         thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
     else:
         # Audio file
-        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
     # Create Clip object
     clip = Clip()
@@ -162,6 +162,7 @@ def create_clip(context, track):
     clip_title = context.get("clip_title") or os.path.basename(clip_path_value) or clip_path_value
     clip.data["title"] = clip_title
     clip.data["layer"] = track.data.get("number", 1000000)
+    clip.data["image"] = thumb_path
     reel_name = (video_ctx or audio_ctx).get("reel") if (video_ctx or audio_ctx) else None
     if not reel_name and audio_ctx_list:
         reel_name = audio_ctx_list[0].get("reel")
