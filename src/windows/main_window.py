@@ -159,6 +159,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     SelectionChanged = pyqtSignal()      # Signal after selections have been changed (added/removed)
     SetKeyframeFilter = pyqtSignal(str)     # Signal to only show keyframes for the selected property
     IgnoreUpdates = pyqtSignal(bool, bool)     # Signal to let widgets know to ignore updates (i.e. batch updates)
+    WaitCursorSignal = pyqtSignal(bool)
     ThemeChangedSignal = pyqtSignal(object)     # Signal when theme is changed
 
     # Docks are closable, movable and floatable
@@ -320,6 +321,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             timeline_widget = getattr(self, "timeline", None)
             if timeline_widget and getattr(timeline_widget, "thumbnail_manager", None):
                 if not isdeleted(timeline_widget.thumbnail_manager):
+                    thread = getattr(timeline_widget.thumbnail_manager, "_thread", None)
+                    log.info(
+                        "Shutdown timeline thumbnail thread running=%s",
+                        thread.isRunning() if thread is not None else None,
+                    )
                     timeline_widget.thumbnail_manager.shutdown()
         except Exception:
             log.debug("Failed to shut down the timeline thumbnail manager", exc_info=True)
@@ -347,6 +353,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Stop preview thread (and wait for it to end)
         if self.preview_thread:
+            if self.preview_parent and getattr(self.preview_parent, "background", None):
+                log.info(
+                    "Shutdown preview thread running=%s",
+                    self.preview_parent.background.isRunning(),
+                )
             self.preview_thread.player.CloseAudioDevice()
             self.preview_thread.kill()
             from qt_api import isdeleted
@@ -1385,12 +1396,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
 
-        # Set cursor to waiting
-        get_app().setOverrideCursor(QCursor(Qt.WaitCursor))
-
-        # Show dialog
-        from windows.preferences import Preferences
-        win = Preferences()
+        get_app().window.WaitCursorSignal.emit(True)
+        try:
+            # Show dialog
+            from windows.preferences import Preferences
+            win = Preferences()
+        finally:
+            get_app().window.WaitCursorSignal.emit(False)
         # Run the dialog event loop - blocking interaction on this window during this time
         result = win.exec_()
         if result == QDialog.Accepted:
@@ -1401,9 +1413,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Save settings
         s = get_app().get_settings()
         s.save()
-
-        # Restore normal cursor
-        get_app().restoreOverrideCursor()
 
     def actionSignOut_trigger(self, checked=True):
         """Sign out of the Zenvi account and prompt re-login."""
@@ -1550,7 +1559,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionPlay_trigger(self):
         """Toggle play/pause on video preview"""
         player = self.preview_thread.player
-        if player.Mode() == openshot.PLAYBACK_PAUSED:
+        is_actively_playing = (
+            player.Mode() == openshot.PLAYBACK_PLAY and
+            player.Speed() != 0
+        )
+        if not is_actively_playing:
             # Start playback
             if self.should_play():
                 self.PlaySignal.emit()
@@ -1594,7 +1607,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # If paused, fast forward starting at faster than normal playback speed
             requested_speed = 2
 
-        if player.Mode() == openshot.PLAYBACK_PAUSED:
+        if player.Mode() != openshot.PLAYBACK_PLAY:
             self.actionPlay_trigger()
 
         if self.should_play(requested_speed):
@@ -1609,7 +1622,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             requested_speed = -1
 
         if self.should_play(requested_speed):
-            if player.Mode() == openshot.PLAYBACK_PAUSED:
+            if player.Mode() != openshot.PLAYBACK_PLAY:
                 self.actionPlay_trigger()
             self.SpeedSignal.emit(requested_speed)
 
@@ -2457,20 +2470,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         log.debug('actionRemoveClip_trigger')
 
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
+        created_transaction = False
+        if not get_app().updates.transaction_id:
+            get_app().updates.transaction_id = str(uuid.uuid4())
+            created_transaction = True
 
-        # Loop through selected clips
-        for clip_id in json.loads(json.dumps(self.selected_clips)):
-            # Find matching file
-            clips = Clip.filter(id=clip_id)
-            clips = list(filter(lambda x: x.data.get("layer") not in locked_tracks, clips))
-            for c in clips:
-                # Clear selected clips
-                self.removeSelection(clip_id, "clip")
-                self.emit_selection_signal()
-                self.show_property_timeout()
+        try:
+            # Loop through selected clips
+            for clip_id in json.loads(json.dumps(self.selected_clips)):
+                # Find matching file
+                clips = Clip.filter(id=clip_id)
+                clips = list(filter(lambda x: x.data.get("layer") not in locked_tracks, clips))
+                for c in clips:
+                    # Clear selected clips
+                    self.removeSelection(clip_id, "clip")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
 
-                # Remove clip
-                c.delete()
+                    # Remove clip
+                    c.delete()
+        finally:
+            if created_transaction:
+                get_app().updates.transaction_id = None
 
         # A deleted clip may still be referenced by the preview widget's
         # transform state (e.g. it was the selected/transforming clip) —
@@ -2618,20 +2639,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         locked_tracks = [l.get("number")
                          for l in get_app().project.get('layers')
                          if l.get("lock", False)]
+        created_transaction = False
+        if not get_app().updates.transaction_id:
+            get_app().updates.transaction_id = str(uuid.uuid4())
+            created_transaction = True
 
-        # Loop through selected clips
-        for tran_id in json.loads(json.dumps(self.selected_transitions)):
-            # Find matching file
-            transitions = Transition.filter(id=tran_id)
-            transitions = list(filter(lambda x: x.data.get("layer") not in locked_tracks, transitions))
-            for t in transitions:
-                # Clear selected clips
-                self.removeSelection(tran_id, "transition")
-                self.emit_selection_signal()
-                self.show_property_timeout()
+        try:
+            # Loop through selected clips
+            for tran_id in json.loads(json.dumps(self.selected_transitions)):
+                # Find matching file
+                transitions = Transition.filter(id=tran_id)
+                transitions = list(filter(lambda x: x.data.get("layer") not in locked_tracks, transitions))
+                for t in transitions:
+                    # Clear selected clips
+                    self.removeSelection(tran_id, "transition")
+                    self.emit_selection_signal()
+                    self.show_property_timeout()
 
-                # Remove transition
-                t.delete()
+                    # Remove transition
+                    t.delete()
+        finally:
+            if created_transaction:
+                get_app().updates.transaction_id = None
 
         # Refresh preview
         if refresh:
@@ -4208,6 +4237,17 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if self.filesView.hasFocus():
                 self.actionRemove_from_Project_trigger()
             else:
+                # Prioritize deleting selected keyframes before deleting clips.
+                keyframes_deleted = False
+                timeline_widget = getattr(self, "timeline", None)
+                if timeline_widget and hasattr(timeline_widget, "delete_selected_keyframes"):
+                    try:
+                        keyframes_deleted = bool(timeline_widget.delete_selected_keyframes())
+                    except Exception:
+                        keyframes_deleted = False
+                if keyframes_deleted:
+                    self.refreshFrameSignal.emit()
+                    return
                 # Otherwise, proceed with the normal timeline delete behavior
                 self.actionRemoveClip_trigger(refresh=False)
                 self.actionRemoveTransition_trigger(refresh=False)
@@ -4644,27 +4684,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def ignore_updates_callback(self, ignore, show_wait=True):
         """Ignore updates callback - used to stop updating this widget during batch updates"""
-        app = get_app()
-
         if ignore and not self.ignore_updates:
             if show_wait:
-                # Wait for mass updates to finish
-                app.setOverrideCursor(QCursor(Qt.WaitCursor))
-                self._wait_cursor_requests += 1
+                self._acquire_wait_cursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
-            app.processEvents()
+            get_app().processEvents()
         elif not ignore and self.ignore_updates:
-            if self._wait_cursor_requests:
-                # Ensure we unwind any wait cursors that we previously applied
-                while self._wait_cursor_requests and app.overrideCursor():
-                    app.restoreOverrideCursor()
-                    self._wait_cursor_requests -= 1
-                if self._wait_cursor_requests:
-                    # Cursor stack unexpectedly empty; reset our counter to keep it accurate
-                    self._wait_cursor_requests = 0
-            elif show_wait and app.overrideCursor():
-                # Fallback for callers expecting an unconditional restore
-                app.restoreOverrideCursor()
+            if show_wait:
+                self._release_wait_cursor()
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
 
         if not ignore:
@@ -4676,6 +4703,30 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Keep track of ignore / not ignore
         self.ignore_updates = ignore
+
+    def _acquire_wait_cursor(self):
+        """Push a wait cursor request on the GUI thread."""
+        app = get_app()
+        app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        self._wait_cursor_requests += 1
+
+    def _release_wait_cursor(self):
+        """Release a wait cursor request on the GUI thread."""
+        app = get_app()
+        if self._wait_cursor_requests:
+            if app.overrideCursor():
+                app.restoreOverrideCursor()
+            self._wait_cursor_requests -= 1
+            return
+        if app.overrideCursor():
+            app.restoreOverrideCursor()
+
+    def handle_wait_cursor_signal(self, enabled):
+        """Handle cross-thread wait cursor requests safely on the GUI thread."""
+        if enabled:
+            self._acquire_wait_cursor()
+        else:
+            self._release_wait_cursor()
 
     def style_dock_widgets(self):
         """Apply the title bar each dock widget should have for its current state.
@@ -5140,6 +5191,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.ignore_updates = False
         self._wait_cursor_requests = 0
         self.IgnoreUpdates.connect(self.ignore_updates_callback)
+        self.WaitCursorSignal.connect(self.handle_wait_cursor_signal)
 
         # Connect playhead moved signals
         self.SeekSignal.connect(self.handleSeek)

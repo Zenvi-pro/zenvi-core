@@ -35,6 +35,29 @@ from classes.query import Clip, Transition, Effect
 
 
 class KeyframePanelMixin:
+    def _panel_track_for_item(self, item):
+        for track_key, info in (self._panel_properties or {}).items():
+            if not isinstance(info, dict):
+                continue
+            context = info.get("context")
+            if isinstance(context, dict) and context.get("placeholder"):
+                continue
+            properties = info.get("properties") or []
+            if not properties:
+                continue
+            for prop in properties:
+                prop_ctx = self._panel_property_context(prop, context)
+                if self._panel_context_matches_item(prop_ctx, item):
+                    return self.normalize_track_number(track_key)
+        return None
+
+    def _panel_drag_item_key(self, item):
+        if isinstance(item, Clip):
+            return ("clip", str(getattr(item, "id", "")))
+        if isinstance(item, Transition):
+            return ("transition", str(getattr(item, "id", "")))
+        return None
+
     def _panel_float(self, value, default=0.0):
         try:
             result = float(value)
@@ -65,6 +88,21 @@ class KeyframePanelMixin:
         ctx = info.get("context")
         return ctx if isinstance(ctx, dict) else {}
 
+    def _panel_placeholder_info(self, reason="no-selection"):
+        translate = get_app()._tr
+        label = translate("No Selection") if reason == "no-selection" else translate("No Keyframes")
+        props = [{"display_name": label, "points": [], "placeholder": True}]
+        info = {
+            "item_id": "",
+            "item_type": None,
+            "properties": props,
+            "context": {"placeholder": reason},
+            "base_properties": {},
+            "base_context": {},
+        }
+        height = self._panel_height_for_properties(len(props))
+        return info, height
+
     def is_keyframe_panel_visible(self, track_num):
         key = self.normalize_track_number(track_num)
         if not self._track_panel_enabled.get(key):
@@ -91,6 +129,9 @@ class KeyframePanelMixin:
     def _panel_property_key(self, prop):
         if not isinstance(prop, dict):
             return None
+        panel_key = prop.get("panel_key")
+        if panel_key:
+            return panel_key
         key = prop.get("key")
         if key:
             return key
@@ -98,6 +139,126 @@ class KeyframePanelMixin:
         if name:
             return name
         return str(id(prop))
+
+    def _panel_context_signature(self, context):
+        if not isinstance(context, dict):
+            return ("", "", "", "")
+        item_type = str(context.get("item_type") or "")
+        item_id = str(
+            context.get("item_id")
+            or context.get("clip_id")
+            or context.get("transition_id")
+            or context.get("effect_id")
+            or ""
+        )
+        clip_id = str(context.get("clip_id") or "")
+        effect_id = str(context.get("effect_id") or "")
+        return (item_type, item_id, clip_id, effect_id)
+
+    def _panel_property_context(self, prop, fallback=None):
+        if isinstance(prop, dict):
+            ctx = prop.get("context")
+            if isinstance(ctx, dict):
+                return ctx
+        return fallback if isinstance(fallback, dict) else {}
+
+    def _panel_point_context_signature(self, point, fallback_context=None):
+        point_ctx = point.get("_panel_context") if isinstance(point, dict) else None
+        if isinstance(point_ctx, dict):
+            return self._panel_context_signature(point_ctx)
+        return self._panel_context_signature(fallback_context if isinstance(fallback_context, dict) else {})
+
+    def _panel_selection_frames(self, selector):
+        if isinstance(selector, dict):
+            source = selector.get("frames", [])
+        else:
+            source = selector or []
+        frames = set()
+        for value in source:
+            if value is None:
+                continue
+            try:
+                frames.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        return frames
+
+    def _panel_selection_context(self, selector):
+        if not isinstance(selector, dict):
+            return None
+        context = selector.get("context")
+        if not context:
+            return None
+        if isinstance(context, (tuple, list)):
+            return tuple(str(part) for part in context)
+        return None
+
+    def _panel_selection_selector(self, frames, context_signature=None):
+        frame_set = self._panel_selection_frames(frames)
+        if not frame_set:
+            return None
+        if context_signature:
+            if isinstance(context_signature, (tuple, list)):
+                context_signature = tuple(str(part) for part in context_signature)
+            else:
+                context_signature = None
+        if context_signature:
+            return {"frames": frame_set, "context": context_signature}
+        return frame_set
+
+    def _panel_selection_contains(self, selector, frame, point=None, fallback_context=None):
+        if frame is None:
+            return False
+        frames = self._panel_selection_frames(selector)
+        if frame not in frames:
+            return False
+        selector_ctx = self._panel_selection_context(selector)
+        if selector_ctx is None:
+            return True
+        point_ctx = self._panel_point_context_signature(point, fallback_context)
+        return point_ctx == selector_ctx
+
+    def _panel_context_matches_item(self, context, item):
+        if not isinstance(context, dict):
+            return False
+        item_type = context.get("item_type")
+        target_id = str(
+            context.get("item_id")
+            or context.get("clip_id")
+            or context.get("transition_id")
+            or ""
+        )
+        if isinstance(item, Clip):
+            item_id = str(getattr(item, "id", ""))
+            clip_match = str(context.get("clip_id") or "")
+            if item_type == "clip":
+                return not target_id or target_id == item_id
+            if item_type == "effect":
+                return not clip_match or clip_match == item_id
+            return False
+        if isinstance(item, Transition):
+            item_id = str(getattr(item, "id", ""))
+            return item_type == "transition" and (not target_id or target_id == item_id)
+        return False
+
+    def _panel_context_matches_marker(self, context, context_type, context_id, effect_id=None):
+        if not isinstance(context, dict):
+            return False
+        item_type = context.get("item_type")
+        target_id = str(
+            context.get("item_id")
+            or context.get("clip_id")
+            or context.get("transition_id")
+            or ""
+        )
+        if context_type == "transition":
+            return item_type == "transition" and (not target_id or target_id == context_id)
+        if context_type == "effect":
+            effect_ctx = str(context.get("item_id") or context.get("effect_id") or "")
+            return item_type == "effect" and (not effect_id or not effect_ctx or effect_ctx == effect_id)
+        if item_type not in ("clip", "effect"):
+            return False
+        return not target_id or target_id == context_id or context.get("clip_id") in (None, context_id)
 
     def _panel_property_points_parent_path(self, prop):
         if not isinstance(prop, dict):
@@ -121,6 +282,130 @@ class KeyframePanelMixin:
             if tuple_path:
                 return tuple_path[:-1]
         return None
+
+    def _panel_find_points_parent_path(self, data, prop_key, path=()):
+        if not prop_key:
+            return None
+        if isinstance(data, dict):
+            if prop_key in data and isinstance(data.get(prop_key), dict):
+                prop_dict = data.get(prop_key) or {}
+                points = prop_dict.get("Points")
+                if isinstance(points, list):
+                    return path + (("dict", prop_key), ("dict", "Points"))
+                for channel in ("red", "green", "blue", "alpha"):
+                    channel_dict = prop_dict.get(channel)
+                    if isinstance(channel_dict, dict) and isinstance(channel_dict.get("Points"), list):
+                        return path + (
+                            ("dict", prop_key),
+                            ("dict", channel),
+                            ("dict", "Points"),
+                        )
+            for key_name, value in data.items():
+                if isinstance(value, (dict, list)):
+                    found = self._panel_find_points_parent_path(
+                        value,
+                        prop_key,
+                        path + (("dict", key_name),),
+                    )
+                    if found:
+                        return found
+        elif isinstance(data, list):
+            for index, item in enumerate(data):
+                if not isinstance(item, (dict, list)):
+                    continue
+                found = self._panel_find_points_parent_path(
+                    item,
+                    prop_key,
+                    path + (("list", index),),
+                )
+                if found:
+                    return found
+        return None
+
+    def _panel_context_under_playhead(self, track_num, prop, fallback_context):
+        context = fallback_context if isinstance(fallback_context, dict) else {}
+        context_signatures = set()
+        if isinstance(prop, dict):
+            for point in prop.get("points") or []:
+                point_ctx = point.get("_panel_context") if isinstance(point, dict) else None
+                if not isinstance(point_ctx, dict):
+                    continue
+                context_signatures.add(self._panel_context_signature(point_ctx))
+        force_multi = len(context_signatures) > 1
+        if context.get("item_type") != "multi" and not force_multi:
+            return context
+        fps = self.fps_float or 1.0
+        if fps <= 0.0:
+            fps = 1.0
+        frame = int(getattr(self, "current_frame", 1) or 1)
+        if frame < 1:
+            frame = 1
+        playhead_seconds = (frame - 1.0) / fps
+        epsilon = 1.0 / fps if fps > 0.0 else 1e-6
+        selected_items = list(getattr(self.win, "selected_items", []) or [])
+        candidates = []
+        for selected in selected_items:
+            item_id = selected.get("id") if isinstance(selected, dict) else None
+            item_type = selected.get("type") if isinstance(selected, dict) else None
+            if not item_id or item_type not in ("clip", "effect", "transition"):
+                continue
+            item_context = self._panel_item_context(item_id, item_type)
+            track_value = item_context.get("track") if isinstance(item_context, dict) else None
+            track_key = self.normalize_track_number(track_value) if track_value is not None else None
+            if track_key != self.normalize_track_number(track_num):
+                continue
+            range_start = self._panel_float(item_context.get("range_start_seconds"), None)
+            range_end = self._panel_float(item_context.get("range_end_seconds"), None)
+            if range_start is None or range_end is None:
+                continue
+            if range_end < range_start:
+                range_start, range_end = range_end, range_start
+            contains = False
+            if abs(range_end - range_start) <= epsilon:
+                contains = abs(playhead_seconds - range_start) <= epsilon
+            else:
+                contains = (playhead_seconds + 1e-9) >= range_start and (playhead_seconds + 1e-9) < (range_end - 1e-9)
+            if contains:
+                candidates.append((range_start, range_end, item_context))
+        if candidates:
+            # Prefer the most specific containing item (shortest span), then latest start.
+            candidates.sort(key=lambda row: ((row[1] - row[0]), -row[0]))
+            return candidates[0][2]
+        return {}
+
+    def _panel_parent_path_for_context(self, prop, context):
+        parent_path = self._panel_property_points_parent_path(prop)
+        if parent_path and context.get("item_type") != "multi":
+            return parent_path
+        source_key = prop.get("source_key") if isinstance(prop, dict) else None
+        if not source_key and isinstance(prop, dict):
+            source_key = prop.get("key")
+        if not source_key:
+            return parent_path
+        data = None
+        item_type = context.get("item_type") if isinstance(context, dict) else None
+        if item_type == "clip":
+            clip_id = context.get("clip_id") or context.get("item_id")
+            clip_obj = Clip.get(id=clip_id) if clip_id else None
+            if clip_obj and isinstance(getattr(clip_obj, "data", None), (dict, list)):
+                data = clip_obj.data
+        elif item_type == "transition":
+            tran_id = context.get("transition_id") or context.get("item_id")
+            tran_obj = Transition.get(id=tran_id) if tran_id else None
+            if tran_obj and isinstance(getattr(tran_obj, "data", None), (dict, list)):
+                data = tran_obj.data
+        elif item_type == "effect":
+            effect_id = context.get("effect_id") or context.get("item_id")
+            effect_obj = Effect.get(id=effect_id) if effect_id else None
+            if effect_obj and isinstance(getattr(effect_obj, "data", None), (dict, list)):
+                data = effect_obj.data
+            if data is None:
+                clip_id = context.get("clip_id")
+                clip_obj = Clip.get(id=clip_id) if clip_id else None
+                if clip_obj and isinstance(getattr(clip_obj, "data", None), (dict, list)):
+                    data = clip_obj.data
+        found = self._panel_find_points_parent_path(data, source_key) if data is not None else None
+        return found or parent_path
 
     def _panel_capture_base_properties(self, properties):
         base = {}
@@ -262,13 +547,14 @@ class KeyframePanelMixin:
             properties = self.get_track_panel_properties(track_num)
             if not properties:
                 continue
-            context = self.get_track_panel_context(track_num)
+            track_context = self.get_track_panel_context(track_num)
             toggle_rect = self._track_toggle_rect(track, name_rect)
             indent = 0.0
             if not toggle_rect.isNull():
                 indent = max(0.0, toggle_rect.x() - name_rect.x())
             y = panel_rect.y() + padding
             for prop in properties:
+                context = self._panel_property_context(prop, track_context)
                 if y + row_height > panel_rect.bottom() - padding + 1.0:
                     break
                 full_lane = QRectF(panel_rect.x(), y, panel_rect.width(), row_height)
@@ -365,6 +651,9 @@ class KeyframePanelMixin:
                 info = dict(lane)
                 info["point"] = point
                 info["marker_rect"] = marker_rect
+                point_context = point.get("_panel_context") if isinstance(point, dict) else None
+                if isinstance(point_context, dict):
+                    info["context"] = point_context
                 return info
         return None
 
@@ -380,6 +669,116 @@ class KeyframePanelMixin:
     def _panel_compute_snap_targets(self, track_num, property_entry, entries, context):
         targets = []
         seen = set()
+        current_context = self._panel_property_context(property_entry, context)
+        current_signature = self._panel_context_signature(current_context)
+        entry_signatures = {
+            self._panel_context_signature(entry.get("context"))
+            for entry in (entries or [])
+            if isinstance(entry, dict)
+        }
+        if entry_signatures:
+            current_signature = next(iter(entry_signatures))
+
+        def _same_owner(prop):
+            prop_context = self._panel_property_context(prop, context)
+            return self._panel_context_signature(prop_context) == current_signature
+
+        def _point_same_owner(prop, point):
+            point_ctx = point.get("_panel_context") if isinstance(point, dict) else None
+            if isinstance(point_ctx, dict):
+                return self._panel_context_signature(point_ctx) == current_signature
+            return _same_owner(prop)
+
+        # Collect dragged entries' original positions (seconds) to exclude
+        # from non-keyframe snap sources (markers, snap_helper) that would
+        # otherwise create a dead zone at the drag origin.
+        dragged_positions = set()
+        for entry in entries or []:
+            orig = entry.get("original_seconds")
+            if orig is not None:
+                dragged_positions.add(round(float(orig), 6))
+
+        # Collect dragged frames by property key so selected points across
+        # multiple properties are excluded from snap targets.
+        selected_frames_by_prop = {}
+        dragged_paths = set()
+        for entry in entries or []:
+            prop_key = entry.get("prop_key")
+            frame_val = entry.get("original_frame")
+            if not prop_key or frame_val is None:
+                continue
+            try:
+                frame_int = int(frame_val)
+            except (TypeError, ValueError):
+                continue
+            selected_frames_by_prop.setdefault(prop_key, set()).add(frame_int)
+            path = entry.get("path")
+            if path:
+                try:
+                    dragged_paths.add(tuple(path))
+                except TypeError:
+                    pass
+
+        property_key = property_entry.get("key") if isinstance(property_entry, dict) else None
+        selected_frames = selected_frames_by_prop.get(property_key, set())
+
+        # Keep origin-position snapping only when an unselected point exists at
+        # that same time.
+        unselected_positions = set()
+        # Track panel property points first.
+        for prop in self.get_track_panel_properties(track_num) or []:
+            prop_key = prop.get("key") if isinstance(prop, dict) else None
+            selected_prop_frames = selected_frames_by_prop.get(prop_key, set())
+            for point in prop.get("points") or []:
+                if not _point_same_owner(prop, point):
+                    continue
+                frame_val = point.get("frame")
+                try:
+                    frame_int = int(frame_val) if frame_val is not None else None
+                except (TypeError, ValueError):
+                    frame_int = None
+                if frame_int is not None and frame_int in selected_prop_frames:
+                    continue
+                seconds_val = point.get("seconds")
+                try:
+                    unselected_positions.add(round(float(seconds_val), 6))
+                except (TypeError, ValueError):
+                    continue
+
+        # Also include unselected keyframe markers for the same owner. Because
+        # clip markers are merged by frame, inspect marker paths to detect mixed
+        # selected/unselected keyframes at a dragged origin frame.
+        anchor_point = None
+        if entries and isinstance(entries[0], dict):
+            anchor_point = entries[0].get("point")
+        owner = self._panel_resolve_owner(property_entry, current_context, point=anchor_point)
+        drag_scope = {
+            "owner_type": owner.get("owner_type", "clip"),
+            "object_id": owner.get("object_id", ""),
+            "clip": owner.get("clip"),
+            "transition": owner.get("transition"),
+            "entries": entries,
+        }
+        self._ensure_keyframe_markers()
+        markers = list(getattr(self, "_keyframe_markers", []) or [])
+        selected_marker_ids = set()
+        for entry in entries or []:
+            marker = self._find_panel_drag_marker(markers, drag_scope, entry)
+            if marker is not None:
+                selected_marker_ids.add(id(marker))
+        for marker in markers:
+            if not self._panel_drag_owner_matches_marker(drag_scope, marker):
+                continue
+            if id(marker) in selected_marker_ids:
+                marker_paths = self._marker_paths_tuples(marker)
+                if marker_paths and any(path not in dragged_paths for path in marker_paths):
+                    absolute = self._marker_absolute_seconds(marker)
+                    if absolute is not None:
+                        unselected_positions.add(round(float(absolute), 6))
+                continue
+            absolute = self._marker_absolute_seconds(marker)
+            if absolute is not None:
+                unselected_positions.add(round(float(absolute), 6))
 
         def add_target(value, tolerance=None):
             try:
@@ -404,14 +803,18 @@ class KeyframePanelMixin:
             else:
                 targets.append(seconds_val)
 
-        for entry in entries or []:
-            add_target(entry.get("original_seconds"))
+        def _is_excluded_dragged_position(value):
+            try:
+                key = round(float(value), 6)
+            except (TypeError, ValueError):
+                return False
+            if key not in dragged_positions:
+                return False
+            # Allow snapping back to drag origin when there is at least one
+            # unselected keyframe at this position.
+            return key not in unselected_positions
 
-        selected_frames = {
-            entry.get("original_frame")
-            for entry in entries
-            if entry.get("original_frame") is not None
-        }
+        # Same-property points: exclude dragged frames
         for point in property_entry.get("points") or []:
             frame_val = point.get("frame")
             try:
@@ -428,12 +831,24 @@ class KeyframePanelMixin:
         for other_prop in self.get_track_panel_properties(track_num) or []:
             if other_prop is property_entry:
                 continue
+            other_key = other_prop.get("key") if isinstance(other_prop, dict) else None
+            selected_other_frames = selected_frames_by_prop.get(other_key, set())
             for point in other_prop.get("points") or []:
+                if not _point_same_owner(other_prop, point):
+                    continue
+                frame_val = point.get("frame")
+                try:
+                    frame_int = int(frame_val) if frame_val is not None else None
+                except (TypeError, ValueError):
+                    frame_int = None
+                if frame_int is not None and frame_int in selected_other_frames:
+                    continue
                 seconds = point.get("seconds")
                 if seconds is None:
                     continue
                 add_target(seconds)
 
+        # Context range boundaries: always valid
         if isinstance(context, dict):
             range_start = context.get("range_start_seconds")
             range_end = context.get("range_end_seconds")
@@ -442,72 +857,34 @@ class KeyframePanelMixin:
             if range_end is not None:
                 add_target(range_end)
 
-        self._ensure_keyframe_markers()
-        for marker in getattr(self, "_keyframe_markers", []):
+        # Markers: exclude those at the drag origin
+        for marker in markers:
             absolute = self._marker_absolute_seconds(marker)
             if absolute is None:
                 continue
+            if _is_excluded_dragged_position(absolute):
+                continue
             add_target(absolute)
 
+        # Snap helper: exclude those at the drag origin
         snap_helper = getattr(self, "snap", None)
         if snap_helper and hasattr(snap_helper, "keyframe_snap_seconds"):
             for entry in snap_helper.keyframe_snap_seconds(include_playhead=False):
                 if isinstance(entry, dict):
-                    add_target(entry.get("seconds"), entry.get("tolerance"))
+                    sec = entry.get("seconds")
+                    if _is_excluded_dragged_position(sec):
+                        continue
+                    add_target(sec, entry.get("tolerance"))
                 else:
+                    if _is_excluded_dragged_position(entry):
+                        continue
                     add_target(entry)
 
         return targets
 
     def _panel_snap_seconds(self, drag, seconds):
-        if not self.enable_snapping:
-            return seconds
         targets = drag.get("snap_targets") or []
-        if not targets:
-            return seconds
-        pps = float(self.pixels_per_second or 0.0)
-        if pps <= 0.0:
-            return seconds
-        tolerance_px = 0.0
-        snap_helper = getattr(self, "snap", None)
-        if snap_helper and hasattr(snap_helper, "_snap_tolerance_px"):
-            try:
-                tolerance_px = float(snap_helper._snap_tolerance_px())
-            except (TypeError, ValueError):
-                tolerance_px = 0.0
-        if tolerance_px <= 0.0:
-            return seconds
-        tolerance_sec = tolerance_px / pps
-        best = None
-        min_diff = None
-        for target in targets:
-            tolerance_override = None
-            if isinstance(target, dict):
-                target_seconds = target.get("seconds")
-                tolerance_override = target.get("tolerance")
-            else:
-                target_seconds = target
-            try:
-                value = float(target_seconds)
-            except (TypeError, ValueError):
-                continue
-            local_tol = tolerance_sec
-            if tolerance_override is not None:
-                try:
-                    override = float(tolerance_override)
-                except (TypeError, ValueError):
-                    override = None
-                if override and override > 0.0:
-                    local_tol = override
-            diff = abs(value - seconds)
-            if diff > local_tol + 1e-9:
-                continue
-            if min_diff is None or diff < min_diff:
-                min_diff = diff
-                best = value
-        if best is None:
-            return seconds
-        return best
+        return self._snap_absolute_seconds_to_targets(seconds, targets)
 
     def _panel_write_point_value(
         self,
@@ -550,10 +927,6 @@ class KeyframePanelMixin:
         if not entries:
             return
         context = drag.get("context") or {}
-        try:
-            position = float(context.get("position", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            position = 0.0
         grouped = {}
         for entry in entries:
             prop = entry.get("property")
@@ -586,6 +959,13 @@ class KeyframePanelMixin:
                         point["frame"] = pending_frame
                 if pending_seconds is not None:
                     point["seconds"] = pending_seconds
+                    entry_context = entry.get("context")
+                    if not isinstance(entry_context, dict):
+                        entry_context = context
+                    try:
+                        position = float(entry_context.get("position", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        position = 0.0
                     try:
                         point["local_seconds"] = float(pending_seconds) - position
                     except (TypeError, ValueError):
@@ -603,7 +983,18 @@ class KeyframePanelMixin:
                     if entry.get("pending_frame") is not None
                 }
                 if new_frames:
-                    track_map[prop_key] = set(new_frames)
+                    context_signature = None
+                    for entry in bundle.get("entries", []):
+                        entry_context = entry.get("context")
+                        if isinstance(entry_context, dict):
+                            context_signature = self._panel_context_signature(entry_context)
+                            break
+                    selector = self._panel_selection_selector(
+                        new_frames,
+                        context_signature=context_signature,
+                    )
+                    if selector:
+                        track_map[prop_key] = selector
                 elif prop_key in track_map:
                     track_map.pop(prop_key, None)
 
@@ -715,14 +1106,53 @@ class KeyframePanelMixin:
                     transaction_id=transaction_id,
                 )
 
-    def _panel_resolve_owner(self, prop, context):
-        source_meta = prop.get("source_meta") if isinstance(prop, dict) else {}
+    def _panel_resolve_owner(self, prop, context, point=None):
+        if isinstance(point, dict):
+            point_context = point.get("_panel_context")
+            if isinstance(point_context, dict):
+                context = point_context
+        context = self._panel_property_context(prop, context)
+        source_meta = {}
+        if isinstance(point, dict):
+            point_meta = point.get("_panel_source_meta")
+            if isinstance(point_meta, dict):
+                source_meta = dict(point_meta)
+        if not source_meta:
+            source_meta = prop.get("source_meta") if isinstance(prop, dict) else {}
         if not isinstance(source_meta, dict):
             source_meta = {}
         owner_hint = source_meta.get("owner")
         clip_obj = source_meta.get("clip")
         transition_obj = source_meta.get("transition")
         effect_obj = source_meta.get("effect")
+        if isinstance(context, dict):
+            ctx_item_type = context.get("item_type")
+            ctx_clip_id = str(context.get("clip_id") or "")
+            ctx_item_id = str(context.get("item_id") or "")
+            ctx_transition_id = str(context.get("transition_id") or "")
+            ctx_effect_id = str(context.get("effect_id") or "")
+
+            if ctx_item_type == "clip":
+                ctx_target = ctx_clip_id or ctx_item_id
+                if ctx_target:
+                    if clip_obj is not None and str(getattr(clip_obj, "id", "")) != ctx_target:
+                        clip_obj = None
+                    transition_obj = None
+                    effect_obj = None
+            elif ctx_item_type == "transition":
+                ctx_target = ctx_transition_id or ctx_item_id
+                if ctx_target:
+                    if transition_obj is not None and str(getattr(transition_obj, "id", "")) != ctx_target:
+                        transition_obj = None
+                    clip_obj = None
+                    effect_obj = None
+            elif ctx_item_type == "effect":
+                ctx_target = ctx_effect_id or ctx_item_id
+                if ctx_target:
+                    if effect_obj is not None and str(getattr(effect_obj, "id", "")) != ctx_target:
+                        effect_obj = None
+                if ctx_clip_id and clip_obj is not None and str(getattr(clip_obj, "id", "")) != ctx_clip_id:
+                    clip_obj = None
         if not clip_obj and isinstance(context, dict):
             clip_id_ctx = context.get("clip_id")
             if clip_id_ctx:
@@ -735,6 +1165,13 @@ class KeyframePanelMixin:
             if tran_id_ctx:
                 try:
                     transition_obj = Transition.get(id=tran_id_ctx)
+                except Exception:
+                    pass
+        if not effect_obj and isinstance(context, dict) and context.get("item_type") == "effect":
+            effect_id_ctx = context.get("effect_id") or context.get("item_id")
+            if effect_id_ctx:
+                try:
+                    effect_obj = Effect.get(id=effect_id_ctx)
                 except Exception:
                     pass
         owner_type = "transition" if transition_obj else "clip"
@@ -790,28 +1227,43 @@ class KeyframePanelMixin:
             lane_rect = QRectF(info.get("lane_rect", QRectF()))
         lane_padding = info.get("lane_padding", self._panel_lane_padding())
         context = info.get("context") or self.get_track_panel_context(track_key)
+        anchor_context = point.get("_panel_context") if isinstance(point, dict) else None
+        if not isinstance(anchor_context, dict):
+            anchor_context = self._panel_property_context(prop, context)
+        context = anchor_context
+        anchor_signature = self._panel_context_signature(anchor_context)
 
         selection_map = self._panel_selected_keyframes.get(track_key, {}) or {}
-        selected_frames = set(selection_map.get(prop_key, set()) or set())
-        normalized_frames = set()
-        for val in selected_frames:
-            if val is None:
-                continue
-            try:
-                normalized_frames.add(int(val))
-            except (TypeError, ValueError):
-                continue
-        if normalized_frames:
-            selected_frames = normalized_frames
+        selector = selection_map.get(prop_key, set())
+        selected_frames = self._panel_selection_frames(selector)
+        selector_context = self._panel_selection_context(selector)
+        if selector_context and selector_context != anchor_signature:
+            selected_frames = set()
         modifiers = info.get("modifiers", Qt.NoModifier)
         ctrl_down = bool(modifiers & Qt.ControlModifier)
         if frame_int not in selected_frames:
             if ctrl_down:
-                self._panel_merge_selection_map(track_key, {prop_key: {frame_int}})
+                self._panel_merge_selection_map(
+                    track_key,
+                    {
+                        prop_key: self._panel_selection_selector(
+                            {frame_int},
+                            context_signature=anchor_signature,
+                        )
+                    },
+                )
                 selected_frames.add(frame_int)
             else:
                 selected_frames = {frame_int}
-                self._panel_set_selection_map(track_key, {prop_key: {frame_int}})
+                self._panel_set_selection_map(
+                    track_key,
+                    {
+                        prop_key: self._panel_selection_selector(
+                            {frame_int},
+                            context_signature=anchor_signature,
+                        )
+                    },
+                )
 
         lane_lookup = {}
         for lane in self._iter_panel_lanes() or []:
@@ -824,15 +1276,11 @@ class KeyframePanelMixin:
 
         track_map = self._panel_selected_keyframes.get(track_key, {}) or {}
         move_sets = {}
-        for key, frames in (track_map.items() if track_map else []):
-            frames_set = set()
-            for val in frames or []:
-                if val is None:
-                    continue
-                try:
-                    frames_set.add(int(val))
-                except (TypeError, ValueError):
-                    continue
+        for key, selector in (track_map.items() if track_map else []):
+            selector_context = self._panel_selection_context(selector)
+            if selector_context and selector_context != anchor_signature:
+                continue
+            frames_set = self._panel_selection_frames(selector)
             if frames_set:
                 move_sets[key] = frames_set
         if not move_sets:
@@ -873,7 +1321,12 @@ class KeyframePanelMixin:
                     "path": tuple(candidate.get("path")) if candidate.get("path") else None,
                     "property": prop_obj,
                     "prop_key": key,
+                    "context": candidate.get("_panel_context") if isinstance(candidate, dict) else None,
+                    "source_meta": candidate.get("_panel_source_meta") if isinstance(candidate, dict) else None,
                 }
+                entry_signature = self._panel_context_signature(entry.get("context") or anchor_context)
+                if entry_signature != anchor_signature:
+                    continue
                 entries.append(entry)
                 if key == prop_key and candidate_frame == frame_int and anchor_entry is None:
                     anchor_entry = entry
@@ -885,7 +1338,7 @@ class KeyframePanelMixin:
         if anchor_entry is None:
             anchor_entry = entries[0]
 
-        owner_info = self._panel_resolve_owner(prop, context)
+        owner_info = self._panel_resolve_owner(prop, context, point=anchor_entry.get("point") if anchor_entry else point)
         source_meta = owner_info.get("source_meta") or {}
         clip_obj = owner_info.get("clip")
         transition_obj = owner_info.get("transition")
@@ -1011,6 +1464,9 @@ class KeyframePanelMixin:
                 new_local = new_abs - base_position
                 frame_seconds = new_local + clip_start
                 new_frame = int(round(frame_seconds * fps)) + 1
+                # Keep panel drag positions locked to exact frame boundaries,
+                # matching clip keyframe-icon dragging behavior.
+                new_abs = ((new_frame - 1.0) / fps) - clip_start + base_position
             else:
                 new_frame = entry.get("original_frame")
             if new_frame != prev_frame or prev_seconds is None or not math.isclose(new_abs, prev_seconds, rel_tol=1e-6, abs_tol=1e-9):
@@ -1032,8 +1488,9 @@ class KeyframePanelMixin:
             anchor_pending = anchor.get("original_seconds")
 
         self._panel_update_property_points(drag)
-        self._panel_begin_transaction(drag)
-        self._apply_panel_keyframe_delta(drag, ignore_refresh=True)
+        # Rebuild clip keyframe markers every drag tick so old pre-snap
+        # marker frames are not left in the cached marker list.
+        self._keyframes_dirty = True
 
         fps_seek = drag.get("fps") or self.fps_float or 1.0
         if anchor_pending is not None and fps_seek and fps_seek > 0.0 and hasattr(self, "win"):
@@ -1050,6 +1507,9 @@ class KeyframePanelMixin:
         context = info.get("context") if isinstance(info, dict) else None
         if not isinstance(context, dict):
             context = {}
+        point_context = point.get("_panel_context") if isinstance(point, dict) else None
+        if isinstance(point_context, dict):
+            context = point_context
 
         fps = self._panel_float(context.get("fps"), None)
         if fps is None or fps <= 0.0:
@@ -1092,6 +1552,9 @@ class KeyframePanelMixin:
         timeline = getattr(self.win, "timeline", None)
         started = drag.get("transaction_started")
         moved = drag.get("moved")
+        if moved:
+            self._panel_begin_transaction(drag)
+            started = drag.get("transaction_started")
         if started:
             self._apply_panel_keyframe_delta(drag, ignore_refresh=False, force=True)
             if timeline:
@@ -1099,8 +1562,18 @@ class KeyframePanelMixin:
                     drag.get("owner_type", "clip") or "clip",
                     drag.get("object_id", "") or "",
                 )
-            if moved and hasattr(self.win, "show_property_timeout"):
+            if hasattr(self.win, "show_property_timeout"):
                 QTimer.singleShot(0, self.win.show_property_timeout)
+            anchor = (drag.get("anchor") or ((drag.get("entries") or [None])[0])) or {}
+            # Seek to the absolute timeline frame of the dragged keyframe.
+            # ``pending_frame`` is clip-local (it includes clip_start), so derive
+            # the frame from ``pending_seconds`` like _panel_keyframe_move does.
+            # Zenvi's SeekSignal takes a single int (no preroll flag).
+            anchor_seconds = anchor.get("pending_seconds", anchor.get("original_seconds"))
+            fps_seek = drag.get("fps") or self.fps_float or 1.0
+            if anchor_seconds is not None and fps_seek > 0.0 and hasattr(self, "win") and hasattr(self.win, "SeekSignal"):
+                frame_seek = max(1, int(round(float(anchor_seconds) * fps_seek)) + 1)
+                self.win.SeekSignal.emit(frame_seek)
         self._dragging_panel_keyframes = None
         self.mouse_dragging = False
         info = dict(self._panel_press_info or {})
@@ -1121,6 +1594,10 @@ class KeyframePanelMixin:
         if not isinstance(prop, dict) or prop.get("placeholder"):
             return False
         context = info.get("context") or self.get_track_panel_context(track_num)
+        context = self._panel_context_under_playhead(track_num, prop, context)
+        if not isinstance(context, dict) or not context:
+            log.info("Keyframe panel add skipped: no selected item under playhead")
+            return False
         prop_key = prop.get("key")
         if not prop_key:
             return False
@@ -1128,10 +1605,23 @@ class KeyframePanelMixin:
         if not timeline:
             log.info("Keyframe panel add skipped: no timeline backend")
             return False
-        owner = self._panel_resolve_owner(prop, context)
-        clip_obj = owner.get("clip")
-        transition_obj = owner.get("transition")
-        parent_path = self._panel_property_points_parent_path(prop)
+        item_type = context.get("item_type") if isinstance(context, dict) else None
+        clip_obj = None
+        transition_obj = None
+        effect_obj = None
+        if item_type == "clip":
+            clip_id = context.get("clip_id") or context.get("item_id")
+            clip_obj = Clip.get(id=clip_id) if clip_id else None
+        elif item_type == "transition":
+            tran_id = context.get("transition_id") or context.get("item_id")
+            transition_obj = Transition.get(id=tran_id) if tran_id else None
+        elif item_type == "effect":
+            effect_id = context.get("effect_id") or context.get("item_id")
+            effect_obj = Effect.get(id=effect_id) if effect_id else None
+            clip_id = context.get("clip_id")
+            clip_obj = Clip.get(id=clip_id) if clip_id else None
+
+        parent_path = self._panel_parent_path_for_context(prop, context)
         if parent_path is None:
             log.info("Keyframe panel add skipped: property %s missing points path", prop_key)
             return False
@@ -1141,17 +1631,36 @@ class KeyframePanelMixin:
             parent_path = parent_path
         data_obj = None
         data_label = None
-        for label, candidate in (("clip", clip_obj), ("transition", transition_obj)):
-            data = getattr(candidate, "data", None)
-            if isinstance(data, (dict, list)):
-                target = self._resolve_data_path(data, parent_path)
-                if isinstance(target, list):
-                    data_obj = candidate
-                    data_label = label
-                    break
-        if not data_obj or not isinstance(getattr(data_obj, "data", None), (dict, list)):
+        if isinstance(getattr(clip_obj, "data", None), (dict, list)):
+            data_obj = clip_obj
+            data_label = "clip"
+        elif isinstance(getattr(transition_obj, "data", None), (dict, list)):
+            data_obj = transition_obj
+            data_label = "transition"
+        elif isinstance(getattr(effect_obj, "data", None), (dict, list)):
+            data_obj = effect_obj
+            data_label = "effect"
+
+        if not data_obj:
             log.info(
-                "Keyframe panel add skipped: property %s has no writable source",
+                "Keyframe panel add skipped: property %s has no writable source for context",
+                prop_key,
+            )
+            return False
+
+        data = getattr(data_obj, "data", None)
+        target = self._resolve_data_path(data, parent_path) if isinstance(data, (dict, list)) else None
+        if not isinstance(target, list):
+            source_key = prop.get("source_key") if isinstance(prop, dict) else None
+            if not source_key:
+                source_key = prop_key
+            strict_path = self._panel_find_points_parent_path(data, source_key)
+            if strict_path is not None:
+                parent_path = strict_path
+                target = self._resolve_data_path(data, parent_path)
+        if not isinstance(target, list):
+            log.info(
+                "Keyframe panel add skipped: property %s has no points list in target context",
                 prop_key,
             )
             return False
@@ -1210,7 +1719,15 @@ class KeyframePanelMixin:
             return False
         existing_path = None
         interpolation = None
+        target_signature = self._panel_context_signature(context) if isinstance(context, dict) else None
         for point in prop.get("points") or []:
+            point_context = point.get("_panel_context") if isinstance(point, dict) else None
+            if (
+                target_signature
+                and isinstance(point_context, dict)
+                and self._panel_context_signature(point_context) != target_signature
+            ):
+                continue
             frame_val = point.get("frame")
             try:
                 frame_int = int(frame_val) if frame_val is not None else None
@@ -1279,7 +1796,12 @@ class KeyframePanelMixin:
             )
             return False
         if track_num is not None:
-            self._panel_merge_selection_map(track_num, {prop_key: {new_frame}})
+            context_signature = self._panel_context_signature(context) if isinstance(context, dict) else None
+            selector = self._panel_selection_selector(
+                {new_frame},
+                context_signature=context_signature,
+            )
+            self._panel_merge_selection_map(track_num, {prop_key: selector or {new_frame}})
         self._update_track_panel_properties()
         self.geometry.mark_dirty()
         self.update()
@@ -1291,9 +1813,44 @@ class KeyframePanelMixin:
         )
         return True
 
-    def _panel_preview_marker(self, marker, old_frame, new_frame, absolute_seconds):
+    def _panel_preview_marker(
+        self,
+        marker,
+        old_frame,
+        new_frame,
+        absolute_seconds,
+        *,
+        refresh=True,
+        drag_paths=None,
+    ):
         if not isinstance(marker, dict):
             return
+        def _normalize_path(value):
+            if isinstance(value, (tuple, list)):
+                normalized = []
+                for item in value:
+                    norm = _normalize_path(item)
+                    if isinstance(norm, list):
+                        norm = tuple(norm)
+                    normalized.append(norm)
+                return tuple(normalized)
+            return value
+
+        marker_paths = set()
+        marker_raw_paths = drag_paths if drag_paths else marker.get("data_paths")
+        for raw_path in marker_raw_paths or ():
+            try:
+                marker_paths.add(_normalize_path(raw_path))
+            except TypeError:
+                continue
+        if not marker_paths:
+            single_path = marker.get("data_path")
+            if single_path:
+                try:
+                    marker_paths.add(_normalize_path(single_path))
+                except TypeError:
+                    pass
+
         marker_type = marker.get("type")
         track_num = None
         context_type = None
@@ -1316,22 +1873,7 @@ class KeyframePanelMixin:
         info = self._panel_properties.get(track_num)
         if not info:
             return
-        context = info.get("context", {})
-        item_type = context.get("item_type")
-        target_id = str(context.get("item_id") or context.get("clip_id") or context.get("transition_id") or "")
-        if context_type == "transition":
-            if item_type != "transition" or (target_id and target_id != context_id):
-                return
-        elif context_type == "effect":
-            effect_ctx = str(context.get("item_id") or context.get("effect_id") or "")
-            if item_type != "effect" or (effect_id and effect_ctx and effect_ctx != effect_id):
-                return
-        else:
-            if item_type not in ("clip", "effect"):
-                return
-            if target_id and target_id != context_id and context.get("clip_id") not in (None, context_id):
-                return
-
+        track_context = info.get("context", {})
         properties = info.get("properties", [])
         changed = False
         new_frame_int = None
@@ -1340,15 +1882,38 @@ class KeyframePanelMixin:
         except (TypeError, ValueError):
             new_frame_int = new_frame
         for prop in properties:
+            prop_context = self._panel_property_context(prop, track_context)
             prop_key = prop.get("key")
+            selection_frames = set()
+            selection_selector = None
+            if track_num in self._panel_selected_keyframes and prop_key in self._panel_selected_keyframes[track_num]:
+                selection_selector = self._panel_selected_keyframes[track_num][prop_key]
+                selection_frames = self._panel_selection_frames(selection_selector)
+            strict_matches = 0
             for point in prop.get("points") or []:
+                context = self._panel_property_context({"context": point.get("_panel_context")}, prop_context)
+                if not self._panel_context_matches_marker(context, context_type, context_id, effect_id):
+                    continue
+                point_path = point.get("path")
+                path_match = False
+                if marker_paths and point_path:
+                    try:
+                        path_match = _normalize_path(point_path) in marker_paths
+                    except TypeError:
+                        path_match = False
                 frame_val = point.get("frame")
                 try:
                     frame_int = int(frame_val) if frame_val is not None else None
                 except (TypeError, ValueError):
                     frame_int = None
-                if frame_int is None or frame_int != old_frame:
+                # When drag paths are known (clip-keyframe drag), only move exact
+                # path matches. Falling back to frame-only matching here causes
+                # unrelated points at crossed frames to "ride along" visually.
+                frame_match = (not marker_paths) and frame_int is not None and frame_int == old_frame
+                if not path_match and not frame_match:
                     continue
+                strict_matches += 1
+                source_frame = frame_int if frame_int is not None else old_frame
                 point["frame"] = new_frame_int
                 if absolute_seconds is not None:
                     point["seconds"] = absolute_seconds
@@ -1360,13 +1925,91 @@ class KeyframePanelMixin:
                 changed = True
                 if track_num in self._panel_selected_keyframes and prop_key in self._panel_selected_keyframes[track_num]:
                     selection = self._panel_selected_keyframes[track_num][prop_key]
-                    if old_frame in selection:
-                        selection.discard(old_frame)
-                        if new_frame_int is not None:
-                            selection.add(int(new_frame_int))
+                    sel_context = self._panel_selection_context(selection)
+                    point_context = self._panel_point_context_signature(point, context)
+                    if sel_context is None or sel_context == point_context:
+                        selection_frames_local = self._panel_selection_frames(selection)
+                        if source_frame in selection_frames_local:
+                            selection_frames_local.discard(source_frame)
+                            if new_frame_int is not None:
+                                selection_frames_local.add(int(new_frame_int))
+                            self._panel_selected_keyframes[track_num][prop_key] = self._panel_selection_selector(
+                                selection_frames_local,
+                                context_signature=sel_context,
+                            ) or set()
+            if strict_matches == 0 and selection_frames:
+                for point in prop.get("points") or []:
+                    context = self._panel_property_context({"context": point.get("_panel_context")}, prop_context)
+                    if not self._panel_context_matches_marker(context, context_type, context_id, effect_id):
+                        continue
+                    frame_val = point.get("frame")
+                    try:
+                        frame_int = int(frame_val) if frame_val is not None else None
+                    except (TypeError, ValueError):
+                        frame_int = None
+                    if frame_int is None or frame_int not in selection_frames:
+                        continue
+                    point["frame"] = new_frame_int
+                    if absolute_seconds is not None:
+                        point["seconds"] = absolute_seconds
+                        try:
+                            position_val = float(context.get("position", 0.0) or 0.0)
+                            point["local_seconds"] = absolute_seconds - position_val
+                        except (TypeError, ValueError):
+                            pass
+                    changed = True
+                if track_num in self._panel_selected_keyframes and prop_key in self._panel_selected_keyframes[track_num]:
+                    if new_frame_int is not None:
+                        sel_context = self._panel_selection_context(selection_selector)
+                        self._panel_selected_keyframes[track_num][prop_key] = (
+                            self._panel_selection_selector(
+                                {int(new_frame_int)},
+                                context_signature=sel_context,
+                            )
+                            or set()
+                        )
         if changed:
             self._apply_panel_selection_flags(track_num)
-            self.update()
+            if refresh:
+                self.update()
+
+    def _apply_keyframe_drag_panel_override(self):
+        """Keep panel points aligned with the active clip/effect/transition keyframe drag."""
+        if self._dragging_panel_keyframes:
+            return
+        drag = self._dragging_keyframe
+        if not isinstance(drag, dict):
+            return
+        marker = drag.get("marker")
+        if not isinstance(marker, dict):
+            return
+        old_frame = drag.get("current_frame")
+        new_frame = drag.get("pending_frame", old_frame)
+        pending_seconds = drag.get("pending_seconds")
+        if pending_seconds is None:
+            fps = self.fps_float or 0.0
+            try:
+                frame_val = int(new_frame) if new_frame is not None else None
+            except (TypeError, ValueError):
+                frame_val = None
+            if fps > 0.0 and frame_val is not None:
+                clip_start = self._panel_float(drag.get("clip_start"), 0.0)
+                pending_seconds = max(0.0, ((frame_val - 1.0) / fps) - clip_start)
+        if pending_seconds is None:
+            return
+        pending_seconds = self._panel_float(pending_seconds, None)
+        if pending_seconds is None:
+            return
+        base_position = self._keyframe_base_position(marker)
+        absolute_seconds = base_position + pending_seconds
+        self._panel_preview_marker(
+            marker,
+            old_frame,
+            new_frame,
+            absolute_seconds,
+            refresh=False,
+            drag_paths=drag.get("data_paths"),
+        )
 
     def _panel_shift_item(self, item, delta_seconds, frame_offset):
         if not isinstance(delta_seconds, (int, float)):
@@ -1379,92 +2022,189 @@ class KeyframePanelMixin:
             layer = item.data.get("layer")
         except Exception:
             layer = None
-        track_num = self.normalize_track_number(layer) if layer is not None else None
-        if track_num is None:
+        target_track_num = self.normalize_track_number(layer) if layer is not None else None
+        if target_track_num is None:
             return
+
+        source_track_num = self._panel_track_for_item(item)
+        if source_track_num is None:
+            source_track_num = target_track_num
+
+        item_key = self._panel_drag_item_key(item)
+        hidden_map = getattr(self, "_panel_hidden_drag_info", None)
+        if not isinstance(hidden_map, dict):
+            hidden_map = {}
+            self._panel_hidden_drag_info = hidden_map
+
+        target_enabled = bool(self._track_panel_enabled.get(target_track_num))
+        if item_key and target_enabled:
+            hidden_entry = hidden_map.get(item_key)
+            target_info = self._panel_properties.get(target_track_num)
+            target_placeholder = bool(
+                isinstance(target_info, dict)
+                and isinstance(target_info.get("context"), dict)
+                and target_info.get("context", {}).get("placeholder")
+            )
+            if isinstance(hidden_entry, dict) and (not target_info or target_placeholder):
+                restored_info = hidden_entry.get("info")
+                if restored_info:
+                    self._panel_properties[target_track_num] = restored_info
+                    restored_height = hidden_entry.get("height")
+                    if restored_height is None:
+                        restored_height = self._panel_height_for_properties(
+                            len(restored_info.get("properties") or [])
+                        )
+                    self._panel_heights[target_track_num] = restored_height
+                    restored_selection = hidden_entry.get("selection")
+                    if restored_selection is not None:
+                        self._panel_selected_keyframes[target_track_num] = restored_selection
+                    restored_manual = hidden_entry.get("manual")
+                    if restored_manual is not None:
+                        self._panel_manual_properties[target_track_num] = restored_manual
+                    context = restored_info.get("context")
+                    if isinstance(context, dict):
+                        context["track"] = target_track_num
+                    hidden_map.pop(item_key, None)
+                    self.geometry.mark_dirty()
+                    source_track_num = target_track_num
+
+        # Keep panel aligned with dragged item's track. If target track panel is
+        # hidden, clear the moving panel preview to avoid stale old-track display.
+        if source_track_num != target_track_num:
+            source_info = self._panel_properties.get(source_track_num)
+            if isinstance(source_info, dict) and source_info.get("item_type") == "multi":
+                # Multi-item panel rows are track-local; let the next refresh rebuild
+                # them after drop instead of moving the entire combined panel.
+                return
+            if target_enabled and source_info:
+                source_height = self._panel_heights.get(source_track_num)
+                self._panel_properties[target_track_num] = source_info
+                self._panel_properties.pop(source_track_num, None)
+                if source_height is None:
+                    source_height = self._panel_height_for_properties(
+                        len(source_info.get("properties") or [])
+                    )
+                self._panel_heights[target_track_num] = source_height
+                if source_track_num in self._panel_selected_keyframes:
+                    self._panel_selected_keyframes[target_track_num] = self._panel_selected_keyframes.pop(
+                        source_track_num
+                    )
+                if source_track_num in self._panel_manual_properties:
+                    self._panel_manual_properties[target_track_num] = self._panel_manual_properties.pop(
+                        source_track_num
+                    )
+                context = source_info.get("context")
+                if isinstance(context, dict):
+                    context["track"] = target_track_num
+                if self._track_panel_enabled.get(source_track_num):
+                    placeholder, placeholder_height = self._panel_placeholder_info("no-selection")
+                    self._panel_properties[source_track_num] = placeholder
+                    self._panel_heights[source_track_num] = placeholder_height
+                else:
+                    self._panel_heights.pop(source_track_num, None)
+                source_track_num = target_track_num
+                self.geometry.mark_dirty()
+            elif not target_enabled:
+                if item_key and source_info:
+                    hidden_map[item_key] = {
+                        "info": source_info,
+                        "height": self._panel_heights.get(source_track_num),
+                        "selection": self._panel_selected_keyframes.get(source_track_num),
+                        "manual": self._panel_manual_properties.get(source_track_num),
+                    }
+                if self._track_panel_enabled.get(source_track_num):
+                    placeholder, placeholder_height = self._panel_placeholder_info("no-selection")
+                    self._panel_properties[source_track_num] = placeholder
+                    self._panel_heights[source_track_num] = placeholder_height
+                else:
+                    self._panel_properties.pop(source_track_num, None)
+                    self._panel_heights.pop(source_track_num, None)
+                self._panel_selected_keyframes.pop(source_track_num, None)
+                self._panel_manual_properties.pop(source_track_num, None)
+                self.geometry.mark_dirty()
+                self.update()
+                return
+
+        track_num = source_track_num
         info = self._panel_properties.get(track_num)
         if not info:
             return
-        context = info.get("context")
-        if not isinstance(context, dict) or context.get("placeholder"):
+        track_context = info.get("context")
+        if isinstance(track_context, dict) and track_context.get("placeholder"):
             return
-        item_type = context.get("item_type")
-        target_id = str(context.get("item_id") or context.get("clip_id") or context.get("transition_id") or "")
-        if isinstance(item, Clip):
-            item_id = str(getattr(item, "id", ""))
-            clip_match = str(context.get("clip_id") or "")
-            if item_type == "clip":
-                if target_id and target_id != item_id:
-                    return
-            elif item_type == "effect":
-                if clip_match and clip_match != item_id:
-                    return
-            else:
-                return
-        elif isinstance(item, Transition):
-            item_id = str(getattr(item, "id", ""))
-            if item_type != "transition" or (target_id and target_id != item_id):
-                return
-        else:
-            return
-
+        drag_base_token = getattr(self, "_drag_transaction_id", None)
+        base_token = info.get("_panel_shift_base_token")
         base_props = info.get("base_properties")
-        if base_props is None:
+        if base_props is None or base_token != drag_base_token:
             base_props = self._panel_capture_base_properties(info.get("properties"))
             info["base_properties"] = base_props
-        base_context = info.get("base_context")
-        if base_context is None:
-            base_context = self._panel_capture_base_context(context)
-            info["base_context"] = base_context
-
-        if delta_seconds:
-            for key_name in ("position", "range_start_seconds", "range_end_seconds"):
-                base_value = base_context.get(key_name, context.get(key_name))
-                if base_value is None:
-                    continue
-                try:
-                    context[key_name] = float(base_value) + delta_seconds
-                except (TypeError, ValueError):
-                    context[key_name] = base_value
+        info["_panel_shift_base_token"] = drag_base_token
 
         properties = info.get("properties", [])
+        changed = False
         for prop in properties:
+            context = self._panel_property_context(prop, track_context)
+            prop_matches_item = self._panel_context_matches_item(context, item)
+            base_context = prop.get("_panel_base_context")
+            if prop_matches_item:
+                if not isinstance(base_context, dict) or base_token != drag_base_token:
+                    base_context = self._panel_capture_base_context(context)
+                    prop["_panel_base_context"] = base_context
+                for key_name in ("position", "range_start_seconds", "range_end_seconds"):
+                    base_value = base_context.get(key_name, context.get(key_name))
+                    if base_value is None:
+                        continue
+                    try:
+                        context[key_name] = float(base_value) + delta_seconds
+                    except (TypeError, ValueError):
+                        context[key_name] = base_value
+
             key_name = self._panel_property_key(prop)
             base_points = base_props.get(key_name, []) if key_name else []
             points = prop.get("points") or []
             for index, point in enumerate(points):
+                point_context = self._panel_property_context({"context": point.get("_panel_context")}, context)
+                if not self._panel_context_matches_item(point_context, item):
+                    continue
                 base_point = base_points[index] if index < len(base_points) else {}
-                if frame_offset:
-                    base_frame = base_point.get("frame")
-                    if base_frame is not None:
-                        try:
-                            point["frame"] = int(base_frame) + frame_offset
-                        except (TypeError, ValueError):
-                            point["frame"] = base_frame
-                if delta_seconds:
-                    base_seconds = base_point.get("seconds")
-                    if base_seconds is not None:
-                        try:
-                            new_seconds = float(base_seconds) + delta_seconds
-                        except (TypeError, ValueError):
-                            new_seconds = base_seconds
-                        point["seconds"] = new_seconds
-                        try:
-                            position_val = float(context.get("position", 0.0) or 0.0)
-                            point["local_seconds"] = float(new_seconds) - position_val
-                        except (TypeError, ValueError):
-                            pass
+                base_frame = base_point.get("frame")
+                if base_frame is not None:
+                    try:
+                        point["frame"] = int(base_frame) + frame_offset
+                    except (TypeError, ValueError):
+                        point["frame"] = base_frame
+                    changed = True
+                base_seconds = base_point.get("seconds")
+                if base_seconds is not None:
+                    try:
+                        new_seconds = float(base_seconds) + delta_seconds
+                    except (TypeError, ValueError):
+                        new_seconds = base_seconds
+                    point["seconds"] = new_seconds
+                    try:
+                        position_val = float(point_context.get("position", 0.0) or 0.0)
+                        point["local_seconds"] = float(new_seconds) - position_val
+                    except (TypeError, ValueError):
+                        pass
+                    changed = True
 
         if track_num in self._panel_selected_keyframes:
+            existing_selection = dict(self._panel_selected_keyframes.get(track_num, {}) or {})
             updated = {}
             for prop in properties:
                 prop_key = prop.get("key")
                 if not prop_key:
                     continue
                 selected_frames = set()
+                selected_context = None
                 for point in prop.get("points") or []:
+                    context = self._panel_property_context({"context": point.get("_panel_context")}, track_context)
+                    if not self._panel_context_matches_item(context, item):
+                        continue
                     if not point.get("selected"):
                         continue
+                    if selected_context is None:
+                        selected_context = self._panel_context_signature(context)
                     frame_val = point.get("frame")
                     if frame_val is None:
                         continue
@@ -1473,13 +2213,72 @@ class KeyframePanelMixin:
                     except (TypeError, ValueError):
                         continue
                 if selected_frames:
-                    updated[prop_key] = selected_frames
+                    updated[prop_key] = self._panel_selection_selector(
+                        selected_frames,
+                        context_signature=selected_context,
+                    ) or selected_frames
             if updated:
                 self._panel_selected_keyframes[track_num] = updated
             else:
                 self._panel_selected_keyframes.pop(track_num, None)
             self._apply_panel_selection_flags(track_num)
-        self.update()
+
+        if changed:
+            self.update()
+
+    def _panel_select_points_for_clip_marker(self, marker):
+        """Select all panel points at the marker frame for the marker's clip."""
+        if not isinstance(marker, dict) or marker.get("type") != "clip":
+            return
+        clip = marker.get("clip")
+        if not clip or not isinstance(getattr(clip, "data", None), dict):
+            return
+        track_num = self.normalize_track_number(clip.data.get("layer"))
+        if track_num is None or not self.is_keyframe_panel_visible(track_num):
+            return
+        info = self._panel_properties.get(track_num)
+        if not isinstance(info, dict):
+            return
+        context = info.get("context")
+        if isinstance(context, dict) and context.get("placeholder"):
+            return
+        clip_id = str(getattr(clip, "id", ""))
+        frame_val = marker.get("display_frame", marker.get("frame"))
+        try:
+            target_frame = int(frame_val) if frame_val is not None else None
+        except (TypeError, ValueError):
+            target_frame = None
+        if target_frame is None:
+            return
+        mapping = {}
+        for prop in info.get("properties", []):
+            if not isinstance(prop, dict) or prop.get("placeholder"):
+                continue
+            prop_key = prop.get("key")
+            if not prop_key:
+                continue
+            frames = set()
+            context_signature = None
+            for point in prop.get("points") or []:
+                point_context = self._panel_property_context({"context": point.get("_panel_context")}, context)
+                context_clip_id = str(point_context.get("clip_id") or point_context.get("item_id") or "")
+                if context_clip_id and context_clip_id != clip_id:
+                    continue
+                if context_signature is None:
+                    context_signature = self._panel_context_signature(point_context)
+                frame = point.get("frame")
+                try:
+                    frame = int(frame) if frame is not None else None
+                except (TypeError, ValueError):
+                    frame = None
+                if frame == target_frame:
+                    frames.add(frame)
+            if frames:
+                mapping[prop_key] = self._panel_selection_selector(
+                    frames,
+                    context_signature=context_signature,
+                )
+        self._panel_set_selection_map(track_num, mapping)
 
     def _clear_panel_selection(self, track_num=None):
         targets = []
@@ -1514,10 +2313,16 @@ class KeyframePanelMixin:
             return
         selection = self._panel_selected_keyframes.get(key, {}) or {}
         for prop in info.get("properties", []):
-            frames = selection.get(prop.get("key"), set()) or set()
+            prop_context = self._panel_property_context(prop, info.get("context"))
+            selector = selection.get(prop.get("key"), set())
             for point in prop.get("points") or []:
                 frame = point.get("frame")
-                point["selected"] = frame in frames if frame is not None else False
+                point["selected"] = self._panel_selection_contains(
+                    selector,
+                    frame,
+                    point=point,
+                    fallback_context=prop_context,
+                )
 
     def _sync_panel_selection(self, track_num, properties):
         key = self.normalize_track_number(track_num)
@@ -1537,9 +2342,14 @@ class KeyframePanelMixin:
             }
             if not frames or prop_key not in current:
                 continue
-            selected = {frame for frame in current.get(prop_key, set()) if frame in frames}
+            selector = current.get(prop_key, set())
+            selector_frames = self._panel_selection_frames(selector)
+            selected = {frame for frame in selector_frames if frame in frames}
             if selected:
-                valid[prop_key] = selected
+                valid[prop_key] = self._panel_selection_selector(
+                    selected,
+                    context_signature=self._panel_selection_context(selector),
+                )
         if valid:
             self._panel_selected_keyframes[key] = valid
         else:
@@ -1550,10 +2360,16 @@ class KeyframePanelMixin:
         if key is None:
             return
         cleaned = {}
-        for prop_key, frames in (mapping or {}).items():
-            if not prop_key or not frames:
+        for prop_key, selector in (mapping or {}).items():
+            if not prop_key or not selector:
                 continue
-            cleaned[prop_key] = {int(frame) for frame in frames if frame is not None}
+            context_signature = self._panel_selection_context(selector)
+            normalized = self._panel_selection_selector(
+                selector,
+                context_signature=context_signature,
+            )
+            if normalized:
+                cleaned[prop_key] = normalized
         if cleaned:
             self._panel_selected_keyframes[key] = cleaned
         else:
@@ -1569,19 +2385,32 @@ class KeyframePanelMixin:
             self._panel_selected_keyframes[key] = {}
         track_map = self._panel_selected_keyframes[key]
         changed = False
-        for prop_key, frames in (mapping or {}).items():
-            if not prop_key or not frames:
+        for prop_key, selector in (mapping or {}).items():
+            if not prop_key or not selector:
                 continue
-            if prop_key not in track_map:
-                track_map[prop_key] = set()
-            dest = set(track_map[prop_key])
-            before = set(dest)
-            for frame in frames:
-                if frame is None:
+            source_frames = self._panel_selection_frames(selector)
+            if not source_frames:
+                continue
+            source_context = self._panel_selection_context(selector)
+            current_selector = track_map.get(prop_key)
+            current_context = self._panel_selection_context(current_selector)
+            current_frames = self._panel_selection_frames(current_selector)
+            if current_context is not None and source_context is not None and current_context != source_context:
+                merged_frames = set(source_frames)
+                merged_context = source_context
+            else:
+                merged_frames = set(current_frames)
+                before = set(merged_frames)
+                merged_frames.update(source_frames)
+                if merged_frames == before:
                     continue
-                dest.add(int(frame))
-            if dest != before:
-                track_map[prop_key] = dest
+                merged_context = source_context if source_context is not None else current_context
+            normalized = self._panel_selection_selector(
+                merged_frames,
+                context_signature=merged_context,
+            )
+            if normalized != current_selector:
+                track_map[prop_key] = normalized
                 changed = True
         if not track_map:
             self._panel_selected_keyframes.pop(key, None)
@@ -1589,14 +2418,30 @@ class KeyframePanelMixin:
             self._apply_panel_selection_flags(key)
             self.update()
 
-    def _panel_toggle_frames(self, track_num, prop_key, frames):
+    def _panel_toggle_frames(self, track_num, prop_key, frames, context_signature=None):
         key = self.normalize_track_number(track_num)
         if key is None or not prop_key:
             return
         if key not in self._panel_selected_keyframes:
             self._panel_selected_keyframes[key] = {}
         track_map = self._panel_selected_keyframes[key]
-        current = set(track_map.get(prop_key, set()))
+        current_selector = track_map.get(prop_key, set())
+        current_context = self._panel_selection_context(current_selector)
+        if context_signature:
+            if isinstance(context_signature, (tuple, list)):
+                context_signature = tuple(str(part) for part in context_signature)
+            else:
+                context_signature = None
+        if (
+            context_signature is not None
+            and current_context is not None
+            and current_context != context_signature
+        ):
+            current = set()
+        else:
+            current = self._panel_selection_frames(current_selector)
+            if context_signature is None:
+                context_signature = current_context
         changed = False
         for frame in frames or []:
             if frame is None:
@@ -1608,7 +2453,10 @@ class KeyframePanelMixin:
                 current.add(frame_int)
             changed = True
         if current:
-            track_map[prop_key] = current
+            track_map[prop_key] = self._panel_selection_selector(
+                current,
+                context_signature=context_signature,
+            )
         else:
             track_map.pop(prop_key, None)
         if not track_map:
@@ -2064,9 +2912,8 @@ class KeyframePanelMixin:
                         "Keyframe panel refresh: treating property %s as keyframe despite flag False",
                         key,
                     )
-            selected_frames = track_selection.get(key, set())
-            if selected_frames:
-                selected_frames = {int(frame) for frame in selected_frames}
+            selected_selector = track_selection.get(key, set())
+            selected_frames = self._panel_selection_frames(selected_selector)
             for point in points:
                 frame_val = point.get("frame")
                 try:
@@ -2074,10 +2921,12 @@ class KeyframePanelMixin:
                 except (TypeError, ValueError):
                     frame_int = None
                 point["frame"] = frame_int
-                if selected_frames and frame_int is not None:
-                    point["selected"] = frame_int in selected_frames
-                else:
-                    point["selected"] = False
+                point["selected"] = self._panel_selection_contains(
+                    selected_selector,
+                    frame_int,
+                    point=point,
+                    fallback_context=context,
+                )
             entry = {
                 "key": key,
                 "display_name": _(name),
@@ -2126,7 +2975,6 @@ class KeyframePanelMixin:
         frame = int(getattr(self, "current_frame", 1) or 1)
         if frame <= 0:
             frame = 1
-        priority = {"effect": 0, "clip": 1, "transition": 2}
         new_props = {}
         new_heights = {}
         translate = get_app()._tr
@@ -2143,10 +2991,11 @@ class KeyframePanelMixin:
             }
             return info, self._panel_height_for_properties(len(props))
 
+        grouped_entries = {}
         for sel in selection:
             item_id = sel.get("id")
             item_type = sel.get("type")
-            if not item_id or item_type not in priority:
+            if not item_id or item_type not in ("clip", "effect", "transition"):
                 continue
             context = self._panel_item_context(item_id, item_type)
             track_value = context.get("track") if isinstance(context, dict) else None
@@ -2169,9 +3018,6 @@ class KeyframePanelMixin:
                     key,
                 )
                 continue
-            existing = new_props.get(key)
-            if existing and priority[existing.get("item_type")] <= priority[item_type]:
-                continue
             properties, context, available = self._properties_for_item(
                 timeline,
                 item_id,
@@ -2179,127 +3025,193 @@ class KeyframePanelMixin:
                 frame,
                 context=context,
             )
-            properties = list(properties or [])
-            available = list(available or [])
-            available_map = {
-                str(entry.get("key")): entry
-                for entry in available
-                if isinstance(entry, dict) and entry.get("key") is not None
-            }
-            current_item_id = str(item_id)
-            manual_entry = self._panel_manual_properties.get(key)
-            if (
-                not manual_entry
-                or manual_entry.get("item_id") != current_item_id
-                or manual_entry.get("item_type") != item_type
-            ):
-                manual_entry = {
-                    "item_id": current_item_id,
+            grouped_entries.setdefault(key, []).append(
+                {
+                    "item_id": str(item_id),
                     "item_type": item_type,
-                    "properties": set(),
+                    "properties": list(properties or []),
+                    "context": dict(context or {}),
+                    "available": list(available or []),
                 }
-            else:
-                manual_entry = {
-                    "item_id": manual_entry.get("item_id", current_item_id),
-                    "item_type": manual_entry.get("item_type"),
-                    "properties": set(manual_entry.get("properties") or []),
-                }
-            manual_entry["properties"] = {
-                prop_id for prop_id in manual_entry.get("properties", set()) if prop_id in available_map
-            }
-            existing_keys = {
-                str(prop.get("key"))
-                for prop in properties
-                if isinstance(prop, dict) and prop.get("key") is not None
-            }
-            manual_added = []
-            def _manual_sort_key(prop_id):
-                entry = available_map.get(prop_id)
-                if not isinstance(entry, dict):
-                    return prop_id.lower()
-                label = entry.get("display_name") or entry.get("key") or prop_id
-                return str(label).lower()
+            )
 
-            for prop_id in sorted(manual_entry["properties"], key=_manual_sort_key):
-                if prop_id in existing_keys:
-                    continue
-                candidate = available_map.get(prop_id)
-                if candidate:
-                    manual_added.append(candidate)
-                    existing_keys.add(prop_id)
-            if manual_added:
-                properties.extend(manual_added)
-            if properties:
-                properties.sort(key=lambda item: str(item.get("display_name", "")).lower())
-            self._panel_manual_properties[key] = manual_entry
-
-            if not properties:
-                if available:
-                    placeholder_context = dict(context or {})
-                    placeholder_context["placeholder"] = "no-keyframes"
-                    placeholder_label = translate("No Keyframes")
-                    placeholder_prop = {
-                        "display_name": placeholder_label,
-                        "points": [],
-                        "placeholder": True,
-                    }
-                    info = {
-                        "item_id": str(item_id),
-                        "item_type": item_type,
-                        "properties": [placeholder_prop],
-                        "context": placeholder_context,
-                        "available_properties": available,
-                        "base_properties": {},
-                        "base_context": self._panel_capture_base_context(placeholder_context),
-                    }
-                    new_props[key] = info
-                    new_heights[key] = self._panel_height_for_properties(1)
-                    continue
-
-                cached = self._panel_properties.get(key)
-                cached_props = cached.get("properties") if isinstance(cached, dict) else None
-                if (
-                    cached
-                    and cached_props
-                    and cached.get("item_id") == str(item_id)
-                    and cached.get("item_type") == item_type
-                ):
-                    if "base_properties" not in cached:
-                        cached["base_properties"] = self._panel_capture_base_properties(cached_props)
-                    if "base_context" not in cached:
-                        cached["base_context"] = self._panel_capture_base_context(cached.get("context"))
-                    if "available_properties" not in cached:
-                        cached["available_properties"] = available
-                    log.info(
-                        "Keyframe panel refresh: reusing cached properties for %s %s on track %s",
-                        item_type,
-                        item_id,
-                        key,
-                    )
-                    new_props[key] = cached
-                    cached_height = self._panel_heights.get(key)
-                    if cached_height is None:
-                        cached_height = self._panel_height_for_properties(len(cached_props))
-                    new_heights[key] = cached_height
-                    continue
-                log.info(
-                    "Keyframe panel refresh: no properties found for %s %s on track %s",
-                    item_type,
-                    item_id,
-                    key,
-                )
+        for key in sorted(enabled_tracks):
+            entries = grouped_entries.get(key, [])
+            if not entries:
                 continue
-            info = {
-                "item_id": str(item_id),
-                "item_type": item_type,
-                "properties": properties,
-                "context": context,
-                "available_properties": available,
-                "base_properties": self._panel_capture_base_properties(properties),
-                "base_context": self._panel_capture_base_context(context),
-            }
-            new_props[key] = info
-            new_heights[key] = self._panel_height_for_properties(len(properties))
+            if len(entries) == 1:
+                entry = entries[0]
+                item_id = entry["item_id"]
+                item_type = entry["item_type"]
+                properties = list(entry["properties"] or [])
+                context = dict(entry.get("context") or {})
+                available = list(entry.get("available") or [])
+
+                available_map = {
+                    str(entry_obj.get("key")): entry_obj
+                    for entry_obj in available
+                    if isinstance(entry_obj, dict) and entry_obj.get("key") is not None
+                }
+                manual_entry = self._panel_manual_properties.get(key)
+                if (
+                    not manual_entry
+                    or manual_entry.get("item_id") != item_id
+                    or manual_entry.get("item_type") != item_type
+                ):
+                    manual_entry = {
+                        "item_id": item_id,
+                        "item_type": item_type,
+                        "properties": set(),
+                    }
+                else:
+                    manual_entry = {
+                        "item_id": manual_entry.get("item_id", item_id),
+                        "item_type": manual_entry.get("item_type"),
+                        "properties": set(manual_entry.get("properties") or []),
+                    }
+                manual_entry["properties"] = {
+                    prop_id for prop_id in manual_entry.get("properties", set()) if prop_id in available_map
+                }
+                existing_keys = {
+                    str(prop.get("key"))
+                    for prop in properties
+                    if isinstance(prop, dict) and prop.get("key") is not None
+                }
+
+                def _manual_sort_key(prop_id):
+                    entry_obj = available_map.get(prop_id)
+                    if not isinstance(entry_obj, dict):
+                        return prop_id.lower()
+                    label = entry_obj.get("display_name") or entry_obj.get("key") or prop_id
+                    return str(label).lower()
+
+                for prop_id in sorted(manual_entry["properties"], key=_manual_sort_key):
+                    if prop_id in existing_keys:
+                        continue
+                    candidate = available_map.get(prop_id)
+                    if candidate:
+                        properties.append(candidate)
+                        existing_keys.add(prop_id)
+                if properties:
+                    properties.sort(key=lambda item: str(item.get("display_name", "")).lower())
+                self._panel_manual_properties[key] = manual_entry
+
+                if not properties:
+                    if available:
+                        placeholder_context = dict(context or {})
+                        placeholder_context["placeholder"] = "no-keyframes"
+                        placeholder_label = translate("No Keyframes")
+                        placeholder_prop = {
+                            "display_name": placeholder_label,
+                            "points": [],
+                            "placeholder": True,
+                        }
+                        info = {
+                            "item_id": item_id,
+                            "item_type": item_type,
+                            "properties": [placeholder_prop],
+                            "context": placeholder_context,
+                            "available_properties": available,
+                            "base_properties": {},
+                            "base_context": self._panel_capture_base_context(placeholder_context),
+                        }
+                        new_props[key] = info
+                        new_heights[key] = self._panel_height_for_properties(1)
+                        continue
+                    continue
+
+                info = {
+                    "item_id": item_id,
+                    "item_type": item_type,
+                    "properties": properties,
+                    "context": context,
+                    "available_properties": available,
+                    "base_properties": self._panel_capture_base_properties(properties),
+                    "base_context": self._panel_capture_base_context(context),
+                }
+                new_props[key] = info
+                new_heights[key] = self._panel_height_for_properties(len(properties))
+                continue
+
+            grouped_props = {}
+            for entry in entries:
+                item_id = entry["item_id"]
+                item_type = entry["item_type"]
+                context = dict(entry.get("context") or {})
+                context["track"] = key
+                for prop in entry.get("properties") or []:
+                    if not isinstance(prop, dict):
+                        continue
+                    base_key = str(prop.get("key") or uuid.uuid4())
+                    row = grouped_props.get(base_key)
+                    if row is None:
+                        row = {
+                            "key": base_key,
+                            "panel_key": base_key,
+                            "display_name": prop.get("display_name") or base_key,
+                            "points": [],
+                            "min_value": prop.get("min_value"),
+                            "max_value": prop.get("max_value"),
+                            "owner_type": prop.get("owner_type"),
+                            "source_meta": prop.get("source_meta"),
+                            "value": prop.get("value"),
+                            "value_type": prop.get("value_type"),
+                            "point_paths": [],
+                            "context": {"item_type": "multi", "track": key},
+                        }
+                        grouped_props[base_key] = row
+
+                    row_point_paths = row.get("point_paths") or []
+                    row_paths_seen = {tuple(path) for path in row_point_paths if isinstance(path, (tuple, list))}
+                    for path in prop.get("point_paths") or []:
+                        try:
+                            tuple_path = tuple(path)
+                        except TypeError:
+                            continue
+                        if tuple_path in row_paths_seen:
+                            continue
+                        row_paths_seen.add(tuple_path)
+                        row_point_paths.append(tuple_path)
+                    row["point_paths"] = row_point_paths
+
+                    source_meta = prop.get("source_meta")
+                    for point in prop.get("points") or []:
+                        if not isinstance(point, dict):
+                            continue
+                        merged_point = dict(point)
+                        merged_point["_panel_context"] = dict(context)
+                        merged_point["_panel_source_meta"] = (
+                            dict(source_meta) if isinstance(source_meta, dict) else source_meta
+                        )
+                        row["points"].append(merged_point)
+
+            combined_props = list(grouped_props.values())
+            if combined_props:
+                for row in combined_props:
+                    row["points"].sort(
+                        key=lambda point: (
+                            self._panel_float(point.get("seconds"), 0.0),
+                            self._panel_float(point.get("frame"), 0.0),
+                        )
+                    )
+                combined_props.sort(key=lambda item: str(item.get("display_name", "")).lower())
+                multi_context = {"item_type": "multi", "track": key}
+                info = {
+                    "item_id": "",
+                    "item_type": "multi",
+                    "properties": combined_props,
+                    "context": multi_context,
+                    "available_properties": [],
+                    "base_properties": self._panel_capture_base_properties(combined_props),
+                    "base_context": {},
+                }
+                new_props[key] = info
+                new_heights[key] = self._panel_height_for_properties(len(combined_props))
+            else:
+                placeholder_label = translate("No Keyframes")
+                info, height = _placeholder_info(placeholder_label, "no-keyframes")
+                new_props[key] = info
+                new_heights[key] = height
         missing_tracks = enabled_tracks - set(new_props.keys())
         if missing_tracks:
             reason = "no-selection" if not selection else "no-keyframes"
@@ -2353,7 +3265,11 @@ class KeyframePanelMixin:
             for track_key, entry in self._panel_manual_properties.items():
                 info = new_props.get(track_key)
                 context = info.get("context") if isinstance(info, dict) else None
-                if not info or (isinstance(context, dict) and context.get("placeholder")):
+                if (
+                    not info
+                    or (isinstance(context, dict) and context.get("placeholder"))
+                    or (isinstance(info, dict) and info.get("item_type") == "multi")
+                ):
                     continue
                 filtered_manual[track_key] = entry
             self._panel_manual_properties = filtered_manual

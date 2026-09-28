@@ -280,7 +280,10 @@ App.directive("tlTransition", function () {
           // update transition in Qt (very important =)
           if (scope.Qt) {
             timeline.BeginTrimRefresh();
-            timeline.update_transition_data(JSON.stringify(scope.transition), true, false, null);
+            var transitionPayload = Object.assign({}, scope.transition, {
+              _auto_direction: true
+            });
+            timeline.update_transition_data(JSON.stringify(transitionPayload), true, false, null);
           }
 
           if (scope.Qt) {

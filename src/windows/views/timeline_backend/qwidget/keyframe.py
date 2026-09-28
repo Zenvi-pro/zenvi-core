@@ -37,6 +37,29 @@ from ..colors import effect_color_qcolor
 
 
 class KeyframeMixin:
+    def _keyframe_item_position(self, item):
+        """Return the item's timeline position, honoring live preview overrides."""
+        if not item:
+            return 0.0
+
+        data = item.data if isinstance(getattr(item, "data", None), dict) else {}
+        position = data.get("position", 0.0)
+        item_id = getattr(item, "id", None)
+
+        overrides = None
+        if isinstance(item, Clip):
+            overrides = getattr(self, "_pending_clip_overrides", {}).get(item_id)
+        elif isinstance(item, Transition):
+            overrides = getattr(self, "_pending_transition_overrides", {}).get(item_id)
+
+        if isinstance(overrides, dict) and overrides.get("position") is not None:
+            position = overrides.get("position")
+
+        try:
+            return float(position or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _lookup_interpolation(self, value):
         try:
             idx = int(value)
@@ -445,8 +468,25 @@ class KeyframeMixin:
         if transition.id not in getattr(self.win, "selected_transitions", []):
             return []
         data = transition.data if isinstance(transition.data, dict) else {}
-        clip_start = float(data.get("start", 0.0) or 0.0)
-        clip_end = float(data.get("end", clip_start) or clip_start)
+        base_start = float(data.get("start", 0.0) or 0.0)
+        base_end = float(data.get("end", base_start) or base_start)
+        clip_start = base_start
+        clip_end = base_end
+        override_ctx = None
+        overrides = self._pending_transition_overrides.get(transition.id)
+        if overrides:
+            clip_start = overrides.get("start", clip_start)
+            clip_end = overrides.get("end", clip_end)
+            if clip_end < clip_start:
+                clip_end = clip_start
+            initial_start = overrides.get("initial_start", base_start)
+            initial_end = overrides.get("initial_end", base_end)
+            override_ctx = {
+                "initial_start": initial_start,
+                "initial_end": initial_end,
+                "scale": bool(overrides.get("scale")),
+                "show_outside": not bool(overrides.get("scale")),
+            }
         if clip_end < clip_start:
             clip_end = clip_start
         return self._collect_keyframes_from_data(
@@ -461,6 +501,7 @@ class KeyframeMixin:
             selected=True,
             color=self.keyframe_painter.fill,
             object_id=str(transition.id),
+            override=override_ctx,
             view_state=view_state,
         )
 
@@ -509,10 +550,301 @@ class KeyframeMixin:
         self._update_keyframe_marker_viewports(state)
 
     def _ensure_keyframe_markers(self):
+        if getattr(self, "_suspend_keyframe_rebuild", False):
+            self._update_keyframe_marker_viewports()
+            return
         if self._keyframes_dirty:
             self._refresh_keyframe_markers()
         else:
             self._update_keyframe_marker_viewports()
+
+    def _apply_panel_drag_marker_override(self):
+        """Adjust clip-level keyframe marker positions during a panel drag.
+
+        Called from paintEvent AFTER _ensure_keyframe_markers so that
+        the override is always the last thing to touch marker rects
+        before painting.  This corrects the sub-frame rounding that
+        occurs when markers are rebuilt from saved clip data.
+        """
+        panel_drag = self._dragging_panel_keyframes
+        if not panel_drag:
+            return
+        markers = getattr(self, "_keyframe_markers", None)
+        if not markers:
+            return
+        entries = panel_drag.get("entries") or []
+        if not entries:
+            return
+
+        base_position = panel_drag.get("base_position", 0.0) or 0.0
+        try:
+            base_position = float(base_position)
+        except (TypeError, ValueError):
+            base_position = 0.0
+        marker_updates = {}
+        pending_by_path = {}
+        pending_by_parent_path = {}
+        for entry in entries:
+            entry_path = self._entry_path_tuple(entry)
+            marker = self._find_panel_drag_marker(markers, panel_drag, entry)
+            if not marker:
+                continue
+            pending_seconds = entry.get("pending_seconds")
+            if pending_seconds is None:
+                continue
+            try:
+                pending_seconds = float(pending_seconds)
+            except (TypeError, ValueError):
+                continue
+            if entry_path:
+                pending_entry = {
+                    "seconds": pending_seconds,
+                    "frame": entry.get("pending_frame"),
+                }
+                pending_by_path[entry_path] = pending_entry
+                if len(entry_path) > 1:
+                    parent_path = entry_path[:-1]
+                    pending_by_parent_path.setdefault(parent_path, []).append(pending_entry)
+            marker_updates[id(marker)] = {
+                "marker": marker,
+                "seconds": pending_seconds,
+                "frame": entry.get("pending_frame"),
+            }
+
+        if not marker_updates and not pending_by_path:
+            return
+
+        state = self.geometry._current_view_state()
+        def apply_marker_update(marker, update):
+            local_seconds = update["seconds"] - base_position
+            marker["seconds"] = local_seconds
+            marker["display_seconds"] = local_seconds
+            pending_frame = update.get("frame")
+            if pending_frame is not None:
+                marker["display_frame"] = pending_frame
+            clip_timeline = marker.get("clip_rect_timeline", marker.get("clip_rect"))
+            if isinstance(clip_timeline, QRectF) and not clip_timeline.isNull():
+                rect_timeline = self._keyframe_rect(clip_timeline, local_seconds)
+                marker["rect_timeline"] = QRectF(rect_timeline)
+                marker["rect"] = self._viewport_rect(rect_timeline, state)
+            else:
+                marker["rect"] = self._keyframe_rect(
+                    marker.get("clip_rect", QRectF()), local_seconds
+                )
+            marker["dimmed"] = False
+
+        for update in marker_updates.values():
+            apply_marker_update(update["marker"], update)
+
+        # If a dragged path still exists on another marker (stale cache/data
+        # frame), force it to the same pending drag position this paint cycle.
+        # This prevents old pre-snap marker positions from lingering visually.
+        if pending_by_path:
+            for marker in markers:
+                if id(marker) in marker_updates:
+                    continue
+                if not self._panel_drag_owner_matches_marker(panel_drag, marker):
+                    continue
+                marker_paths = self._marker_paths_tuples(marker)
+                if not marker_paths:
+                    continue
+                marker_frame = marker.get("frame")
+                try:
+                    marker_frame = int(marker_frame) if marker_frame is not None else None
+                except (TypeError, ValueError):
+                    marker_frame = None
+                matched_update = None
+                for marker_path in marker_paths:
+                    matched_update = pending_by_path.get(marker_path)
+                    if matched_update:
+                        break
+                    if len(marker_path) <= 1 or marker_frame is None:
+                        continue
+                    candidates = pending_by_parent_path.get(marker_path[:-1]) or []
+                    if not candidates:
+                        continue
+                    frame_candidates = []
+                    for candidate in candidates:
+                        try:
+                            candidate_frame = candidate.get("frame")
+                            candidate_frame = (
+                                int(candidate_frame) if candidate_frame is not None else None
+                            )
+                        except (TypeError, ValueError):
+                            candidate_frame = None
+                        if candidate_frame == marker_frame:
+                            frame_candidates.append(candidate)
+                    if len(frame_candidates) == 1:
+                        matched_update = frame_candidates[0]
+                        break
+                    if len(frame_candidates) > 1:
+                        marker_seconds = self._marker_absolute_seconds(marker)
+                        if marker_seconds is None:
+                            continue
+                        best = None
+                        best_diff = None
+                        for candidate in frame_candidates:
+                            try:
+                                candidate_seconds = float(candidate.get("seconds"))
+                            except (TypeError, ValueError):
+                                continue
+                            diff = abs(candidate_seconds - marker_seconds)
+                            if best_diff is None or diff < best_diff:
+                                best_diff = diff
+                                best = candidate
+                        if best is not None:
+                            matched_update = best
+                            break
+                if matched_update:
+                    apply_marker_update(marker, matched_update)
+
+    def _entry_path_tuple(self, entry):
+        if not isinstance(entry, dict):
+            return None
+        path = entry.get("path")
+        if not path:
+            return None
+        try:
+            return tuple(path)
+        except TypeError:
+            return None
+
+    def _marker_paths_tuples(self, marker):
+        if not isinstance(marker, dict):
+            return []
+        marker_paths = marker.get("data_paths")
+        if not marker_paths:
+            single_path = marker.get("data_path")
+            if single_path:
+                marker_paths = (single_path,)
+        normalized = []
+        for marker_path in marker_paths or ():
+            try:
+                normalized.append(tuple(marker_path))
+            except TypeError:
+                continue
+        return normalized
+
+    def _panel_drag_owner_matches_marker(self, drag, marker):
+        if not isinstance(drag, dict) or not isinstance(marker, dict):
+            return False
+        drag_object_id = drag.get("object_id", "")
+        drag_owner_type = drag.get("owner_type", "clip") or "clip"
+        drag_clip = drag.get("clip")
+        drag_transition = drag.get("transition")
+        drag_clip_id = str(getattr(drag_clip, "id", "")) if drag_clip is not None else ""
+        drag_transition_id = (
+            str(getattr(drag_transition, "id", "")) if drag_transition is not None else ""
+        )
+        if drag_owner_type == "transition":
+            marker_transition = marker.get("transition")
+            marker_transition_id = (
+                str(getattr(marker_transition, "id", ""))
+                if marker_transition is not None
+                else ""
+            )
+            if drag_transition_id and marker_transition_id != drag_transition_id:
+                return False
+        else:
+            marker_clip = marker.get("clip")
+            marker_clip_id = (
+                str(getattr(marker_clip, "id", "")) if marker_clip is not None else ""
+            )
+            if drag_clip_id and marker_clip_id != drag_clip_id:
+                return False
+        if drag_object_id and marker.get("object_id") != drag_object_id:
+            return False
+        return True
+
+    def _select_marker_by_entry_frames(self, markers, entry):
+        if not markers:
+            return None
+        frame_values = []
+        for key in ("pending_frame", "original_frame"):
+            value = entry.get(key)
+            try:
+                if value is not None:
+                    frame_values.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        for frame_int in frame_values:
+            frame_matches = []
+            for marker in markers:
+                try:
+                    marker_frame = marker.get("frame")
+                    if marker_frame is not None and int(marker_frame) == frame_int:
+                        frame_matches.append(marker)
+                except (TypeError, ValueError):
+                    continue
+            if len(frame_matches) == 1:
+                return frame_matches[0]
+            if len(frame_matches) > 1:
+                target_seconds = entry.get("pending_seconds", entry.get("original_seconds"))
+                try:
+                    target_seconds = float(target_seconds)
+                except (TypeError, ValueError):
+                    target_seconds = None
+                if target_seconds is not None:
+                    best = None
+                    best_diff = None
+                    for marker in frame_matches:
+                        marker_seconds = self._marker_absolute_seconds(marker)
+                        if marker_seconds is None:
+                            continue
+                        diff = abs(marker_seconds - target_seconds)
+                        if best_diff is None or diff < best_diff:
+                            best_diff = diff
+                            best = marker
+                    if best is not None:
+                        return best
+                return frame_matches[0]
+        return None
+
+    def _find_panel_drag_marker(self, markers, drag, entry):
+        if not markers or not isinstance(entry, dict):
+            return None
+        owner_markers = [m for m in markers if self._panel_drag_owner_matches_marker(drag, m)]
+        strict_owner = False
+        if isinstance(drag, dict):
+            strict_owner = bool(
+                drag.get("object_id")
+                or drag.get("clip") is not None
+                or drag.get("transition") is not None
+            )
+        if strict_owner:
+            if not owner_markers:
+                return None
+            candidates = owner_markers
+        else:
+            candidates = owner_markers if owner_markers else list(markers)
+
+        entry_path = self._entry_path_tuple(entry)
+        if entry_path:
+            exact = [m for m in candidates if entry_path in self._marker_paths_tuples(m)]
+            if len(exact) == 1:
+                return exact[0]
+            if len(exact) > 1:
+                selected = self._select_marker_by_entry_frames(exact, entry)
+                if selected is not None:
+                    return selected
+                return exact[0]
+
+            if len(entry_path) > 1:
+                parent = entry_path[:-1]
+                parent_matches = []
+                for marker in candidates:
+                    for marker_path in self._marker_paths_tuples(marker):
+                        if len(marker_path) > 1 and marker_path[:-1] == parent:
+                            parent_matches.append(marker)
+                            break
+                if len(parent_matches) == 1:
+                    return parent_matches[0]
+                if len(parent_matches) > 1:
+                    selected = self._select_marker_by_entry_frames(parent_matches, entry)
+                    if selected is not None:
+                        return selected
+
+        return self._select_marker_by_entry_frames(candidates, entry)
 
     def _update_keyframe_marker_viewports(self, state=None):
         markers = getattr(self, "_keyframe_markers", [])
@@ -661,17 +993,9 @@ class KeyframeMixin:
 
         base_position = 0.0
         if clip:
-            data = clip.data if isinstance(clip.data, dict) else {}
-            try:
-                base_position = float(data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                base_position = 0.0
+            base_position = self._keyframe_item_position(clip)
         elif transition:
-            data = transition.data if isinstance(transition.data, dict) else {}
-            try:
-                base_position = float(data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                base_position = 0.0
+            base_position = self._keyframe_item_position(transition)
         return base_position
 
     def _marker_absolute_seconds(self, marker):
@@ -737,10 +1061,7 @@ class KeyframeMixin:
         clip_obj = marker.get("clip") if isinstance(marker, dict) else None
         if isinstance(clip_obj, Clip):
             clip_data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-            try:
-                clip_position = float(clip_data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                clip_position = 0.0
+            clip_position = self._keyframe_item_position(clip_obj)
             try:
                 clip_start = float(clip_data.get("start", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -759,10 +1080,7 @@ class KeyframeMixin:
         transition_obj = marker.get("transition") if isinstance(marker, dict) else None
         if isinstance(transition_obj, Transition):
             tran_data = transition_obj.data if isinstance(transition_obj.data, dict) else {}
-            try:
-                tran_position = float(tran_data.get("position", 0.0) or 0.0)
-            except (TypeError, ValueError):
-                tran_position = 0.0
+            tran_position = self._keyframe_item_position(transition_obj)
             try:
                 tran_start = float(tran_data.get("start", 0.0) or 0.0)
             except (TypeError, ValueError):
@@ -783,15 +1101,10 @@ class KeyframeMixin:
 
         return targets
 
-    def _apply_keyframe_snapping(self, drag, local_seconds):
-        if not drag or not self.enable_snapping:
-            return local_seconds
-        targets = drag.get("snap_targets")
-        if not targets:
-            return local_seconds
+    def _keyframe_snap_tolerance_seconds(self):
         pps = float(self.pixels_per_second or 0.0)
         if pps <= 0.0:
-            return local_seconds
+            return 0.0
         tolerance_px = 0.0
         snap_helper = getattr(self, "snap", None)
         if snap_helper and hasattr(snap_helper, "_snap_tolerance_px"):
@@ -800,14 +1113,20 @@ class KeyframeMixin:
             except (TypeError, ValueError):
                 tolerance_px = 0.0
         if tolerance_px <= 0.0:
-            return local_seconds
-        tolerance_sec = tolerance_px / pps
+            return 0.0
+        return tolerance_px / pps
+
+    def _snap_absolute_seconds_to_targets(self, absolute_seconds, targets):
+        if not self.enable_snapping or not targets:
+            return absolute_seconds
         try:
-            current = float(local_seconds)
+            current = float(absolute_seconds)
         except (TypeError, ValueError):
-            return local_seconds
-        base_position = self._keyframe_base_position(drag)
-        absolute = base_position + current
+            return absolute_seconds
+        tolerance_sec = self._keyframe_snap_tolerance_seconds()
+        if tolerance_sec <= 0.0:
+            return absolute_seconds
+
         best = None
         min_diff = None
         for target in targets:
@@ -821,6 +1140,7 @@ class KeyframeMixin:
                 value = float(value)
             except (TypeError, ValueError):
                 continue
+
             local_tol = tolerance_sec
             if tolerance_override is not None:
                 try:
@@ -829,15 +1149,32 @@ class KeyframeMixin:
                     override = None
                 if override is not None and override > 0.0:
                     local_tol = override
-            diff = abs(value - absolute)
+
+            diff = abs(value - current)
             if diff > local_tol + 1e-9:
                 continue
             if min_diff is None or diff < min_diff:
                 min_diff = diff
                 best = value
+
         if best is None:
+            return absolute_seconds
+        return best
+
+    def _apply_keyframe_snapping(self, drag, local_seconds):
+        if not drag or not self.enable_snapping:
             return local_seconds
-        snapped = best - base_position
+        targets = drag.get("snap_targets")
+        if not targets:
+            return local_seconds
+        try:
+            current = float(local_seconds)
+        except (TypeError, ValueError):
+            return local_seconds
+        base_position = self._keyframe_base_position(drag)
+        absolute = base_position + current
+        snapped_absolute = self._snap_absolute_seconds_to_targets(absolute, targets)
+        snapped = snapped_absolute - base_position
         if snapped < 0.0:
             snapped = 0.0
         return snapped
@@ -881,6 +1218,372 @@ class KeyframeMixin:
         co["X"] = new_frame
         return True
 
+    def _remove_keyframe_at_path(self, data, path):
+        if not path:
+            return False
+        try:
+            path_tuple = tuple(path)
+        except TypeError:
+            return False
+        if not path_tuple:
+            return False
+        parent_path = path_tuple[:-1]
+        last = path_tuple[-1]
+        if not isinstance(last, tuple) or len(last) != 2:
+            return False
+        parent = self._resolve_data_path(data, parent_path)
+        kind, key = last
+        if kind == "list":
+            if not isinstance(parent, list):
+                return False
+            try:
+                index = int(key)
+            except (TypeError, ValueError):
+                return False
+            if index < 0 or index >= len(parent):
+                return False
+            parent.pop(index)
+            return True
+        if kind == "dict":
+            if not isinstance(parent, dict) or key not in parent:
+                return False
+            parent.pop(key, None)
+            return True
+        return False
+
+    def _remove_keyframes_by_paths(self, data, paths):
+        if not isinstance(data, (dict, list)):
+            return False
+        grouped = {}
+        for path in paths or ():
+            try:
+                path_tuple = tuple(path)
+            except TypeError:
+                continue
+            if not path_tuple:
+                continue
+            parent_path = path_tuple[:-1]
+            last = path_tuple[-1]
+            if not isinstance(last, tuple) or len(last) != 2:
+                continue
+            grouped.setdefault(parent_path, []).append(last)
+        changed = False
+        for parent_path, tails in grouped.items():
+            parent = self._resolve_data_path(data, parent_path)
+            list_indexes = []
+            dict_keys = []
+            for tail in tails:
+                kind, key = tail
+                if kind == "list":
+                    try:
+                        list_indexes.append(int(key))
+                    except (TypeError, ValueError):
+                        continue
+                elif kind == "dict":
+                    dict_keys.append(key)
+            if isinstance(parent, list) and list_indexes:
+                for index in sorted(set(list_indexes), reverse=True):
+                    if 0 <= index < len(parent):
+                        parent.pop(index)
+                        changed = True
+            if isinstance(parent, dict) and dict_keys:
+                for key in set(dict_keys):
+                    if key in parent:
+                        parent.pop(key, None)
+                        changed = True
+        return changed
+
+    def _remove_keyframes_in_object(self, obj, target_frame):
+        changed = False
+        if isinstance(obj, dict):
+            points = obj.get("Points")
+            if isinstance(points, list):
+                kept = []
+                for point in points:
+                    if not isinstance(point, dict):
+                        kept.append(point)
+                        continue
+                    co = point.get("co") if isinstance(point.get("co"), dict) else {}
+                    try:
+                        frame = int(round(float(co.get("X"))))
+                    except (TypeError, ValueError):
+                        kept.append(point)
+                        continue
+                    if frame == target_frame:
+                        changed = True
+                        continue
+                    kept.append(point)
+                if changed and len(kept) != len(points):
+                    points[:] = kept
+            for channel in ("red", "green", "blue"):
+                channel_obj = obj.get(channel)
+                if isinstance(channel_obj, (dict, list)):
+                    if self._remove_keyframes_in_object(channel_obj, target_frame):
+                        changed = True
+            for key, value in obj.items():
+                if key in ("ui", "red", "green", "blue"):
+                    continue
+                if isinstance(value, (dict, list)):
+                    if self._remove_keyframes_in_object(value, target_frame):
+                        changed = True
+        elif isinstance(obj, list):
+            for item in obj:
+                if isinstance(item, (dict, list)):
+                    if self._remove_keyframes_in_object(item, target_frame):
+                        changed = True
+        return changed
+
+    def _panel_selected_keyframe_targets(self):
+        targets = {}
+        panel_selection = getattr(self, "_panel_selected_keyframes", {}) or {}
+        panel_properties = getattr(self, "_panel_properties", {}) or {}
+        for track_num, prop_selection in panel_selection.items():
+            info = panel_properties.get(track_num)
+            if not isinstance(info, dict):
+                continue
+            track_context = info.get("context")
+            for prop in info.get("properties") or []:
+                if not isinstance(prop, dict):
+                    continue
+                prop_key = prop.get("key")
+                if not prop_key:
+                    continue
+                selector = prop_selection.get(prop_key)
+                if not selector:
+                    continue
+                prop_context = self._panel_property_context(prop, track_context)
+                for point in prop.get("points") or []:
+                    frame_val = point.get("frame")
+                    if not self._panel_selection_contains(
+                        selector,
+                        frame_val,
+                        point=point,
+                        fallback_context=prop_context,
+                    ):
+                        continue
+                    path = point.get("path")
+                    if not path:
+                        continue
+                    owner = self._panel_resolve_owner(prop, prop_context, point=point)
+                    owner_type = owner.get("owner_type") or "clip"
+                    object_id = str(owner.get("object_id") or "")
+                    clip_obj = owner.get("clip")
+                    transition_obj = owner.get("transition")
+                    if owner_type == "transition":
+                        if not object_id and transition_obj is not None:
+                            object_id = str(getattr(transition_obj, "id", "") or "")
+                    else:
+                        if not object_id and clip_obj is not None:
+                            object_id = str(getattr(clip_obj, "id", "") or "")
+                    if not object_id:
+                        continue
+                    key = (owner_type, object_id)
+                    target = targets.get(key)
+                    if target is None:
+                        target = {
+                            "owner_type": owner_type,
+                            "object_id": object_id,
+                            "clip": clip_obj,
+                            "transition": transition_obj,
+                            "paths": set(),
+                        }
+                        targets[key] = target
+                    try:
+                        target["paths"].add(tuple(path))
+                    except TypeError:
+                        continue
+        return list(targets.values())
+
+    def _delete_keyframe_marker_target(self, marker):
+        if not isinstance(marker, dict):
+            return False
+        marker_type = marker.get("type")
+        if marker_type not in ("clip", "effect", "transition"):
+            return False
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return False
+
+        if marker_type == "transition":
+            transition = marker.get("transition")
+            if not transition:
+                transition = Transition.get(id=marker.get("object_id"))
+            if not transition or not isinstance(getattr(transition, "data", None), (dict, list)):
+                return False
+            data_copy = json.loads(json.dumps(transition.data))
+            paths = tuple(marker.get("data_paths") or ())
+            changed = False
+            if paths:
+                changed = self._remove_keyframes_by_paths(data_copy, paths)
+                if changed:
+                    self._remove_keyframes_by_paths(transition.data, paths)
+            if not changed:
+                frame_val = marker.get("display_frame", marker.get("frame"))
+                try:
+                    frame_int = int(frame_val)
+                except (TypeError, ValueError):
+                    return False
+                changed = self._remove_keyframes_in_object(data_copy, frame_int)
+                if changed:
+                    self._remove_keyframes_in_object(transition.data, frame_int)
+            if not changed:
+                return False
+            timeline.update_transition_data(
+                data_copy,
+                only_basic_props=False,
+                ignore_refresh=False,
+            )
+            return True
+
+        clip = marker.get("clip")
+        if not clip:
+            clip = Clip.get(id=marker.get("object_id"))
+        if not clip or not isinstance(getattr(clip, "data", None), (dict, list)):
+            return False
+        data_copy = json.loads(json.dumps(clip.data))
+        paths = tuple(marker.get("data_paths") or ())
+        changed = False
+        if paths:
+            changed = self._remove_keyframes_by_paths(data_copy, paths)
+            if changed:
+                self._remove_keyframes_by_paths(clip.data, paths)
+        if not changed:
+            frame_val = marker.get("display_frame", marker.get("frame"))
+            try:
+                frame_int = int(frame_val)
+            except (TypeError, ValueError):
+                return False
+            if marker_type == "effect":
+                effect_id = str(marker.get("owner_id") or marker.get("effect_id") or "")
+                effect_copy = None
+                effect_live = None
+                for eff in data_copy.get("effects", []) if isinstance(data_copy, dict) else []:
+                    if str(eff.get("id")) == effect_id:
+                        effect_copy = eff
+                        break
+                for eff in clip.data.get("effects", []) if isinstance(clip.data, dict) else []:
+                    if str(eff.get("id")) == effect_id:
+                        effect_live = eff
+                        break
+                if effect_copy is None:
+                    return False
+                changed = self._remove_keyframes_in_object(effect_copy, frame_int)
+                if changed and effect_live is not None:
+                    self._remove_keyframes_in_object(effect_live, frame_int)
+            else:
+                changed = self._remove_keyframes_in_object(data_copy, frame_int)
+                if changed:
+                    self._remove_keyframes_in_object(clip.data, frame_int)
+        if not changed:
+            return False
+        timeline.update_clip_data(
+            data_copy,
+            only_basic_props=False,
+            ignore_reader=True,
+            ignore_refresh=False,
+        )
+        return True
+
+    def _keyframe_marker_owner_is_selected(self, marker):
+        """Return True when the marker's owning item is in the window selection."""
+        if not isinstance(marker, dict):
+            return False
+        marker_type = marker.get("type")
+        if marker_type == "effect":
+            owner_id = marker.get("owner_id") or marker.get("effect_id")
+        elif marker_type == "transition":
+            owner_id = getattr(marker.get("transition"), "id", None) or marker.get("object_id")
+        else:
+            owner_id = getattr(marker.get("clip"), "id", None) or marker.get("object_id")
+            marker_type = "clip"
+        if owner_id is None:
+            return False
+        selected = getattr(self.win, "selected_items", None) or []
+        return any(
+            isinstance(selection, dict)
+            and str(selection.get("id")) == str(owner_id)
+            and selection.get("type") == marker_type
+            for selection in selected
+        )
+
+    def delete_selected_keyframes(self):
+        timeline = getattr(self.win, "timeline", None)
+        if not timeline:
+            return False
+
+        changed = False
+        targets = self._panel_selected_keyframe_targets()
+        for target in targets:
+            owner_type = target.get("owner_type")
+            object_id = target.get("object_id")
+            if not owner_type or not object_id:
+                continue
+            paths = tuple(target.get("paths") or ())
+            if not paths:
+                continue
+            if owner_type == "transition":
+                transition = target.get("transition") or Transition.get(id=object_id)
+                if not transition or not isinstance(getattr(transition, "data", None), (dict, list)):
+                    continue
+                data_copy = json.loads(json.dumps(transition.data))
+                if not self._remove_keyframes_by_paths(data_copy, paths):
+                    continue
+                self._remove_keyframes_by_paths(transition.data, paths)
+                timeline.update_transition_data(
+                    data_copy,
+                    only_basic_props=False,
+                    ignore_refresh=False,
+                )
+                changed = True
+                continue
+
+            clip = target.get("clip") or Clip.get(id=object_id)
+            if not clip or not isinstance(getattr(clip, "data", None), (dict, list)):
+                continue
+            data_copy = json.loads(json.dumps(clip.data))
+            if not self._remove_keyframes_by_paths(data_copy, paths):
+                continue
+            self._remove_keyframes_by_paths(clip.data, paths)
+            timeline.update_clip_data(
+                data_copy,
+                only_basic_props=False,
+                ignore_reader=True,
+                ignore_refresh=False,
+            )
+            changed = True
+
+        if not changed:
+            marker = getattr(self, "_active_keyframe_marker", None)
+            if not marker:
+                marker = getattr(self, "_press_keyframe", None)
+            if not marker and isinstance(getattr(self, "_dragging_keyframe", None), dict):
+                marker = self._dragging_keyframe.get("marker")
+            # The remembered marker is only a valid Delete target while its
+            # owner is still selected; selection changes made outside the
+            # timeline (Properties, agent tools) do not clear it.
+            if marker and not self._keyframe_marker_owner_is_selected(marker):
+                self._active_keyframe_marker = None
+                self._press_keyframe = None
+                marker = None
+            changed = self._delete_keyframe_marker_target(marker)
+
+        if not changed:
+            return False
+
+        self._active_keyframe_marker = None
+        self._press_keyframe = None
+        self._dragging_keyframe = None
+        self._dragging_panel_keyframes = None
+        self._clear_panel_selection(None)
+        self._snap_keyframe_seconds = []
+        self._update_track_panel_properties()
+        self.geometry.mark_dirty()
+        self._keyframes_dirty = True
+        self.update()
+        if hasattr(self.win, "show_property_timeout"):
+            QTimer.singleShot(0, self.win.show_property_timeout)
+        return True
+
     def _begin_keyframe_transaction(self):
         if not self._dragging_keyframe or self._dragging_keyframe.get("transaction_started"):
             return
@@ -904,6 +1607,8 @@ class KeyframeMixin:
         self._press_keyframe = None
         if not marker:
             return
+        if marker.get("type") == "clip":
+            self._panel_select_points_for_clip_marker(marker)
         self.mouse_dragging = True
         self._dragging_keyframe = {
             "marker": marker,
@@ -962,12 +1667,16 @@ class KeyframeMixin:
             new_frame = drag.get("current_frame")
         drag["pending_frame"] = new_frame
         absolute_seconds = self._keyframe_base_position(marker) + relative_seconds
-        self._panel_preview_marker(marker, drag.get("current_frame"), new_frame, absolute_seconds)
+        self._panel_preview_marker(
+            marker,
+            drag.get("current_frame"),
+            new_frame,
+            absolute_seconds,
+            drag_paths=drag.get("data_paths"),
+        )
         if new_frame != drag.get("current_frame"):
-            self._begin_keyframe_transaction()
-            if drag.get("transaction_started") and new_frame is not None:
-                self._apply_keyframe_delta(drag, ignore_refresh=True)
-        self._seek_to_marker_frame(marker, new_frame)
+            drag["moved"] = True
+        self._seek_to_marker_frame(marker, new_frame, start_preroll=False)
         self._keyframes_dirty = True
         self.update()
 
@@ -1057,7 +1766,13 @@ class KeyframeMixin:
         if pending_seconds is None and self.fps_float:
             pending_seconds = max(0.0, ((new_frame - 1.0) / self.fps_float) - drag.get("clip_start", 0.0))
         absolute_seconds = base_position + (pending_seconds or 0.0)
-        self._panel_preview_marker(marker, old_frame, new_frame, absolute_seconds)
+        self._panel_preview_marker(
+            marker,
+            old_frame,
+            new_frame,
+            absolute_seconds,
+            drag_paths=drag.get("data_paths"),
+        )
 
         drag["current_frame"] = new_frame
         marker["frame"] = new_frame
@@ -1121,9 +1836,10 @@ class KeyframeMixin:
     def _handle_keyframe_click(self, marker, clear_existing=True):
         if not marker:
             return
+        self._active_keyframe_marker = marker
         self._select_marker_owner(marker, seek=True, clear_existing=clear_existing)
 
-    def _seek_to_marker_frame(self, marker, frame):
+    def _seek_to_marker_frame(self, marker, frame, start_preroll=True):
         if marker is None or frame is None:
             return
         fps = self.fps_float or 1.0
@@ -1153,23 +1869,27 @@ class KeyframeMixin:
         moved = drag.get("moved")
         marker = drag.get("marker")
         timeline = getattr(self.win, "timeline", None)
-        if started:
-            if moved:
-                if changed:
-                    self._apply_keyframe_delta(drag)
-                else:
-                    self._apply_keyframe_delta(drag, force=True)
-            if timeline:
-                timeline.FinalizeKeyframeDrag(
-                    drag.get("object_type", "clip"),
-                    drag.get("object_id", ""),
-                )
-            if moved and hasattr(self.win, "show_property_timeout"):
-                QTimer.singleShot(0, self.win.show_property_timeout)
+        if moved:
+            if changed:
+                self._begin_keyframe_transaction()
+                started = drag.get("transaction_started")
+            if started:
+                self._apply_keyframe_delta(drag, force=True)
+                if timeline:
+                    timeline.FinalizeKeyframeDrag(
+                        drag.get("object_type", "clip"),
+                        drag.get("object_id", ""),
+                    )
+                if hasattr(self.win, "show_property_timeout"):
+                    QTimer.singleShot(0, self.win.show_property_timeout)
+            pending_frame = drag.get("pending_frame")
+            if pending_frame is not None:
+                self._seek_to_marker_frame(marker, pending_frame, start_preroll=True)
         else:
             clear_existing = drag.get("clear_existing", True)
             self._handle_keyframe_click(marker, clear_existing=clear_existing)
 
+        self._active_keyframe_marker = marker
         self._dragging_keyframe = None
         self.mouse_dragging = False
         self._keyframes_dirty = True

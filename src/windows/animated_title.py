@@ -133,14 +133,12 @@ class AnimatedTitle(QDialog):
         """ Actually close window and accept dialog """
         self.blenderView.Cancel()
         self.blenderView.end_processing()
-        QApplication.restoreOverrideCursor()
         super().accept()
 
     def reject(self):
         # Stop threads
         self.blenderView.Cancel()
         self.blenderView.end_processing()
-        QApplication.restoreOverrideCursor()
         super().reject()
 
     def clear_effect_controls(self):

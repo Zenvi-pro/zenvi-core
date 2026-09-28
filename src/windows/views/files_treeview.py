@@ -30,7 +30,7 @@
 import os
 import uuid
 
-from qt_api import QSize, Qt, QPoint
+from qt_api import QSize, Qt, QPoint, QItemSelectionModel
 from qt_api import clear_override_cursor
 from qt_api import modifiers_has
 from qt_api import QDrag, QCursor, QPixmap, QPainter, QIcon
@@ -60,6 +60,10 @@ class FilesTreeView(QTreeView):
 
         event.accept()
         index = self.indexAt(event.pos())
+        if not index.isValid():
+            self.clearSelection()
+        else:
+            self.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
 
         # Build menu
         menu = StyledContextMenu(parent=self)
@@ -115,6 +119,12 @@ class FilesTreeView(QTreeView):
 
         # Show menu
         menu.show_at(event)
+
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.pos())
+        if not index.isValid() and event.button() in (Qt.LeftButton, Qt.RightButton):
+            self.clearSelection()
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # Get the index of the item at the click position

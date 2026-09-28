@@ -154,6 +154,10 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     font-size: 11px;
 }
 QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #b8b8b8;
+}
         """
 
     def apply_theme(self):
@@ -170,7 +174,20 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
         self.app.setStyleSheet(self.compose_stylesheet())
 
         # Apply timeline theme
-        self.app.window.timeline.apply_theme("")
+        self.app.window.timeline.apply_theme("""
+            .keyframe-panel-row {
+              background: #2f2f2f;
+              border: 0px solid transparent;
+            }
+            .keyframe-panel-curve {
+              color: #4b92ad;
+            }
+            .keyframe-panel-point {
+              background: #4b92ad;
+              border: 1px solid #7dc3dd;
+              opacity: 0.70;
+            }
+        """)
 
         # Emit signal
         self.app.window.ThemeChangedSignal.emit(self)
@@ -198,6 +215,11 @@ QMainWindow::separator:hover {
 
 QWidget#videoPreview {
     background-color: #dedede;
+}
+
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #5a5a5a;
 }
 
 QComboBox {
@@ -350,10 +372,10 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
               background-image: url(../themes/humanity/images/keyframe-constant.svg);
             }
             .track-keyframe-panel-disabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-show-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-keyframe-panel-show-disabled.svg);
             }
             .track-keyframe-panel-enabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-show-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-keyframe-panel-show-enabled.svg);
             }
             .track-add-above-disabled {
               background-image: url(../themes/humanity/images/track-add-above-disabled.svg);
@@ -374,19 +396,31 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
               background-image: url(../themes/humanity/images/track-delete-enabled.svg);
             }
             .track-locked-disabled {
-              background-image: url(../themes/humanity/images/track-locked-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-locked-disabled.svg);
             }
             .track-locked-enabled {
-              background-image: url(../themes/humanity/images/track-locked-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-locked-enabled.svg);
             }
             .track-unlocked-disabled {
-              background-image: url(../themes/humanity/images/track-unlocked-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-unlocked-disabled.svg);
             }
             .track-unlocked-enabled {
-              background-image: url(../themes/humanity/images/track-unlocked-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-unlocked-enabled.svg);
             }
             .keyframe-panel-add {
               background-image: url(../themes/humanity/images/keyframe-panel-add.svg);
+            }
+            .keyframe-panel-row {
+              background: #e5e7ea;
+              border: 0px solid transparent;
+            }
+            .keyframe-panel-curve {
+              color: #4b92ad;
+            }
+            .keyframe-panel-point {
+              background: #4b92ad;
+              border: 1px solid #3a748a;
+              opacity: 0.72;
             }
         """)
 

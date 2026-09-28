@@ -40,6 +40,9 @@ from .base import BasePainter
 
 
 class TransitionPainter(BasePainter):
+    DEFAULT_OPACITY = 0.75
+    LOCKED_OPACITY_MULTIPLIER = 0.8
+
     def update_theme(self):
         self.col = self.w.theme.transition.background
         self.col2 = self.w.theme.transition.background2
@@ -88,7 +91,7 @@ class TransitionPainter(BasePainter):
 
         painter.save()
         painter.setClipRect(area)
-        for rect, _tran, selected in self.w.geometry.iter_transitions():
+        for rect, tran, selected in self.w.geometry.iter_transitions():
             if not rect.intersects(expanded):
                 continue
             segment_left = max(rect.left(), expanded.left())
@@ -102,8 +105,19 @@ class TransitionPainter(BasePainter):
                 rect.height(),
             )
             pen = self.sel_pen if selected else self.pen
+            locked = self.w._is_track_locked((tran.data if isinstance(tran.data, dict) else {}).get("layer"))
+            if locked:
+                pen = self.dimmed_pen(pen)
+            opacity = 1.0 if selected else self.DEFAULT_OPACITY
+            if locked:
+                opacity *= self.LOCKED_OPACITY_MULTIPLIER
+            if opacity < 0.999:
+                painter.save()
+                painter.setOpacity(opacity)
             result = self._transition_pixmap(rect, segment_rect)
             if not result:
+                if opacity < 0.999:
+                    painter.restore()
                 continue
             pix, includes_start, includes_end = result
             if pix:
@@ -115,6 +129,8 @@ class TransitionPainter(BasePainter):
                 includes_start=includes_start,
                 includes_end=includes_end,
             )
+            if opacity < 0.999:
+                painter.restore()
         painter.restore()
 
     def _transition_pixmap(self, full_rect, segment_rect):

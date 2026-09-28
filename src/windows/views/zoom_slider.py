@@ -589,8 +589,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
     def wheelEvent(self, event):
         event.accept()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Use async repaint to avoid recursive paint on some Qt/Windows paths.
+        self.update()
 
     def setZoomFactor(self, zoom_factor, center=False, emit=True):
         """Set the current zoom factor (do not clamp width here — backend owns authoritative geometry)."""
@@ -600,8 +600,8 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         if center:
             get_app().window.TimelineCenter.emit()
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def zoomIn(self):
         """Zoom into timeline"""
@@ -642,25 +642,25 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
         # Disable auto center
         self.is_auto_center = False
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def handle_selection(self):
         # Force recalculation of clips and repaint
         self.changed(None)
-        self.repaint()
+        self.update()
 
     def timeline_resized(self):
         # Force recalculation of clips and repaint
-        self.repaint()
+        self.update()
         self.delayed_resize_timer.start()
 
     def update_playhead_pos(self, currentFrame):
         """Callback when position is changed"""
         self.current_frame = currentFrame
 
-        # Force re-paint
-        self.repaint()
+        # Force re-paint asynchronously
+        self.update()
 
     def handle_play(self):
         """Callback when play button is clicked"""
@@ -677,7 +677,7 @@ class ZoomSlider(QWidget, updates.UpdateInterface):
             # Force recalculation and repaint
             self.ignore_updates = ignore
             self.changed(None)
-            self.repaint()
+            self.update()
         self.ignore_updates = ignore
 
     def __init__(self, *args):

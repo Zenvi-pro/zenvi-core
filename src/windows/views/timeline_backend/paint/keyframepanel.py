@@ -30,6 +30,7 @@ import math
 from qt_api import QPointF, QRectF, Qt
 from qt_api import QBrush, QColor, QPainter, QPainterPath, QPen
 
+from classes.app import get_app
 from classes.logger import log
 
 from .base import BasePainter
@@ -59,16 +60,29 @@ class KeyframePanelPainter(BasePainter):
         track_border = self.w.theme.track.border_color
         if not track_border.isValid():
             track_border = self.w.theme.track.font_color
-        curve_color = QColor(self.w.keyframe_painter.fill)
+        curve_color = QColor(self.w.theme.keyframe_panel_curve_color)
+        if not curve_color.isValid():
+            curve_color = QColor(self.w.keyframe_painter.fill)
         if not curve_color.isValid():
             curve_color = QColor(track_border)
-        marker_border = QColor(self.w.keyframe_painter.border)
+        marker_fill = QColor(self.w.theme.keyframe_panel_marker_fill)
+        if not marker_fill.isValid():
+            marker_fill = QColor(curve_color)
+        marker_border = QColor(self.w.theme.keyframe_panel_marker_border)
+        if not marker_border.isValid():
+            marker_border = QColor(self.w.keyframe_painter.border)
         if not marker_border.isValid():
             marker_border = QColor(curve_color)
 
-        self.range_pen = QPen(track_border)
+        row_border = QColor(self.w.theme.keyframe_panel_row_border_color)
+        if not row_border.isValid():
+            row_border = QColor(track_border)
+        row_border_w = float(getattr(self.w.theme, "keyframe_panel_row_border_width", 1.0) or 0.0)
+        self.range_pen = QPen(row_border)
         self.range_pen.setCosmetic(True)
-        self.range_pen.setWidthF(1.0)
+        self.range_pen.setWidthF(max(0.0, row_border_w))
+        if row_border_w <= 0.0:
+            self.range_pen.setStyle(Qt.NoPen)
 
         self.curve_pen = QPen(curve_color)
         self.curve_pen.setCosmetic(True)
@@ -76,7 +90,22 @@ class KeyframePanelPainter(BasePainter):
 
         self.marker_pen = QPen(marker_border)
         self.marker_pen.setCosmetic(True)
-        self.marker_brush = QBrush(curve_color)
+        self.marker_pen_unselected = QPen(Qt.NoPen)
+        self.marker_pen_selected = QPen(self.marker_pen)
+        self.marker_pen_selected.setCosmetic(True)
+        if self._use_white_selected_border():
+            self.marker_pen_selected.setColor(QColor("#FFFFFF"))
+            self.marker_pen_selected.setWidthF(1.2)
+        elif self._is_retro_theme():
+            self.marker_pen_selected.setColor(QColor("#1F4358"))
+            self.marker_pen_selected.setWidthF(1.6)
+        else:
+            bright = QColor(self.marker_pen_selected.color())
+            if bright.isValid():
+                bright = bright.lighter(145)
+                self.marker_pen_selected.setColor(bright)
+            self.marker_pen_selected.setWidthF(1.2)
+        self.marker_brush = QBrush(marker_fill)
         base_size = float(getattr(self.w.keyframe_painter, "size", 10) or 10)
         self.marker_size = max(6.0, base_size * 0.75)
         self.label_margin = max(6.0, float(self.w.theme.menu_margin or 0.0))
@@ -93,6 +122,29 @@ class KeyframePanelPainter(BasePainter):
                 self.add_pix = add_icon
         if self.add_margin <= 0.0:
             self.add_margin = self.label_margin
+
+    def _use_white_selected_border(self):
+        app = get_app()
+        manager = getattr(app, "theme_manager", None) if app else None
+        current = manager.get_current_theme() if manager and hasattr(manager, "get_current_theme") else None
+        name = str(getattr(current, "name", "") or "").strip().lower()
+        name = name.replace(":", "").replace("-", " ")
+        name = " ".join(name.split())
+        class_name = current.__class__.__name__.strip().lower() if current else ""
+        return name in {"cosmic dusk", "humanity dark"} or class_name in {
+            "cosmictheme",
+            "humanitydarktheme",
+        }
+
+    def _is_retro_theme(self):
+        app = get_app()
+        manager = getattr(app, "theme_manager", None) if app else None
+        current = manager.get_current_theme() if manager and hasattr(manager, "get_current_theme") else None
+        name = str(getattr(current, "name", "") or "").strip().lower()
+        name = name.replace(":", "").replace("-", " ")
+        name = " ".join(name.split())
+        class_name = current.__class__.__name__.strip().lower() if current else ""
+        return name == "retro" or class_name == "retro"
 
     def _seconds_to_x(self, seconds):
         try:
@@ -147,12 +199,12 @@ class KeyframePanelPainter(BasePainter):
             return "linear"
         return "constant"
 
-    def _draw_marker(self, painter, x, y, interpolation=None):
+    def _draw_marker(self, painter, x, y, interpolation=None, selected=False):
         size = self.marker_size
         half = size / 2.0
         rect = QRectF(x - half, y - half, size, size)
         painter.setBrush(self.marker_brush)
-        painter.setPen(self.marker_pen)
+        painter.setPen(self.marker_pen_selected if selected else self.marker_pen_unselected)
         mode = self._normalize_interpolation(interpolation)
         if mode == "linear":
             painter.drawRect(rect)
@@ -188,7 +240,11 @@ class KeyframePanelPainter(BasePainter):
             painter.save()
             painter.setClipRect(lane_clip)
             painter.fillRect(lane_clip, self.property_brush)
-            if self.range_pen.color().isValid() and self.range_pen.widthF() > 0.0:
+            if (
+                self.range_pen.color().isValid()
+                and self.range_pen.widthF() > 0.0
+                and self.range_pen.style() != Qt.NoPen
+            ):
                 painter.setPen(self.range_pen)
                 painter.drawRect(lane_clip.adjusted(0.5, 0.5, -0.5, -0.5))
             painter.restore()
@@ -196,13 +252,9 @@ class KeyframePanelPainter(BasePainter):
         add_rect = QRectF()
         can_add = isinstance(prop, dict) and not prop.get("placeholder")
         if can_add:
-            cached = prop.get("_panel_add_rect") if isinstance(prop, dict) else None
-            if isinstance(cached, QRectF) and not cached.isNull():
-                add_rect = cached
-            else:
-                add_rect = self.w._panel_add_icon_rect(label_rect)
-                if isinstance(prop, dict):
-                    prop["_panel_add_rect"] = add_rect
+            # Compute per paint. Caching this rect can leave stale icon positions
+            # when panel rows move between tracks during drag.
+            add_rect = self.w._panel_add_icon_rect(label_rect)
 
         if draw_labels:
             painter.setPen(self.text_pen)
@@ -232,24 +284,59 @@ class KeyframePanelPainter(BasePainter):
                 min(lane_rect.bottom() - lane_padding, baseline),
             )
 
-        range_start = context.get("range_start_seconds") if isinstance(context, dict) else None
-        range_end = context.get("range_end_seconds") if isinstance(context, dict) else None
-        start_x = lane_rect.left() + lane_padding
-        end_x = lane_rect.right() - lane_padding
-        if range_start is not None and range_end is not None:
-            start_x = self._seconds_to_x(range_start)
-            end_x = self._seconds_to_x(range_end)
-        if end_x < start_x:
-            start_x, end_x = end_x, start_x
-        start_x = max(start_x, lane_clip.left())
-        end_x = min(end_x, lane_clip.right())
+        segments = []
+        seen_segments = set()
+        for point in prop.get("points") or []:
+            point_context = point.get("_panel_context") if isinstance(point, dict) else None
+            if not isinstance(point_context, dict):
+                continue
+            seg_start = point_context.get("range_start_seconds")
+            seg_end = point_context.get("range_end_seconds")
+            try:
+                seg_start = float(seg_start) if seg_start is not None else None
+                seg_end = float(seg_end) if seg_end is not None else None
+            except (TypeError, ValueError):
+                continue
+            if seg_start is None or seg_end is None:
+                continue
+            if seg_end < seg_start:
+                seg_start, seg_end = seg_end, seg_start
+            key = (round(seg_start, 6), round(seg_end, 6))
+            if key in seen_segments:
+                continue
+            seen_segments.add(key)
+            segments.append((seg_start, seg_end))
+
+        if not segments:
+            range_start = context.get("range_start_seconds") if isinstance(context, dict) else None
+            range_end = context.get("range_end_seconds") if isinstance(context, dict) else None
+            start_x = lane_rect.left() + lane_padding
+            end_x = lane_rect.right() - lane_padding
+            if range_start is not None and range_end is not None:
+                start_x = self._seconds_to_x(range_start)
+                end_x = self._seconds_to_x(range_end)
+            if end_x < start_x:
+                start_x, end_x = end_x, start_x
+            segments = [(start_x, end_x)]
+        else:
+            segments = [
+                (self._seconds_to_x(seg_start), self._seconds_to_x(seg_end))
+                for seg_start, seg_end in segments
+            ]
 
         painter.save()
         painter.setClipRect(lane_clip)
         painter.setPen(self.curve_pen)
-        painter.drawLine(QPointF(start_x, baseline), QPointF(end_x, baseline))
+        for start_x, end_x in segments:
+            if end_x < start_x:
+                start_x, end_x = end_x, start_x
+            start_x = max(start_x, lane_clip.left())
+            end_x = min(end_x, lane_clip.right())
+            if end_x <= start_x:
+                continue
+            painter.drawLine(QPointF(start_x, baseline), QPointF(end_x, baseline))
 
-        inactive = getattr(self.w.keyframe_painter, "inactive_opacity", 0.5)
+        inactive = 0.72
         for point in prop.get("points") or []:
             seconds = point.get("seconds")
             if seconds is None:
@@ -260,7 +347,13 @@ class KeyframePanelPainter(BasePainter):
             x = max(lane_clip.left(), min(lane_clip.right(), x))
             selected = bool(point.get("selected"))
             painter.setOpacity(1.0 if selected else inactive)
-            self._draw_marker(painter, x, baseline, point.get("interpolation"))
+            self._draw_marker(
+                painter,
+                x,
+                baseline,
+                point.get("interpolation"),
+                selected=selected,
+            )
         painter.setOpacity(1.0)
         painter.restore()
 
