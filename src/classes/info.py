@@ -30,8 +30,8 @@ import sys
 from time import strftime
 
 VERSION = "1.0.188"
-# 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
-MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
+# libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
+MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
 NAME = "zenvi"
 PRODUCT_NAME = "Zenvi"
