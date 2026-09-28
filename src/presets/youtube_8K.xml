@@ -5,17 +5,17 @@
     <title translatable="True">YouTube HD (8K)</title>
 	<videoformat>mp4</videoformat>
 	<videocodec>libx264</videocodec>
-	<audiocodec>libmp3lame</audiocodec>
+	<audiocodec>aac</audiocodec>
 	<audiochannels>2</audiochannels>
 	<audiochannellayout>3</audiochannellayout>
 	<videobitrate
-	 low="160 Mb/s"
-	 med="200 Mb/s"
-	 high="240 Mb/s"></videobitrate>
+	 low="80 Mb/s"
+	 med="120 Mb/s"
+	 high="160 Mb/s"></videobitrate>
 	<audiobitrate
 	 low="128 kb/s"
-	 med="256 kb/s"
-	 high="320 kb/s"></audiobitrate>
+	 med="192 kb/s"
+	 high="256 kb/s"></audiobitrate>
 	<samplerate>48000</samplerate>
 	<projectprofile>8K UHD 4320p 23.98 fps</projectprofile>
 	<projectprofile>8K UHD 4320p 24 fps</projectprofile>

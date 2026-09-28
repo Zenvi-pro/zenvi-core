@@ -40,6 +40,7 @@ from classes.logger import log
 from classes.query import Clip, Transition
 from classes.app import get_app
 from classes.metrics import track_metric_screen
+from classes.clip_utils import apply_file_caption_to_clip
 from windows.views.add_to_timeline_treeview import TimelineTreeView
 
 import openshot
@@ -258,6 +259,9 @@ class AddToTimeline(QDialog):
             # TODO: Determine why this even happens, as it shouldn't be possible
             if not new_clip.get("reader"):
                 continue  # Skip to next file
+
+            # If the source file has stored caption text, attach a Caption effect to this new clip.
+            apply_file_caption_to_clip(new_clip, file)
 
             # Check for optional start and end attributes
             start_time = 0

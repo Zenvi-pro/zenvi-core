@@ -213,6 +213,10 @@ class TimelineWidgetBase(QWidget):
         self.keyframe_panel_padding = 6.0
 
         # Wheel scrolling helpers
+        self._pending_hscroll_delta = 0.0
+        self._hscroll_timer = QTimer(self)
+        self._hscroll_timer.setSingleShot(True)
+        self._hscroll_timer.timeout.connect(self._flush_pending_horizontal_scroll)
         self._pending_vscroll_delta = 0.0
         self._vscroll_timer = QTimer(self)
         self._vscroll_timer.setSingleShot(True)
@@ -2140,9 +2144,41 @@ class TimelineWidgetBase(QWidget):
             event.accept()
             return
 
+        # Horizontal scrolling: mouse wheel tilt (left/right) or a trackpad swipe
+        horizontal_delta = 0.0
+        pixel_delta = event.pixelDelta()
+        angle_delta = event.angleDelta()
+        if not pixel_delta.isNull():
+            horizontal_delta = pixel_delta.x()
+        if not horizontal_delta:
+            horizontal_delta = angle_delta.x()
+
+        if horizontal_delta and self.scrollbar_position[3] > 0 and self.scrollbar_position[2] > self.scrollbar_position[3]:
+            delta = -horizontal_delta / 120.0
+            self._pending_hscroll_delta += delta
+            if not self._hscroll_timer.isActive():
+                # Process accumulated wheel events once the event queue is flushed
+                self._hscroll_timer.start(0)
+            event.accept()
+            return
+
+        # SHIFT + wheel scrolls horizontally as well
+        if event.modifiers() & Qt.ShiftModifier:
+            if self.scrollbar_position[3] > 0 and self.scrollbar_position[2] > self.scrollbar_position[3]:
+                delta = -angle_delta.y() / 120.0
+                if delta:
+                    self._pending_hscroll_delta += delta
+                    if not self._hscroll_timer.isActive():
+                        # Process accumulated wheel events once the event queue is flushed
+                        self._hscroll_timer.start(0)
+                event.accept()
+            else:
+                event.ignore()
+            return
+
         # Vertical scrolling
         if self.v_scrollbar_position[3] > 0 and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]:
-            delta = -event.angleDelta().y() / 120.0
+            delta = -angle_delta.y() / 120.0
             if delta:
                 self._pending_vscroll_delta += delta
                 if not self._vscroll_timer.isActive():
@@ -2201,6 +2237,35 @@ class TimelineWidgetBase(QWidget):
         self._ctrl_zooming = False
         self._ctrl_zoom_anchor_y = None
         self.mouse_dragging = False
+
+    def _flush_pending_horizontal_scroll(self):
+        """Apply any pending horizontal scroll updates triggered by the wheel."""
+        delta = self._pending_hscroll_delta
+        self._pending_hscroll_delta = 0.0
+
+        if not delta:
+            return
+
+        if not (
+            self.scrollbar_position[3] > 0
+            and self.scrollbar_position[2] > self.scrollbar_position[3]
+        ):
+            return
+
+        view_ratio = self.scrollbar_position[1] - self.scrollbar_position[0]
+        if not view_ratio:
+            return
+
+        new_left = self.scrollbar_position[0] + delta * view_ratio * 0.1
+        new_left = max(0.0, min(new_left, 1.0 - view_ratio))
+        self.scrollbar_position[0] = new_left
+        self.scrollbar_position[1] = new_left + view_ratio
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = new_left * timeline_w
+        self.is_auto_center = False
+        self.geometry.mark_dirty()
+        self._update_scrollbar_handles()
+        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
         self._schedule_viewport_thumbnail_reset()
         self.update()
 

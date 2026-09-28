@@ -67,16 +67,25 @@ class PreviewParent(QObject, UpdateInterface):
 
         # Check if we are at the end of the timeline
         if self.worker.player.Mode() == openshot.PLAYBACK_PLAY:
+            loop_preview = bool(getattr(self.parent, "loop_playback", False))
             if self.worker.player.Speed() > 0.0 and current_frame >= self.timeline_max_length:
-                # Yes, pause the video
-                self.parent.PauseSignal.emit()
-                # If the player got past the end of the project, go back.
-                self.worker.Seek(self.timeline_max_length)
+                if loop_preview:
+                    # Loop preview playback back to the beginning.
+                    self.worker.Seek(1)
+                else:
+                    # Yes, pause the video
+                    self.parent.PauseSignal.emit()
+                    # If the player got past the end of the project, go back.
+                    self.worker.Seek(self.timeline_max_length)
             if self.worker.player.Speed() < 0.0 and current_frame <= 1:
-                # If rewinding, and the player got past the first frame,
-                # pause and go to frame 1
-                self.parent.PauseSignal.emit()
-                self.worker.Seek(1)
+                if loop_preview:
+                    # Loop rewind to the end frame.
+                    self.worker.Seek(self.timeline_max_length)
+                else:
+                    # If rewinding, and the player got past the first frame,
+                    # pause and go to frame 1
+                    self.parent.PauseSignal.emit()
+                    self.worker.Seek(1)
 
     # Signal when the playback mode changes in the preview player (i.e PLAY, PAUSE, STOP)
     def onModeChanged(self, current_mode):
@@ -504,7 +513,7 @@ class PlayerWorker(QObject):
         """ Stop the video player and terminate the playback threads """
 
         # Stop playback
-        if self.parent.initialized:
+        if getattr(self, "player", None):
             self.player.Stop()
 
     def Seek(self, number):

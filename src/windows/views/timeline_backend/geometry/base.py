@@ -581,12 +581,12 @@ class GeometryBase:
                 icon_rect = entry.get("icon_rect")
                 if icon_rect:
                     adj_icon = QRectF(icon_rect)
-                    adj_icon.translate(-h_offset, -v_offset)
+                    adj_icon.translate(-h_offset, 0.0)
                     entry["icon_rect"] = adj_icon
                 hit_rect = entry.get("hit_rect")
                 if hit_rect:
                     adj_hit = QRectF(hit_rect)
-                    adj_hit.translate(-h_offset, -v_offset)
+                    adj_hit.translate(-h_offset, 0.0)
                     entry["hit_rect"] = adj_hit
                 yield entry
                 continue
