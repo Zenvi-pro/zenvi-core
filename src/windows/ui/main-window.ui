@@ -173,6 +173,7 @@
       <string>Views</string>
      </property>
      <addaction name="actionSimple_View"/>
+     <addaction name="actionColor_Grade_View"/>
      <addaction name="separator"/>
      <addaction name="actionFreeze_View"/>
      <addaction name="actionUn_Freeze_View"/>
@@ -1242,6 +1243,14 @@
    </property>
    <property name="text">
     <string>Simple View</string>
+   </property>
+  </action>
+  <action name="actionColor_Grade_View">
+   <property name="text">
+    <string>Color View</string>
+   </property>
+   <property name="shortcut">
+    <string>Alt+Shift+2</string>
    </property>
   </action>
   <action name="actionFreeze_View">

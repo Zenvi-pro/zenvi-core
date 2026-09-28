@@ -188,3 +188,16 @@ def test_windows_cross_drive_stays_absolute(tmp_path, monkeypatch):
     data = json.loads(relative)
     assert data["path"].replace("\\", "/").endswith("/Volumes/External/foo.mp4")
     assert not data["path"].startswith("..")
+
+
+def test_empty_lut_path_stays_blank(tmp_path):
+    """A Color Grade effect with no LUT keeps an empty lut_path (upstream #6016)."""
+    project_dir, project_file, _assets = _project_paths(tmp_path)
+
+    store = _PathStore()
+    relative, absolute = _round_trip(
+        store, project_file, {"lut_path": ""}
+    )
+
+    assert relative["lut_path"] == ""
+    assert absolute["lut_path"] == ""
