@@ -187,6 +187,9 @@ class AddToTimeline(QDialog):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
+        # Track added clip IDs for auto-selection
+        added_clip_ids = []
+
         # Loop through each file (in the current order)
         for file in self.treeFiles.timeline_model.files:
             # Create a clip
@@ -386,12 +389,28 @@ class AddToTimeline(QDialog):
             # Save Clip
             clip.data = new_clip
             clip.save()
+            added_clip_ids.append(clip.data.get("id"))
 
             # Increment position by length of clip
             position += (end_time - start_time)
 
         # Clear transaction
         get_app().updates.transaction_id = None
+
+        # Ensure timeline extension behavior matches all other timeline add/move paths.
+        timeline_view = getattr(get_app().window, "timeline", None)
+        extend_timeline = getattr(timeline_view, "_extend_timeline_to_fit_items", None)
+        if callable(extend_timeline):
+            extend_timeline()
+
+        # Auto-select newly added clips
+        win = get_app().window
+        for idx, clip_id in enumerate(added_clip_ids):
+            if clip_id:
+                win.addSelection(str(clip_id), "clip", clear_existing=(idx == 0))
+        if added_clip_ids and hasattr(win.timeline, "geometry"):
+            win.timeline.geometry.mark_dirty()
+            win.timeline.update()
 
         # Accept dialog
         super(AddToTimeline, self).accept()

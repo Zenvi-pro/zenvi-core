@@ -128,6 +128,10 @@ class EmojisListView(QListView):
             # Determine media type
             file_data["media_type"] = "image"
 
+            # Set friendly emoji name (translated)
+            if emoji_name:
+                file_data["name"] = emoji_name
+
             # Save new file to the project data
             file = File()
             file.data = file_data

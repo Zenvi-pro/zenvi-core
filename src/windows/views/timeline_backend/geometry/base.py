@@ -642,7 +642,7 @@ class GeometryBase:
         *,
         viewport=True,
     ):
-        """Yield visible entries grouped by selection state while preserving stacking order."""
+        """Yield visible entries grouped by paint priority while preserving stacking order."""
 
         if not entries:
             return
@@ -698,15 +698,30 @@ class GeometryBase:
 
         seq = _visible_sequence()
 
+        # Drag-preview items should always be topmost while creating new clips/transitions.
+        preview_ids = {
+            getattr((item or {}).get("model"), "id", None)
+            for item in (getattr(self.widget, "_drag_preview_items", None) or [])
+            if isinstance(item, dict)
+        }
+        preview_ids.discard(None)
+
+        def _priority(entry):
+            if getattr(getattr(entry, "obj", None), "id", None) in preview_ids:
+                return 2
+            if entry.selected:
+                return 1
+            return 0
+
         if reverse:
             seq = list(reversed(seq))
-            order = (True, False)
+            order = (2, 1, 0)
         else:
-            order = (False, True)
+            order = (0, 1, 2)
 
-        for selected_flag in order:
+        for level in order:
             for entry in seq:
-                if entry.selected != selected_flag:
+                if _priority(entry) != level:
                     continue
                 rect = QRectF(entry.rect)
                 if viewport:

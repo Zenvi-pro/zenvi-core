@@ -9,6 +9,11 @@ from qt_api import QColor, QPixmap
 from classes.logger import log
 from classes.info import PATH
 
+LOG_THEME_MISS = False
+LOG_THEME_INFO = False
+# Verbose dump of parsed QWidget timeline theme values.
+LOG_THEME_DUMP = False
+
 
 def _apply_overrides(obj, overrides: dict, *, allow_unknown: bool = False) -> None:
     """Apply keyword overrides to a theme object, optionally ignoring unknown keys."""
@@ -40,6 +45,8 @@ class BasicTheme:
         self.shadow_blur: int = 0
         self.thumb_width: int = 0
         self.thumb_height: int = 0
+        self.top_overlay: QColor = QColor()
+        self.top_overlay2: QColor = QColor()
         _apply_overrides(self, kwargs)
 
 
@@ -60,7 +67,187 @@ class TrackTheme(BasicTheme):
         self.name_border_bottom_width: int = 0
         self.name_radius_tl: int = 0
         self.name_radius_bl: int = 0
+        self.name_top_overlay: QColor = QColor()
+        self.name_top_overlay2: QColor = QColor()
         _apply_overrides(self, kwargs)
+
+
+def _color_repr(color: QColor) -> str:
+    if not isinstance(color, QColor) or not color.isValid():
+        return "invalid"
+    return "#{:02X}{:02X}{:02X}{:02X}".format(
+        color.red(),
+        color.green(),
+        color.blue(),
+        color.alpha(),
+    )
+
+
+def _pixmap_repr(pixmap: Optional[QPixmap]) -> str:
+    if not pixmap or pixmap.isNull():
+        return "null"
+    source = getattr(pixmap, "svg_path", None) or getattr(pixmap, "path", None)
+    size = "{}x{}".format(pixmap.width(), pixmap.height())
+    if source:
+        return "pixmap {} ({})".format(size, source)
+    return "pixmap {}".format(size)
+
+
+def _theme_group_dump(title: str, values: Sequence[Tuple[str, str]]) -> None:
+    lines = ["Theme Vars [{}]".format(title)]
+    for key, value in values:
+        lines.append("  {} = {}".format(key, value))
+    log.info("\n".join(lines))
+
+
+def _log_theme_dump(theme: "TimelineTheme", source: str) -> None:
+    if not LOG_THEME_DUMP:
+        return
+
+    _theme_group_dump(
+        "meta",
+        [
+            ("source", source),
+        ],
+    )
+    _theme_group_dump(
+        "timeline",
+        [
+            ("background", _color_repr(theme.background)),
+            ("background2", _color_repr(theme.background2)),
+            ("playhead_color", _color_repr(theme.playhead_color)),
+            ("playhead_width", repr(theme.playhead_width)),
+            ("clip_selected", _color_repr(theme.clip_selected)),
+            ("selection", _color_repr(theme.selection)),
+            ("selection_border", _color_repr(theme.selection_border)),
+            ("selection_border_width", repr(theme.selection_border_width)),
+            ("playback_cache_color", _color_repr(theme.playback_cache_color)),
+            ("playback_cache_height", repr(theme.playback_cache_height)),
+            ("ruler_name_background", _color_repr(theme.ruler_name_background)),
+            ("ruler_name_background2", _color_repr(theme.ruler_name_background2)),
+            ("ruler_time_font_size", repr(theme.ruler_time_font_size)),
+            ("ruler_time_pad_left", repr(theme.ruler_time_pad_left)),
+            ("ruler_time_pad_top", repr(theme.ruler_time_pad_top)),
+            ("ruler_label_top", repr(theme.ruler_label_top)),
+            ("scrollbar_handle", _color_repr(theme.scrollbar_handle)),
+            ("scrollbar_track", _color_repr(theme.scrollbar_track)),
+            ("scrollbar_width", repr(theme.scrollbar_width)),
+            ("waveform_color", _color_repr(theme.waveform_color)),
+            ("waveform_peak_color", _color_repr(theme.waveform_peak_color)),
+            ("keyframe_fill", _color_repr(theme.keyframe_fill)),
+            ("keyframe_border", _color_repr(theme.keyframe_border)),
+            ("keyframe_inactive_opacity", repr(theme.keyframe_inactive_opacity)),
+            ("keyframe_size", repr(theme.keyframe_size)),
+            ("keyframe_panel_property_bg", _color_repr(theme.keyframe_panel_property_bg)),
+            ("keyframe_panel_row_border_color", _color_repr(theme.keyframe_panel_row_border_color)),
+            ("keyframe_panel_row_border_width", repr(theme.keyframe_panel_row_border_width)),
+            ("keyframe_panel_curve_color", _color_repr(theme.keyframe_panel_curve_color)),
+            ("keyframe_panel_marker_fill", _color_repr(theme.keyframe_panel_marker_fill)),
+            ("keyframe_panel_marker_border", _color_repr(theme.keyframe_panel_marker_border)),
+        ],
+    )
+    _theme_group_dump(
+        "clip",
+        [
+            ("background", _color_repr(theme.clip.background)),
+            ("background2", _color_repr(theme.clip.background2)),
+            ("top_overlay", _color_repr(theme.clip.top_overlay)),
+            ("top_overlay2", _color_repr(theme.clip.top_overlay2)),
+            ("border_color", _color_repr(theme.clip.border_color)),
+            ("border_radius", repr(theme.clip.border_radius)),
+            ("border_width", repr(theme.clip.border_width)),
+            ("font_color", _color_repr(theme.clip.font_color)),
+            ("font_size", repr(theme.clip.font_size)),
+            ("height", repr(theme.clip.height)),
+            ("shadow_color", _color_repr(theme.clip.shadow_color)),
+            ("shadow_blur", repr(theme.clip.shadow_blur)),
+            ("thumb_width", repr(theme.clip.thumb_width)),
+            ("thumb_height", repr(theme.clip.thumb_height)),
+        ],
+    )
+    _theme_group_dump(
+        "track",
+        [
+            ("background", _color_repr(theme.track.background)),
+            ("background2", _color_repr(theme.track.background2)),
+            ("border_color", _color_repr(theme.track.border_color)),
+            ("border_radius", repr(theme.track.border_radius)),
+            ("height", repr(theme.track.height)),
+            ("gap", repr(theme.track.gap)),
+            ("margin_top", repr(theme.track.margin_top)),
+            ("font_color", _color_repr(theme.track.font_color)),
+            ("font_size", repr(theme.track.font_size)),
+            ("name_background", _color_repr(theme.track.name_background)),
+            ("name_width", repr(theme.track.name_width)),
+            ("name_border_color", _color_repr(theme.track.name_border_color)),
+            ("name_border_width", repr(theme.track.name_border_width)),
+            ("name_border_top_color", _color_repr(theme.track.name_border_top_color)),
+            ("name_border_top_width", repr(theme.track.name_border_top_width)),
+            ("name_border_bottom_color", _color_repr(theme.track.name_border_bottom_color)),
+            ("name_border_bottom_width", repr(theme.track.name_border_bottom_width)),
+            ("name_radius_tl", repr(theme.track.name_radius_tl)),
+            ("name_radius_bl", repr(theme.track.name_radius_bl)),
+            ("name_top_overlay", _color_repr(theme.track.name_top_overlay)),
+            ("name_top_overlay2", _color_repr(theme.track.name_top_overlay2)),
+        ],
+    )
+    _theme_group_dump(
+        "transition",
+        [
+            ("background", _color_repr(theme.transition.background)),
+            ("background2", _color_repr(theme.transition.background2)),
+            ("top_overlay", _color_repr(theme.transition.top_overlay)),
+            ("top_overlay2", _color_repr(theme.transition.top_overlay2)),
+            ("border_color", _color_repr(theme.transition.border_color)),
+            ("border_radius", repr(theme.transition.border_radius)),
+            ("font_color", _color_repr(theme.transition.font_color)),
+            ("font_size", repr(theme.transition.font_size)),
+            ("height", repr(theme.transition.height)),
+            ("background_image", _pixmap_repr(theme.transition.background_image)),
+        ],
+    )
+    _theme_group_dump(
+        "ruler",
+        [
+            ("background", _color_repr(theme.ruler.background)),
+            ("background2", _color_repr(theme.ruler.background2)),
+            ("border_color", _color_repr(theme.ruler.border_color)),
+            ("font_color", _color_repr(theme.ruler.font_color)),
+            ("font_size", repr(theme.ruler.font_size)),
+            ("height", repr(theme.ruler.height)),
+        ],
+    )
+    _theme_group_dump(
+        "icons",
+        [
+            ("menu_icon", _pixmap_repr(theme.menu_icon)),
+            ("menu_size", repr(theme.menu_size)),
+            ("menu_margin", repr(theme.menu_margin)),
+            ("playhead_icon", _pixmap_repr(theme.playhead_icon)),
+            ("playhead_icon_width", repr(theme.playhead_icon_width)),
+            ("playhead_icon_height", repr(theme.playhead_icon_height)),
+            ("playhead_icon_offset_x", repr(theme.playhead_icon_offset_x)),
+            ("playhead_icon_offset_y", repr(theme.playhead_icon_offset_y)),
+            ("marker_icon", _pixmap_repr(theme.marker_icon)),
+            ("marker_icon_width", repr(theme.marker_icon_width)),
+            ("marker_icon_height", repr(theme.marker_icon_height)),
+            ("marker_icon_offset_x", repr(theme.marker_icon_offset_x)),
+            ("marker_icon_offset_y", repr(theme.marker_icon_offset_y)),
+            ("track_keyframe_panel_disabled_icon", _pixmap_repr(theme.track_keyframe_panel_disabled_icon)),
+            ("track_keyframe_panel_enabled_icon", _pixmap_repr(theme.track_keyframe_panel_enabled_icon)),
+            ("keyframe_panel_add_icon", _pixmap_repr(theme.keyframe_panel_add_icon)),
+            ("track_add_above_disabled_icon", _pixmap_repr(theme.track_add_above_disabled_icon)),
+            ("track_add_above_enabled_icon", _pixmap_repr(theme.track_add_above_enabled_icon)),
+            ("track_add_below_disabled_icon", _pixmap_repr(theme.track_add_below_disabled_icon)),
+            ("track_add_below_enabled_icon", _pixmap_repr(theme.track_add_below_enabled_icon)),
+            ("track_delete_disabled_icon", _pixmap_repr(theme.track_delete_disabled_icon)),
+            ("track_delete_enabled_icon", _pixmap_repr(theme.track_delete_enabled_icon)),
+            ("track_locked_disabled_icon", _pixmap_repr(theme.track_locked_disabled_icon)),
+            ("track_locked_enabled_icon", _pixmap_repr(theme.track_locked_enabled_icon)),
+            ("track_unlocked_disabled_icon", _pixmap_repr(theme.track_unlocked_disabled_icon)),
+            ("track_unlocked_enabled_icon", _pixmap_repr(theme.track_unlocked_enabled_icon)),
+        ],
+    )
 
 
 class TimelineTheme:
@@ -104,6 +291,11 @@ class TimelineTheme:
         self.track_unlocked_enabled_icon: Optional[QPixmap] = None
         self.keyframe_panel_add_icon: Optional[QPixmap] = None
         self.keyframe_panel_property_bg: QColor = QColor()
+        self.keyframe_panel_row_border_color: QColor = QColor()
+        self.keyframe_panel_row_border_width: float = 1.0
+        self.keyframe_panel_curve_color: QColor = QColor()
+        self.keyframe_panel_marker_fill: QColor = QColor()
+        self.keyframe_panel_marker_border: QColor = QColor()
         self.playhead_icon: Optional[QPixmap] = None
         self.playhead_icon_width: int = 0
         self.playhead_icon_height: int = 0
@@ -865,6 +1057,13 @@ def _theme_apply_clip(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     _apply_clip_box_shadow(theme, css_sheet, "theme", log_miss=False)
     _theme_apply_int(theme.clip, "thumb_width", qt_theme, ".thumb", "width")
     _theme_apply_int(theme.clip, "thumb_height", qt_theme, ".thumb", "height")
+    _apply_gradient_with_fallback(
+        theme.clip,
+        "top_overlay",
+        "top_overlay2",
+        lambda: _parse_gradient(css_sheet, ".clip_top", "background", "theme", log_miss=False),
+        lambda: _theme_get_color(qt_theme, ".clip_top", ("background", "background-color"), log_miss=False),
+    )
 
 
 def _theme_apply_selection(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
@@ -982,6 +1181,18 @@ def _theme_apply_track(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
     val = _theme_get_int(qt_theme, ".track_name", "border-radius")
     if val is not None:
         _set_default_if_missing(theme.track, ("name_radius_tl", "name_radius_bl"), val)
+    _apply_gradient_with_fallback(
+        theme.track,
+        "name_top_overlay",
+        "name_top_overlay2",
+        lambda: _parse_gradient(css_sheet, ".track_top", "background", "theme", log_miss=False),
+        lambda: _theme_get_color(
+            qt_theme,
+            ".track_top",
+            ("background", "background-color"),
+            log_miss=False,
+        ),
+    )
 
 
 def _theme_apply_ruler(theme: TimelineTheme, qt_theme, css_sheet: str) -> None:
@@ -1087,9 +1298,61 @@ def _theme_apply_keyframe_panel(theme: TimelineTheme, qt_theme) -> None:
     add_img = _theme_pixmap(qt_theme, ".keyframe-panel-add", "background-image")
     if add_img:
         theme.keyframe_panel_add_icon = add_img
-    panel_bg = _theme_get_color(qt_theme, "QMenuBar", ("background", "background-color"))
+    panel_bg = _theme_get_color(
+        qt_theme,
+        ".keyframe-panel-row",
+        ("background", "background-color"),
+        log_miss=False,
+    )
+    if not panel_bg:
+        panel_bg = _theme_get_color(qt_theme, "QMenuBar", ("background", "background-color"))
     if panel_bg:
         theme.keyframe_panel_property_bg = panel_bg
+    border_color = _theme_get_color(
+        qt_theme,
+        ".keyframe-panel-row",
+        ("border", "border-color"),
+        log_miss=False,
+    )
+    if border_color:
+        theme.keyframe_panel_row_border_color = border_color
+    border_width = _theme_get_int(
+        qt_theme,
+        ".keyframe-panel-row",
+        ("border", "border-width"),
+        log_miss=False,
+    )
+    if border_width is not None:
+        theme.keyframe_panel_row_border_width = float(border_width)
+    curve_color = _theme_get_color(qt_theme, ".keyframe-panel-curve", "color", log_miss=False)
+    if curve_color:
+        theme.keyframe_panel_curve_color = curve_color
+    marker_fill = _theme_get_color(
+        qt_theme,
+        ".keyframe-panel-point",
+        ("background", "background-color"),
+        log_miss=False,
+    )
+    if marker_fill:
+        theme.keyframe_panel_marker_fill = marker_fill
+    marker_border = _theme_get_color(
+        qt_theme,
+        ".keyframe-panel-point",
+        ("border", "border-color"),
+        log_miss=False,
+    )
+    if marker_border:
+        theme.keyframe_panel_marker_border = marker_border
+    inactive = _parse_float(
+        getattr(qt_theme, "style_sheet", ""),
+        ".keyframe-panel-point",
+        "opacity",
+        "theme",
+        log_miss=False,
+        log_selector=False,
+    )
+    if inactive is not None:
+        theme.keyframe_inactive_opacity = max(0.0, min(1.0, float(inactive)))
 
 
 def _theme_apply_track_toolbar(theme: TimelineTheme, qt_theme) -> None:
@@ -1234,6 +1497,19 @@ def _css_apply_clip(theme: TimelineTheme, css: str, source: str, log_miss: bool)
         source,
         log_miss=log_miss,
         transform=int,
+    )
+    _apply_gradient_with_fallback(
+        theme.clip,
+        "top_overlay",
+        "top_overlay2",
+        lambda: _parse_gradient(css, ".clip_top", "background", source, log_miss=False),
+        lambda: _parse_color(
+            css,
+            ".clip_top",
+            ("background", "background-color"),
+            source,
+            log_miss=False,
+        ),
     )
 
 
@@ -1423,6 +1699,19 @@ def _css_apply_track(theme: TimelineTheme, css: str, source: str, log_miss: bool
         log_miss=log_miss,
         transform=int,
     )
+    _apply_gradient_with_fallback(
+        theme.track,
+        "name_top_overlay",
+        "name_top_overlay2",
+        lambda: _parse_gradient(css, ".track_top", "background", source, log_miss=False),
+        lambda: _parse_color(
+            css,
+            ".track_top",
+            ("background", "background-color"),
+            source,
+            log_miss=False,
+        ),
+    )
 
 
 def _css_apply_ruler(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
@@ -1604,6 +1893,64 @@ def _css_apply_keyframe_panel(theme: TimelineTheme, css: str, source: str, log_m
     add_img = _parse_pixmap(css, ".keyframe-panel-add", "background-image", source, log_miss=log_miss)
     if add_img:
         theme.keyframe_panel_add_icon = add_img
+    panel_bg = _parse_color(
+        css,
+        ".keyframe-panel-row",
+        ("background", "background-color"),
+        source,
+        log_miss=False,
+    )
+    if panel_bg:
+        theme.keyframe_panel_property_bg = panel_bg
+    border_color = _parse_color(
+        css,
+        ".keyframe-panel-row",
+        ("border", "border-color"),
+        source,
+        log_miss=False,
+    )
+    if border_color:
+        theme.keyframe_panel_row_border_color = border_color
+    border_width = _parse_float(
+        css,
+        ".keyframe-panel-row",
+        ("border", "border-width"),
+        source,
+        log_miss=False,
+    )
+    if border_width is not None:
+        theme.keyframe_panel_row_border_width = float(border_width)
+    curve_color = _parse_color(css, ".keyframe-panel-curve", "color", source, log_miss=False)
+    if curve_color:
+        theme.keyframe_panel_curve_color = curve_color
+    marker_fill = _parse_color(
+        css,
+        ".keyframe-panel-point",
+        ("background", "background-color"),
+        source,
+        log_miss=False,
+    )
+    if marker_fill:
+        theme.keyframe_panel_marker_fill = marker_fill
+    marker_border = _parse_color(
+        css,
+        ".keyframe-panel-point",
+        ("border", "border-color"),
+        source,
+        log_miss=False,
+    )
+    if marker_border:
+        theme.keyframe_panel_marker_border = marker_border
+    inactive = _parse_float(
+        css,
+        ".keyframe-panel-point",
+        "opacity",
+        source,
+        log_miss=False,
+        log_selector=False,
+    )
+    if inactive is not None:
+        theme.keyframe_inactive_opacity = max(0.0, min(1.0, float(inactive)))
 
 
 def _css_apply_track_toolbar(theme: TimelineTheme, css: str, source: str, log_miss: bool) -> None:
@@ -1671,6 +2018,7 @@ def apply_theme(widget, css: str = "") -> bool:
     from classes.app import get_app
 
     app_theme = get_app().theme_manager.get_current_theme() if get_app() else None
+    theme_name = getattr(app_theme, "name", "") if app_theme else ""
 
     t = TimelineTheme()
 
@@ -1684,6 +2032,17 @@ def apply_theme(widget, css: str = "") -> bool:
     # Optional additional CSS overrides
     if isinstance(css, str) and css.strip():
         t = _apply_css(t, css, source="override")
+
+    normalized_theme_name = str(theme_name or "").strip().lower()
+    normalized_theme_name = normalized_theme_name.replace(":", "").replace("-", " ")
+    normalized_theme_name = " ".join(normalized_theme_name.split())
+    theme_class_name = (
+        app_theme.__class__.__name__.strip().lower() if app_theme else ""
+    )
+    is_humanity_dark = (
+        normalized_theme_name == "humanity dark"
+        or theme_class_name == "humanitydarktheme"
+    )
 
     if not t.playhead_icon:
         base = os.path.dirname(_CSS_PATH)
@@ -1713,19 +2072,50 @@ def apply_theme(widget, css: str = "") -> bool:
         if fallback:
             setattr(t, attr, fallback)
 
+    track_keyframe_disabled = (
+        "humanity-dark-track-keyframe-panel-show-disabled.svg"
+        if is_humanity_dark
+        else "track-keyframe-panel-show-disabled.svg"
+    )
+    track_keyframe_enabled = (
+        "humanity-dark-track-keyframe-panel-show-enabled.svg"
+        if is_humanity_dark
+        else "track-keyframe-panel-show-enabled.svg"
+    )
+    track_locked_disabled = (
+        "humanity-dark-track-locked-disabled.svg"
+        if is_humanity_dark
+        else "track-locked-disabled.svg"
+    )
+    track_locked_enabled = (
+        "humanity-dark-track-locked-enabled.svg"
+        if is_humanity_dark
+        else "track-locked-enabled.svg"
+    )
+    track_unlocked_disabled = (
+        "humanity-dark-track-unlocked-disabled.svg"
+        if is_humanity_dark
+        else "track-unlocked-disabled.svg"
+    )
+    track_unlocked_enabled = (
+        "humanity-dark-track-unlocked-enabled.svg"
+        if is_humanity_dark
+        else "track-unlocked-enabled.svg"
+    )
+
     _fallback_map = {
-        "track_keyframe_panel_disabled_icon": ("themes", "humanity", "images", "track-keyframe-panel-show-disabled.svg"),
-        "track_keyframe_panel_enabled_icon": ("themes", "humanity", "images", "track-keyframe-panel-show-enabled.svg"),
+        "track_keyframe_panel_disabled_icon": ("themes", "humanity", "images", track_keyframe_disabled),
+        "track_keyframe_panel_enabled_icon": ("themes", "humanity", "images", track_keyframe_enabled),
         "track_add_above_disabled_icon": ("themes", "humanity", "images", "track-add-above-disabled.svg"),
         "track_add_above_enabled_icon": ("themes", "humanity", "images", "track-add-above-enabled.svg"),
         "track_add_below_disabled_icon": ("themes", "humanity", "images", "track-add-below-disabled.svg"),
         "track_add_below_enabled_icon": ("themes", "humanity", "images", "track-add-below-enabled.svg"),
         "track_delete_disabled_icon": ("themes", "humanity", "images", "track-delete-disabled.svg"),
         "track_delete_enabled_icon": ("themes", "humanity", "images", "track-delete-enabled.svg"),
-        "track_locked_disabled_icon": ("themes", "humanity", "images", "track-locked-disabled.svg"),
-        "track_locked_enabled_icon": ("themes", "humanity", "images", "track-locked-enabled.svg"),
-        "track_unlocked_disabled_icon": ("themes", "humanity", "images", "track-unlocked-disabled.svg"),
-        "track_unlocked_enabled_icon": ("themes", "humanity", "images", "track-unlocked-enabled.svg"),
+        "track_locked_disabled_icon": ("themes", "humanity", "images", track_locked_disabled),
+        "track_locked_enabled_icon": ("themes", "humanity", "images", track_locked_enabled),
+        "track_unlocked_disabled_icon": ("themes", "humanity", "images", track_unlocked_disabled),
+        "track_unlocked_enabled_icon": ("themes", "humanity", "images", track_unlocked_enabled),
         "marker_icon": ("timeline", "media", "images", "markers", "marker.svg"),
     }
 
@@ -1754,6 +2144,23 @@ def apply_theme(widget, css: str = "") -> bool:
             t.menu_icon = fallback
             if not t.menu_size:
                 t.menu_size = fallback.width()
+
+    # Limit recent QWidget parity tweaks to Humanity Dark only.
+    if not is_humanity_dark:
+        t.clip.top_overlay = QColor()
+        t.clip.top_overlay2 = QColor()
+        t.track.name_top_overlay = QColor()
+        t.track.name_top_overlay2 = QColor()
+        t.track.name_radius_tl = 0
+        t.track.name_radius_bl = 0
+
+    theme_name_for_log = theme_name or "none"
+    sources = ["main.css"]
+    if app_theme:
+        sources.append("qt-theme:{}".format(theme_name_for_log))
+    if isinstance(css, str) and css.strip():
+        sources.append("override-css")
+    _log_theme_dump(t, " + ".join(sources))
 
 
     old_track_h = widget.track_height

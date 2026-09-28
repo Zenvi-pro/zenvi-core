@@ -135,9 +135,6 @@ class Preferences(QDialog):
         # Highlight invalid keyboard shortcuts
         self.check_shortcut_validity()
 
-        # Restore normal cursor
-        get_app().restoreOverrideCursor()
-
     def category_tab_changed(self, index):
         """Update the Restore Defaults button label based on the selected tab."""
         # Get the current widget for the selected tab

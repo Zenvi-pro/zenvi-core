@@ -284,9 +284,11 @@ class BlenderListView(QListView):
         self.win.sliderPreview.setEnabled(False)
         self.win.btnRender.setEnabled(False)
 
-        # Show 'Wait' cursor
+        # Show 'Wait' cursor (remember it so end_processing() releases only
+        # what this view acquired; the main window counts requests globally)
         if cursor:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._wait_cursor_held = True
+            get_app().window.WaitCursorSignal.emit(True)
 
     @pyqtSlot()
     def end_processing(self):
@@ -297,7 +299,9 @@ class BlenderListView(QListView):
         self.win.statusContainer.hide()
 
         # Restore normal cursor and keyboard focus
-        QApplication.restoreOverrideCursor()
+        if getattr(self, "_wait_cursor_held", False):
+            self._wait_cursor_held = False
+            get_app().window.WaitCursorSignal.emit(False)
         if self.focus_owner:
             self.focus_owner.setFocus()
 

@@ -472,6 +472,35 @@ class FileFilterProxyModel(QSortFilterProxyModel):
 class FilesModel(QObject, updates.UpdateInterface):
     ModelRefreshed = pyqtSignal()
     indexingProgress = pyqtSignal(str, str, int)  # file_id, phase, percent
+    PLACEHOLDER_PREFIX = "__genjob__:"
+    PROJECT_FILE_THUMB_ATTEMPTS = 3
+
+    def _thumbnail_source_for_file(self, file, clear_cache=False):
+        """Return the thumbnail/artwork source path and display name for a file."""
+        path, filename = os.path.split(file.data["path"])
+        name = file.data.get("name", filename)
+        media_type = file.data.get("media_type")
+
+        if media_type in ["video", "image"]:
+            thumbnail_frame = 1
+            if 'start' in file.data:
+                fps = file.data["fps"]
+                fps_float = float(fps["num"]) / float(fps["den"])
+                thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
+            thumb_source = GetThumbPath(
+                file.id,
+                thumbnail_frame,
+                clear_cache=clear_cache,
+                attempts=self.PROJECT_FILE_THUMB_ATTEMPTS,
+            )
+        else:
+            thumb_source = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
+
+        return thumb_source, name, media_type
+
+    def _project_file_icon_for_file(self, file):
+        thumb_source, name, media_type = self._thumbnail_source_for_file(file)
+        return QIcon(thumb_source), name, media_type
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -566,31 +595,14 @@ class FilesModel(QObject, updates.UpdateInterface):
 
             path, filename = os.path.split(file.data["path"])
             tags = file.data.get("tags", "")
-            name = file.data.get("name", filename)
-
-            media_type = file.data.get("media_type")
-
-            # Generate thumbnail for file (if needed)
-            if media_type in ["video", "image"]:
-                # Check for start and end attributes (optional)
-                thumbnail_frame = 1
-                if 'start' in file.data:
-                    fps = file.data["fps"]
-                    fps_float = float(fps["num"]) / float(fps["den"])
-                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-
-                # Get thumb path
-                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame))
-            else:
-                # Audio file
-                thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+            thumb_icon, name, media_type = self._project_file_icon_for_file(file)
 
             row = []
             flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemIsDragEnabled | Qt. ItemNeverHasChildren
 
             # Append thumbnail
             col = QStandardItem(thumb_icon, name)
-            col.setToolTip(filename)
+            col.setToolTip(name)
             col.setFlags(flags)
             col.setAccessibleText(name)
             row.append(col)
@@ -1106,7 +1118,8 @@ class FilesModel(QObject, updates.UpdateInterface):
         }
         return parameters
 
-    def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False):
+    def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False,
+                     transaction_id=None):
         """Recursively process QUrls from a QDropEvent.
 
         Returns the list of imported (or already-present) File objects, or an
@@ -1115,11 +1128,25 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         Reuses an existing ``updates.transaction_id`` when the caller already
         opened one (e.g. timeline drop that also places clips), so the whole
-        gesture undoes as a single step.
+        gesture undoes as a single step. ``transaction_id`` lets a caller name
+        that transaction explicitly; it stays active after this call so the
+        caller can group follow-up mutations under it.
         """
         media_paths = []
 
         from classes.updates import nested_transaction
+
+        if transaction_id:
+            active_tid = get_app().updates.transaction_id
+            if active_tid and active_tid != transaction_id:
+                # Never hijack a caller's in-flight transaction: joining it keeps
+                # the caller's later mutations in the undo step they expect.
+                log.warning(
+                    "process_urls: ignoring transaction_id %s, joining active %s",
+                    transaction_id, active_tid,
+                )
+            else:
+                get_app().updates.transaction_id = transaction_id
 
         with nested_transaction(get_app().updates):
             for uri in qurl_list or []:
@@ -1157,9 +1184,6 @@ class FilesModel(QObject, updates.UpdateInterface):
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
 
-        fps = file.data["fps"]
-        fps_float = float(fps["num"]) / float(fps["den"])
-
         # Refresh thumbnail for updated file
         self.ignore_updates = True
         m = self.model
@@ -1170,24 +1194,15 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
-            # Generate thumbnail for file (if needed)
-            if file.data.get("media_type") in ["video", "image"]:
-                # Check for start and end attributes (optional)
-                thumbnail_frame = 1
-                if 'start' in file.data:
-                    thumbnail_frame = round(float(file.data['start']) * fps_float) + 1
-
-                # Get thumb path
-                thumb_icon = QIcon(GetThumbPath(file.id, thumbnail_frame, clear_cache=True))
-            else:
-                # Audio file
-                thumb_icon = QIcon(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
+            thumb_source, _, _ = self._thumbnail_source_for_file(file, clear_cache=True)
+            thumb_icon = QIcon(thumb_source)
 
             # Update thumb for file
             thumb_index = id_index.sibling(id_index.row(), 0)
             item = m.itemFromIndex(thumb_index)
             item.setIcon(thumb_icon)
             item.setText(name)
+            item.setToolTip(name)
             item.setAccessibleText(name)
 
             # Update display name
@@ -1216,13 +1231,27 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def current_file_id(self):
         """ Get the file ID of the current files-view item, or the first selection """
+        # Prefer selected rows first, since currentIndex can become stale when
+        # switching between details/list views with separate selection models.
+        selected_rows = self.selection_model.selectedRows(5)
+        if selected_rows:
+            selected_ids = {row_index.data() for row_index in selected_rows if row_index.data()}
+            current = self.selection_model.currentIndex()
+            if current and current.isValid():
+                current_id = current.sibling(current.row(), 5).data()
+                # A stale current index must not win over the real selection.
+                if current_id and current_id in selected_ids:
+                    return current_id
+            for row_index in selected_rows:
+                file_id = row_index.data()
+                if file_id:
+                    return file_id
+
         cur = self.selection_model.currentIndex()
-
-        if not cur or not cur.isValid() and self.selection_model.hasSelection():
-            cur = self.selection_model.selectedIndexes()[0]
-
         if cur and cur.isValid():
-            return cur.sibling(cur.row(), 5).data()
+            file_id = cur.sibling(cur.row(), 5).data()
+            if file_id:
+                return file_id
 
     def current_file(self):
         """ Get the File object for the current files-view item, or the first selection """

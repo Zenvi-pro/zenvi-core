@@ -39,7 +39,10 @@ class TransitionGeometryMixin:
         w = self.widget
         overrides_map = getattr(w, "_pending_transition_overrides", {})
         entries = []
-        selected_ids = set(getattr(win, "selected_transitions", []) or [])
+        selected_ids = {
+            str(item_id)
+            for item_id in (getattr(win, "selected_transitions", []) or [])
+        }
         for tr in Transition.filter():
             tr_data = tr.data if isinstance(tr.data, dict) else {}
             override = overrides_map.get(tr.id, {})
@@ -89,7 +92,7 @@ class TransitionGeometryMixin:
         max_right = float("-inf")
         max_rights = []
         for left, rect, tran in entries:
-            is_selected = tran.id in selected_ids
+            is_selected = str(getattr(tran, "id", "")) in selected_ids
             transition_entries.append(
                 _GeometryEntry(rect=rect, obj=tran, selected=is_selected)
             )

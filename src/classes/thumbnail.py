@@ -49,9 +49,7 @@ from socketserver import ThreadingMixIn
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1/
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
-
-
-def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
+def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     """Get thumbnail path by invoking HTTP thumbnail request"""
 
     # Clear thumb cache (if requested)
@@ -67,12 +65,39 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
         file_id,
         thumbnail_frame,
         thumb_cache)
-    r = get(thumb_address)
-    if r.ok:
-        # Update thumbnail path to real one
-        return r.text
-    else:
-        return ''
+    attempts = max(1, int(attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            r = get(thumb_address)
+        except Exception:
+            log.warning(
+                "Thumbnail path request failed file_id=%s frame=%s attempt=%s/%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                exc_info=1,
+            )
+            r = None
+
+        if r is not None and r.ok and r.text:
+            # Update thumbnail path to real one
+            return r.text
+
+        if r is not None:
+            log.warning(
+                "Thumbnail path request returned empty/miss file_id=%s frame=%s attempt=%s/%s status=%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                getattr(r, "status_code", "n/a"),
+            )
+
+        if attempt < attempts:
+            time.sleep(0.05)
+
+    return ''
 
 
 def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):

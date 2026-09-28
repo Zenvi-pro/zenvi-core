@@ -197,6 +197,7 @@ class TimelineThumbnailManager(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._thread = QThread(self)
+        self._thread.setObjectName("timeline_thumbnail")
         self._worker = _ThumbnailWorker()
         self._worker.moveToThread(self._thread)
         self._pending = OrderedDict()
@@ -250,9 +251,17 @@ class TimelineThumbnailManager(QObject):
         if self._thread is None:
             return
         self.clear_pending()
-        if self._thread.isRunning():
+        was_running = self._thread.isRunning()
+        if was_running:
             self._thread.quit()
-            self._thread.wait(2000)
+            stopped = self._thread.wait(2000)
+            log.info(
+                "Timeline thumbnail thread stop result running_before=%s running_after=%s",
+                was_running,
+                self._thread.isRunning(),
+            )
+            if not stopped:
+                log.warning("Timeline thumbnail thread did not stop within 2 seconds")
         self._worker.deleteLater()
         self._thread.deleteLater()
         self._thread = None

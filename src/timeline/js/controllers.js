@@ -1204,6 +1204,12 @@ $scope.selectItem = function (item_id, item_type, clear_selections, event, force
   };
 
 // Show clip context menu
+  $scope.showProperties = function () {
+    if ($scope.Qt) {
+      timeline.ShowProperties();
+    }
+  };
+
   $scope.showClipMenu = function (clip_id, event) {
     if ($scope.Qt && !$scope.enable_razor) {
       setTimeout(function() {
@@ -1456,9 +1462,15 @@ $scope.updateRecentItemJSON = function (item_type, item_ids, tid) {
 
     // Update clip or transition in Qt (very important)
     if (item_type === "clip") {
-      timeline.update_clip_data(JSON.stringify(item_object), true, true, false, tid);
+      var clipPayload = Object.assign({}, item_object, {
+        _auto_transition: item_ids.length === 1
+      });
+      timeline.update_clip_data(JSON.stringify(clipPayload), true, true, false, tid);
     } else if (item_type === "transition") {
-      timeline.update_transition_data(JSON.stringify(item_object), true, false, tid);
+      var transitionPayload = Object.assign({}, item_object, {
+        _auto_direction: item_ids.length === 1
+      });
+      timeline.update_transition_data(JSON.stringify(transitionPayload), true, false, tid);
     }
 
     // Resize timeline if it's too small to contain all clips
@@ -1467,11 +1479,6 @@ $scope.updateRecentItemJSON = function (item_type, item_ids, tid) {
     // Hide snapline (if any)
     $scope.hideSnapline();
 
-    // Check again for missing transitions
-    var missing_transition_details = $scope.getMissingTransitions(item_object);
-    if ($scope.Qt && missing_transition_details !== null && item_ids.length === 1) {
-      timeline.add_missing_transition(JSON.stringify(missing_transition_details));
-    }
   });
 
   // Remove manual move stylesheet
@@ -1682,77 +1689,6 @@ $scope.updateLayerIndex = function () {
         });
       });
     }
-  };
-
-  // Find overlapping clips
-  $scope.getMissingTransitions = function (original_clip) {
-
-    var transition_size = null;
-
-    // Get clip that matches this id
-    var original_left = original_clip.position;
-    var original_right = original_clip.position + (original_clip.end - original_clip.start);
-
-    // Search through all other clips on this track, and look for overlapping ones
-    for (var index = 0; index < $scope.project.clips.length; index++) {
-      var clip = $scope.project.clips[index];
-
-      // skip clips that are not on the same layer
-      if (original_clip.layer !== clip.layer) {
-        continue;
-      }
-
-      // is clip overlapping
-      var clip_left = clip.position;
-      var clip_right = clip.position + (clip.end - clip.start);
-
-      if (original_left < clip_right && original_left > clip_left) {
-        transition_size = {
-          "position": original_left,
-          "layer": clip.layer,
-          "start": 0,
-          "end": (clip_right - original_left)
-        };
-      }
-      else if (original_right > clip_left && original_right < clip_right) {
-        transition_size = {"position": clip_left, "layer": clip.layer, "start": 0, "end": (original_right - clip_left)};
-      }
-
-      if (transition_size !== null && transition_size.end >= 0.5) {
-        // Found a possible missing transition
-        break;
-      }
-      else if (transition_size !== null && transition_size.end < 0.5) {
-        // Too small to be a missing transitions, clear and continue looking
-        transition_size = null;
-      }
-    }
-    // Search through all existing transitions, and don't overlap an existing one
-    if (transition_size !== null) {
-      for (var tran_index = 0; tran_index < $scope.project.effects.length; tran_index++) {
-        var tran = $scope.project.effects[tran_index];
-
-        // skip transitions that are not on the same layer
-        if (tran.layer !== transition_size.layer) {
-          continue;
-        }
-
-        var tran_left = tran.position;
-        var tran_right = tran.position + (tran.end - tran.start);
-
-        var new_tran_left = transition_size.position;
-        var new_tran_right = transition_size.position + (transition_size.end - transition_size.start);
-
-        var TOLERANCE = 0.01;
-        // Check for overlapping transitions
-        if (Math.abs(tran_left - new_tran_left) < TOLERANCE || Math.abs(tran_right - new_tran_right) < TOLERANCE) {
-          transition_size = null; // this transition already exists
-          break;
-        }
-      }
-    }
-
-    return transition_size;
   };
 
   // Search through clips and transitions to find the closest element within a given threshold
@@ -1969,6 +1905,19 @@ $scope.updateLayerIndex = function () {
    * @return {string}
    * @return {string}
    */
+  $scope.isTrackLocked = function(layer_number) {
+    if (!$scope.project || !$scope.project.layers) {
+      return false;
+    }
+    for (var i = 0; i < $scope.project.layers.length; i++) {
+      var layer = $scope.project.layers[i];
+      if (layer && parseInt(layer.number, 10) === parseInt(layer_number, 10)) {
+        return !!layer.lock;
+      }
+    }
+    return false;
+  };
+
   $scope.getTrackStyle = function (lock) {
     if (lock) {
       return "track track_disabled";
@@ -1976,6 +1925,13 @@ $scope.updateLayerIndex = function () {
     else {
       return "track";
     }
+  };
+
+  $scope.getTrackNameStyle = function (lock) {
+    if (lock) {
+      return "track_disabled";
+    }
+    return "";
   };
 
   $scope.setDragging = function(value) {
@@ -2010,6 +1966,9 @@ $scope.updateLayerIndex = function () {
     }
     if ($scope.enable_razor) {
       style += "razor_cursor ";
+    }
+    if ($scope.isTrackLocked(clip.layer)) {
+      style += "track_disabled ";
     }
 
     return style;

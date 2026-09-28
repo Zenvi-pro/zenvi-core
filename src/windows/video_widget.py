@@ -2148,16 +2148,16 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         else:
             self.resize_button.hide()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Request repaint asynchronously to avoid recursive paint calls.
+        self.update()
 
     def resize_button_clicked(self):
         """Resize zoom button clicked"""
         self.zoom = 1.0
         self.resize_button.hide()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Request repaint asynchronously to avoid recursive paint calls.
+        self.update()
 
     def __init__(self, watch_project=True, *args):
         """watch_project: watch for changes in project size / widget size, and
