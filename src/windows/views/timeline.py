@@ -48,7 +48,7 @@ from classes import info, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
 from classes.effect_init import effect_options
-from classes.file_drop import mime_has_file_drop, urls_from_mime
+from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
 from classes.path_utils import absolute_media_path
@@ -4405,23 +4405,27 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
 
         # Handle text-based mime data (clips or transitions)
-        if event.mimeData().html():
-            self.item_type = event.mimeData().html()
-            data_list = self._mime_json_list(event.mimeData())
-        # Handle URL-based OS file drop
-        if mime_has_file_drop(event.mimeData()):
-            self.item_type = "clip"
-            urls = urls_from_mime(event.mimeData())
+        mime = event.mimeData()
+        if mime.html():
+            self.item_type = mime.html()
+            data_list = self._mime_json_list(mime)
 
+        # Handle URL-based OS file drop. A Project Files drag also carries URLs,
+        # so this only imports when the text branch found no ids -- otherwise
+        # every file would be placed twice (see os_drop_file_ids).
+        def _import_os_drop(urls):
+            nonlocal drop_tid
             # One gesture: import + place clips share this tid (process_urls nests).
             drop_tid = self.get_uuid()
             get_app().updates.transaction_id = drop_tid
-            imported = get_app().window.files_model.process_urls(
+            return get_app().window.files_model.process_urls(
                 urls, import_quietly=True, prevent_image_seq=True
-            ) or []
-            for file in imported:
-                if file and getattr(file, "id", None):
-                    data_list.append(file.id)
+            )
+
+        os_drop_ids = os_drop_file_ids(mime, data_list, _import_os_drop)
+        if os_drop_ids:
+            self.item_type = "clip"
+            data_list = os_drop_ids
 
         # If no valid item type, return
         if not self.item_type:
