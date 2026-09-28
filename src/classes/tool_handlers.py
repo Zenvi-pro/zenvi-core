@@ -43,6 +43,8 @@ from classes.agent_tools.handlers import (
     PHASE3_HANDLERS,
     PHASE4_DISPLAY_LABELS,
     PHASE4_HANDLERS,
+    PHASE5_DISPLAY_LABELS,
+    PHASE5_HANDLERS,
 )
 from classes.image_types import is_audio_only_media
 from classes.track_display import (
@@ -8212,15 +8214,31 @@ def duck_under_speech(
                     missing.append(cid)
             if missing:
                 return f"Error: no timeline clip with audio for id(s): {', '.join(missing)}."
-            # A declared speech clip with no cues falls back to waveform energy.
+            # A declared speech clip with no cues falls back to VAD, then energy.
             for entry in speech:
                 if not entry["windows"]:
-                    energetic = am.speech_windows_from_energy(entry["data"])
-                    if energetic:
-                        entry["windows"] = energetic
-                        entry["window_source"] = "energy"
+                    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+                    path = str(((data.get("reader") or {}) if isinstance(data.get("reader"), dict) else {}).get("path") or "")
+                    windows, src = am.speech_windows_best(data, None, media_path=path)
+                    if windows:
+                        entry["windows"] = windows
+                        entry["window_source"] = src
         else:
             speech = [e for e in entries if e["role"] == "speech" and e["windows"]]
+            if not speech:
+                for entry in entries:
+                    if entry.get("windows"):
+                        continue
+                    data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+                    path = str(((data.get("reader") or {}) if isinstance(data.get("reader"), dict) else {}).get("path") or "")
+                    if not path:
+                        continue
+                    windows, src = am.speech_windows_best(data, None, media_path=path)
+                    if windows and src == "local_vad":
+                        entry["windows"] = windows
+                        entry["window_source"] = src
+                        entry["role"] = "speech"
+                        speech.append(entry)
 
         if not speech:
             unknown = [e["id"] for e in entries if e["role"] == "unknown"]
@@ -8533,6 +8551,7 @@ AGENT_TOOL_HANDLERS = {
 }
 AGENT_TOOL_HANDLERS.update(PHASE3_HANDLERS)
 AGENT_TOOL_HANDLERS.update(PHASE4_HANDLERS)
+AGENT_TOOL_HANDLERS.update(PHASE5_HANDLERS)
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
@@ -8599,6 +8618,7 @@ TOOL_DISPLAY_LABELS = {
 }
 TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update(PHASE4_DISPLAY_LABELS)
+TOOL_DISPLAY_LABELS.update(PHASE5_DISPLAY_LABELS)
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -8648,6 +8668,12 @@ READ_ONLY_TOOLS = frozenset({
     "analyze_timeline_audio_tool",
     "inspect_timeline_tool",
     "inspect_media_tool",
+    "get_transcript_tool",
+    "transcribe_media_tool",
+    "detect_beats_tool",
+    "diarize_media_tool",
+    "search_media_local_tool",
+    "export_captions_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -8687,6 +8713,16 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "fetch_remotion_video_from_supabase_tool",
     "inspect_timeline_tool",
     "inspect_media_tool",
+    # Local ASR / VAD / beats / embeds can take minutes; Qt mutations marshal themselves.
+    "get_transcript_tool",
+    "transcribe_media_tool",
+    "remove_words_tool",
+    "remove_silence_tool",
+    "add_captions_tool",
+    "export_captions_tool",
+    "detect_beats_tool",
+    "diarize_media_tool",
+    "search_media_local_tool",
 })
 
 # Tools whose main-thread work can legitimately run far longer than

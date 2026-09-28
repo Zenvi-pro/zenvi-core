@@ -417,6 +417,90 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "overview": {"type": "boolean"},
     }, required=["fileId"]),
 
+    "get_transcript_tool": _obj({
+        "clipId": _str(description="Timeline clip id. Prefer this after edits."),
+        "fileId": _str(description="Media-bin file id (source seconds at timeline 0)."),
+        "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
+        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
+        "modelId": _str(description="e.g. faster-whisper-base (whisper path only)."),
+        "force": _bool(description="Ignore cache and re-run ASR."),
+        "engine": _str(
+            description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
+        ),
+    }),
+    "transcribe_media_tool": _obj({
+        "fileId": _str(description="Media-bin file id."),
+        "language": _str(description="BCP-47 / whisper code, or 'auto'."),
+        "modelId": _str(description="e.g. faster-whisper-base"),
+        "force": _bool(description="Ignore cache and re-run ASR."),
+        "engine": _str(description="auto|apple|whisper"),
+    }, required=["fileId"]),
+    "remove_words_tool": _obj({
+        "clipId": _str(description="Timeline clip to cut."),
+        "wordIndices": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+            "description": "Word indices from get_transcript_tool for this clip.",
+        },
+        "fillerPreset": _str(
+            description="Built-in preset: um_uh or english_fillers.",
+        ),
+        "transcriptGeneration": _int(
+            minimum=1,
+            description="Pin from get_transcript; refuse on mismatch.",
+        ),
+        "language": _str(),
+        "modelId": _str(),
+        "engine": _str(description="auto|apple|whisper"),
+    }, required=["clipId"]),
+
+    "remove_silence_tool": _obj({
+        "clipId": _str(description="Timeline clip to tighten."),
+        "minPauseSec": _num(minimum=0.05, description="Minimum silence gap to remove."),
+        "padSec": _num(minimum=0.0, description="Keep this much audio around speech."),
+        "maxRemoveFraction": _num(
+            minimum=0.1, maximum=0.99,
+            description="Refuse if more than this fraction would be deleted.",
+        ),
+    }, required=["clipId"]),
+
+    "add_captions_tool": _obj({
+        "clipId": _str(),
+        "trackIndex": _int(minimum=0),
+        "maxWords": _int(minimum=1, maximum=24),
+        "maxChars": _int(minimum=8, maximum=120),
+        "language": _str(),
+        "modelId": _str(),
+        "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
+    }),
+
+    "export_captions_tool": _obj({
+        "path": _str(description="Destination .srt or .vtt path."),
+        "format": _str(description="srt or vtt."),
+        "clipId": _str(),
+        "trackIndex": _int(minimum=0),
+        "language": _str(),
+    }, required=["path"]),
+
+    "detect_beats_tool": _obj({
+        "fileId": _str(),
+        "clipId": _str(),
+    }),
+
+    "diarize_media_tool": _obj({
+        "fileId": _str(),
+        "clipId": _str(),
+        "maxSpeakers": _int(minimum=1, maximum=8),
+        "language": _str(),
+        "modelId": _str(),
+    }),
+
+    "search_media_local_tool": _obj({
+        "query": _str(description="Visual / semantic query."),
+        "top_k": _int(minimum=1, maximum=50),
+        "provider": _str(description="local or auto."),
+    }, required=["query"]),
+
 }
 
 

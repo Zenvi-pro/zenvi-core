@@ -4427,6 +4427,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         except Exception as e:
             log.error(f"Failed to initialize Freesound Dock: {e}", exc_info=True)
 
+        # Phase 5 — transcript Index panel (same store as get_transcript_tool)
+        try:
+            from windows.index_panel import IndexPanel
+            self.dockIndex = IndexPanel(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.dockIndex)
+            self.dockIndex.setVisible(False)
+        except Exception as e:
+            log.error(f"Failed to initialize Index Dock: {e}", exc_info=True)
+
         # Add Docks submenu to View menu
         self.addViewDocksMenu()
 

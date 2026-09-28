@@ -51,3 +51,4 @@ graphify_output/
 
 # gstack
 .gstack/
+native/apple-speech-asr/.build/

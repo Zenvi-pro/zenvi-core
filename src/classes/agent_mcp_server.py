@@ -48,7 +48,18 @@ SERVER_INSTRUCTIONS = (
     "Do not shell ffmpeg for frames. Do not use watch_clip_window_tool for "
     "verification — that path is Assistant place/slice backend confirm and does "
     "not return images to you. After delete_from_timeline_tool, check the receipt "
-    "removedClipIds. If inspect shows the edit is wrong, undo_tool and retry."
+    "removedClipIds. If inspect shows the edit is wrong, undo_tool and retry. "
+    "SPEECH WORKFLOW: get_transcript_tool reads spoken words in project frames "
+    "(never put ASR inside inspect_*). On macOS, engine=auto prefers Apple "
+    "SpeechAnalyzer when the helper is present (macOS 26+); Windows and older "
+    "Macs use faster-whisper. Pass engine=whisper or engine=apple to pin. "
+    "Tighten pacing with remove_silence_tool "
+    "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
+    "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
+    "indices are refused. add_captions_tool burns timed dialogue; "
+    "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
+    "offline. detect_beats_tool finds music beats. search_media_local_tool is "
+    "on-device visual search; search_clips_tool remains the cloud TwelveLabs tier."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
