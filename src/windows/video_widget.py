@@ -2445,14 +2445,18 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         Returns (source_width, source_height, scaled_width, scaled_height,
         anchored_x, anchored_y, layout_x, layout_y, layout_width, layout_height).
-        Zenvi has no clip margin property, so the layout rect is the viewport.
+        The layout rect is the viewport inset by the clip's margin (libopenshot
+        1.0), in the same absolute coordinates as viewport_rect.
         """
         player_width = viewport_rect.width()
         player_height = viewport_rect.height()
-        layout_x = viewport_rect.x()
-        layout_y = viewport_rect.y()
-        layout_width = max(float(player_width), 1.0)
-        layout_height = max(float(player_height), 1.0)
+        margin = max(float(raw_properties.get('margin', {}).get('value', 0.0)), 0.0)
+        margin = min(margin, 0.5)
+        margin_pixels = margin * min(player_width, player_height)
+        layout_x = viewport_rect.x() + margin_pixels
+        layout_y = viewport_rect.y() + margin_pixels
+        layout_width = max(float(player_width) - (margin_pixels * 2.0), 1.0)
+        layout_height = max(float(player_height) - (margin_pixels * 2.0), 1.0)
 
         source_size = QSizeF(base_width, base_height)
         scale_mode = clip.data['scale']
@@ -2467,16 +2471,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         elif scale_mode == openshot.SCALE_CROP:
             source_size.scale(layout_width, layout_height, Qt.KeepAspectRatioByExpanding)
         elif scale_mode == openshot.SCALE_NONE:
+            # Project pixels map onto the whole player, not the margin-inset layout.
             try:
-                project_width = float(get_app().project.get("width") or layout_width)
-                project_height = float(get_app().project.get("height") or layout_height)
+                project_width = float(get_app().project.get("width") or player_width)
+                project_height = float(get_app().project.get("height") or player_height)
             except Exception:
-                project_width = float(layout_width)
-                project_height = float(layout_height)
+                project_width = float(player_width)
+                project_height = float(player_height)
             if project_width > 0.0 and project_height > 0.0:
                 source_size = QSizeF(
-                    source_size.width() * (layout_width / project_width),
-                    source_size.height() * (layout_height / project_height))
+                    source_size.width() * (player_width / project_width),
+                    source_size.height() * (player_height / project_height))
 
         source_width = max(source_size.width(), 0.0001)
         source_height = max(source_size.height(), 0.0001)
