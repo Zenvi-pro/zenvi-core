@@ -54,22 +54,44 @@ def otool_dependencies(path):
 
 
 def opencv_rpath_dependencies(path):
+    """OpenCV references that need rewriting: @rpath entries (upstream CI builds)
+    and absolute install-prefix entries (Homebrew builds link libopenshot that way)."""
     return [
         dependency
         for dependency in otool_dependencies(path)
-        if dependency.startswith("@rpath/")
+        if (dependency.startswith("@rpath/") or os.path.isabs(dependency))
         and "opencv" in os.path.basename(dependency)
         and dependency.endswith(".dylib")
     ]
 
 
-def stage_opencv_dylibs(opencv_root, stage_dir):
+def referenced_opencv_dylibs(binaries, opencv_lib_dir):
+    """Return the transitive set of OpenCV dylibs (by basename) that `binaries` load."""
+    referenced = set()
+    pending = list(binaries)
+    while pending:
+        binary = pending.pop()
+        for dependency in opencv_rpath_dependencies(binary):
+            name = os.path.basename(dependency)
+            if name in referenced:
+                continue
+            candidate = os.path.join(opencv_lib_dir, name)
+            if not os.path.exists(candidate):
+                raise FileNotFoundError(f"OpenCV dependency of {binary} not found: {candidate}")
+            referenced.add(name)
+            pending.append(candidate)
+    return referenced
+
+
+def stage_opencv_dylibs(opencv_root, stage_dir, only_names=None):
     opencv_lib_dir = os.path.join(opencv_root, "lib")
     if not os.path.isdir(opencv_lib_dir):
         raise FileNotFoundError(f"OpenCV lib directory not found: {opencv_lib_dir}")
 
     os.makedirs(stage_dir, exist_ok=True)
     dylibs = sorted(glob.glob(os.path.join(opencv_lib_dir, "*.dylib")))
+    if only_names is not None:
+        dylibs = [dylib for dylib in dylibs if os.path.basename(dylib) in only_names]
     if not dylibs:
         raise FileNotFoundError(f"No OpenCV dylibs found in: {opencv_lib_dir}")
 
@@ -108,6 +130,12 @@ def main(argv):
         nargs="*",
         help="Additional dylibs or extension modules to rewrite before freeze",
     )
+    parser.add_argument(
+        "--only-referenced",
+        action="store_true",
+        help="Stage only the OpenCV dylibs the binaries (transitively) load, instead of "
+             "every dylib in the OpenCV prefix (Homebrew ships ~170 files / 120 MB).",
+    )
     args = parser.parse_args(argv)
 
     binding = os.path.abspath(args.binding)
@@ -121,7 +149,11 @@ def main(argv):
         if not os.path.exists(path):
             raise FileNotFoundError(f"Additional binary not found: {path}")
 
-    stage_opencv_dylibs(opencv_root, stage_dir)
+    only_names = None
+    if args.only_referenced:
+        only_names = referenced_opencv_dylibs([binding] + extra_binaries, os.path.join(opencv_root, "lib"))
+        print(f"Staging {len(only_names)} referenced OpenCV dylibs: {', '.join(sorted(only_names))}")
+    stage_opencv_dylibs(opencv_root, stage_dir, only_names)
     for path in [binding] + extra_binaries + sorted(glob.glob(os.path.join(stage_dir, "*.dylib"))):
         rewrite_opencv_dependencies(path, stage_dir)
     rewrite_opencv_ids(stage_dir)

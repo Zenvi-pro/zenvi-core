@@ -81,6 +81,7 @@ from classes.file_drop import local_path_from_url, mime_has_file_drop, urls_from
 from classes.query import Clip, Transition, File
 from classes.logger import log
 from .thumbnails import TimelineThumbnailManager
+from .timecode import TimecodeLineEdit
 
 
 class TimelineEvents(QObject):
@@ -212,6 +213,10 @@ class TimelineWidgetBase(QWidget):
         self.keyframe_panel_padding = 6.0
 
         # Wheel scrolling helpers
+        self._pending_hscroll_delta = 0.0
+        self._hscroll_timer = QTimer(self)
+        self._hscroll_timer.setSingleShot(True)
+        self._hscroll_timer.timeout.connect(self._flush_pending_horizontal_scroll)
         self._pending_vscroll_delta = 0.0
         self._vscroll_timer = QTimer(self)
         self._vscroll_timer.setSingleShot(True)
@@ -330,6 +335,11 @@ class TimelineWidgetBase(QWidget):
             self._handle_thumbnail_ready,
             type=Qt.QueuedConnection,
         )
+
+        # In-place editor for the painted playhead time in the ruler header.
+        self.playhead_time_editor = TimecodeLineEdit(self)
+        self.playhead_time_editor.frameCommitted.connect(self._commit_playhead_time_edit)
+        self.playhead_time_editor.editCanceled.connect(self._cancel_playhead_time_edit)
 
         # Keyframe helpers
         self._keyframe_markers = []
@@ -780,6 +790,80 @@ class TimelineWidgetBase(QWidget):
         seconds = (x_pos - self.track_name_width + offset_px) / pps
         return max(0.0, seconds)
 
+    def _playhead_time_panel_rect(self):
+        """Return the header rectangle containing the painted playhead time."""
+        return QRectF(0, 0, self.track_name_width, self.ruler_height)
+
+    def _update_playhead_time_editor_geometry(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return
+        rect = self._playhead_time_panel_rect()
+        editor.setGeometry(
+            int(rect.x()),
+            int(rect.y()),
+            max(0, int(rect.width())),
+            max(0, int(rect.height())),
+        )
+
+    def _update_playhead_time_editor_theme(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        ruler = getattr(self, "ruler_painter", None)
+        if not editor or not ruler:
+            return
+        editor.apply_timeline_theme(
+            self.theme,
+            ruler.play_font,
+            self.theme.ruler_time_pad_left,
+            self.theme.ruler_time_pad_top,
+        )
+
+    def _sync_playhead_time_editor_context(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return
+        fps = get_app().project.get("fps")
+        editor.set_context(
+            fps.get("num", 30),
+            fps.get("den", 1),
+            self.current_frame,
+        )
+
+    def _start_playhead_time_edit(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if not editor:
+            return False
+        self._sync_playhead_time_editor_context()
+        self._update_playhead_time_editor_geometry()
+        self._update_playhead_time_editor_theme()
+        editor.set_current_frame_text(self.current_frame)
+        editor.show()
+        editor.raise_()
+        editor.setFocus(Qt.MouseFocusReason)
+        editor.selectAll()
+        return True
+
+    def _commit_playhead_time_edit(self, frame, start_preroll=True, force=True):
+        # Zenvi's SeekSignal takes only the frame (upstream also passes a
+        # preroll flag); the preroll/force flags only decide whether the
+        # editor closes after the seek.
+        frame = max(1, int(frame or 1))
+        if frame != self.current_frame:
+            self.current_frame = frame
+            self.update()
+        self.win.SeekSignal.emit(frame)
+        self.centerOnPlayhead()
+        editor = getattr(self, "playhead_time_editor", None)
+        if editor and force:
+            editor.hide()
+
+    def _cancel_playhead_time_edit(self):
+        editor = getattr(self, "playhead_time_editor", None)
+        if editor:
+            editor.hide()
+            editor.clearFocus()
+        self.update()
+
     def run_js(self, code, callback=None, retries=0):
         """No-op on the native backend; log so silent gaps surface in debug logs."""
         snippet = (code or "")[:120].replace("\n", " ")
@@ -884,6 +968,8 @@ class TimelineWidgetBase(QWidget):
             p.update_theme()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
+        self._update_playhead_time_editor_theme()
+        self._update_playhead_time_editor_geometry()
         self.update()
 
     def setup_js_data(self):
@@ -1039,6 +1125,7 @@ class TimelineWidgetBase(QWidget):
             self.keyframe_panel_painter.paint(painter, mode="overlay")
             self.selection_painter.paint(painter)
             self.ruler_painter.paint(painter)
+            self.playback_cache_painter.paint(painter)
             self.marker_painter.paint(painter)
             self.playhead_painter.paint(painter)
             self.ruler_painter.paint_overlay(painter)
@@ -1956,6 +2043,7 @@ class TimelineWidgetBase(QWidget):
         event.accept()
         self.geometry.mark_dirty()
         self.delayed_size = self.size()
+        self._update_playhead_time_editor_geometry()
         view_w = max(
             0.0,
             self.width() - self.track_name_width - self.scroll_bar_thickness,
@@ -2049,9 +2137,41 @@ class TimelineWidgetBase(QWidget):
             event.accept()
             return
 
+        # Horizontal scrolling: mouse wheel tilt (left/right) or a trackpad swipe
+        horizontal_delta = 0.0
+        pixel_delta = event.pixelDelta()
+        angle_delta = event.angleDelta()
+        if not pixel_delta.isNull():
+            horizontal_delta = pixel_delta.x()
+        if not horizontal_delta:
+            horizontal_delta = angle_delta.x()
+
+        if horizontal_delta and self.scrollbar_position[3] > 0 and self.scrollbar_position[2] > self.scrollbar_position[3]:
+            delta = -horizontal_delta / 120.0
+            self._pending_hscroll_delta += delta
+            if not self._hscroll_timer.isActive():
+                # Process accumulated wheel events once the event queue is flushed
+                self._hscroll_timer.start(0)
+            event.accept()
+            return
+
+        # SHIFT + wheel scrolls horizontally as well
+        if event.modifiers() & Qt.ShiftModifier:
+            if self.scrollbar_position[3] > 0 and self.scrollbar_position[2] > self.scrollbar_position[3]:
+                delta = -angle_delta.y() / 120.0
+                if delta:
+                    self._pending_hscroll_delta += delta
+                    if not self._hscroll_timer.isActive():
+                        # Process accumulated wheel events once the event queue is flushed
+                        self._hscroll_timer.start(0)
+                event.accept()
+            else:
+                event.ignore()
+            return
+
         # Vertical scrolling
         if self.v_scrollbar_position[3] > 0 and self.v_scrollbar_position[2] > self.v_scrollbar_position[3]:
-            delta = -event.angleDelta().y() / 120.0
+            delta = -angle_delta.y() / 120.0
             if delta:
                 self._pending_vscroll_delta += delta
                 if not self._vscroll_timer.isActive():
@@ -2110,6 +2230,35 @@ class TimelineWidgetBase(QWidget):
         self._ctrl_zooming = False
         self._ctrl_zoom_anchor_y = None
         self.mouse_dragging = False
+
+    def _flush_pending_horizontal_scroll(self):
+        """Apply any pending horizontal scroll updates triggered by the wheel."""
+        delta = self._pending_hscroll_delta
+        self._pending_hscroll_delta = 0.0
+
+        if not delta:
+            return
+
+        if not (
+            self.scrollbar_position[3] > 0
+            and self.scrollbar_position[2] > self.scrollbar_position[3]
+        ):
+            return
+
+        view_ratio = self.scrollbar_position[1] - self.scrollbar_position[0]
+        if not view_ratio:
+            return
+
+        new_left = self.scrollbar_position[0] + delta * view_ratio * 0.1
+        new_left = max(0.0, min(new_left, 1.0 - view_ratio))
+        self.scrollbar_position[0] = new_left
+        self.scrollbar_position[1] = new_left + view_ratio
+        timeline_w = self.scrollbar_position[2] or self.scrollbar_position[3] or 0.0
+        self.h_scroll_offset = new_left * timeline_w
+        self.is_auto_center = False
+        self.geometry.mark_dirty()
+        self._update_scrollbar_handles()
+        get_app().window.TimelineScrolled.emit(list(self.scrollbar_position))
         self._schedule_viewport_thumbnail_reset()
         self.update()
 
@@ -2706,6 +2855,13 @@ class TimelineWidgetBase(QWidget):
 
         self.geometry.ensure()
 
+        if (
+            getattr(self, "playhead_time_editor", None)
+            and self._playhead_time_panel_rect().contains(pos)
+        ):
+            self.setCursor(Qt.IBeamCursor)
+            return
+
         # Playhead icon
         handle_rect = self._playhead_handle_rect()
         if (self.playhead_painter.icon_pix and not handle_rect.isNull() and handle_rect.contains(pos)):
@@ -2830,6 +2986,10 @@ class TimelineWidgetBase(QWidget):
         self.geometry.ensure()
 
         if event.button() == Qt.LeftButton:
+            if self._playhead_time_panel_rect().contains(pos):
+                if self._start_playhead_time_edit():
+                    event.accept()
+                    return
             toolbar_button = self._track_toolbar_button_at(pos)
             if toolbar_button:
                 self._last_event = event

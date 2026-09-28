@@ -1,0 +1,73 @@
+{
+  "action_icon": "ai-action-smooth.svg",
+  "menu_category": "enhance",
+  "menu_order": 20,
+  "name": "Smooth Motion (2x Frame Rate)",
+  "open_dialog": false,
+  "output_type": "video",
+  "template_id": "video-frame-interpolation-rife2x",
+  "workflow": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "/tmp/input.mp4"
+      }
+    },
+    "2": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "_meta": {
+        "title": "RIFE VFI (recommend rife47 and rife49)"
+      },
+      "class_type": "RIFE VFI",
+      "inputs": {
+        "ckpt_name": "rife47.pth",
+        "clear_cache_after_n_frames": 10,
+        "dtype": "float32",
+        "ensemble": true,
+        "fast_mode": true,
+        "frames": [
+          "2",
+          0
+        ],
+        "multiplier": 2,
+        "scale_factor": 1,
+        "torch_compile": false,
+        "batch_size": 1
+      }
+    },
+    "4": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "audio": [
+          "2",
+          1
+        ],
+        "fps": 60.0,
+        "images": [
+          "3",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "codec": "auto",
+        "filename_prefix": "video/openshot_gen",
+        "format": "auto",
+        "video": [
+          "4",
+          0
+        ]
+      }
+    }
+  }
+}

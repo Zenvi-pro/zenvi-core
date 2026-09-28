@@ -27,6 +27,7 @@
  """
 
 import uuid
+import os
 
 from qt_api import QSize, Qt, QPoint, QRect, QEvent, QItemSelectionModel
 from qt_api import clear_override_cursor
@@ -43,6 +44,10 @@ from classes.query import File
 from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
 from .optimized_preview_menu import add_optimized_preview_menu
+from .ai_tools_menu import add_ai_tools_menu
+from .generation_badge import (
+    file_id_for_index, is_generation_placeholder, job_id_from_placeholder,
+)
 
 
 class FileCardDelegate(IndexingBadgeDelegate):
@@ -184,8 +189,36 @@ class FilesListView(QListView):
         add_bound_action(menu, self.win, "actionImportFiles", _("Import Files..."), "actionImportFiles_trigger")
         add_bound_action(menu, self.win, "actionDetailsView", _("Details View"), "actionDetailsView_trigger")
 
+        # ComfyUI (optional): AI tools + job cancel for the clicked row
+        source_file = None
+        active_job = None
         if index.isValid():
-            # Look up the model item and our unique ID
+            file_id = file_id_for_index(index)
+            if is_generation_placeholder(file_id):
+                queue = getattr(self.win, "generation_queue", None)
+                active_job = queue.get_job(job_id_from_placeholder(file_id)) if queue else None
+                if active_job and active_job.get("status") not in ("queued", "running", "canceling"):
+                    active_job = None
+            elif hasattr(self.win, "active_generation_job_for_file"):
+                active_job = self.win.active_generation_job_for_file(file_id)
+                source_file = File.get(id=file_id)
+        if hasattr(self.win, "is_comfy_available"):
+            add_ai_tools_menu(self.win, menu, source_file=source_file)
+            if not active_job and hasattr(self.win, "actionGenerate"):
+                self.win.actionGenerate.setEnabled(self.win.can_open_generate_dialog())
+        if active_job:
+            cancel_action = menu.addAction(_("Cancel Job"))
+            delete_icon_path = os.path.join(info.PATH, "themes", "cosmic", "images", "track-delete-enabled.svg")
+            if os.path.exists(delete_icon_path):
+                cancel_action.setIcon(QIcon(delete_icon_path))
+            else:
+                cancel_action.setIcon(self.win.actionRemove_from_Project.icon())
+            cancel_action.triggered.connect(
+                lambda checked=False, job_id=active_job.get("id"): self.win.cancel_generation_job(job_id)
+            )
+
+        if index.isValid() and not active_job:
+            # Look up file_id from 5th column of row
             model = self.model()
             source_index = model.mapToSource(index)
 
@@ -193,6 +226,9 @@ class FilesListView(QListView):
             id_index = source_index.sibling(source_index.row(), 5)
             file_id = model.sourceModel().data(id_index, Qt.DisplayRole)
             file = File.get(id=file_id)
+            if not file:
+                menu.show_at(event)
+                return
 
             menu.addSeparator()
 
@@ -246,6 +282,8 @@ class FilesListView(QListView):
 
         # Get first column indexes for all selected rows
         selected = self.selectionModel().selectedRows(0)
+        # Generation placeholder rows are not draggable media
+        selected = [idx for idx in selected if not is_generation_placeholder(file_id_for_index(idx))]
 
         # Check if there are any selected items
         if not selected:
@@ -346,7 +384,8 @@ class FilesListView(QListView):
         set_proxy_filter(self.files_model.proxy_model, regex)
 
         col = self.files_model.proxy_model.sortColumn()
-        self.files_model.proxy_model.sort(col)
+        if col >= 0:
+            self.files_model.proxy_model.sort(col)
 
     def resize_contents(self):
         pass

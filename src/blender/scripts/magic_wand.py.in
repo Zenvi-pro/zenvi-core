@@ -117,11 +117,7 @@ if action:
     update_curve(fc_z, params["start_z"], params["end_z"])
 
 # Change the material settings (color, alpha, etc...)
-material_object = bpy.data.materials["Material"]
-mat_emission = material_object.node_tree.nodes["Emission"]
-mat_emission.inputs[0].default_value = params["diffuse_color"]
-mat_emission.inputs[1].default_value = params["strength"]
-material_object.diffuse_color = params["diffuse_color"]
+set_material_color("Material", params["diffuse_color"], emission_strength=params["strength"])
 
 # Change size of particle
 sval = params["particle_scale"]

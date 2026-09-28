@@ -1,0 +1,73 @@
+{
+  "action_icon": "ai-action-scenes.svg",
+  "menu_category": "enhance",
+  "menu_order": 30,
+  "name": "Split into Scenes",
+  "open_dialog": false,
+  "output_type": "video",
+  "template_id": "video-segment-scenes-transnet",
+  "workflow": {
+    "1": {
+      "_meta": {
+        "title": "MiaoshouAI Segment Video"
+      },
+      "class_type": "TransNetV2_Run",
+      "inputs": {
+        "TransNet_model": [
+          "2",
+          0
+        ],
+        "min_scene_length": 30,
+        "output_dir": "output",
+        "threshold": 0.5,
+        "video": [
+          "7",
+          0
+        ]
+      }
+    },
+    "2": {
+      "_meta": {
+        "title": "MiaoshouAI Load TransNet Model"
+      },
+      "class_type": "DownloadAndLoadTransNetModel",
+      "inputs": {
+        "device": "auto",
+        "model": "transnetv2-pytorch-weights"
+      }
+    },
+    "7": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "/tmp/input.mp4"
+      }
+    },
+    "8": {
+      "_meta": {
+        "title": "MiaoshouAI Select Video"
+      },
+      "class_type": "SelectVideo",
+      "inputs": {
+        "index": 0,
+        "segment_paths": [
+          "1",
+          0
+        ]
+      }
+    },
+    "9": {
+      "_meta": {
+        "title": "Preview Any"
+      },
+      "class_type": "PreviewAny",
+      "inputs": {
+        "preview": "",
+        "previewMode": null,
+        "source": [
+          "1",
+          0
+        ]
+      }
+    }
+  }
+}

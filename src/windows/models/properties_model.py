@@ -39,7 +39,7 @@ from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
 from classes.clip_utils import clamp_timing_to_media, clip_time_bounds
-from classes.query import Clip, Transition, Effect
+from classes.query import Clip, Transition, Effect, File
 from classes.logger import log
 from classes.app import get_app
 import openshot
@@ -67,6 +67,78 @@ class ClipStandardItemModel(QStandardItemModel):
 
 
 class PropertiesModel(updates.UpdateInterface):
+    def _reader_display_name(self, selected_item, reader_memo):
+        """Resolve a human-friendly reader display name from File.name when available."""
+        reader_json = json.loads(reader_memo or "{}")
+        reader_path = reader_json.get("path", "")
+        file_id = reader_json.get("id")
+
+        if getattr(selected_item, "data", None):
+            file_id = selected_item.data.get("file_id") or file_id
+
+        if file_id:
+            file_obj = File.get(id=file_id)
+            if file_obj:
+                file_name = str(file_obj.data.get("name", "")).strip()
+                if file_name:
+                    return file_name
+
+        return os.path.basename(reader_path)
+
+    def _resolve_tracked_object_id(self, raw_properties, tracked_objects_raw_properties):
+        """Resolve selected tracked object ID from properties payload."""
+        if not tracked_objects_raw_properties:
+            return None
+
+        selected_idx = raw_properties.get("selected_object_index", {}).get("value")
+        if selected_idx not in (None, "", "None"):
+            selected_idx = str(selected_idx)
+            try:
+                selected_idx_number = int(float(selected_idx))
+            except (TypeError, ValueError):
+                selected_idx_number = None
+            if selected_idx_number == -1 and "all" in tracked_objects_raw_properties:
+                return "all"
+            if selected_idx in tracked_objects_raw_properties:
+                return selected_idx
+
+            # Newer tracked-object IDs are "<effect-uuid>-<index>".
+            suffix = f"-{selected_idx}"
+            for object_id in tracked_objects_raw_properties.keys():
+                if object_id.endswith(suffix):
+                    return object_id
+
+        # Fallback to first tracked object
+        return next(iter(tracked_objects_raw_properties.keys()))
+
+    def _tracked_object_is_all(self, object_id):
+        return str(object_id).strip().lower() in {"all", "*", "-1"}
+
+    def _tracked_object_clip_data(self, effect_data, object_id):
+        """Return editable tracked object data, using a real object as template for 'all'."""
+        objects = effect_data.get('objects', {})
+        if not object_id:
+            return effect_data, False
+        if self._tracked_object_is_all(object_id):
+            template = objects.get("all")
+            if not isinstance(template, dict):
+                template = next((value for key, value in objects.items()
+                                 if not self._tracked_object_is_all(key) and isinstance(value, dict)), {})
+            return json.loads(json.dumps(template or {})), True
+        return objects.get(object_id, {}), False
+
+    def _tracked_object_update_payload(self, effect_data, object_id, clip_data, property_key):
+        """Build an effect update payload for one tracked object property edit."""
+        property_payload = json.loads(json.dumps(clip_data.get(property_key)))
+        if self._tracked_object_is_all(object_id):
+            objects_payload = {object_id: {property_key: property_payload}}
+            for existing_id, existing_data in effect_data.get('objects', {}).items():
+                if self._tracked_object_is_all(existing_id) or not isinstance(existing_data, dict):
+                    continue
+                objects_payload[existing_id] = {property_key: property_payload}
+            return {'objects': objects_payload}
+        return {'objects': {object_id: {property_key: property_payload}}}
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
 
@@ -200,8 +272,7 @@ class PropertiesModel(updates.UpdateInterface):
             # Create reference
             clip_data = c.data
             if object_id:
-                objects = c.data.get('objects', {})
-                clip_data = objects.pop(object_id, {})
+                clip_data, _ = self._tracked_object_clip_data(c.data, object_id)
                 if not clip_data:
                     log.debug("No clip data found for this object id")
                     return
@@ -287,9 +358,7 @@ class PropertiesModel(updates.UpdateInterface):
                     else:
                         clip_data = {property_key: clip_data.get(property_key)}
                 else:
-                    # If objects dict detected - don't reduce the # of objects
-                    objects[object_id] = clip_data
-                    clip_data = {'objects': objects}
+                    clip_data = self._tracked_object_update_payload(c.data, object_id, clip_data, property_key)
 
                 # Save changes
                 if clip_updated:
@@ -343,13 +412,20 @@ class PropertiesModel(updates.UpdateInterface):
                     # Create reference
                     clip_data = c.data
                     if object_id:
-                        objects = c.data.get('objects', {})
-                        clip_data = objects.pop(object_id, {})
-                        if not clip_data:
-                            log.debug("No clip data found for this object id")
-                            return
+                        clip_data, _ = self._tracked_object_clip_data(c.data, object_id)
+                        if not isinstance(clip_data, dict):
+                            clip_data = {}
 
                     # Update clip attribute
+                    if property_key not in clip_data and object_id:
+                        clip_data[property_key] = {
+                            channel: json.loads(json.dumps(property[1].get(channel, {"Points": []})))
+                            for channel in ("red", "blue", "green", "alpha")
+                            if channel in property[1]
+                        }
+                        for channel in ("red", "blue", "green"):
+                            clip_data[property_key].setdefault(channel, {"Points": []})
+
                     if property_key in clip_data:
                         log_id = "{}/{}".format(item_id, object_id) if object_id else item_id
                         log.debug("%s: update color property %s. %s", log_id, property_key, clip_data.get(property_key))
@@ -428,9 +504,7 @@ class PropertiesModel(updates.UpdateInterface):
                     if not object_id:
                         clip_data = {property_key: clip_data.get(property_key)}
                     else:
-                        # If objects dict detected - don't reduce the # of objects
-                        objects[object_id] = clip_data
-                        clip_data = {'objects': objects}
+                        clip_data = self._tracked_object_update_payload(c.data, object_id, clip_data, property_key)
 
                     # Save changes
                     if clip_updated:
@@ -614,11 +688,26 @@ class PropertiesModel(updates.UpdateInterface):
                 # Create reference
                 clip_data = c.data
                 if object_id:
-                    objects = c.data.get('objects', {})
-                    clip_data = objects.pop(object_id, {})
+                    clip_data, _ = self._tracked_object_clip_data(c.data, object_id)
                     if not clip_data:
                         log.debug("No clip data found for this object id")
                         return
+
+                if (
+                    property_key not in clip_data
+                    and item_type == "effect"
+                    and property_key in {"left", "top", "right", "bottom"}
+                    and property_type == "float"
+                ):
+                    clip_data[property_key] = {"Points": []}
+                elif (
+                    property_key not in clip_data
+                    and object_id
+                    and property_type in {"bool", "float", "int"}
+                ):
+                    clip_data[property_key] = {
+                        "Points": json.loads(json.dumps(property[1].get("Points", [])))
+                    }
 
                 # Update clip attribute
                 if property_key in clip_data:
@@ -819,9 +908,7 @@ class PropertiesModel(updates.UpdateInterface):
                     else:
                         clip_data = {property_key: clip_data.get(property_key)}
                 else:
-                    # If objects dict detected - don't reduce the # of objects
-                    objects[object_id] = clip_data
-                    clip_data = {'objects': objects}
+                    clip_data = self._tracked_object_update_payload(c.data, object_id, clip_data, property_key)
 
                 # Save changes
                 if clip_updated:
@@ -938,8 +1025,6 @@ class PropertiesModel(updates.UpdateInterface):
             elif type == "caption":
                 # Use caption value
                 col.setText(memo)
-                # Load caption editor also
-                get_app().window.CaptionTextLoaded.emit(memo, row)
             elif type == "bool":
                 # Use boolean value
                 if value:
@@ -1015,6 +1100,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Append ROW to MODEL (if does not already exist in model)
             self.model.appendRow(row)
+            if type == "caption":
+                # Load caption editor after both label/value cells exist.
+                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         elif name in self.items and self.items[name]["row"]:
             # Update the value of the existing model
@@ -1072,10 +1160,7 @@ class PropertiesModel(updates.UpdateInterface):
             elif type == "int":
                 col.setText("%d" % value)
             elif type == "reader":
-                reader_json = json.loads(property[1].get("memo") or "{}")
-                reader_path = reader_json.get("path", "/")
-                fileName = os.path.basename(reader_path)
-                col.setText("%s" % fileName)
+                col.setText(self._reader_display_name(c, property[1].get("memo")))
             else:
                 # Use numeric value
                 if value == "" or value is None:
@@ -1113,6 +1198,9 @@ class PropertiesModel(updates.UpdateInterface):
 
             # Update helper dictionary
             row.append(col)
+            if type == "caption":
+                # Keep the editor enabled and synchronized on property refreshes.
+                get_app().window.CaptionTextLoaded.emit(memo, row)
 
         # Keep track of items in a dictionary (for quick look up)
         self.items[name] = {"row": row, "property": property}
@@ -1153,7 +1241,8 @@ class PropertiesModel(updates.UpdateInterface):
                 if len(all_raw_properties) == 1:
                     tracked_objects_raw_properties = raw_properties.pop('objects', None)
                     if tracked_objects_raw_properties:
-                        tracked_object_id = list(tracked_objects_raw_properties.keys())[0]
+                        tracked_object_id = self._resolve_tracked_object_id(
+                            raw_properties, tracked_objects_raw_properties)
                         tracked_object_properties = tracked_objects_raw_properties[tracked_object_id]
                         raw_properties.update(tracked_object_properties)
                 else:

@@ -38,11 +38,11 @@
         </sizepolicy>
        </property>
        <property name="text">
-        <string>*/.openshot_qt/profiles/*</string>
-       </property>
-       <property name="textFormat">
-        <enum>Qt::PlainText</enum>
-       </property>
+        <string>&lt;b&gt;~/.openshot_qt/profiles/...&lt;/b&gt;</string>
+        </property>
+        <property name="textFormat">
+        <enum>Qt::RichText</enum>
+        </property>
       </widget>
      </item>
     </layout>

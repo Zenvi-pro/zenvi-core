@@ -14,6 +14,7 @@ from qt_api import QColor, QPen, QPainterPath
 from qt_api import QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolTip
 
 from classes.app import get_app
+from .generation_badge import paint_generation_progress
 from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS
 from classes.query import File
 from .files_thumbnail_overlay import paint_proxy_badge
@@ -188,6 +189,7 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
         self.paint_badge(painter, option, index)
         self.paint_proxy_state(painter, option, index)
+        paint_generation_progress(self, painter, option, index)
 
     def paint_badge(self, painter, option, index):
         status = self._status(index)

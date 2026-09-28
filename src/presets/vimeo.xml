@@ -5,7 +5,7 @@
 	<title translatable="True">Vimeo</title>
 	<videoformat>mp4</videoformat>
 	<videocodec>libx264</videocodec>
-	<audiocodec>libmp3lame</audiocodec>
+	<audiocodec>aac</audiocodec>
 	<audiochannels>2</audiochannels>
 	<audiochannellayout>3</audiochannellayout>
 	<videobitrate
@@ -14,8 +14,8 @@
 	 high="8 Mb/s"></videobitrate>
 	<audiobitrate
 	 low="128 kb/s"
-	 med="256 kb/s"
-	 high="320 kb/s"></audiobitrate>
+	 med="192 kb/s"
+	 high="256 kb/s"></audiobitrate>
 	<samplerate>48000</samplerate>
 	<projectprofile>NTSC SD SQ VGA 480p 29.97 fps</projectprofile>
 	<projectprofile>NTSC SD Wide FWVGA 480p 29.97 fps</projectprofile>

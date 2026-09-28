@@ -8,6 +8,12 @@
 #   pip3 install -r requirements.txt
 #
 # Optional env vars:
+#   ZENVI_DEPS            — libopenshot prefix to bundle (default: ~/zenvi-deps)
+#   OPENCV_ROOT           — OpenCV prefix libopenshot was built against
+#                           (default: `brew --prefix opencv@4`); set OPENCV_ROOT=""
+#                           to skip OpenCV staging. Only the OpenCV dylibs that
+#                           libopenshot actually loads are bundled (Object Detector /
+#                           Object Mask effects need them).
 #   SIGN_IDENTITY         — codesign identity for production signing
 #   MAC_NOTARIZE_PASSWORD — notarytool password (requires SIGN_IDENTITY)
 #   APPLE_ID              — Apple ID for notarytool
@@ -39,16 +45,44 @@ echo "======================================"
 echo ""
 
 # ── Step 1: Install Python dependencies ──────────────────────────────────────
-echo "[1/5] Installing Python dependencies..."
+echo "[1/6] Installing Python dependencies..."
 pip3 install --upgrade pip
 pip3 install -r requirements.txt
 pip3 install pyobjc-framework-Cocoa 2>/dev/null || true
 
-# ── Step 2: Freeze ────────────────────────────────────────────────────────────
-echo "[2/5] Running cx_Freeze (build)..."
+# ── Step 2: Stage OpenCV runtime for the bundle ──────────────────────────────
+# libopenshot links Homebrew's OpenCV; its dylibs reference each other via
+# @rpath, which cx_Freeze cannot follow. Stage the referenced closure with
+# concrete paths first (installer/fix_opencv_rpath.py, from upstream OpenShot)
+# and let freeze.py bundle it via OPENCV_ROOT / OPENCV_FREEZE_LIB_PATH.
+# NOTE: the fixer rewrites load commands inside $ZENVI_DEPS in place (the
+# staged paths remain valid for from-source runs).
+ZENVI_DEPS="${ZENVI_DEPS:-$HOME/zenvi-deps}"
+export ZENVI_OPENSHOT_INSTALL="${ZENVI_OPENSHOT_INSTALL:-$ZENVI_DEPS}"
+echo "[2/6] Staging OpenCV runtime libraries..."
+if [ -z "${OPENCV_ROOT+x}" ]; then
+  OPENCV_ROOT="$(brew --prefix opencv@4 2>/dev/null || true)"
+fi
+OPENSHOT_BINDING="$ZENVI_DEPS/python/_openshot.so"
+if [ -n "$OPENCV_ROOT" ] && [ -f "$OPENSHOT_BINDING" ] \
+   && otool -L "$ZENVI_DEPS/lib/libopenshot.dylib" 2>/dev/null | grep -q opencv; then
+  export OPENCV_ROOT
+  export OPENCV_FREEZE_LIB_PATH="$REPO_ROOT/build/opencv-freeze-lib"
+  rm -rf "$OPENCV_FREEZE_LIB_PATH"
+  python3 installer/fix_opencv_rpath.py --only-referenced \
+    "$OPENSHOT_BINDING" "$OPENCV_ROOT" "$OPENCV_FREEZE_LIB_PATH" \
+    "$ZENVI_DEPS"/lib/libopenshot*.dylib
+  echo "  OpenCV staged from $OPENCV_ROOT -> $OPENCV_FREEZE_LIB_PATH"
+else
+  unset OPENCV_ROOT OPENCV_FREEZE_LIB_PATH
+  echo "  libopenshot at $ZENVI_DEPS has no OpenCV link (or OPENCV_ROOT unset); skipping."
+fi
+
+# ── Step 3: Freeze ────────────────────────────────────────────────────────────
+echo "[3/6] Running cx_Freeze (build)..."
 python3 freeze.py build --git-branch=production
 
-# ── Step 3: Locate frozen output ─────────────────────────────────────────────
+# ── Step 4: Locate frozen output ─────────────────────────────────────────────
 FROZEN_DIR=$(find build -maxdepth 1 -type d -name 'exe.*' | head -1)
 if [ -z "$FROZEN_DIR" ]; then
   echo "ERROR: No cx_Freeze output directory found in build/. The freeze step likely failed."
@@ -56,8 +90,8 @@ if [ -z "$FROZEN_DIR" ]; then
 fi
 echo "Found frozen dir: $FROZEN_DIR"
 
-# ── Step 4: Construct .app bundle ────────────────────────────────────────────
-echo "[3/5] Constructing .app bundle..."
+# ── Step 5: Construct .app bundle ────────────────────────────────────────────
+echo "[4/6] Constructing .app bundle..."
 APP="${APP_NAME}.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -81,8 +115,8 @@ for bin in zenvi launch launch-zenvi launch-mac; do
   [ -f "$APP/Contents/MacOS/$bin" ] && chmod +x "$APP/Contents/MacOS/$bin" || true
 done
 
-# ── Step 5: Sign ─────────────────────────────────────────────────────────────
-echo "[4/5] Signing..."
+# ── Step 6: Sign ─────────────────────────────────────────────────────────────
+echo "[5/6] Signing..."
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "  Production signing with identity: $SIGN_IDENTITY"
   find build \( -name '*.dylib' -o -name '*.so' \) \
@@ -100,9 +134,9 @@ else
   codesign -s - --deep --force "$APP"
 fi
 
-# ── Step 6: Create DMG ────────────────────────────────────────────────────────
+# ── Step 7: Create DMG ────────────────────────────────────────────────────────
 DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
-echo "[5/5] Creating branded DMG: $DMG_NAME"
+echo "[6/6] Creating branded DMG: $DMG_NAME"
 bash "$REPO_ROOT/installer/create-zenvi-dmg.sh" "$APP" "$DMG_NAME"
 
 echo ""
