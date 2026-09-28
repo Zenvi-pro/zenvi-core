@@ -3533,3 +3533,47 @@ class TimelineHelperTests(unittest.TestCase):
 
         self.assertEqual([item[1] for item in ready], [100, 300, 400])
         self.assertEqual([item[2] for item in ready], ["F1:100", "F1:300", "F1:400"])
+
+
+class UpstreamMaskFixesTimelineHelperTests(unittest.TestCase):
+    """Timecode-editor and ruler-tick cases ported from upstream OpenShot #6024 (mask-fixes)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+        cls.ruler_paint_module = importlib.import_module("windows.views.timeline_backend.paint.ruler")
+        cls.qwidget_timecode_module = importlib.import_module("windows.views.timeline_backend.qwidget.timecode")
+
+    def test_timecode_editor_parses_blank_and_zero_as_timeline_start(self):
+        edit = self.qwidget_timecode_module.TimecodeLineEdit()
+        edit.set_context(30, 1, 31)
+
+        self.assertEqual(edit.parse_text(""), 1)
+        self.assertEqual(edit.parse_text("0"), 1)
+        self.assertEqual(edit.parse_text("00:00:00,00"), 1)
+        self.assertIsNone(edit.parse_text("bad"))
+
+    def test_timecode_editor_round_trips_current_frame(self):
+        edit = self.qwidget_timecode_module.TimecodeLineEdit()
+        edit.set_context(30, 1, 31)
+        edit.set_current_frame_text(31)
+
+        self.assertEqual(edit.parse_text(edit.text()), 31)
+
+    def test_ruler_tick_intervals_include_intermediate_common_steps(self):
+        painter = object.__new__(self.ruler_paint_module.RulerPainter)
+
+        self.assertEqual(
+            painter._nice_frame_intervals(30.0)[:8],
+            [1, 2, 3, 5, 6, 10, 15, 30],
+        )
+        self.assertIn(30, painter._nice_frame_intervals(30.0))
+        self.assertIn(12, painter._nice_frame_intervals(24.0))
+
+    def test_ruler_tick_picker_avoids_large_density_drop_near_threshold(self):
+        painter = object.__new__(self.ruler_paint_module.RulerPainter)
+
+        self.assertEqual(painter._frames_per_tick(210.0, 30.0), 10)
+        self.assertEqual(painter._frames_per_tick(190.0, 30.0), 10)
+        self.assertEqual(painter._frames_per_tick(110.0, 30.0), 15)
+        self.assertEqual(painter._frames_per_tick(70.0, 30.0), 30)
