@@ -1662,6 +1662,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             (_("From Right"),     MenuAnimate.WIPE_IN_RIGHT),
             (_("From Top"),       MenuAnimate.WIPE_IN_TOP),
         ]))
+        In_Menu.addMenu(_motion_sub(_("Blur Wipe In"), [
+            (_("Circle Expand"),  MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK),
+            (_("From Bottom"),    MenuAnimate.BLUR_WIPE_IN_BOTTOM),
+            (_("From Left"),      MenuAnimate.BLUR_WIPE_IN_LEFT),
+            (_("From Right"),     MenuAnimate.BLUR_WIPE_IN_RIGHT),
+            (_("From Top"),       MenuAnimate.BLUR_WIPE_IN_TOP),
+        ]))
         Animate_Menu.addMenu(In_Menu)
 
         # ── Out ▶ ──────────────────────────────────────────────────────────────
@@ -1695,6 +1703,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             (_("To Left"),        MenuAnimate.WIPE_OUT_LEFT),
             (_("To Right"),       MenuAnimate.WIPE_OUT_RIGHT),
             (_("To Top"),         MenuAnimate.WIPE_OUT_TOP),
+        ]))
+        Out_Menu.addMenu(_motion_sub(_("Blur Wipe Out"), [
+            (_("Circle Expand"),  MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK),
+            (_("To Bottom"),      MenuAnimate.BLUR_WIPE_OUT_BOTTOM),
+            (_("To Left"),        MenuAnimate.BLUR_WIPE_OUT_LEFT),
+            (_("To Right"),       MenuAnimate.BLUR_WIPE_OUT_RIGHT),
+            (_("To Top"),         MenuAnimate.BLUR_WIPE_OUT_TOP),
         ]))
         Animate_Menu.addMenu(Out_Menu)
 
@@ -3096,7 +3112,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         )
                     ]
 
-                def _make_wipe_fx(svg_filename, t_start, t_end, brightness_start, brightness_end):
+                def _make_wipe_fx(svg_filename, t_start, t_end, brightness_start, brightness_end,
+                                  contrast=20.0):
                     """Attach a Mask effect (wipe) to clip.data using the given SVG transition."""
                     svg_path = os.path.join(info.PATH, "transitions", "common", svg_filename)
                     reader_json = self._get_transition_reader_json(svg_path)
@@ -3108,10 +3125,21 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     fx["mask_reader"] = deepcopy(reader_json)
                     fx["reader"]      = deepcopy(reader_json)
                     fx["brightness"]  = {"Points": [
-                        kf(t_start, brightness_start),
-                        kf(t_end,   brightness_end),
+                        kf(t_start, brightness_start, openshot.LINEAR),
+                        kf(t_end,   brightness_end,   openshot.LINEAR),
                     ]}
-                    fx["contrast"] = {"Points": [kf(t_start, 20.0)]}
+                    fx["contrast"] = {"Points": [kf(t_start, contrast)]}
+                    clip.data["effects"].append(fx)
+
+                def _make_blur_fx(t_start, r_start, t_end, r_end):
+                    """Attach a Blur effect (horizontal + vertical radius) to clip.data."""
+                    effect = openshot.EffectInfo().CreateEffect("Blur")
+                    fx = json.loads(effect.Json())
+                    fx["id"] = get_app().project.generate_id()
+                    fx["horizontal_radius"] = {"Points": [kf(t_start, r_start, openshot.LINEAR),
+                                                          kf(t_end,   r_end,   openshot.LINEAR)]}
+                    fx["vertical_radius"]   = {"Points": [kf(t_start, r_start, openshot.LINEAR),
+                                                          kf(t_end,   r_end,   openshot.LINEAR)]}
                     clip.data["effects"].append(fx)
 
                 def _apply_preset(preset_name, t_start, t_end, resting_frame):
@@ -3187,6 +3215,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     MenuAnimate.WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
                     MenuAnimate.WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
                     MenuAnimate.WIPE_OUT_BOTTOM:        "wipe_bottom_to_top.svg",
+                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND:  "circle_in_to_out.svg",
+                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK:  "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_IN_LEFT:           "wipe_left_to_right.svg",
+                    MenuAnimate.BLUR_WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
+                    MenuAnimate.BLUR_WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
+                    MenuAnimate.BLUR_WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_BOTTOM:        "wipe_bottom_to_top.svg",
                 }
 
                 def _camera_context():
@@ -3252,26 +3292,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         self._remove_keypoints_in_range(clip.data["location_y"], out_start, e)
                         add("location_y", kf(out_start, by), kf(e, by + 1.0))
 
-                    # ── BLUR IN — horizontal+vertical blur 50→0 + alpha fade ───
+                    # ── BLUR IN — blur 50→0 + alpha fade ─────────────────────
                     elif action == MenuAnimate.BLUR_IN:
-                        effect = openshot.EffectInfo().CreateEffect("Blur")
-                        fx = json.loads(effect.Json())
-                        fx["id"] = get_app().project.generate_id()
-                        fx["horizontal_radius"] = {"Points": [kf(s, 50.0), kf(in_end, 0.0)]}
-                        fx["vertical_radius"]   = {"Points": [kf(s, 50.0), kf(in_end, 0.0)]}
-                        clip.data["effects"].append(fx)
+                        _make_blur_fx(s, 50.0, in_end, 0.0)
                         ba = _base('alpha', in_end)
                         self._remove_keypoints_in_range(clip.data["alpha"], s, in_end)
                         add("alpha", kf(s, 0.0), kf(in_end, ba))
 
-                    # ── BLUR OUT — alpha fade + blur grows 0→50 ───────────────
+                    # ── BLUR OUT — alpha fade + blur 0→50 ─────────────────────
                     elif action == MenuAnimate.BLUR_OUT:
-                        effect = openshot.EffectInfo().CreateEffect("Blur")
-                        fx = json.loads(effect.Json())
-                        fx["id"] = get_app().project.generate_id()
-                        fx["horizontal_radius"] = {"Points": [kf(out_start, 0.0), kf(e, 50.0)]}
-                        fx["vertical_radius"]   = {"Points": [kf(out_start, 0.0), kf(e, 50.0)]}
-                        clip.data["effects"].append(fx)
+                        _make_blur_fx(out_start, 0.0, e, 50.0)
                         ba = _base('alpha', out_start)
                         self._remove_keypoints_in_range(clip.data["alpha"], out_start, e)
                         add("alpha", kf(out_start, ba), kf(e, 0.0))
@@ -3291,6 +3321,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                                     MenuAnimate.WIPE_OUT_LEFT, MenuAnimate.WIPE_OUT_RIGHT,
                                     MenuAnimate.WIPE_OUT_TOP,  MenuAnimate.WIPE_OUT_BOTTOM):
                         _make_wipe_fx(_WIPE_SVG[action], out_start, e, -1.0, 1.0)
+
+                    # ── BLUR WIPE IN — blur 50→0, then wipe reveals ───────────
+                    elif action in (MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND,
+                                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK,
+                                    MenuAnimate.BLUR_WIPE_IN_LEFT, MenuAnimate.BLUR_WIPE_IN_RIGHT,
+                                    MenuAnimate.BLUR_WIPE_IN_TOP,  MenuAnimate.BLUR_WIPE_IN_BOTTOM):
+                        _make_blur_fx(s, 50.0, in_end, 0.0)
+                        _make_wipe_fx(_WIPE_SVG[action], s, in_end, 1.0, -1.0, contrast=10.0)
+
+                    # ── BLUR WIPE OUT — wipe hides, blur 0→50 ─────────────────
+                    elif action in (MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND,
+                                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK,
+                                    MenuAnimate.BLUR_WIPE_OUT_LEFT, MenuAnimate.BLUR_WIPE_OUT_RIGHT,
+                                    MenuAnimate.BLUR_WIPE_OUT_TOP,  MenuAnimate.BLUR_WIPE_OUT_BOTTOM):
+                        _make_blur_fx(out_start, 0.0, e, 50.0)
+                        _make_wipe_fx(_WIPE_SVG[action], out_start, e, -1.0, 1.0, contrast=10.0)
 
                     # ── POP ───────────────────────────────────────────────────
                     elif action == MenuAnimate.POP_IN:
@@ -3401,13 +3447,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     elif action == MenuAnimate.CREDITS_UP:
                         clip.data["scale"] = openshot.SCALE_CROP
                         add("location_y",
-                            kf(s,  1.5, openshot.LINEAR),
-                            kf(e, -1.5, openshot.LINEAR))
+                            kf(s,  1.0, openshot.LINEAR),
+                            kf(e, -1.0, openshot.LINEAR))
                     elif action == MenuAnimate.CREDITS_DOWN:
                         clip.data["scale"] = openshot.SCALE_CROP
                         add("location_y",
-                            kf(s, -1.5, openshot.LINEAR),
-                            kf(e,  1.5, openshot.LINEAR))
+                            kf(s, -1.0, openshot.LINEAR),
+                            kf(e,  1.0, openshot.LINEAR))
 
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
         finally:

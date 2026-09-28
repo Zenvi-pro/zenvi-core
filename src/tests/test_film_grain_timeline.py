@@ -119,6 +119,15 @@ class FilmGrainTimelineTests(unittest.TestCase):
         }
         return types.SimpleNamespace(id="C1", data=data)
 
+    def make_motion_app(self):
+        return types.SimpleNamespace(
+            updates=types.SimpleNamespace(transaction_id=None),
+            project=types.SimpleNamespace(
+                get=lambda key: {"num": 30, "den": 1} if key == "fps" else None,
+                generate_id=lambda: "FX1",
+            ),
+        )
+
     def make_motion_helper(self):
         timeline_module = self.timeline_module
 
@@ -154,15 +163,8 @@ class FilmGrainTimelineTests(unittest.TestCase):
     def test_motion_wipe_mask_uses_high_static_contrast(self):
         helper = self.make_motion_helper()
         clip = self.make_motion_clip()
-        app = types.SimpleNamespace(
-            updates=types.SimpleNamespace(transaction_id=None),
-            project=types.SimpleNamespace(
-                get=lambda key: {"num": 30, "den": 1} if key == "fps" else None,
-                generate_id=lambda: "FX1",
-            ),
-        )
 
-        with patch.object(self.timeline_module, "get_app", return_value=app), \
+        with patch.object(self.timeline_module, "get_app", return_value=self.make_motion_app()), \
                 patch.object(self.timeline_module.Clip, "get", return_value=clip):
             self.timeline_module.TimelineView.Animate_Triggered(
                 helper,
@@ -175,6 +177,52 @@ class FilmGrainTimelineTests(unittest.TestCase):
         effect = clip.data["effects"][0]
         self.assertEqual(effect["class_name"], "Mask")
         self.assertEqual(effect["contrast"]["Points"][0]["co"]["Y"], 20.0)
+
+    def test_motion_blur_wipe_in_produces_blur_then_mask_effects(self):
+        helper = self.make_motion_helper()
+        clip = self.make_motion_clip()
+
+        with patch.object(self.timeline_module, "get_app", return_value=self.make_motion_app()), \
+                patch.object(self.timeline_module.Clip, "get", return_value=clip):
+            self.timeline_module.TimelineView.Animate_Triggered(
+                helper,
+                self.timeline_module.MenuAnimate.BLUR_WIPE_IN_LEFT,
+                ["C1"],
+                transaction_id="tx-blur-wipe-test",
+            )
+
+        self.assertEqual(len(clip.data["effects"]), 2)
+        blur_fx, mask_fx = clip.data["effects"]
+        self.assertEqual(blur_fx["class_name"], "Blur")
+        self.assertEqual(blur_fx["horizontal_radius"]["Points"][0]["co"]["Y"], 50.0)
+        self.assertEqual(blur_fx["horizontal_radius"]["Points"][-1]["co"]["Y"], 0.0)
+        self.assertEqual(mask_fx["class_name"], "Mask")
+        self.assertEqual(mask_fx["brightness"]["Points"][0]["co"]["Y"], 1.0)
+        self.assertEqual(mask_fx["brightness"]["Points"][-1]["co"]["Y"], -1.0)
+        self.assertEqual(mask_fx["contrast"]["Points"][0]["co"]["Y"], 10.0)
+
+    def test_motion_blur_wipe_out_produces_blur_then_mask_effects(self):
+        helper = self.make_motion_helper()
+        clip = self.make_motion_clip()
+
+        with patch.object(self.timeline_module, "get_app", return_value=self.make_motion_app()), \
+                patch.object(self.timeline_module.Clip, "get", return_value=clip):
+            self.timeline_module.TimelineView.Animate_Triggered(
+                helper,
+                self.timeline_module.MenuAnimate.BLUR_WIPE_OUT_LEFT,
+                ["C1"],
+                transaction_id="tx-blur-wipe-test",
+            )
+
+        self.assertEqual(len(clip.data["effects"]), 2)
+        blur_fx, mask_fx = clip.data["effects"]
+        self.assertEqual(blur_fx["class_name"], "Blur")
+        self.assertEqual(blur_fx["horizontal_radius"]["Points"][0]["co"]["Y"], 0.0)
+        self.assertEqual(blur_fx["horizontal_radius"]["Points"][-1]["co"]["Y"], 50.0)
+        self.assertEqual(mask_fx["class_name"], "Mask")
+        self.assertEqual(mask_fx["brightness"]["Points"][0]["co"]["Y"], -1.0)
+        self.assertEqual(mask_fx["brightness"]["Points"][-1]["co"]["Y"], 1.0)
+        self.assertEqual(mask_fx["contrast"]["Points"][0]["co"]["Y"], 10.0)
 
     def test_motion_bounce_emphasis_uses_frame_relative_offsets(self):
         helper = self.make_motion_helper()
