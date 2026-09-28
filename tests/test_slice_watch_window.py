@@ -287,7 +287,7 @@ def test_watch_clip_window_refuses_instead_of_watching_elsewhere(kwargs, needle)
     assert calls == [] and searched == []
 
 
-def _slice_with_explicit_seconds(**kwargs):
+def _slice_with_explicit_seconds(siblings=None, **kwargs):
     from contextlib import ExitStack
 
     resolved = MagicMock(ok=True, clip=MagicMock())
@@ -298,15 +298,24 @@ def _slice_with_explicit_seconds(**kwargs):
     blocked = []
     time_slices = []
     cuts = []
+    cuts_on = []
+    _slice_with_explicit_seconds.last_cuts_on = cuts_on
 
     def run_main(fn):
         if getattr(fn, "__name__", "") == "_do_time_slice":
             time_slices.append(True)
+            # Expose which clip the range slice targeted (closure cell).
+            try:
+                cells = dict(zip(fn.__code__.co_freevars, fn.__closure__))
+                _slice_with_explicit_seconds.last_range_target = cells["tgt_id"].cell_contents
+            except Exception:
+                _slice_with_explicit_seconds.last_range_target = None
             return "Sliced at 0:10 and 0:12 (source). Three segments: before, selected range, after."
         return fn() if callable(fn) else None
 
     def cut(clip_id, cs, ce, cp, cut_source, **kw):
         cuts.append(float(cut_source))
+        cuts_on.append(clip_id)
         return f"Sliced at {cut_source - cs:.0f}s ({kw.get('label')})."
 
     patches = [
@@ -314,6 +323,7 @@ def _slice_with_explicit_seconds(**kwargs):
         patch.object(tool_handlers, "_twelvelabs_search_in_window",
                      lambda *a, **k: blocked.append("search") or ([], None)),
         patch.object(tool_handlers, "_slice_at_source_cut", cut),
+        patch.object(tool_handlers, "_sibling_clips_from_same_file", lambda *a, **k: list(siblings or [])),
         patch.object(tool_handlers, "_run_on_main_thread", side_effect=run_main),
         patch.object(tool_handlers, "_get_source_file_for_clip", return_value=sf),
         patch("classes.clip_resolver.resolve_timeline_clip", return_value=resolved),
@@ -345,6 +355,84 @@ def test_slice_explicit_seconds_outside_the_clip_is_an_error():
     out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="10", end_seconds="12")
     assert out.startswith("Error:")
     assert blocked == [] and not time_slices and not cuts
+    # With no other placement from this file, the error says so instead of
+    # leaving the caller to guess.
+    assert "only clip from this file" in out
+
+
+# The resolved clip covers source [60, 80]. Siblings are other timeline
+# placements cut from the same file: (id, source_start, source_end, position, layer).
+_SIBLINGS = [("clip-0", 0.0, 60.0, 0.0, 1), ("clip-2", 80.0, 229.0, 40.0, 1)]
+
+
+def test_slice_cut_at_clip_start_is_a_noop_not_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60")
+    assert not out.startswith("Error:")
+    assert out.startswith("Nothing to slice")
+    assert "start of this clip" in out
+    assert blocked == [] and not time_slices and not cuts
+
+
+def test_slice_cut_at_clip_end_is_a_noop_not_an_error():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(end_seconds="80")
+    assert out.startswith("Nothing to slice")
+    assert "end of this clip" in out
+    assert not cuts and not time_slices
+
+
+def test_slice_cut_redirects_to_the_sibling_that_holds_the_time():
+    # 98s lives in clip-2 (source 80-229), not in the resolved clip (60-80).
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="98", siblings=_SIBLINGS)
+    assert "Sliced" in out
+    assert cuts == [98.0]
+    assert _slice_with_explicit_seconds.last_cuts_on == ["clip-2"]
+    assert "timeline_clip_id=clip-2" in out
+    assert blocked == [] and not time_slices
+
+
+def test_slice_cut_with_no_sibling_holding_the_time_names_the_sibling_windows():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="300", siblings=_SIBLINGS)
+    assert out.startswith("Error:")
+    assert "300.00s" in out
+    assert "timeline_clip_id=clip-0" in out and "timeline_clip_id=clip-2" in out
+    assert "[80.00s\u2013229.00s]" in out
+    assert not cuts and not time_slices
+
+
+def test_slice_cut_on_a_sibling_edge_is_not_redirected_into_a_failing_cut():
+    # 60s is the resolved clip's start (no-op) and clip-0's end; neither is a cut.
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60", siblings=_SIBLINGS)
+    assert out.startswith("Nothing to slice")
+    assert not cuts
+    # 229s is clip-2's end: no clip has room to cut there, so say so.
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="229", siblings=_SIBLINGS)
+    assert out.startswith("Error:")
+    assert not cuts and not time_slices
+
+
+def test_slice_range_redirects_to_the_sibling_that_holds_it():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(
+        start_seconds="100", end_seconds="110", siblings=_SIBLINGS,
+    )
+    assert "Sliced" in out
+    assert time_slices and not cuts
+    assert _slice_with_explicit_seconds.last_range_target == "clip-2"
+
+
+def test_slice_range_equal_to_the_whole_clip_is_a_noop():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="60", end_seconds="80")
+    assert out.startswith("Nothing to slice")
+    assert not cuts and not time_slices
+
+
+def test_slice_range_spanning_two_clips_is_an_error_that_names_them():
+    # 70-100 straddles the resolved clip (60-80) and clip-2 (80-229).
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(
+        start_seconds="70", end_seconds="100", siblings=_SIBLINGS,
+    )
+    assert out.startswith("Error:")
+    assert "timeline_clip_id=clip-2" in out
+    assert not cuts and not time_slices
 
 
 def test_watch_clip_window_in_handlers():

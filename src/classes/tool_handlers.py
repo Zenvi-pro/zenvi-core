@@ -3573,6 +3573,72 @@ def _slice_timeline_clip_at_source_times(
     )
 
 
+_SIBLING_EPS = 1e-3
+
+
+def _sibling_clips_from_same_file(file_id: str, exclude_clip_id: str = "") -> list:
+    """Other timeline placements cut from the same source file.
+
+    Returns ``[(clip_id, source_start, source_end, position, layer), ...]``
+    sorted by source_start. Must run on the main thread (reads project data).
+    Any failure yields ``[]`` so callers fall back to the single-clip path.
+    """
+    try:
+        from classes.query import Clip
+        from classes.ai_metadata_utils import get_source_window
+    except Exception:
+        return []
+    out = []
+    try:
+        for c in Clip.filter():
+            d = c.data if isinstance(getattr(c, "data", None), dict) else {}
+            if str(d.get("file_id") or "") != str(file_id or ""):
+                continue
+            if str(c.id) == str(exclude_clip_id):
+                continue
+            sf = _get_source_file_for_clip(c)
+            fd = sf.data if sf and isinstance(sf.data, dict) else None
+            cs, ce = get_source_window(d, fd)
+            try:
+                layer = int(d.get("layer", 1) or 1)
+            except (TypeError, ValueError):
+                layer = 1
+            out.append((str(c.id), float(cs), float(ce), float(d.get("position", 0.0) or 0.0), layer))
+    except Exception as exc:
+        log.debug("sibling clip scan failed: %s", exc)
+        return []
+    out.sort(key=lambda t: t[1])
+    return out
+
+
+def _sibling_containing(siblings, t0: float, t1: float):
+    """First sibling whose source window contains [t0, t1] with room to cut.
+
+    A point cut (t0 == t1) must be strictly inside the sibling: a cut on its
+    edge would split off nothing. A range may touch one edge but not both.
+    """
+    for sib in siblings or []:
+        _sid, cs, ce, _pos, _layer = sib
+        if t1 - t0 <= _SIBLING_EPS:
+            if cs + _SIBLING_EPS < t0 < ce - _SIBLING_EPS:
+                return sib
+            continue
+        if cs - _SIBLING_EPS <= t0 and t1 <= ce + _SIBLING_EPS:
+            if t0 - cs > _SIBLING_EPS or ce - t1 > _SIBLING_EPS:
+                return sib
+    return None
+
+
+def _describe_siblings(siblings) -> str:
+    if not siblings:
+        return "it is the only clip from this file on the timeline"
+    parts = [
+        f"[{cs:.2f}s–{ce:.2f}s] at {_fmt_mmss(pos)} on track {layer} (timeline_clip_id={sid})"
+        for sid, cs, ce, pos, layer in siblings
+    ]
+    return "other clips from this file cover " + "; ".join(parts)
+
+
 def slice_clip_at_best_match(
     query="",
     occurrence="0",
@@ -3588,6 +3654,7 @@ def slice_clip_at_best_match(
 
         clip_info_box = [None]
         error_box_pre = [None]
+        siblings_box: list = [[]]
 
         def _read_clip_info():
             try:
@@ -3638,6 +3705,7 @@ def slice_clip_at_best_match(
                 clip_info_box[0] = (
                     str(obj.id), cs, ce, cp, str(iid), str(vid), layer_num, fid, tw_status, tw_err
                 )
+                siblings_box[0] = _sibling_clips_from_same_file(fid, exclude_clip_id=str(obj.id))
             except Exception as exc:
                 error_box_pre[0] = f"Error: {exc}"
 
@@ -3653,12 +3721,34 @@ def slice_clip_at_best_match(
         # Explicit source seconds (from a watch or the user) skip search + watch.
         t_in = _coerce_optional_float(start_seconds)
         t_out = _coerce_optional_float(end_seconds)
+        siblings = siblings_box[0] or []
         if (t_in is None) != (t_out is None):
             cut_at = t_in if t_out is None else t_out
             if not clip_start < cut_at < clip_end:
+                # A cut on the clip's own edge splits off nothing. Say so
+                # plainly (not as an error) so the caller does not retry it.
+                if abs(cut_at - clip_start) <= _SIBLING_EPS:
+                    return (
+                        f"Nothing to slice: {cut_at:.2f}s is already the start of this clip "
+                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
+                    )
+                if abs(cut_at - clip_end) <= _SIBLING_EPS:
+                    return (
+                        f"Nothing to slice: {cut_at:.2f}s is already the end of this clip "
+                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
+                    )
+                sib = _sibling_containing(siblings, cut_at, cut_at)
+                if sib:
+                    sid, s_cs, s_ce, s_pos, _s_layer = sib
+                    return _slice_at_source_cut(
+                        sid, s_cs, s_ce, s_pos, cut_at,
+                        label=f"requested time, on the clip that holds it: timeline_clip_id={sid}",
+                    )
                 return (
                     f"Error: Requested cut {cut_at:.2f}s is outside this clip's "
-                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s]."
+                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
+                    f"{_describe_siblings(siblings)}. Pick a time inside a clip's window, "
+                    f"or pass that clip's timeline_clip_id."
                 )
             return _slice_at_source_cut(
                 clip_id_str, clip_start, clip_end, clip_pos, cut_at, label="requested time",
@@ -3669,19 +3759,31 @@ def slice_clip_at_best_match(
         if time_rng is not None:
             t0, t1 = time_rng
             eps = 1e-3
+            target = (clip_id_str, clip_start, clip_end, clip_pos, layer_num)
             if t0 < clip_start - eps or t1 > clip_end + eps:
+                sib = _sibling_containing(siblings, t0, t1)
+                if sib is None:
+                    return (
+                        f"Error: Requested range [{t0:.2f}s–{t1:.2f}s] is outside this clip's "
+                        f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
+                        f"{_describe_siblings(siblings)}. Pick a range inside one clip's window, "
+                        f"or pass that clip's timeline_clip_id."
+                    )
+                target = sib
+            elif abs(t0 - clip_start) <= eps and abs(t1 - clip_end) <= eps:
                 return (
-                    f"Error: Requested range [{t0:.2f}s–{t1:.2f}s] is outside this clip's "
-                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s]."
+                    f"Nothing to slice: [{t0:.2f}s–{t1:.2f}s] is already exactly this clip's "
+                    f"source window."
                 )
+            tgt_id, tgt_cs, tgt_ce, tgt_pos, tgt_layer = target
 
             def _do_time_slice():
                 return _slice_timeline_clip_at_source_times(
-                    clip_id_str,
-                    clip_start,
-                    clip_end,
-                    clip_pos,
-                    layer_num,
+                    tgt_id,
+                    tgt_cs,
+                    tgt_ce,
+                    tgt_pos,
+                    tgt_layer,
                     file_id_str,
                     t0,
                     t1,

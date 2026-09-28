@@ -98,7 +98,13 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep its bearer token current.
+
+        Paid backend routes (/search, /generation/*, /research/*) reject any
+        request without ``Authorization: Bearer <jwt>``. The token is re-read
+        on every access so a refreshed or cleared login is picked up without
+        rebuilding the session.
+        """
         if self._session is None:
             try:
                 import requests
@@ -111,7 +117,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        self._apply_bearer(self._session)
         return self._session
+
+    def _apply_bearer(self, session) -> None:
+        """Set or clear the Authorization header from the current login."""
+        token = self._auth_token()
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            session.headers.pop("Authorization", None)
 
     def auth_token(self) -> Optional[str]:
         """Current user JWT for backend usage/credits tracking."""
@@ -757,6 +772,7 @@ class ZenviBackendClient:
             s.verify = False
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._apply_bearer(s)
         return s
 
     def start_direct_indexing_job(
