@@ -1414,12 +1414,16 @@ class TimelineHelperTests(unittest.TestCase):
     def test_clip_waveform_cache_token_includes_waveform_generation_token(self):
         helper = self.make_qwidget_clip_helper()
         clip = types.SimpleNamespace(
-            data={"ui": {"audio_data": [0.1, 0.2, 0.3], "waveform_token": "wf-2"}}
+            data={"ui": {
+                "audio_data": [0.1, 0.2, 0.3],
+                "audio_data_format": "absolute_peak_v2",
+                "waveform_token": "wf-2",
+            }}
         )
 
         token = helper.clip_waveform_cache_token(clip)
 
-        self.assertEqual(token, (3, "wf-2"))
+        self.assertEqual(token, (3, 0, "wf-2", "absolute_peak_v2", None))
 
     def test_find_missing_transition_details_ignores_tiny_overlap(self):
         clip_data = {"id": "B", "layer": 1, "position": 4.7, "start": 0.0, "end": 6.0}
@@ -2816,9 +2820,14 @@ class TimelineHelperTests(unittest.TestCase):
             id="F1",
             data={
                 "id": "F1",
-                "path": "/tmp/example.wav",
+                "path": "/project/example.wav",
                 "has_audio": True,
-                "ui": {"audio_data": [1.0, 1.0, 1.0, 1.0, 1.0]},
+                "ui": {
+                    "audio_data": [1.0, 1.0, 1.0, 1.0, 1.0],
+                    "audio_data_rms": [0.4, 0.4, 0.4, 0.4, 0.4],
+                    "audio_data_format": "absolute_peak_v2",
+                    "audio_data_rate": 20,
+                },
             },
         )
         clip = types.SimpleNamespace(
@@ -2868,6 +2877,12 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertEqual(captured[-1][0], "C1")
         self.assertEqual(captured[-1][2], "wf-time-1")
         self.assertEqual(captured[-1][1]["ui"]["audio_data"], [0.5, 0.5, 0.5, 0.5])
+        self.assertEqual(captured[-1][1]["ui"]["audio_data_rms"], [0.2, 0.2, 0.2, 0.2])
+        self.assertEqual(captured[-1][1]["ui"]["audio_data_rate"], 20)
+        self.assertEqual(
+            captured[-1][1]["ui"]["audio_data_format"],
+            self.waveform_module.ABSOLUTE_WAVEFORM_FORMAT,
+        )
 
     def test_clip_audio_data_ready_preserves_existing_waveform_when_pending_samples_are_none(self):
         helper = types.SimpleNamespace(
