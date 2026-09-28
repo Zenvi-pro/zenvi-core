@@ -149,11 +149,11 @@ class SettingStore(JsonDataStore):
         if key in user_values:
             user_values[key].update({"value": value})
         else:
-            log.warn(
+            log.warning(
                 "{} key '{}' not valid. The following are valid: {}".format(
                     self.data_type,
                     key,
-                    list(self._data.keys()),
+                    list(user_values.keys()),
                 ))
 
     def load(self):

@@ -187,8 +187,17 @@ QMenu {
 }
 
 QMenu::item {
-    padding: 5px 16px 5px 10px;
+    padding: 5px 18px 5px 22px;
     border-radius: 4px;
+}
+
+QMenu::item:checked {
+    padding: 5px 18px 5px 22px;
+}
+
+QMenu::indicator {
+    width: 12px;
+    height: 12px;
 }
 
 QMenu::item:selected {

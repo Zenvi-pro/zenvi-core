@@ -46,6 +46,7 @@ PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # Primary o
 PY_ABI = sysconfig.get_config_var('py_version_short')
 
 # Access info class (for version info)
+sys.path.append(os.path.join(PATH, 'src'))
 sys.path.append(os.path.join(PATH, 'src', 'classes'))
 import info
 
