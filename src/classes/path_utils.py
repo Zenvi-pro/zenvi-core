@@ -102,6 +102,21 @@ def absolute_media_path(path_value, project_file=None):
     return os.path.normpath(os.path.join(base_folder, normalized))
 
 
+def comparable_media_path(path_value, project_file=None):
+    """Return a normalized absolute media path suitable for equality checks."""
+    resolved = absolute_media_path(path_value, project_file)
+    if not resolved:
+        return ""
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def media_paths_equal(path_a, path_b, project_file=None):
+    """Compare two media paths after token expansion and platform normalization."""
+    if not path_a or not path_b:
+        return False
+    return comparable_media_path(path_a, project_file) == comparable_media_path(path_b, project_file)
+
+
 def _media_roots():
     """Remembered folders used to silently relink missing media."""
     try:
@@ -259,18 +274,3 @@ def wrapped_path_html(path_value):
         return ""
     escaped_path = html.escape(display_path)
     return re.sub(r"([/\\\\])", r"\1<wbr/>", escaped_path)
-
-
-def comparable_media_path(path_value, project_file=None):
-    """Return a normalized absolute media path suitable for equality checks."""
-    resolved = absolute_media_path(path_value, project_file)
-    if not resolved:
-        return ""
-    return os.path.normcase(os.path.normpath(resolved))
-
-
-def media_paths_equal(path_a, path_b, project_file=None):
-    """Compare two media paths after token expansion and platform normalization."""
-    if not path_a or not path_b:
-        return False
-    return comparable_media_path(path_a, project_file) == comparable_media_path(path_b, project_file)

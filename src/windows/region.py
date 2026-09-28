@@ -43,6 +43,7 @@ from classes import info, ui_util, time_parts, qt_types, updates
 from classes.app import get_app
 from classes.logger import log
 from classes.metrics import *
+from classes.proxy_service import dialog_preview_reader_data
 from windows.preview_thread import PreviewParent
 from windows.video_widget import VideoWidget
 
@@ -86,18 +87,27 @@ class SelectRegion(QDialog):
         self.end_image = None
         self.current_frame = 1
 
+        # Keep track of file object
+        self.file = file
+        self.file_path = file.absolute_path()
+
+        # Optimize Preview: draw the region over the low-resolution proxy when one exists
+        self.reader_data = dialog_preview_reader_data(file) if file else {}
+        proxy_path = str(self.reader_data.get("path") or "")
+        use_proxy = bool(proxy_path) and os.path.abspath(proxy_path) != os.path.abspath(self.file_path or "")
+
         # Create region clip with Reader
-        self.clip = openshot.Clip(clip.Reader())
+        if use_proxy:
+            self.file_path = proxy_path
+            self.clip = openshot.Clip(proxy_path)
+        else:
+            self.clip = openshot.Clip(clip.Reader())
         self.clip.Open()
 
         # Set region clip start and end
         self.clip.Start(clip.Start())
         self.clip.End(clip.End())
         self.clip.Id( get_app().project.generate_id() )
-
-        # Keep track of file object
-        self.file = file
-        self.file_path = file.absolute_path()
 
         c_info = clip.Reader().info
         self.fps = c_info.fps.ToInt()
@@ -117,8 +127,9 @@ class SelectRegion(QDialog):
         # Open video file with Reader
         log.info(self.clip.Reader())
 
-        # Add Video Widget
-        self.videoPreview = VideoWidget()
+        # Add Video Widget (this dialog owns its own resize / max-size flow)
+        self.videoPreview = VideoWidget(watch_project=False)
+        self.videoPreview.win = self
         self.videoPreview.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.verticalLayout.insertWidget(0, self.videoPreview)
 
@@ -170,6 +181,7 @@ class SelectRegion(QDialog):
         self.sliderVideo.setMaximum(self.video_length)
         self.sliderVideo.setSingleStep(1)
         self.sliderVideo.setPageStep(24)
+        self.videoPreview.delayed_resize_timer.timeout.connect(self._apply_dynamic_preview_max_size)
 
         # Display start frame (and then the previous frame)
         QTimer.singleShot(500, functools.partial(self.sliderVideo.setValue, 2))
@@ -211,6 +223,51 @@ class SelectRegion(QDialog):
 
         # Update label
         self.lblVideoTime.setText(timestamp)
+
+    def _target_preview_max_size(self):
+        """Even-sized render bound: the viewport (in device pixels) capped at the source size."""
+        viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
+        device_pixel_ratio = self.devicePixelRatioF()
+        requested = QSize(
+            max(2, int(round(viewport_rect.width() * device_pixel_ratio))),
+            max(2, int(round(viewport_rect.height() * device_pixel_ratio))),
+        )
+
+        source_width = int(getattr(self, "width", 0) or 0)
+        source_height = int(getattr(self, "height", 0) or 0)
+        if source_width > 0 and source_height > 0:
+            if requested.width() > source_width or requested.height() > source_height:
+                capped = QSize(source_width, source_height)
+            else:
+                capped = QSize(requested)
+        else:
+            capped = requested
+
+        if capped.height() > 0:
+            ratio = float(capped.width()) / float(capped.height())
+            even_width = max(2, int(round(capped.width() / 2.0) * 2))
+            even_height = max(2, int(round(round(even_width / ratio) / 2.0) * 2))
+            capped = QSize(even_width, even_height)
+
+        return capped
+
+    def _apply_dynamic_preview_max_size(self):
+        """Resize the preview render bound after the dialog (video widget) is resized."""
+        if not getattr(self, "initialized", False) or not getattr(self, "r", None):
+            return
+
+        new_size = self._target_preview_max_size()
+        previous_width = int(getattr(self.r, "preview_width", 0) or 0)
+        previous_height = int(getattr(self.r, "preview_height", 0) or 0)
+
+        if previous_width == new_size.width() and previous_height == new_size.height():
+            return
+
+        self.PauseSignal.emit()
+        self.r.SetMaxSize(new_size.width(), new_size.height())
+        self.r.ClearAllCache(True)
+        self.viewport_rect = self.videoPreview.centeredViewport(self.width, self.height)
+        self.refreshFrameSignal.emit()
 
     def btnPlay_clicked(self, force=None):
         log.info("btnPlay_clicked")

@@ -38,7 +38,7 @@ from qt_api import (
     QSortFilterProxyModel, QItemSelectionModel, QItemSelection, QPersistentModelIndex, QModelIndex
 )
 from qt_api import (
-    QIcon, QStandardItem, QStandardItemModel
+    QIcon, QPixmap, QStandardItem, QStandardItemModel
 )
 from qt_api import QAbstractItemView
 from classes import updates
@@ -500,7 +500,60 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def _project_file_icon_for_file(self, file):
         thumb_source, name, media_type = self._thumbnail_source_for_file(file)
-        return QIcon(thumb_source), name, media_type
+        return self._thumbnail_icon(thumb_source, media_type), name, media_type
+
+    def _thumbnail_icon(self, thumb_source, media_type):
+        """Icon for a thumbnail source; video/image thumbs reload from disk bytes."""
+        if media_type in ["video", "image"]:
+            return self._icon_from_thumbnail_source(thumb_source)
+        return QIcon(thumb_source)
+
+    @staticmethod
+    def _icon_from_thumbnail_source(thumb_source):
+        """Create an icon from freshly loaded thumbnail bytes when possible.
+
+        QIcon(path) caches by file name, so a thumbnail regenerated on disk
+        (e.g. after Optimize Preview pre-warms it) would keep showing the old
+        image; loading through QPixmap always reads the current bytes.
+        """
+        thumb_source = str(thumb_source or "")
+        if thumb_source:
+            pixmap = QPixmap()
+            if pixmap.load(thumb_source) and not pixmap.isNull():
+                return QIcon(pixmap)
+        return QIcon(thumb_source)
+
+    def _proxy_service(self):
+        """The window's Optimize Preview service (None before the window creates it)."""
+        if self.proxy_service is not None:
+            return self.proxy_service
+        window = getattr(get_app(), "window", None)
+        return getattr(window, "proxy_service", None) if window else None
+
+    def _tooltip_for_file(self, file, name):
+        """Tooltip for the thumbnail cell; marks files that have an optimized preview."""
+        tooltip = str(name or "")
+        proxy_service = self._proxy_service()
+        if not proxy_service or not file:
+            return tooltip
+        if proxy_service.get_proxy_state(file) in ("ready", "missing"):
+            return "{} {}".format(tooltip, get_app()._tr("(Optimized)"))
+        return tooltip
+
+    def _on_proxy_file_changed(self, file_id):
+        """Repaint one row when its Optimize Preview job/state changes."""
+        file_id = str(file_id or "")
+        id_index = self.model_ids.get(file_id)
+        if id_index is None or not id_index.isValid():
+            return
+        row = id_index.row()
+        file_obj = File.get(id=file_id)
+        if file_obj:
+            path, filename = os.path.split(file_obj.data["path"])
+            self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+        left = self.model.index(row, 0)
+        right = self.model.index(row, self.model.columnCount() - 1)
+        self.model.dataChanged.emit(left, right, [Qt.DisplayRole, Qt.ToolTipRole])
 
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
@@ -511,11 +564,11 @@ class FilesModel(QObject, updates.UpdateInterface):
             if action.type == "insert":
                 # Don't clear the existing items if only inserting new things
                 self.update_model(clear=False)
-            elif action.type == "delete" and action.key[0].lower() == "files":
-                # Don't clear the existing items if only deleting things
+            elif action.type == "delete" and action.key[0].lower() == "files" and len(action.key) == 2:
+                # Delete a top-level file row only when the file object itself was deleted.
                 self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, delete_file_id=action.key[1].get('id', ''))
-            elif action.type == "update" and action.key[0].lower() == "files":
+            elif action.type in ("update", "delete") and action.key[0].lower() == "files":
                 # Update a single file (if found)
                 self.invalidate_indexing_status(action.key[1].get('id', ''))
                 self.update_model(clear=False, update_file_id=action.key[1].get('id', ''))
@@ -564,6 +617,8 @@ class FilesModel(QObject, updates.UpdateInterface):
                 row_num = id_index.row()
                 if f.data.get("tags") != self.model.item(row_num, 2).text():
                     self.model.item(row_num, 2).setText(f.data.get("tags"))
+                path, filename = os.path.split(f.data["path"])
+                self.model.item(row_num, 0).setToolTip(self._tooltip_for_file(f, filename))
 
         # Clear all items
         if clear:
@@ -602,7 +657,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
             # Append thumbnail
             col = QStandardItem(thumb_icon, name)
-            col.setToolTip(name)
+            col.setToolTip(self._tooltip_for_file(file, filename))
             col.setFlags(flags)
             col.setAccessibleText(name)
             row.append(col)
@@ -1194,8 +1249,8 @@ class FilesModel(QObject, updates.UpdateInterface):
             if not id_index.isValid():
                 return
 
-            thumb_source, _, _ = self._thumbnail_source_for_file(file, clear_cache=True)
-            thumb_icon = QIcon(thumb_source)
+            thumb_source, _, media_type = self._thumbnail_source_for_file(file, clear_cache=True)
+            thumb_icon = self._thumbnail_icon(thumb_source, media_type)
 
             # Update thumb for file
             thumb_index = id_index.sibling(id_index.row(), 0)
@@ -1204,6 +1259,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             item.setText(name)
             item.setToolTip(name)
             item.setAccessibleText(name)
+            item.setToolTip(self._tooltip_for_file(file, filename))
 
             # Update display name
             text_index = id_index.sibling(id_index.row(), 1)
@@ -1310,7 +1366,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         finally:
             self._syncing_selection = False
 
-    def __init__(self, *args):
+    def __init__(self, *args, proxy_service=None):
+        # Optimize Preview service (badges, tooltips, per-row repaints)
+        self.proxy_service = proxy_service
 
         # Add self as listener to project data updates
         # (undo/redo, as well as normal actions handled within this class all update the model)
@@ -1360,6 +1418,8 @@ class FilesModel(QObject, updates.UpdateInterface):
 
         # Connect signal
         app.window.FileUpdated.connect(self.update_file_thumbnail)
+        if self.proxy_service is not None:
+            self.proxy_service.file_job_changed.connect(self._on_proxy_file_changed)
         app.window.refreshFilesSignal.connect(
             functools.partial(self.update_model, clear=False))
 

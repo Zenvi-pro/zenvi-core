@@ -197,6 +197,49 @@
     "restart": true
   },
   {
+    "max": 8,
+    "title": "Concurrent Optimize Jobs",
+    "category": "Preview",
+    "min": 1,
+    "setting": "optimize-preview-jobs",
+    "value": 2,
+    "type": "spinner-int"
+  },
+  {
+    "title": "Optimized Preview Resolution",
+    "category": "Preview",
+    "setting": "optimize-preview-max-size",
+    "type": "dropdown",
+    "value": "1280x720",
+    "values": [
+      {
+        "value": "640x360",
+        "name": "360p"
+      },
+      {
+        "value": "960x540",
+        "name": "540p"
+      },
+      {
+        "value": "1280x720",
+        "name": "720p"
+      },
+      {
+        "value": "1920x1080",
+        "name": "1080p"
+      }
+    ]
+  },
+  {
+    "max": 12,
+    "title": "Thumbnail Preload Rate / second",
+    "category": "Preview",
+    "min": 1,
+    "setting": "optimize-preview-thumbnails",
+    "value": 4,
+    "type": "spinner-int"
+  },
+  {
     "value": "",
     "title": "Playback Audio Device",
     "category": "Preview",
@@ -1298,6 +1341,14 @@
     "restart": false,
     "setting": "actionClearWaveformData",
     "value": "Ctrl+Shift+W",
+    "type": "text"
+  },
+  {
+    "category": "Keyboard",
+    "title": "Delete Optimized Videos",
+    "restart": false,
+    "setting": "actionClearOptimizedFiles",
+    "value": "Ctrl+Shift+O",
     "type": "text"
   },
   {

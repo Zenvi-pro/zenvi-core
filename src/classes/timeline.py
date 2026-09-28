@@ -89,6 +89,7 @@ class TimelineSync(UpdateInterface):
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             try:
+                proxy_service = getattr(self.window, "proxy_service", None)
                 if action.type == "load":
                     # Clear any selections in UI (since we are clearing the timeline)
                     self.window.clearSelections()
@@ -98,7 +99,10 @@ class TimelineSync(UpdateInterface):
                     self.timeline.Clear()
 
                     # This JSON is initially loaded to libopenshot to update the timeline
-                    self.timeline.SetJson(action.json(only_value=True))
+                    payload = action.json(only_value=True)
+                    if proxy_service:
+                        payload = proxy_service.rewrite_json_for_preview(payload)
+                    self.timeline.SetJson(payload)
                     self.timeline.Open()  # Re-Open the Timeline reader
 
                     # The timeline's profile changed, so update all clips
@@ -112,7 +116,10 @@ class TimelineSync(UpdateInterface):
 
                 else:
                     # This JSON DIFF is passed to libopenshot to update the timeline
-                    self.timeline.ApplyJsonDiff(action.json(is_array=True))
+                    payload = action.json(is_array=True)
+                    if proxy_service:
+                        payload = proxy_service.rewrite_json_for_preview(payload)
+                    self.timeline.ApplyJsonDiff(payload)
 
                     # Clear frame cache so the next render picks up the new clip data
                     # (without this, libopenshot serves the cached pre-change frame)

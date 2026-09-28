@@ -2108,8 +2108,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.delayed_size = self.size()
         self.delayed_resize_timer.start()
 
-        # Pause playback (to prevent crash since we are fixing to change the timeline's max size)
-        self.win.PauseSignal.emit()
+        # Only the main project preview uses VideoWidget's internal delayed resize
+        # pipeline. Dialog previews manage their own resize/max-size flow and
+        # should not be forcibly paused here during startup.
+        if getattr(self, "watch_project", True):
+            self.win.PauseSignal.emit()
 
     def delayed_resize_callback(self):
         """Callback for resize event timer (to delay the resize event, and prevent lots of similar resize events)"""
@@ -2164,6 +2167,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         continue to match the current project's aspect ratio."""
         # Invoke parent init
         super().__init__(*args)
+        self.watch_project = bool(watch_project)
 
         # Translate object
         _ = get_app()._tr

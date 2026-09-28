@@ -376,6 +376,15 @@ class ClipPainter(BasePainter):
             scaled.setDevicePixelRatio(ratio)
         return (scaled, blur, [], False, None)
 
+    def clear_render_cache(self):
+        """Clear only cached clip renders while keeping loaded thumbnail pixmaps.
+
+        Selection changes and project edits invalidate the rendered clip
+        pixmaps, but the thumbnails themselves are still valid; dropping them
+        made the timeline flicker while thumbnails were re-requested.
+        """
+        self.clip_cache.clear()
+
     def _segment_overdraw(self, view_width):
         """Return the horizontal overdraw (extra pixels) to render beyond the view."""
 
