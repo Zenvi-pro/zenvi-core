@@ -25,9 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import time
 import threading
 import openshot  # Python module for libopenshot (required video editing module installed separately)
+from qt_api import QTimer
 
 from classes.updates import UpdateInterface
 from classes.logger import log
@@ -112,7 +112,10 @@ class TimelineSync(UpdateInterface):
                     self.window.SeekSignal.emit(1)
 
                     # Refresh current frame (since the entire timeline was updated)
-                    self.window.refreshFrameSignal.emit()
+                    if getattr(self.window, "_project_loading", False):
+                        self.window._pending_project_open_refresh = True
+                    else:
+                        self.window.refreshFrameSignal.emit()
 
                 else:
                     # This JSON DIFF is passed to libopenshot to update the timeline
@@ -137,9 +140,11 @@ class TimelineSync(UpdateInterface):
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
-        while not self.window.initialized:
-            log.info('Waiting for main window to initialize before calling SetMaxSize')
-            time.sleep(0.5)
+        if not self.window.initialized:
+            log.info('Deferring SetMaxSize until main window initialization completes')
+            self.window._pending_preview_size = new_size
+            QTimer.singleShot(0, self.window._finish_pending_preview_resize)
+            return
 
         # Increase based on DPI
         device_pixel_ratio = self.window.devicePixelRatioF()
@@ -162,6 +167,10 @@ class TimelineSync(UpdateInterface):
             with self.timeline_lock:
                 # Clear timeline preview cache (since our video size has changed)
                 self.timeline.ClearAllCache(True)
+
+            if getattr(self.window, "_project_loading", False):
+                self.window._pending_project_open_refresh = True
+                return
 
             # Refresh current frame (since the entire timeline was updated)
             self.window.refreshFrameSignal.emit()
