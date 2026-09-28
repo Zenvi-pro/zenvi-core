@@ -1677,10 +1677,10 @@
      <normaloff>:/icons/Humanity/actions/16/list-add.svg</normaloff>:/icons/Humanity/actions/16/list-add.svg</iconset>
    </property>
    <property name="text">
-    <string>Insert Timestamp</string>
+    <string>Insert Caption</string>
    </property>
    <property name="toolTip">
-    <string>Insert Timestamp</string>
+    <string>Insert Caption</string>
    </property>
   </action>
   <action name="actionClearWaveformData">

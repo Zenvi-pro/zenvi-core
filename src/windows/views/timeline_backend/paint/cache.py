@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-from qt_api import QPointF, QRectF, Qt
-from qt_api import QBrush, QColor, QLinearGradient, QPainter
+from qt_api import QRectF, Qt
+from qt_api import QColor, QPainter
 
 from .base import BasePainter
 
@@ -49,53 +49,83 @@ class PlaybackCachePainter(BasePainter):
             height = 5.0
         self.cache_height = height
 
+    def _ruler_bottom_color(self):
+        """Return the ruler color that touches the playback cache lane."""
+        theme = getattr(self.w, "theme", None)
+        ruler_theme = getattr(theme, "ruler", None)
+        bg = QColor(getattr(ruler_theme, "background", QColor()))
+        bg2 = QColor(getattr(ruler_theme, "background2", QColor()))
+        if not bg.isValid():
+            track_theme = getattr(theme, "track", None)
+            bg = QColor(getattr(track_theme, "background", QColor()))
+            bg2 = QColor(getattr(track_theme, "background2", QColor()))
+        if bg2.isValid():
+            return bg2
+        return bg
+
+    def _time_panel_bottom_color(self):
+        """Return the current-time panel color beside the cache lane."""
+        theme = getattr(self.w, "theme", None)
+        bg = QColor(getattr(theme, "ruler_name_background", QColor()))
+        bg2 = QColor(getattr(theme, "ruler_name_background2", QColor()))
+        if not bg.isValid():
+            track_theme = getattr(theme, "track", None)
+            bg = QColor(getattr(track_theme, "name_background", QColor()))
+        if bg2.isValid():
+            return bg2
+        return bg
+
     def paint(self, painter: QPainter):
-        ranges = getattr(self.w, "_playback_cache_ranges", None)
-        if not ranges:
-            return
+        ranges = getattr(self.w, "_playback_cache_ranges", None) or []
 
-        pps = float(getattr(self.w, "pixels_per_second", 0.0) or 0.0)
-        if pps <= 0.0:
-            return
-
-        area = QRectF(
-            self.w.track_name_width,
-            self.w.ruler_height,
-            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
-            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        ruler_height = float(getattr(self.w, "ruler_height", 0.0) or 0.0)
+        timeline_height = (
+            self.w.height()
+            - ruler_height
+            - self.w.scroll_bar_thickness
         )
-        if area.width() <= 0.0 or area.height() <= 0.0:
+        available_width = (
+            self.w.width()
+            - self.w.track_name_width
+            - self.w.scroll_bar_thickness
+        )
+        if available_width <= 0.0 or timeline_height <= 0.0:
             return
 
-        bar_height = min(self.cache_height, area.height())
+        bar_height = min(self.cache_height, timeline_height)
         if bar_height <= 0.0:
             return
         lane_height = min(
-            area.height(),
+            timeline_height,
             max(bar_height, float(getattr(self.w, "track_margin_top", 0.0) or 0.0)),
         )
         if lane_height <= 0.0:
             lane_height = bar_height
-        lane_rect = QRectF(area.left(), area.top(), area.width(), lane_height)
+        lane_rect = QRectF(
+            self.w.track_name_width,
+            ruler_height,
+            available_width,
+            lane_height,
+        )
+        time_lane_rect = QRectF(0.0, ruler_height, self.w.track_name_width, lane_height)
 
         offset_px = float(getattr(self.w, "h_scroll_offset", 0.0) or 0.0)
 
         painter.save()
-        painter.setClipRect(lane_rect)
         painter.setPen(Qt.NoPen)
-        track_theme = getattr(getattr(self.w, "theme", None), "track", None)
-        bg = QColor(getattr(track_theme, "background", QColor()))
-        bg2 = QColor(getattr(track_theme, "background2", QColor()))
+        time_bg = self._time_panel_bottom_color()
+        if time_bg.isValid():
+            painter.fillRect(time_lane_rect, time_bg)
+        bg = self._ruler_bottom_color()
         if bg.isValid():
-            if bg2.isValid() and bg2 != bg:
-                grad = QLinearGradient(QPointF(lane_rect.topLeft()), QPointF(lane_rect.bottomLeft()))
-                grad.setColorAt(0, bg)
-                grad.setColorAt(1, bg2)
-                painter.fillRect(lane_rect, QBrush(grad))
-            else:
-                painter.fillRect(lane_rect, bg)
+            painter.fillRect(lane_rect, bg)
 
-        top = area.top()
+        painter.setClipRect(lane_rect)
+        pps = float(getattr(self.w, "pixels_per_second", 0.0) or 0.0)
+        if pps <= 0.0:
+            painter.restore()
+            return
+        top = lane_rect.top()
         for start_seconds, end_seconds in ranges:
             if end_seconds <= start_seconds:
                 continue
