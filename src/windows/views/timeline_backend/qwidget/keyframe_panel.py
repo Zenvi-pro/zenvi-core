@@ -1565,9 +1565,15 @@ class KeyframePanelMixin:
             if hasattr(self.win, "show_property_timeout"):
                 QTimer.singleShot(0, self.win.show_property_timeout)
             anchor = (drag.get("anchor") or ((drag.get("entries") or [None])[0])) or {}
-            frame_seek = anchor.get("pending_frame")
-            if frame_seek is not None and hasattr(self, "win") and hasattr(self.win, "SeekSignal"):
-                self.win.SeekSignal.emit(max(1, int(frame_seek)), True)
+            # Seek to the absolute timeline frame of the dragged keyframe.
+            # ``pending_frame`` is clip-local (it includes clip_start), so derive
+            # the frame from ``pending_seconds`` like _panel_keyframe_move does.
+            # Zenvi's SeekSignal takes a single int (no preroll flag).
+            anchor_seconds = anchor.get("pending_seconds", anchor.get("original_seconds"))
+            fps_seek = drag.get("fps") or self.fps_float or 1.0
+            if anchor_seconds is not None and fps_seek > 0.0 and hasattr(self, "win") and hasattr(self.win, "SeekSignal"):
+                frame_seek = max(1, int(round(float(anchor_seconds) * fps_seek)) + 1)
+                self.win.SeekSignal.emit(frame_seek)
         self._dragging_panel_keyframes = None
         self.mouse_dragging = False
         info = dict(self._panel_press_info or {})

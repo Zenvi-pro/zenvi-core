@@ -227,20 +227,24 @@ class clipExportWindow(QDialog):
             clip_reader.Open()
 
             log.info(f"Starting to write frames to {export_path}")
-            for frame in range(start_frame, end_frame + 1):
-                w.WriteFrame(clip_reader.GetFrame(frame))
-                if frame % 5 == 0:
-                    self._updateProgressBar(frames_written, total_frames)
-                    get_app().processEvents()
-                frames_written += 1
-                if self.canceled:
-                    log.info("Export Canceled. Deleting partial export")
-                    if os.path.exists(export_path):
-                        os.remove(export_path)
-                    break
-            clip_reader.Close()
-            w.Close()
+            try:
+                for frame in range(start_frame, end_frame + 1):
+                    w.WriteFrame(clip_reader.GetFrame(frame))
+                    if frame % 5 == 0:
+                        self._updateProgressBar(frames_written, total_frames)
+                        get_app().processEvents()
+                    frames_written += 1
+                    if self.canceled:
+                        break
+            finally:
+                # Close both before touching the file: on Windows the partial
+                # export cannot be deleted while the writer still holds it open.
+                clip_reader.Close()
+                w.Close()
             if self.canceled:
+                log.info("Export Canceled. Deleting partial export")
+                if os.path.exists(export_path):
+                    os.remove(export_path)
                 log.info("Reader and Writer closed. Exiting Dialog")
                 self.done(0)
                 break

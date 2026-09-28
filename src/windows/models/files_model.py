@@ -1137,7 +1137,16 @@ class FilesModel(QObject, updates.UpdateInterface):
         from classes.updates import nested_transaction
 
         if transaction_id:
-            get_app().updates.transaction_id = transaction_id
+            active_tid = get_app().updates.transaction_id
+            if active_tid and active_tid != transaction_id:
+                # Never hijack a caller's in-flight transaction: joining it keeps
+                # the caller's later mutations in the undo step they expect.
+                log.warning(
+                    "process_urls: ignoring transaction_id %s, joining active %s",
+                    transaction_id, active_tid,
+                )
+            else:
+                get_app().updates.transaction_id = transaction_id
 
         with nested_transaction(get_app().updates):
             for uri in qurl_list or []:
@@ -1226,10 +1235,12 @@ class FilesModel(QObject, updates.UpdateInterface):
         # switching between details/list views with separate selection models.
         selected_rows = self.selection_model.selectedRows(5)
         if selected_rows:
+            selected_ids = {row_index.data() for row_index in selected_rows if row_index.data()}
             current = self.selection_model.currentIndex()
             if current and current.isValid():
                 current_id = current.sibling(current.row(), 5).data()
-                if current_id:
+                # A stale current index must not win over the real selection.
+                if current_id and current_id in selected_ids:
                     return current_id
             for row_index in selected_rows:
                 file_id = row_index.data()

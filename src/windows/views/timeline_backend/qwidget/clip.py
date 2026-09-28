@@ -1590,13 +1590,21 @@ class ClipInteractionMixin:
 
                 if isinstance(candidate, (Clip, Transition)) and hasattr(self, "RefreshTrimmedTimelineItem"):
                     self.RefreshTrimmedTimelineItem(json.dumps(candidate.data), resize_edge)
-
+        finally:
+            # Release the trim thumbnail suspension for every clip that
+            # _startItemResize() suspended, including candidates that had no
+            # resize result (a `continue` above) or raised mid-commit.
+            for candidate in resize_items:
                 if isinstance(candidate, Clip):
                     self._set_trim_thumbnail_suspension(False, candidate.id)
-        finally:
             self._preserve_overrides_during_batch = False
             self._suspend_changed_update = max(0, self._suspend_changed_update - 1)
             self._suspend_keyframe_rebuild = False
+            # Forget this gesture's geometry so a later edge click without any
+            # movement takes the no-move path instead of re-committing stale values.
+            for attr in ("_resize_new_start", "_resize_new_end", "_resize_new_position"):
+                if hasattr(self, attr):
+                    delattr(self, attr)
 
         self._snap_keyframe_seconds = []
         self.snap.reset()

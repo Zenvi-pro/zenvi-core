@@ -38,6 +38,14 @@ class EffectInteractionMixin:
             return
         pos_seconds = max(0.0, float(pos_seconds))
 
+        # PyQt5 hands us a QPoint from QDropEvent.pos(); Qt6 a QPointF from
+        # position(). Normalise so the clip-under-pointer path always runs.
+        if drop_pos is not None and not isinstance(drop_pos, QPointF):
+            try:
+                drop_pos = QPointF(drop_pos)
+            except TypeError:
+                drop_pos = None
+
         if isinstance(drop_pos, QPointF):
             self.geometry.ensure()
             for rect, clip, _selected in self.geometry.iter_clips(reverse=True):

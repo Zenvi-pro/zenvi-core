@@ -562,9 +562,13 @@ class Cutting(QDialog):
 
         if getattr(self, "preview_thread", None):
             try:
+                # Pause/Stop are no-ops in PlayerWorker once ``initialized`` is
+                # False, and the queued Pause/Stop signals would only be handled
+                # after the flag flip below. Call the worker directly first so
+                # the QtPlayer really stops before the reader is closed.
+                self.preview_thread.Pause()
+                self.preview_thread.Stop()
                 self.initialized = False
-                self.PauseSignal.emit()
-                self.StopSignal.emit()
                 # Zenvi: flip is_running so the worker loop exits promptly.
                 self.preview_thread.kill()
             except Exception:

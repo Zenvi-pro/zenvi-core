@@ -971,10 +971,10 @@ class TimelineHelperTests(unittest.TestCase):
                             (object_type, object_id)
                         )
                     ),
+                    # Zenvi's MainWindow.SeekSignal is pyqtSignal(int): a
+                    # two-argument emit must fail here like it does in PyQt5.
                     SeekSignal=types.SimpleNamespace(
-                        emit=lambda frame, preroll=True: self.seek_calls.append(
-                            (int(frame), bool(preroll))
-                        )
+                        emit=lambda frame: self.seek_calls.append(int(frame))
                     ),
                     show_property_timeout=lambda: None,
                 )
@@ -2362,10 +2362,347 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertEqual(helper.begin_calls, 1)
         self.assertEqual(helper.apply_calls, [(False, True)])
         self.assertEqual(helper.finalize_calls, [("clip", "C1")])
-        self.assertEqual(helper.seek_calls, [(121, True)])
+        self.assertEqual(helper.seek_calls, [121])
         self.assertIsNone(helper._dragging_panel_keyframes)
         self.assertFalse(helper.mouse_dragging)
         self.assertEqual(helper.release_calls, 1)
+
+    def test_qwidget_panel_keyframe_finish_seeks_timeline_frame_not_clip_local_frame(self):
+        helper = self.make_qwidget_panel_keyframe_drag_helper()
+        helper._dragging_panel_keyframes["moved"] = True
+        # Clip starts 2 s into its media and sits at 10 s on the timeline:
+        # the keyframe's clip-local frame (co.X) is not the timeline frame.
+        helper._dragging_panel_keyframes["context"] = {"position": 10.0, "clip_start": 2.0}
+        helper._dragging_panel_keyframes["entries"][0]["pending_frame"] = 73
+        helper._dragging_panel_keyframes["entries"][0]["pending_seconds"] = 11.0
+
+        self.qwidget_keyframe_panel_module.KeyframePanelMixin._finish_panel_keyframe_drag(helper)
+
+        self.assertEqual(helper.seek_calls, [int(round(11.0 * 24.0)) + 1])
+        self.assertIsNone(helper._dragging_panel_keyframes)
+        self.assertFalse(helper.mouse_dragging)
+        self.assertEqual(helper.release_calls, 1)
+
+    def test_update_clip_data_creates_auto_transition_inside_caller_transaction(self):
+        updates = types.SimpleNamespace(transaction_id=None)
+        seen = []
+        existing_clip = types.SimpleNamespace(
+            id="C1",
+            data={"id": "C1", "layer": 1, "position": 4.0, "start": 0.0, "end": 6.0},
+        )
+        existing_clip.save = lambda: seen.append(("clip", updates.transaction_id))
+        helper = types.SimpleNamespace(
+            _apply_effect_colors=lambda _data: None,
+            delete_invalid_timeline_item=lambda _item: False,
+            _find_missing_transition_details=lambda _data: {
+                "layer": 1, "position": 4.0, "start": 0.0, "end": 1.0,
+            },
+            add_missing_transition=lambda _payload: seen.append(("transition", updates.transaction_id)),
+            window=types.SimpleNamespace(
+                IgnoreUpdates=types.SimpleNamespace(emit=lambda *_args, **_kwargs: None)
+            ),
+            show_wait_spinner=False,
+        )
+        payload = {
+            "id": "C1", "layer": 1, "position": 4.0, "start": 0.0, "end": 6.0,
+            "_auto_transition": True,
+        }
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.timeline_module.Clip, "get", return_value=existing_clip))
+            stack.enter_context(patch.object(self.timeline_module, "clamp_timing_to_media", lambda *_a, **_k: None))
+            stack.enter_context(patch.object(
+                self.timeline_module, "get_app",
+                return_value=types.SimpleNamespace(updates=updates),
+            ))
+            self.timeline_module.TimelineView.update_clip_data(
+                helper, payload, only_basic_props=True, transaction_id="drag-tx-1"
+            )
+
+        # The auto transition must land in the same undo step as the clip move.
+        self.assertEqual(seen, [("clip", "drag-tx-1"), ("transition", "drag-tx-1")])
+        self.assertIsNone(updates.transaction_id)
+
+    def test_preview_transition_frame_loads_mask_and_seeks(self):
+        calls = []
+        helper = types.SimpleNamespace(
+            window=types.SimpleNamespace(
+                LoadFileSignal=types.SimpleNamespace(emit=lambda path: calls.append(("load", path))),
+                SpeedSignal=types.SimpleNamespace(emit=lambda speed: calls.append(("speed", speed))),
+                SeekSignal=types.SimpleNamespace(emit=lambda frame: calls.append(("seek", frame))),
+            ),
+        )
+        helper._transition_mask_reader = lambda data, fallback=None: self.timeline_module.TimelineView._transition_mask_reader(
+            helper, data, fallback
+        )
+        transition = types.SimpleNamespace(id="T1", data={"id": "T1", "reader": {"path": "/tmp/mask.svg"}})
+
+        with patch.object(self.timeline_module.Transition, "get", return_value=transition):
+            self.timeline_module.TimelineView.PreviewTransitionFrame(helper, "T1", 0)
+            self.timeline_module.TimelineView.PreviewTransitionFrame(helper, "T1", 42)
+
+        self.assertEqual(calls, [
+            ("load", "/tmp/mask.svg"), ("speed", 0), ("seek", 1),
+            ("load", "/tmp/mask.svg"), ("speed", 0), ("seek", 42),
+        ])
+
+    def test_preview_transition_frame_ignores_missing_transition(self):
+        calls = []
+        helper = types.SimpleNamespace(
+            window=types.SimpleNamespace(
+                LoadFileSignal=types.SimpleNamespace(emit=lambda path: calls.append(path)),
+            ),
+        )
+        with patch.object(self.timeline_module.Transition, "get", return_value=None):
+            self.timeline_module.TimelineView.PreviewTransitionFrame(helper, "missing", 5)
+        self.assertEqual(calls, [])
+
+    def test_qwidget_group_resize_preview_calls_transition_preview_on_timeline_view(self):
+        helper = self.make_qwidget_group_resize_preview_helper()
+
+        class DummyTransition:
+            def __init__(self, item_id, data):
+                self.id = item_id
+                self.data = data
+
+        transition = DummyTransition("T1", {"position": 4.0, "start": 0.0, "end": 3.0, "layer": 5})
+        helper._resize_items = [transition]
+        helper._resizing_item = transition
+        helper._resize_initial_map = {"T1": {"initial": {"position": 4.0, "start": 0.0, "end": 3.0}}}
+
+        with patch.object(self.qwidget_clip_module, "Transition", DummyTransition):
+            self.qwidget_clip_module.ClipInteractionMixin._itemResizeMove(helper)
+
+        self.assertEqual(helper.preview_calls, [])
+        self.assertEqual(helper.transition_preview_calls, [("T1", 97)])
+        # The real TimelineView must expose the method the mixin calls.
+        self.assertTrue(callable(getattr(self.timeline_module.TimelineView, "PreviewTransitionFrame", None)))
+
+    def make_qwidget_no_result_resize_helper(self):
+        qwidget_clip_module = self.qwidget_clip_module
+
+        class Helper(qwidget_clip_module.ClipInteractionMixin):
+            def __init__(self):
+                self._resizing_item = None
+                self._resize_items = []
+                self._resize_initial_map = {}
+                self._resize_results = {}
+                self._resize_edge = "right"
+                self._suspend_changed_update = 0
+                self._suspend_keyframe_rebuild = False
+                self._preserve_overrides_during_batch = False
+                self._dragging_panel_keyframes = None
+                self._dragging_keyframe = None
+                self._last_event = None
+                self._keyframes_dirty = False
+                self._snap_keyframe_seconds = []
+                self._pending_transition_overrides = {}
+                self._pending_clip_overrides = {}
+                self._suspend_thumbnail_requests = False
+                self.suspension_calls = []
+                self.changed_calls = 0
+                self.update_calls = 0
+                self.release_calls = 0
+                self.snap = types.SimpleNamespace(reset=lambda: None)
+                self.geometry = types.SimpleNamespace(mark_dirty=lambda: None)
+                self.win = types.SimpleNamespace()
+
+            def _set_trim_thumbnail_suspension(self, enabled, clip_id=None):
+                self._suspend_thumbnail_requests = bool(enabled)
+                self.suspension_calls.append((bool(enabled), clip_id))
+
+            def _restore_resize_snap_ignore_ids(self, items):
+                return None
+
+            def _update_project_duration(self):
+                return None
+
+            def _finalize_resize_preview_state(self, items, requested_backend_refresh):
+                return None
+
+            def _clear_resize_preview_overrides(self, item):
+                return None
+
+            def changed(self, _value):
+                self.changed_calls += 1
+
+            def update(self):
+                self.update_calls += 1
+
+            def _release_cursor(self):
+                self.release_calls += 1
+
+        return Helper()
+
+    def test_qwidget_finish_item_resize_releases_thumbnail_suspension_without_results(self):
+        helper = self.make_qwidget_no_result_resize_helper()
+
+        class DummyClip:
+            def __init__(self, item_id, data):
+                self.id = item_id
+                self.data = data
+
+        clip = DummyClip("C1", {"id": "C1", "position": 1.0, "start": 0.0, "end": 2.0, "layer": 1})
+        helper._resizing_item = clip
+        helper._resize_items = [clip]
+        helper._resize_initial_map = {"C1": {"initial": {"position": 1.0, "start": 0.0, "end": 2.0}}}
+        # A previous gesture left its geometry behind, this one produced no result
+        # (edge click without movement): _startItemResize() suspended thumbnails.
+        helper._resize_new_start = 0.0
+        helper._resize_new_end = 2.0
+        helper._resize_new_position = 1.0
+        helper._resize_results = {}
+        helper._suspend_thumbnail_requests = True
+
+        with patch.object(self.qwidget_clip_module, "Clip", DummyClip):
+            self.qwidget_clip_module.ClipInteractionMixin._finishItemResize(helper)
+
+        self.assertEqual(helper.suspension_calls, [(False, "C1")])
+        self.assertFalse(helper._suspend_thumbnail_requests)
+        for attr in ("_resize_new_start", "_resize_new_end", "_resize_new_position"):
+            self.assertFalse(hasattr(helper, attr), attr)
+
+        # The next edge click without movement takes the no-move path.
+        helper._resizing_item = clip
+        helper._resize_items = [clip]
+        with patch.object(self.qwidget_clip_module, "Clip", DummyClip):
+            self.qwidget_clip_module.ClipInteractionMixin._finishItemResize(helper)
+        self.assertEqual(helper.changed_calls, 1)
+        self.assertEqual(helper.suspension_calls, [(False, "C1"), (False, "C1")])
+
+    def make_qwidget_effect_drop_helper(self, clip, locked):
+        effect_module = importlib.import_module("windows.views.timeline_backend.qwidget.effect")
+
+        class Helper(effect_module.EffectInteractionMixin):
+            def __init__(self):
+                self.added = []
+                self.lock_checks = []
+                self.win = types.SimpleNamespace(
+                    timeline=types.SimpleNamespace(
+                        addEffect=lambda names, pos: self.added.append((list(names), pos.x(), pos.y()))
+                    )
+                )
+                self.geometry = types.SimpleNamespace(
+                    ensure=lambda: None,
+                    iter_clips=lambda reverse=False: [(QRectF(0.0, 0.0, 100.0, 50.0), clip, False)],
+                )
+
+            def _is_track_locked(self, track_num):
+                self.lock_checks.append(track_num)
+                return locked
+
+        return Helper()
+
+    def test_qwidget_apply_effect_drop_accepts_qpoint_and_targets_clip_under_pointer(self):
+        from qt_api import QPoint
+
+        clip = types.SimpleNamespace(
+            id="C1", data={"id": "C1", "layer": 3, "position": 2.0, "start": 0.0, "end": 4.0}
+        )
+        helper = self.make_qwidget_effect_drop_helper(clip, locked=False)
+
+        # PyQt5's QDropEvent.pos() is a QPoint, not a QPointF.
+        helper._apply_effect_drop(["Blur"], 3.0, 1, drop_pos=QPoint(10, 10))
+
+        self.assertEqual(helper.lock_checks, [3])
+        self.assertEqual(helper.added, [(["Blur"], 3.0, 3)])
+
+    def test_qwidget_apply_effect_drop_aborts_on_locked_clip_under_pointer(self):
+        from qt_api import QPoint
+
+        clip = types.SimpleNamespace(
+            id="C1", data={"id": "C1", "layer": 3, "position": 2.0, "start": 0.0, "end": 4.0}
+        )
+        helper = self.make_qwidget_effect_drop_helper(clip, locked=True)
+
+        helper._apply_effect_drop(["Blur"], 3.0, 1, drop_pos=QPoint(10, 10))
+
+        # Must stop at the locked clip instead of falling back to another track.
+        self.assertEqual(helper.lock_checks, [3])
+        self.assertEqual(helper.added, [])
+
+    def make_qwidget_delete_keyframes_helper(self, selected_items):
+        qwidget_keyframe_module = self.qwidget_keyframe_module
+
+        class Helper(qwidget_keyframe_module.KeyframeMixin):
+            def __init__(self):
+                self.win = types.SimpleNamespace(
+                    timeline=types.SimpleNamespace(),
+                    selected_items=list(selected_items),
+                )
+                self.marker_targets = []
+                self._active_keyframe_marker = None
+                self._press_keyframe = None
+                self._dragging_keyframe = None
+                self._dragging_panel_keyframes = None
+                self._snap_keyframe_seconds = []
+                self._keyframes_dirty = False
+                self.geometry = types.SimpleNamespace(mark_dirty=lambda: None)
+
+            def _panel_selected_keyframe_targets(self):
+                return []
+
+            def _delete_keyframe_marker_target(self, marker):
+                self.marker_targets.append(marker)
+                return marker is not None
+
+            def _clear_panel_selection(self, _track):
+                return None
+
+            def _update_track_panel_properties(self):
+                return None
+
+            def update(self):
+                return None
+
+        return Helper()
+
+    def test_qwidget_delete_selected_keyframes_ignores_marker_of_deselected_owner(self):
+        helper = self.make_qwidget_delete_keyframes_helper([{"id": "C2", "type": "clip"}])
+        stale_marker = {"type": "clip", "clip": types.SimpleNamespace(id="C1"), "frame": 5}
+        helper._active_keyframe_marker = stale_marker
+
+        deleted = self.qwidget_keyframe_module.KeyframeMixin.delete_selected_keyframes(helper)
+
+        self.assertFalse(deleted)
+        self.assertEqual(helper.marker_targets, [None])
+        self.assertIsNone(helper._active_keyframe_marker)
+
+    def test_qwidget_delete_selected_keyframes_uses_marker_of_selected_owner(self):
+        helper = self.make_qwidget_delete_keyframes_helper([{"id": "C1", "type": "clip"}])
+        marker = {"type": "clip", "clip": types.SimpleNamespace(id="C1"), "frame": 5}
+        helper._active_keyframe_marker = marker
+
+        deleted = self.qwidget_keyframe_module.KeyframeMixin.delete_selected_keyframes(helper)
+
+        self.assertTrue(deleted)
+        self.assertEqual(helper.marker_targets, [marker])
+
+    def test_qwidget_keyframe_marker_owner_selection_check_per_type(self):
+        check = self.qwidget_keyframe_module.KeyframeMixin._keyframe_marker_owner_is_selected
+        helper = types.SimpleNamespace(win=types.SimpleNamespace(selected_items=[
+            {"id": "E1", "type": "effect"},
+            {"id": "T1", "type": "transition"},
+        ]))
+        self.assertTrue(check(helper, {"type": "effect", "owner_id": "E1"}))
+        self.assertTrue(check(helper, {"type": "transition", "transition": types.SimpleNamespace(id="T1")}))
+        self.assertFalse(check(helper, {"type": "clip", "object_id": "E1"}))
+        self.assertFalse(check(helper, {"type": "clip", "clip": types.SimpleNamespace(id="C9")}))
+        self.assertFalse(check(helper, None))
+
+    def test_draw_clip_falls_back_to_normal_render_when_trim_preview_cache_is_empty(self):
+        painter = self.make_clip_painter()
+        clip = types.SimpleNamespace(id="C1", data={"file_id": "F1"})
+        painter._is_trim_preview_active = lambda candidate: True
+        painter._retime_preview_cache = {}
+        pixmap_calls = []
+        painter._clip_pixmap = lambda full_rect, segment_rect, candidate: pixmap_calls.append(candidate.id) or None
+
+        rect = QRectF(0.0, 0.0, 120.0, 40.0)
+        painter._draw_clip(None, rect, rect, clip, None, False)
+
+        # An empty preview cache must not skip the regular clip render.
+        self.assertEqual(pixmap_calls, ["C1"])
 
     def test_frame_rounding_increment_caps_to_nearby_frames(self):
         painter = self.make_clip_painter(project_fps=30.0)

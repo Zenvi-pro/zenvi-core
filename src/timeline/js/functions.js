@@ -900,7 +900,9 @@ function updateDraggables(scope, ui, itemType) {
     transition_updates.forEach(function(item_data, index) {
         var needs_refresh = (index === transition_updates.length - 1);
         var transitionPayload = Object.assign({}, item_data, {
-            _auto_direction: true
+            // Only a standalone transition move re-orients its fade; a grouped
+            // move keeps the direction the user set (matches the native timeline).
+            _auto_direction: transition_updates.length === 1 && clip_updates.length === 0
         });
         timeline.update_transition_data(JSON.stringify(transitionPayload), true, !needs_refresh, tid);
     });

@@ -1484,6 +1484,28 @@ class KeyframeMixin:
         )
         return True
 
+    def _keyframe_marker_owner_is_selected(self, marker):
+        """Return True when the marker's owning item is in the window selection."""
+        if not isinstance(marker, dict):
+            return False
+        marker_type = marker.get("type")
+        if marker_type == "effect":
+            owner_id = marker.get("owner_id") or marker.get("effect_id")
+        elif marker_type == "transition":
+            owner_id = getattr(marker.get("transition"), "id", None) or marker.get("object_id")
+        else:
+            owner_id = getattr(marker.get("clip"), "id", None) or marker.get("object_id")
+            marker_type = "clip"
+        if owner_id is None:
+            return False
+        selected = getattr(self.win, "selected_items", None) or []
+        return any(
+            isinstance(selection, dict)
+            and str(selection.get("id")) == str(owner_id)
+            and selection.get("type") == marker_type
+            for selection in selected
+        )
+
     def delete_selected_keyframes(self):
         timeline = getattr(self.win, "timeline", None)
         if not timeline:
@@ -1536,6 +1558,13 @@ class KeyframeMixin:
                 marker = getattr(self, "_press_keyframe", None)
             if not marker and isinstance(getattr(self, "_dragging_keyframe", None), dict):
                 marker = self._dragging_keyframe.get("marker")
+            # The remembered marker is only a valid Delete target while its
+            # owner is still selected; selection changes made outside the
+            # timeline (Properties, agent tools) do not clear it.
+            if marker and not self._keyframe_marker_owner_is_selected(marker):
+                self._active_keyframe_marker = None
+                self._press_keyframe = None
+                marker = None
             changed = self._delete_keyframe_marker_target(marker)
 
         if not changed:

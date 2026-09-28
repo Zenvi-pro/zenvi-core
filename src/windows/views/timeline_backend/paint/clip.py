@@ -1772,7 +1772,10 @@ class ClipPainter(BasePainter):
                 painter.drawPixmap(offset, pix)
                 painter.restore()
                 preview_drawn = True
-        else:
+        if not preview_drawn:
+            # No usable trim-preview pixmap (cache cleared mid-gesture or the
+            # item was never painted): fall back to the normal render instead
+            # of leaving an empty clip body for the rest of the trim.
             result = self._clip_pixmap(full_rect, segment_rect, clip)
             if not result:
                 return

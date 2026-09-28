@@ -1468,7 +1468,7 @@ $scope.updateRecentItemJSON = function (item_type, item_ids, tid) {
       timeline.update_clip_data(JSON.stringify(clipPayload), true, true, false, tid);
     } else if (item_type === "transition") {
       var transitionPayload = Object.assign({}, item_object, {
-        _auto_direction: true
+        _auto_direction: item_ids.length === 1
       });
       timeline.update_transition_data(JSON.stringify(transitionPayload), true, false, tid);
     }

@@ -51,6 +51,7 @@ from classes.effect_init import effect_options
 from classes.file_drop import mime_has_file_drop, urls_from_mime
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
+from classes.path_utils import absolute_media_path
 from classes.clipboard import ClipboardManager
 from classes.thumbnail import GetThumbPath
 from classes.waveform import get_audio_data
@@ -690,10 +691,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     existing_clip.data = old_data
                 raise
 
-        if auto_transition:
-            missing_transition = self._find_missing_transition_details(existing_clip.data)
-            if missing_transition is not None:
-                self.add_missing_transition(json.dumps(missing_transition))
+            # Keep the automatic transition in the same undo step as the clip
+            # move that produced the overlap (one gesture, one undo).
+            if auto_transition:
+                missing_transition = self._find_missing_transition_details(existing_clip.data)
+                if missing_transition is not None:
+                    self.add_missing_transition(json.dumps(missing_transition))
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
@@ -4085,6 +4088,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         frame_number = max(mapped_frame, 1)
 
         # Load the clip into the Player (ignored if this has already happened)
+        self.window.LoadFileSignal.emit(preview_path)
+        self.window.SpeedSignal.emit(0)
+
+        # Seek to frame
+        self.window.SeekSignal.emit(frame_number)
+
+    def PreviewTransitionFrame(self, transition_id, frame_number):
+        """Preview a specific source frame of a transition mask while trimming."""
+        transition = Transition.get(id=transition_id)
+        if not transition:
+            return
+
+        transition_data = transition.data if isinstance(transition.data, dict) else {}
+        reader = self._transition_mask_reader(transition_data)
+        preview_path = absolute_media_path(reader.get("path")) if isinstance(reader, dict) else None
+        if not preview_path:
+            return
+
+        try:
+            frame_number = max(int(frame_number or 1), 1)
+        except (TypeError, ValueError):
+            frame_number = 1
+
+        # Load the mask source into the Player (ignored if already loaded)
         self.window.LoadFileSignal.emit(preview_path)
         self.window.SpeedSignal.emit(0)
 
