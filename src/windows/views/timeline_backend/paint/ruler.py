@@ -117,23 +117,37 @@ class RulerPainter(BasePainter):
             painter.setPen(self.tick_pen)
         return left_rect
 
-    def _prime_factors(self, n: int):
-        factors = []
-        d = 2
-        while d * d <= n:
-            while n % d == 0:
-                factors.append(d)
-                n //= d
-            d += 1
-        if n > 1:
-            factors.append(n)
-        return factors
+    def _nice_frame_intervals(self, fps):
+        fps_frames = max(1, int(round(fps)))
+        intervals = set()
+
+        for frames in (1, 2, 3, 5, 10, 15):
+            if frames < fps_frames:
+                intervals.add(frames)
+
+        for fraction in (0.2, 0.25, 1.0 / 3.0, 0.5, 1.0):
+            raw_frames = fps_frames * fraction
+            frames = int(round(raw_frames))
+            if frames >= 1 and abs(raw_frames - frames) < 1e-6:
+                intervals.add(frames)
+
+        for seconds in (2, 3, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600):
+            intervals.add(fps_frames * seconds)
+
+        return sorted(intervals)
 
     def _frames_per_tick(self, pps, fps):
-        frames = 1
-        factors = self._prime_factors(round(fps))
-        while (frames / fps) * pps < 40:
-            frames *= factors.pop(0) if factors else 2
+        if pps <= 0 or fps <= 0:
+            return 1
+
+        min_spacing = 44.0
+        for frames in self._nice_frame_intervals(fps):
+            if (frames / fps) * pps >= min_spacing:
+                return frames
+
+        frames = self._nice_frame_intervals(fps)[-1]
+        while (frames / fps) * pps < min_spacing:
+            frames *= 2
         return frames
 
     def paint(self, painter: QPainter):

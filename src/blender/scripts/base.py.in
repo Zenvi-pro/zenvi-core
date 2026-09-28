@@ -35,6 +35,18 @@ def update_color_fcurves(action_name, keyframes):
     fcurves = get_action_fcurves(action)
     by_index = {fc.array_index: fc for fc in fcurves}
 
+    if len(keyframes) == 1:
+        _, color = keyframes[0]
+        for i in range(0, 3):
+            fc = by_index.get(i)
+            if not fc:
+                continue
+            for keyframe_point in fc.keyframe_points:
+                keyframe_point.co.y = color[i]
+                keyframe_point.handle_left.y = color[i]
+                keyframe_point.handle_right.y = color[i]
+        return action
+
     for point, (frame, color) in enumerate(keyframes):
         for i in range(0, 3):
             fc = by_index.get(i)
@@ -57,6 +69,32 @@ def keyframe_color_socket(socket, keyframes):
         for idx in range(4):
             socket.keyframe_insert("default_value", index=idx, frame=frame)
 
+    if len(keyframes) == 1:
+        _, color = keyframes[0]
+        update_socket_color_fcurves(socket, color)
+
+
+def update_socket_color_fcurves(socket, color):
+    """Update all existing color keyframes on a socket to one static color."""
+    if not socket:
+        return
+
+    owner = getattr(socket, "id_data", None)
+    animation_data = getattr(owner, "animation_data", None)
+    action = getattr(animation_data, "action", None) if animation_data else None
+    if not action:
+        return
+
+    rgba = ensure_rgba(color)
+    data_path = socket.path_from_id("default_value")
+    for fc in get_action_fcurves(action):
+        if fc.data_path != data_path or fc.array_index >= len(rgba):
+            continue
+        for keyframe_point in fc.keyframe_points:
+            keyframe_point.co.y = rgba[fc.array_index]
+            keyframe_point.handle_left.y = rgba[fc.array_index]
+            keyframe_point.handle_right.y = rgba[fc.array_index]
+
 
 def keyframe_value_socket(socket, value, frames):
     """Keyframe a single-float socket at provided frames."""
@@ -65,9 +103,102 @@ def keyframe_value_socket(socket, value, frames):
         socket.keyframe_insert("default_value", frame=frame)
 
 
+def _find_node(nodes, preferred_name=None, node_type=None):
+    """Return a node by name first, then by Blender node type."""
+    if preferred_name:
+        node = nodes.get(preferred_name)
+        if node:
+            return node
+
+    if node_type:
+        for node in nodes:
+            if getattr(node, "type", None) == node_type:
+                return node
+
+    return None
+
+
+def _input_socket(node, *names, socket_type=None):
+    """Find a socket by name, with an optional type-constrained fallback."""
+    if not node:
+        return None
+
+    for name in names:
+        socket = node.inputs.get(name)
+        if socket is not None:
+            return socket
+
+    if socket_type:
+        for socket in node.inputs:
+            if getattr(socket, "type", None) == socket_type:
+                return socket
+
+    return None
+
+
 def _get_principled_node(mat):
     nt = mat.node_tree
-    return nt.nodes.get("Principled BSDF") if nt else None
+    return _find_node(nt.nodes, "Principled BSDF", "BSDF_PRINCIPLED") if nt else None
+
+
+def _fallback_color_socket(mat):
+    """Find a render color socket on non-Principled materials."""
+    nt = mat.node_tree
+    if not nt:
+        return None
+
+    for node_type in ("EMISSION", "BSDF_DIFFUSE", "BSDF_GLOSSY", "BSDF_TRANSLUCENT"):
+        node = _find_node(nt.nodes, node_type=node_type)
+        socket = _input_socket(node, "Color", "Base Color", "Emission Color", socket_type='RGBA')
+        if socket:
+            return socket
+
+    for node in nt.nodes:
+        socket = _input_socket(node, "Color", "Base Color", "Emission Color", socket_type='RGBA')
+        if socket:
+            return socket
+
+    return None
+
+
+def _set_socket_color(socket, color, keyframes=None):
+    """Set or keyframe a color socket."""
+    if not socket:
+        return
+    if keyframes:
+        keyframe_color_socket(socket, keyframes)
+    else:
+        socket.default_value = ensure_rgba(color)
+
+
+def set_material_color(material_name, color, keyframes=None, emission_strength=None):
+    """Set a material's visible/rendered color across Blender shader versions."""
+    mat = bpy.data.materials.get(material_name)
+    if not mat:
+        return None
+
+    rgba = ensure_rgba(color)
+    mat.diffuse_color = rgba
+
+    bsdf = _get_principled_node(mat)
+    if bsdf:
+        base_sock = _input_socket(bsdf, "Base Color")
+        emission_sock = _input_socket(bsdf, "Emission Color", "Emission")
+        strength_sock = _input_socket(bsdf, "Emission Strength", "Strength")
+        _set_socket_color(base_sock, rgba, keyframes)
+        _set_socket_color(emission_sock, rgba, keyframes)
+        if strength_sock is not None and emission_strength is not None:
+            strength_sock.default_value = emission_strength
+
+    color_sock = _fallback_color_socket(mat)
+    _set_socket_color(color_sock, rgba, keyframes)
+
+    emission = _find_node(mat.node_tree.nodes, node_type="EMISSION") if mat.node_tree else None
+    strength_sock = _input_socket(emission, "Strength")
+    if strength_sock is not None and emission_strength is not None:
+        strength_sock.default_value = emission_strength
+
+    return mat
 
 
 def keyframe_principled(
@@ -83,30 +214,26 @@ def keyframe_principled(
     if not mat:
         return None
 
-    if viewport_color is not None:
-        mat.diffuse_color = ensure_rgba(viewport_color)
-
-    if specular_color is not None:
+    if specular_color is not None and hasattr(mat, "specular_color"):
         # Viewport/specular color property uses RGB only
         mat.specular_color = ensure_rgba(specular_color)[:3]
 
+    if viewport_color is not None:
+        mat.diffuse_color = ensure_rgba(viewport_color)
+
     bsdf = _get_principled_node(mat)
     if not bsdf:
+        fallback_keyframes = base_keyframes or emission_keyframes
+        if fallback_keyframes:
+            color_sock = _fallback_color_socket(mat)
+            _set_socket_color(color_sock, fallback_keyframes[0][1], fallback_keyframes)
         return mat
 
-    base_sock = bsdf.inputs.get("Base Color")
-    emission_sock = bsdf.inputs[27] if len(bsdf.inputs) > 27 else None
-    emission_strength_sock = bsdf.inputs[28] if len(bsdf.inputs) > 28 else None
-    # IOR socket (Principled input index 3)
-    ior_sock = bsdf.inputs[3] if len(bsdf.inputs) > 3 else None
-    # Specular tint/color socket (RGBA)
-    specular_tint_sock = None
-    for sock in bsdf.inputs:
-        if "Specular Tint" in sock.name and sock.type == 'RGBA':
-            specular_tint_sock = sock
-            break
-    if specular_tint_sock is None and len(bsdf.inputs) > 14 and bsdf.inputs[14].type == 'RGBA':
-        specular_tint_sock = bsdf.inputs[14]
+    base_sock = _input_socket(bsdf, "Base Color")
+    emission_sock = _input_socket(bsdf, "Emission Color", "Emission")
+    emission_strength_sock = _input_socket(bsdf, "Emission Strength", "Strength")
+    ior_sock = _input_socket(bsdf, "IOR", "Specular IOR Level")
+    specular_tint_sock = _input_socket(bsdf, "Specular Tint", socket_type='RGBA')
 
     if base_sock and base_keyframes:
         keyframe_color_socket(base_sock, base_keyframes)
@@ -123,5 +250,10 @@ def keyframe_principled(
 
     if specular_tint_sock is not None and specular_color is not None:
         specular_tint_sock.default_value = ensure_rgba(specular_color)
+
+    fallback_keyframes = base_keyframes or emission_keyframes
+    if fallback_keyframes:
+        color_sock = _fallback_color_socket(mat)
+        _set_socket_color(color_sock, fallback_keyframes[0][1], fallback_keyframes)
 
     return mat
