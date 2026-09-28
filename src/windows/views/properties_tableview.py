@@ -25,6 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
+import copy
 import os
 import json
 import functools
@@ -717,7 +718,9 @@ class PropertiesTableView(QTableView):
             property_name = cur_property[1]["name"]
             self.property_type = cur_property[1]["type"]
             points = cur_property[1]["points"]
-            self.choices = cur_property[1]["choices"]
+            # Work on a copy so dynamic menu construction doesn't mutate the
+            # property's stored choices and leave stale entries behind.
+            self.choices = copy.deepcopy(cur_property[1]["choices"])
             property_key = cur_property[0]
 
             for item_id, item_type in selected_value.data():
@@ -1230,6 +1233,7 @@ class PropertiesTableView(QTableView):
 
         # Connect to update signals, so our menus stay current
         self.files_model.dataChanged.connect(self.refresh_menu)
+        self.win.files_model.ModelRefreshed.connect(self.refresh_menu)
         self.win.transition_model.ModelRefreshed.connect(self.refresh_menu)
         self.menu_reset = False
 
