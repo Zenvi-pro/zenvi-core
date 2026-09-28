@@ -26,8 +26,10 @@
  """
 
 import time
-
+import threading
 import math
+import json
+import traceback
 
 from qt_api import QObject, QThread, QTimer, pyqtSlot, pyqtSignal, QCoreApplication
 from qt_api import QMessageBox
@@ -37,6 +39,7 @@ import openshot  # Python module for libopenshot (required video editing module 
 from classes.app import get_app
 from classes.logger import log
 from classes.updates import UpdateInterface
+from windows.scope_panel import build_vectorscope_image, normalize_vectorscope_display
 
 
 class PreviewParent(QObject, UpdateInterface):
@@ -158,6 +161,9 @@ class PreviewParent(QObject, UpdateInterface):
         self.parent.LoadTimelineAndSeekSignal.connect(self.worker.LoadTimelineAndSeek)
         self.parent.SpeedSignal.connect(self.worker.Speed)
         self.parent.StopSignal.connect(self.worker.Stop)
+        if hasattr(self.parent, "RunScopeSignal"):
+            self.parent.RunScopeSignal.connect(self.worker.queue_scope_analysis)
+            self.worker.scope_ready.connect(self.parent._on_scope_ready)
 
         # Move Worker to new thread, and Start
         self.worker.moveToThread(self.background)
@@ -175,6 +181,7 @@ class PlayerWorker(QObject):
     error_found = pyqtSignal(object)
     ready = pyqtSignal()
     finished = pyqtSignal()
+    scope_ready = pyqtSignal(int, dict, dict)
 
     @pyqtSlot(object, object)
     def Init(self, parent, timeline, videoPreview):
@@ -192,6 +199,9 @@ class PlayerWorker(QObject):
         self.current_frame = None
         self.current_mode = None
         self.reader_mode = "timeline"
+        self._scope_lock = threading.Lock()
+        self._pending_scope_request = None
+        self._scope_analysis_active = False
 
         # Create QtPlayer class from libopenshot
         self.player = openshot.QtPlayer()
@@ -388,6 +398,146 @@ class PlayerWorker(QObject):
         self.Seek(self.player.Position())
 
         log.debug("refreshFrame done pos=%s", self.player.Position())
+
+    @pyqtSlot(int, bool, bool, bool, bool, object, object, object)
+    def queue_scope_analysis(self, frame_number, need_waveform, need_histogram, need_vectorscope, need_audio, scope_region, waveform_render, vectorscope_render):
+        with self._scope_lock:
+            self._pending_scope_request = (
+                frame_number, need_waveform, need_histogram, need_vectorscope,
+                need_audio, scope_region, waveform_render, vectorscope_render,
+            )
+            if self._scope_analysis_active:
+                return
+            self._scope_analysis_active = True
+
+        while True:
+            with self._scope_lock:
+                request = self._pending_scope_request
+                self._pending_scope_request = None
+            if not request:
+                with self._scope_lock:
+                    self._scope_analysis_active = False
+                return
+            self.run_scope_analysis(*request)
+
+    def run_scope_analysis(self, frame_number, need_waveform, need_histogram, need_vectorscope, need_audio, scope_region, waveform_render, vectorscope_render):
+        """Compute FrameScope data on the worker thread and emit scope_ready.
+
+        Running here keeps scope analysis work off the UI thread.
+
+        Channel key contract: libopenshot frames are stored as
+        QImage::Format_RGBA8888_Premultiplied ([R=0, G=1, B=2, A=3]).
+        FrameScope exposes per-channel data under the keys "red", "green",
+        and "blue" matching that order. scope_panel.py reads those same keys.
+        """
+        timeline = getattr(getattr(get_app().window, "timeline_sync", None), "timeline", None)
+        if not timeline:
+            self.scope_ready.emit(frame_number, {}, {})
+            return
+        video, audio = {}, {}
+        try:
+            need_video = bool(need_waveform or need_histogram or need_vectorscope)
+            frame = timeline.GetFrame(frame_number)
+            scope = openshot.FrameScope()
+            if need_waveform:
+                waveform_settings = waveform_render if isinstance(waveform_render, dict) else {}
+                try:
+                    scope.SetWaveformColumns(max(32, int(waveform_settings.get("columns", 256) or 256)))
+                except Exception:
+                    pass
+            if need_vectorscope:
+                is_playing = False
+                try:
+                    is_playing = self.player.Mode() == openshot.PLAYBACK_PLAY
+                except Exception:
+                    is_playing = self.current_mode == openshot.PLAYBACK_PLAY
+                if is_playing:
+                    playback_size = 96 if not (need_waveform or need_histogram) else 128
+                    scope.SetVectorscopeSize(playback_size)
+                else:
+                    scope.SetVectorscopeSize(256)
+            if need_video and isinstance(scope_region, dict):
+                scope.SetVideoRegionNormalized(
+                    float(scope_region.get("x", 0.0)),
+                    float(scope_region.get("y", 0.0)),
+                    float(scope_region.get("width", 0.0)),
+                    float(scope_region.get("height", 0.0)),
+                )
+            scope.SetFrame(frame)
+            if need_video:
+                if scope.HasVideo():
+                    video = {"present": True}
+                    if need_waveform:
+                        video["waveform"] = {
+                            "columns": scope.GetWaveformColumns(),
+                            "bins":    scope.GetWaveformBins(),
+                            "luma":    list(scope.GetVideoWaveformLuma()),
+                            "red":     list(scope.GetVideoWaveformRed()),
+                            "green":   list(scope.GetVideoWaveformGreen()),
+                            "blue":    list(scope.GetVideoWaveformBlue()),
+                        }
+                    if need_histogram:
+                        video["histogram"] = {
+                            "luma":  list(scope.GetVideoHistogramLuma()),
+                            "red":   list(scope.GetVideoHistogramRed()),
+                            "green": list(scope.GetVideoHistogramGreen()),
+                            "blue":  list(scope.GetVideoHistogramBlue()),
+                        }
+                    if need_vectorscope:
+                        render_settings = vectorscope_render if isinstance(vectorscope_render, dict) else {}
+                        display = normalize_vectorscope_display(render_settings.get("display", "colorized"))
+                        zoom_factor = {"100": 1.0, "200": 2.0, "400": 4.0}.get(
+                            str(render_settings.get("zoom", "100")), 1.0)
+                        vectorscope = {
+                            "size": scope.GetVectorscopeSize(),
+                            "density": [],
+                        }
+                        try:
+                            vectorscope["density"] = list(scope.GetVideoVectorscope())
+                        except Exception:
+                            try:
+                                root = json.loads(scope.Json())
+                                vectorscope = root.get("video", {}).get("vectorscope", vectorscope)
+                            except Exception:
+                                pass
+                        try:
+                            vectorscope["image"] = build_vectorscope_image(
+                                vectorscope.get("density", []),
+                                int(vectorscope.get("size", 256) or 256),
+                                zoom_factor,
+                                display,
+                            )
+                        except Exception:
+                            pass
+                        video["vectorscope"] = vectorscope
+                    video["summary"] = {
+                        "avg_luma":           scope.GetVideoAverageLuma(),
+                        "clipped_shadows":    scope.GetVideoClippedShadows(),
+                        "clipped_highlights": scope.GetVideoClippedHighlights(),
+                    }
+                else:
+                    video = {"present": False}
+            if need_audio:
+                if scope.HasAudio():
+                    channels = scope.GetAudioChannels()
+                    audio = {
+                        "present":  True,
+                        "channels": channels,
+                        "summary": {
+                            "peak":            list(scope.GetAudioPeakLevels()),
+                            "rms":             list(scope.GetAudioRmsLevels()),
+                            "clipped_samples": list(scope.GetAudioClippedSamples()),
+                        },
+                        "waveform": {
+                            "min": [list(scope.GetAudioWaveformMin(ch)) for ch in range(channels)],
+                            "max": [list(scope.GetAudioWaveformMax(ch)) for ch in range(channels)],
+                        },
+                    }
+                else:
+                    audio = {"present": False}
+        except Exception:
+            log.error("Scope analysis failed for frame %s\n%s", frame_number, traceback.format_exc())
+        self.scope_ready.emit(frame_number, video, audio)
 
     def LoadFile(self, path=None):
         """ Load a media file into the video player """

@@ -84,8 +84,7 @@ class TimelineSync(UpdateInterface):
             return
 
         with self.timeline_lock:
-            # Disable video caching temporarily
-            caching_value = openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING
+            # Enter edit mode — disable video caching until the user seeks or plays
             openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             try:
@@ -135,8 +134,7 @@ class TimelineSync(UpdateInterface):
                 log.error("Error applying JSON to timeline object in libopenshot: %s. %s" %
                          (e, action.json(is_array=True)))
 
-            # Resume video caching original value
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = caching_value
+            # Cache stays off — re-enabled when the user seeks or starts playback
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
@@ -146,10 +144,22 @@ class TimelineSync(UpdateInterface):
             QTimer.singleShot(0, self.window._finish_pending_preview_resize)
             return
 
+        if getattr(self.window, "_dock_interaction_active", False):
+            self.window._pending_preview_size = new_size
+            return
+
         # Increase based on DPI
         device_pixel_ratio = self.window.devicePixelRatioF()
         scaled_width = round(new_size.width() * device_pixel_ratio)
         scaled_height = round(new_size.height() * device_pixel_ratio)
+
+        if scaled_width < 1 or scaled_height < 1:
+            log.info(
+                "Skipping preview max size update for invalid size: %sx%s",
+                scaled_width,
+                scaled_height,
+            )
+            return
 
         log.info(f"Adjusting max size of preview image: {scaled_width}x{scaled_height}")
 

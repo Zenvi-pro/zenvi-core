@@ -50,6 +50,8 @@ class HiddenTitleBar(QWidget):
         self._tr = None
         self.close_btn = None
         self.setObjectName("dock-title-bar")
+        # Never take keyboard focus away from the dock contents (upstream #6016)
+        self.setFocusPolicy(Qt.NoFocus)
 
         # Set up a horizontal layout
         layout = QHBoxLayout(self)
@@ -58,6 +60,7 @@ class HiddenTitleBar(QWidget):
 
         # Add a QLabel for the title (optional, based on title_text)
         self.title_label = QLabel(title_text)
+        self.title_label.setFocusPolicy(Qt.NoFocus)
         if title_text:
             self.title_label.setObjectName("dock-title-label")
         else:
@@ -73,6 +76,7 @@ class HiddenTitleBar(QWidget):
             self.float_btn.setObjectName("dock-float-button")
             self.float_btn.setFixedSize(18, 18)
             self.float_btn.setFlat(True)
+            self.float_btn.setFocusPolicy(Qt.NoFocus)
             self.float_btn.setToolTip("Dock" if floating else "Float")
             self.float_btn.clicked.connect(self.toggle_floating)
             layout.addWidget(self.float_btn)
@@ -83,6 +87,7 @@ class HiddenTitleBar(QWidget):
                 self.close_btn.setObjectName("dock-close-button")
                 self.close_btn.setFixedSize(18, 18)
                 self.close_btn.setFlat(True)
+                self.close_btn.setFocusPolicy(Qt.NoFocus)
                 self.close_btn.setToolTip("Close")
                 self.close_btn.clicked.connect(dock_widget.hide)
                 layout.addWidget(self.close_btn)
