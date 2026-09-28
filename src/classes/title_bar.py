@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from qt_api import Qt
+from qt_api import Qt, QEvent
 from qt_api import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
 
 from classes.app import get_app
@@ -61,6 +61,7 @@ class HiddenTitleBar(QWidget):
         # Add a QLabel for the title (optional, based on title_text)
         self.title_label = QLabel(title_text)
         self.title_label.setFocusPolicy(Qt.NoFocus)
+        self.title_label.installEventFilter(self)
         if title_text:
             self.title_label.setObjectName("dock-title-label")
         else:
@@ -122,6 +123,21 @@ class HiddenTitleBar(QWidget):
             else:
                 self.float_btn.setAccessibleName(_("Float"))
 
+    def _close_on_middle_click(self, event):
+        if event.button() != Qt.MiddleButton:
+            return False
+        if not (self.dock_widget.features() & QDockWidget.DockWidgetClosable):
+            return False
+        self.dock_widget.close()
+        event.accept()
+        return True
+
+    def eventFilter(self, obj, event):
+        if obj is self.title_label and event.type() == QEvent.MouseButtonRelease:
+            if self._close_on_middle_click(event):
+                return True
+        return super().eventFilter(obj, event)
+
     def toggle_floating(self):
         """Float the panel, or dock it back if it's already floating."""
         if self.dock_widget.isFloating():
@@ -157,5 +173,8 @@ class HiddenTitleBar(QWidget):
         event.ignore()
 
     def mouseReleaseEvent(self, event):
-        """Ignore releases, so the QDockWidget can finish the drag."""
+        """Middle-click closes the dock; ignore other releases so the
+        QDockWidget can finish the drag."""
+        if self._close_on_middle_click(event):
+            return
         event.ignore()

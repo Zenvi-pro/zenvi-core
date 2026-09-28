@@ -35,6 +35,7 @@ from qt_api import (
     QComboBox, QToolButton, QRect, QPainterPath, QPointF,
 )
 from classes import info
+from classes.logger import log
 from windows.color_grade_editor import draw_broadcast_hue_ring
 
 # ─── Persistent settings keys ────────────────────────────────────────────────
@@ -79,8 +80,8 @@ def _set(key, value):
     if s is not None:
         try:
             s.set(key, value)
-        except Exception:
-            pass
+        except Exception as ex:
+            log.debug("Unable to save scope setting %s: %s", key, ex)
 
 
 def _scope_region_icon(size=16):

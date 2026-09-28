@@ -139,6 +139,177 @@ class PropertiesModel(updates.UpdateInterface):
             return {'objects': objects_payload}
         return {'objects': {object_id: {property_key: property_payload}}}
 
+    def _insert_colorgrade_keyframe(self, data, property_type, frame_number):
+        from windows.color_grade_editor import (
+            _set_color_value,
+            _set_keyframe_value,
+            curve_enabled_at_frame,
+            curve_nodes_at_frame,
+            normalize_curve_data,
+            normalize_wheels_data,
+            wheels_enabled_at_frame,
+            wheels_snapshot,
+        )
+
+        frame_number = int(round(frame_number))
+        if property_type == "colorgrade_curve":
+            updated = normalize_curve_data(data)
+            enabled = 1.0 if curve_enabled_at_frame(updated, frame_number) else 0.0
+            updated["enabled"] = _set_keyframe_value(
+                updated.get("enabled"), frame_number, enabled, openshot.LINEAR)
+            nodes_at_frame = {
+                node["id"]: node
+                for node in curve_nodes_at_frame(updated, frame_number)
+            }
+            for node in updated.get("nodes", []):
+                snapshot = nodes_at_frame.get(node.get("id"))
+                if not snapshot:
+                    continue
+                for key in ("x", "y", "left_handle_x", "left_handle_y", "right_handle_x", "right_handle_y"):
+                    node[key] = _set_keyframe_value(
+                        node.get(key), frame_number, snapshot.get(key, 0.0), openshot.LINEAR)
+            return normalize_curve_data(updated)
+
+        updated = normalize_wheels_data(data)
+        snapshot = wheels_snapshot(updated, frame_number)
+        enabled = 1.0 if wheels_enabled_at_frame(updated, frame_number) else 0.0
+        updated["enabled_keyframes"] = _set_keyframe_value(
+            updated.get("enabled_keyframes"), frame_number, enabled, openshot.LINEAR)
+        for name in ("global", "shadows", "midtones", "highlights"):
+            wheel = updated.get(name, {})
+            wheel_snapshot = snapshot.get(name, {})
+            wheel["color_keyframes"] = _set_color_value(
+                wheel.get("color_keyframes"), frame_number, QColor(wheel_snapshot.get("color", "#ffffff")),
+                openshot.LINEAR)
+            wheel["amount_keyframes"] = _set_keyframe_value(
+                wheel.get("amount_keyframes"), frame_number, wheel_snapshot.get("amount", 0.0), openshot.LINEAR)
+            wheel["luma_keyframes"] = _set_keyframe_value(
+                wheel.get("luma_keyframes"), frame_number, wheel_snapshot.get("luma", 0.0), openshot.LINEAR)
+        return normalize_wheels_data(updated)
+
+    def _remove_colorgrade_keyframe(self, data, property_type, frame_number):
+        from windows.color_grade_editor import normalize_curve_data, normalize_wheels_data
+
+        frame_number = int(round(frame_number))
+        if property_type == "colorgrade_curve":
+            updated = normalize_curve_data(data)
+        else:
+            updated = normalize_wheels_data(data)
+
+        changed = False
+
+        def _remove_from_keyframe(kf_data):
+            nonlocal changed
+            points = kf_data.get("Points") if isinstance(kf_data, dict) else None
+            if not isinstance(points, list) or len(points) <= 1:
+                return
+            filtered = []
+            for point in points:
+                try:
+                    keep = int(round(float(point.get("co", {}).get("X")))) != frame_number
+                except (TypeError, ValueError):
+                    keep = True
+                if keep:
+                    filtered.append(point)
+            if len(filtered) != len(points):
+                kf_data["Points"] = filtered
+                changed = True
+
+        def _walk(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("Points"), list):
+                    _remove_from_keyframe(value)
+                    return
+                for child in value.values():
+                    _walk(child)
+            elif isinstance(value, list):
+                for child in value:
+                    _walk(child)
+
+        _walk(updated)
+        if property_type == "colorgrade_curve":
+            return normalize_curve_data(updated), changed
+        return normalize_wheels_data(updated), changed
+
+    def _save_colorgrade_keyframe_update(self, item, operation):
+        property = self.model.item(item.row(), 0).data()
+        property_type = property[1]["type"]
+        property_key = property[0]
+        object_id = property[1]["object_id"]
+        item_data = item.data()
+        any_updated = False
+
+        for item_id, item_type in item_data:
+            clip_updated = False
+            c = None
+            if item_type == "clip":
+                c = Clip.get(id=item_id)
+            elif item_type == "transition":
+                c = Transition.get(id=item_id)
+            elif item_type == "effect":
+                c = Effect.get(id=item_id)
+            if not c or not c.data:
+                continue
+
+            clip_data = c.data
+            objects = {}
+            if object_id:
+                objects = c.data.get('objects', {})
+                clip_data = objects.pop(object_id, {})
+                if not clip_data:
+                    log.debug("No clip data found for this object id")
+                    continue
+            if property_key not in clip_data:
+                continue
+
+            if operation == "insert":
+                clip_data[property_key] = self._insert_colorgrade_keyframe(
+                    clip_data[property_key], property_type, self.frame_number)
+                clip_updated = True
+            else:
+                clip_data[property_key], clip_updated = self._remove_colorgrade_keyframe(
+                    clip_data[property_key], property_type, self.frame_number)
+
+            if not clip_updated:
+                continue
+            if not object_id:
+                clip_data = {property_key: clip_data.get(property_key)}
+            else:
+                objects[object_id] = clip_data
+                clip_data = {'objects': objects}
+            c.data = clip_data
+            c.save()
+            any_updated = True
+
+        if any_updated:
+            if not self._trim_preview_mode:
+                get_app().window.refreshFrameSignal.emit()
+
+        current_row = self.parent.currentIndex().row()
+        self.parent.clearSelection()
+        if current_row >= 0:
+            self.parent.setCurrentIndex(self.model.index(current_row, 0))
+
+    def insert_keyframe(self, item):
+        property = self.model.item(item.row(), 0).data()
+        property_type = property[1]["type"]
+        if property_type in ("colorgrade_curve", "colorgrade_wheels"):
+            self._save_colorgrade_keyframe_update(item, "insert")
+            return
+        if property_type == "color":
+            property_data = property[1]
+            current_color = QColor(
+                int(property_data["red"]["value"]),
+                int(property_data["green"]["value"]),
+                int(property_data["blue"]["value"]),
+                int(property_data.get("alpha", {}).get("value", property_data.get("max", 255.0))),
+            )
+            self.color_update(item, current_color)
+            return
+
+        value = QLocale().system().toDouble(item.text())[0]
+        self.value_updated(item, value=value)
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
 
@@ -250,6 +421,10 @@ class PropertiesModel(updates.UpdateInterface):
         property_key = property[0]
         object_id = property[1]["object_id"]
         item_data = item.data()
+
+        if property_type in ("colorgrade_curve", "colorgrade_wheels"):
+            self._save_colorgrade_keyframe_update(item, "remove")
+            return
 
         for item_id, item_type in item_data:
             # Find this clip

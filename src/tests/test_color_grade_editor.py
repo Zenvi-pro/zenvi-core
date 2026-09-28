@@ -36,6 +36,8 @@ if PATH not in sys.path:
 from windows.color_grade_editor import (  # noqa: E402
     _set_color_value,
     _set_keyframe_value,
+    _default_curve_node,
+    WheelRow,
     colorgrade_keyframe_frames,
     curve_enabled_at_frame,
     curve_nodes_at_frame,
@@ -59,6 +61,24 @@ class ColorGradeEditorTests(unittest.TestCase):
         self.assertEqual(len(curve["nodes"]), 2)
         self.assertEqual(curve["nodes"][0]["interpolation"], openshot.LINEAR)
         self.assertEqual(curve["nodes"][1]["interpolation"], openshot.LINEAR)
+        self.assertEqual(curve["nodes"][0]["x"]["Points"][0]["interpolation"], openshot.LINEAR)
+
+    def test_new_curve_node_interpolates_after_frame_one_shape_is_added(self):
+        node = _default_curve_node(2, 0.5, 0.8, frame_number=24)
+        node["y"] = _set_keyframe_value(node["y"], 1, 0.2)
+        curve = normalize_curve_data({
+            "enabled": {"Points": [{"co": {"X": 1.0, "Y": 1.0}, "interpolation": openshot.LINEAR}]},
+            "nodes": [
+                _default_curve_node(0, 0.0, 0.0),
+                node,
+                _default_curve_node(1, 1.0, 1.0),
+            ],
+        })
+
+        evaluated = {node["id"]: node for node in curve_nodes_at_frame(curve, 12)}
+
+        self.assertGreater(evaluated[2]["y"], 0.2)
+        self.assertLess(evaluated[2]["y"], 0.8)
 
     def test_normalize_curve_data_falls_back_to_default(self):
         self.assertEqual(normalize_curve_data({}), default_curve_data())
@@ -194,6 +214,114 @@ class ColorGradeEditorTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(updated["nodes"][0]["y"]["Points"][1]["interpolation"], openshot.CONSTANT)
         self.assertEqual(updated["nodes"][1]["x"]["Points"][1]["interpolation"], openshot.CONSTANT)
+
+    def test_properties_model_inserts_colorgrade_wheel_keyframe_without_resetting_payload(self):
+        wheels = default_wheels_data()
+        wheels["global"]["amount_keyframes"]["Points"].append({
+            "co": {"X": 24.0, "Y": 0.8},
+            "interpolation": openshot.LINEAR,
+        })
+        wheels["shadows"]["luma_keyframes"]["Points"].append({
+            "co": {"X": 24.0, "Y": -0.4},
+            "interpolation": openshot.LINEAR,
+        })
+
+        helper = PropertiesModel.__new__(PropertiesModel)
+        updated = helper._insert_colorgrade_keyframe(wheels, "colorgrade_wheels", 12)
+
+        self.assertIn(12, colorgrade_keyframe_frames(updated, "colorgrade_wheels"))
+        self.assertIn(24, colorgrade_keyframe_frames(updated, "colorgrade_wheels"))
+        self.assertEqual(updated["global"]["amount_keyframes"]["Points"][1]["interpolation"], openshot.LINEAR)
+        self.assertEqual(updated["global"]["amount_keyframes"]["Points"][-1]["co"]["X"], 24.0)
+        self.assertEqual(updated["shadows"]["luma_keyframes"]["Points"][-1]["co"]["X"], 24.0)
+
+    def test_properties_model_removes_colorgrade_wheel_frame_without_clearing_other_frames(self):
+        wheels = default_wheels_data()
+        for keyframe in (
+            wheels["global"]["color_keyframes"]["red"],
+            wheels["global"]["color_keyframes"]["green"],
+            wheels["global"]["amount_keyframes"],
+            wheels["highlights"]["luma_keyframes"],
+        ):
+            keyframe["Points"].append({
+                "co": {"X": 24.0, "Y": 0.5},
+                "interpolation": openshot.LINEAR,
+            })
+
+        helper = PropertiesModel.__new__(PropertiesModel)
+        updated, changed = helper._remove_colorgrade_keyframe(wheels, "colorgrade_wheels", 24)
+
+        self.assertTrue(changed)
+        self.assertEqual(colorgrade_keyframe_frames(updated, "colorgrade_wheels"), {1})
+
+    def test_wheel_row_remove_keyframe_targets_active_interpolated_frame(self):
+        row = WheelRow.__new__(WheelRow)
+        row._frame_number = 12
+        row._data = normalize_wheels_data({
+            "global": {
+                "color_keyframes": {
+                    "red": {"Points": [
+                        {"co": {"X": 1.0, "Y": 255.0}, "interpolation": openshot.LINEAR},
+                        {"co": {"X": 24.0, "Y": 64.0}, "interpolation": openshot.LINEAR},
+                    ]},
+                    "green": {"Points": [
+                        {"co": {"X": 1.0, "Y": 255.0}, "interpolation": openshot.LINEAR},
+                        {"co": {"X": 24.0, "Y": 128.0}, "interpolation": openshot.LINEAR},
+                    ]},
+                    "blue": {"Points": [
+                        {"co": {"X": 1.0, "Y": 255.0}, "interpolation": openshot.LINEAR},
+                        {"co": {"X": 24.0, "Y": 192.0}, "interpolation": openshot.LINEAR},
+                    ]},
+                    "alpha": {"Points": [
+                        {"co": {"X": 1.0, "Y": 255.0}, "interpolation": openshot.LINEAR},
+                        {"co": {"X": 24.0, "Y": 255.0}, "interpolation": openshot.LINEAR},
+                    ]},
+                },
+                "amount_keyframes": {"Points": [
+                    {"co": {"X": 1.0, "Y": 0.0}, "interpolation": openshot.LINEAR},
+                    {"co": {"X": 24.0, "Y": 0.8}, "interpolation": openshot.LINEAR},
+                ]},
+            }
+        })["global"]
+        row.dragStarted = type("Signal", (), {"emit": lambda self: None})()
+        row.dragFinished = type("Signal", (), {"emit": lambda self: None})()
+        row.changed = type("Signal", (), {"emit": lambda self: None})()
+        row._apply_data = lambda: None
+
+        row._remove_keyframe()
+
+        self.assertEqual(row._frame_set(), {1})
+
+    def test_wheel_row_remove_slider_keyframe_targets_active_interpolated_frame(self):
+        row = WheelRow.__new__(WheelRow)
+        row._frame_number = 12
+        row._data = normalize_wheels_data({
+            "global": {
+                "amount_keyframes": {"Points": [
+                    {"co": {"X": 1.0, "Y": 0.0}, "interpolation": openshot.LINEAR},
+                    {"co": {"X": 24.0, "Y": 0.8}, "interpolation": openshot.LINEAR},
+                ]},
+                "luma_keyframes": {"Points": [
+                    {"co": {"X": 1.0, "Y": 0.0}, "interpolation": openshot.LINEAR},
+                    {"co": {"X": 24.0, "Y": -0.4}, "interpolation": openshot.LINEAR},
+                ]},
+            }
+        })["global"]
+        row.dragStarted = type("Signal", (), {"emit": lambda self: None})()
+        row.dragFinished = type("Signal", (), {"emit": lambda self: None})()
+        row.changed = type("Signal", (), {"emit": lambda self: None})()
+        row._apply_data = lambda: None
+
+        row._remove_slider_keyframe("amount")
+
+        self.assertEqual(
+            [point["co"]["X"] for point in row._data["amount_keyframes"]["Points"]],
+            [1.0],
+        )
+        self.assertEqual(
+            [point["co"]["X"] for point in row._data["luma_keyframes"]["Points"]],
+            [1.0, 24.0],
+        )
 
     def test_achromatic_color_detection_treats_white_as_neutral(self):
         self.assertTrue(is_achromatic_color(QColor("#ffffff")))

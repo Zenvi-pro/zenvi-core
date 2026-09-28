@@ -67,30 +67,29 @@ def _calculate_retime_metrics(clip, new_end, pfps):
     }
 
 
-def _iterate_keyframe_lists(clip_dict):
-    for value in clip_dict.values():
-        if isinstance(value, dict) and isinstance(value.get("Points"), list):
-            yield value["Points"]
-    objects = clip_dict.get("objects") or {}
-    for obj in objects.values():
-        if not isinstance(obj, dict):
-            continue
-        for value in obj.values():
-            if isinstance(value, dict) and isinstance(value.get("Points"), list):
-                yield value["Points"]
-    for eff in clip_dict.get("effects", []) or []:
-        if not isinstance(eff, dict):
-            continue
-        for value in eff.values():
-            if isinstance(value, dict) and isinstance(value.get("Points"), list):
-                yield value["Points"]
+def _iterate_keyframe_lists(value):
+    """Yield every keyframe Points list nested anywhere inside a clip payload."""
+    if isinstance(value, dict):
+        points = value.get("Points")
+        if isinstance(points, list):
+            yield points
+            return
+        for child in value.values():
+            yield from _iterate_keyframe_lists(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iterate_keyframe_lists(child)
 
 
 def _scale_points(points, start_x, new_end_x, scale):
     if not isinstance(points, list):
         return
     for point in points:
+        if not isinstance(point, dict):
+            continue
         co = point.get("co", {})
+        if not isinstance(co, dict):
+            continue
         x = co.get("X")
         if x is None or x < start_x:
             continue
