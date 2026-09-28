@@ -40,17 +40,18 @@ import time
 # Is one even necessary, or is it safe to use xml.dom.minidom for that?
 from xml.dom import minidom
 
-from PyQt5.QtCore import Qt, pyqtSlot, QTimer, pyqtSignal, QRect, QPoint, QSize, QEvent
-from PyQt5.QtGui import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
-from PyQt5.QtWidgets import (
+from qt_api import Qt, pyqtSlot, QTimer, pyqtSignal, QRect, QPoint, QSize, QEvent
+from qt_api import get_font_dialog_selection
+from qt_api import QFontDatabase, QColor, QIcon, QFont, QFontInfo, QPixmap, QPainter
+from qt_api import (
     QWidget,
-    QMessageBox, QDialog, QColorDialog, QFontDialog,
+    QMessageBox, QDialog,
     QPushButton, QLineEdit, QLabel, QDialogButtonBox
 )
 
 import openshot
 
-from classes import info, ui_util
+from classes import info, ui_util, tabstops
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
@@ -71,8 +72,11 @@ class TitleEditor(QDialog):
         # Create dialog class
         super().__init__(*args, **kwargs)
 
-        # Init font DB
-        self.font_db = QFontDatabase()
+        # Init font DB (Qt6 removes the default constructor)
+        try:
+            self.font_db = QFontDatabase()
+        except TypeError:
+            self.font_db = QFontDatabase
 
         # A timer to pause until user input stops before updating the svg
         self.update_timer = QTimer(self)
@@ -95,15 +99,22 @@ class TitleEditor(QDialog):
 
         # In your widget's initialization:
         self.lblPreviewLabel.installEventFilter(self)
+        self.lblPreviewLabel.setFocusPolicy(Qt.NoFocus)
+        self.scrollArea.setFocusPolicy(Qt.NoFocus)
 
-        # Set up the buttons
-        self.buttonBox = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        self.saveButton = self.buttonBox.button(QDialogButtonBox.Save)
-        self.cancelButton = self.buttonBox.button(QDialogButtonBox.Cancel)
-
-        # Set object names (for theme styles)
+        # Set up the buttons (match Animated Title behavior)
+        app = get_app()
+        _ = app._tr
+        self.buttonBox = QDialogButtonBox()
+        self.saveButton = QPushButton(_('Save'))
         self.saveButton.setObjectName("acceptButton")
+        self.cancelButton = QPushButton(_('Cancel'))
         self.cancelButton.setObjectName("cancelButton")
+        self.buttonBox.addButton(self.saveButton, QDialogButtonBox.AcceptRole)
+        self.buttonBox.addButton(self.cancelButton, QDialogButtonBox.RejectRole)
+        # Set focus policy after adding to buttonBox to prevent override
+        self.saveButton.setFocusPolicy(Qt.StrongFocus)
+        self.cancelButton.setFocusPolicy(Qt.StrongFocus)
         self.layout().addWidget(self.buttonBox)
 
         # Connect the buttons
@@ -147,7 +158,12 @@ class TitleEditor(QDialog):
         self.verticalLayout.addWidget(self.titlesView)
 
         # Disable Save button on window load
-        self.buttonBox.button(self.buttonBox.Save).setEnabled(False)
+        if hasattr(self, "saveButton"):
+            self.saveButton.setEnabled(False)
+
+        self._apply_tab_order()
+        if not self.edit_file_path:
+            QTimer.singleShot(0, lambda: self.titlesView.setFocus(Qt.TabFocusReason))
 
         # Connect thumbnail listener
         self.thumbnailReady.connect(self.display_pixmap)
@@ -203,7 +219,7 @@ class TitleEditor(QDialog):
         """Display pixmap of SVG on UI thread"""
         self.lblPreviewLabel.setPixmap(display_pixmap)
 
-    def txtLine_changed(self, txtWidget):
+    def txtLine_changed(self, txtWidget, *_args):
 
         # Loop through child widgets (and remove them)
         text_list = []
@@ -473,7 +489,48 @@ class TitleEditor(QDialog):
             self.btnFontColor.setEnabled(False)
 
         # Enable Save button when a template is selected
-        self.buttonBox.button(self.buttonBox.Save).setEnabled(True)
+        if hasattr(self, "saveButton"):
+            self.saveButton.setEnabled(True)
+
+        self._apply_tab_order()
+
+    def _apply_tab_order(self):
+        """Apply explicit tab order for the title editor."""
+        ordered = []
+        titles_view = getattr(self, "titlesView", None)
+        if titles_view:
+            ordered.append(titles_view)
+
+        dynamic_widgets = tabstops.collect_focusable_from_layout(
+            self.settingsContainer.layout(),
+            self,
+            include_hidden=True,
+            include_disabled=True,
+        )
+        if not dynamic_widgets:
+            dynamic_widgets = [
+                w for w in self.settingsContainer.findChildren(QWidget)
+                if w.focusPolicy() != Qt.NoFocus and w.isVisibleTo(self)
+            ]
+        ordered.extend(dynamic_widgets)
+
+        action_buttons = tabstops.sort_widgets_left_to_right(
+            [getattr(self, "saveButton", None), getattr(self, "cancelButton", None)],
+            self,
+        )
+        ordered.extend(action_buttons)
+
+        tabstops.apply_explicit_tab_order_later(
+            ordered,
+            root=self,
+            include_hidden=True,
+            include_disabled=True,
+        )
+
+        if ordered:
+            QTimer.singleShot(
+                0, lambda: tabstops.safe_set_tab_order(ordered[-1], ordered[0])
+            )
 
     def writeToFile(self, xmldoc):
         '''writes a new svg file containing the user edited data'''
@@ -563,7 +620,7 @@ class TitleEditor(QDialog):
         oldfont = self.qfont
 
         # Get font from user
-        font, ok = QFontDialog.getFont(oldfont, caption=("Change Font"))
+        font, ok = get_font_dialog_selection(oldfont, self, _("Change Font"))
 
         # Update SVG font
         if ok and font is not oldfont:

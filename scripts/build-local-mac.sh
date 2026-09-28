@@ -102,16 +102,8 @@ fi
 
 # ── Step 6: Create DMG ────────────────────────────────────────────────────────
 DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
-echo "[5/5] Creating DMG: $DMG_NAME"
-rm -rf dmgroot && mkdir dmgroot
-cp -R "$APP" dmgroot/
-ln -s /Applications dmgroot/Applications
-hdiutil create \
-  -volname "Zenvi" \
-  -srcfolder "dmgroot" \
-  -ov -format UDZO \
-  "$DMG_NAME"
-rm -rf dmgroot
+echo "[5/5] Creating branded DMG: $DMG_NAME"
+bash "$REPO_ROOT/installer/create-zenvi-dmg.sh" "$APP" "$DMG_NAME"
 
 echo ""
 echo "======================================"

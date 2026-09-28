@@ -27,9 +27,9 @@
 
 import os
 
-from PyQt5.QtCore import QMimeData, Qt, QSortFilterProxyModel
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon
-from PyQt5.QtWidgets import QMessageBox
+from qt_api import QObject, QMimeData, Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal
+from qt_api import QStandardItemModel, QStandardItem, QIcon
+from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
@@ -60,7 +60,13 @@ class EmojiStandardItemModel(QStandardItemModel):
         return data
 
 
-class EmojisModel():
+class EmojiProxyModel(QSortFilterProxyModel):
+    def columnCount(self, parent=QModelIndex()):
+        return 1
+
+
+class EmojisModel(QObject):
+    ModelRefreshed = pyqtSignal()
     def update_model(self, clear=True):
         log.info("updating emoji model.")
         app = get_app()
@@ -171,10 +177,24 @@ class EmojisModel():
                 if path not in self.model_paths:
                     self.model.appendRow(row)
                     self.model_paths[path] = path
+        self.ModelRefreshed.emit()
+
+    def set_text_filter(self, text):
+        pattern = text.replace(' ', '.*')
+        from qt_api import make_filter_regex, set_proxy_filter
+        regex = make_filter_regex(pattern, case_insensitive=True)
+        set_proxy_filter(self.proxy_model, regex)
+
+    def set_group_filter(self, group_id):
+        pattern = group_id or ""
+        from qt_api import make_filter_regex, set_proxy_filter
+        regex = make_filter_regex(pattern, case_insensitive=True)
+        set_proxy_filter(self.group_model, regex)
 
     def __init__(self, *args):
 
         # Create standard model
+        super().__init__(*args)
         self.app = get_app()
         self.model = EmojiStandardItemModel()
         self.model.setColumnCount(3)
@@ -188,21 +208,22 @@ class EmojisModel():
         self.group_model.setSortCaseSensitivity(Qt.CaseSensitive)
         self.group_model.setSourceModel(self.model)
         self.group_model.setSortLocaleAware(True)
-        self.group_model.setFilterKeyColumn(1)
+        self.group_model.setFilterKeyColumn(2)
 
-        self.proxy_model = QSortFilterProxyModel()
+        self.proxy_model = EmojiProxyModel()
         self.proxy_model.setDynamicSortFilter(True)
         self.proxy_model.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.proxy_model.setSortCaseSensitivity(Qt.CaseSensitive)
         self.proxy_model.setSourceModel(self.group_model)
         self.proxy_model.setSortLocaleAware(True)
+        self.proxy_model.setFilterKeyColumn(-1)
 
         # Attempt to load model testing interface, if requested
         # (will only succeed with Qt 5.11+)
         if info.MODEL_TEST:
             try:
                 # Create model tester objects
-                from PyQt5.QtTest import QAbstractItemModelTester
+                from qt_api import QAbstractItemModelTester
                 self.model_tests = []
                 for m in [self.proxy_model, self.group_model, self.model]:
                     self.model_tests.append(

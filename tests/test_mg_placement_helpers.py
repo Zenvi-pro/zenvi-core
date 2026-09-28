@@ -64,7 +64,8 @@ def test_file_looks_transparent():
     assert file_looks_transparent({"ai_metadata": {"transparent": True}}) is True
     assert file_looks_transparent({"ai_metadata": {"transparent": "true"}}) is True
     assert file_looks_transparent({"tags": ["transparent_overlay"]}) is True
-    assert file_looks_transparent({"path": "/tmp/out.webm"}) is True
+    assert file_looks_transparent({"path": "/tmp/out.webm"}) is False
+    assert file_looks_transparent({"path": "/tmp/out.webm", "ai_metadata": {"transparent": True}}) is True
     assert file_looks_transparent({"path": "/tmp/out.mp4", "ai_metadata": {}}) is False
 
 

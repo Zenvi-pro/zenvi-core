@@ -25,9 +25,6 @@
  You should have received a copy of the GNU General Public License
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
-from classes.logger import log
-
-
 class KeyframeScaler:
     """This factory class produces scaler objects which, when called,
     will apply the assigned scaling factor to the keyframe points
@@ -59,7 +56,6 @@ class KeyframeScaler:
         for k in keyframes:
             if (scale_y):
                 # Y represents a frame number. Scale it too
-                log.debug("Updating x and y coordinates of time keyframes")
                 [point["co"].update({
                     "X": self._scale_value(point["co"].get("X", 0.0)),
                     "Y": self._scale_value(point["co"].get("Y", 0.0))

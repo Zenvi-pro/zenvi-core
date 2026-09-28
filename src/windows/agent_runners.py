@@ -3,7 +3,7 @@
 Each runner is a ``QObject`` worker (moved onto a ``QThread`` by
 ``AIChatWindow._make_worker``) that exposes the *same* six signals and the
 ``run_request(...)`` / ``clear_session()`` slots as the built-in
-``AIChatWorker`` — so the existing chat rendering works unchanged regardless of
+``AIChatWorker`` ΓÇö so the existing chat rendering works unchanged regardless of
 which backend produced the events.
 
 The CLI runners (Claude Code, Codex) spawn the agent CLI as a headless
@@ -23,9 +23,11 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
+import threading
 import uuid
 
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+from qt_api import QObject, pyqtSignal, pyqtSlot
 
 log = logging.getLogger(__name__)
 
@@ -40,11 +42,66 @@ BACKEND_CODEX = "codex"
 # full model name or a latest-alias ("opus", "sonnet"), and we use full names so
 # the picker keeps meaning the same model after a new release ships.
 #
+# The lineup the user sees comes from the Zenvi backend's ``GET /models/cli``
+# whenever it has answered (``set_live_lineups``): the backend builds it from
+# each provider's live model list, so a release shows up in the picker the
+# next time it refreshes, with no desktop update.  Each runner's ``MODELS`` is
+# the built-in fallback for when the backend is unreachable or too old to
+# serve the route.
+#
 # A backend with an empty list hides the model pill and lets the CLI use
-# whatever its own config selects — that is the case for Codex, whose model
-# lineup we do not track here.
+# whatever its own config selects. Codex's built-in list is empty because we
+# do not track the OpenAI lineup here; the live one fills it in.
+_live_lineups: dict = {}
+_live_lineups_lock = threading.Lock()
+
+_PICKER_KEYS = ("id", "name", "provider", "featured", "rank", "tags", "default")
+
+
+def _clean_lineup(rows) -> list:
+    """Keep only well-formed picker entries; the backend payload is data."""
+    out = []
+    seen = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        mid = row.get("id")
+        if not isinstance(mid, str) or not mid or mid in seen:
+            continue
+        seen.add(mid)
+        entry = {k: row[k] for k in _PICKER_KEYS if k in row}
+        entry.setdefault("name", mid)
+        out.append(entry)
+    return out
+
+
+def set_live_lineups(lineups: dict) -> None:
+    """Install the backend-served lineups (``{backend_id: [entries]}``).
+
+    An empty or missing list for a backend means "nothing to offer", and the
+    built-in list takes over for it; passing ``{}`` clears everything.
+    """
+    cleaned = {}
+    for backend, rows in (lineups or {}).items():
+        rows = _clean_lineup(rows)
+        if rows:
+            cleaned[backend] = rows
+    with _live_lineups_lock:
+        _live_lineups.clear()
+        _live_lineups.update(cleaned)
+
+
+def live_lineup_for(backend: str) -> list:
+    """The backend-served list for *backend*, or ``[]`` when none has landed."""
+    with _live_lineups_lock:
+        return [dict(m) for m in _live_lineups.get(backend, [])]
+
+
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
+    live = live_lineup_for(backend)
+    if live:
+        return live
     if backend == BACKEND_CLAUDE:
         return [dict(m) for m in ClaudeCodeRunner.MODELS]
     if backend == BACKEND_CODEX:
@@ -71,7 +128,7 @@ def _cli_install_dirs() -> list:
 
     Codex's Windows installer puts ``codex.exe`` under
     ``~/.codex/packages/standalone/current/bin`` and does *not* always add
-    that folder to PATH — so ``shutil.which("codex")`` fails even when the
+    that folder to PATH ΓÇö so ``shutil.which("codex")`` fails even when the
     CLI is installed and logged in.
     """
     home = _resolved_home()
@@ -124,7 +181,7 @@ def _bash_candidates():
 
 @functools.lru_cache(maxsize=1)
 def _resolve_cli_bash():
-    """A bash ≥4 binary for Claude Code's Bash tool, or None.
+    """A bash ΓëÑ4 binary for Claude Code's Bash tool, or None.
 
     macOS ``/bin/bash`` is 3.2 (no associative arrays). Pointing
     ``CLAUDE_CODE_SHELL`` at it would break ``declare -A``. Claude Code's
@@ -175,7 +232,7 @@ def _cli_child_env(extra=None):
             env.setdefault("HOMEPATH", tail)
         env.setdefault("APPDATA", os.path.join(home, "AppData", "Roaming"))
         env.setdefault("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
-    # Claude Code auto-detects zsh on macOS; bash ≥4 makes ${!files[@]} work.
+    # Claude Code auto-detects zsh on macOS; bash ΓëÑ4 makes ${!files[@]} work.
     # Do not clobber a user-set CLAUDE_CODE_SHELL.
     if "CLAUDE_CODE_SHELL" not in env:
         bash = _resolve_cli_bash()
@@ -188,7 +245,7 @@ def _cli_child_env(extra=None):
 
 
 def _add_dir_args():
-    """``--add-dir`` flags for typical footage folders (Desktop, Downloads, …).
+    """``--add-dir`` flags for typical footage folders (Desktop, Downloads, ΓÇª).
 
     cwd stays the project / agent_workspace so the CLI is not rooted at
     ``$HOME``; these extra dirs let Glob/Read see local media the user points at.
@@ -232,7 +289,7 @@ def _agent_mcp_dir() -> str:
 
 
 def _project_cwd() -> str:
-    """Working directory for the agent — the current project's folder if any.
+    """Working directory for the agent ΓÇö the current project's folder if any.
 
     With no saved project the fallback is a scratch folder under the user's
     Zenvi data dir, never ``$HOME``: these CLIs run with approvals and sandbox
@@ -299,7 +356,7 @@ def _claude_is_registered() -> bool:
 
     ``claude mcp list`` also reports this, but it live health-checks every
     configured server (including ones needing OAuth) before printing
-    anything — slow and network-dependent, and observed to occasionally
+    anything ΓÇö slow and network-dependent, and observed to occasionally
     exceed a reasonable subprocess timeout right after a fresh registration,
     which would misreport a real registration as absent. Reading the config
     file is instant and has no such race.
@@ -348,7 +405,7 @@ def register_claude(port: int, token: str):
     """Register Zenvi's MCP server with the ``claude`` CLI (user scope).
 
     Idempotent: removes any prior ``zenvi`` registration first (ignoring
-    failure — it's fine if none existed) so re-running this after the port
+    failure ΓÇö it's fine if none existed) so re-running this after the port
     changed (e.g. a fallback-port restart) cleanly replaces the old entry
     rather than erroring on a duplicate name.
 
@@ -388,11 +445,11 @@ def _codex_desired_section(port: int) -> str:
 def register_codex(port: int, token: str):
     """Write/update the ``[mcp_servers.zenvi_editor]`` table in
     ``~/.codex/config.toml`` (Codex has no CLI command for registering an
-    HTTP-transport MCP server — only stdio servers via ``codex mcp add``;
+    HTTP-transport MCP server ΓÇö only stdio servers via ``codex mcp add``;
     confirmed against the current Codex CLI docs).
 
     Validates the file both before and after editing, and writes a
-    ``.zenvi-backup`` copy first — this mutates a config file we don't fully
+    ``.zenvi-backup`` copy first ΓÇö this mutates a config file we don't fully
     control the rest of the schema/contents of, so failing safe matters more
     than convenience here.
 
@@ -462,7 +519,7 @@ class BaseAgentRunner(QObject):
     tool_log = pyqtSignal(str, str)            # call_id, line
     tool_completed = pyqtSignal(str, bool, str)  # call_id, ok, result_text
     # Declared for signature parity with AIChatWorker so AIChatWindow can
-    # connect the same slots to every backend. CLI backends never emit it —
+    # connect the same slots to every backend. CLI backends never emit it ΓÇö
     # planning mode is a Zenvi-backend feature, and these agents do their own
     # planning internally.
     plan_event = pyqtSignal(str, str)          # event_type, payload_json
@@ -473,7 +530,8 @@ class BaseAgentRunner(QObject):
 
     CLI_NAME = ""        # executable, e.g. "claude"
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
-    MODELS: list = []    # model-picker entries; empty = use the CLI's own default
+    BACKEND_ID = ""      # picker/backend id, e.g. BACKEND_CLAUDE
+    MODELS: list = []    # built-in model-picker entries; the live lineup wins
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -545,10 +603,27 @@ class BaseAgentRunner(QObject):
         if proc and proc.poll() is None:
             # Signal the whole process group, not just the CLI: these agents
             # spawn their own children (shells, language servers, MCP clients),
-            # and terminating the parent alone leaves those running — they keep
+            # and terminating the parent alone leaves those running ΓÇö they keep
             # driving the editor through the MCP server after the user pressed
             # Stop. run_request starts the child in its own session so this
             # group id is ours to kill.
+            if sys.platform == "win32":
+                try:
+                    subprocess.call(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    pass
+                for send in (proc.terminate, proc.kill):
+                    try:
+                        send()
+                        return
+                    except Exception:
+                        continue
+                return
             for send in (
                 lambda: os.killpg(os.getpgid(proc.pid), signal.SIGTERM),
                 proc.terminate,
@@ -567,7 +642,7 @@ class BaseAgentRunner(QObject):
 
     # Signature must match AIChatWorker.run_request exactly: AIChatWindow
     # dispatches through QMetaObject.invokeMethod with five Q_ARG(str, ...),
-    # and Qt resolves the slot by its registered signature — a shorter one is
+    # and Qt resolves the slot by its registered signature ΓÇö a shorter one is
     # simply never found and the request silently does nothing.
     @pyqtSlot(str, str, str, str, str)
     def run_request(self, text: str, model_id: str, agent_mode: str = "agent",
@@ -622,8 +697,8 @@ class BaseAgentRunner(QObject):
 
         try:
             argv = self._build_argv(text)
-            self._proc = subprocess.Popen(
-                argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            popen_kwargs = dict(
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
                 # can silently resolve to ASCII and crash on the CLI's normal
@@ -632,10 +707,16 @@ class BaseAgentRunner(QObject):
                 # U+FFFD instead of killing the whole read loop.
                 encoding="utf-8", errors="replace",
                 bufsize=1, env=self._build_env(), cwd=cwd,
+            )
+            if sys.platform == "win32":
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP
+                no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                popen_kwargs["creationflags"] = flags | no_window
+            else:
                 # Own process group so cancel() can signal the CLI *and* every
                 # child it spawned (see cancel()).
-                start_new_session=True,
-            )
+                popen_kwargs["start_new_session"] = True
+            self._proc = subprocess.Popen(argv, **popen_kwargs)
         except Exception as e:
             if not self._aborted:
                 self._emit_error("Failed to launch %s: %s" % (self.DISPLAY_NAME, e))
@@ -657,7 +738,7 @@ class BaseAgentRunner(QObject):
                 try:
                     ev = json.loads(line)
                 except Exception:
-                    # Non-JSON log noise (CLI diagnostics) — keep a short tail
+                    # Non-JSON log noise (CLI diagnostics) ΓÇö keep a short tail
                     # so we can surface something useful if the run fails.
                     self._stderr_tail.append(line)
                     self._stderr_tail = self._stderr_tail[-8:]
@@ -720,12 +801,13 @@ class BaseAgentRunner(QObject):
         """Keep *model_id* only if it is one this backend actually offers.
 
         Tabs remember the model the picker last had, and that picker is shared
-        with the other backends — so a tab switched from Zenvi to Claude Code
+        with the other backends ΓÇö so a tab switched from Zenvi to Claude Code
         can arrive holding a Zenvi model id, which the CLI would reject.
         """
-        if not model_id or not self.MODELS:
+        offered = models_for_backend(self.BACKEND_ID)
+        if not model_id or not offered:
             return ""
-        return model_id if any(m["id"] == model_id for m in self.MODELS) else ""
+        return model_id if any(m["id"] == model_id for m in offered) else ""
 
     # -- subclass hooks ----------------------------------------------------
     def _ensure_ready(self):
@@ -747,10 +829,13 @@ class ClaudeCodeRunner(BaseAgentRunner):
 
     CLI_NAME = "claude"
     DISPLAY_NAME = "Claude Code"
+    BACKEND_ID = BACKEND_CLAUDE
 
-    # ``rank`` orders the picker, ``featured`` decides whether an entry shows
-    # before the menu's "show all" toggle — same contract as the Zenvi model
-    # list the backend serves (see setModels in chat.js).
+    # Built-in fallback lineup, used until the backend's live list lands (see
+    # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
+    # whether an entry shows before the menu's "show all" toggle, the same
+    # contract as the Zenvi model list the backend serves (see setModels in
+    # chat.js).
     MODELS = [
         {"id": "claude-opus-5",   "name": "Opus 5",   "provider": "anthropic",
          "rank": 10, "featured": True, "default": True,
@@ -783,7 +868,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
             "--output-format", "stream-json", "--verbose", "--include-partial-messages",
             "--mcp-config", cfg, "--strict-mcp-config",
             # The agent is driving the editor on the user's behalf from inside
-            # the app — there is no terminal to answer a permission prompt, so
+            # the app ΓÇö there is no terminal to answer a permission prompt, so
             # a prompt would just hang the turn until it times out.
             "--dangerously-skip-permissions",
             "--append-system-prompt", _agent_bash_prompt(),
@@ -866,7 +951,9 @@ class CodexRunner(BaseAgentRunner):
 
     CLI_NAME = "codex"
     DISPLAY_NAME = "Codex"
-    # Left empty on purpose: we do not track the Codex model lineup, so the
+    BACKEND_ID = BACKEND_CODEX
+    # No built-in lineup: we do not track OpenAI's models here. The backend's
+    # live list (``set_live_lineups``) fills the picker; until it lands the
     # picker stays hidden and the CLI uses whatever its own config selects.
     MODELS: list = []
 

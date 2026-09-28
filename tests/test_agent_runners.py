@@ -1,7 +1,7 @@
 """Parser tests for the CLI agent runners (windows.agent_runners).
 
 Feed recorded streaming-JSON fixtures through each runner's ``_handle_event``
-and assert the emitted signal sequence — no subprocess or backend required.
+and assert the emitted signal sequence ΓÇö no subprocess or backend required.
 ``claude_stream.jsonl`` was captured from a real ``claude`` run against the
 in-app MCP server; ``codex_stream.jsonl`` mirrors the Codex thread/turn/item
 event schema.
@@ -135,7 +135,7 @@ def test_claude_is_registered_false_from_config_file(monkeypatch, tmp_path):
     cfg = tmp_path / "claude.json"
     cfg.write_text('{"mcpServers": {"magic": {"type": "stdio"}}}')
     monkeypatch.setattr(ar, "_claude_config_path", lambda: str(cfg))
-    # Not in the config file → falls back to the CLI check, which we also
+    # Not in the config file ΓåÆ falls back to the CLI check, which we also
     # make say "absent" here so the overall result is a clean False.
     monkeypatch.setattr(ar, "_claude_is_registered_via_cli", lambda: False)
     assert ar._claude_is_registered() is False
@@ -153,7 +153,7 @@ def test_claude_is_registered_via_cli_true(monkeypatch):
     import windows.agent_runners as ar
 
     class _FakeResult:
-        stdout = "magic: npx foo - ✔ Connected\nzenvi: http://127.0.0.1:7434/mcp (HTTP) - ✔ Connected\n"
+        stdout = "magic: npx foo - Γ£ö Connected\nzenvi: http://127.0.0.1:7434/mcp (HTTP) - Γ£ö Connected\n"
 
     monkeypatch.setattr(ar.subprocess, "run", lambda *a, **kw: _FakeResult())
     assert ar._claude_is_registered_via_cli() is True
@@ -163,7 +163,7 @@ def test_claude_is_registered_via_cli_false_when_absent(monkeypatch):
     import windows.agent_runners as ar
 
     class _FakeResult:
-        stdout = "magic: npx foo - ✔ Connected\n"
+        stdout = "magic: npx foo - Γ£ö Connected\n"
 
     monkeypatch.setattr(ar.subprocess, "run", lambda *a, **kw: _FakeResult())
     assert ar._claude_is_registered_via_cli() is False
@@ -303,7 +303,7 @@ def test_register_codex_refuses_to_touch_invalid_toml(monkeypatch, tmp_path):
 def test_run_request_popen_uses_explicit_utf8_encoding(qapp, monkeypatch):
     """Regression guard for the actual fix: subprocess.Popen(..., text=True)
     with no explicit encoding falls back to locale.getpreferredencoding(),
-    which can resolve to ASCII depending on the *parent* process's locale —
+    which can resolve to ASCII depending on the *parent* process's locale ΓÇö
     decoding happens on this side of the pipe, so nothing the child's env
     declares can influence it. That crashed the whole read loop with
     UnicodeDecodeError the moment real claude/codex output contained an em
@@ -344,7 +344,7 @@ def test_run_request_popen_uses_explicit_utf8_encoding(qapp, monkeypatch):
 
 
 def test_run_request_decodes_real_non_ascii_subprocess_output(qapp, monkeypatch):
-    """End-to-end sanity check (not a locale-fault repro — see above test for
+    """End-to-end sanity check (not a locale-fault repro ΓÇö see above test for
     that): a real subprocess emitting UTF-8 non-ASCII bytes decodes cleanly
     through the actual run_request/Popen/read-loop path, with no error."""
     import windows.agent_runners as ar
@@ -362,7 +362,7 @@ def test_run_request_decodes_real_non_ascii_subprocess_output(qapp, monkeypatch)
     monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
     monkeypatch.setattr(ar.shutil, "which", lambda name: "/usr/bin/" + name)
 
-    non_ascii = "done — ✔ all set"  # em dash + checkmark
+    non_ascii = "done ΓÇö Γ£ö all set"  # em dash + checkmark
     payload = json.dumps({"type": "result", "is_error": False, "result": non_ascii})
     argv = [sys.executable, "-c", "import sys; print(sys.argv[1])", payload]
     monkeypatch.setattr(ClaudeCodeRunner, "_build_argv", lambda self, text: argv)
@@ -403,7 +403,7 @@ def test_codex_missing_cli_reports_friendly_error(qapp, monkeypatch):
     assert any(e[0] == "error" and "Codex CLI not found" in e[1] for e in events)
 
 
-# ── Model selection ────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Model selection ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_claude_argv_carries_model_and_skips_permission_prompts(qapp, monkeypatch):
     """The picked model reaches the CLI, and the agent never waits on a
@@ -424,7 +424,7 @@ def test_claude_argv_carries_model_and_skips_permission_prompts(qapp, monkeypatc
 
 
 def test_claude_and_codex_argv_add_typical_media_dirs(qapp, monkeypatch, tmp_path):
-    """Claude/Codex cwd stays the project; --add-dir exposes Desktop/Downloads/…"""
+    """Claude/Codex cwd stays the project; --add-dir exposes Desktop/Downloads/ΓÇª"""
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner, CodexRunner
 
@@ -502,10 +502,10 @@ def test_models_for_backend_matches_the_picker_contract(qapp):
     assert models_for_backend(BACKEND_CLAUDE)[0]["name"] != "mutated"
 
 
-# ── Cancel ─────────────────────────────────────────────────────────────────
+# ΓöÇΓöÇ Cancel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
 def test_cancel_does_not_disable_the_tab_for_later_messages(qapp, monkeypatch):
-    """Stop must silence the turn in flight and nothing more — a cancelled tab
+    """Stop must silence the turn in flight and nothing more ΓÇö a cancelled tab
     still has to answer the next message the user sends."""
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner
@@ -571,12 +571,49 @@ def test_cancel_signals_the_whole_process_group(qapp, monkeypatch):
     assert killed.get("group") == (4242, signal.SIGTERM)
     assert "terminate" not in killed, "group kill succeeded; no need to fall back"
     assert runner._cancelled
-    assert not runner._stopping, "cancel is not a shutdown — the tab stays usable"
+    assert not runner._stopping, "cancel is not a shutdown ΓÇö the tab stays usable"
+
+
+def test_cancel_on_windows_uses_taskkill(qapp, monkeypatch):
+    """os.killpg does not exist on Windows; Stop must kill the process tree."""
+    import subprocess
+    from windows.agent_runners import ClaudeCodeRunner
+
+    called = {}
+
+    class _Proc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            called["terminate"] = True
+
+        def kill(self):
+            called["kill"] = True
+
+    monkeypatch.setattr("windows.agent_runners.sys.platform", "win32")
+
+    def fake_call(cmd, **kwargs):
+        called["cmd"] = cmd
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    runner = ClaudeCodeRunner()
+    runner._proc = _Proc()
+    runner.cancel()
+
+    assert called.get("cmd")[:4] == ["taskkill", "/PID", "4242", "/T"]
+    assert "/F" in called["cmd"]
+    assert "terminate" not in called
+    assert runner._cancelled
 
 
 def test_codex_accumulates_several_assistant_messages(qapp):
     """A turn can complete more than one assistant message, and all of them
-    stream into the same bubble — so the text ``turn.completed`` persists has
+    stream into the same bubble ΓÇö so the text ``turn.completed`` persists has
     to be all of them, not just the last one."""
     from windows.agent_runners import CodexRunner
 
@@ -600,7 +637,7 @@ def test_failed_launch_does_not_leave_a_resume_for_a_session_the_cli_never_made(
     """A CLI that exits non-zero with no output never created the conversation
     we latched at launch. Keeping that latch makes every later message in the
     tab ``--resume`` an unknown id, which fails until the user clears the
-    session — so the failure has to reset the continuity."""
+    session ΓÇö so the failure has to reset the continuity."""
     import windows.agent_runners as ar
     from windows.agent_runners import ClaudeCodeRunner
 
@@ -640,7 +677,7 @@ def test_failed_launch_does_not_leave_a_resume_for_a_session_the_cli_never_made(
 
 def test_no_saved_project_confines_the_agent_outside_home(monkeypatch, tmp_path):
     """These CLIs run with approvals and sandbox bypassed, and an unsaved
-    project is the state the app launches in — a home-rooted cwd would hand the
+    project is the state the app launches in ΓÇö a home-rooted cwd would hand the
     agent unattended write access to everything the user owns."""
     import windows.agent_runners as ar
     from classes import info
@@ -808,3 +845,105 @@ def test_resolve_cli_bash_picks_version_4(monkeypatch):
             assert ar._resolve_cli_bash() == "/opt/homebrew/bin/bash"
     finally:
         ar._resolve_cli_bash.cache_clear()
+
+
+# ── Live model lineups ────────────────────────────────────────────────────
+
+@pytest.fixture
+def clear_live_lineups():
+    from windows.agent_runners import set_live_lineups
+    set_live_lineups({})
+    yield
+    set_live_lineups({})
+
+
+def test_live_lineup_replaces_the_built_in_list(qapp, clear_live_lineups):
+    """Once the backend has answered, its list is what the picker shows, so a
+    release that the backend discovered appears without a desktop update."""
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, models_for_backend,
+        set_live_lineups,
+    )
+
+    set_live_lineups({
+        BACKEND_CLAUDE: [
+            {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "featured": True,
+             "rank": 9, "tags": ["New"], "provider": "anthropic"},
+            {"id": "claude-opus-5", "name": "Claude Opus 5", "featured": True,
+             "rank": 10, "default": True},
+        ],
+        BACKEND_CODEX: [
+            {"id": "gpt-5.6-astra", "name": "GPT-5.6 Astra", "featured": True, "rank": 10},
+            {"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex", "featured": True,
+             "rank": 30, "default": True},
+        ],
+    })
+    claude = models_for_backend(BACKEND_CLAUDE)
+    assert [m["id"] for m in claude] == ["claude-opus-5-5", "claude-opus-5"]
+    assert claude[0]["tags"] == ["New"]
+    assert [m["id"] for m in claude if m.get("default")] == ["claude-opus-5"]
+    # the built-in catalogue is untouched, ready for the next fallback
+    assert ClaudeCodeRunner.MODELS[0]["id"] == "claude-opus-5"
+
+    # Codex, which has no built-in list, now offers one
+    codex = models_for_backend(BACKEND_CODEX)
+    assert [m["id"] for m in codex] == ["gpt-5.6-astra", "gpt-5.3-codex"]
+
+    # callers mutate what they get; the cache must not leak by reference
+    claude[0]["name"] = "mutated"
+    assert models_for_backend(BACKEND_CLAUDE)[0]["name"] == "Claude Opus 5.5"
+
+
+def test_missing_or_empty_live_list_falls_back_to_the_built_in_one(qapp, clear_live_lineups):
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, models_for_backend,
+        set_live_lineups,
+    )
+
+    set_live_lineups({BACKEND_CLAUDE: [], BACKEND_CODEX: []})
+    assert [m["id"] for m in models_for_backend(BACKEND_CLAUDE)] == \
+        [m["id"] for m in ClaudeCodeRunner.MODELS]
+    assert models_for_backend(BACKEND_CODEX) == []
+
+    set_live_lineups({})
+    assert len(models_for_backend(BACKEND_CLAUDE)) == len(ClaudeCodeRunner.MODELS)
+
+
+def test_live_lineup_ignores_malformed_rows(qapp, clear_live_lineups):
+    """The payload comes over the network; junk must not reach chat.js."""
+    from windows.agent_runners import BACKEND_CODEX, models_for_backend, set_live_lineups
+
+    set_live_lineups({BACKEND_CODEX: [
+        "not-a-dict", {"name": "no id"}, {"id": ""}, {"id": 42},
+        {"id": "gpt-5.3-codex"},                      # name defaults to the id
+        {"id": "gpt-5.3-codex", "name": "dup"},       # duplicate id dropped
+        {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "extra": "ignored"},
+    ]})
+    rows = models_for_backend(BACKEND_CODEX)
+    assert [r["id"] for r in rows] == ["gpt-5.3-codex", "gpt-5.6-sol"]
+    assert rows[0]["name"] == "gpt-5.3-codex"
+    assert "extra" not in rows[1]
+
+
+def test_coerce_model_honours_the_live_lineup(qapp, clear_live_lineups):
+    """A model the backend surfaced must reach the CLI's --model flag, and a
+    Codex tab must accept a Codex model once it has a lineup at all."""
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, CodexRunner, set_live_lineups,
+    )
+
+    claude, codex = ClaudeCodeRunner(), CodexRunner()
+    # built-in only: a not-yet-known model is refused, Codex takes nothing
+    assert claude._coerce_model("claude-opus-5-5") == ""
+    assert claude._coerce_model("claude-opus-5") == "claude-opus-5"
+    assert codex._coerce_model("gpt-5.3-codex") == ""
+
+    set_live_lineups({
+        BACKEND_CLAUDE: [{"id": "claude-opus-5-5", "name": "Claude Opus 5.5"}],
+        BACKEND_CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}],
+    })
+    assert claude._coerce_model("claude-opus-5-5") == "claude-opus-5-5"
+    assert claude._coerce_model("claude-opus-5") == "", "live list replaces, not extends"
+    assert codex._coerce_model("gpt-5.3-codex") == "gpt-5.3-codex"
+    # a Zenvi model id left over from a shared picker is still refused
+    assert codex._coerce_model("openai/gpt-5.6-sol") == ""

@@ -33,13 +33,13 @@ import copy
 import os
 import re
 
-from classes.assets import get_assets_path
+from classes.assets import get_assets_path, path_is_under
 from classes.logger import log
 from classes import info
 from classes.app import get_app
 
 # Compiled path regex
-path_regex = re.compile(r'"(image|path|protobuf_data_path|lut_path)"\s*:\s*"(.*?)"')
+path_regex = re.compile(r'"(image|path|resource|protobuf_data_path|lut_path)"\s*:\s*"(.*?)"')
 path_context = {}
 
 # Determine regex pattern type (compatible with older Python versions)
@@ -158,9 +158,9 @@ class JsonDataStore:
 
     def read_from_file(self, file_path, path_mode="ignore"):
         """ Load JSON settings from a file """
+        from qt_api import read_file_text, write_file_text, is_content_uri
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                contents = f.read()
+            contents = read_file_text(file_path)
             if not contents:
                 raise RuntimeError("Couldn't load {} file, no data.".format(self.data_type))
 
@@ -176,12 +176,8 @@ class JsonDataStore:
                 temp_data = json.loads(contents)
                 contents = json.dumps(temp_data, ensure_ascii=False, indent=1)
 
-                # Save the repaired data back to the original file
-                with open(file_path, "w", encoding="utf-8") as fout:
-                    fout.write(contents)
-
-                msg_log = "Repaired windows drive corruptions in file {}"
-                log.info(msg_log.format(file_path))
+                write_file_text(file_path, contents)
+                log.info("Repaired windows drive corruptions in file {}".format(file_path))
 
             # Scan for and correct possible OpenShot 2.5.0 corruption
             if self.damage_re.search(contents) and self.version_re_250.search(contents):
@@ -193,23 +189,17 @@ class JsonDataStore:
                 contents, subs_count = self.damage_re.subn(r'\\u\1', contents)
 
                 if subs_count < 1:
-                    # Nothing to do!
                     log.info("No recovery substitutions on {}".format(file_path))
                 else:
                     # We have to de- and re-serialize the data, to complete repairs
                     temp_data = json.loads(contents)
                     contents = json.dumps(temp_data, ensure_ascii=False, indent=1)
 
-                    # Save the repaired data back to the original file
-                    with open(file_path, "w", encoding="utf-8") as fout:
-                        fout.write(contents)
+                    write_file_text(file_path, contents)
+                    log.info("Repaired {} corruptions in file {}".format(subs_count, file_path))
 
-                    msg_log = "Repaired {} corruptions in file {}"
-                    log.info(msg_log.format(subs_count, file_path))
-
-            # Process JSON data
-            if path_mode == "absolute":
-                # Convert any paths to absolute
+            # Path conversion is only meaningful for local filesystem paths.
+            if path_mode == "absolute" and not is_content_uri(file_path):
                 contents = self.convert_paths_to_absolute(file_path, contents)
             return json.loads(contents)
         except RuntimeError as ex:
@@ -223,13 +213,13 @@ class JsonDataStore:
 
     def write_to_file(self, file_path, data, path_mode="ignore", previous_path=None):
         """ Save JSON settings to a file """
+        from qt_api import write_file_text, is_content_uri
         try:
             contents = json.dumps(data, ensure_ascii=False, indent=1)
-            if path_mode == "relative":
-                # Convert any paths to relative
+            # Path conversion is only meaningful for local filesystem paths.
+            if path_mode == "relative" and not is_content_uri(file_path):
                 contents = self.convert_paths_to_relative(file_path, previous_path, contents)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(contents)
+            write_file_text(file_path, contents)
         except Exception as ex:
             msg = "Couldn't save {} file:\n{}\n{}".format(self.data_type, file_path, ex)
             log.error(msg)
@@ -249,6 +239,7 @@ class JsonDataStore:
         # Find absolute path of file (if needed)
         if "@transitions" in path:
             new_path = path.replace("@transitions", os.path.join(info.PATH, "transitions"))
+            new_path = os.path.normpath(new_path)
             new_path = json.dumps(new_path, ensure_ascii=False)
             return '"%s": %s' % (key, new_path)
 
@@ -301,8 +292,15 @@ class JsonDataStore:
         #   /Videos/quote \\"/  instead of  /Videos/quote "/
         path = json.loads('"%s"' % path)
 
+        # Resolve against the project folder, not process CWD, when relative.
+        project_folder = path_context.get("new_project_folder", "") or ""
+        if os.path.isabs(path):
+            abs_path = os.path.normpath(path)
+        else:
+            abs_path = os.path.normpath(os.path.join(project_folder, path))
+
         # Split path into folder and file
-        folder_path, file_path = os.path.split(os.path.abspath(path))
+        folder_path, file_path = os.path.split(abs_path)
 
         # Determine if thumbnail path is found
         if info.THUMBNAIL_PATH in folder_path:
@@ -349,25 +347,34 @@ class JsonDataStore:
 
         # Find absolute path of file (if needed)
         else:
-            # Convert path to the correct relative path (based on the existing folder)
-            orig_abs_path = os.path.abspath(path)
-
             # Determine windows drives that the project and file are on
-            project_win_drive = os.path.splitdrive(path_context.get("new_project_folder", ""))[0]
-            file_win_drive = os.path.splitdrive(path)[0]
+            project_win_drive = os.path.splitdrive(project_folder)[0]
+            file_win_drive = os.path.splitdrive(abs_path)[0]
             if file_win_drive != project_win_drive:
-                log.debug("Drive mismatch, not making path relative: %s", orig_abs_path)
+                log.debug("Drive mismatch, not making path relative: %s", abs_path)
                 # If the file is on different drive. Don't abbreviate the path.
-                clean_path = orig_abs_path.replace("\\", "/")
+                clean_path = abs_path.replace("\\", "/")
+                clean_path = json.dumps(clean_path, ensure_ascii=False)
+                return f"\"{key}\": {clean_path}"
+
+            # Keep paths outside the project folder absolute so moving the
+            # .zvn does not break external media references.
+            if project_folder and not path_is_under(abs_path, project_folder):
+                log.debug("Path outside project folder, keeping absolute: %s", abs_path)
+                clean_path = abs_path.replace("\\", "/")
                 clean_path = json.dumps(clean_path, ensure_ascii=False)
                 return f"\"{key}\": {clean_path}"
 
             # Remove file from abs path
-            orig_abs_folder = os.path.dirname(orig_abs_path)
+            orig_abs_folder = os.path.dirname(abs_path)
 
-            log.debug("Generating new relative path for %s", orig_abs_path)
-            new_rel_path_folder = os.path.relpath(orig_abs_folder, path_context.get("new_project_folder", ""))
-            new_rel_path = os.path.join(new_rel_path_folder, file_path).replace("\\", "/")
+            log.debug("Generating new relative path for %s", abs_path)
+            new_rel_path_folder = os.path.relpath(orig_abs_folder, project_folder)
+            if new_rel_path_folder in (".", ""):
+                new_rel_path = file_path
+            else:
+                new_rel_path = os.path.join(new_rel_path_folder, file_path)
+            new_rel_path = new_rel_path.replace("\\", "/")
             new_rel_path = json.dumps(new_rel_path, ensure_ascii=False)
             return '"%s": %s' % (key, new_rel_path)
 

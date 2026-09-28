@@ -1,7 +1,7 @@
 /**
- * Zenvi Assistant – chat UI styles.
+ * Zenvi Assistant ΓÇô chat UI styles.
  *
- * Scope: only what Tailwind cannot express –
+ * Scope: only what Tailwind cannot express ΓÇô
  *   CSS custom properties (dynamic theming via setThemeColors()),
  *   keyframe / @property animations, custom scrollbars, and
  *   a handful of stateful component rules (glow, overlays, badges).
@@ -10,7 +10,7 @@
  * Host can override any variable at runtime via window.setThemeColors().
  */
 
-/* ── Design tokens ────────────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Design tokens ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 :root {
     /* Surfaces */
     --chat-bg:          #0d0d0d;
@@ -36,17 +36,17 @@
     --chat-button-hover-bg:  #4d9cf6;
 }
 
-/* ── Reset ────────────────────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Reset ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 *, *::before, *::after { box-sizing: border-box; }
 
-/* ── Thin dark scrollbar (Cursor style) ──────────────────────────────── */
+/* ΓöÇΓöÇ Thin dark scrollbar (Cursor style) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 ::-webkit-scrollbar              { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track        { background: transparent; }
 ::-webkit-scrollbar-thumb        { background: rgba(255,255,255,0.1); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover  { background: rgba(255,255,255,0.18); }
 ::-webkit-scrollbar-corner       { background: transparent; }
 
-/* ── Preamble status (toggled visible by JS) ──────────────────────────── */
+/* ΓöÇΓöÇ Preamble status (toggled visible by JS) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-preamble-status           { display: none; }
 .chat-preamble-status.visible   { display: block; }
 .chat-preamble-status .status-sep { margin: 0 5px; opacity: 0.35; }
@@ -67,7 +67,7 @@
 .preamble-project b { font-weight: 600; }
 .preamble-try       { display: block; margin-top: 4px; font-size: 12px; opacity: 0.65; }
 
-/* ── Message entry animation ─────────────────────────────────────────── */
+/* ΓöÇΓöÇ Message entry animation ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes chat-message-enter {
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -127,7 +127,7 @@
 }
 .chat-message-body pre code { padding: 0; background: transparent; border-radius: 0; }
 
-/* ── Thought badge ───────────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Thought badge ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-thought-badge {
     display: inline-block;
     margin-bottom: 5px;
@@ -139,7 +139,7 @@
     animation: chat-message-enter 0.35s ease forwards;
 }
 
-/* ── Typing indicator ───────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Typing indicator ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes chat-typing-dots {
     0%,20%  { content: "."; }
     40%     { content: ".."; }
@@ -156,14 +156,14 @@
     animation: chat-typing-dots 1.2s steps(4, end) infinite;
 }
 
-/* ── Placeholder text ───────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Placeholder text ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-placeholder { font-style: italic; padding: 6px 0; }
 
-/* ── Input overlay (reserved; idle typing UI removed) ─────────────────── */
+/* ΓöÇΓöÇ Input overlay (reserved; idle typing UI removed) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-input-overlay         { transition: opacity 0.15s; }
 .chat-input-overlay.hidden  { display: none !important; pointer-events: none; }
 
-/* ── Input textarea sizing (auto-grow in JS) ─────────────────────────── */
+/* ΓöÇΓöÇ Input textarea sizing (auto-grow in JS) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-input {
     overflow-y: auto;
     line-height: 1.45;
@@ -171,7 +171,7 @@
     padding-bottom: 6px;
 }
 
-/* ── Command palette ("/" suggestions) ───────────────────────────────── */
+/* ΓöÇΓöÇ Command palette ("/" suggestions) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-command-palette {
     position: absolute;
     left: 8px;
@@ -231,7 +231,7 @@
     color: var(--chat-muted);
 }
 
-/* ── Attachment chips + @ mention palette ───────────────────────────── */
+/* ΓöÇΓöÇ Attachment chips + @ mention palette ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-attach-row {
     display: none;
     flex-wrap: wrap;
@@ -317,7 +317,7 @@
     font-size: 12px;
 }
 
-/* ── Idle layout: centre input when there are no messages ───────────── */
+/* ΓöÇΓöÇ Idle layout: centre input when there are no messages ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-container.chat-input-idle .chat-input-row {
     position: absolute;
     top: 50%;
@@ -327,7 +327,7 @@
     transition: top 0.45s ease, transform 0.45s ease;
 }
 
-/* ── Glow border (conic-gradient spinner) ───────────────────────────── */
+/* ΓöÇΓöÇ Glow border (conic-gradient spinner) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @property --glow-angle {
     syntax: "<angle>";
     initial-value: 0deg;
@@ -371,7 +371,7 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-accent) 40%, transparent);
 }
 
-/* ── Activity log (Reasoning / tool steps) ──────────────────────────── */
+/* ΓöÇΓöÇ Activity log (Reasoning / tool steps) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes activity-spin {
     0%   { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
@@ -430,7 +430,7 @@
     text-overflow: ellipsis;
 }
 
-/* ── Thinking block (Cursor-style collapsible) ───────────────────────── */
+/* ΓöÇΓöÇ Thinking block (Cursor-style collapsible) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-thinking-block {
     display: flex;
     flex-direction: column;
@@ -498,14 +498,14 @@
     font-family: monospace;
 }
 
-/* ── Tool terminal block (Cursor-style collapsible) ──────────────────── */
+/* ΓöÇΓöÇ Tool terminal block (Cursor-style collapsible) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-tool-block {
     display: flex;
     flex-direction: column;
     margin: 1px 0;
     border: none;
     border-radius: 6px;
-    /* Blend into the chat background — no raised card, just a row. */
+    /* Blend into the chat background ΓÇö no raised card, just a row. */
     background: transparent;
     overflow: hidden;
     opacity: 0;
@@ -644,7 +644,7 @@
     opacity: 0.92;
 }
 
-/* ── Model trigger interactive states ───────────────────────────────── */
+/* ΓöÇΓöÇ Model trigger interactive states ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-model-trigger:hover,
 .chat-model-trigger:focus,
 .chat-model-trigger.active {
@@ -654,7 +654,7 @@
 .chat-model-trigger.active .chat-model-chevron { transform: rotate(180deg); }
 .chat-model-trigger:active { transform: scale(0.96); }
 
-/* ── Model dropdown ─────────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Model dropdown ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 @keyframes chat-menu-enter {
     from { opacity: 0; transform: translateY(4px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -756,7 +756,7 @@
 }
 .chat-model-option:hover      { background: rgba(255,255,255,0.05); }
 .chat-model-option.selected   { font-weight: 600; }
-/* Keyboard cursor — must be visually distinct from :hover so arrow-key
+/* Keyboard cursor ΓÇö must be visually distinct from :hover so arrow-key
    navigation is followable while the mouse sits elsewhere in the menu. */
 .chat-model-option.active     { background: rgba(255,255,255,0.09); }
 .chat-model-option.unavailable .chat-model-option-name { opacity: 0.45; }
@@ -766,7 +766,7 @@
 .chat-model-option-check { flex-shrink: 0; width: 14px; height: 14px; opacity: 0; }
 .chat-model-option.selected .chat-model-option-check { opacity: 1; color: var(--chat-accent); }
 
-/* ── Inline "Connect" flow in the CLI empty state ─────────────────────── */
+/* ΓöÇΓöÇ Inline "Connect" flow in the CLI empty state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-cli-connect-msg { margin-bottom: 10px; }
 
 .chat-cli-connect-btn {
@@ -791,7 +791,7 @@
 .chat-cli-connect-status.ok { color: #22c55e; }
 .chat-cli-connect-status.error { color: #ef4444; }
 
-/* ── Icon buttons in the toolbar ────────────────────────────────────── */
+/* ΓöÇΓöÇ Icon buttons in the toolbar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-bottom-icon {
     display: flex;
     align-items: center;
@@ -809,7 +809,7 @@
 .chat-bottom-icon:hover           { background: var(--chat-button-bg); color: var(--chat-text); }
 .chat-cancel-icon:hover           { color: #ef4444 !important; }
 
-/* ── New-chat "+" button ─────────────────────────────────────────────── */
+/* ΓöÇΓöÇ New-chat "+" button ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 #chat-tab-add {
     color: var(--chat-muted);
 }
@@ -858,7 +858,7 @@
     color: var(--chat-muted);
 }
 
-/* ── Tool-gap log button + panel ──────────────────────────────────────── */
+/* ΓöÇΓöÇ Tool-gap log button + panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 #chat-gap-log-btn { color: var(--chat-muted); }
 #chat-gap-log-btn:hover { background: var(--chat-button-bg); color: var(--chat-text); }
 #chat-gap-log-btn:active { transform: scale(0.9); }
@@ -981,7 +981,7 @@
 .chat-gap-log-action-btn.resolve:hover { color: var(--chat-accent); border-color: var(--chat-accent); }
 .chat-gap-log-action-btn.delete:hover { color: #ef4444; border-color: rgba(239,68,68,0.4); }
 
-/* ── Send button ────────────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Send button ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-send-circle {
     position: relative;
     display: block;
@@ -1011,7 +1011,7 @@
 .chat-send-circle:active:not(:disabled) { transform: scale(0.92); }
 .chat-send-circle:disabled             { opacity: 0.4; cursor: not-allowed; }
 
-/* ── Multi-chat tab bar ─────────────────────────────────────────────── */
+/* ΓöÇΓöÇ Multi-chat tab bar ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 .chat-tab {
     display: inline-flex;
     align-items: center;

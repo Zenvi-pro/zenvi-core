@@ -27,10 +27,10 @@
 import os
 import re
 
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
-from PyQt5.QtSvg import QSvgRenderer
-from PyQt5.QtWidgets import QTabWidget, QWidget, QSizePolicy
+from qt_api import Qt, QSize
+from qt_api import QColor, QIcon, QPixmap, QPainter
+from qt_api import QSvgRenderer
+from qt_api import QTabWidget, QWidget, QSizePolicy
 
 from classes import ui_util
 from classes.info import PATH
@@ -43,8 +43,57 @@ class BaseTheme:
     foreground-color: #b3b3b3;
     background-color: #343434;
 }
+QTreeView::item, QListView::item {
+    padding-top: 2px;
+}
         """
         self.app = app
+
+    def _debug_focus_styles(self):
+        if not os.environ.get("OPENSHOT_DEBUG_FOCUS"):
+            return ""
+        return """
+QToolButton:focus, QToolBar QToolButton:focus, QToolBar#toolBar QToolButton:focus,
+QToolBar#timelineToolbar QToolButton:focus, QPushButton:focus,
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus,
+QSpinBox:focus, QDoubleSpinBox:focus, QSlider:focus,
+QMenuBar::item:selected,
+QTabBar:focus, QTabBar::tab:focus, QMenu::item:selected,
+QCheckBox:focus, QRadioButton:focus,
+QToolBox::tab:focus {
+    border: 2px solid #ff00ff;
+}
+QToolButton:focus, QToolBar QToolButton:focus {
+    border-style: solid;
+    border-width: 2px;
+}
+QListView::item:focus, QListWidget::item:focus,
+QTreeView::item:focus, QTableView::item:focus {
+    border: 2px solid #ff00ff;
+}
+QListView::item:selected:focus, QListWidget::item:selected:focus,
+QTreeView::item:selected:focus, QTableView::item:selected:focus {
+    border: 2px solid #ff00ff;
+    background: palette(highlight);
+    color: palette(highlighted-text);
+}
+QLineEdit#filesFilter:focus, QLineEdit#effectsFilter:focus,
+QLineEdit#transitionsFilter:focus, QLineEdit#emojisFilter:focus,
+QLineEdit#txtPropertyFilter:focus, QLineEdit#txtProfileFilter:focus,
+QLineEdit#txtDeveloperFilter:focus, QLineEdit#txtTranslatorFilter:focus,
+QLineEdit#txtSupporterFilter:focus, QLineEdit#txtChangeLogFilter_openshot_qt:focus,
+QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_libopenshot_audio:focus {
+    border: 2px solid #ff00ff;
+}
+        """
+
+    def _debug_focus_toolbutton_rule(self):
+        if not os.environ.get("OPENSHOT_DEBUG_FOCUS"):
+            return ""
+        return " QToolButton:focus { border: 2px solid #ff00ff; }"
+
+    def compose_stylesheet(self):
+        return self.style_sheet + self._debug_focus_styles()
 
     def create_svg_icon(self, svg_path, size):
         """Create Dynamic High DPI icons"""
@@ -132,8 +181,14 @@ class BaseTheme:
         """Iterate through toolbar button settings, and apply them to each button.
         [{"text": "", "icon": ""},...]
         """
-        # List of colors for demonstration
-        toolbar.clear()
+        from qt_api import QT_API, isdeleted
+
+        # Clear toolbar without deleting actions on PySide6
+        if QT_API == "pyside6":
+            for action in list(toolbar.actions()):
+                toolbar.removeAction(action)
+        else:
+            toolbar.clear()
 
         # Set icon size
         qsize_icon = QSize(icon_size, icon_size)
@@ -161,6 +216,7 @@ class BaseTheme:
                 # Add spacer and 'New Version Available' toolbar button (default hidden)
                 spacer = QWidget(toolbar)
                 spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                spacer.setFocusPolicy(Qt.NoFocus)
                 toolbar.addWidget(spacer)
                 continue
 
@@ -180,6 +236,8 @@ class BaseTheme:
 
             # Create button from action
             if button_action:
+                if QT_API == "pyside6" and isdeleted(button_action):
+                    continue
                 toolbar.addAction(button_action)
                 button_action.setVisible(button_visible)
                 button = toolbar.widgetForAction(button_action)
@@ -190,13 +248,15 @@ class BaseTheme:
                 if button_style:
                     button.setToolButtonStyle(button_style)
                 if button_stylesheet:
-                    button.setStyleSheet(button_stylesheet)
+                    button.setStyleSheet(
+                        button_stylesheet + self._debug_focus_toolbutton_rule()
+                    )
 
     def apply_theme(self):
         # Apply the stylesheet to the entire application
         from classes import info
         from classes.logger import log
-        from PyQt5.QtGui import QFont, QFontDatabase
+        from qt_api import QFont, QFontDatabase
 
         if not self.app.theme_manager:
             log.warning("ThemeManager not initialized yet. Skip applying a theme.")
@@ -205,7 +265,7 @@ class BaseTheme:
             self.app.setStyle(self.app.theme_manager.original_style)
         if self.app.theme_manager.original_palette:
             self.app.setPalette(self.app.theme_manager.original_palette)
-        self.app.setStyleSheet(self.style_sheet)
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # Hide main window status bar
         if hasattr(self.app, "window") and hasattr(self.app.window, "statusBar"):

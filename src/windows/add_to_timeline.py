@@ -31,8 +31,8 @@ import uuid
 from operator import itemgetter
 from random import shuffle, randint, uniform
 
-from PyQt5.QtWidgets import QDialog
-from PyQt5.QtGui import QIcon
+from qt_api import QDialog
+from qt_api import QIcon
 
 from classes import info, ui_util, time_parts
 from classes.clip_placement import apply_audio_only_clip_overrides
@@ -50,6 +50,38 @@ class AddToTimeline(QDialog):
     """ Add To timeline Dialog """
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'add-to-timeline.ui')
+
+    def _select_added_items(self, win, added_clip_ids):
+        """Select only the newly added clips, matching timeline drag/drop behavior."""
+        if not win or not added_clip_ids:
+            return
+
+        timeline_view = getattr(win, "timeline", None)
+        for idx, clip_id in enumerate(added_clip_ids):
+            if not clip_id:
+                continue
+            if timeline_view and hasattr(timeline_view, "AddSelectionJS"):
+                timeline_view.AddSelectionJS(str(clip_id), "clip", idx == 0)
+            else:
+                win.addSelection(str(clip_id), "clip", clear_existing=(idx == 0))
+
+        files_model = getattr(win, "files_model", None)
+        if files_model:
+            selection_model = getattr(files_model, "selection_model", None)
+            if selection_model:
+                selection_model.clearSelection()
+            list_selection_model = getattr(files_model, "list_selection_model", None)
+            if list_selection_model:
+                list_selection_model.clearSelection()
+
+        if timeline_view and hasattr(timeline_view, "setFocus"):
+            timeline_view.setFocus()
+        if timeline_view and hasattr(timeline_view, "geometry"):
+            timeline_geometry = getattr(timeline_view, "geometry", None)
+            if hasattr(timeline_geometry, "mark_dirty"):
+                timeline_geometry.mark_dirty()
+        if timeline_view and hasattr(timeline_view, "update"):
+            timeline_view.update()
 
     def btnMoveUpClicked(self, checked):
         """Callback for move up button click"""
@@ -178,6 +210,7 @@ class AddToTimeline(QDialog):
 
         # Init position
         position = start_position
+        added_clip_ids = []
 
         random_transition = False
         if transition_path == "random":
@@ -186,6 +219,9 @@ class AddToTimeline(QDialog):
         # Get frames per second
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
+
+        # Track added clip IDs for auto-selection
+        added_clip_ids = []
 
         # Loop through each file (in the current order)
         for file in self.treeFiles.timeline_model.files:
@@ -386,12 +422,22 @@ class AddToTimeline(QDialog):
             # Save Clip
             clip.data = new_clip
             clip.save()
+            added_clip_ids.append(clip.data.get("id"))
 
             # Increment position by length of clip
             position += (end_time - start_time)
 
         # Clear transaction
         get_app().updates.transaction_id = None
+
+        # Ensure timeline extension behavior matches all other timeline add/move paths.
+        timeline_view = getattr(get_app().window, "timeline", None)
+        extend_timeline = getattr(timeline_view, "_extend_timeline_to_fit_items", None)
+        if callable(extend_timeline):
+            extend_timeline()
+
+        # Auto-select newly added clips, like timeline drag/drop does.
+        self._select_added_items(get_app().window, added_clip_ids)
 
         # Accept dialog
         super(AddToTimeline, self).accept()
@@ -445,7 +491,7 @@ class AddToTimeline(QDialog):
 
     def __init__(self, files=None, position=0.0):
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from Designer
         ui_util.load_ui(self, self.ui_path)

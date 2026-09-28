@@ -135,6 +135,20 @@ def test_reinstalling_over_a_wrapping_hook_does_not_recurse():
     crash_handler._excepthook(*_raise(SystemExit(0)))
 
 
+def test_install_after_a_second_init_tracing_wrap_stays_outermost():
+    """foundCurrentVersion calls sentry.init_tracing() again; we must re-wrap."""
+    crash_handler.install()
+    our_first = sys.excepthook
+
+    def wrapping_hook(*args):
+        our_first(*args)
+
+    sys.excepthook = wrapping_hook
+    crash_handler.install()
+    assert sys.excepthook is crash_handler._excepthook
+    assert sys.excepthook is not wrapping_hook
+
+
 def test_chaining_falls_back_to_the_interpreter_default():
     # Nothing to chain to: still must not call itself.
     crash_handler.install()

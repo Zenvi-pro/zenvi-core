@@ -282,7 +282,7 @@ class ZenviMcpServer:
 
     def _connect_shutdown_hook(self):
         try:
-            from PyQt5.QtWidgets import QApplication
+            from qt_api import QApplication
             qapp = QApplication.instance()
             if qapp is not None:
                 qapp.aboutToQuit.connect(self.stop)
@@ -328,15 +328,22 @@ class ZenviMcpServer:
         return app
 
     def stop(self):
+        thread = None
         with self._lock:
             if not self._started:
                 return
             self._started = False
+            thread = self._thread
         try:
             if self._uvicorn is not None:
                 self._uvicorn.should_exit = True
         except Exception:
             pass
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+        with self._lock:
+            self._thread = None
+            self._uvicorn = None
 
     # -- accessors ---------------------------------------------------------
     @property

@@ -30,14 +30,15 @@ import math
 import time
 import uuid
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QCoreApplication, QMutex, QTimer,
-    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot,
+    QPoint, QPointF, QSize, QSizeF, QRect, QRectF, pyqtSlot, QLineF,
 )
-from PyQt5.QtGui import (
+from qt_api import modifiers_has
+from qt_api import (
     QTransform, QPainter, QIcon, QColor, QPen, QBrush, QCursor, QImage, QRegion
 )
-from PyQt5.QtWidgets import QSizePolicy, QWidget, QPushButton
+from qt_api import QSizePolicy, QWidget, QPushButton
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
@@ -50,6 +51,13 @@ from classes.query import Clip, Effect
 
 class VideoWidget(QWidget, updates.UpdateInterface):
     """ A QWidget used on the video display widget """
+
+    def _snap_angle(self, angle_degrees, step_degrees=15.0):
+        """Snap an angle to the nearest increment (degrees)."""
+        step = float(step_degrees) if step_degrees else 0.0
+        if step <= 0.0:
+            return angle_degrees
+        return math.floor((angle_degrees + (step / 2.0)) / step) * step
 
     def _compute_handles_opacity(self, fps_float):
         """
@@ -239,6 +247,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.originHandle = None
         self.original_effect_data = None
         self.hover_transform_mode = None
+        self.rotation_drag_value = None
         self.hover_cursor = Qt.ArrowCursor
         self.setCursor(Qt.ArrowCursor)
         self.update()
@@ -353,7 +362,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             center = origin_rect.center()
             halfW = QPointF(origin_rect.width() * 0.75, 0)
             halfH = QPointF(0, origin_rect.height() * 0.75)
-            painter.drawLines(center - halfW, center + halfW, center - halfH, center + halfH)
+            painter.drawLines([
+                QLineF(center - halfW, center + halfW),
+                QLineF(center - halfH, center + halfH),
+            ])
 
         painter.resetTransform()
 
@@ -647,7 +659,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     cross_h = self.cropOriginHandleScreen.height() * 0.75
                     halfW = QPointF(cross_w / 2.0, 0)
                     halfH = QPointF(0, cross_h / 2.0)
-                    painter.drawLines(c - halfW, c + halfW, c - halfH, c + halfH)
+                    painter.drawLines([
+                        QLineF(c - halfW, c + halfW),
+                        QLineF(c - halfH, c + halfH),
+                    ])
 
             # Region selection UI (also uses global opacity)
             if self.region_enabled:
@@ -709,7 +724,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         return viewport_rect.toAlignedRect()
 
     @pyqtSlot(QImage)
-    def present(self, image):
+    def present(self, image, *args):
         """ Present the current frame (QImage slot for QueuedConnection / invokeMethod). """
 
         # Calculate "render" / "present" FPS
@@ -753,6 +768,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_dragging = False
         self.mouse_position = event.pos()
         self.transform_mode = self.hover_transform_mode
+        self.rotation_drag_value = None
         self.setCursor(self.hover_cursor)
 
         # Ignore undo/redo history temporarily (to avoid a huge pile of undo/redo history)
@@ -778,6 +794,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_pressed = False
         self.mouse_dragging = False
         self.transform_mode = None
+        self.rotation_drag_value = None
         self.region_mode = None
 
         # Save region image data (as QImage)
@@ -855,6 +872,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def rotateCursor(self, pixmap, rotation, shear_x, shear_y):
         """Rotate cursor based on the current transform"""
+        fallback = None
+        if isinstance(pixmap, tuple):
+            pixmap, fallback = pixmap
+        if pixmap is None or pixmap.isNull():
+            if fallback is None:
+                fallback = Qt.ArrowCursor
+            return QCursor(fallback)
         rotated_pixmap = pixmap.transformed(
             QTransform().rotate(rotation).shear(shear_x, shear_y).scale(0.8, 0.8),
             Qt.SmoothTransformation)
@@ -962,6 +986,13 @@ class VideoWidget(QWidget, updates.UpdateInterface):
     def mouseMoveEvent(self, event):
         """Capture mouse events on video preview window """
         self.mutex.lock()
+        try:
+            self._mouseMoveEvent_locked(event)
+        finally:
+            self.mutex.unlock()
+
+    def _mouseMoveEvent_locked(self, event):
+        """Body of mouseMoveEvent; caller holds self.mutex."""
         event.accept()
 
         if self.mouse_pressed:
@@ -1048,9 +1079,36 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     location_x = raw_properties.get('location_x').get('value')
                     location_y = raw_properties.get('location_y').get('value')
 
-                    # Calculate new location coordinates
-                    location_x += x_motion / viewport_rect.width()
-                    location_y += y_motion / viewport_rect.height()
+                    base_w, base_h = self._clip_source_dimensions(
+                        self.transforming_clip, self.transforming_clip_object, clip_frame_number)
+                    (
+                        _source_w,
+                        _source_h,
+                        scaled_w,
+                        scaled_h,
+                        anchored_x,
+                        anchored_y,
+                        layout_x,
+                        layout_y,
+                        layout_width,
+                        layout_height) = self._clip_location_geometry(
+                            base_w, base_h, self.transforming_clip, raw_properties, viewport_rect)
+
+                    # Match libopenshot's location contract: Crop uses the
+                    # distance to the offscreen edge, while all other scale
+                    # modes retain canvas-relative coordinates.
+                    if self.transforming_clip.data['scale'] == openshot.SCALE_CROP:
+                        current_x_offset = self._location_offset(
+                            location_x, anchored_x - layout_x, layout_width, scaled_w)
+                        current_y_offset = self._location_offset(
+                            location_y, anchored_y - layout_y, layout_height, scaled_h)
+                        location_x = self._location_value_from_offset(
+                            current_x_offset + x_motion, anchored_x - layout_x, layout_width, scaled_w)
+                        location_y = self._location_value_from_offset(
+                            current_y_offset + y_motion, anchored_y - layout_y, layout_height, scaled_h)
+                    else:
+                        location_x += x_motion / viewport_rect.width()
+                        location_y += y_motion / viewport_rect.height()
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -1125,7 +1183,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 elif self.transform_mode == 'rotation':
                     # Get current rotation keyframe value
-                    rotation = raw_properties.get('rotation').get('value')
+                    if self.rotation_drag_value is None:
+                        self.rotation_drag_value = raw_properties.get('rotation').get('value')
+                    rotation = self.rotation_drag_value
                     scale_x = max(float(raw_properties.get('scale_x').get('value')), 0.001)
                     scale_y = max(float(raw_properties.get('scale_y').get('value')), 0.001)
 
@@ -1138,6 +1198,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     y_adjust = y_motion / ((self.clipBounds.height() * scale_y) / 90)
                     rotation += (y_adjust if is_on_right else -y_adjust)
+
+                    self.rotation_drag_value = rotation
+                    if int(QCoreApplication.instance().keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) > 0:
+                        rotation = self._snap_angle(rotation, 15.0)
 
                     # Update keyframe value (or create new one)
                     self.updateClipProperty(
@@ -1175,7 +1239,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                     elif self.transform_mode == 'scale_right':
                         scale_x += x_motion / half_w
 
-                    if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+                    if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
                         # If CTRL key is pressed, fix the scale_y to the correct aspect ratio
                         if scale_x:
                             scale_y = scale_x
@@ -1298,7 +1362,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                 if not raw_properties.get('visible'):
                     self.mouse_position = event.pos()
-                    self.mutex.unlock()
                     return
 
                 self.checkTransformMode(0, 0, 0, event)
@@ -1331,7 +1394,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                     elif self.transform_mode == 'rotation':
                         # Get current rotation keyframe value
-                        rotation = raw_properties.get('rotation').get('value')
+                        if self.rotation_drag_value is None:
+                            self.rotation_drag_value = raw_properties.get('rotation').get('value')
+                        rotation = self.rotation_drag_value
                         scale_x = max(float(raw_properties.get('scale_x').get('value')), 0.001)
                         scale_y = max(float(raw_properties.get('scale_y').get('value')), 0.001)
 
@@ -1344,6 +1409,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
                         y_adjust = y_motion / (self.clipBounds.height() * scale_y / 90)
                         rotation += (y_adjust if is_on_right else -y_adjust)
+
+                        self.rotation_drag_value = rotation
+                        if int(QCoreApplication.instance().keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier)) > 0:
+                            rotation = self._snap_angle(rotation, 15.0)
 
                         # Update keyframe value (or create new one)
                         self.updateEffectProperty(
@@ -1380,7 +1449,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         elif self.transform_mode == 'scale_right':
                             scale_x += x_motion / half_w
 
-                        if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+                        if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
                             # If CTRL key is pressed, fix the scale_y to the correct aspect ratio
                             if scale_x:
                                 scale_y = scale_x
@@ -1445,7 +1514,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                         origin_w = width
                         origin_h = height
                     if width <= 0.0001 or height <= 0.0001:
-                        self.mutex.unlock()
                         return
 
                     eff_id = self.transforming_effect.id
@@ -1535,8 +1603,6 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Update mouse position
         self.mouse_position = event.pos()
-
-        self.mutex.unlock()
 
     def updateClipProperty(self, clip_id, frame_number, property_key, new_value, refresh=True):
         """Update a keyframe property to a new value, adding or updating keyframes as needed"""
@@ -1729,8 +1795,9 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
     def _clip_source_dimensions(self, clip, clip_object, frame_number, skip_effect_id=None):
         pixel_adjust = self.pixel_ratio.Reciprocal().ToDouble()
-        width = float(clip.data['reader']['width'])
-        height = float(clip.data['reader']['height']) * pixel_adjust
+        reader = clip.data.get('reader', {})
+        width = float(reader.get('width', self.width()))
+        height = float(reader.get('height', self.height())) * pixel_adjust
 
         for eff in clip_object.Effects():
             if getattr(getattr(eff, 'info', None), 'class_name', '') != 'Crop':
@@ -1753,9 +1820,45 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         return width, height
 
-    def _clip_display_rect(self, base_width, base_height, clip, raw_properties, viewport_rect):
+    @staticmethod
+    def _location_offset(location, anchored_position, canvas_size, clip_size):
+        """Match libopenshot normalized location semantics for one axis."""
+        location = float(location)
+        anchored_position = float(anchored_position)
+        canvas_size = float(canvas_size)
+        clip_size = float(clip_size)
+        if location < 0.0:
+            return location * (anchored_position + clip_size)
+        return location * (canvas_size - anchored_position)
+
+    @staticmethod
+    def _location_value_from_offset(offset, anchored_position, canvas_size, clip_size):
+        """Inverse of _location_offset(), used when dragging transform handles."""
+        offset = float(offset)
+        anchored_position = float(anchored_position)
+        canvas_size = float(canvas_size)
+        clip_size = float(clip_size)
+        if offset < 0.0:
+            basis = anchored_position + clip_size
+        else:
+            basis = canvas_size - anchored_position
+        if abs(basis) < 0.0001:
+            return 0.0
+        return offset / basis
+
+    def _clip_location_geometry(self, base_width, base_height, clip, raw_properties, viewport_rect):
+        """Scaled size and gravity anchor of a clip inside the preview viewport.
+
+        Returns (source_width, source_height, scaled_width, scaled_height,
+        anchored_x, anchored_y, layout_x, layout_y, layout_width, layout_height).
+        Zenvi has no clip margin property, so the layout rect is the viewport.
+        """
         player_width = viewport_rect.width()
         player_height = viewport_rect.height()
+        layout_x = viewport_rect.x()
+        layout_y = viewport_rect.y()
+        layout_width = max(float(player_width), 1.0)
+        layout_height = max(float(player_height), 1.0)
 
         source_size = QSizeF(base_width, base_height)
         scale_mode = clip.data['scale']
@@ -1764,11 +1867,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
             scale_mode = openshot.SCALE_STRETCH
 
         if scale_mode == openshot.SCALE_FIT:
-            source_size.scale(player_width, player_height, Qt.KeepAspectRatio)
+            source_size.scale(layout_width, layout_height, Qt.KeepAspectRatio)
         elif scale_mode == openshot.SCALE_STRETCH:
-            source_size.scale(player_width, player_height, Qt.IgnoreAspectRatio)
+            source_size.scale(layout_width, layout_height, Qt.IgnoreAspectRatio)
         elif scale_mode == openshot.SCALE_CROP:
-            source_size.scale(player_width, player_height, Qt.KeepAspectRatioByExpanding)
+            source_size.scale(layout_width, layout_height, Qt.KeepAspectRatioByExpanding)
 
         source_width = max(source_size.width(), 0.0001)
         source_height = max(source_size.height(), 0.0001)
@@ -1781,35 +1884,65 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         scaled_width = source_width * sx
         scaled_height = source_height * sy
 
-        x = viewport_rect.x()
-        y = viewport_rect.y()
+        x = layout_x
+        y = layout_y
 
         gravity = clip.data['gravity']
         if gravity == openshot.GRAVITY_TOP:
-            x += (player_width - scaled_width) / 2.0
+            x += (layout_width - scaled_width) / 2.0
         elif gravity == openshot.GRAVITY_TOP_RIGHT:
-            x += player_width - scaled_width
+            x += layout_width - scaled_width
         elif gravity == openshot.GRAVITY_LEFT:
-            y += (player_height - scaled_height) / 2.0
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_CENTER:
-            x += (player_width - scaled_width) / 2.0
-            y += (player_height - scaled_height) / 2.0
+            x += (layout_width - scaled_width) / 2.0
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_RIGHT:
-            x += player_width - scaled_width
-            y += (player_height - scaled_height) / 2.0
+            x += layout_width - scaled_width
+            y += (layout_height - scaled_height) / 2.0
         elif gravity == openshot.GRAVITY_BOTTOM_LEFT:
-            y += player_height - scaled_height
+            y += layout_height - scaled_height
         elif gravity == openshot.GRAVITY_BOTTOM:
-            x += (player_width - scaled_width) / 2.0
-            y += player_height - scaled_height
+            x += (layout_width - scaled_width) / 2.0
+            y += layout_height - scaled_height
         elif gravity == openshot.GRAVITY_BOTTOM_RIGHT:
-            x += player_width - scaled_width
-            y += player_height - scaled_height
+            x += layout_width - scaled_width
+            y += layout_height - scaled_height
+
+        return (
+            source_width, source_height, scaled_width, scaled_height,
+            x, y, layout_x, layout_y, layout_width, layout_height)
+
+    def _clip_display_rect(self, base_width, base_height, clip, raw_properties, viewport_rect):
+        player_width = viewport_rect.width()
+        player_height = viewport_rect.height()
+
+        (
+            source_width,
+            source_height,
+            scaled_width,
+            scaled_height,
+            anchored_x,
+            anchored_y,
+            layout_x,
+            layout_y,
+            layout_width,
+            layout_height) = self._clip_location_geometry(
+                base_width, base_height, clip, raw_properties, viewport_rect)
+        x = anchored_x
+        y = anchored_y
 
         location_x = float(raw_properties.get('location_x', {}).get('value', 0.0))
         location_y = float(raw_properties.get('location_y', {}).get('value', 0.0))
-        x += player_width * location_x
-        y += player_height * location_y
+        # Match libopenshot 1.0's location contract: Crop clips move by the
+        # distance to the offscreen edge, every other scale mode keeps the
+        # historical canvas-relative coordinates.
+        if clip.data['scale'] == openshot.SCALE_CROP:
+            x += self._location_offset(location_x, anchored_x - layout_x, layout_width, scaled_width)
+            y += self._location_offset(location_y, anchored_y - layout_y, layout_height, scaled_height)
+        else:
+            x += player_width * location_x
+            y += player_height * location_y
 
         return QRectF(x, y, source_width, source_height)
 
@@ -1975,8 +2108,11 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.delayed_size = self.size()
         self.delayed_resize_timer.start()
 
-        # Pause playback (to prevent crash since we are fixing to change the timeline's max size)
-        self.win.PauseSignal.emit()
+        # Only the main project preview uses VideoWidget's internal delayed resize
+        # pipeline. Dialog previews manage their own resize/max-size flow and
+        # should not be forcibly paused here during startup.
+        if getattr(self, "watch_project", True):
+            self.win.PauseSignal.emit()
 
     def delayed_resize_callback(self):
         """Callback for resize event timer (to delay the resize event, and prevent lots of similar resize events)"""
@@ -2015,22 +2151,23 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         else:
             self.resize_button.hide()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Request repaint asynchronously to avoid recursive paint calls.
+        self.update()
 
     def resize_button_clicked(self):
         """Resize zoom button clicked"""
         self.zoom = 1.0
         self.resize_button.hide()
 
-        # Repaint widget on zoom
-        self.repaint()
+        # Request repaint asynchronously to avoid recursive paint calls.
+        self.update()
 
     def __init__(self, watch_project=True, *args):
         """watch_project: watch for changes in project size / widget size, and
         continue to match the current project's aspect ratio."""
         # Invoke parent init
-        QWidget.__init__(self, *args)
+        super().__init__(*args)
+        self.watch_project = bool(watch_project)
 
         # Translate object
         _ = get_app()._tr
@@ -2069,6 +2206,7 @@ class VideoWidget(QWidget, updates.UpdateInterface):
         self.mouse_position = None
         self.transform_mode = None
         self.hover_transform_mode = None
+        self.rotation_drag_value = None
         self.hover_cursor = Qt.ArrowCursor
         self.original_clip_data = None
         self.original_clip_data_map = {}
@@ -2098,6 +2236,17 @@ class VideoWidget(QWidget, updates.UpdateInterface):
 
         # Load icon (using display DPI)
         self.cursors = {}
+        cursor_fallbacks = {
+            "move": Qt.SizeAllCursor,
+            "resize_x": Qt.SizeHorCursor,
+            "resize_y": Qt.SizeVerCursor,
+            "resize_bdiag": Qt.SizeBDiagCursor,
+            "resize_fdiag": Qt.SizeFDiagCursor,
+            "rotate": Qt.CrossCursor,
+            "shear_x": Qt.SizeHorCursor,
+            "shear_y": Qt.SizeVerCursor,
+            "hand": Qt.OpenHandCursor,
+        }
         for cursor_name in ["move",
                             "resize_x",
                             "resize_y",
@@ -2108,7 +2257,10 @@ class VideoWidget(QWidget, updates.UpdateInterface):
                             "shear_y",
                             "hand"]:
             icon = QIcon(":/cursors/cursor_%s.png" % cursor_name)
-            self.cursors[cursor_name] = icon.pixmap(32, 32)
+            pixmap = icon.pixmap(32, 32)
+            if pixmap.isNull() or pixmap.size().isEmpty():
+                pixmap = None
+            self.cursors[cursor_name] = (pixmap, cursor_fallbacks[cursor_name])
 
         # Mutex lock
         self.mutex = QMutex()

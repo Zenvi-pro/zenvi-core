@@ -31,7 +31,12 @@ import os
 import re
 import fnmatch
 import sys
-from PyQt5.QtCore import QLocale, QLibraryInfo, QTranslator, QCoreApplication
+
+SRC_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
+
+from qt_api import QLocale, QLibraryInfo, QTranslator, QCoreApplication
 
 
 # Get the absolute path of this project

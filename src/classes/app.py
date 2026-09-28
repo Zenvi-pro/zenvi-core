@@ -32,15 +32,18 @@ import os
 import platform
 import traceback
 import json
+import logging
 
-from PyQt5.QtCore import (
-    PYQT_VERSION_STR,
+from qt_api import (
+    QT_API,
     QT_VERSION_STR,
-    pyqtSlot,
+    BINDING_VERSION_STR,
+    Slot,
     qInstallMessageHandler,
     QtMsgType,
 )
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from qt_api import QApplication, QMessageBox, QTimer
+from qt_api import request_android_storage_permission_if_needed
 
 _QT_MSG_PREFIXES = {
     QtMsgType.QtDebugMsg: "debug",
@@ -94,7 +97,7 @@ def _install_windows_qfiledialog_workaround():
     """Avoid native IFileOpenDialog COM on MSYS2/MinGW (HRESULT 0x80040155)."""
     if sys.platform != "win32":
         return
-    from PyQt5.QtWidgets import QFileDialog
+    from qt_api import QFileDialog
 
     _FLAG = QFileDialog.DontUseNativeDialog
 
@@ -218,7 +221,11 @@ class OpenShotApp(QApplication):
 
         except ImportError as ex:
             tb = traceback.format_exc()
-            log.error('OpenShotApp::Import Error', exc_info=1)
+            try:
+                log.error('OpenShotApp::Import Error', exc_info=1)
+            except Exception:
+                logging.getLogger(__name__).error(
+                    'OpenShotApp::Import Error', exc_info=True)
             diag_hint = ""
             try:
                 from classes.openshot_import_diag import write_openshot_import_diagnostic
@@ -272,6 +279,12 @@ class OpenShotApp(QApplication):
 
         # Log some basic system info
         self.log = log
+        # Clear any stale override cursor (can suppress widget cursors in some Qt bindings)
+        try:
+            while QApplication.overrideCursor():
+                QApplication.restoreOverrideCursor()
+        except Exception as exc:
+            log.debug("Failed to clear stale override cursor: %s", exc, exc_info=True)
         self.show_environment(info, openshot)
         if self.mode != "unittest":
             self.check_libopenshot_version(info, openshot)
@@ -327,8 +340,7 @@ class OpenShotApp(QApplication):
             log.info("processor: %s" % platform.processor())
             log.info("machine: %s" % platform.machine())
             log.info("python version: %s" % platform.python_version())
-            log.info("qt5 version: %s" % QT_VERSION_STR)
-            log.info("pyqt5 version: %s" % PYQT_VERSION_STR)
+            log.info("qt binding: %s (Qt %s, binding %s)" % (QT_API, QT_VERSION_STR, BINDING_VERSION_STR))
 
             # Look for frozen version info
             version_path = os.path.join(info.PATH, "settings", "version.json")
@@ -377,7 +389,7 @@ class OpenShotApp(QApplication):
 
         if use_qwidget:
             self.info.WEB_BACKEND = "qwidget"
-            self.log.info("Experimental timeline enabled via preferences; using QWidget backend.")
+            self.log.info("Native timeline enabled via preferences; using QWidget backend.")
 
     def gui(self):
         """
@@ -454,7 +466,7 @@ class OpenShotApp(QApplication):
             result = login_dlg.exec_()
             # If user cancelled auth, quit the application
             if result != LoginWindow.Accepted:
-                log.info("Auth cancelled by user — exiting.")
+                log.info("Auth cancelled by user ΓÇö exiting.")
                 self.window.close()
                 return False
 
@@ -464,6 +476,10 @@ class OpenShotApp(QApplication):
             info.schedule_application_icon(self.window)
         except Exception:
             pass
+
+        # On Android, prompt for All Files Access once the window is visible so
+        # the permission is in place before the user first taps Import Files.
+        QTimer.singleShot(500, request_android_storage_permission_if_needed)
 
         args = self.args
         if len(args) < 2:
@@ -523,7 +539,7 @@ class OpenShotApp(QApplication):
     def _tr(self, message):
         return self.translate("", message)
 
-    @pyqtSlot()
+    @Slot()
     def cleanup(self):
         """aboutToQuit signal handler for application exit"""
         # faulthandler on Windows reports benign COM teardown (0x80010108) as "fatal" during late exit.
@@ -545,7 +561,11 @@ class OpenShotApp(QApplication):
             pass
 
         self.log.debug("Saving settings in app.cleanup")
-
+        if getattr(self, "window", None):
+            try:
+                self.window._shutdown()
+            except Exception:
+                self.log.warning("Window shutdown raised during app cleanup.", exc_info=1)
         try:
             self.settings.save()
         except Exception:

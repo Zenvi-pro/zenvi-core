@@ -477,7 +477,7 @@ def _fork(conn, src_key: str, new_key: str, new_path: str) -> None:
 
 @_store(default=0)
 def discard_empty_bucket(conn, project_key: str) -> int:
-    """Drop a bucket that never got a message — abandoned drafts, mostly.
+    """Drop a bucket that never got a message ΓÇö abandoned drafts, mostly.
 
     "New Project" walks away from its draft bucket; without this they would
     pile up forever.  Buckets that hold an actual conversation are left alone.

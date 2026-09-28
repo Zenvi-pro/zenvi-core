@@ -31,10 +31,11 @@ import copy
 import glob
 import os
 import random
+import re
 import shutil
 import json
 
-from PyQt5.QtWidgets import QMessageBox
+from qt_api import QFileDialog, QMessageBox
 
 from classes import info
 from classes.app import get_app
@@ -48,12 +49,13 @@ from classes.json_data import JsonDataStore
 from classes.logger import log
 from classes.updates import UpdateInterface
 from classes.assets import (
-    copy_imported_media,
     get_assets_path,
+    relocate_generated_media,
     restore_media_paths,
+    reverse_media_moves,
     snapshot_media_paths,
 )
-from windows.views.find_file import find_missing_file
+from classes.path_utils import comparable_local_path, normalized_local_path
 from classes.convert_framerate import change_profile
 
 from .keyframe_scaler import KeyframeScaler
@@ -81,6 +83,57 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
     def needs_save(self):
         """Returns if project data has unsaved changes"""
         return self.has_unsaved_changes
+
+    def _effect_has_reader_source(self, effect):
+        """Return True when an effect already has a modern reader payload."""
+        if not isinstance(effect, dict):
+            return False
+        for key in ("mask_reader", "reader"):
+            reader = effect.get(key)
+            if not isinstance(reader, dict):
+                continue
+            if reader.get("path") or reader.get("id") or reader.get("has_single_image"):
+                return True
+        return False
+
+    def _drop_obsolete_effect_resource(self, effect):
+        """Remove legacy resource paths once a reader payload is available."""
+        if not isinstance(effect, dict):
+            return
+        if "resource" in effect and self._effect_has_reader_source(effect):
+            effect.pop("resource", None)
+
+    def _migrate_optimized_asset_paths(self):
+        """Migrate legacy proxy asset folder paths from `proxies` to `optimized`."""
+        if not self.current_filepath:
+            return
+
+        asset_path = get_assets_path(self.current_filepath)
+        legacy_proxy_path = os.path.join(asset_path, "proxies")
+        optimized_path = os.path.join(asset_path, "optimized")
+
+        if os.path.isdir(legacy_proxy_path) and not os.path.exists(optimized_path):
+            shutil.move(legacy_proxy_path, optimized_path)
+            log.info("Migrated optimized assets folder to %s", optimized_path)
+
+        legacy_prefix = os.path.abspath(legacy_proxy_path) + os.sep
+        updated = 0
+        for file_data in self._data.get("files", []):
+            if not isinstance(file_data, dict):
+                continue
+            proxy_reader = file_data.get("proxy_reader")
+            if not isinstance(proxy_reader, dict):
+                continue
+            proxy_path = str(proxy_reader.get("path") or "")
+            abs_proxy_path = os.path.abspath(proxy_path) if proxy_path else ""
+            if abs_proxy_path.startswith(legacy_prefix):
+                relative_path = os.path.relpath(abs_proxy_path, os.path.abspath(legacy_proxy_path))
+                proxy_reader["path"] = os.path.join(optimized_path, relative_path)
+                updated += 1
+
+        info.PROXY_PATH = optimized_path
+        if updated:
+            log.info("Updated %s optimized reader path(s) to use %s", updated, optimized_path)
 
     def get(self, key):
         """Get copied value of a given key in data store"""
@@ -437,6 +490,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
                 info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
+                info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+
+            self._migrate_optimized_asset_paths()
 
             # Clear needs save flag
             self.has_unsaved_changes = False
@@ -877,9 +933,210 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             scale_none=openshot.SCALE_NONE,
         )
 
+        # libopenshot 1.0 corrected location_x/y so +/-1 moves a scaled
+        # SCALE_CROP clip fully offscreen. Preserve the visual positions
+        # stored by projects saved against libopenshot < 1.0, which used the
+        # canvas size for these offsets. Zenvi stamps its own openshot-qt
+        # version (1.0.x), so only the libopenshot version is meaningful here.
+        if self._numeric_version(libopenshot_version) < (1, 0, 0):
+            self._migrate_legacy_crop_locations()
+
+        # OpenShot 4.0.0 saved non-Crop locations using libopenshot 1.0's
+        # temporary geometry-relative behavior. Convert those values back to
+        # canvas-relative units so the positions remain unchanged with the
+        # corrected libopenshot behavior.
+        if (
+            self._numeric_version(openshot_version) == (4, 0, 0)
+            and "-" not in openshot_version
+        ):
+            self._migrate_400_non_crop_locations()
+
         # Fix default project id (if found)
         if self._data.get("id") == "T0":
             self._data["id"] = self.generate_id()
+
+    @staticmethod
+    def _numeric_version(value):
+        """Return three numeric components from a release-like version."""
+        numbers = [int(part) for part in re.findall(r"\d+", str(value))[:3]]
+        return tuple((numbers + [0, 0, 0])[:3])
+
+    @classmethod
+    def _version_at_most(cls, version, cutoff):
+        """Compare the numeric components of release-like version strings."""
+        return cls._numeric_version(version) <= cls._numeric_version(cutoff)
+
+    @staticmethod
+    def _keyframe_value(keyframe_data, frame, default):
+        """Evaluate serialized keyframe data, falling back safely if malformed."""
+        if not isinstance(keyframe_data, dict):
+            return default
+        try:
+            keyframe = openshot.Keyframe()
+            keyframe.SetJson(json.dumps(keyframe_data))
+            return keyframe.GetValue(int(round(frame)))
+        except (RuntimeError, TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _legacy_location_factor(value, canvas_size, clip_size, alignment):
+        """Return the old/new location-unit ratio for one clip axis."""
+        if not value or canvas_size <= 0.0 or clip_size <= 0.0:
+            return 1.0
+        if alignment == "start":
+            denominator = clip_size if value < 0.0 else canvas_size
+        elif alignment == "end":
+            denominator = canvas_size if value < 0.0 else clip_size
+        else:
+            denominator = (canvas_size + clip_size) / 2.0
+        return canvas_size / denominator if denominator else 1.0
+
+    def _migrate_legacy_crop_locations(self):
+        """Preserve positions of SCALE_CROP clips saved by libopenshot <= 0.7."""
+        canvas_width = float(self._data.get("width") or 0.0)
+        canvas_height = float(self._data.get("height") or 0.0)
+        if canvas_width <= 0.0 or canvas_height <= 0.0:
+            return
+
+        files = {
+            file_data.get("id"): file_data
+            for file_data in self._data.get("files", [])
+            if isinstance(file_data, dict)
+        }
+        horizontal_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start",
+            openshot.GRAVITY_LEFT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "start",
+            openshot.GRAVITY_TOP_RIGHT: "end",
+            openshot.GRAVITY_RIGHT: "end",
+            openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+        vertical_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start",
+            openshot.GRAVITY_TOP: "start",
+            openshot.GRAVITY_TOP_RIGHT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "end",
+            openshot.GRAVITY_BOTTOM: "end",
+            openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+
+        for clip in self._data.get("clips", []):
+            if clip.get("scale") != openshot.SCALE_CROP:
+                continue
+
+            reader = clip.get("reader") or files.get(clip.get("file_id"), {})
+            source_width = float(reader.get("width") or 0.0)
+            source_height = float(reader.get("height") or 0.0)
+            if source_width <= 0.0 or source_height <= 0.0:
+                continue
+
+            crop_scale = max(
+                canvas_width / source_width,
+                canvas_height / source_height,
+            )
+            base_width = source_width * crop_scale
+            base_height = source_height * crop_scale
+            gravity = clip.get("gravity", openshot.GRAVITY_CENTER)
+            x_alignment = horizontal_alignment.get(gravity, "center")
+            y_alignment = vertical_alignment.get(gravity, "center")
+            migrated = False
+
+            for property_name, canvas_size, base_size, alignment, scale_name in (
+                ("location_x", canvas_width, base_width, x_alignment, "scale_x"),
+                ("location_y", canvas_height, base_height, y_alignment, "scale_y"),
+            ):
+                for point in clip.get(property_name, {}).get("Points", []):
+                    coordinate = point.get("co")
+                    if not isinstance(coordinate, dict) or "Y" not in coordinate:
+                        continue
+                    frame = coordinate.get("X", 1.0)
+                    value = coordinate["Y"]
+                    scale_value = self._keyframe_value(
+                        clip.get(scale_name), frame, 1.0
+                    )
+                    factor = self._legacy_location_factor(
+                        value, canvas_size, base_size * scale_value, alignment
+                    )
+                    if factor != 1.0:
+                        coordinate["Y"] = value * factor
+                        migrated = True
+
+            if migrated:
+                log.info(
+                    "Migrating legacy SCALE_CROP location keyframes for clip %s",
+                    clip.get("id", "<unknown>"),
+                )
+
+    def _migrate_400_non_crop_locations(self):
+        """Preserve non-Crop positions saved by the OpenShot 4.0.0 release."""
+        canvas_width = float(self._data.get("width") or 0.0)
+        canvas_height = float(self._data.get("height") or 0.0)
+        if canvas_width <= 0.0 or canvas_height <= 0.0:
+            return
+
+        files = {
+            file_data.get("id"): file_data
+            for file_data in self._data.get("files", [])
+            if isinstance(file_data, dict)
+        }
+        horizontal_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start", openshot.GRAVITY_LEFT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "start", openshot.GRAVITY_TOP_RIGHT: "end",
+            openshot.GRAVITY_RIGHT: "end", openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+        vertical_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start", openshot.GRAVITY_TOP: "start",
+            openshot.GRAVITY_TOP_RIGHT: "start", openshot.GRAVITY_BOTTOM_LEFT: "end",
+            openshot.GRAVITY_BOTTOM: "end", openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+
+        for clip in self._data.get("clips", []):
+            scale_mode = clip.get("scale", openshot.SCALE_FIT)
+            if scale_mode == openshot.SCALE_CROP:
+                continue
+            reader = clip.get("reader") or files.get(clip.get("file_id"), {})
+            source_width = float(reader.get("width") or 0.0)
+            source_height = float(reader.get("height") or 0.0)
+            if source_width <= 0.0 or source_height <= 0.0:
+                continue
+
+            gravity = clip.get("gravity", openshot.GRAVITY_CENTER)
+            for property_name, canvas_size, source_size, alignment, scale_name in (
+                ("location_x", canvas_width, source_width,
+                 horizontal_alignment.get(gravity, "center"), "scale_x"),
+                ("location_y", canvas_height, source_height,
+                 vertical_alignment.get(gravity, "center"), "scale_y"),
+            ):
+                for point in clip.get(property_name, {}).get("Points", []):
+                    coordinate = point.get("co")
+                    if not isinstance(coordinate, dict) or "Y" not in coordinate:
+                        continue
+                    frame = coordinate.get("X", 1.0)
+                    value = coordinate["Y"]
+                    margin = self._keyframe_value(clip.get("margin"), frame, 0.0)
+                    margin_pixels = max(0.0, min(0.5, margin)) * min(
+                        canvas_width, canvas_height)
+                    layout_size = max(1.0, canvas_size - (2.0 * margin_pixels))
+
+                    if scale_mode == openshot.SCALE_STRETCH:
+                        base_size = layout_size
+                    elif scale_mode == openshot.SCALE_NONE:
+                        base_size = source_size
+                    else:
+                        fit_scale = min(
+                            (canvas_width - 2.0 * margin_pixels) / source_width,
+                            (canvas_height - 2.0 * margin_pixels) / source_height,
+                        )
+                        base_size = source_size * fit_scale
+
+                    clip_size = base_size * self._keyframe_value(
+                        clip.get(scale_name), frame, 1.0)
+                    factor = self._legacy_location_factor(
+                        value, layout_size, clip_size, alignment)
+                    if factor:
+                        # Undo old->new conversion, then account for the fact
+                        # that restored non-Crop coordinates use the full canvas.
+                        coordinate["Y"] = value * layout_size / (factor * canvas_size)
 
     def is_keyframe_valid(self, keyframe, default_value):
         """Check if a keyframe is not empty (i.e. > 1 point, or a non default_value)"""
@@ -899,18 +1156,28 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         # Move all temp files (i.e. Blender Animations, Titles, Thumbnails, Protobuf files) to the project folder
         media_snapshot = None
+        media_moves = None
         if not backup_only:
             self.move_temp_paths_to_project_folder(
                 file_path, previous_path=self.current_filepath)
             files = self._data.get("files") or []
             clips = self._data.get("clips") or []
+            # Backfill fingerprints for files that lack them (legacy / other insert paths).
+            try:
+                from classes.media_fingerprint import fingerprint as _media_fp
+                for file in files:
+                    if file.get("fingerprint"):
+                        continue
+                    path = file.get("path") or ""
+                    if not path or "%" in path or not os.path.isfile(path):
+                        continue
+                    stamped = _media_fp(path)
+                    if stamped:
+                        file["fingerprint"] = stamped
+            except Exception:
+                log.debug("Fingerprint backfill failed", exc_info=1)
             media_snapshot = snapshot_media_paths(files, clips)
-            copy_imported_media(
-                files,
-                clips,
-                file_path,
-                app_root=info.PATH,
-            )
+            media_moves = relocate_generated_media(files, clips, file_path)
 
         # Append version info
         self._data["version"] = {"openshot-qt": info.VERSION,
@@ -923,6 +1190,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 path_mode="ignore" if backup_only else "relative",
                 previous_path=self.current_filepath if not backup_only else None)
         except Exception:
+            reverse_media_moves(media_moves)
             restore_media_paths(media_snapshot)
             raise
 
@@ -935,9 +1203,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
             info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
             info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
+            info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
 
             self.add_to_recent_files(file_path)
             self.has_unsaved_changes = False
+            try:
+                from classes.media_cache import evict_if_needed
+                evict_if_needed()
+            except Exception:
+                log.debug("Media cache eviction skipped", exc_info=1)
 
     def move_temp_paths_to_project_folder(self, file_path, previous_path=None):
         """ Move all temp files (such as Thumbnails, Titles, and Blender animations) to the project asset folder. """
@@ -949,12 +1223,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             target_blender_path = os.path.join(asset_path, "blender")
             target_protobuf_path = os.path.join(asset_path, "protobuf_data")
             target_clipboard_path = os.path.join(asset_path, "clipboard")
+            target_proxy_path = os.path.join(asset_path, "optimized")
 
             # Create any missing target paths
             try:
                 for target_dir in [asset_path, target_thumb_path, target_title_path,
                                    target_blender_path, target_protobuf_path,
-                                   target_clipboard_path]:
+                                   target_clipboard_path, target_proxy_path]:
                     if not os.path.exists(target_dir):
                         os.mkdir(target_dir)
             except OSError:
@@ -969,38 +1244,40 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.BLENDER_PATH = os.path.join(previous_asset_path, "blender")
                 info.PROTOBUF_DATA_PATH = os.path.join(previous_asset_path, "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(previous_asset_path, "clipboard")
+                info.PROXY_PATH = os.path.join(previous_asset_path, "optimized")
 
             # Track assets we copy/update
             copied_assets = {
                 "blender": set(),
                 "title": set(),
                 "clipboard": set(),
+                "proxy": set(),
             }
             reader_paths = {}
 
-            # Copy all thumbnail files (if not found in target asset folder)
-            for thumb_path in os.listdir(info.THUMBNAIL_PATH):
-                working_thumb_path = os.path.join(info.THUMBNAIL_PATH, thumb_path)
-                target_thumb_filepath = os.path.join(target_thumb_path, thumb_path)
-                if not os.path.exists(target_thumb_filepath):
-                    shutil.copy2(working_thumb_path, target_thumb_filepath)
+            # Thumbnails live in the global fingerprint cache; do not copy them
+            # into the project assets folder.
 
             # Copy all title files (if not found in target asset folder)
-            for title_path in os.listdir(info.TITLE_PATH):
-                working_title_path = os.path.join(info.TITLE_PATH, title_path)
-                target_title_filepath = os.path.join(target_title_path, title_path)
-                if not os.path.exists(target_title_filepath):
-                    shutil.copy2(working_title_path, target_title_filepath)
+            if os.path.abspath(info.TITLE_PATH) != os.path.abspath(target_title_path):
+                for title_path in os.listdir(info.TITLE_PATH):
+                    working_title_path = os.path.join(info.TITLE_PATH, title_path)
+                    target_title_filepath = os.path.join(target_title_path, title_path)
+                    if not os.path.exists(target_title_filepath):
+                        shutil.copy2(working_title_path, target_title_filepath)
 
             # Copy all blender folders (if not found in target asset folder)
-            for blender_path in os.listdir(info.BLENDER_PATH):
-                working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
-                target_blender_filepath = os.path.join(target_blender_path, blender_path)
-                if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
-                    shutil.copytree(working_blender_path, target_blender_filepath)
+            if os.path.abspath(info.BLENDER_PATH) != os.path.abspath(target_blender_path):
+                for blender_path in os.listdir(info.BLENDER_PATH):
+                    working_blender_path = os.path.join(info.BLENDER_PATH, blender_path)
+                    target_blender_filepath = os.path.join(target_blender_path, blender_path)
+                    if os.path.isdir(working_blender_path) and not os.path.exists(target_blender_filepath):
+                        shutil.copytree(working_blender_path, target_blender_filepath)
 
             # Copy all clipboard files (if not found in target asset folder)
-            if os.path.exists(info.CLIPBOARD_PATH):
+            if os.path.exists(info.CLIPBOARD_PATH) and (
+                os.path.abspath(info.CLIPBOARD_PATH) != os.path.abspath(target_clipboard_path)
+            ):
                 for clipboard_path in os.listdir(info.CLIPBOARD_PATH):
                     working_clipboard_path = os.path.join(info.CLIPBOARD_PATH, clipboard_path)
                     target_clipboard_filepath = os.path.join(target_clipboard_path, clipboard_path)
@@ -1008,49 +1285,60 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
 
             # Copy all protobuf files (if not found in target asset folder)
-            for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
-                working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
-                target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
-                if not os.path.exists(target_protobuf_filepath):
-                    shutil.copy2(working_protobuf_path, target_protobuf_filepath)
+            if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
+                for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
+                    working_protobuf_path = os.path.join(info.PROTOBUF_DATA_PATH, protobuf_path)
+                    target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
+                    if not os.path.exists(target_protobuf_filepath):
+                        shutil.copy2(working_protobuf_path, target_protobuf_filepath)
+
+            # Copy all optimized preview videos (if not found in target asset folder)
+            if os.path.isdir(info.PROXY_PATH) and (
+                os.path.abspath(info.PROXY_PATH) != os.path.abspath(target_proxy_path)
+            ):
+                for proxy_name in os.listdir(info.PROXY_PATH):
+                    working_proxy_path = os.path.join(info.PROXY_PATH, proxy_name)
+                    target_proxy_filepath = os.path.join(target_proxy_path, proxy_name)
+                    if os.path.isfile(working_proxy_path) and not os.path.exists(target_proxy_filepath):
+                        shutil.copy2(working_proxy_path, target_proxy_filepath)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
                 path = file["path"]
                 file_id = file["id"]
 
-                # For now, store thumbnail path for backwards compatibility
-                file["image"] = os.path.join(target_thumb_path, f"{file_id}.png")
+                # Drop legacy per-project thumbnail pointers; runtime resolves via media_cache.
+                file.pop("image", None)
 
                 # Assets which need to be copied
                 new_asset_path = None
                 if info.BLENDER_PATH in path:
                     # Copy directory of blender files
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if os.path.isdir(old_dir) and old_dir not in copied_assets["blender"]:
                         # Copy dir into new folder
                         old_dir_name = os.path.basename(old_dir)
-                        copied_assets["blender"].add(old_dir)
-                        log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_blender_path):
+                            copied_assets["blender"].add(old_dir)
+                            log.info("Copied dir %s to %s", old_dir_name, target_blender_path)
                     new_asset_path = os.path.join(target_blender_path, old_dir_name, asset_name)
 
                 if info.TITLE_PATH in path:
                     # Copy title files into assets folder
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["title"]:
                         # Copy title into assets title folder
-                        copied_assets["title"].add(asset_name)
-                        log.info("Copied title %s to %s", asset_name, target_title_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_title_path):
+                            copied_assets["title"].add(asset_name)
+                            log.info("Copied title %s to %s", asset_name, target_title_path)
                     new_asset_path = os.path.join(target_title_path, asset_name)
 
                 if info.CLIPBOARD_PATH in path:
-                    log.info("Copying %s", path)
                     old_dir, asset_name = os.path.split(path)
                     if asset_name not in copied_assets["clipboard"]:
-                        copied_assets["clipboard"].add(asset_name)
-                        log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
+                        if os.path.abspath(old_dir) != os.path.abspath(target_clipboard_path):
+                            copied_assets["clipboard"].add(asset_name)
+                            log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
 
                 # Update path in File object to new location
@@ -1059,13 +1347,33 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     reader_paths[file_id] = new_asset_path
                     log.info("Set file %s path to %s", file_id, new_asset_path)
 
+                # Optimized preview videos generated into the working assets folder
+                # move with the project (externally linked proxies keep their path)
+                proxy_reader = file.get("proxy_reader")
+                proxy_path = proxy_reader.get("path") if isinstance(proxy_reader, dict) else ""
+                if proxy_path and info.PROXY_PATH in proxy_path:
+                    proxy_dir, proxy_name = os.path.split(proxy_path)
+                    if proxy_name not in copied_assets["proxy"]:
+                        if os.path.abspath(proxy_dir) != os.path.abspath(target_proxy_path):
+                            copied_assets["proxy"].add(proxy_name)
+                            source_proxy = os.path.join(proxy_dir, proxy_name)
+                            target_proxy = os.path.join(target_proxy_path, proxy_name)
+                            if os.path.isdir(source_proxy):
+                                if os.path.exists(target_proxy):
+                                    shutil.rmtree(target_proxy, True)
+                                shutil.copytree(source_proxy, target_proxy)
+                            elif os.path.exists(source_proxy) and not os.path.exists(target_proxy):
+                                shutil.copy2(source_proxy, target_proxy)
+                            log.info("Copied proxy %s to %s", proxy_name, target_proxy_path)
+                    proxy_reader["path"] = os.path.join(target_proxy_path, proxy_name)
+
             # Copy all Clip thumbnails and update reader paths
             for clip in self._data["clips"]:
                 file_id = clip["file_id"]
                 clip_id = clip["id"]
 
-                # For now, store thumbnail path for backwards compatibility
-                clip["image"] = os.path.join(target_thumb_path, f"{file_id}.png")
+                # Drop legacy per-project thumbnail pointers.
+                clip.pop("image", None)
 
                 log.info("Checking clip %s path for file %s", clip_id, file_id)
                 # Update paths to files stored in our working space or old path structure
@@ -1097,19 +1405,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         s = get_app().get_settings()
         recent_projects = s.get("recent_projects")
 
-        # Make sure file_path is absolute
-        file_path = os.path.abspath(file_path)
+        normalized_path = normalized_local_path(file_path)
+        normalized_key = comparable_local_path(normalized_path)
 
-        # Remove existing project
-        if file_path in recent_projects:
-            recent_projects.remove(file_path)
+        # Remove existing project entries, including mixed-separator duplicates.
+        recent_projects = [
+            normalized_local_path(existing_path)
+            for existing_path in recent_projects
+            if comparable_local_path(existing_path) != normalized_key
+        ]
 
         # Remove oldest item (if needed)
-        if len(recent_projects) > 10:
+        if len(recent_projects) >= 10:
             del recent_projects[0]
 
         # Append file path to end of recent files
-        recent_projects.append(file_path)
+        recent_projects.append(normalized_path)
 
         # Save setting
         s.set("recent_projects", recent_projects)
@@ -1117,7 +1428,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
     def check_if_paths_are_valid(self):
         """Check if all paths are valid, and prompt to update them if needed.
-        Shows one dialog: user can skip all missing files at once or locate them."""
+
+        Shows one dialog: skip all, or pick a single folder and fingerprint-match
+        every missing file under it. Cancel keeps files and clips in place.
+        """
         app = get_app()
         settings = app.get_settings()
         _ = app._tr
@@ -1125,23 +1439,68 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
         log.info("checking project files...")
 
-        # Collect all missing files and clips (don't prompt yet)
+        # Drop the legacy transition/effect "resource" path once a reader payload
+        # exists; it broke project saves on relocatable installs (OpenShot #5962).
+        for effect in self._data.get("effects") or []:
+            self._drop_obsolete_effect_resource(effect)
+        for clip in self._data.get("clips") or []:
+            clip_effects = clip.get("effects") if isinstance(clip, dict) else None
+            if isinstance(clip_effects, list):
+                for effect in clip_effects:
+                    self._drop_obsolete_effect_resource(effect)
+        prompt_state = {"cancelled": False}
+
+        from classes.media_fingerprint import fingerprint, scan_folder_for_fingerprints
+        from classes.path_utils import remember_media_root, resolve_media_path
+
+        # Silent resolve via remembered media roots before prompting.
+        for file in self._data.get("files") or []:
+            path = file.get("path") or ""
+            if not path or "%" in path or os.path.exists(path):
+                continue
+            resolved = resolve_media_path(path, fingerprint=file.get("fingerprint"))
+            if resolved and os.path.exists(resolved):
+                file["path"] = resolved
+                log.info("Silently relinked missing file via media roots: %s", resolved)
+
+        for clip in self._data.get("clips") or []:
+            reader = clip.get("reader") if isinstance(clip.get("reader"), dict) else {}
+            path = reader.get("path") or ""
+            if not path or "%" in path or os.path.exists(path):
+                continue
+            # Prefer the parent file fingerprint when available.
+            fp = None
+            file_id = clip.get("file_id")
+            if file_id:
+                for file in self._data.get("files") or []:
+                    if file.get("id") == file_id:
+                        fp = file.get("fingerprint")
+                        break
+            resolved = resolve_media_path(path, fingerprint=fp)
+            if resolved and os.path.exists(resolved):
+                reader["path"] = resolved
+                clip["reader"] = reader
+                log.info("Silently relinked missing clip via media roots: %s", resolved)
+
         missing_files = []
         missing_clips = []
-        for file in self._data["files"]:
-            path = file["path"]
-            if not os.path.exists(path) and "%" not in path:
+        for file in self._data.get("files") or []:
+            path = file.get("path") or ""
+            if path and not os.path.exists(path) and "%" not in path:
                 missing_files.append((file, path))
-        for clip in self._data["clips"]:
+        for clip in self._data.get("clips") or []:
             path = clip.get("reader", {}).get("path", "")
             if path and not os.path.exists(path) and "%" not in path:
                 missing_clips.append((clip, path))
+
+        # Natural-sort by filename so prompts and logs are predictable (OpenShot #5914)
+        missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
+        missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
         total_missing = len(missing_files) + len(missing_clips)
         if total_missing == 0:
             return
 
-        # One dialog: Skip all or Locate files (so the app isn't blocked by many dialogs)
         sample_names = []
         for _f, p in (missing_files + missing_clips)[:5]:
             sample_names.append(os.path.basename(p))
@@ -1154,52 +1513,123 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         msg.setText(_("This project references %s missing file(s).") % total_missing)
         msg.setInformativeText(sample_text)
         skip_all_btn = msg.addButton(_("Skip all and open project"), QMessageBox.AcceptRole)
-        locate_btn = msg.addButton(_("Locate files..."), QMessageBox.ActionRole)
+        locate_btn = msg.addButton(_("Locate folder..."), QMessageBox.ActionRole)
         msg.exec_()
         skip_all = msg.clickedButton() == skip_all_btn
 
         if skip_all:
-            # Keep missing files and clips so the timeline is not wiped. Playback
-            # of those clips will fail until the media is located on a later open.
             log.info(
                 "Opening with %s missing file(s); leaving files and clips in place",
                 total_missing,
             )
             return
 
-        # User chose "Locate files...": prompt for each missing item with parent so dialogs stay on top
-        for file, path in reversed(missing_files):
-            path, is_modified, is_skipped = find_missing_file(path, parent=dialog_parent)
-            if path and is_modified and not is_skipped:
-                file["path"] = path
-                settings.setDefaultPath(settings.actionType.IMPORT, path)
-                log.info("Auto-updated missing file: %s", path)
-            elif is_skipped:
-                log.info("Removed missing file: %s", os.path.basename(path))
-                self._data["files"].remove(file)
+        # One folder pick; fingerprint-match everything under it.
+        recommended_path = self.current_filepath or info.HOME_PATH
+        if recommended_path and os.path.isfile(recommended_path):
+            recommended_path = os.path.dirname(recommended_path)
+        folder = QFileDialog.getExistingDirectory(
+            dialog_parent,
+            _("Find folder that contains the missing media"),
+            recommended_path or "",
+        )
+        if not folder:
+            # Cancel keeps files and clips — do not remove them.
+            log.info("Locate folder cancelled; leaving %s missing file(s) in place", total_missing)
+            return
 
-        for clip, path in reversed(missing_clips):
-            path, is_modified, is_skipped = find_missing_file(path, parent=dialog_parent)
-            if path and is_modified and not is_skipped:
-                clip["reader"]["path"] = path
-                log.info("Auto-updated missing file: %s", clip["reader"]["path"])
-            elif is_skipped:
-                log.info("Removed missing clip: %s", os.path.basename(path))
-                self._data["clips"].remove(clip)
+        wanted = set()
+        for file, _path in missing_files:
+            fp = file.get("fingerprint")
+            if isinstance(fp, dict) and fp.get("sha256"):
+                wanted.add(fp["sha256"])
+        index = scan_folder_for_fingerprints(folder, wanted=wanted or None)
+        remember_media_root(folder)
+
+        # Also match by basename when fingerprint is missing (legacy projects).
+        basename_hits = {}
+        for root, _dirs, names in os.walk(folder):
+            for name in names:
+                if name not in basename_hits:
+                    basename_hits[name] = os.path.join(root, name)
+
+        def _relink(path, fp):
+            if isinstance(fp, dict) and fp.get("sha256") and fp["sha256"] in index:
+                return index[fp["sha256"]]
+            base = os.path.basename(path or "")
+            if base in basename_hits:
+                hit = basename_hits[base]
+                # Basename-only matching is legacy fallback; when a fingerprint
+                # exists, require a digest match so duplicate names cannot swap media.
+                if isinstance(fp, dict) and fp.get("sha256"):
+                    stamped = fingerprint(hit)
+                    if stamped and stamped.get("sha256") == fp["sha256"]:
+                        return hit
+                    return None
+                return hit
+            return None
+
+        for file, path in missing_files:
+            hit = _relink(path, file.get("fingerprint"))
+            if hit:
+                file["path"] = hit
+                if not file.get("fingerprint"):
+                    stamped = fingerprint(hit)
+                    if stamped:
+                        file["fingerprint"] = stamped
+                if settings:
+                    settings.setDefaultPath(settings.actionType.IMPORT, hit)
+                log.info("Relinked missing file: %s -> %s", path, hit)
+
+        # Build file_id -> path map after file relinks.
+        file_paths_by_id = {
+            f.get("id"): f.get("path")
+            for f in (self._data.get("files") or [])
+            if f.get("id") and f.get("path") and os.path.exists(f.get("path"))
+        }
+        file_fp_by_id = {
+            f.get("id"): f.get("fingerprint")
+            for f in (self._data.get("files") or [])
+            if f.get("id") and isinstance(f.get("fingerprint"), dict)
+        }
+
+        for clip, path in missing_clips:
+            file_id = clip.get("file_id")
+            if file_id and file_id in file_paths_by_id:
+                clip.setdefault("reader", {})["path"] = file_paths_by_id[file_id]
+                log.info("Relinked missing clip via file_id: %s", file_paths_by_id[file_id])
+                continue
+            hit = _relink(path, file_fp_by_id.get(file_id))
+            if hit:
+                clip.setdefault("reader", {})["path"] = hit
+                log.info("Relinked missing clip: %s -> %s", path, hit)
 
     def changed(self, action):
         """ This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface) """
+        updates = get_app().updates
+
+        def mark_dirty():
+            if not self.has_unsaved_changes:
+                log.debug(
+                    "Project dirty flag set: action=%s key=%s ignore_history=%s values=%s",
+                    action.type,
+                    action.key,
+                    updates.ignore_history,
+                    action.values,
+                )
+            self.has_unsaved_changes = True
+
         if action.type == "insert":
             # Insert new item
             old_vals = self._set(action.key, action.values, add=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "update":
             # Update existing item
             old_vals = self._set(action.key, action.values)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
             if len(action.key) == 1 and action.key[0] in ["fps"]:
                 # FPS changed (apply profile)
@@ -1245,7 +1675,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Delete existing item
             old_vals = self._set(action.key, remove=True)
             action.set_old_values(old_vals)  # Save previous values to reverse this action
-            self.has_unsaved_changes = True
+            mark_dirty()
 
         elif action.type == "load":
             # Don't track unsaved changes when loading a project

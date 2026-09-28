@@ -27,9 +27,9 @@
 
 import os
 
-from PyQt5.QtCore import Qt, QSize, QTimer
-from PyQt5.QtGui import QIcon, QPainter, QPixmap, QTransform
-from PyQt5.QtWidgets import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
+from qt_api import Qt, QSize, QTimer
+from qt_api import QIcon, QPainter, QPixmap, QTransform
+from qt_api import QDockWidget, QMenu, QTabBar, QTabWidget, QWidget
 
 from classes.info import PATH
 from ..base import BaseTheme
@@ -139,6 +139,12 @@ QCheckBox#checkboxMetrics { font-size: 14px; }
 QWidget#tutorial QPushButton#NextTip,
 QWidget#tutorial QPushButton#HideTutorial {
     font-size: 12px;
+}
+
+
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #9bb2cc;
 }
 
 /* ── Preference / settings panels ────────────────────────── */
@@ -574,6 +580,15 @@ QComboBox {
 QComboBox:hover  { border-color: rgba(255, 255, 255, 0.2); }
 QComboBox:focus  { border-color: #4d9cf6; }
 
+/* ── Keyboard focus (TAB navigation; ported from OpenShot #5912, Zenvi palette) ── */
+QToolBar QToolButton:focus { background-color: #2e2e2e; border: 1px solid #4d9cf6; }
+QToolBar QToolButton:checked:focus { border: 1px solid #4d9cf6; }
+QPushButton:focus { border-color: #4d9cf6; }
+QCheckBox:focus { background-color: #2a2a2a; border-radius: 3px; }
+QTabBar:focus { outline: none; }
+QTabBar::tab:focus { border-bottom: 2px solid #4d9cf6; }
+QToolBox::tab:focus { border-left: 2px solid #4d9cf6; }
+
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
@@ -845,52 +860,39 @@ QWidget#cutting QPushButton#btnAddClip:disabled {
 /* ── Video preview ────────────────────────────────────────── */
 QWidget#videoPreview { background-color: #0d0d0d; }
 
-/* ── AI Media Manager dock ────────────────────────────────── */
-QDockWidget#AIMediaPanel QWidget,
-QDockWidget#AIMediaPanel QTabWidget,
-QDockWidget#AIMediaPanel QTabWidget::pane {
+/* ── Scene Descriptions dock ──────────────────────────────── */
+QDockWidget#AIMediaPanel QWidget {
     background-color: #0d0d0d;
     border: none;
 }
 
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
-    background-color: #0d0d0d;
-    border: none;
-}
-
-QDockWidget#AIMediaPanel QTabBar::tab {
-    color: #d4d4d4;
-    padding: 5px 12px;
-    font-size: 11px;
-    min-width: 0;
-    min-height: 0;
-    max-width: 400px;
-}
-
-/* Make the tag search feel like a real search field */
-QDockWidget#AIMediaPanel QLineEdit {
+QDockWidget#AIMediaPanel QWidget#AIMediaPanelContents { background: #0d0d0d; }
+QDockWidget#AIMediaPanel QLabel#clipNameLabel { color: #d4d4d4; font-size: 12px; font-weight: bold; }
+QDockWidget#AIMediaPanel QLabel#statusLabel { color: #6a9fd8; font-size: 11px; }
+QDockWidget#AIMediaPanel QLabel#statusLabel[failed="true"] { color: #ef4444; }
+QDockWidget#AIMediaPanel QTextEdit#descriptionView {
     background: #0d0d0d;
-    border-radius: 5px;
-    padding: 5px 10px;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 8px;
+    font-size: 12px;
 }
-
-/* Compact list rows in the Tags list */
-QDockWidget#AIMediaPanel QListWidget,
-QDockWidget#AIMediaPanel QTreeWidget {
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress {
+    background: #252525;
+    border: none;
+    border-radius: 1px;
+}
+QDockWidget#AIMediaPanel QProgressBar#indexingProgress::chunk { background: #4d9cf6; border-radius: 1px; }
+QDockWidget#AIMediaPanel QPushButton#refreshBtn {
+    background: #252525;
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 4px;
+    color: #d4d4d4;
+    padding: 6px;
     font-size: 11px;
 }
-
-QDockWidget#AIMediaPanel QListWidget::item,
-QDockWidget#AIMediaPanel QTreeWidget::item {
-    padding: 3px 4px;
-    border-radius: 3px;
-}
-
-QDockWidget#AIMediaPanel QListWidget::item:selected,
-QDockWidget#AIMediaPanel QTreeWidget::item:selected {
-    background: rgba(77, 156, 246, 0.18);
-}
+QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { background: #2e2e2e; border-color: #4d9cf6; }
 
 /* ── Tree/List view item height ───────────────────────────── */
 QTreeView::item,
@@ -982,8 +984,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         from classes.app import get_app
         from classes import ui_util
         from classes.logger import log
-        from PyQt5.QtWidgets import QStyleFactory
-        from PyQt5.QtGui import QFont
+        from qt_api import QStyleFactory
+        from qt_api import QFont
 
         _ = get_app()._tr
 
@@ -993,10 +995,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
 
         # Override palette to absolute black so all unstyled QWidget backgrounds
         # default to #0d0d0d instead of the default medium-gray (53,53,53)
-        from PyQt5.QtGui import QColor as _QColor
+        from qt_api import QColor as _QColor
         _black = _QColor(13, 13, 13)
         _gray  = _QColor(37, 37, 37)
-        from PyQt5.QtGui import QPalette as _QPalette
+        from qt_api import QPalette as _QPalette
         dark_palette.setColor(_QPalette.Window,        _black)
         dark_palette.setColor(_QPalette.Base,          _black)
         dark_palette.setColor(_QPalette.AlternateBase, _black)
@@ -1018,8 +1020,8 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         self.set_dock_margins([14, 0, 14, 0])
         self.set_dock_margins([0, 0, 0, 0], [0, 8, 0, 0], "dockTimelineContents")
 
-        # Re-apply the full stylesheet
-        self.app.setStyleSheet(self.style_sheet)
+        # Apply new stylesheet
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # ── Dock nav tab icons (icon-only, text hidden via QSS) ───────
         win = self.app.window

@@ -30,15 +30,16 @@ import functools
 import json
 from copy import deepcopy
 
-from PyQt5.QtCore import pyqtSignal, QTimer
-from PyQt5.QtWidgets import QDialog, QMessageBox, QSizePolicy, QSlider
-from PyQt5.QtCore import Qt, QEvent
+from qt_api import pyqtSignal, QTimer, QSize
+from qt_api import QDialog, QMessageBox, QSizePolicy, QSlider
+from qt_api import Qt, QEvent
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info, ui_util, time_parts
 from classes.app import get_app
 from classes.logger import log
 from classes.metrics import track_metric_screen
+from classes.proxy_service import dialog_preview_reader_data
 from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
 from classes.query import File
 from windows.preview_thread import PreviewParent
@@ -58,14 +59,20 @@ class Cutting(QDialog):
     PlaySignal = pyqtSignal()
     PauseSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
+    LoadTimelineAndSeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
     StopSignal = pyqtSignal()
 
     def __init__(self, file=None, preview=False):
         _ = get_app()._tr
+        self.is_preview_mode = preview
+        self._preview_autoplay_active = preview
+        self._preview_autoplay_attempts = 0
+        self._shutdown_in_progress = False
+        self._close_after_shutdown = False
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -78,7 +85,11 @@ class Cutting(QDialog):
 
         # Keep track of file object
         self.file = file
-        self.file_path = file.absolute_path()
+        # Optimize Preview: play the low-resolution proxy in this dialog when one exists
+        self.source_reader_data = dialog_preview_reader_data(file, prefer_proxy=False)
+        self.proxy_reader_data = dialog_preview_reader_data(file, prefer_proxy=True)
+        self.reader_data = self.proxy_reader_data
+        self.file_path = str(self.reader_data.get("path") or file.absolute_path() or "")
         self.video_length = int(file.data['video_length'])
         self.fps_num = int(file.data['fps']['num'])
         self.fps_den = int(file.data['fps']['den'])
@@ -110,15 +121,13 @@ class Cutting(QDialog):
             self.end_frame = round(file.data.get("end", 0) * self.fps)
             self.video_length = (self.end_frame - self.start_frame) + 1
 
-        # Set clip start / end
-        clip_start = file.data.get("start", 0.0)
-        clip_end = file.data.get("end", file.data.get("duration", 0.0))
 
         # Open video file with Reader
         log.info(self.file_path)
 
-        # Add Video Widget
-        self.videoPreview = VideoWidget()
+        # Add Video Widget (this dialog owns its own resize / max-size flow)
+        self.videoPreview = VideoWidget(watch_project=False)
+        self.videoPreview.win = self
         self.videoPreview.setObjectName("videoPreview")
         self.videoPreview.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.verticalLayout.insertWidget(0, self.videoPreview)
@@ -126,48 +135,13 @@ class Cutting(QDialog):
         # Set max size of video preview (for speed)
         viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
 
-        # Create an instance of a libopenshot Timeline object
-        self.r = openshot.Timeline(
-            viewport_rect.width(),
-            viewport_rect.height(),
-            openshot.Fraction(self.fps_num, self.fps_den),
-            self.sample_rate,
-            self.channels,
-            self.channel_layout)
-        self.r.info.channel_layout = self.channel_layout
-        self.r.SetMaxSize(viewport_rect.width(), viewport_rect.height())
-
         try:
-            # Add clip for current preview file
-            self.clip = openshot.Clip(self.file_path)
-            # NOTE: Do NOT inject file.data into the reader via SetJson.
-            # file.data may contain ai_metadata, tags, etc. that corrupt
-            # the native FrameMapper and cause preview drift / SIGSEGV.
-            self.clip.Start(clip_start)
-            self.clip.End(clip_end)
-
-            # Show waveform for audio files
-            if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
-                self.clip.Waveform(True)
-
-            # Set has_audio property
-            self.r.info.has_audio = self.clip.Reader().info.has_audio
-
-            # Update video_length property of the Timeline object
-            self.r.info.video_length = self.video_length
-
-            # Display frame #
-            self.clip.display = openshot.FRAME_DISPLAY_CLIP
-            self.r.AddClip(self.clip)
-
+            self._build_preview_timeline(self.reader_data, QSize(viewport_rect.width(), viewport_rect.height()))
         except Exception:
             log.error(
                 'Failed to load media file into preview player: %s',
                 self.file_path)
             return
-
-        # Open reader
-        self.r.Open()
 
         # Start the preview thread
         self.initialized = False
@@ -181,12 +155,19 @@ class Cutting(QDialog):
         self.sliderVideo.setMinimum(1)
         self.sliderVideo.setMaximum(self.video_length)
         self.sliderVideo.setSingleStep(1)
-        self.sliderVideo.setSingleStep(1)
         self.sliderVideo.setPageStep(24)
 
-        # Display start frame (and then the previous frame)
-        QTimer.singleShot(500, functools.partial(self.sliderVideo.setValue, 2))
-        QTimer.singleShot(600, functools.partial(self.sliderVideo.setValue, 1))
+        # Initialize first frame display.
+        # For cutting mode, preserve the legacy two-step seek refresh.
+        # For preview mode, avoid the seek/pause startup hack so autoplay
+        # isn't fighting initialization pauses.
+        if self.is_preview_mode:
+            self.sliderIgnoreSignal = True
+            self.sliderVideo.setValue(1)
+            self.sliderIgnoreSignal = False
+        else:
+            QTimer.singleShot(500, functools.partial(self.sliderVideo.setValue, 2))
+            QTimer.singleShot(600, functools.partial(self.sliderVideo.setValue, 1))
 
         # Connect signals
         self.actionPlay.triggered.connect(self.actionPlay_Triggered)
@@ -204,10 +185,181 @@ class Cutting(QDialog):
         self.slider_timer.setInterval(100)
         self.slider_timer.setSingleShot(True)
         self.slider_timer.timeout.connect(self.sliderVideo_timeout)
+        self.videoPreview.delayed_resize_timer.timeout.connect(self._apply_dynamic_preview_max_size)
         self.initialized = True
 
+    def _target_preview_max_size(self):
+        """Even-sized render bound: the viewport (in device pixels) capped at the source size."""
+        viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
+        device_pixel_ratio = self.devicePixelRatioF()
+        requested = QSize(
+            max(2, int(round(viewport_rect.width() * device_pixel_ratio))),
+            max(2, int(round(viewport_rect.height() * device_pixel_ratio))),
+        )
+
+        source_width = int(getattr(self, "width", 0) or 0)
+        source_height = int(getattr(self, "height", 0) or 0)
+        if source_width > 0 and source_height > 0:
+            if requested.width() > source_width or requested.height() > source_height:
+                capped = QSize(source_width, source_height)
+            else:
+                capped = QSize(requested)
+        else:
+            capped = requested
+
+        if capped.height() > 0:
+            ratio = float(capped.width()) / float(capped.height())
+            even_width = max(2, int(round(capped.width() / 2.0) * 2))
+            even_height = max(2, int(round(round(even_width / ratio) / 2.0) * 2))
+            capped = QSize(even_width, even_height)
+
+        return capped
+
+    def _select_reader_data_for_size(self, target_size):
+        """Prefer the optimized proxy whenever one is linked and present on disk."""
+        _ = target_size
+        proxy_data = getattr(self, "proxy_reader_data", None) or {}
+        source_data = getattr(self, "source_reader_data", None) or {}
+        if str(proxy_data.get("path") or ""):
+            return proxy_data
+        return source_data or proxy_data
+
+    def _build_preview_timeline(self, reader_data, max_size):
+        """Create the libopenshot Timeline + Clip for the given reader (source or proxy)."""
+        self.reader_data = reader_data
+        self.file_path = str(reader_data.get("path") or self.file.absolute_path() or "")
+        source_path = str((getattr(self, "source_reader_data", None) or {}).get("path") or "")
+        proxy_path = str((getattr(self, "proxy_reader_data", None) or {}).get("path") or "")
+        if self.file_path and self.file_path == proxy_path and proxy_path != source_path:
+            reader_kind = "proxy_reader"
+        else:
+            reader_kind = "source_reader"
+        log.debug(
+            "Preview dialog opening with %s path=%s size=%sx%s",
+            reader_kind,
+            self.file_path,
+            int(reader_data.get("width", 0) or 0),
+            int(reader_data.get("height", 0) or 0),
+        )
+
+        base_width = max(2, int(getattr(self, "width", 0) or max_size.width() or 2))
+        base_height = max(2, int(getattr(self, "height", 0) or max_size.height() or 2))
+
+        # Create an instance of a libopenshot Timeline object
+        self.r = openshot.Timeline(
+            base_width,
+            base_height,
+            openshot.Fraction(self.fps_num, self.fps_den),
+            self.sample_rate,
+            self.channels,
+            self.channel_layout)
+        self.r.info.channel_layout = self.channel_layout
+        self.r.SetMaxSize(max_size.width(), max_size.height())
+
+        # Add clip for current preview file
+        self.clip = openshot.Clip(self.file_path)
+        # NOTE: Do NOT inject file.data into the reader via SetJson.
+        # file.data may contain ai_metadata, tags, etc. that corrupt
+        # the native FrameMapper and cause preview drift / SIGSEGV.
+        self.clip.Start(self.file.data.get("start", 0.0))
+        self.clip.End(self.file.data.get("end", self.file.data.get("duration", 0.0)))
+
+        # Show waveform for audio files
+        if not self.clip.Reader().info.has_video and self.clip.Reader().info.has_audio:
+            self.clip.Waveform(True)
+
+        # Set has_audio property
+        self.r.info.has_audio = self.clip.Reader().info.has_audio
+
+        # Update video_length property of the Timeline object
+        self.r.info.video_length = self.video_length
+
+        # Display frame #
+        self.clip.display = openshot.FRAME_DISPLAY_CLIP
+        self.r.AddClip(self.clip)
+        self.r.Open()
+
+    def _reload_preview_reader(self, reader_data, max_size):
+        """Swap the preview between the source and the proxy reader."""
+        current_frame = max(1, int(self.sliderVideo.value() or 1))
+        old_preview_parent = getattr(self, "preview_parent", None)
+        old_timeline = getattr(self, "r", None)
+        old_clip = getattr(self, "clip", None)
+        was_playing = False
+        try:
+            was_playing = (
+                getattr(self, "preview_thread", None) is not None
+                and self.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                and self.preview_thread.player.Speed() != 0.0
+            )
+        except Exception:
+            was_playing = False
+
+        self.initialized = False
+        if old_preview_parent:
+            try:
+                old_preview_parent.Stop()
+            except Exception:
+                pass
+
+        self._build_preview_timeline(reader_data, max_size)
+
+        self.preview_parent = PreviewParent()
+        self.preview_parent.Init(self, self.r, self.videoPreview, self.video_length)
+        self.preview_thread = self.preview_parent.worker
+        self.initialized = True
+        self.SeekSignal.emit(current_frame)
+        if was_playing:
+            QTimer.singleShot(0, lambda: self.btnPlay_clicked(force="play"))
+
+        if old_timeline:
+            try:
+                old_timeline.Close()
+                old_timeline.ClearAllCache(True)
+            except Exception:
+                pass
+        if old_clip:
+            try:
+                old_clip.Close()
+            except Exception:
+                pass
+
+    def _apply_dynamic_preview_max_size(self):
+        """Resize the preview render bound after the dialog (video widget) is resized."""
+        if not getattr(self, "initialized", False) or not getattr(self, "r", None):
+            return
+
+        new_size = self._target_preview_max_size()
+        desired_reader_data = self._select_reader_data_for_size(new_size)
+        if str(desired_reader_data.get("path") or "") != str(getattr(self, "reader_data", {}).get("path") or ""):
+            self._reload_preview_reader(desired_reader_data, new_size)
+            return
+
+        previous_width = int(getattr(self.r, "preview_width", 0) or 0)
+        previous_height = int(getattr(self.r, "preview_height", 0) or 0)
+
+        if previous_width == new_size.width() and previous_height == new_size.height():
+            return
+
+        was_playing = False
+        try:
+            was_playing = (
+                getattr(self, "preview_thread", None) is not None
+                and self.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                and self.preview_thread.player.Speed() != 0.0
+            )
+        except Exception:
+            was_playing = False
+
+        self.PauseSignal.emit()
+        self.r.SetMaxSize(new_size.width(), new_size.height())
+        self.r.ClearAllCache(True)
+        self.refreshFrameSignal.emit()
+        if was_playing:
+            QTimer.singleShot(0, lambda: self.btnPlay_clicked(force="play"))
+
     def eventFilter(self, obj, event):
-        if event.type() == event.KeyPress and obj is self.txtName:
+        if event.type() == QEvent.KeyPress and obj is self.txtName:
             # Handle ENTER key to create new clip
             if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
                 if self.btnAddClip.isEnabled():
@@ -237,6 +389,22 @@ class Cutting(QDialog):
         t = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
         return "%s:%s:%s:%s" % (t["hour"], t["min"], t["sec"], t["frame"])
 
+    def frame_to_compact_timestamp(self, frame_number, include_hours=False, include_minutes=False):
+        """Return a compact timecode for split clip names"""
+        seconds = (frame_number - 1) / self.fps
+        t = time_parts.secondsToTime(seconds, self.fps_num, self.fps_den)
+
+        hours = int(t["hour"])
+        minutes = int(t["min"])
+        secs = int(t["sec"])
+        frames = int(t["frame"])
+
+        if include_hours:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d};{frames:02d}"
+        if include_minutes:
+            return f"{minutes:02d}:{secs:02d};{frames:02d}"
+        return f"{secs:02d};{frames:02d}"
+
     def movePlayhead(self, frame_number):
         """Update the playhead position"""
 
@@ -251,6 +419,10 @@ class Cutting(QDialog):
     def btnPlay_clicked(self, force=None):
         log.info("btnPlay_clicked")
 
+        if force is None and self._preview_autoplay_active:
+            # Respect explicit user input (don't keep forcing startup autoplay).
+            self._preview_autoplay_active = False
+
         if force == "pause":
             self.btnPlay.setChecked(False)
         elif force == "play":
@@ -259,21 +431,63 @@ class Cutting(QDialog):
         if self.btnPlay.isChecked():
             log.info('play (icon to pause)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-pause")
-            self.preview_thread.Play()
+            self.PlaySignal.emit()
         else:
             log.info('pause (icon to play)')
             ui_util.setup_icon(self, self.btnPlay, "actionPlay", "media-playback-start")  # to default
-            self.preview_thread.Pause()
+            self.PauseSignal.emit()
 
         # Send focus back to toolbar
         self.sliderVideo.setFocus()
+
+    def _start_preview_autoplay(self):
+        if not self._preview_autoplay_active or not self.is_preview_mode:
+            return
+        if not getattr(self, "preview_thread", None):
+            QTimer.singleShot(120, self._start_preview_autoplay)
+            return
+        if self._preview_autoplay_attempts >= 30:
+            self._preview_autoplay_active = False
+            return
+
+        self._preview_autoplay_attempts += 1
+        self.btnPlay_clicked(force="play")
+
+        is_playing = False
+        try:
+            is_playing = (
+                self.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                and self.preview_thread.player.Speed() != 0.0
+            )
+        except Exception:
+            is_playing = False
+
+        if is_playing:
+            self._preview_autoplay_active = False
+            return
+
+        QTimer.singleShot(120, self._start_preview_autoplay)
+
+    def _preview_ready(self):
+        if not self.is_preview_mode:
+            return
+        self.SeekSignal.emit(1)
+        if self._preview_autoplay_active:
+            QTimer.singleShot(0, self._start_preview_autoplay)
+
+    def _preview_mode_changed(self, mode):
+        if not self.is_preview_mode or not self._preview_autoplay_active:
+            return
+        paused_mode = getattr(openshot, "PLAYBACK_PAUSED", getattr(openshot, "PLAYBACK_PAUSE", None))
+        if paused_mode is not None and mode == paused_mode:
+            QTimer.singleShot(0, self._start_preview_autoplay)
 
     def sliderVideo_valueChanged(self, new_frame):
         if self.preview_thread and not self.sliderIgnoreSignal:
             log.info('sliderVideo_valueChanged')
             # Pause video and update preview immediately
             self.btnPlay_clicked(force="pause")
-            self.preview_thread.previewFrame(new_frame)
+            self.previewFrameSignal.emit(new_frame)
             # Start timer to ensure preview updates after dragging stops
             self.slider_timer.start()
 
@@ -281,13 +495,13 @@ class Cutting(QDialog):
         if self.preview_thread and not self.sliderIgnoreSignal:
             log.info('sliderVideo_timeout')
             self.btnPlay_clicked(force="pause")
-            self.preview_thread.previewFrame(self.sliderVideo.value())
+            self.previewFrameSignal.emit(self.sliderVideo.value())
 
     def sliderVideo_released(self):
         if self.preview_thread and not self.sliderIgnoreSignal:
             log.info('sliderVideo_released')
             self.btnPlay_clicked(force="pause")
-            self.preview_thread.previewFrame(self.sliderVideo.value())
+            self.previewFrameSignal.emit(self.sliderVideo.value())
             self.slider_timer.start()
 
     def btnStart_clicked(self):
@@ -415,10 +629,25 @@ class Cutting(QDialog):
         if self.txtName.text():
             new_file.data['name'] = self.txtName.text()
         else:
-            global_frame = round(self.previous_start * self.fps) + self.start_frame
-            timestamp = self.frame_to_timestamp(global_frame)
+            global_start_frame = round(self.previous_start * self.fps) + self.start_frame
+            global_end_frame = round(self.previous_start * self.fps) + self.end_frame
+            start_seconds = (global_start_frame - 1) / self.fps
+            end_seconds = (global_end_frame - 1) / self.fps
+            start_parts = time_parts.secondsToTime(start_seconds, self.fps_num, self.fps_den)
+            end_parts = time_parts.secondsToTime(end_seconds, self.fps_num, self.fps_den)
+
+            include_hours = int(start_parts["hour"]) > 0 or int(end_parts["hour"]) > 0
+            include_minutes = (
+                include_hours
+                or int(start_parts["min"]) > 0
+                or int(end_parts["min"]) > 0
+            )
+            start_timestamp = self.frame_to_compact_timestamp(
+                global_start_frame, include_hours=include_hours, include_minutes=include_minutes)
+            end_timestamp = self.frame_to_compact_timestamp(
+                global_end_frame, include_hours=include_hours, include_minutes=include_minutes)
             base = os.path.splitext(os.path.basename(self.file_path))[0]
-            new_file.data['name'] = f"{base} ({timestamp})"
+            new_file.data['name'] = f"{base} ({start_timestamp} to {end_timestamp})"
 
         new_file.save()
 
@@ -428,37 +657,89 @@ class Cutting(QDialog):
         # Reset form
         self.clearForm()
 
-    def closeEvent(self, event):
-        log.debug('closeEvent')
-
-        # 1. Stop any pending main-thread timers first
-        if hasattr(self, 'slider_timer') and self.slider_timer:
-            self.slider_timer.stop()
-
-        # 2. Signal the player loop to stop.
-        #    Do NOT call CloseAudioDevice() here — the main window owns the
-        #    JUCE audio device lifecycle and calling it from a dialog leaves
-        #    the audio subsystem in a state that causes the main window's own
-        #    CloseAudioDevice() to hang on shutdown.
-        if hasattr(self, 'preview_thread') and self.preview_thread:
-            self.preview_thread.kill()          # is_running = False → exits loop
-
-        # 3. Stop the preview thread and WAIT for it to fully exit.
-        #    This must complete before we touch readers or the video widget.
-        if hasattr(self, 'preview_parent') and self.preview_parent:
-            self.preview_parent.Stop()          # disconnect, stop, exit, wait(5 s)
-
-        # 4. Now the background QThread is finished — safe to close readers.
-        if hasattr(self, 'r') and self.r:
-            self.r.Close()
-            self.r.ClearAllCache()
-        if hasattr(self, 'clip') and self.clip:
-            self.clip.Close()
-
-        # 5. Finally schedule videoPreview for deletion (no more timer callbacks
-        #    can reference it since the worker thread is gone).
-        if hasattr(self, 'videoPreview') and self.videoPreview:
+    def _finalize_preview_shutdown(self):
+        if getattr(self, "videoPreview", None):
             get_app().updates.disconnect_listener(self.videoPreview)
             self.videoPreview.deleteLater()
             self.videoPreview = None
 
+        if getattr(self, "r", None):
+            try:
+                self.r.Close()
+                self.r.ClearAllCache()
+            except Exception:
+                pass
+        if getattr(self, "clip", None):
+            try:
+                self.clip.Close()
+            except Exception:
+                pass
+
+        self.preview_parent = None
+        self.preview_thread = None
+
+    def _on_preview_stopped(self):
+        self._finalize_preview_shutdown()
+        self._shutdown_in_progress = False
+        if self._close_after_shutdown:
+            self._close_after_shutdown = False
+            super().reject()
+
+    def _shutdown_preview(self, close_dialog=False):
+        # Stop playback and preview worker safely (used by ESC/reject and close).
+        if close_dialog:
+            self._close_after_shutdown = True
+
+        if self._shutdown_in_progress:
+            return
+        self._shutdown_in_progress = True
+
+        # Zenvi: stop pending main-thread timers first so no slider callback
+        # touches the preview while it is being torn down.
+        if getattr(self, "slider_timer", None):
+            self.slider_timer.stop()
+
+        if getattr(self, "preview_thread", None):
+            try:
+                # Pause/Stop are no-ops in PlayerWorker once ``initialized`` is
+                # False, and the queued Pause/Stop signals would only be handled
+                # after the flag flip below. Call the worker directly first so
+                # the QtPlayer really stops before the reader is closed.
+                self.preview_thread.Pause()
+                self.preview_thread.Stop()
+                self.initialized = False
+                # Zenvi: flip is_running so the worker loop exits promptly.
+                self.preview_thread.kill()
+            except Exception:
+                pass
+
+        # Do NOT call CloseAudioDevice() here — the main window owns the
+        # JUCE audio device lifecycle and calling it from a dialog leaves
+        # the audio subsystem in a state that causes the main window's own
+        # CloseAudioDevice() to hang on shutdown.
+        if getattr(self, "preview_parent", None):
+            background = getattr(self.preview_parent, "background", None)
+            if background and background.isRunning():
+                try:
+                    background.finished.disconnect(self._on_preview_stopped)
+                except Exception:
+                    pass
+                background.finished.connect(self._on_preview_stopped)
+                try:
+                    # Non-blocking stop to avoid visible UI lag when closing with ESC.
+                    self.preview_parent.Stop(wait_for_thread=False)
+                    return
+                except Exception:
+                    pass
+
+        self._on_preview_stopped()
+
+    def reject(self):
+        log.debug('reject')
+        self.hide()
+        self._shutdown_preview(close_dialog=True)
+
+    def closeEvent(self, event):
+        log.debug('closeEvent')
+        event.ignore()
+        self.reject()

@@ -39,7 +39,7 @@ from classes.logger import log
 
 import openshot
 
-from PyQt5.QtCore import QTimer, QT_VERSION_STR, PYQT_VERSION_STR
+from qt_api import QTimer, QT_VERSION_STR, PYQT_VERSION_STR
 from functools import partial
 
 try:

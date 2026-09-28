@@ -28,10 +28,12 @@
 import os
 
 import openshot
-from PyQt5.QtWidgets import QDialog, QMessageBox
-from classes import ui_util, info
+from qt_api import QDialog, QMessageBox
+from classes import ui_util, info, tabstops
 from classes.app import get_app
 from classes.logger import log
+
+MAX_FPS_SPINBOX_VALUE = 2147483647
 
 
 class EditProfileDialog(QDialog):
@@ -41,7 +43,7 @@ class EditProfileDialog(QDialog):
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'profile-edit.ui')
 
     def __init__(self, profile, duplicate):
-        super(EditProfileDialog, self).__init__()
+        super().__init__()
 
         # Make copy of profile
         self.original_profile = profile.Json()
@@ -63,6 +65,8 @@ class EditProfileDialog(QDialog):
 
         # Populate fields from profile
         self.initialize()
+
+        tabstops.apply_auto_tab_order_later(self)
 
     def initialize(self):
         """Initialize the form fields with data from the profile."""
@@ -90,8 +94,11 @@ class EditProfileDialog(QDialog):
         self.txtAspectRatioDen.setValue(self.profile.info.display_ratio.den)
         self.txtPixelRatioNum.setValue(self.profile.info.pixel_ratio.num)
         self.txtPixelRatioDen.setValue(self.profile.info.pixel_ratio.den)
+        self.txtFrameRateNum.setMaximum(MAX_FPS_SPINBOX_VALUE)
+        self.txtFrameRateDen.setMaximum(MAX_FPS_SPINBOX_VALUE)
         self.txtFrameRateNum.setValue(self.profile.info.fps.num)
         self.txtFrameRateDen.setValue(self.profile.info.fps.den)
+        self.update_frame_rate_display()
         self.cboInterlaced.setCurrentText(_('Yes') if self.profile.info.interlaced_frame == 1 else _('No'))
         self.cboSpherical.setCurrentText(_('Yes') if self.profile.info.spherical else _('No'))
 
@@ -107,6 +114,8 @@ class EditProfileDialog(QDialog):
         self.txtPixelRatioDen.valueChanged.connect(self.update_profile_pixel_ratio)
         self.txtFrameRateNum.valueChanged.connect(self.update_profile_frame_rate_num)
         self.txtFrameRateDen.valueChanged.connect(self.update_profile_frame_rate_den)
+        self.txtFrameRateNum.valueChanged.connect(self.update_frame_rate_display)
+        self.txtFrameRateDen.valueChanged.connect(self.update_frame_rate_display)
         self.cboInterlaced.currentTextChanged.connect(self.update_profile_interlaced)
         self.cboSpherical.currentTextChanged.connect(self.update_profile_spherical)
         self.txtProfileName.setFocus()
@@ -157,6 +166,11 @@ class EditProfileDialog(QDialog):
     def update_profile_frame_rate_den(self, value):
         self.profile.info.fps.den = value
         self.update_profile_path()
+
+    def update_frame_rate_display(self):
+        fps_den = self.txtFrameRateDen.value() or 1
+        fps_float = self.txtFrameRateNum.value() / fps_den
+        self.lblFrameRateValueDisplay.setText(f"= {fps_float:.2f}")
 
     def update_profile_interlaced(self, value):
         # get translations

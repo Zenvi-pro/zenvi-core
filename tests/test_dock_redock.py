@@ -2,7 +2,7 @@
 
 A floating QDockWidget with no title bar widget gets *native* window
 decorations, and window frame drags are never delivered to Qt on Windows or
-Linux — so the panel turns into an unrelated window that can't be dragged back
+Linux ΓÇö so the panel turns into an unrelated window that can't be dragged back
 in. These tests pin the two things that keep panels dockable there:
 
   1. floating panels keep a Qt-drawn (frameless) title bar, and
