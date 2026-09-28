@@ -64,7 +64,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media, is_single_image_media
+from classes.clip_utils import clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
@@ -4528,6 +4528,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not new_clip.get("reader"):
             return  # Skip this clip
 
+        # If the source file has stored caption text (e.g. ComfyUI Whisper
+        # captions), attach a Caption effect to this new clip.
+        apply_file_caption_to_clip(new_clip, file)
+
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)
         apply_audio_only_clip_overrides(
@@ -4590,6 +4594,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
+
+        # Generate waveform data by default for audio-only clips.
+        reader = new_clip.get("reader", {}) if isinstance(new_clip.get("reader"), dict) else {}
+        has_video = reader.get("has_video")
+        has_video = True if has_video is None else bool(has_video)
+        has_audio = reader.get("has_audio")
+        has_audio = True if has_audio is None else bool(has_audio)
+        clip_id = new_clip.get("id")
+        if has_audio and not has_video and clip_id:
+            self.Show_Waveform_Triggered([clip_id])
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:

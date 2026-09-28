@@ -1546,6 +1546,14 @@
     "restart": false
   },
   {
+    "category": "AI",
+    "title": "ComfyUI URL (optional, e.g. http://127.0.0.1:8188)",
+    "setting": "comfy-ui-url",
+    "value": "",
+    "type": "text",
+    "restart": false
+  },
+  {
     "value": 5,
     "title": "Video Generation Duration (seconds)",
     "category": "AI",

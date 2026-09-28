@@ -46,12 +46,11 @@ from qt_api import (
     Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent, QUrl
 )
 from qt_api import QIcon, QCursor, QKeySequence, QTextCursor
-from qt_api import QMenu
 from qt_api import file_exists, show_open_file_dialog
 from qt_api import (
     QApplication, QMainWindow, QWidget, QDockWidget,
     QMessageBox, QDialog, QFileDialog, QInputDialog,
-    QAction, QActionGroup, QSizePolicy, QWidgetAction,
+    QAction, QActionGroup, QSizePolicy, QWidgetAction, QMenu,
     QStatusBar, QToolBar, QToolButton,
     QLineEdit, QComboBox, QTextEdit, QShortcut, QTabBar, QAbstractButton,
     QPlainTextEdit, QSpinBox, QDoubleSpinBox
@@ -73,6 +72,8 @@ from classes.query import File, Clip, Transition, Marker, Track, Effect
 from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.clipboard import ClipboardManager
 from classes.proxy_service import ProxyService
+from classes.generation_queue import GenerationQueueManager
+from classes.generation_service import GenerationService
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
@@ -259,6 +260,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # instead of writing into a .part file we are about to orphan
         if getattr(self, "_auto_updater", None):
             self._auto_updater.stop()
+        # Flush and close UI trace recorder, if enabled
+        if getattr(self, "ui_trace_recorder", None):
+            self.ui_trace_recorder.close()
 
         if self.tutorial_manager:
             # Close any tutorial dialogs (if any)
@@ -341,6 +345,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if getattr(self, "proxy_service", None):
             self.proxy_service.shutdown()
 
+        # Stop generation queue worker thread (if any)
+        if getattr(self, "generation_queue", None):
+            self.generation_queue.shutdown()
+
+        # Cleanup temporary generation source files
+        if getattr(self, "generation_service", None):
+            self.generation_service.shutdown()
+            self.generation_service.cleanup_temp_files()
+
+        # Stop ZMQ polling thread (if any)
         # Stop background render manager (Phase 5)
         try:
             mgr = getattr(self, "background_render_manager", None)
@@ -1060,6 +1074,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 info.get_default_path("TITLE_PATH"),
                 info.get_default_path("CLIPBOARD_PATH"),
                 info.get_default_path("PROXY_PATH"),
+                info.get_default_path("COMFYUI_OUTPUT_PATH"),
                 ]:
             try:
                 if os.path.exists(temp_dir):
@@ -1141,9 +1156,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def auto_save_project(self):
         """Auto save the project"""
-        import time
-
         app = get_app()
+        current_data_version = app.updates.data_version
 
         # Skip auto-save if a video generation pipeline is in progress.
         # The generation code pauses and resumes this timer, but as a
@@ -1155,6 +1169,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Get current filepath (if any)
         file_path = app.project.current_filepath
         if not app.project.needs_save():
+            return
+
+        # Skip if no project mutations happened since the last autosave.
+        # This avoids rewriting the same backup.osp on every timer tick for
+        # untitled/recovered projects that remain "unsaved" by design.
+        if current_data_version == self.last_auto_save_data_version:
             return
 
         if file_path:
@@ -1185,6 +1205,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self._set_restore_draft_history_key(draft_key)
             except Exception:
                 pass
+
+        self.last_auto_save_data_version = current_data_version
 
     def actionSaveAs_trigger(self):
         app = get_app()
@@ -1574,14 +1596,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         and the total number of frames in our timeline clips. For example,
         if we are at the end of our last clip, and the user clicks play, we
         do not want to start playback."""
-        # Get max frame (based on last clip) and current frame
+        # Get max frame (based on last clip) and current frame.
         timeline_sync = get_app().window.timeline_sync
         if timeline_sync and timeline_sync.timeline:
-            max_frame = timeline_sync.timeline.GetMaxFrame()
+            last_frame = timeline_sync.GetLastFrame()
             current_frame = self.preview_thread.current_frame
             if current_frame is not None:
                 next_frame = current_frame + requested_speed
-                return next_frame <= max_frame and next_frame > 0
+                return next_frame <= last_frame and next_frame > 0
         return False
 
     def actionPlay_trigger(self):
@@ -1603,8 +1625,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         """ Preview the selected media file """
         log.info('actionPreview_File_trigger')
 
-        # Loop through selected files (set 1 selected file if more than 1)
+        # Prefer current file, but fall back to selected real files when a generation
+        # placeholder row has focus.
         f = self.files_model.current_file()
+        if not f:
+            selected_files = self.files_model.selected_files()
+            if selected_files:
+                f = selected_files[0]
 
         # Bail out if no file selected
         if not f:
@@ -1685,8 +1712,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         log.debug("actionJumpEnd_trigger")
 
         # Determine last frame (based on clips) & seek there
-        max_frame = get_app().window.timeline_sync.timeline.GetMaxFrame()
-        self.SeekSignal.emit(max_frame)
+        self.SeekSignal.emit(get_app().window.timeline_sync.GetLastFrame())
         QTimer.singleShot(50, self.actionCenterOnPlayhead_trigger)
 
     def onPlayCallback(self):
@@ -2056,6 +2082,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             "vector": "blue",
             }
         marker.save()
+        self.timeline.setFocus(Qt.OtherFocusReason)
 
     def findAllMarkerPositions(self):
         """Build and return a list of all seekable locations for the currently-selected timeline elements"""
@@ -2106,9 +2133,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # If nothing is selected, also add the end of the last clip
         if not self.selected_clips + self.selected_transitions + self.selected_effects:
-            all_marker_positions.append(
-                # last frame is -1 frame's duration
-                get_app().window.timeline_sync.timeline.GetMaxTime() - frame_duration)
+            last_frame = get_app().window.timeline_sync.GetLastFrame()
+            all_marker_positions.append((last_frame - 1) / fps_float)
 
         # Get list of marker and important positions (like selected clip bounds)
         for marker in Marker.filter():
@@ -2185,11 +2211,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if closest_position is not None:
             # Seek
             frame_to_seek = round(closest_position * fps_float) + 1
+            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
             self.SeekSignal.emit(frame_to_seek)
 
-            # Update the preview and reselect current frame in properties
-            get_app().window.refreshFrameSignal.emit()
+            # Keep properties in sync with the seek target. Avoid forcing
+            # refreshFrameSignal here: it can queue a stale seek to the old
+            # player position and overwrite this navigation jump.
             get_app().window.propertyTableView.select_frame(frame_to_seek)
+        self.timeline.setFocus(Qt.OtherFocusReason)
 
     def actionNextMarker_trigger(self, checked=True):
         log.info("actionNextMarker_trigger")
@@ -2217,11 +2246,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if closest_position is not None:
             # Seek
             frame_to_seek = round(closest_position * fps_float) + 1
+            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
             self.SeekSignal.emit(frame_to_seek)
 
-            # Update the preview and reselct current frame in properties
-            get_app().window.refreshFrameSignal.emit()
+            # Keep properties in sync with the seek target. Avoid forcing
+            # refreshFrameSignal here: it can queue a stale seek to the old
+            # player position and overwrite this navigation jump.
             get_app().window.propertyTableView.select_frame(frame_to_seek)
+        self.timeline.setFocus(Qt.OtherFocusReason)
 
     def actionCenterOnPlayhead_trigger(self, checked=True):
         """ Center the timeline on the current playhead position """
@@ -2407,8 +2439,21 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # Group transactions
             tid = str(uuid.uuid4())
 
-            # Get current FPS (prior to changing)
+            # Detect whether the project profile is actually changing
+            current_profile_desc = proj.get("profile")
+            current_width = proj.get("width")
+            current_height = proj.get("height")
             current_fps = proj.get("fps")
+            profile_changed = any([
+                current_profile_desc != profile.info.description,
+                current_width != profile.info.width,
+                current_height != profile.info.height,
+                not current_fps,
+                current_fps.get("num") != profile.info.fps.num,
+                current_fps.get("den") != profile.info.fps.den
+            ])
+
+            # Get current FPS (prior to changing)
             current_fps_float = float(current_fps["num"]) / float(current_fps["den"])
             fps_factor = float(profile.info.fps.ToFloat() / current_fps_float)
 
@@ -2426,6 +2471,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             get_app().updates.update(["display_ratio"], {"num": profile.info.display_ratio.num, "den": profile.info.display_ratio.den})
             get_app().updates.update(["pixel_ratio"], {"num": profile.info.pixel_ratio.num, "den": profile.info.pixel_ratio.den})
             get_app().updates.update(["fps"], {"num": profile.info.fps.num, "den": profile.info.fps.den})
+            if profile_changed:
+                # Export dialog settings are profile-dependent; reset cache on profile changes.
+                get_app().updates.update(["export_settings"], None)
 
             # Clear transaction id
             get_app().updates.transaction_id = None
@@ -2521,6 +2569,47 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def _refresh_optimized_preview_action_states(self):
         populate_optimized_preview_menu(self, self.optimizedPreviewMenu)
+    def comfy_ui_url(self):
+        return self.generation_service.comfy_ui_url()
+
+    def is_comfy_available(self, force=False):
+        return self.generation_service.is_comfy_available(force=force)
+
+    def refresh_comfy_availability_async(self, timeout=0.5, callback=None):
+        return self.generation_service.refresh_comfy_availability_async(timeout=timeout, callback=callback)
+
+    def can_open_generate_dialog(self):
+        return self.generation_service.can_open_generate_dialog()
+
+    def active_generation_job_for_file(self, file_id):
+        if not getattr(self, "generation_queue", None):
+            return None
+        return self.generation_queue.get_active_job_for_file(file_id)
+
+    def cancel_generation_job(self, job_id):
+        if not job_id:
+            log.debug("MainWindow cancel_generation_job ignored; empty job_id")
+            return
+        log.debug("MainWindow cancel_generation_job requested job=%s", str(job_id))
+        if self.generation_queue.cancel_job(job_id):
+            log.debug("MainWindow cancel_generation_job accepted job=%s", str(job_id))
+            self.statusBar.showMessage("Generation canceled", 3000)
+        else:
+            log.debug("MainWindow cancel_generation_job rejected job=%s", str(job_id))
+
+    def actionCancelGenerationJob_trigger(self, checked=True):
+        file_id = self.current_file_id()
+        if not file_id:
+            return
+        active_job = self.active_generation_job_for_file(file_id)
+        if active_job:
+            self.cancel_generation_job(active_job.get("id"))
+
+    def actionGenerate_trigger(self, checked=True):
+        self.generation_service.action_generate_trigger(checked=checked)
+
+    def _on_generation_job_finished(self, job_id, status):
+        self.generation_service.on_generation_job_finished(job_id, status)
 
     def actionRemove_from_Project_trigger(self):
         log.debug("actionRemove_from_Project_trigger")
@@ -2532,6 +2621,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         for f in self.selected_files():
             if not f:
                 continue
+
+            # Cancel queued/running generation jobs tied to this file
+            if getattr(self, "generation_queue", None):
+                self.generation_queue.cancel_jobs_for_file(f.data.get("id"))
 
             # Find matching clips (if any)
             clips = Clip.filter(file_id=f.data.get("id"))
@@ -3974,10 +4067,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._ensure_update_button()
         self._sync_update_panel()
 
-    def handleSeek(self, frame):
+    def handleSeek(self, frame, _start_preroll=True):
         """ Always update the property view when we seek to a new position """
         # Notify properties dialog
-        self.propertyTableView.select_frame(frame)
+        if self.propertyTableView:
+            self.propertyTableView.select_frame(frame)
 
     def _on_plan_execute_requested(self, plan_id):
         """Execute plan from Plan dock."""
@@ -4204,7 +4298,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         s = get_app().get_settings()
 
         # Setup files tree and list view (both share a model)
-        self.files_model = FilesModel(proxy_service=getattr(self, "proxy_service", None))
+        self.files_model = FilesModel(
+            proxy_service=getattr(self, "proxy_service", None),
+            generation_queue=getattr(self, "generation_queue", None),
+        )
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
@@ -4295,6 +4392,75 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         else:
             self._stock_search_timer.stop()
             self.stockSearchView.clear_stock()
+    def _init_generation_actions(self):
+        _ = get_app()._tr
+        self.actionGenerate = QAction(_("Generate with ComfyUI..."), self)
+        self.actionGenerate.setObjectName("actionGenerate")
+        sparkle_icon_path = os.path.join(info.PATH, "themes", "cosmic", "images", "tool-generate-sparkle.svg")
+        self.actionGenerate.setIcon(QIcon(sparkle_icon_path))
+        self.actionGenerate.setShortcut(QKeySequence("Ctrl+G"))
+        self.actionGenerate.setShortcutContext(Qt.ApplicationShortcut)
+        self.actionGenerate.triggered.connect(self.actionGenerate_trigger)
+
+        self.actionCancelGenerationJob = QAction(_("Cancel Job"), self)
+        self.actionCancelGenerationJob.setObjectName("actionCancelGenerationJob")
+        self.actionCancelGenerationJob.triggered.connect(self.actionCancelGenerationJob_trigger)
+
+    def _init_ai_tools_menu(self):
+        """Top-level "AI Tools" menu for the optional local ComfyUI integration.
+
+        Deliberately separate from Zenvi's assistant / plan docks (View > Docks):
+        this menu only exposes ComfyUI generation templates and is rebuilt each
+        time it opens, from the current Project Files selection.
+        """
+        _ = get_app()._tr
+        self.menuAITools = QMenu(_("AI Tools"), self.menuBar())
+        self.menuAITools.setObjectName("menuAITools")
+        self.menuBar().insertMenu(self.menuHelp.menuAction(), self.menuAITools)
+        # Built lazily: the Project Files model and ComfyUI status do not exist yet.
+        self.menuAITools.aboutToShow.connect(self._populate_ai_tools_menu)
+
+    def _populate_ai_tools_menu(self):
+        from windows.views.ai_tools_menu import add_ai_tools_menu
+
+        _ = get_app()._tr
+        menu = self.menuAITools
+        menu.clear()
+        menu.addAction(self.actionGenerate)
+        if getattr(self, "files_model", None) is not None:
+            self.actionGenerate.setEnabled(self.can_open_generate_dialog())
+        menu.addSeparator()
+
+        service = getattr(self, "generation_service", None)
+        if service is None or not service.is_comfy_configured():
+            status_action = menu.addAction(_("ComfyUI is not configured (optional)"))
+            status_action.setEnabled(False)
+        elif not self.is_comfy_available(force=False):
+            status_action = menu.addAction(_("ComfyUI server is not reachable"))
+            status_action.setEnabled(False)
+            retry_action = menu.addAction(_("Check ComfyUI Connection"))
+            retry_action.triggered.connect(
+                lambda checked=False: self.refresh_comfy_availability_async(timeout=2.0))
+        else:
+            # "Create with AI" (no source) and, for a single selected file, "Enhance with AI"
+            add_ai_tools_menu(self, menu, source_file=None)
+            selected = self.selected_files()
+            if len(selected) == 1 and selected[0]:
+                add_ai_tools_menu(self, menu, source_file=selected[0])
+
+        menu.addSeparator()
+        settings_action = menu.addAction(_("ComfyUI Settings..."))
+        settings_action.triggered.connect(lambda checked=False: self.actionPreferences.trigger())
+
+    def _init_ui_trace_recorder(self):
+        """Enable env-configured UI trace recording for automated test capture."""
+        try:
+            from classes.ui_trace_recorder import UiTraceRecorder
+            recorder = UiTraceRecorder(self)
+            if recorder.enabled:
+                self.ui_trace_recorder = recorder
+        except Exception:
+            log.error("Failed to initialize UI trace recorder", exc_info=1)
 
     def _init_proxy_actions(self):
         """Create the Optimize Preview actions and the Preview > Optimize menu."""
@@ -4931,6 +5097,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self._restart_for_update = False
         self.lock = threading.Lock()
         self.installEventFilter(self)
+        self.ui_trace_recorder = None
+        self.last_auto_save_data_version = -1
 
         # set window on app for reference during initialization of children
         app = get_app()
@@ -5007,6 +5175,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.setup_toolbars()
         self.proxy_service = ProxyService(self)
         self._init_proxy_actions()
+        self.generation_service = GenerationService(self)
+        self.generation_queue = GenerationQueueManager(self)
+        self.generation_queue.job_finished.connect(self._on_generation_job_finished)
+        self._init_generation_actions()
+        self._init_ai_tools_menu()
+        self.refresh_comfy_availability_async()
 
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)
@@ -5314,6 +5488,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Connect Selection signals
         self.SelectionAdded.connect(self.addSelection)
         self.SelectionRemoved.connect(self.removeSelection)
+        self._init_ui_trace_recorder()
 
         # Connect 'ignore update' signal
         self.ignore_updates = False
