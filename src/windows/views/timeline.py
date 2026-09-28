@@ -153,7 +153,7 @@ from classes.camera_motion import (
     source_dimensions_from_reader,
 )
 from classes.effect_init import effect_options
-from classes.file_drop import mime_has_file_drop, urls_from_mime
+from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
 from classes.path_utils import absolute_media_path
@@ -169,7 +169,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media, is_single_image_media
+from classes.clip_utils import clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
@@ -4351,6 +4351,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 freeze_seconds = float(speed)
 
                 original_duration = clip.data["duration"]
+                original_end = float(clip.data["end"])
                 log.info('Updating timing for clip ID {}, original duration: {}'.format(clip.id, original_duration))
                 log.debug(clip.data)
 
@@ -4364,9 +4365,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 start_animation_frames_value = start_animation_frames
                 end_animation_seconds = start_animation_seconds + freeze_seconds
                 end_animation_frames = round(end_animation_seconds * fps_float) + 1
-                end_of_clip_seconds = float(clip.data["duration"])
+                end_of_clip_seconds = float(clip.data["end"])
                 end_of_clip_frames = round((end_of_clip_seconds) * fps_float) + 1
-                end_of_clip_frames_value = round((original_duration) * fps_float) + 1
+                end_of_clip_frames_value = round((original_end) * fps_float) + 1
 
                 # Determine volume start and end
                 start_volume_value = 1.0
@@ -5367,23 +5368,27 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         snap_to_grid = lambda t: round(t * fps_float) / fps_float
 
         # Handle text-based mime data (clips or transitions)
-        if event.mimeData().html():
-            self.item_type = event.mimeData().html()
-            data_list = self._mime_json_list(event.mimeData())
-        # Handle URL-based OS file drop
-        if mime_has_file_drop(event.mimeData()):
-            self.item_type = "clip"
-            urls = urls_from_mime(event.mimeData())
+        mime = event.mimeData()
+        if mime.html():
+            self.item_type = mime.html()
+            data_list = self._mime_json_list(mime)
 
+        # Handle URL-based OS file drop. A Project Files drag also carries URLs,
+        # so this only imports when the text branch found no ids -- otherwise
+        # every file would be placed twice (see os_drop_file_ids).
+        def _import_os_drop(urls):
+            nonlocal drop_tid
             # One gesture: import + place clips share this tid (process_urls nests).
             drop_tid = self.get_uuid()
             get_app().updates.transaction_id = drop_tid
-            imported = get_app().window.files_model.process_urls(
+            return get_app().window.files_model.process_urls(
                 urls, import_quietly=True, prevent_image_seq=True
-            ) or []
-            for file in imported:
-                if file and getattr(file, "id", None):
-                    data_list.append(file.id)
+            )
+
+        os_drop_ids = os_drop_file_ids(mime, data_list, _import_os_drop)
+        if os_drop_ids:
+            self.item_type = "clip"
+            data_list = os_drop_ids
 
         # If no valid item type, return
         if not self.item_type:
@@ -5486,6 +5491,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not new_clip.get("reader"):
             return  # Skip this clip
 
+        # If the source file has stored caption text (e.g. ComfyUI Whisper
+        # captions), attach a Caption effect to this new clip.
+        apply_file_caption_to_clip(new_clip, file)
+
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)
         apply_audio_only_clip_overrides(
@@ -5548,6 +5557,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
+
+        # Generate waveform data by default for audio-only clips.
+        reader = new_clip.get("reader", {}) if isinstance(new_clip.get("reader"), dict) else {}
+        has_video = reader.get("has_video")
+        has_video = True if has_video is None else bool(has_video)
+        has_audio = reader.get("has_audio")
+        has_audio = True if has_audio is None else bool(has_audio)
+        clip_id = new_clip.get("id")
+        if has_audio and not has_video and clip_id:
+            self.Show_Waveform_Triggered([clip_id])
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:

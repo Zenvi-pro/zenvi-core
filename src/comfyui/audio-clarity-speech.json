@@ -1,0 +1,51 @@
+{
+  "template_id": "audio-clarity-speech",
+  "name": "Speech",
+  "menu_category": "enhance",
+  "menu_parent": "clarity",
+  "menu_order": 7,
+  "input_type": "audio",
+  "output_type": "audio",
+  "open_dialog": false,
+  "action_icon": "ai-action-create-audio.svg",
+  "workflow": {
+    "1": {
+      "inputs": {
+        "audio": "__openshot_input__",
+        "start_time": 0,
+        "duration": 0
+      },
+      "class_type": "VHS_LoadAudioUpload"
+    },
+    "2": {
+      "inputs": {
+        "source_audio_path": "",
+        "audio": [
+          "1",
+          0
+        ],
+        "keep_model_loaded": true
+      },
+      "class_type": "OpenShotLavaSRSpeechClarity"
+    },
+    "3": {
+      "inputs": {
+        "audio_file": [
+          "2",
+          0
+        ]
+      },
+      "class_type": "VHS_LoadAudio"
+    },
+    "4": {
+      "inputs": {
+        "audio": [
+          "3",
+          0
+        ],
+        "filename_prefix": "audio/openshot_clarity_speech"
+      },
+      "class_type": "SaveAudio"
+    }
+  }
+}

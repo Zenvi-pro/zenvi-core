@@ -310,6 +310,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
             # Otherwise, set the given index
             elif isinstance(values, dict):
+                if (
+                    isinstance(obj, dict)
+                    and isinstance(obj.get("objects"), dict)
+                    and isinstance(values.get("objects"), dict)
+                ):
+                    values = copy.deepcopy(values)
+                    object_updates = values.pop("objects", {})
+                    tracked_objects = obj.setdefault("objects", {})
+                    for object_id, object_values in object_updates.items():
+                        if (
+                            isinstance(object_values, dict)
+                            and isinstance(tracked_objects.get(object_id), dict)
+                        ):
+                            tracked_objects[object_id].update(object_values)
+                        else:
+                            tracked_objects[object_id] = object_values
                 # Update existing dictionary value
                 obj.update(values)
 
@@ -491,6 +507,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
                 info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
 
             self._migrate_optimized_asset_paths()
 
@@ -645,7 +662,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                 thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
                             else:
                                 # Audio file
-                                thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+                                thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
                             # Get file name
                             filename = os.path.basename(file.data["path"])
@@ -1202,8 +1219,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             info.THUMBNAIL_PATH = os.path.join(get_assets_path(self.current_filepath), "thumbnail")
             info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
             info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
+            info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
             info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
             info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+            info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
 
             self.add_to_recent_files(file_path)
             self.has_unsaved_changes = False
@@ -1224,12 +1243,14 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             target_protobuf_path = os.path.join(asset_path, "protobuf_data")
             target_clipboard_path = os.path.join(asset_path, "clipboard")
             target_proxy_path = os.path.join(asset_path, "optimized")
+            target_comfy_output_path = os.path.join(asset_path, "comfyui-output")
 
             # Create any missing target paths
             try:
                 for target_dir in [asset_path, target_thumb_path, target_title_path,
                                    target_blender_path, target_protobuf_path,
-                                   target_clipboard_path, target_proxy_path]:
+                                   target_clipboard_path, target_proxy_path,
+                                   target_comfy_output_path]:
                     if not os.path.exists(target_dir):
                         os.mkdir(target_dir)
             except OSError:
@@ -1245,6 +1266,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.PROTOBUF_DATA_PATH = os.path.join(previous_asset_path, "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(previous_asset_path, "clipboard")
                 info.PROXY_PATH = os.path.join(previous_asset_path, "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(previous_asset_path, "comfyui-output")
 
             # Track assets we copy/update
             copied_assets = {
@@ -1252,6 +1274,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 "title": set(),
                 "clipboard": set(),
                 "proxy": set(),
+                "comfyui_output": set(),
             }
             reader_paths = {}
 
@@ -1284,6 +1307,20 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     if not os.path.exists(target_clipboard_filepath):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
 
+            # Copy all ComfyUI output files/folders (fully) to assets folder
+            if os.path.exists(info.COMFYUI_OUTPUT_PATH) and (
+                os.path.abspath(info.COMFYUI_OUTPUT_PATH) != os.path.abspath(target_comfy_output_path)
+            ):
+                for output_name in os.listdir(info.COMFYUI_OUTPUT_PATH):
+                    working_output_path = os.path.join(info.COMFYUI_OUTPUT_PATH, output_name)
+                    target_output_path = os.path.join(target_comfy_output_path, output_name)
+                    if os.path.isdir(working_output_path):
+                        if os.path.exists(target_output_path):
+                            shutil.rmtree(target_output_path, True)
+                        shutil.copytree(working_output_path, target_output_path)
+                    else:
+                        shutil.copy2(working_output_path, target_output_path)
+
             # Copy all protobuf files (if not found in target asset folder)
             if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
                 for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
@@ -1301,6 +1338,22 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     target_proxy_filepath = os.path.join(target_proxy_path, proxy_name)
                     if os.path.isfile(working_proxy_path) and not os.path.exists(target_proxy_filepath):
                         shutil.copy2(working_proxy_path, target_proxy_filepath)
+            def relocate_effect_protobuf(effect):
+                """Copy an effect's protobuf file into the project assets folder and
+                point the effect at it (also when the file lives in a stale/previous
+                assets folder rather than the current runtime folder)."""
+                if not isinstance(effect, dict) or "protobuf_data_path" not in effect:
+                    return
+                old_protobuf_path = effect["protobuf_data_path"]
+                old_protobuf_dir, protobuf_name = os.path.split(old_protobuf_path)
+                if not protobuf_name:
+                    return
+                new_protobuf_path = os.path.join(target_protobuf_path, protobuf_name)
+                if os.path.abspath(old_protobuf_dir) != os.path.abspath(target_protobuf_path):
+                    if os.path.exists(old_protobuf_path) and not os.path.exists(new_protobuf_path):
+                        shutil.copy2(old_protobuf_path, new_protobuf_path)
+                    effect["protobuf_data_path"] = new_protobuf_path
+                    log.info("Copied protobuf %s to %s", old_protobuf_path, target_protobuf_path)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -1341,6 +1394,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
 
+                comfy_output_abs = os.path.abspath(info.COMFYUI_OUTPUT_PATH)
+                path_abs = os.path.abspath(path)
+                if path_abs.startswith(comfy_output_abs + os.sep):
+                    if os.path.abspath(os.path.dirname(path)) != os.path.abspath(target_comfy_output_path):
+                        relative_output_path = os.path.relpath(path_abs, comfy_output_abs)
+                        if relative_output_path not in copied_assets["comfyui_output"]:
+                            copied_assets["comfyui_output"].add(relative_output_path)
+                            log.info("Copied ComfyUI output %s to %s", relative_output_path, target_comfy_output_path)
+                        new_asset_path = os.path.join(target_comfy_output_path, relative_output_path)
+
                 # Update path in File object to new location
                 if new_asset_path:
                     file["path"] = new_asset_path
@@ -1366,6 +1429,9 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                 shutil.copy2(source_proxy, target_proxy)
                             log.info("Copied proxy %s to %s", proxy_name, target_proxy_path)
                     proxy_reader["path"] = os.path.join(target_proxy_path, proxy_name)
+            # Copy top-level effect protobuf assets and update paths.
+            for effect in self._data.get("effects", []):
+                relocate_effect_protobuf(effect)
 
             # Copy all Clip thumbnails and update reader paths
             for clip in self._data["clips"]:
@@ -1384,12 +1450,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
 
                 log.info("Checking effects in clip %s path for protobuf files" % clip_id)
                 for effect in clip.get("effects", []):
-                    if "protobuf_data_path" in effect:
-                        old_protobuf_path = effect["protobuf_data_path"]
-                        old_protobuf_dir, protobuf_name = os.path.split(old_protobuf_path)
-                        if old_protobuf_dir != target_protobuf_path:
-                            effect["protobuf_data_path"] = os.path.join(target_protobuf_path, protobuf_name)
-                            log.info("Copied protobuf %s to %s", old_protobuf_path, target_protobuf_path)
+                    relocate_effect_protobuf(effect)
 
         except Exception:
             log.error(

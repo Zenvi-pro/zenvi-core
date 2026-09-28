@@ -26,7 +26,7 @@
  """
 
 from qt_api import QRectF
-from qt_api import QColor, QPainter, QPainterPath, QPen
+from qt_api import QColor, QPainter, QPainterPath, QPen, Qt
 
 from .base import BasePainter
 
@@ -53,7 +53,15 @@ class KeyframePainter(BasePainter):
         if not markers:
             return
 
+        content_area = QRectF(
+            self.w.track_name_width,
+            self.w.ruler_height,
+            self.w.width() - self.w.track_name_width - self.w.scroll_bar_thickness,
+            self.w.height() - self.w.ruler_height - self.w.scroll_bar_thickness,
+        )
+
         painter.save()
+        painter.setClipRect(content_area, Qt.IntersectClip)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(self.pen)
         for marker in markers:

@@ -27,6 +27,10 @@
  """
 from classes.info import YOLO_PATH
 import os
+
+YOLO_DEFAULT_PATH = os.path.join(YOLO_PATH, "yolo26n-seg")
+EFFICIENTSAM_DEFAULT_PATH = os.path.join(YOLO_PATH, "efficient-sam-tiny-1024")
+CUTIE_DEFAULT_PATH = os.path.join(YOLO_PATH, "cutie-medium")
 # Not all Effects support pre-processing, so for now, this is a hard-coded
 # solution to providing the pre-processing params needed for these special effects.
 
@@ -151,44 +155,159 @@ effect_options = {
 
     "ObjectDetection": [
         {
-            "value": "https://github.com/OpenShot/openshot-qt/wiki/Object-Detection-Effect-(dependencies)",
-            "title": "Click here for instructions and dependencies...",
-            "type": "link",
-            "setting": "model-instructions"
+            "title": "Version",
+            "type": "download-yolo",
+            "setting": "download-yolo",
+            "model-setting": "model",
+            "classes-setting": "classes_file",
+            "file-settings": ["model", "classes_file"]
         },
         {
-            "value": os.path.join(YOLO_PATH,"yolov3.weights"),
-            "title": "Model Weights",
-            "type": "text",
-            "setting": "model-weights"
+            "value": os.path.join(YOLO_DEFAULT_PATH, "model.onnx"),
+            "title": "Model File",
+            "type": "file",
+            "setting": "model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
         },
         {
-            "value": os.path.join(YOLO_PATH,"yolov3.cfg"),
-            "title": "Model Config",
-            "type": "text",
-            "setting": "model-config"
-        },
-        {
-            "value": os.path.join(YOLO_PATH,"obj.names"),
-            "title": "Class names",
-            "type": "text",
-            "setting": "class-names"
+            "value": os.path.join(YOLO_DEFAULT_PATH, "classes.names"),
+            "title": "Class Names",
+            "type": "file",
+            "setting": "classes_file",
+            "file-filter": "Class names (*.names *.txt)",
+            "validator": "classes",
+            "required": True,
+            "advanced": True
         },
         {
             "title": "Processing Device",
             "setting": "processing-device",
-            "value": "GPU",
+            "value": "CPU",
             "values": [
-                {
-                    "value": "GPU",
-                    "name": "GPU"
-                },
                 {
                     "value": "CPU",
                     "name": "CPU"
+                },
+                {
+                    "value": "GPU_AUTO",
+                    "name": "GPU (Auto)"
+                },
+                {
+                    "value": "GPU_CUDA",
+                    "name": "GPU (CUDA)"
+                },
+                {
+                    "value": "GPU_OPENCL",
+                    "name": "GPU (OpenCL)"
                 }
             ],
             "type": "dropdown",
+            "advanced": True
+        }
+    ],
+
+    "ObjectMask": [
+        {
+            "title": "Quality",
+            "type": "download-object-mask",
+            "setting": "download-object-mask",
+            "efficient-sam-setting": "efficient_sam_model",
+            "cutie-settings": {
+                "encode-key": "cutie_encode_key_model",
+                "encode-value": "cutie_encode_value_model",
+                "memory-readout": "cutie_memory_readout_model",
+                "decode": "cutie_decode_model"
+            },
+            "file-settings": [
+                "efficient_sam_model",
+                "cutie_encode_key_model",
+                "cutie_encode_value_model",
+                "cutie_memory_readout_model",
+                "cutie_decode_model"
+            ]
+        },
+        {
+            "value": os.path.join(EFFICIENTSAM_DEFAULT_PATH, "image_segmentation_efficientsam_ti_2025april.onnx"),
+            "title": "EfficientSAM Model File",
+            "type": "file",
+            "setting": "efficient_sam_model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
+        },
+        {
+            "value": os.path.join(CUTIE_DEFAULT_PATH, "cutie-encode-key-640x368.onnx"),
+            "title": "Cutie Key Encoder Model File",
+            "type": "file",
+            "setting": "cutie_encode_key_model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
+        },
+        {
+            "value": os.path.join(CUTIE_DEFAULT_PATH, "cutie-encode-value-640x368.onnx"),
+            "title": "Cutie Value Encoder Model File",
+            "type": "file",
+            "setting": "cutie_encode_value_model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
+        },
+        {
+            "value": os.path.join(CUTIE_DEFAULT_PATH, "cutie-memory-readout-floatmask-valid-640x368-m6-topk30-opencv.onnx"),
+            "title": "Cutie Memory Readout Model File",
+            "type": "file",
+            "setting": "cutie_memory_readout_model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
+        },
+        {
+            "value": os.path.join(CUTIE_DEFAULT_PATH, "cutie-decode-640x368.onnx"),
+            "title": "Cutie Decoder Model File",
+            "type": "file",
+            "setting": "cutie_decode_model",
+            "file-filter": "Model files (*.onnx)",
+            "validator": "onnx",
+            "required": True,
+            "advanced": True
+        },
+        {
+            "title": "Processing Device",
+            "setting": "processing-device",
+            "value": "CPU",
+            "values": [
+                {
+                    "value": "CPU",
+                    "name": "CPU"
+                },
+                {
+                    "value": "GPU_AUTO",
+                    "name": "GPU (Auto)"
+                },
+                {
+                    "value": "GPU_CUDA",
+                    "name": "GPU (CUDA)"
+                },
+                {
+                    "value": "GPU_OPENCL",
+                    "name": "GPU (OpenCL)"
+                }
+            ],
+            "type": "dropdown",
+            "advanced": True
+        },
+        {
+            "title": "Select Points",
+            "type": "object-mask-selection",
+            "setting": "object_mask_selection"
         }
     ]
 }

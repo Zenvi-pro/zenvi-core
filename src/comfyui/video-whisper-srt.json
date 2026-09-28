@@ -1,0 +1,57 @@
+{
+  "action_icon": "ai-action-captions.svg",
+  "menu_category": "enhance",
+  "menu_order": 40,
+  "name": "Add Captions from Speech",
+  "open_dialog": false,
+  "output_type": "video",
+  "template_id": "video-whisper-srt",
+  "workflow": {
+    "1": {
+      "class_type": "VHS_LoadVideo",
+      "inputs": {
+        "custom_height": 0,
+        "custom_width": 0,
+        "force_rate": 0,
+        "format": "AnimateDiff",
+        "frame_load_cap": 0,
+        "select_every_nth": 1,
+        "skip_first_frames": 0,
+        "video": "/tmp/input.mp4"
+      }
+    },
+    "2": {
+      "class_type": "Apply Whisper",
+      "inputs": {
+        "audio": [
+          "1",
+          2
+        ],
+        "language": "auto",
+        "model": "medium",
+        "prompt": ""
+      }
+    },
+    "3": {
+      "class_type": "Save SRT",
+      "inputs": {
+        "alignment": [
+          "2",
+          1
+        ],
+        "name": "openshot_gen_segments"
+      }
+    },
+    "4": {
+      "class_type": "PreviewAny",
+      "inputs": {
+        "preview": "",
+        "previewMode": null,
+        "source": [
+          "3",
+          0
+        ]
+      }
+    }
+  }
+}

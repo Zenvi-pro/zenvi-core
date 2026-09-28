@@ -1,0 +1,93 @@
+{
+  "action_icon": "ai-action-smooth.svg",
+  "menu_category": "enhance",
+  "menu_parent": "track_object",
+  "menu_order": 60,
+  "name": "Blur...",
+  "open_dialog": true,
+  "output_type": "image",
+  "template_id": "image-blur-anything-sam2",
+  "workflow": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "__openshot_input__",
+        "upload": "image"
+      }
+    },
+    "2": {
+      "class_type": "OpenShotDownloadAndLoadSAM2Model",
+      "inputs": {
+        "model": "sam2.1_hiera_small.safetensors",
+        "segmentor": "single_image",
+        "device": "cuda",
+        "precision": "fp16"
+      }
+    },
+    "3": {
+      "class_type": "OpenShotSam2Segmentation",
+      "inputs": {
+        "sam2_model": [
+          "2",
+          0
+        ],
+        "image": [
+          "1",
+          0
+        ],
+        "auto_mode": false,
+        "positive_points_json": "",
+        "negative_points_json": "",
+        "positive_rects_json": "",
+        "negative_rects_json": "",
+        "dino_prompt": "",
+        "dino_model_id": "IDEA-Research/grounding-dino-tiny",
+        "dino_box_threshold": 0.35,
+        "dino_text_threshold": 0.25,
+        "dino_device": "auto",
+        "keep_model_loaded": false
+      }
+    },
+    "4": {
+      "class_type": "ImageBlur",
+      "inputs": {
+        "image": [
+          "1",
+          0
+        ],
+        "blur_radius": 12,
+        "sigma": 4.0
+      }
+    },
+    "5": {
+      "class_type": "ImageCompositeMasked",
+      "inputs": {
+        "destination": [
+          "1",
+          0
+        ],
+        "source": [
+          "4",
+          0
+        ],
+        "mask": [
+          "3",
+          0
+        ],
+        "x": 0,
+        "y": 0,
+        "resize_source": false
+      }
+    },
+    "6": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "5",
+          0
+        ],
+        "filename_prefix": "image/openshot_gen"
+      }
+    }
+  }
+}
