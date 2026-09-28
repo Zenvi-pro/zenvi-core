@@ -46,6 +46,7 @@ from qt_api import (
     Qt, pyqtSignal, pyqtSlot, QCoreApplication, QTimer, QDateTime, QFileInfo, QEvent, QUrl
 )
 from qt_api import QIcon, QCursor, QKeySequence, QTextCursor
+from qt_api import QMenu
 from qt_api import file_exists, show_open_file_dialog
 from qt_api import (
     QApplication, QMainWindow, QWidget, QDockWidget,
@@ -71,6 +72,7 @@ from classes.path_utils import comparable_local_path, native_display_path, norma
 from classes.query import File, Clip, Transition, Marker, Track, Effect
 from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.clipboard import ClipboardManager
+from classes.proxy_service import ProxyService
 from classes.thumbnail import httpThumbnailServerThread, httpThumbnailException
 from classes.time_parts import secondsToTimecode
 from classes.timeline import TimelineSync
@@ -79,6 +81,7 @@ from themes.manager import ThemeName
 from windows.models.effects_model import EffectsModel
 from windows.models.emoji_model import EmojisModel
 from windows.models.files_model import FilesModel
+from windows.views.optimized_preview_menu import optimized_preview_icon, populate_optimized_preview_menu
 from windows.models.transition_model import TransitionsModel
 from windows.preview_thread import PreviewParent
 from windows.agent_selector_button import AgentSelectorButton
@@ -333,6 +336,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Stop thumbnail server thread (if any)
         if self.http_server_thread:
             self.http_server_thread.kill()
+
+        # Stop Optimize Preview transcode workers (if any)
+        if getattr(self, "proxy_service", None):
+            self.proxy_service.shutdown()
 
         # Stop background render manager (Phase 5)
         try:
@@ -808,6 +815,26 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         get_app().updates.reset()
         log.info('History cleared')
 
+    def actionClearOptimizedFiles_trigger(self):
+        """Delete and unlink internal optimized files for the current project"""
+        _ = get_app()._tr
+        ret = QMessageBox.question(
+            self,
+            _("Delete Optimized Videos?"),
+            _("Delete optimized videos from this project's assets folder?"),
+            QMessageBox.No | QMessageBox.Yes,
+        )
+        if ret != QMessageBox.Yes:
+            return
+        self.proxy_service.delete_internal_project_proxy_files()
+
+    def _refresh_clear_menu_action_states(self):
+        has_internal_optimized = bool(
+            getattr(self, "proxy_service", None)
+            and self.proxy_service.has_internal_project_proxy_files()
+        )
+        self.actionClearOptimizedFiles.setEnabled(has_internal_optimized)
+
     def save_project(self, file_path):
         """ Save a project to a file path, and refresh the screen """
         with self.lock:
@@ -1032,6 +1059,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 info.get_default_path("BLENDER_PATH"),
                 info.get_default_path("TITLE_PATH"),
                 info.get_default_path("CLIPBOARD_PATH"),
+                info.get_default_path("PROXY_PATH"),
                 ]:
             try:
                 if os.path.exists(temp_dir):
@@ -2434,6 +2462,65 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             log.info('Cutting Finished')
         else:
             log.info('Cutting Cancelled')
+
+    def _optimized_preview_files_for_action(self):
+        files = []
+        for file_obj in (self.selected_files() or []):
+            if not file_obj:
+                continue
+            data = getattr(file_obj, "data", {}) or {}
+            if str(data.get("media_type", "") or "").strip().lower() == "video":
+                files.append(file_obj)
+        if files:
+            return files
+
+        target_ids = [str(file_id or "") for file_id in getattr(self, "_optimized_preview_target_file_ids", []) if str(file_id or "")]
+        if not target_ids:
+            return []
+        return [
+            file_obj for file_obj in (File.get(id=file_id) for file_id in target_ids)
+            if file_obj and str((getattr(file_obj, "data", {}) or {}).get("media_type", "") or "").strip().lower() == "video"
+        ]
+
+    def _optimized_preview_file_for_cancel_action(self):
+        file_id = self.current_file_id()
+        if file_id:
+            file_obj = File.get(id=file_id)
+            data = getattr(file_obj, "data", {}) or {}
+            if file_obj and str(data.get("media_type", "") or "").strip().lower() == "video":
+                return file_obj
+
+        files = self._optimized_preview_files_for_action()
+        return files[0] if files else None
+
+    def actionOptimizedPreviewCreate_trigger(self, checked=True):
+        files = self._optimized_preview_files_for_action()
+        log.debug("actionOptimizedPreviewCreate_trigger files=%s", [getattr(f, "id", None) for f in files])
+        self.proxy_service.create_for_files(files)
+
+    def actionOptimizedPreviewUseExisting_trigger(self, checked=True):
+        files = self._optimized_preview_files_for_action()
+        log.debug("actionOptimizedPreviewUseExisting_trigger files=%s", [getattr(f, "id", None) for f in files])
+        self.proxy_service.use_existing_for_files(files)
+
+    def actionOptimizedPreviewRemove_trigger(self, checked=True):
+        files = self._optimized_preview_files_for_action()
+        log.debug("actionOptimizedPreviewRemove_trigger files=%s", [getattr(f, "id", None) for f in files])
+        self.proxy_service.remove_for_files(files)
+
+    def actionOptimizedPreviewCancel_trigger(self, checked=True):
+        file_obj = self._optimized_preview_file_for_cancel_action()
+        log.debug("actionOptimizedPreviewCancel_trigger file=%s", getattr(file_obj, "id", None))
+        if file_obj:
+            self.proxy_service.cancel_for_files([file_obj])
+
+    def actionOptimizedPreviewDeleteAndUnlink_trigger(self, checked=True):
+        files = self._optimized_preview_files_for_action()
+        log.debug("actionOptimizedPreviewDeleteAndUnlink_trigger files=%s", [getattr(f, "id", None) for f in files])
+        self.proxy_service.delete_and_unlink_for_files(files)
+
+    def _refresh_optimized_preview_action_states(self):
+        populate_optimized_preview_menu(self, self.optimizedPreviewMenu)
 
     def actionRemove_from_Project_trigger(self):
         log.debug("actionRemove_from_Project_trigger")
@@ -4117,7 +4204,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         s = get_app().get_settings()
 
         # Setup files tree and list view (both share a model)
-        self.files_model = FilesModel()
+        self.files_model = FilesModel(proxy_service=getattr(self, "proxy_service", None))
         self.filesTreeView = FilesTreeView(self.files_model)
         self.filesListView = FilesListView(self.files_model)
         self.files_model.update_model()
@@ -4208,6 +4295,45 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         else:
             self._stock_search_timer.stop()
             self.stockSearchView.clear_stock()
+
+    def _init_proxy_actions(self):
+        """Create the Optimize Preview actions and the Preview > Optimize menu."""
+        _ = get_app()._tr
+        self.actionOptimizedPreviewCreate = QAction(_("Optimize Video"), self)
+        self.actionOptimizedPreviewCreate.setObjectName("actionOptimizedPreviewCreate")
+        self.actionOptimizedPreviewCreate.triggered.connect(self.actionOptimizedPreviewCreate_trigger)
+
+        self.actionOptimizedPreviewUseExisting = QAction(_("Link to Existing..."), self)
+        self.actionOptimizedPreviewUseExisting.setObjectName("actionOptimizedPreviewUseExisting")
+        self.actionOptimizedPreviewUseExisting.triggered.connect(self.actionOptimizedPreviewUseExisting_trigger)
+
+        self.actionOptimizedPreviewRemove = QAction(_("Unlink"), self)
+        self.actionOptimizedPreviewRemove.setObjectName("actionOptimizedPreviewRemove")
+        self.actionOptimizedPreviewRemove.triggered.connect(self.actionOptimizedPreviewRemove_trigger)
+
+        self.actionOptimizedPreviewCancel = QAction(_("Cancel"), self)
+        self.actionOptimizedPreviewCancel.setObjectName("actionOptimizedPreviewCancel")
+        self.actionOptimizedPreviewCancel.triggered.connect(self.actionOptimizedPreviewCancel_trigger)
+
+        self.actionOptimizedPreviewDeleteAndUnlink = QAction(_("Delete && Unlink"), self)
+        self.actionOptimizedPreviewDeleteAndUnlink.setObjectName("actionOptimizedPreviewDeleteAndUnlink")
+        self.actionOptimizedPreviewDeleteAndUnlink.triggered.connect(self.actionOptimizedPreviewDeleteAndUnlink_trigger)
+
+        preview_menu = getattr(self, "menuPreview", None)
+        if preview_menu is None:
+            preview_menu = QMenu(_("Preview"), self)
+            preview_menu.setObjectName("menuPreview")
+            if hasattr(self, "menuHelp") and self.menuHelp:
+                self.menubar.insertMenu(self.menuHelp.menuAction(), preview_menu)
+            else:
+                self.menubar.addMenu(preview_menu)
+            self.menuPreview = preview_menu
+
+        self.optimizedPreviewMenu = preview_menu.addMenu(_("Optimize"))
+        self.optimizedPreviewMenu.setIcon(optimized_preview_icon("ready"))
+        self.optimizedPreviewMenu.aboutToShow.connect(self._refresh_optimized_preview_action_states)
+        if getattr(self, "menuClear", None):
+            self.menuClear.aboutToShow.connect(self._refresh_clear_menu_action_states)
 
     def actionInsertKeyframe(self):
         log.debug("actionInsertKeyframe")
@@ -4879,6 +5005,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Create dock toolbars, set initial state of items, etc
         self.setup_toolbars()
+        self.proxy_service = ProxyService(self)
+        self._init_proxy_actions()
 
         # Add window as watcher to receive undo/redo status updates
         app.updates.add_watcher(self)

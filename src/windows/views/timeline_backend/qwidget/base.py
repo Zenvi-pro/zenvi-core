@@ -961,14 +961,9 @@ class TimelineWidgetBase(QWidget):
         fps_info = get_app().project.get("fps")
         self.fps_float = float(fps_info.get("num", 24)) / float(fps_info.get("den", 1) or 1)
 
-        # Invalidate caches and geometry
-        win = getattr(self, "win", None)
-        if getattr(win, "_trim_refresh_pending", False):
-            # Keep thumbnail/fallback caches during trim commit to avoid a blank flicker
-            # while new thumbnails are still being generated.
-            self.clip_painter.clip_cache.clear()
-        else:
-            self.clip_painter.clear_cache()
+        # Invalidate caches and geometry (keep loaded thumbnails; only renders are stale,
+        # including during a trim commit)
+        self.clip_painter.clear_render_cache()
         self.transition_painter.clear_cache()
         self.geometry.mark_dirty()
 
@@ -2482,7 +2477,7 @@ class TimelineWidgetBase(QWidget):
             timeline.addSelection(item_id_str, item_type, clear_existing)
         self.win.addSelection(item_id_str, item_type, clear_existing)
         # Selection changes affect cached clip renders and keyframe visibility.
-        self.clip_painter.clear_cache()
+        self.clip_painter.clear_render_cache()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()
@@ -2536,7 +2531,7 @@ class TimelineWidgetBase(QWidget):
         self._active_keyframe_marker = None
         if hasattr(self, "_clear_panel_selection"):
             self._clear_panel_selection(None)
-        self.clip_painter.clear_cache()
+        self.clip_painter.clear_render_cache()
         self.geometry.mark_dirty()
         self._keyframes_dirty = True
         self.update()

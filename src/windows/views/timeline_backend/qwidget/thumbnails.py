@@ -31,7 +31,7 @@ from qt_api import QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 from qt_api import QImage
 
 from classes.logger import log
-from classes.thumbnail import GetThumbPath, resolve_thumbnail_path
+from classes.thumbnail import GetThumbPath, RoundFrameToThumbnailGrid, resolve_thumbnail_path
 
 # Cap pending work so fast scroll/zoom cannot unbounded-queue the machine.
 _MAX_PENDING_JOBS = 64
@@ -48,6 +48,31 @@ def _file_fingerprint(file_id):
     except Exception:
         return None
     return None
+
+
+def _file_fps(file_id):
+    """Best-effort source FPS for a file id (0.0 when unknown)."""
+    try:
+        from classes.query import File
+
+        f = File.get(id=file_id)
+        fps = f.data.get("fps", {}) if f and isinstance(getattr(f, "data", None), dict) else {}
+        num = float(fps.get("num", 0.0) or 0.0)
+        den = float(fps.get("den", 1.0) or 1.0)
+        return (num / den) if num > 0.0 and den > 0.0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def prewarmed_thumb_path(file_id, frame, fingerprint=None):
+    """Nearest Optimize-Preview pre-warmed thumbnail (coarse frame grid), or ""."""
+    fps = _file_fps(file_id)
+    if fps <= 0.0:
+        return ""
+    rounded = RoundFrameToThumbnailGrid(frame, fps)
+    if rounded == int(frame or 0):
+        return ""
+    return existing_thumb_path(file_id, rounded, fingerprint=fingerprint)
 
 
 def existing_thumb_path(file_id, frame, fingerprint=None):
@@ -80,6 +105,8 @@ def load_thumbnail_image(file_id, frame, *, clear_cache=False):
             path = ""
     else:
         path = existing_thumb_path(file_id, frame)
+        if not path:
+            path = prewarmed_thumb_path(file_id, frame)
         if not path:
             try:
                 path = GetThumbPath(file_id, frame) or ""
