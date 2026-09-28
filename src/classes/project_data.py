@@ -31,6 +31,7 @@ import copy
 import glob
 import os
 import random
+import re
 import shutil
 import json
 
@@ -897,9 +898,210 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             scale_none=openshot.SCALE_NONE,
         )
 
+        # libopenshot 1.0 corrected location_x/y so +/-1 moves a scaled
+        # SCALE_CROP clip fully offscreen. Preserve the visual positions
+        # stored by projects saved against libopenshot < 1.0, which used the
+        # canvas size for these offsets. Zenvi stamps its own openshot-qt
+        # version (1.0.x), so only the libopenshot version is meaningful here.
+        if self._numeric_version(libopenshot_version) < (1, 0, 0):
+            self._migrate_legacy_crop_locations()
+
+        # OpenShot 4.0.0 saved non-Crop locations using libopenshot 1.0's
+        # temporary geometry-relative behavior. Convert those values back to
+        # canvas-relative units so the positions remain unchanged with the
+        # corrected libopenshot behavior.
+        if (
+            self._numeric_version(openshot_version) == (4, 0, 0)
+            and "-" not in openshot_version
+        ):
+            self._migrate_400_non_crop_locations()
+
         # Fix default project id (if found)
         if self._data.get("id") == "T0":
             self._data["id"] = self.generate_id()
+
+    @staticmethod
+    def _numeric_version(value):
+        """Return three numeric components from a release-like version."""
+        numbers = [int(part) for part in re.findall(r"\d+", str(value))[:3]]
+        return tuple((numbers + [0, 0, 0])[:3])
+
+    @classmethod
+    def _version_at_most(cls, version, cutoff):
+        """Compare the numeric components of release-like version strings."""
+        return cls._numeric_version(version) <= cls._numeric_version(cutoff)
+
+    @staticmethod
+    def _keyframe_value(keyframe_data, frame, default):
+        """Evaluate serialized keyframe data, falling back safely if malformed."""
+        if not isinstance(keyframe_data, dict):
+            return default
+        try:
+            keyframe = openshot.Keyframe()
+            keyframe.SetJson(json.dumps(keyframe_data))
+            return keyframe.GetValue(int(round(frame)))
+        except (RuntimeError, TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _legacy_location_factor(value, canvas_size, clip_size, alignment):
+        """Return the old/new location-unit ratio for one clip axis."""
+        if not value or canvas_size <= 0.0 or clip_size <= 0.0:
+            return 1.0
+        if alignment == "start":
+            denominator = clip_size if value < 0.0 else canvas_size
+        elif alignment == "end":
+            denominator = canvas_size if value < 0.0 else clip_size
+        else:
+            denominator = (canvas_size + clip_size) / 2.0
+        return canvas_size / denominator if denominator else 1.0
+
+    def _migrate_legacy_crop_locations(self):
+        """Preserve positions of SCALE_CROP clips saved by libopenshot <= 0.7."""
+        canvas_width = float(self._data.get("width") or 0.0)
+        canvas_height = float(self._data.get("height") or 0.0)
+        if canvas_width <= 0.0 or canvas_height <= 0.0:
+            return
+
+        files = {
+            file_data.get("id"): file_data
+            for file_data in self._data.get("files", [])
+            if isinstance(file_data, dict)
+        }
+        horizontal_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start",
+            openshot.GRAVITY_LEFT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "start",
+            openshot.GRAVITY_TOP_RIGHT: "end",
+            openshot.GRAVITY_RIGHT: "end",
+            openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+        vertical_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start",
+            openshot.GRAVITY_TOP: "start",
+            openshot.GRAVITY_TOP_RIGHT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "end",
+            openshot.GRAVITY_BOTTOM: "end",
+            openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+
+        for clip in self._data.get("clips", []):
+            if clip.get("scale") != openshot.SCALE_CROP:
+                continue
+
+            reader = clip.get("reader") or files.get(clip.get("file_id"), {})
+            source_width = float(reader.get("width") or 0.0)
+            source_height = float(reader.get("height") or 0.0)
+            if source_width <= 0.0 or source_height <= 0.0:
+                continue
+
+            crop_scale = max(
+                canvas_width / source_width,
+                canvas_height / source_height,
+            )
+            base_width = source_width * crop_scale
+            base_height = source_height * crop_scale
+            gravity = clip.get("gravity", openshot.GRAVITY_CENTER)
+            x_alignment = horizontal_alignment.get(gravity, "center")
+            y_alignment = vertical_alignment.get(gravity, "center")
+            migrated = False
+
+            for property_name, canvas_size, base_size, alignment, scale_name in (
+                ("location_x", canvas_width, base_width, x_alignment, "scale_x"),
+                ("location_y", canvas_height, base_height, y_alignment, "scale_y"),
+            ):
+                for point in clip.get(property_name, {}).get("Points", []):
+                    coordinate = point.get("co")
+                    if not isinstance(coordinate, dict) or "Y" not in coordinate:
+                        continue
+                    frame = coordinate.get("X", 1.0)
+                    value = coordinate["Y"]
+                    scale_value = self._keyframe_value(
+                        clip.get(scale_name), frame, 1.0
+                    )
+                    factor = self._legacy_location_factor(
+                        value, canvas_size, base_size * scale_value, alignment
+                    )
+                    if factor != 1.0:
+                        coordinate["Y"] = value * factor
+                        migrated = True
+
+            if migrated:
+                log.info(
+                    "Migrating legacy SCALE_CROP location keyframes for clip %s",
+                    clip.get("id", "<unknown>"),
+                )
+
+    def _migrate_400_non_crop_locations(self):
+        """Preserve non-Crop positions saved by the OpenShot 4.0.0 release."""
+        canvas_width = float(self._data.get("width") or 0.0)
+        canvas_height = float(self._data.get("height") or 0.0)
+        if canvas_width <= 0.0 or canvas_height <= 0.0:
+            return
+
+        files = {
+            file_data.get("id"): file_data
+            for file_data in self._data.get("files", [])
+            if isinstance(file_data, dict)
+        }
+        horizontal_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start", openshot.GRAVITY_LEFT: "start",
+            openshot.GRAVITY_BOTTOM_LEFT: "start", openshot.GRAVITY_TOP_RIGHT: "end",
+            openshot.GRAVITY_RIGHT: "end", openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+        vertical_alignment = {
+            openshot.GRAVITY_TOP_LEFT: "start", openshot.GRAVITY_TOP: "start",
+            openshot.GRAVITY_TOP_RIGHT: "start", openshot.GRAVITY_BOTTOM_LEFT: "end",
+            openshot.GRAVITY_BOTTOM: "end", openshot.GRAVITY_BOTTOM_RIGHT: "end",
+        }
+
+        for clip in self._data.get("clips", []):
+            scale_mode = clip.get("scale", openshot.SCALE_FIT)
+            if scale_mode == openshot.SCALE_CROP:
+                continue
+            reader = clip.get("reader") or files.get(clip.get("file_id"), {})
+            source_width = float(reader.get("width") or 0.0)
+            source_height = float(reader.get("height") or 0.0)
+            if source_width <= 0.0 or source_height <= 0.0:
+                continue
+
+            gravity = clip.get("gravity", openshot.GRAVITY_CENTER)
+            for property_name, canvas_size, source_size, alignment, scale_name in (
+                ("location_x", canvas_width, source_width,
+                 horizontal_alignment.get(gravity, "center"), "scale_x"),
+                ("location_y", canvas_height, source_height,
+                 vertical_alignment.get(gravity, "center"), "scale_y"),
+            ):
+                for point in clip.get(property_name, {}).get("Points", []):
+                    coordinate = point.get("co")
+                    if not isinstance(coordinate, dict) or "Y" not in coordinate:
+                        continue
+                    frame = coordinate.get("X", 1.0)
+                    value = coordinate["Y"]
+                    margin = self._keyframe_value(clip.get("margin"), frame, 0.0)
+                    margin_pixels = max(0.0, min(0.5, margin)) * min(
+                        canvas_width, canvas_height)
+                    layout_size = max(1.0, canvas_size - (2.0 * margin_pixels))
+
+                    if scale_mode == openshot.SCALE_STRETCH:
+                        base_size = layout_size
+                    elif scale_mode == openshot.SCALE_NONE:
+                        base_size = source_size
+                    else:
+                        fit_scale = min(
+                            (canvas_width - 2.0 * margin_pixels) / source_width,
+                            (canvas_height - 2.0 * margin_pixels) / source_height,
+                        )
+                        base_size = source_size * fit_scale
+
+                    clip_size = base_size * self._keyframe_value(
+                        clip.get(scale_name), frame, 1.0)
+                    factor = self._legacy_location_factor(
+                        value, layout_size, clip_size, alignment)
+                    if factor:
+                        # Undo old->new conversion, then account for the fact
+                        # that restored non-Crop coordinates use the full canvas.
+                        coordinate["Y"] = value * layout_size / (factor * canvas_size)
 
     def is_keyframe_valid(self, keyframe, default_value):
         """Check if a keyframe is not empty (i.e. > 1 point, or a non default_value)"""
