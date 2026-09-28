@@ -25,11 +25,12 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
+from qt_api import QRectF
 from classes.app import get_app
 
 TRACK_TOOLBAR_SPACING_REDUCTION = 2.0
 TRACK_TOOLBAR_LEFT_SHIFT = 10.0
+TRACK_TOOLBAR_BOTTOM_PADDING = 3.0
 
 
 class TrackInteractionMixin:
@@ -108,9 +109,15 @@ class TrackInteractionMixin:
         bottom_border = float(getattr(painter, "name_border_bottom_width", 0.0) or 0.0)
         font_metrics = self.fontMetrics()
         text_height = float(font_metrics.height()) if font_metrics else 0.0
-        icons_base = name_rect.y() + menu_margin + text_height + menu_margin
         min_row_top = name_rect.y() + menu_margin
-        max_icon_area_bottom = name_rect.bottom() - bottom_border - menu_margin
+        base_row_height = float(
+            getattr(self, "vertical_factor", 0.0)
+            or getattr(self, "track_height", 0.0)
+            or name_rect.height()
+        )
+        base_row_bottom = name_rect.y() + max(0.0, base_row_height)
+        base_row_bottom = min(base_row_bottom, name_rect.bottom())
+        max_icon_area_bottom = base_row_bottom - bottom_border - menu_margin
 
         current_left = left_limit
 
@@ -134,25 +141,26 @@ class TrackInteractionMixin:
 
             icon_height = spec.get("icon_height", spec["height"]) or 0.0
             margin_y = spec.get("margin_y", margin)
-            # Keep icons strictly below the text row (+ menu margin)
-            desired_draw_y = max(icons_base, min_row_top)
+            text_bottom = name_rect.y() + menu_margin + text_height
 
-            if icon_height:
-                max_draw_y = max_icon_area_bottom - icon_height
-                desired_draw_y = min(desired_draw_y, max_draw_y)
+            # Anchor icons by their draw position (not padded hit-rect)
+            # so they stay near the bottom edge across all themes.
+            desired_draw_y = max_icon_area_bottom - icon_height - TRACK_TOOLBAR_BOTTOM_PADDING
+            min_draw_y = max(min_row_top, text_bottom + menu_margin)
+            max_draw_y = max_icon_area_bottom - icon_height
+            if max_draw_y < min_draw_y:
+                draw_y = max_draw_y
+            else:
+                draw_y = min(max(desired_draw_y, min_draw_y), max_draw_y)
 
-            top = desired_draw_y  # <-- do NOT subtract margin_y here
-            bottom_limit = max_icon_area_bottom  # no extra +margin_y; keep within icon area
+            top = draw_y - margin_y
+            bottom_limit = max_icon_area_bottom
 
             height = spec["height"]
-            rect_bottom = top + height
-            if rect_bottom > bottom_limit:
-                rect_bottom = bottom_limit
-                top = rect_bottom - height
-
-            text_bottom = name_rect.y() + menu_margin + text_height
-            if top < text_bottom + menu_margin:
-                top = text_bottom + menu_margin
+            if top < min_row_top:
+                top = min_row_top
+            if top + height > bottom_limit:
+                top = bottom_limit - height
 
             rect = QRectF(
                 current_left,
@@ -185,6 +193,8 @@ class TrackInteractionMixin:
 
     def _track_toolbar_button_at(self, pos):
         self.geometry.ensure()
+        if hasattr(pos, "toPointF"):
+            pos = pos.toPointF()
         for _track_rect, track, name_rect in self.geometry.iter_tracks():
             for button in self._track_toolbar_buttons(track, name_rect):
                 if button["rect"].contains(pos):
@@ -258,27 +268,6 @@ class TrackInteractionMixin:
         if not self.win:
             return
 
-        if key == "insert-above":
-            action = getattr(self.win, "actionAddTrackAbove_trigger", None)
-            if action and track_id:
-                self._select_track_for_action(track_id)
-                action()
-            return
-
-        if key == "insert-below":
-            action = getattr(self.win, "actionAddTrackBelow_trigger", None)
-            if action and track_id:
-                self._select_track_for_action(track_id)
-                action()
-            return
-
-        if key == "delete-track":
-            action = getattr(self.win, "actionRemoveTrack_trigger", None)
-            if action and track_id:
-                self._select_track_for_action(track_id)
-                action()
-            return
-
         if key == "lock-toggle" and track_id:
             self._select_track_for_action(track_id)
             locked = bool(getattr(track, "data", {}).get("lock")) if track else False
@@ -309,6 +298,8 @@ class TrackInteractionMixin:
     def _update_toolbar_pressed_state(self, pos):
         if not self._toolbar_pressed_key:
             return
+        if hasattr(pos, "toPointF"):
+            pos = pos.toPointF()
         button = self._get_toolbar_button(*self._toolbar_pressed_key)
         inside = bool(button and button.get("rect") and button["rect"].contains(pos))
         if inside != self._toolbar_pressed_inside:

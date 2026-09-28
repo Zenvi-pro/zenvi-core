@@ -26,17 +26,21 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QSize, Qt, QPoint, QRegExp, QRect, QEvent
-from PyQt5.QtGui import (QDrag, QCursor, QPixmap, QPainter, QIcon,
-                         QLinearGradient, QColor, QPen)
-from PyQt5.QtWidgets import QListView, QAbstractItemView
+import uuid
+
+from qt_api import QSize, Qt, QPoint, QRect, QEvent, QItemSelectionModel
+from qt_api import clear_override_cursor
+from qt_api import modifiers_has
+from qt_api import (QDrag, QCursor, QPixmap, QPainter, QIcon,
+                    QLinearGradient, QColor, QPen)
+from qt_api import QListView, QAbstractItemView
 
 from classes import info
 from classes.app import get_app
 from classes.file_drop import accept_os_file_drag, urls_from_mime
 from classes.logger import log
 from classes.query import File
-from .menu import StyledContextMenu
+from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
 
 
@@ -164,48 +168,69 @@ class FilesListView(QListView):
 
         # Set context menu mode
         app = get_app()
+        self.win = app.window
         _ = app._tr
         app.context_menu_object = "files"
 
         index = self.indexAt(event.pos())
+        if not index.isValid():
+            self.clearSelection()
+        else:
+            self.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
 
         # Build menu
         menu = StyledContextMenu(parent=self)
-        menu.addAction(self.win.actionImportFiles)
-        menu.addAction(self.win.actionDetailsView)
+        add_bound_action(menu, self.win, "actionImportFiles", _("Import Files..."), "actionImportFiles_trigger")
+        add_bound_action(menu, self.win, "actionDetailsView", _("Details View"), "actionDetailsView_trigger")
 
         if index.isValid():
-            # Look up file_id from 5th column of row
+            # Look up the model item and our unique ID
             model = self.model()
-            id_index = index.sibling(index.row(), 5)
-            file_id = model.data(id_index, Qt.DisplayRole)
+            source_index = model.mapToSource(index)
+
+            # Look up file_id from 5th column of row
+            id_index = source_index.sibling(source_index.row(), 5)
+            file_id = model.sourceModel().data(id_index, Qt.DisplayRole)
             file = File.get(id=file_id)
 
             menu.addSeparator()
 
             # SVG title editing (rare – keep it)
             if file and file.data.get("path", "").endswith(".svg"):
-                menu.addAction(self.win.actionEditTitle)
+                add_bound_action(menu, self.win, "actionEditTitle", _("Edit Title"), "actionEditTitle_trigger")
                 menu.addSeparator()
 
             # Core actions – the most common workflows
-            menu.addAction(self.win.actionPreview_File)
-            menu.addAction(self.win.actionAdd_to_Timeline)
+            add_bound_action(menu, self.win, "actionPreview_File", _("Preview File"), "actionPreview_File_trigger")
+            add_bound_action(menu, self.win, "actionAdd_to_Timeline", _("Add to Timeline"), "actionAdd_to_Timeline_trigger")
             menu.addSeparator()
-            menu.addAction(self.win.actionSplitFile)
+            add_bound_action(menu, self.win, "actionSplitFile", _("Split Clip"), "actionSplitFile_trigger")
             menu.addSeparator()
-            menu.addAction(self.win.actionFile_Properties)
-            menu.addAction(self.win.actionRemove_from_Project)
+            add_bound_action(menu, self.win, "actionFile_Properties", _("File Properties"), "actionFile_Properties_trigger")
+            add_bound_action(menu, self.win, "actionRemove_from_Project", _("Remove from Project"), "actionRemove_from_Project_trigger")
 
         # Show menu
-        menu.popup(event.globalPos())
+        menu.show_at(event)
+
+    def mousePressEvent(self, event):
+        index = self.indexAt(event.pos())
+        if not index.isValid() and event.button() in (Qt.LeftButton, Qt.RightButton):
+            self.clearSelection()
+        super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         super(FilesListView, self).mouseDoubleClickEvent(event)
+        index = self.indexAt(event.pos())
+        if index.isValid():
+            self.setCurrentIndex(index)
+            self.selectionModel().select(
+                index,
+                QItemSelectionModel.ClearAndSelect,
+            )
         # Preview File, File Properties, or Split File (depending on Shift/Ctrl)
-        if int(get_app().keyboardModifiers() & Qt.ShiftModifier) > 0:
+        if modifiers_has(get_app().keyboardModifiers(), Qt.ShiftModifier):
             get_app().window.actionSplitFile.trigger()
-        elif int(get_app().keyboardModifiers() & Qt.ControlModifier) > 0:
+        elif modifiers_has(get_app().keyboardModifiers(), Qt.ControlModifier):
             get_app().window.actionFile_Properties.trigger()
         else:
             get_app().window.actionPreview_File.trigger()
@@ -266,8 +291,19 @@ class FilesListView(QListView):
         # Set the hot spot to the center of the composite pixmap
         drag.setHotSpot(composite_pixmap.rect().center())
 
-        # Execute the drag operation
-        drag.exec_(supportedActions)
+        # Start a transaction so all clips are grouped for a single undo
+        tid = str(uuid.uuid4())
+        get_app().updates.transaction_id = tid
+
+        # Execute the drag operation (blocking - dropEvent creates clips during this call)
+        exec_fn = getattr(drag, "exec", None) or getattr(drag, "exec_", None)
+        if exec_fn is None:
+            raise AttributeError("QDrag has no exec_/exec method")
+        exec_fn(supportedActions)
+        clear_override_cursor()
+
+        # End transaction
+        get_app().updates.transaction_id = None
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):
@@ -300,12 +336,15 @@ class FilesListView(QListView):
 
     def refresh_view(self):
         """Filter files with proxy class"""
-        model = self.model()
         filter_text = self.win.filesFilter.text()
-        model.setFilterRegExp(QRegExp(filter_text.replace(' ', '.*'), Qt.CaseInsensitive))
+        # Apply filter to the source proxy model (not the single-column wrapper)
+        from qt_api import make_filter_regex, set_proxy_filter
+        pattern = filter_text.replace(' ', '.*')
+        regex = make_filter_regex(pattern, case_insensitive=True)
+        set_proxy_filter(self.files_model.proxy_model, regex)
 
-        col = model.sortColumn()
-        model.sort(col)
+        col = self.files_model.proxy_model.sortColumn()
+        self.files_model.proxy_model.sort(col)
 
     def resize_contents(self):
         pass
@@ -321,17 +360,18 @@ class FilesListView(QListView):
         super().__init__(*args)
 
         # Get a reference to the window object
-        self.win = get_app().window
+        app = get_app()
+        self.win = app.window
 
         # Get Model data
         self.files_model = model
-        self.setModel(self.files_model.proxy_model)
+        self.setModel(self.files_model.list_proxy_model)
 
-        # Remove the default selection model and wire up to the shared one
+        # Remove the default selection model and wire up to the list-specific one
         self.selectionModel().deleteLater()
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setSelectionModel(self.files_model.selection_model)
+        self.setSelectionModel(self.files_model.list_selection_model)
 
         # Keep track of mouse press start position to determine when to start drag
         self.setAcceptDrops(True)
@@ -339,6 +379,7 @@ class FilesListView(QListView):
         self.setDropIndicatorShown(True)
 
         # Setup header columns and layout
+        self.setModelColumn(0)  # Only display first column in icon mode
         self.setIconSize(info.LIST_ICON_SIZE)
         self.setGridSize(info.LIST_GRID_SIZE)
         self.setViewMode(QListView.IconMode)

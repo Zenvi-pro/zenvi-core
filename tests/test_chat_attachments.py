@@ -1,6 +1,7 @@
 import os
 
 from classes.chat_attachments import (
+    attach_paths_batch,
     display_user_text,
     format_referenced_files_block,
     kind_for_path,
@@ -52,3 +53,13 @@ def test_format_block_omits_empty_path():
     assert "path=" not in block
     assert os.getcwd() not in block
     assert "@reel.mp4" in block
+
+
+def test_attach_paths_batch_returns_snapshot(tmp_path):
+    clip = tmp_path / "a.png"
+    clip.write_bytes(b"x")
+    atts = []
+    before, added = attach_paths_batch(atts, [str(clip)])
+    assert added == 1
+    assert before == []
+    assert len(atts) == 1

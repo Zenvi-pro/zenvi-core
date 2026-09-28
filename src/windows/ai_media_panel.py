@@ -10,8 +10,8 @@
 """
 
 import os
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import (
+from qt_api import QTimer
+from qt_api import (
     QDockWidget, QWidget, QVBoxLayout,
     QPushButton, QLabel, QProgressBar, QTextEdit,
 )

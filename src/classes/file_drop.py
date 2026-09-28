@@ -518,7 +518,7 @@ def local_path_from_url(url) -> str:
             return _macos_posix_path_from_url_string(url)
         if url.startswith("file://"):
             try:
-                from PyQt5.QtCore import QUrl
+                from qt_api import QUrl
                 return local_path_from_url(QUrl(url))
             except ImportError:
                 stripped = url[7:]  # file://
@@ -581,7 +581,7 @@ def mime_has_file_drop(mime) -> bool:
 def urls_from_mime(mime):
     """``QUrl`` list for an OS file drop (urls, text/uri-list, or local-path text)."""
     try:
-        from PyQt5.QtCore import QUrl
+        from qt_api import QUrl
     except ImportError:
         return []
 
@@ -642,7 +642,7 @@ def urls_from_mime(mime):
 def accept_os_file_drag(event) -> bool:
     """Accept a drag if it looks like files. Returns False when the event is ignored."""
     try:
-        from PyQt5.QtCore import Qt
+        from qt_api import Qt
     except ImportError:
         return False
     if event is None:

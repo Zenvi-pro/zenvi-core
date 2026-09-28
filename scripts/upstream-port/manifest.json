@@ -1,0 +1,806 @@
+{
+  "repo": "zenvi-pro/zenvi-core",
+  "base": "develop",
+  "upstream_remote": "openshot",
+  "upstream_ref": "openshot/develop",
+  "fork_point": "8204a244e331aeacfbf0c741d2926a624bfa7b42",
+  "branch_prefix": "jashan/",
+  "default_deps_prefix": "~/zenvi-deps",
+  "max_parallel": 4,
+  "features": {
+    "libopenshot-1.0": {
+      "title": "Build and require libopenshot 1.0.0 (foundation for every 4.0 effect)",
+      "effort": "L",
+      "deps": [],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "libopenshot_tag": "v1.0.0",
+      "libopenshot_audio_tag": "v1.0.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "24ef9ce40",
+          "pr": 6075,
+          "title": "release-20260725",
+          "mode": "hunks",
+          "paths": [
+            "src/classes/project_data.py",
+            "src/tests/test_project_data.py"
+          ],
+          "note": "only the location_x/y migration for libopenshot>=1.0 (_migrate_legacy_crop_locations, _version_at_most); rewrite the gate to depend on libopenshot_version only, Zenvi stamps openshot-qt=1.0.x"
+        },
+        {
+          "sha": "d2737c461",
+          "pr": 6109,
+          "title": "fix/location-transform-backward-compat"
+        }
+      ],
+      "tasks": [
+        "scripts/build-mac-libopenshot.sh: parametrize LIBOPENSHOT_TAG (keep v0.5.0 default) + LIBOPENSHOT_AUDIO_TAG, make installer/mac-patches optional via `git apply --check`, pass -DUSE_QT6=OFF -DENABLE_OPENCV=${ZENVI_OPENCV:-ON} (brew opencv protobuf boost), glob the dylib name in the verify step",
+        "build ~/zenvi-deps-1.0 with ZENVI_DEPS=~/zenvi-deps-1.0 LIBOPENSHOT_TAG=v1.0.0 LIBOPENSHOT_AUDIO_TAG=v1.0.0 and prove `import openshot; openshot.OPENSHOT_VERSION_FULL` == 1.0.0",
+        "src/classes/info.py: MINIMUM_LIBOPENSHOT_VERSION = \"1.0.0\"",
+        ".github/workflows/release.yml (mac arm64 cache key, tags, OpenCV bundling via installer/fix_opencv_rpath.py from upstream 895ff014f, soname globs) and installer/ci-win-msys-libopenshot.sh (v1.0.0, mingw opencv)",
+        "installer/mac-patches/README.md: record which fixes are upstreamed in 1.0; drop patches that no longer apply",
+        "verify develop still runs with ZENVI_DEPS=~/zenvi-deps (0.5.0) untouched"
+      ],
+      "human_test": [
+        "ZENVI_DEPS=~/zenvi-deps-1.0 ./run.sh -> Help > About shows libopenshot 1.0.0",
+        "Open a project saved with 0.5 containing a scaled clip with location_x/y + a Crop effect -> identical framing in preview and export",
+        "Effects panel lists Shadow, Glow, Displacement Map, Denoise, Timer, Color Grade (icons may be blank until effects-basic-1.0)",
+        "Export H.264 MP4 and an audio-only export -> both play",
+        "ZENVI_DEPS=~/zenvi-deps ./run.sh on develop still launches (regression)"
+      ]
+    },
+    "pre-qt6-fixes": {
+      "title": "Upstream quality fixes from before the Qt6 migration (PyQt5 code)",
+      "effort": "M",
+      "deps": [],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "c71cbcd89",
+          "pr": 5912,
+          "title": "tabstops"
+        },
+        {
+          "sha": "6eaf5fe68",
+          "pr": 5914,
+          "title": "better-missing-files"
+        },
+        {
+          "sha": "d92194def",
+          "pr": 5916,
+          "title": "rotate-ctrl-key"
+        },
+        {
+          "sha": "9cd51d712",
+          "pr": 5917,
+          "title": "fix-effect-undo"
+        },
+        {
+          "sha": "a207de20f",
+          "pr": 5920,
+          "title": "cache-before-playhead"
+        },
+        {
+          "sha": "824713012",
+          "pr": 5922,
+          "title": "enable-blender-hw-acceleration"
+        },
+        {
+          "sha": "13425abe4",
+          "pr": 5930,
+          "title": "experimental-transitions"
+        },
+        {
+          "sha": "6a0f1f23c",
+          "pr": 5939,
+          "title": "duplicate-imports"
+        },
+        {
+          "sha": "45589a9ec",
+          "pr": 5952,
+          "title": "audio-transition"
+        },
+        {
+          "sha": "991e4a2bd",
+          "pr": 5953,
+          "title": "dropdown-constant-keyframes"
+        },
+        {
+          "sha": "57a360ecb",
+          "pr": 5955,
+          "title": "trim-stop-playback"
+        },
+        {
+          "sha": "e7c3821a7",
+          "pr": 5959,
+          "title": "missing-file-dialog"
+        },
+        {
+          "sha": "55d53a0f3",
+          "pr": 5962,
+          "title": "transition-resource"
+        },
+        {
+          "sha": "14bf5973e",
+          "pr": 5975,
+          "title": "large-fps"
+        },
+        {
+          "sha": "c3cbf0666",
+          "pr": 5977,
+          "title": "reset-animate"
+        },
+        {
+          "sha": "7512d825b",
+          "pr": 5978,
+          "title": "empty-keyframes"
+        },
+        {
+          "sha": "3976eb8c5",
+          "pr": 5981,
+          "title": "sample-rate-changes"
+        },
+        {
+          "sha": "8b157f1c2",
+          "pr": 5990,
+          "title": "omp-ffmpeg-thread-control"
+        },
+        {
+          "sha": "90df70580",
+          "pr": 5997,
+          "title": "flac-importing"
+        }
+      ],
+      "hotspots": [
+        "src/classes/project_data.py (Zenvi _relink vs #5914/#5959)",
+        "src/windows/models/files_model.py",
+        "src/settings/_default.settings",
+        "src/windows/preferences.py"
+      ],
+      "human_test": [
+        "Import a .flac -> appears in Project Files and plays",
+        "Open a project whose media was moved -> new missing-file dialog lets you relink; project loads",
+        "Ctrl-drag the rotate handle in the preview -> rotation snaps",
+        "Change an effect property, Undo -> property restored (no phantom undo steps)",
+        "Preferences > Performance: set FFmpeg/OMP thread counts, restart, export -> succeeds",
+        "Change project sample rate -> playback still works"
+      ]
+    },
+    "timeline-qwidget-default": {
+      "title": "Native QWidget timeline UX fixes from upstream (develop already defaults to it since #179)",
+      "effort": "L",
+      "deps": [],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "d8d42957d",
+          "pr": 5915,
+          "title": "prevent-qwidget-timeline-crash-exit"
+        },
+        {
+          "sha": "798a00a08",
+          "pr": 5926,
+          "title": "timeline-playback-length"
+        },
+        {
+          "sha": "fc1252176",
+          "pr": 5931,
+          "title": "smoother-drags"
+        },
+        {
+          "sha": "0efc2073c",
+          "pr": 5936,
+          "title": "auto-selections"
+        },
+        {
+          "sha": "795d3f95d",
+          "pr": 5937,
+          "title": "fix-recursive-paint"
+        },
+        {
+          "sha": "fb1030bb4",
+          "pr": 5954,
+          "title": "qwidget-dragging"
+        },
+        {
+          "sha": "3b32e99a3",
+          "pr": 5967,
+          "title": "razor-cursor"
+        },
+        {
+          "sha": "e0567f1be",
+          "pr": 5964,
+          "title": "release-20260316",
+          "mode": "hunks",
+          "paths": [
+            "src/windows/views/"
+          ],
+          "note": "timeline paint/keyframe/thumbnail hunks only; skip version bumps"
+        },
+        {
+          "sha": "0cb12a514",
+          "pr": 5982,
+          "title": "auto-direction-moves"
+        },
+        {
+          "sha": "b61fbee7b",
+          "pr": 5988,
+          "title": "improved-zoom-resize"
+        }
+      ],
+      "tasks": [
+        "develop merged #179 (c6fe9cec3, 2026-09-26) which already makes the native timeline the default and adds paint-path fixes (byte_lru.py, thumbnails.py, tests/test_timeline_*.py): rebase onto origin/develop FIRST and reconcile each upstream pick against those changes; do NOT re-flip or duplicate the default setting",
+        "keep Zenvi's ai_metadata preservation, file drop and pending clip overrides working in timeline_backend/qwidget/base.py + clip.py",
+        "verify the agent tools that slice/add/move clips (src/classes/tool_handlers.py) still work on the qwidget backend; run tests/test_timeline_*.py added by #179"
+      ],
+      "hotspots": [
+        "src/windows/views/timeline.py",
+        "src/windows/views/timeline_backend/qwidget/base.py",
+        "src/windows/views/timeline_backend/qwidget/clip.py",
+        "src/windows/views/zoom_slider.py",
+        "src/windows/models/files_model.py"
+      ],
+      "human_test": [
+        "./run.sh with a fresh HOME -> the native timeline appears by default (unchanged from develop #179)",
+        "Drag, trim, razor, snap clips; multi-select and ripple-move -> smooth, no flicker or crash on exit",
+        "Zoom with the slider and Ctrl+wheel -> playhead stays in view",
+        "Ask the Zenvi assistant to split a clip at the playhead and add a transition -> works on the native timeline",
+        "Preferences: enable Legacy timeline, restart -> web timeline still loads"
+      ]
+    },
+    "qt-api": {
+      "title": "Qt binding abstraction (src/qt_api.py): PyQt5 default, PyQt6/PySide6 opt-in",
+      "effort": "XL",
+      "deps": [],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "6674926ff",
+          "pr": 5885,
+          "title": "qt6-support",
+          "note": "also carries ComfyUI/proxy/tabstops files Zenvi does not have -> `git rm` the deleted-by-us ones (comfy-ui and optimize-preview features re-add them later)"
+        },
+        {
+          "sha": "3e4b914b3",
+          "pr": 6013,
+          "title": "sip_import_pyqt5"
+        },
+        {
+          "sha": "a66fc93ee",
+          "pr": 6025,
+          "title": "pyqt6-fixes-may4"
+        },
+        {
+          "sha": "4ae272992",
+          "pr": 6104,
+          "title": "fix/python36-qt-api-exports"
+        }
+      ],
+      "tasks": [
+        "keep PyQt5 the default binding (auto order pyqt5 > pyqt6 > pyside6, or export OPENSHOT_QT_API=pyqt5 in launch.py); Qt6-as-default is a later feature",
+        "add QtWebEngine/QtWebChannel exports for pyqt5 AND a QtWebKitWidgets export (Windows chat fallback) in qt_api",
+        "convert every Zenvi-only file that imports PyQt5 to `from qt_api import ...` (agent_mcp_server, crash_handler, docking, file_drop, qt_main_thread, qt_platform, tool_handlers, update_installer, update_queue, zenvi_brand_rc, agent_panel, agent_runners, agent_selector_button, agent_trace_dialog, ai_chat_ui, ai_media_panel, chat_web_view, embedded_web, freesound_dock, login_window, pexels_dock, plan_dock_ui, update_panel, update_status_button, views/indexing_badge, views/stock_search_view, timeline_backend/webengine, timeline_backend/webkit, src/tests/*)",
+        "tests/conftest.py: extend the PyQt5 stub so `import qt_api` works headlessly (stub qt_api or make it stub-tolerant); pytest tests/ must stay green",
+        "freeze.py / installer/fix_qt5_rpath.py / requirements.txt: parametrize on qt_api.QT_API, PyQt5 path unchanged",
+        "acceptance: `grep -rn 'PyQt5' src --include=*.py` matches only src/qt_api.py and tests stubs"
+      ],
+      "hotspots": [
+        "src/windows/main_window.py (28 upstream hunks vs 64 Zenvi hunks)",
+        "src/windows/video_widget.py",
+        "src/classes/app.py",
+        "src/windows/views/timeline.py",
+        "src/windows/views/timeline_backend/qwidget/base.py",
+        "src/windows/export.py",
+        "src/launch.py",
+        "freeze.py",
+        "src/classes/info.py"
+      ],
+      "human_test": [
+        "./run.sh (PyQt5 default) -> app launches; Help > About shows Qt 5.15",
+        "All Zenvi docks render: AI chat, Plan, Pexels, Freesound, Scene Descriptions, Update panel; Sign out / Login window works",
+        "Timeline (native and legacy), Export dialog, Title editor, Preferences, Blender dialog all open without console errors",
+        "Optional Qt6 smoke: `pip install PyQt6 PyQt6-WebEngine` in a scratch venv and `OPENSHOT_QT_API=pyqt6 python -c 'import sys; sys.path.insert(0,\"src\"); import qt_api; print(qt_api.QT_API)'` prints pyqt6",
+        ".venv/bin/python -m pytest tests/ -q -> green"
+      ]
+    },
+    "ai-masking": {
+      "title": "Local AI object detection, tracked masks and Object Mask effect",
+      "effort": "XL",
+      "deps": [
+        "libopenshot-1.0",
+        "qt-api"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "cc683e70f",
+          "pr": 6024,
+          "title": "mask-fixes"
+        },
+        {
+          "sha": "748a26e2c",
+          "pr": 6039,
+          "title": "tracked-mask-source"
+        },
+        {
+          "sha": "895ff014f",
+          "pr": 6047,
+          "title": "object-detection-v2",
+          "note": "drop version.py/release_details.py/metrics/.gitlab-ci hunks (Zenvi updater differs); keep http_client.py, installer/fix_opencv_rpath.py, src/resources/*-models.json"
+        },
+        {
+          "sha": "068225620",
+          "pr": 6050,
+          "title": "object-mask-effect"
+        },
+        {
+          "sha": "24ef9ce40",
+          "pr": 6075,
+          "title": "release-20260725",
+          "mode": "hunks",
+          "paths": [
+            "src/windows/process_effect.py"
+          ]
+        }
+      ],
+      "tasks": [
+        "libopenshot must be built with -DENABLE_OPENCV=ON (opencv_dnn runs the YOLO ONNX weights); confirm ~/zenvi-deps-1.0 has it or rebuild",
+        "freeze.py: bundle OpenCV dylibs (upstream fix_opencv_rpath.py)"
+      ],
+      "hotspots": [
+        "src/windows/video_widget.py",
+        "src/windows/main_window.py + src/windows/ui/main-window.ui",
+        "src/classes/project_data.py",
+        "freeze.py",
+        "src/windows/views/timeline_backend/paint/clip.py",
+        "binary icons under src/effects/icons and src/images/cache (take upstream)"
+      ],
+      "human_test": [
+        "Effects > Object Detector on a clip -> model chooser offers YOLO models; download shows progress and completes",
+        "Process the clip -> boxes and labels drawn in the preview; detected objects listed in Properties",
+        "Right-click a tracked object -> 'Use as mask source'",
+        "Effects > Object Mask -> pick the detected object -> clip is masked; keyframes visible on the timeline",
+        "Undo/redo, save, reopen -> mask data persists under the project assets folder",
+        "Export -> masked result in the output file"
+      ]
+    },
+    "effects-basic-1.0": {
+      "title": "Shadow, Glow, Displacement Map and Denoise effects (icons + option metadata)",
+      "effort": "S",
+      "deps": [
+        "libopenshot-1.0",
+        "qt-api"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "af633db4d",
+          "pr": 6007,
+          "title": "displacement-effect"
+        },
+        {
+          "sha": "d0e4cf148",
+          "pr": 6010,
+          "title": "shadow-and-glow"
+        },
+        {
+          "sha": "b2c467d7d",
+          "pr": 6031,
+          "title": "denoise"
+        }
+      ],
+      "human_test": [
+        "Effects panel shows Shadow, Glow, Displacement Map, Denoise with icons",
+        "Drag each onto a clip -> preview changes; properties editable in the Properties dock",
+        "Export a clip with Glow + Denoise -> effect visible in output"
+      ]
+    },
+    "color-grade": {
+      "title": "Color Grade effect editor (wheels, curves, LUT), Look presets and video scopes dock",
+      "effort": "L",
+      "deps": [
+        "libopenshot-1.0",
+        "qt-api"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "ba1beb46a",
+          "pr": 6016,
+          "title": "color-grade"
+        }
+      ],
+      "hotspots": [
+        "src/windows/main_window.py",
+        "src/windows/ui/main-window.ui",
+        "src/windows/video_widget.py",
+        "src/windows/views/timeline.py",
+        "src/themes/cosmic/theme.py (Zenvi +1586)",
+        "src/classes/title_bar.py",
+        "src/settings/_default.settings"
+      ],
+      "human_test": [
+        "Right-click a clip > Look > pick a color preset -> preview updates, undoable",
+        "Open the Color Grade editor -> wheels and curves change the preview live",
+        "View > Scopes dock -> histogram / waveform / vectorscope update during playback",
+        "Keyframe two different grades on one clip -> interpolates",
+        "Export -> graded output"
+      ]
+    },
+    "film-grain": {
+      "title": "Film Grain presets, camera-motion presets and retime keyframe scaling",
+      "effort": "L",
+      "deps": [
+        "color-grade"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "03859602a",
+          "pr": 6017,
+          "title": "film-grain"
+        }
+      ],
+      "hotspots": [
+        "same as color-grade",
+        "src/classes/retime.py",
+        "src/classes/keyframe_scaler.py",
+        "src/presets/*.xml vs Zenvi export.py"
+      ],
+      "human_test": [
+        "Right-click clip > Look > Film Grain presets (Super 8 / 16mm / 35mm / High ISO) -> visible grain",
+        "Motion menu > a camera motion preset -> clip animates",
+        "Change clip speed -> existing keyframes rescale correctly",
+        "Export dialog presets still load; export succeeds"
+      ]
+    },
+    "post-qt6-fixes": {
+      "title": "Upstream quality fixes from after the Qt6 migration",
+      "effort": "M",
+      "deps": [
+        "qt-api"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "afeab08f2",
+          "pr": 6028,
+          "title": "fps-fix"
+        },
+        {
+          "sha": "864abcbab",
+          "pr": 6029,
+          "title": "screen-restore"
+        },
+        {
+          "sha": "461009a54",
+          "pr": 6030,
+          "title": "thumbnail-fixes"
+        },
+        {
+          "sha": "5d25bac21",
+          "pr": 6032,
+          "title": "export-animated-titles"
+        },
+        {
+          "sha": "54636ca95",
+          "pr": 6033,
+          "title": "blender-5-color"
+        },
+        {
+          "sha": "8be219268",
+          "pr": 6037,
+          "title": "source-rotation"
+        },
+        {
+          "sha": "e711d6c24",
+          "pr": 6042,
+          "title": "marker-scrolling"
+        },
+        {
+          "sha": "87f1927e1",
+          "pr": 6043,
+          "title": "speed-reset-freeze"
+        },
+        {
+          "sha": "9e59b9028",
+          "pr": 6051,
+          "title": "file-import-order"
+        },
+        {
+          "sha": "06c5503fa",
+          "pr": 6052,
+          "title": "tilt-scroll-wheel"
+        }
+      ],
+      "hotspots": [
+        "src/windows/export.py (Zenvi +956)",
+        "src/classes/thumbnail.py",
+        "src/windows/models/files_model.py",
+        "src/themes/cosmic/theme.py"
+      ],
+      "human_test": [
+        "Import a phone video recorded in portrait -> correct orientation in preview",
+        "Create a 59.94 fps project -> profile applied, playback OK",
+        "Move the window to a second monitor, quit, relaunch -> geometry restored",
+        "Export an animated title -> renders",
+        "Horizontal tilt-wheel scrolls the timeline; marker navigation scrolls to the marker",
+        "Reset clip speed to 1.0 -> no freeze"
+      ],
+      "tasks": [
+        "#6014 refactor-timeline-styles moved to the timeline-styles feature (it needs helpers from the timeline-qwidget-default picks)"
+      ]
+    },
+    "timeline-styles": {
+      "title": "Upstream timeline style refactor (#6014) on top of the native-timeline fixes",
+      "effort": "M",
+      "deps": [
+        "qt-api",
+        "timeline-qwidget-default"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "930ff9197",
+          "pr": 6014,
+          "title": "refactor-timeline-styles",
+          "note": "drop installer/build-mac-dmg.sh hunks (Zenvi has its own DMG scripts); needs drag preview / razor cursor / auto-select helpers from timeline-qwidget-default and qt_api imports"
+        }
+      ],
+      "hotspots": [
+        "src/themes/cosmic/theme.py",
+        "src/windows/views/timeline.py",
+        "src/windows/views/timeline_backend/paint/clip.py",
+        "src/windows/views/timeline_backend/qwidget/base.py",
+        "src/windows/views/zoom_slider.py"
+      ],
+      "human_test": [
+        "./run.sh -> native timeline renders with the restyled clips/tracks; Cosmic theme colours preserved",
+        "Hover a clip -> tooltip; locked track dims; razor cursor shows in razor mode",
+        "Zoom slider / minimap still work"
+      ],
+      "hold": true,
+      "notes": "HOLD until #205 (qt-api) and #206 (timeline-qwidget-default) are both merged into develop: #6014 needs code from both and they are independent branches, so there is no single stack base. Start with launch-all.sh --only timeline-styles --force once develop contains both."
+    },
+    "optimize-preview": {
+      "title": "Optimized preview proxies for heavy media",
+      "effort": "L",
+      "deps": [
+        "qt-api"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "c13495c9a",
+          "pr": 5993,
+          "title": "optimize-preview",
+          "note": "pre-#5885 code: convert imports to qt_api after picking"
+        },
+        {
+          "sha": "889f68805",
+          "pr": 5994,
+          "title": "release-20260402",
+          "mode": "hunks",
+          "paths": [
+            "src/classes/proxy_service.py",
+            "src/windows/models/files_model.py",
+            "src/windows/preferences.py",
+            "src/settings/_default.settings"
+          ]
+        }
+      ],
+      "tasks": [
+        "evaluate overlap with Zenvi's media_cache.py / media-cache-limit-mb before committing; keep both caches independent"
+      ],
+      "hotspots": [
+        "src/windows/models/files_model.py",
+        "src/classes/assets.py",
+        "src/classes/thumbnail.py",
+        "src/classes/project_data.py"
+      ],
+      "human_test": [
+        "Right-click a 4K file > Optimize Preview -> proxy generated with progress; badge on the thumbnail",
+        "Playback uses the proxy (smoother); toggle proxies off in Preferences -> original used",
+        "Export -> uses originals (full resolution)",
+        "Save, reopen -> proxy paths still resolve"
+      ]
+    },
+    "comfy-ui": {
+      "title": "Local ComfyUI integration: generation queue, templates and AI Tools menu",
+      "effort": "XL",
+      "deps": [
+        "qt-api"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "eff3bfccf",
+          "pr": 5932,
+          "title": "comfy-ui",
+          "note": "pre-#5885 code: convert imports to qt_api after picking; skip translation churn"
+        },
+        {
+          "sha": "9b87b174c",
+          "pr": 5989,
+          "title": "comfyui-depth-lines"
+        },
+        {
+          "sha": "4cb641437",
+          "pr": 6008,
+          "title": "comfy-naming-and-audio"
+        },
+        {
+          "sha": "6674926ff",
+          "pr": 5885,
+          "title": "qt6-support",
+          "mode": "hunks",
+          "paths": [
+            "src/classes/comfy_client.py",
+            "src/classes/comfy_templates.py",
+            "src/classes/generation_queue.py",
+            "src/classes/generation_service.py",
+            "src/comfyui/"
+          ],
+          "note": "the ComfyUI hunks that qt-api dropped"
+        }
+      ],
+      "tasks": [
+        "place the AI Tools menu so it does not collide with Zenvi's assistant/agent docks; document that ComfyUI is optional and off until a server URL is configured"
+      ],
+      "hotspots": [
+        "src/windows/main_window.py",
+        "src/classes/app.py",
+        "src/classes/project_data.py",
+        "src/classes/thumbnail.py",
+        "src/settings/_default.settings",
+        "freeze.py"
+      ],
+      "human_test": [
+        "Preferences > AI: set a ComfyUI server URL (or leave blank) -> app starts either way",
+        "With a local ComfyUI running: AI Tools > Generate image from prompt -> job appears in the generation queue, result lands in Project Files",
+        "Audio template (Reduce Noise) on a clip -> processed clip added",
+        "Without a server: actions show a clear 'ComfyUI not configured' message, no crash"
+      ]
+    },
+    "screen-recording": {
+      "title": "Recording view: screen, webcam, microphone and system-audio capture",
+      "effort": "XL",
+      "deps": [
+        "libopenshot-1.0",
+        "qt-api",
+        "ai-masking"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "96d836200",
+          "pr": 6070,
+          "title": "audio-recording"
+        },
+        {
+          "sha": "24ef9ce40",
+          "pr": 6075,
+          "title": "release-20260725",
+          "mode": "hunks",
+          "paths": [
+            "src/windows/audio_recording.py",
+            "src/windows/recording_widgets.py",
+            "src/tests/test_recording_preview.py"
+          ]
+        }
+      ],
+      "tasks": [
+        "installer/Info.plist: NSMicrophoneUsageDescription, NSCameraUsageDescription, screen-capture strings; installer/zenvi.entitlements: audio-input + camera",
+        "drop installer/build_server.py hunks"
+      ],
+      "hotspots": [
+        "src/windows/main_window.py",
+        "src/windows/video_widget.py",
+        "src/windows/views/timeline.py",
+        "src/windows/cutting.py",
+        "src/classes/waveform.py",
+        "src/settings/_default.settings",
+        "freeze.py"
+      ],
+      "human_test": [
+        "View > Record -> recording dock opens",
+        "Record microphone only -> clip lands on the timeline with a waveform",
+        "Record the screen (macOS asks for Screen Recording permission once) -> clip plays back",
+        "Webcam picture-in-picture -> second track",
+        "Pause/resume during a recording -> single continuous clip",
+        "Save project -> recording copied into the project assets folder"
+      ]
+    },
+    "audio-viz-beat-sync": {
+      "title": "Audio Visualization and Beat Sync effects",
+      "effort": "S",
+      "deps": [
+        "film-grain"
+      ],
+      "deps_prefix": "~/zenvi-deps-1.0",
+      "gui": true,
+      "commits": [
+        {
+          "sha": "f195bf845",
+          "pr": 6020,
+          "title": "audio-visualizations"
+        },
+        {
+          "sha": "65abcef4f",
+          "pr": 6023,
+          "title": "beat-sync"
+        }
+      ],
+      "human_test": [
+        "Add Audio Visualization to a music clip -> bars/waves render in the preview",
+        "Add Beat Sync -> clip pulses on beats",
+        "Export -> effects visible in the output"
+      ]
+    },
+    "remove-webview-timeline": {
+      "title": "Remove the legacy web (JS) timeline; keep QtWebEngine for Zenvi chat/plan docks",
+      "effort": "M",
+      "hold": true,
+      "deps": [
+        "timeline-qwidget-default",
+        "qt-api"
+      ],
+      "gui": true,
+      "commits": [
+        {
+          "sha": "78bb37fc8",
+          "pr": 6009,
+          "title": "goodbye-webview-timeline",
+          "note": "revert within the PR: launch.py WebEngine preload, app.py QTWEBENGINE_DISABLE_SANDBOX, freeze.py WebEngine bundling, ci.yml/build-mac-dmg.sh hunks; keep qt_api WebEngine exports"
+        }
+      ],
+      "human_test": [
+        "./run.sh -> native timeline; no 'legacy timeline' preference remains",
+        "AI chat, Plan and embedded web docks still render (WebEngine intact)",
+        "Frozen build (scripts/build-local-mac.sh) launches"
+      ]
+    },
+    "qt6-default": {
+      "title": "Make PyQt6 the default binding on macOS/Linux (libopenshot built with Qt6)",
+      "effort": "L",
+      "hold": true,
+      "deps": [
+        "qt-api",
+        "libopenshot-1.0",
+        "remove-webview-timeline"
+      ],
+      "deps_prefix": "~/zenvi-deps-qt6",
+      "libopenshot_tag": "v1.0.0",
+      "libopenshot_audio_tag": "v1.0.0",
+      "gui": true,
+      "commits": [],
+      "tasks": [
+        "build libopenshot 1.0 against Homebrew qt (6) into ~/zenvi-deps-qt6 with -DUSE_QT6=ON",
+        "PyQt6 + PyQt6-WebEngine in requirements (mac/linux); Windows stays PyQt5",
+        "flip qt_api auto order per platform; re-check QtWin, QRegExp, exec_ in Zenvi files; freeze.py qt6 paths"
+      ],
+      "human_test": [
+        "./run.sh -> Help > About shows Qt 6.x",
+        "All docks, HiDPI scaling, export, frozen DMG"
+      ]
+    }
+  },
+  "skipped": {
+    "banner-notifications (#6115, #6117, #6126, #6127, #6141)": "openshot.org server-driven banners and feedback prompts",
+    "msix-installer (#6071, #6072)": "Zenvi ships Inno Setup on Windows (user decision)",
+    "sentry-* (#5957, #5985, #6111, #6112, #6120, #6125)": "OpenShot DSN/tag tweaks",
+    "mac-new-cert (#5921)": "OpenShot signing certificate",
+    "about-openshot-copy (#6036), new-about-style (#6131)": "OpenShot branding",
+    "docs/translations (#5910, #6034, #6116, #6117)": "translation and doc churn; never ported",
+    "release-* (#5964, #5994, #6075)": "version bumps; only the specific hunks named in features are harvested",
+    "new-testing (#5963), fixing-python-tests (#5969-#5973), ffmpeg-8 (#5974)": "test-infra only; add `python -m unittest discover -s src/tests` to CI in qt-api instead",
+    "ubuntu-18-04-fixes (#5979)": "not a Zenvi target",
+    "speech-to-text": "not in OpenShot 4.0; Zenvi keeps its own captioning"
+  }
+}

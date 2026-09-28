@@ -46,7 +46,7 @@ from classes.track_display import (
 )
 
 try:
-    from PyQt5.QtCore import (
+    from qt_api import (
         QObject, QThread, pyqtSignal, pyqtSlot,
         QEventLoop, QPointF, QTimer,
     )
@@ -60,7 +60,7 @@ except ImportError:
     QTimer = None
 
 try:
-    from PyQt5.QtWidgets import QApplication
+    from qt_api import QApplication
 except ImportError:
     QApplication = None
 
@@ -99,7 +99,7 @@ if pyqtSignal is not None:
 else:
 
     class _MainThreadDispatcher:
-        """Headless fallback when PyQt5 is unavailable."""
+        """Headless fallback when no Qt binding is available."""
 
         def run(self, fn):
             return fn()
@@ -726,26 +726,11 @@ def _twelvelabs_search_in_window(index_id, query_text, *, page_limit=30, video_i
 
 def _output_path_for_generated_video(ext=".mp4"):
     """Return an absolute path for a new generated video (preview-safe)."""
+    from classes.assets import durable_media_path
     ext = ext if str(ext).startswith(".") else f".{ext}"
     if ext.lower() not in (".mp4", ".webm", ".mov", ".mkv"):
         ext = ".mp4"
-    app = _get_app()
-    project_path = getattr(app.project, "current_filepath", None) or ""
-    if project_path and os.path.isabs(os.path.expanduser(str(project_path))):
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(project_path))), "Generated")
-        try:
-            os.makedirs(out_dir, exist_ok=True)
-            return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
-        except OSError:
-            pass
-    try:
-        from classes import info
-        out_dir = os.path.join(info.USER_PATH, "Generated")
-        os.makedirs(out_dir, exist_ok=True)
-        return os.path.join(out_dir, f"generated_{uuid_module.uuid4().hex[:12]}{ext}")
-    except Exception:
-        pass
-    return os.path.join(tempfile.gettempdir(), f"zenvi_generated_{uuid_module.uuid4().hex[:12]}{ext}")
+    return durable_media_path(ext=ext)
 
 
 def _canonical_media_path(path):
@@ -753,6 +738,12 @@ def _canonical_media_path(path):
     if not path:
         return path
     return os.path.normpath(os.path.abspath(os.path.expanduser(str(path))))
+
+
+def _cleanup_scratch_parent(path, prefix):
+    """Remove a tempfile.mkdtemp parent when *path* sits under a matching prefix."""
+    from classes.assets import cleanup_scratch_parent
+    cleanup_scratch_parent(path, prefix)
 
 
 def _download_video_url_to_path(video_url: str, dest_path: str, timeout: int = 180) -> Optional[str]:
@@ -1167,7 +1158,7 @@ def watch_clip_and_play(file_path: str = "", **_kw) -> str:
             return f"Error: File not found: {resolved_path}"
 
         from classes.query import File as _File
-        from PyQt5.QtCore import QUrl as _QUrl
+        from qt_api import QUrl as _QUrl
 
         app = _get_app()
         win = app.window
@@ -1405,28 +1396,28 @@ def _delete_one_clip(app, resolved) -> str:
     track_lbl = format_track_label_for_llm(layer_num, app.project.get("layers") or [])
 
     def _do_delete():
-        # No transaction of its own: execute_tool already opened one for this
-        # tool call. The previous code set a fresh id here and reset it to None
-        # in a finally, which detached whatever the caller did afterwards into
-        # separate undo steps.
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(clip_id, "clip")
-        except Exception:
-            pass
-        clip_obj.delete()
+        # Join execute_tool's transaction when present; otherwise mint one so
+        # direct callers (remove_clip alias / unit tests) still get a single
+        # undo step and a non-None transaction_id during delete.
+        with _transaction(app):
+            try:
+                if hasattr(win, "removeSelection"):
+                    win.removeSelection(clip_id, "clip")
+            except Exception:
+                pass
+            clip_obj.delete()
 
-        # A deleted clip may still be referenced by the preview widget's
-        # transform state; clear it before the next paint dereferences a freed
-        # native object (see main_window.actionRemoveClip_trigger).
-        try:
-            win.videoPreview.clearTransformState()
-        except Exception:
-            pass
-        try:
-            win.refreshFrameSignal.emit()
-        except Exception:
-            pass
+            # A deleted clip may still be referenced by the preview widget's
+            # transform state; clear it before the next paint dereferences a freed
+            # native object (see main_window.actionRemoveClip_trigger).
+            try:
+                win.videoPreview.clearTransformState()
+            except Exception:
+                pass
+            try:
+                win.refreshFrameSignal.emit()
+            except Exception:
+                pass
 
     if QThread is not None and QThread.currentThread() is not app.thread():
         _run_on_main_thread(_do_delete)
@@ -1467,28 +1458,35 @@ def _delete_whole_track(app, track, include_transitions) -> str:
     clips = Clip.filter(layer=layer_num)
     transitions = Transition.filter(layer=layer_num) if include_transitions else []
 
-    # Delete transitions first (they may reference clip time ranges).
-    for t in transitions:
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(t.id, "transition")
-        except Exception:
-            pass
-        t.delete()
+    def _do_delete_track():
+        with _transaction(app):
+            # Delete transitions first (they may reference clip time ranges).
+            for t in transitions:
+                try:
+                    if hasattr(win, "removeSelection"):
+                        win.removeSelection(t.id, "transition")
+                except Exception:
+                    pass
+                t.delete()
 
-    for c in clips:
-        try:
-            if hasattr(win, "removeSelection"):
-                win.removeSelection(c.id, "clip")
-        except Exception:
-            pass
-        c.delete()
+            for c in clips:
+                try:
+                    if hasattr(win, "removeSelection"):
+                        win.removeSelection(c.id, "clip")
+                except Exception:
+                    pass
+                c.delete()
 
-    # Refresh preview frame to reflect the new timeline immediately.
-    try:
-        win.refreshFrameSignal.emit()
-    except Exception:
-        pass
+            # Refresh preview frame to reflect the new timeline immediately.
+            try:
+                win.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+    if QThread is not None and QThread.currentThread() is not app.thread():
+        _run_on_main_thread(_do_delete_track)
+    else:
+        _do_delete_track()
 
     return (
         f"Deleted {len(clips)} clips and {len(transitions)} transitions on "
@@ -2468,7 +2466,7 @@ def add_clip_to_timeline(
                     pos_sec = pos_arg
 
                 if QPointF is None:
-                    from PyQt5.QtCore import QPointF as _QPointF
+                    from qt_api import QPointF as _QPointF
                     pos = _QPointF(pos_sec, 0.0)
                 else:
                     pos = QPointF(pos_sec, 0.0)
@@ -4126,7 +4124,7 @@ def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
             return any(len(px) >= 4 and px[3] < 250 for px in samples)
         except Exception:
             try:
-                from PyQt5.QtGui import QImage
+                from qt_api import QImage
 
                 img = QImage(tmp_png)
                 if img.isNull():
@@ -4251,15 +4249,24 @@ def _normalize_imported_file_path(file_obj, final_path):
 def _refresh_imported_file_thumbnail(file_id, file_path):
     """Pre-generate and refresh the files-panel thumbnail for an imported video."""
     from classes import info
-    from classes.thumbnail import GenerateThumbnail
+    from classes.thumbnail import GenerateThumbnail, preferred_thumbnail_path
 
     file_path = _canonical_media_path(file_path)
     if not file_id or not file_path or not os.path.isfile(file_path):
         return
 
+    fingerprint = None
+    try:
+        from classes.query import File
+        f = File.get(id=file_id)
+        if f and isinstance(getattr(f, "data", None), dict):
+            fingerprint = f.data.get("fingerprint")
+    except Exception:
+        fingerprint = None
+
     mask_path = os.path.join(info.IMAGES_PATH, "mask.png")
     overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
-    thumb_path = os.path.join(info.THUMBNAIL_PATH, file_id, "1.png")
+    thumb_path = preferred_thumbnail_path(file_id, 1, fingerprint=fingerprint)
     GenerateThumbnail(file_path, thumb_path, 1, 98, 64, mask_path, overlay_path)
 
     try:
@@ -4532,7 +4539,7 @@ def _bake_transition_video(
 def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, position, layer):
     """Remove the two source clips and place the baked transition clip on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -4554,7 +4561,7 @@ def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, posi
 def _replace_timeline_clip_with_baked(clip_id, baked_file_id, position, layer):
     """Remove one source clip and place the baked replacement on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -4601,7 +4608,21 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
         clean_path, err = _reencode_for_openshot(video_path, output_path=perm_path)
         if err:
             log.warning("Re-encode failed, using original: %s", err)
-            clean_path = video_path
+            # Copy scratch/original into the durable destination before import so
+            # caller scratch cleanup cannot delete the only project copy.
+            try:
+                if os.path.abspath(video_path) != os.path.abspath(perm_path):
+                    import shutil
+                    os.makedirs(os.path.dirname(perm_path), exist_ok=True)
+                    shutil.copy2(video_path, perm_path)
+                    clean_path = perm_path
+                else:
+                    clean_path = video_path
+            except Exception as copy_err:
+                return None, (
+                    "re-encode failed (%s) and could not copy original: %s"
+                    % (err, copy_err)
+                )
 
     final_path = _canonical_media_path(clean_path)
 
@@ -4632,6 +4653,52 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
 
         _run_on_main_thread(_refresh_thumb, timeout=30)
     return f, None
+
+
+def _stamp_generated_video_metadata(file_obj, prompt=""):
+    """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
+
+    Generated media is imported with skip_indexing=True, so without this the
+    scene panel and clip search have nothing to show for the clip the agent
+    just made. The generation prompt is the summary.
+
+    Returns False when the metadata could not be saved, True otherwise.
+    """
+    summary = (prompt or "").strip()
+    if not file_obj or not summary:
+        return True
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "ai_generated" not in tag_list:
+            tag_list.append("ai_generated")
+        file_obj.data["tags"] = ", ".join(tag_list)
+
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary[:400]
+        ai["description"] = summary[:400]
+        # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
+        ai["analyzed"] = True
+        ai["source"] = "ai_video_generation"
+        file_obj.data["ai_metadata"] = ai
+        if not file_obj.data.get("name"):
+            file_obj.data["name"] = summary[:120]
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        log.warning("Could not stamp generated-video metadata: %s", exc)
+        return False
 
 
 def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
@@ -4794,16 +4861,19 @@ def _download_and_import_one(url, label="", job_transparent=None):
         if dest_path is None:
             return "", 0.0, f"download failed: {last_err}", False, ""
 
-        if job_transparent is True:
-            preserve_alpha = True
-        elif job_transparent is False:
-            preserve_alpha = False
-        else:
-            preserve_alpha = _looks_like_alpha_video(dest_path)
+        try:
+            if job_transparent is True:
+                preserve_alpha = True
+            elif job_transparent is False:
+                preserve_alpha = False
+            else:
+                preserve_alpha = _looks_like_alpha_video(dest_path)
 
-        f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
-        if err:
-            return "", size_mb, f"import failed: {err}", False, ""
+            f, err = _import_generated_video(dest_path, preserve_alpha=preserve_alpha)
+            if err:
+                return "", size_mb, f"import failed: {err}", False, ""
+        finally:
+            _cleanup_scratch_parent(dest_path, "zenvi_hyperframes_")
 
         imported_path = None
         try:
@@ -5157,34 +5227,37 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
         tmp_dir = tempfile.mkdtemp(prefix="zenvi_url_import_")
         dest_path = os.path.join(tmp_dir, raw_name)
 
-        log.info("Downloading video from URL: %s → %s", video_url, dest_path)
-        req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
-        with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
-            while True:
-                chunk = response.read(65536)
-                if not chunk:
-                    break
-                out.write(chunk)
+        try:
+            log.info("Downloading video from URL: %s → %s", video_url, dest_path)
+            req = urllib.request.Request(video_url, headers={"User-Agent": "ZenviApp/1.0"})
+            with urllib.request.urlopen(req, timeout=300) as response, open(dest_path, "wb") as out:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
 
-        size_mb = os.path.getsize(dest_path) / (1024 * 1024)
-        log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
+            size_mb = os.path.getsize(dest_path) / (1024 * 1024)
+            log.info("Download complete: %s (%.1f MB)", dest_path, size_mb)
 
-        # Import into project files (re-encodes for libopenshot compatibility).
-        f, err = _import_generated_video(dest_path)
-        if err:
-            return f"Error importing video: {err}"
-        file_id = f.id if f else ""
-        if not file_id:
-            return "Error: video imported but its file_id could not be resolved."
+            # Import into project files (re-encodes for libopenshot compatibility).
+            f, err = _import_generated_video(dest_path)
+            if err:
+                return f"Error importing video: {err}"
+            file_id = f.id if f else ""
+            if not file_id:
+                return "Error: video imported but its file_id could not be resolved."
 
-        # Place it on the timeline.
-        placement = add_clip_to_timeline(
-            file_id=file_id, position_seconds=position_seconds, track=track, **_kw
-        )
-        return (
-            f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
-            f"{placement}"
-        )
+            # Place it on the timeline.
+            placement = add_clip_to_timeline(
+                file_id=file_id, position_seconds=position_seconds, track=track, **_kw
+            )
+            return (
+                f"✅ Video imported (file_id: {file_id}, {size_mb:.1f} MB) and added to the timeline.\n"
+                f"{placement}"
+            )
+        finally:
+            _cleanup_scratch_parent(dest_path, "zenvi_url_import_")
     except Exception as e:
         log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
         return f"Error importing video from URL: {e}"
@@ -5192,7 +5265,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
     app = _get_app()
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
@@ -5254,6 +5327,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     "Error: Video generated but failed to import into project files"
                     + (f": {import_err}" if import_err else ".")
                 )
+
+            stamped = _stamp_generated_video_metadata(f, prompt)
 
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
@@ -5349,6 +5424,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
                     f"track=<layer_number from list_layers_tool>, position_seconds=...)."
                 )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
+                )
             return msg
         except Exception as e:
             return f"Error: {e}"
@@ -5365,7 +5445,7 @@ def insert_v2v_into_clip(
 ) -> str:
     """Find best match in resolved clip, generate a V2V insert via Kling O1 Pro."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
@@ -5640,7 +5720,7 @@ def replace_object_in_clip(
 ) -> str:
     """Replace or update an object/visual element in a timeline clip using Kling O1 Pro V2V edit."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
@@ -6343,16 +6423,14 @@ def generate_tts_and_add_to_timeline(
             return f"Error: {resp.get('error', 'TTS generation failed')}"
 
         import base64
-        import tempfile
+
+        from classes.assets import durable_media_path
 
         raw = base64.b64decode(resp.get("audio_base64") or "")
         if not raw:
             return "Error: TTS returned empty audio."
 
-        out_path = os.path.join(
-            tempfile.gettempdir(),
-            f"zenvi_tts_{uuid_module.uuid4().hex}.mp3",
-        )
+        out_path = durable_media_path(ext=".mp3")
         with open(out_path, "wb") as f:
             f.write(raw)
 
@@ -8662,6 +8740,23 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     "render_product_demo_tool": "Render product demo",
     "check_motion_graphics_health_tool": "Motion graphics health",
     "get_motion_graphics_job_status_tool": "Motion job status",
+    # The assistant harness contributes its own tool names to the transcript.
+    # `task` is the orchestrator handing work to a specialist; the file and
+    # shell tools only ever run inside the motion-graphics sandbox, on
+    # session/draft.html. Left to the generic fallback these read as "Task",
+    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    "task": "Handing off to a specialist",
+    "bash": "Building the motion graphic",
+    "edit": "Editing the motion graphic",
+    "write": "Writing the motion graphic",
+    "read": "Reading the motion graphic",
+    "glob": "Looking through motion graphic files",
+    "grep": "Searching the motion graphic",
+    "question": "Asking you a question",
+    "todowrite": "Updating the task list",
+    # Denied to the assistant, but a refused call still lands in the transcript.
+    "webfetch": "Reading a web page",
+    "websearch": "Searching the web",
 }
 
 
@@ -8671,6 +8766,10 @@ def humanize_tool_name(tool_name: str) -> str:
         return TOOL_DISPLAY_LABELS[tool_name]
     if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
+    # The harness runtime's own names are all-lowercase keys here; match them
+    # however they arrive cased ("TodoWrite", "WebFetch").
+    if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 

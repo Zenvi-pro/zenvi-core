@@ -49,9 +49,7 @@ from socketserver import ThreadingMixIn
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1/
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
-
-
-def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
+def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     """Get thumbnail path by invoking HTTP thumbnail request"""
 
     # Clear thumb cache (if requested)
@@ -67,13 +65,51 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
         file_id,
         thumbnail_frame,
         thumb_cache)
-    r = get(thumb_address)
-    if r.ok:
-        # Update thumbnail path to real one
-        return r.text
-    else:
-        return ''
+    attempts = max(1, int(attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            r = get(thumb_address)
+        except Exception:
+            log.warning(
+                "Thumbnail path request failed file_id=%s frame=%s attempt=%s/%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                exc_info=1,
+            )
+            r = None
 
+        if r is not None and r.ok and r.text:
+            # Update thumbnail path to real one
+            return r.text
+
+        if r is not None:
+            log.warning(
+                "Thumbnail path request returned empty/miss file_id=%s frame=%s attempt=%s/%s status=%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                getattr(r, "status_code", "n/a"),
+            )
+
+        if attempt < attempts:
+            time.sleep(0.05)
+
+    return ''
+
+
+def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
+    """Locate an existing thumbnail (legacy layouts + fingerprint cache)."""
+    from classes.media_cache import resolve_thumbnail_path as _resolve
+    return _resolve(file_id, frame, fingerprint=fingerprint, thumb_root=thumb_root)
+
+
+def preferred_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
+    """Canonical path to write a newly generated thumbnail."""
+    from classes.media_cache import preferred_thumbnail_path as _preferred
+    return _preferred(file_id, frame, fingerprint=fingerprint, thumb_root=thumb_root)
 
 def _ensure_thumb_dir(thumb_path):
     parent_path = os.path.dirname(thumb_path)
@@ -325,17 +361,19 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
 
-        # Locate thumbnail
-        thumb_path = os.path.join(info.THUMBNAIL_PATH, file_id, "%s.png" % file_frame)
-        if not os.path.exists(thumb_path) and file_frame == 1:
-            # Try ID with no frame # (for backwards compatibility)
-            thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file_id)
-        if not os.path.exists(thumb_path) and file_frame != 1:
-            # Try with ID and frame # in filename (for backwards compatibility)
-            thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s-%s.png" % (file_id, file_frame))
+        # Locate thumbnail (fingerprint cache + legacy layouts)
+        fingerprint = None
+        try:
+            fingerprint = file.data.get("fingerprint") if file and isinstance(file.data, dict) else None
+        except Exception:
+            fingerprint = None
+        thumb_path = resolve_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
+        if not thumb_path:
+            thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 
         if not os.path.exists(thumb_path) or no_cache:
             # Generate thumbnail (since we can't find it)
+            thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 
             # Determine if video overlay should be applied to thumbnail
             overlay_path = ""

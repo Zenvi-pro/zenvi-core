@@ -30,8 +30,8 @@ import sys
 from time import strftime
 
 VERSION = "1.0.188"
-# 0.3.2 minimum for systems where only stable PPA (or older) is available (e.g. aarch64).
-MINIMUM_LIBOPENSHOT_VERSION = "0.3.2"
+# libopenshot 1.0.0 ships the 4.0-era effects and the corrected Crop location math.
+MINIMUM_LIBOPENSHOT_VERSION = "1.0.0"
 DATE = "20260813000000"
 NAME = "zenvi"
 PRODUCT_NAME = "Zenvi"
@@ -122,8 +122,8 @@ def _is_windows():
 def application_qicon():
     """Cached QIcon for windows and QApplication (file-based; not :/openshot.svg)."""
     try:
-        from PyQt5.QtCore import QSize
-        from PyQt5.QtGui import QIcon
+        from qt_api import QSize
+        from qt_api import QIcon
     except ImportError:
         return None
     if getattr(application_qicon, "_cached", None) is not None:
@@ -150,8 +150,8 @@ def application_qicon():
 def application_logo_pixmap(size=80):
     """Scaled Zenvi logo for login / about UI."""
     try:
-        from PyQt5.QtCore import QSize, Qt
-        from PyQt5.QtGui import QIcon, QPixmap
+        from qt_api import QSize, Qt
+        from qt_api import QIcon, QPixmap
     except ImportError:
         return None
     logo_path = os.path.join(PATH, "logo", "logo_dark.png")
@@ -172,9 +172,9 @@ def ensure_windows_app_user_model_id():
     if not _is_windows():
         return
     try:
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QApplication
         if QApplication.instance() is not None:
-            from PyQt5.QtWinExtras import QtWin
+            from qt_api import QtWin
             QtWin.setCurrentProcessExplicitAppUserModelID(_ZENVI_APP_USER_MODEL_ID)
             return
     except Exception:
@@ -258,7 +258,7 @@ def apply_application_icon(widget=None):
             _apply_windows_native_window_icon(widget)
         return
     try:
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QApplication
     except ImportError:
         return
     app = QApplication.instance()
@@ -274,7 +274,7 @@ def schedule_application_icon(widget):
     if widget is None:
         return
     try:
-        from PyQt5.QtCore import QTimer
+        from qt_api import QTimer
     except ImportError:
         apply_application_icon(widget)
         return
@@ -357,7 +357,7 @@ HOME_PATH = os.path.join(os.path.expanduser("~"))
 def get_downloads_path():
     """Return the current user's Downloads folder (macOS, Windows, Linux)."""
     try:
-        from PyQt5.QtCore import QStandardPaths
+        from qt_api import QStandardPaths
         path = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
         if path:
             path = os.path.normpath(path)
@@ -413,7 +413,7 @@ _path_defaults = {
 }
 
 try:
-    from PyQt5.QtCore import QSize
+    from qt_api import QSize
 
     # UI Thumbnail settings
     LIST_ICON_SIZE = QSize(100, 65)
@@ -421,9 +421,13 @@ try:
     TREE_ICON_SIZE = QSize(75, 49)
     EMOJI_ICON_SIZE = QSize(75, 75)
     EMOJI_GRID_SIZE = EMOJI_ICON_SIZE + QSize(5, 25)
+    # Runtime emoji selections
+    EMOJI_FILES = {}
+    EMOJI_PATH = ""
+    EMOJI_ICON = ""
 except ImportError:
-    # Fail gracefully if we're running without PyQt5 (e.g. CI tasks)
-    print("Failed to import `PyQt5.QtCore.QSize` (ignoring exception)")
+    # Fail gracefully if we're running without Qt (e.g. CI tasks)
+    print("Failed to import `qt_api.QSize` (ignoring exception)")
 
 # Maintainer details, for packaging
 JT = {"name": "Jonathan Thomas",
@@ -493,7 +497,7 @@ except ImportError:
 
 # Compile language list from :/locale resource
 try:
-    from PyQt5.QtCore import QDir
+    from qt_api import QDir
     langdir = QDir(language_path)
     trpaths = langdir.entryList(
         ['OpenShot_*.qm'],
@@ -504,8 +508,8 @@ try:
         lang=trpath[trpath.find('_')+1:-3]
         SUPPORTED_LANGUAGES.append(lang)
 except ImportError:
-    # Fail gracefully if we're running without PyQt5 (e.g. CI tasks)
-    print("Failed to import `PyQt5.QtCore.QDir` (ignoring exception)")
+    # Fail gracefully if we're running without Qt (e.g. CI tasks)
+    print("Failed to import `qt_api.QDir` (ignoring exception)")
 
 SETUP = {
     "name": NAME,

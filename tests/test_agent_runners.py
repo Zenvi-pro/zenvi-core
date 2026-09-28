@@ -852,3 +852,105 @@ def test_resolve_cli_bash_picks_version_4(monkeypatch):
             assert ar._resolve_cli_bash() == "/opt/homebrew/bin/bash"
     finally:
         ar._resolve_cli_bash.cache_clear()
+
+
+# ── Live model lineups ────────────────────────────────────────────────────
+
+@pytest.fixture
+def clear_live_lineups():
+    from windows.agent_runners import set_live_lineups
+    set_live_lineups({})
+    yield
+    set_live_lineups({})
+
+
+def test_live_lineup_replaces_the_built_in_list(qapp, clear_live_lineups):
+    """Once the backend has answered, its list is what the picker shows, so a
+    release that the backend discovered appears without a desktop update."""
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, models_for_backend,
+        set_live_lineups,
+    )
+
+    set_live_lineups({
+        BACKEND_CLAUDE: [
+            {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "featured": True,
+             "rank": 9, "tags": ["New"], "provider": "anthropic"},
+            {"id": "claude-opus-5", "name": "Claude Opus 5", "featured": True,
+             "rank": 10, "default": True},
+        ],
+        BACKEND_CODEX: [
+            {"id": "gpt-5.6-astra", "name": "GPT-5.6 Astra", "featured": True, "rank": 10},
+            {"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex", "featured": True,
+             "rank": 30, "default": True},
+        ],
+    })
+    claude = models_for_backend(BACKEND_CLAUDE)
+    assert [m["id"] for m in claude] == ["claude-opus-5-5", "claude-opus-5"]
+    assert claude[0]["tags"] == ["New"]
+    assert [m["id"] for m in claude if m.get("default")] == ["claude-opus-5"]
+    # the built-in catalogue is untouched, ready for the next fallback
+    assert ClaudeCodeRunner.MODELS[0]["id"] == "claude-opus-5"
+
+    # Codex, which has no built-in list, now offers one
+    codex = models_for_backend(BACKEND_CODEX)
+    assert [m["id"] for m in codex] == ["gpt-5.6-astra", "gpt-5.3-codex"]
+
+    # callers mutate what they get; the cache must not leak by reference
+    claude[0]["name"] = "mutated"
+    assert models_for_backend(BACKEND_CLAUDE)[0]["name"] == "Claude Opus 5.5"
+
+
+def test_missing_or_empty_live_list_falls_back_to_the_built_in_one(qapp, clear_live_lineups):
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, models_for_backend,
+        set_live_lineups,
+    )
+
+    set_live_lineups({BACKEND_CLAUDE: [], BACKEND_CODEX: []})
+    assert [m["id"] for m in models_for_backend(BACKEND_CLAUDE)] == \
+        [m["id"] for m in ClaudeCodeRunner.MODELS]
+    assert models_for_backend(BACKEND_CODEX) == []
+
+    set_live_lineups({})
+    assert len(models_for_backend(BACKEND_CLAUDE)) == len(ClaudeCodeRunner.MODELS)
+
+
+def test_live_lineup_ignores_malformed_rows(qapp, clear_live_lineups):
+    """The payload comes over the network; junk must not reach chat.js."""
+    from windows.agent_runners import BACKEND_CODEX, models_for_backend, set_live_lineups
+
+    set_live_lineups({BACKEND_CODEX: [
+        "not-a-dict", {"name": "no id"}, {"id": ""}, {"id": 42},
+        {"id": "gpt-5.3-codex"},                      # name defaults to the id
+        {"id": "gpt-5.3-codex", "name": "dup"},       # duplicate id dropped
+        {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "extra": "ignored"},
+    ]})
+    rows = models_for_backend(BACKEND_CODEX)
+    assert [r["id"] for r in rows] == ["gpt-5.3-codex", "gpt-5.6-sol"]
+    assert rows[0]["name"] == "gpt-5.3-codex"
+    assert "extra" not in rows[1]
+
+
+def test_coerce_model_honours_the_live_lineup(qapp, clear_live_lineups):
+    """A model the backend surfaced must reach the CLI's --model flag, and a
+    Codex tab must accept a Codex model once it has a lineup at all."""
+    from windows.agent_runners import (
+        BACKEND_CLAUDE, BACKEND_CODEX, ClaudeCodeRunner, CodexRunner, set_live_lineups,
+    )
+
+    claude, codex = ClaudeCodeRunner(), CodexRunner()
+    # built-in only: a not-yet-known model is refused, Codex takes nothing
+    assert claude._coerce_model("claude-opus-5-5") == ""
+    assert claude._coerce_model("claude-opus-5") == "claude-opus-5"
+    assert codex._coerce_model("gpt-5.3-codex") == ""
+
+    set_live_lineups({
+        BACKEND_CLAUDE: [{"id": "claude-opus-5-5", "name": "Claude Opus 5.5"}],
+        BACKEND_CODEX: [{"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex"}],
+    })
+    assert claude._coerce_model("claude-opus-5-5") == "claude-opus-5-5"
+    assert claude._coerce_model("claude-opus-5") == "", "live list replaces, not extends"
+    assert codex._coerce_model("gpt-5.3-codex") == "gpt-5.3-codex"
+    # a Zenvi model id left over from a shared picker is still refused
+    assert codex._coerce_model("openai/gpt-5.6-sol") == ""

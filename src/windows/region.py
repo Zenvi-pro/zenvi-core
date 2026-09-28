@@ -30,8 +30,13 @@ import sys
 import functools
 import math
 
-from PyQt5.QtCore import *
-from PyQt5.QtWidgets import *
+from qt_api import Qt, QRectF, QPointF, QSize, QTimer, pyqtSignal
+from qt_api import QIcon, QPainter, QColor, QPen, QBrush, QKeySequence
+from qt_api import (
+    QDialog, QSlider, QStyleOptionSlider, QStyle, QShortcut, QSizePolicy,
+    QPushButton, QHBoxLayout, QLabel, QMessageBox, QDialogButtonBox,
+    QButtonGroup, QToolButton,
+)
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info, ui_util, time_parts, qt_types, updates
@@ -56,6 +61,7 @@ class SelectRegion(QDialog):
     PlaySignal = pyqtSignal()
     PauseSignal = pyqtSignal()
     SeekSignal = pyqtSignal(int)
+    LoadTimelineAndSeekSignal = pyqtSignal(int)
     SpeedSignal = pyqtSignal(float)
     StopSignal = pyqtSignal()
 
@@ -63,7 +69,7 @@ class SelectRegion(QDialog):
         _ = get_app()._tr
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
@@ -277,6 +283,5 @@ class SelectRegion(QDialog):
         self.shutdownPlayer()
         get_app().window.SelectRegionSignal.emit("")
         super(SelectRegion, self).reject()
-
 
 

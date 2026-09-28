@@ -30,10 +30,10 @@ import functools
 
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
-from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QDialog, QSizePolicy, QDialogButtonBox
+from qt_api import QTimer
+from qt_api import QDialog, QSizePolicy, QDialogButtonBox
 
-from classes import info, ui_util
+from classes import info, ui_util, tabstops
 from classes.app import get_app
 from classes.logger import log
 from classes.metrics import track_metric_screen
@@ -49,7 +49,7 @@ class Profile(QDialog):
     def __init__(self, initial_profile_desc=None):
 
         # Create dialog class
-        QDialog.__init__(self)
+        super().__init__()
 
         # Load UI from designer & init
         ui_util.load_ui(self, self.ui_path)
@@ -125,6 +125,8 @@ class Profile(QDialog):
         self.txtProfileFilter.textChanged.connect(self.profileListView.refresh_view)
         self.profileListView.FilterCountChanged.connect(self.profileCountChanged)
         self.profileListView.doubleClicked.connect(self.profileDoubleClick)
+
+        tabstops.apply_auto_tab_order_later(self)
 
     def profileCountChanged(self, new_count):
         """Profile filter count changed"""

@@ -25,10 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QImage, QPainter, QPixmap
-from PyQt5.QtSvg import QSvgRenderer
 import math
+from qt_api import QRectF, Qt, QSvgRenderer, QPen
+from qt_api import QImage, QPainter, QPixmap, QColor
 import os
 
 
@@ -140,3 +139,28 @@ class BasePainter:
             ratio = 1.0
 
         return float(pixmap.width()) / ratio, float(pixmap.height()) / ratio
+
+    @staticmethod
+    def dimmed_color(color, amount=0.20, desaturate=0.20):
+        """Return a gently desaturated/dimmed variant of ``color``."""
+        if not isinstance(color, QColor):
+            return color
+        col = QColor(color)
+        if not col.isValid():
+            return col
+        h, s, l, a = col.getHslF()
+        if h < 0.0:
+            h = 0.0
+        # Keep theme hue while nudging saturation/lightness down a little.
+        s = max(0.0, min(1.0, s * (1.0 - float(desaturate))))
+        l = max(0.0, min(1.0, l * (1.0 - float(amount))))
+        out = QColor.fromHslF(h, s, l, a)
+        out.setAlpha(col.alpha())
+        return out
+
+    def dimmed_pen(self, pen, amount=0.20, desaturate=0.20):
+        if not isinstance(pen, QPen):
+            return pen
+        out = QPen(pen)
+        out.setColor(self.dimmed_color(out.color(), amount=amount, desaturate=desaturate))
+        return out

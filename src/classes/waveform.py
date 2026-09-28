@@ -26,16 +26,15 @@
  """
 
 import threading
+import uuid
 from functools import partial
+
+import openshot
+
 from classes.app import get_app
 from classes.logger import log
 from classes.query import File, Clip
 from classes.clip_utils import project_fps_fraction, video_length_to_project_frames
-from classes.qt_main_thread import invoke_on_gui
-from PyQt5.QtGui import QCursor
-from PyQt5.QtCore import Qt
-import openshot
-import uuid
 
 # resolution of audio waveform
 SAMPLES_PER_SECOND = 20
@@ -106,6 +105,21 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
         # Ensure that UI attribute exists
         file_data = file.data
         file_audio_data = file_data.get("ui", {}).get("audio_data", [])
+        # Hydrate from fingerprint cache when project JSON only has a marker.
+        # Cached waveforms are always all-channel (channel=-1); specific channels
+        # must still extract so Separate Audio / channel filters stay correct.
+        if file_audio_data == ["__cached__"]:
+            if channel != -1:
+                file_audio_data = []
+            else:
+                try:
+                    from classes.media_cache import load_waveform
+                    cached = load_waveform(file_data.get("fingerprint"))
+                    if cached and isinstance(cached.get("audio_data"), list):
+                        return cached["audio_data"]
+                except Exception:
+                    log.debug("Could not hydrate cached waveform", exc_info=1)
+                file_audio_data = []
         if file_audio_data and channel == -1:
             log.info("Audio Data already retrieved (or being retrieved).")
             return
@@ -116,9 +130,8 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             log.info(f"file: {file_data['path']} has no audio_data. Skipping")
             return
 
-        # Show waiting cursor (must run on the GUI thread)
-        invoke_on_gui(lambda: get_app().setOverrideCursor(QCursor(Qt.WaitCursor)))
-
+        # Show waiting cursor on the GUI thread
+        get_app().window.WaitCursorSignal.emit(True)
         try:
             # Extract audio waveform data (for all channels)
             # Use max RMS (root mean squared) value for each sample
@@ -136,11 +149,12 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             # Update file with audio data (only if all channels requested)
             if channel == -1:
                 get_app().window.timeline.fileAudioDataReady.emit(file.id, {"ui": {"audio_data": max_samples_vector}}, tid)
-        finally:
-            invoke_on_gui(lambda: get_app().restoreOverrideCursor())
 
-        # Return audio sample dataset
-        return max_samples_vector
+            # Return audio sample dataset
+            return max_samples_vector
+        finally:
+            # Restore cursor on the GUI thread even if extraction fails
+            get_app().window.WaitCursorSignal.emit(False)
 
     # Get file query object
     file = File.get(id=file_id)
@@ -209,44 +223,6 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
                     "Clip %s time curve not ready, scheduling waveform retry", clip.id
                 )
                 continue
-
-        if time_point_count > 1:
-            # When time curves are present, generate waveform data from the clip instance itself
-            _waveform_retry_counts.pop(clip.id, None)
-            clip_audio_data = []
-            channel = channel_filter if channel_filter != -1 else -1
-            try:
-                waveformer = openshot.AudioWaveformer(clip_instance)
-                clip_wave_data = waveformer.ExtractSamples(
-                    channel, SAMPLES_PER_SECOND, True
-                )
-                sample_vectors = clip_wave_data.vectors()
-                if sample_vectors:
-                    clip_audio_data = list(sample_vectors[0])
-                clip_wave_data.clear()
-            except Exception:
-                log.error(
-                    "Error generating clip waveform data for clip %s", clip.id, exc_info=1
-                )
-
-            if clip_audio_data:
-                get_app().window.timeline.clipAudioDataReady.emit(
-                    clip.id, {"ui": {"audio_data": clip_audio_data}}, tid
-                )
-                continue
-
-            reason = "time curve waveform empty"
-            if _schedule_waveform_retry(file_id, clip.id, tid, reason):
-                log.debug(
-                    "Clip %s waveform generation empty; retry scheduled", clip.id
-                )
-                continue
-
-            log.warning(
-                "Clip %s waveform generation failed after retries; leaving waveform unchanged",
-                clip.id,
-            )
-            continue
 
         _waveform_retry_counts.pop(clip.id, None)
 

@@ -33,6 +33,7 @@ import functools
 import shlex
 import json
 from time import sleep
+import signal
 
 # Try to get the security-patched XML functions from defusedxml
 try:
@@ -40,14 +41,14 @@ try:
 except ImportError:
     from xml.dom import minidom as xml
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QObject, pyqtSlot, pyqtSignal, QThread, QTimer, QSize,
 )
-from PyQt5.QtWidgets import (
+from qt_api import (
     QApplication, QListView, QMessageBox,
     QComboBox, QDoubleSpinBox, QLabel, QPushButton, QLineEdit, QPlainTextEdit,
 )
-from PyQt5.QtGui import QColor, QImage, QPixmap, QIcon
+from qt_api import QColor, QImage, QPixmap, QIcon
 
 from classes import info
 from classes.logger import log
@@ -69,10 +70,14 @@ class BlenderListView(QListView):
         self.selected = selected
         self.deselected = deselected
 
+        if not selected or not selected.isValid():
+            return
+        if getattr(self, "_last_selected_index", None) == selected:
+            return
+
         # Get translation object
         _ = self.app._tr
 
-        self.win.clear_effect_controls()
         animation = self.get_animation_details()
         self.selected_template = animation.get("service")
 
@@ -80,6 +85,9 @@ class BlenderListView(QListView):
         # but the selection is -1. So, just do nothing here.
         if not self.selected_template:
             return
+
+        self._last_selected_index = selected
+        self.win.clear_effect_controls()
 
         # Assign a new unique id for each template selected
         self.generateUniqueFolder()
@@ -195,6 +203,9 @@ class BlenderListView(QListView):
         self.end_processing()
         self.init_slider_values()
 
+        if hasattr(self.win, "_apply_tab_order"):
+            self.win._apply_tab_order()
+
     def spinner_value_changed(self, param, value):
         self.params[param["name"]] = value
         log.info('Animation param %s set to %s' % (param["name"], value))
@@ -263,19 +274,21 @@ class BlenderListView(QListView):
         if not os.path.exists(os.path.join(info.BLENDER_PATH, self.unique_folder_name)):
             os.mkdir(os.path.join(info.BLENDER_PATH, self.unique_folder_name))
 
-    def processing_mode(self, cursor=True):
+    def processing_mode(self, cursor=True, restore_focus=True):
         """ Disable all controls on interface """
 
-        # Store keyboard-focused widget
-        self.focus_owner = self.win.focusWidget()
+        # Store keyboard-focused widget when we plan to restore it
+        self.focus_owner = self.win.focusWidget() if restore_focus else None
 
         self.win.btnRefresh.setEnabled(False)
         self.win.sliderPreview.setEnabled(False)
         self.win.btnRender.setEnabled(False)
 
-        # Show 'Wait' cursor
+        # Show 'Wait' cursor (remember it so end_processing() releases only
+        # what this view acquired; the main window counts requests globally)
         if cursor:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._wait_cursor_held = True
+            get_app().window.WaitCursorSignal.emit(True)
 
     @pyqtSlot()
     def end_processing(self):
@@ -286,7 +299,9 @@ class BlenderListView(QListView):
         self.win.statusContainer.hide()
 
         # Restore normal cursor and keyboard focus
-        QApplication.restoreOverrideCursor()
+        if getattr(self, "_wait_cursor_held", False):
+            self._wait_cursor_held = False
+            get_app().window.WaitCursorSignal.emit(False)
         if self.focus_owner:
             self.focus_owner.setFocus()
 
@@ -457,6 +472,14 @@ class BlenderListView(QListView):
         event.ignore()
         super().mousePressEvent(event)
 
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        # Select first item when user tabs into the listview.
+        if not self.selectionModel().hasSelection() and self.model().rowCount() > 0:
+            first = self.model().index(0, 0)
+            if first.isValid():
+                self.setCurrentIndex(first)
+
     def refresh_view(self):
         self.blender_model.update_model()
 
@@ -613,7 +636,7 @@ Blender Path: {}
         """ Render an images sequence of the current template using Blender 2.62+ and the
         Blender Python API. """
 
-        self.processing_mode()
+        self.processing_mode(restore_focus=frame is None)
 
         # Init blender paths
         blend_file_path = os.path.join(
@@ -682,6 +705,7 @@ Blender Path: {}
         self._color_scratchpad = None
         self.selected_template = ""
         self.final_render = False
+        self._last_selected_index = None
 
         # Preview render timer
         self.preview_timer = QTimer(self)
@@ -775,18 +799,36 @@ class Worker(QObject):
             log.debug('Removing custom LD_LIBRARY_PATH from environment variables when launching Blender')
 
         self.startupinfo = None
+        self.creationflags = 0
         if sys.platform == 'win32':
             self.startupinfo = subprocess.STARTUPINFO()
             self.startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            self.creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
     def Cancel(self):
         """Cancel worker render"""
-        if self.process:
-            while self.process and self.process.poll() == None:
-                log.debug("Terminating Blender Process")
-                self.process.terminate()
-                sleep(0.1)
         self.canceled = True
+        if self.process and self.process.poll() is None:
+            log.debug("Terminating Blender Process")
+            try:
+                if sys.platform != "win32":
+                    os.killpg(self.process.pid, signal.SIGTERM)
+                else:
+                    self.process.terminate()
+            except (OSError, ProcessLookupError):
+                pass  # Process already terminated
+            for _ in range(30):
+                if not self.process or self.process.poll() is not None:
+                    break
+                sleep(0.05)
+            if self.process and self.process.poll() is None:
+                try:
+                    if sys.platform != "win32":
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    else:
+                        self.process.kill()
+                except Exception as ex:
+                    log.debug("Failed to kill Blender process: %s", ex)
 
     def blender_version_check(self):
         # Check the version of Blender
@@ -908,6 +950,10 @@ class Worker(QObject):
 
         _ = get_app()._tr
 
+        if self.canceled:
+            self.finished.emit()
+            return
+
         if not self.version and not self.blender_version_check():
             self.finished.emit()
             return
@@ -944,10 +990,20 @@ class Worker(QObject):
             self.process = subprocess.Popen(
                 command_render, bufsize=512,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                startupinfo=self.startupinfo, env=self.env, cwd=info.HOME_PATH
+                startupinfo=self.startupinfo,
+                creationflags=self.creationflags,
+                start_new_session=(sys.platform != "win32"),
+                env=self.env,
+                cwd=info.HOME_PATH,
             )
             # Signal UI that background task is running
             self.start_processing.emit()
+
+            if self.canceled:
+                self.Cancel()
+                self.end_processing.emit()
+                self.finished.emit()
+                return
 
         except subprocess.SubprocessError as ex:
             # Error running command.  Most likely the blender executable path in

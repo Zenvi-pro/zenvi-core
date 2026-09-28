@@ -9,9 +9,9 @@
  This file is part of OpenShot Video Editor (http://www.openshot.org)
 """
 
-from PyQt5.QtCore import Qt, QRect, QTimer
-from PyQt5.QtGui import QColor, QPen, QPainterPath
-from PyQt5.QtWidgets import QStyledItemDelegate, QToolTip
+from qt_api import Qt, QRect, QTimer
+from qt_api import QColor, QPen, QPainterPath
+from qt_api import QStyledItemDelegate, QToolTip
 
 from classes.app import get_app
 from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS
@@ -109,11 +109,32 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
 
     # ── status lookup ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _row_column(index, column):
+        """Index of `column` on this row, unwrapping single-column view proxies.
+
+        The thumbnail list view sits behind a proxy that exposes one column
+        (upstream tabstops/accessibility work), so sibling() there cannot reach
+        the hidden id/name columns; map back to a source that still has them.
+        """
+        model = index.model()
+        while (
+            index.isValid()
+            and model is not None
+            and model.columnCount(index.parent()) <= column
+            and hasattr(model, "mapToSource")
+        ):
+            index = model.mapToSource(index)
+            model = index.model()
+        return index.sibling(index.row(), column)
+
     def _file_id(self, index):
         if not index.isValid():
             return ""
-        model = index.model()
-        return str(model.data(index.sibling(index.row(), 5), Qt.DisplayRole) or "")
+        id_index = self._row_column(index, 5)
+        if not id_index.isValid():
+            return ""
+        return str(id_index.model().data(id_index, Qt.DisplayRole) or "")
 
     def _files_model(self):
         try:
@@ -175,7 +196,10 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
             and status.tooltip
             and badge_rect(option.rect).contains(event.pos())
         ):
-            name = str(index.model().data(index.sibling(index.row(), 1), Qt.DisplayRole) or "")
+            name_index = self._row_column(index, 1)
+            name = ""
+            if name_index.isValid():
+                name = str(name_index.model().data(name_index, Qt.DisplayRole) or "")
             text = f"{name}\n{status.tooltip}" if name else status.tooltip
             QToolTip.showText(event.globalPos(), text, view)
             return True
