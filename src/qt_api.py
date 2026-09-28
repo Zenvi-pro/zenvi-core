@@ -337,8 +337,8 @@ class _AndroidFilePicker:
                         uri = data.getData()
                         if uri is not None:
                             uris.append(uri)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("qt_api: failed to read Android picker result URIs: %s", exc, exc_info=True)
 
                 # Snapshot URI strings now — jnius objects may not survive thread boundaries.
                 uri_strings = [u.toString() for u in uris]
@@ -352,8 +352,8 @@ class _AndroidFilePicker:
                 for uri in uris:
                     try:
                         resolver.takePersistableUriPermission(uri, read_write)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("qt_api: failed to persist URI permission for %s: %s", uri, exc, exc_info=True)
 
                 # The bridge was created on the Qt main thread (in show_open_file_dialog).
                 # Do NOT call _get_callback_bridge() here — this runs on the Android main thread.
@@ -872,6 +872,8 @@ def get_font_dialog_selection(initial_font=None, parent=None, title=""):
     font_dialog_class = getattr(QtWidgets, "QFontDialog", None)
     if font_dialog_class is None:
         raise RuntimeError("QFontDialog is unavailable")
+    if not callable(font_dialog_class):
+        raise RuntimeError("QFontDialog is not callable")
 
     # PySide6 has been unreliable with the static getFont() overloads here.
     # Use an instance dialog consistently across bindings.

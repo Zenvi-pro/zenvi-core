@@ -1,0 +1,95 @@
+{
+  "action_icon": "ai-action-create-image.svg",
+  "menu_category": "create",
+  "menu_order": 10,
+  "name": "Image...",
+  "open_dialog": true,
+  "output_type": "image",
+  "template_id": "txt2img-basic",
+  "workflow": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "sd_xl_base_1.0.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "cinematic shot, highly detailed"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "low quality, blurry"
+      }
+    },
+    "4": {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "batch_size": 1,
+        "height": 576,
+        "width": 1024
+      }
+    },
+    "5": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 6.5,
+        "denoise": 1.0,
+        "latent_image": [
+          "4",
+          0
+        ],
+        "model": [
+          "1",
+          0
+        ],
+        "negative": [
+          "3",
+          0
+        ],
+        "positive": [
+          "2",
+          0
+        ],
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "seed": 687962524,
+        "steps": 28
+      }
+    },
+    "6": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "5",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "7": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "openshot_gen",
+        "images": [
+          "6",
+          0
+        ]
+      }
+    }
+  }
+}

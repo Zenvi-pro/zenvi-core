@@ -566,8 +566,28 @@ if sys.platform == "win32":
     else:
         log.warning("OPENCV_ROOT is not set; Windows OpenCV runtime DLLs will rely on cx_Freeze detection.")
 
-    # Append all source files
+    # Add the Qt image codec runtime DLLs to the app root, since Windows does not search
+    # lib/PyQt5 when loading dependencies for imageformat plugins from imageformats/.
+    mingw_bin_path = "c:/msys64/%s/bin" % MSYSTEM
+    imageformat_runtime_dlls = [
+        "libjpeg-8.dll",
+        "libjasper-4.dll",
+        "libtiff-5.dll",
+        "libwebp-7.dll",
+        "libwebpdemux-2.dll",
+        "libwebpmux-3.dll",
+        "liblzma-5.dll",
+        "libdeflate.dll",
+        "zlib1.dll",
+    ]
+    for dll_name in imageformat_runtime_dlls:
+        dll_path = os.path.join(mingw_bin_path, dll_name)
+        if os.path.exists(dll_path):
+            src_files.append((dll_path, dll_name))
+        else:
+            log.warning("Missing optional Windows imageformat runtime DLL: %s", dll_path)
 
+    # Append all source files
     # Append all source files under lib/ (cx_Freeze 7.2+ puts modules there;
     # info.PATH resolves to lib/ so data files must be co-located)
     src_files.append((os.path.join(PATH, "installer", "qt.conf"), "qt.conf"))

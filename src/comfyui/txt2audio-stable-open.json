@@ -1,0 +1,101 @@
+{
+  "action_icon": "ai-action-create-audio.svg",
+  "menu_category": "create",
+  "menu_order": 30,
+  "name": "Sound...",
+  "open_dialog": true,
+  "output_type": "audio",
+  "template_id": "txt2audio-stable-open",
+  "workflow": {
+    "10": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "t5-base.safetensors",
+        "type": "stable_audio"
+      }
+    },
+    "11": {
+      "class_type": "EmptyLatentAudio",
+      "inputs": {
+        "batch_size": 1,
+        "seconds": 30.0
+      }
+    },
+    "12": {
+      "class_type": "VAEDecodeAudio",
+      "inputs": {
+        "samples": [
+          "3",
+          0
+        ],
+        "vae": [
+          "4",
+          2
+        ]
+      }
+    },
+    "13": {
+      "class_type": "SaveAudio",
+      "inputs": {
+        "audio": [
+          "12",
+          0
+        ],
+        "filename_prefix": "audio/openshot_gen"
+      }
+    },
+    "3": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 5.0,
+        "denoise": 1.0,
+        "latent_image": [
+          "11",
+          0
+        ],
+        "model": [
+          "4",
+          0
+        ],
+        "negative": [
+          "7",
+          0
+        ],
+        "positive": [
+          "6",
+          0
+        ],
+        "sampler_name": "dpmpp_3m_sde_gpu",
+        "scheduler": "exponential",
+        "seed": 806751699,
+        "steps": 50
+      }
+    },
+    "4": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "stable-audio-open-1.0.safetensors"
+      }
+    },
+    "6": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "10",
+          0
+        ],
+        "text": "lofi ambient beat, soft texture, 90 bpm"
+      }
+    },
+    "7": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "10",
+          0
+        ],
+        "text": ""
+      }
+    }
+  }
+}

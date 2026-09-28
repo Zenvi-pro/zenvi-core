@@ -507,6 +507,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
                 info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
 
             self._migrate_optimized_asset_paths()
 
@@ -661,7 +662,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                                 thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
                             else:
                                 # Audio file
-                                thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+                                thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
                             # Get file name
                             filename = os.path.basename(file.data["path"])
@@ -1221,6 +1222,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
             info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
             info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+            info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
 
             self.add_to_recent_files(file_path)
             self.has_unsaved_changes = False
@@ -1241,12 +1243,14 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             target_protobuf_path = os.path.join(asset_path, "protobuf_data")
             target_clipboard_path = os.path.join(asset_path, "clipboard")
             target_proxy_path = os.path.join(asset_path, "optimized")
+            target_comfy_output_path = os.path.join(asset_path, "comfyui-output")
 
             # Create any missing target paths
             try:
                 for target_dir in [asset_path, target_thumb_path, target_title_path,
                                    target_blender_path, target_protobuf_path,
-                                   target_clipboard_path, target_proxy_path]:
+                                   target_clipboard_path, target_proxy_path,
+                                   target_comfy_output_path]:
                     if not os.path.exists(target_dir):
                         os.mkdir(target_dir)
             except OSError:
@@ -1262,6 +1266,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.PROTOBUF_DATA_PATH = os.path.join(previous_asset_path, "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(previous_asset_path, "clipboard")
                 info.PROXY_PATH = os.path.join(previous_asset_path, "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(previous_asset_path, "comfyui-output")
 
             # Track assets we copy/update
             copied_assets = {
@@ -1269,6 +1274,7 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 "title": set(),
                 "clipboard": set(),
                 "proxy": set(),
+                "comfyui_output": set(),
             }
             reader_paths = {}
 
@@ -1300,6 +1306,20 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     target_clipboard_filepath = os.path.join(target_clipboard_path, clipboard_path)
                     if not os.path.exists(target_clipboard_filepath):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
+
+            # Copy all ComfyUI output files/folders (fully) to assets folder
+            if os.path.exists(info.COMFYUI_OUTPUT_PATH) and (
+                os.path.abspath(info.COMFYUI_OUTPUT_PATH) != os.path.abspath(target_comfy_output_path)
+            ):
+                for output_name in os.listdir(info.COMFYUI_OUTPUT_PATH):
+                    working_output_path = os.path.join(info.COMFYUI_OUTPUT_PATH, output_name)
+                    target_output_path = os.path.join(target_comfy_output_path, output_name)
+                    if os.path.isdir(working_output_path):
+                        if os.path.exists(target_output_path):
+                            shutil.rmtree(target_output_path, True)
+                        shutil.copytree(working_output_path, target_output_path)
+                    else:
+                        shutil.copy2(working_output_path, target_output_path)
 
             # Copy all protobuf files (if not found in target asset folder)
             if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
@@ -1373,6 +1393,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             copied_assets["clipboard"].add(asset_name)
                             log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
+
+                comfy_output_abs = os.path.abspath(info.COMFYUI_OUTPUT_PATH)
+                path_abs = os.path.abspath(path)
+                if path_abs.startswith(comfy_output_abs + os.sep):
+                    if os.path.abspath(os.path.dirname(path)) != os.path.abspath(target_comfy_output_path):
+                        relative_output_path = os.path.relpath(path_abs, comfy_output_abs)
+                        if relative_output_path not in copied_assets["comfyui_output"]:
+                            copied_assets["comfyui_output"].add(relative_output_path)
+                            log.info("Copied ComfyUI output %s to %s", relative_output_path, target_comfy_output_path)
+                        new_asset_path = os.path.join(target_comfy_output_path, relative_output_path)
 
                 # Update path in File object to new location
                 if new_asset_path:

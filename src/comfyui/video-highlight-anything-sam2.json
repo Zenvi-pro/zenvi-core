@@ -1,0 +1,164 @@
+{
+  "action_icon": "ai-action-smooth.svg",
+  "menu_category": "enhance",
+  "menu_parent": "track_object",
+  "menu_order": 62,
+  "name": "Highlight...",
+  "open_dialog": true,
+  "output_type": "video",
+  "template_id": "video-highlight-anything-sam2",
+  "workflow": {
+    "1": {
+      "class_type": "VHS_LoadVideo",
+      "inputs": {
+        "video": "__openshot_input__",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1
+      }
+    },
+    "2": {
+      "class_type": "VHS_VideoInfoLoaded",
+      "inputs": {
+        "video_info": [
+          "1",
+          3
+        ]
+      }
+    },
+    "3": {
+      "class_type": "OpenShotDownloadAndLoadSAM2Model",
+      "inputs": {
+        "model": "sam2.1_hiera_base_plus.safetensors",
+        "segmentor": "video",
+        "device": "cuda",
+        "precision": "fp16"
+      }
+    },
+    "4": {
+      "class_type": "OpenShotSam2VideoSegmentationAddPoints",
+      "inputs": {
+        "sam2_model": [
+          "3",
+          0
+        ],
+        "frame_index": 0,
+        "object_index": 0,
+        "video_path": "__openshot_input__",
+        "windowed_mode": true,
+        "offload_video_to_cpu": false,
+        "offload_state_to_cpu": false,
+        "auto_mode": false,
+        "positive_points_json": "",
+        "negative_points_json": "",
+        "positive_rects_json": "",
+        "negative_rects_json": "",
+        "tracking_selection_json": "{}",
+        "dino_prompt": "",
+        "dino_model_id": "IDEA-Research/grounding-dino-tiny",
+        "dino_box_threshold": 0.35,
+        "dino_text_threshold": 0.25,
+        "dino_device": "auto"
+        ,
+        "meta_batch": [
+          "9",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "OpenShotSam2VideoSegmentationChunked",
+      "inputs": {
+        "sam2_model": [
+          "4",
+          0
+        ],
+        "inference_state": [
+          "4",
+          1
+        ],
+        "image": [
+          "10",
+          0
+        ],
+        "start_frame": 0,
+        "chunk_size_frames": 96,
+        "keep_model_loaded": true,
+        "meta_batch": [
+          "9",
+          0
+        ]
+      }
+    },
+    "9": {
+      "class_type": "VHS_BatchManager",
+      "inputs": {
+        "frames_per_batch": 96
+      }
+    },
+    "10": {
+      "class_type": "VHS_LoadVideo",
+      "inputs": {
+        "video": "__openshot_input__",
+        "force_rate": 0,
+        "custom_width": 0,
+        "custom_height": 0,
+        "frame_load_cap": 0,
+        "skip_first_frames": 0,
+        "select_every_nth": 1,
+        "meta_batch": [
+          "9",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "OpenShotImageHighlightMasked",
+      "inputs": {
+        "image": [
+          "10",
+          0
+        ],
+        "mask": [
+          "5",
+          0
+        ],
+        "highlight_color": "#F5D742",
+        "highlight_opacity": 0.35,
+        "border_color": "#000000",
+        "border_width": 0,
+        "mask_brightness": 1.15,
+        "background_brightness": 0.75
+      }
+    },
+    "15": {
+      "class_type": "VHS_VideoCombine",
+      "inputs": {
+        "images": [
+          "13",
+          0
+        ],
+        "frame_rate": [
+          "2",
+          0
+        ],
+        "loop_count": 0,
+        "filename_prefix": "video/openshot_gen",
+        "format": "video/h264-mp4",
+        "pingpong": false,
+        "save_output": true,
+        "audio": [
+          "1",
+          2
+        ],
+        "meta_batch": [
+          "9",
+          0
+        ]
+      }
+    }
+  }
+}

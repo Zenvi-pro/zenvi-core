@@ -137,6 +137,13 @@
     "setting": "active_builtin_view"
   },
   {
+    "value": 0,
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "video_dock_width"
+  },
+  {
     "value": "thumbnail",
     "title": "",
     "type": "hidden",
@@ -1378,14 +1385,6 @@
   },
   {
     "category": "Keyboard",
-    "title": "Advanced View",
-    "restart": false,
-    "setting": "actionAdvanced_View",
-    "value": "Alt+Shift+1",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
     "title": "Freeze View",
     "restart": false,
     "setting": "actionFreeze_View",
@@ -1559,6 +1558,14 @@
     "title": "Backend URL",
     "setting": "zenvi-backend-url",
     "value": "https://api.zenvi.pro",
+    "type": "text",
+    "restart": false
+  },
+  {
+    "category": "AI",
+    "title": "ComfyUI URL (optional, e.g. http://127.0.0.1:8188)",
+    "setting": "comfy-ui-url",
+    "value": "",
     "type": "text",
     "restart": false
   },

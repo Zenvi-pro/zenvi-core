@@ -1534,6 +1534,7 @@ class ProcessEffect(QDialog):
 
     def rect_select_clicked(self, widget, param):
         """Rect select button clicked"""
+        _ = get_app()._tr
         self.context[param["setting"]].update({"button-clicked": True})
 
         # show dialog
@@ -1544,25 +1545,41 @@ class ProcessEffect(QDialog):
         reader_path = c.data.get('reader', {}).get('path','')
         f = File.get(path=reader_path)
         if f:
-            win = SelectRegion(f, self.clip_instance)
+            win = SelectRegion(f, self.clip_instance, parent=self)
             # Run the dialog event loop - blocking interaction on this window during that time
             result = win.exec_()
             if result == QDialog.Accepted:
                 # self.first_frame = win.current_frame
                 # Region selected (get coordinates if any)
-                topLeft = win.videoPreview.regionTopLeftHandle
-                bottomRight = win.videoPreview.regionBottomRightHandle
-                viewPortSize = win.viewport_rect
-                curr_frame_size = win.videoPreview.curr_frame_size
-
-                x1 = topLeft.x() / curr_frame_size.width()
-                y1 = topLeft.y() / curr_frame_size.height()
-                x2 = bottomRight.x() / curr_frame_size.width()
-                y2 = bottomRight.y() / curr_frame_size.height()
+                selected_rect = win.selected_rect_normalized() if hasattr(win, "selected_rect_normalized") else None
+                if selected_rect:
+                    x1 = float(selected_rect.get("normalized_x", 0.0))
+                    y1 = float(selected_rect.get("normalized_y", 0.0))
+                    xw = float(selected_rect.get("normalized_width", 0.0))
+                    yh = float(selected_rect.get("normalized_height", 0.0))
+                else:
+                    topLeft = win.videoPreview.regionTopLeftHandle
+                    bottomRight = win.videoPreview.regionBottomRightHandle
+                    curr_frame_size = win.videoPreview.curr_frame_size
+                    if not topLeft or not bottomRight or not curr_frame_size:
+                        QMessageBox.warning(
+                            self,
+                            _("Invalid Region"),
+                            _("Please draw a rectangle region before clicking Select Region."),
+                        )
+                        return
+                    x1 = topLeft.x() / curr_frame_size.width()
+                    y1 = topLeft.y() / curr_frame_size.height()
+                    x2 = bottomRight.x() / curr_frame_size.width()
+                    y2 = bottomRight.y() / curr_frame_size.height()
+                    xw = x2 - x1
+                    yh = y2 - y1
 
                 # Get QImage of region
-                if win.videoPreview.region_qimage:
+                region_qimage = win.selected_region_qimage() if hasattr(win, "selected_region_qimage") else None
+                if region_qimage is None and win.videoPreview.region_qimage:
                     region_qimage = win.videoPreview.region_qimage
+                if region_qimage:
 
                     # Resize QImage to match button size
                     resized_qimage = region_qimage.scaled(widget.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
@@ -1572,13 +1589,12 @@ class ProcessEffect(QDialog):
                     widget.setText("")
 
                 # If data found, add to context
-                if topLeft and bottomRight:
-                    self.context[param["setting"]].update({"normalized_x": x1, "normalized_y": y1,
-                                                           "normalized_width": x2-x1,
-                                                           "normalized_height": y2-y1,
-                                                           "first-frame": win.current_frame,
-                                                           })
-                    log.info(self.context)
+                self.context[param["setting"]].update({"normalized_x": x1, "normalized_y": y1,
+                                                       "normalized_width": xw,
+                                                       "normalized_height": yh,
+                                                       "first-frame": win.current_frame,
+                                                       })
+                log.info(self.context)
 
         else:
             log.error('No file found with path: %s' % reader_path)
