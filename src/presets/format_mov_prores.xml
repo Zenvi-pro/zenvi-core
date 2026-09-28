@@ -1,21 +1,21 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE openshot-export-option>
 <export-option>
-	<type translatable="True">Device</type>
-	<title translatable="True">Apple TV</title>
-	<videoformat>mp4</videoformat>
-	<videocodec>libx264</videocodec>
-	<audiocodec>aac</audiocodec>
+	<type translatable="True">All Formats</type>
+	<title translatable="True">MOV (ProRes 422)</title>
+	<videoformat>mov</videoformat>
+	<videocodec>prores_ks</videocodec>
+	<audiocodec>pcm_s16le</audiocodec>
 	<audiochannels>2</audiochannels>
 	<audiochannellayout>3</audiochannellayout>
 	<videobitrate
-	 low="8 Mb/s"
-	 med="20 Mb/s"
-	 high="40 Mb/s"></videobitrate>
+	 low="45 Mb/s"
+	 med="88 Mb/s"
+	 high="176 Mb/s"></videobitrate>
 	<audiobitrate
-	 low="128 kb/s"
-	 med="192 kb/s"
-	 high="256 kb/s"></audiobitrate>
+	 low="1536 kb/s"
+	 med="1536 kb/s"
+	 high="1536 kb/s"></audiobitrate>
 	<samplerate>48000</samplerate>
 	<projectprofile>FHD 1080p 23.98 fps</projectprofile>
 	<projectprofile>FHD 1080p 24 fps</projectprofile>

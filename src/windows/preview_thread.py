@@ -443,8 +443,8 @@ class PlayerWorker(QObject):
                 waveform_settings = waveform_render if isinstance(waveform_render, dict) else {}
                 try:
                     scope.SetWaveformColumns(max(32, int(waveform_settings.get("columns", 256) or 256)))
-                except Exception:
-                    pass
+                except Exception as ex:
+                    log.debug("Unable to set waveform column count: %s", ex)
             if need_vectorscope:
                 is_playing = False
                 try:
@@ -498,8 +498,8 @@ class PlayerWorker(QObject):
                             try:
                                 root = json.loads(scope.Json())
                                 vectorscope = root.get("video", {}).get("vectorscope", vectorscope)
-                            except Exception:
-                                pass
+                            except Exception as ex:
+                                log.debug("Unable to read vectorscope data from scope JSON: %s", ex)
                         try:
                             vectorscope["image"] = build_vectorscope_image(
                                 vectorscope.get("density", []),
@@ -507,8 +507,8 @@ class PlayerWorker(QObject):
                                 zoom_factor,
                                 display,
                             )
-                        except Exception:
-                            pass
+                        except Exception as ex:
+                            log.debug("Unable to build vectorscope image: %s", ex)
                         video["vectorscope"] = vectorscope
                     video["summary"] = {
                         "avg_luma":           scope.GetVideoAverageLuma(),

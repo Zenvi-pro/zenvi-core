@@ -39,32 +39,35 @@ class KeyframeScaler:
         # Round to nearest INT
         return round(value * self._scale_factor)
 
-    def _update_prop(self, prop: dict, scale_y = False):
+    def _scale_points(self, prop: dict, scale_y = False):
         """To keep keyframes at the same time in video,
         update frame numbers to the new framerate.
 
         scale_y: if the y coordinate also represents a frame number,
         this flag will scale both x and y.
         """
-        # Create a list of lists of keyframe points for this prop
-        if "red" in prop:
-            # It's a color, one list of points for each channel
-            keyframes = [prop[color].get("Points", []) for color in prop]
-        else:
-            # Not a color, just a single list of points
-            keyframes = [prop.get("Points", [])]
-        for k in keyframes:
-            if (scale_y):
+        keyframes = prop.get("Points", [])
+        for point in keyframes:
+            if "co" not in point:
+                continue
+            point["co"]["X"] = self._scale_value(point["co"].get("X", 0.0))
+            if scale_y:
                 # Y represents a frame number. Scale it too
-                [point["co"].update({
-                    "X": self._scale_value(point["co"].get("X", 0.0)),
-                    "Y": self._scale_value(point["co"].get("Y", 0.0))
-                }) for point in k if "co" in point]
-            else:
-                # Scale the X coordinate (frame #) by the stored factor
-                [point["co"].update({
-                    "X": self._scale_value(point["co"].get("X", 0.0)),
-                }) for point in k if "co" in point]
+                point["co"]["Y"] = self._scale_value(point["co"].get("Y", 0.0))
+
+    def _update_prop(self, prop: dict, scale_y = False):
+        """Scale keyframe points in a property, including nested property data."""
+        if "Points" in prop:
+            self._scale_points(prop, scale_y=scale_y)
+            return
+
+        for value in prop.values():
+            if isinstance(value, dict):
+                self._update_prop(value, scale_y=scale_y)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        self._update_prop(item, scale_y=scale_y)
 
     def _process_item(self, item: dict):
         """Process all the dict sub-members of the current dict"""

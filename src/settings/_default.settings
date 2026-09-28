@@ -106,13 +106,6 @@
     "setting": "window_geometry_v2"
   },
   {
-    "value": false,
-    "title": "",
-    "type": "hidden",
-    "category": "Qt",
-    "setting": "docks_frozen"
-  },
-  {
     "value": 0,
     "title": "",
     "type": "hidden",
@@ -125,6 +118,20 @@
     "type": "hidden",
     "category": "Qt",
     "setting": "hidden_docks"
+  },
+  {
+    "value": [],
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "custom_views"
+  },
+  {
+    "value": "",
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "active_custom_view"
   },
   {
     "value": 0,
@@ -1371,30 +1378,6 @@
     "restart": false,
     "setting": "actionSimple_View",
     "value": "Alt+Shift+0",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
-    "title": "Freeze View",
-    "restart": false,
-    "setting": "actionFreeze_View",
-    "value": "Ctrl+F",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
-    "title": "Un-Freeze View",
-    "restart": false,
-    "setting": "actionUn_Freeze_View",
-    "value": "Ctrl+Shift+F",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
-    "title": "Show All Docks",
-    "restart": false,
-    "setting": "actionShow_All",
-    "value": "Ctrl+Shift+D",
     "type": "text"
   },
   {

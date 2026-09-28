@@ -51,6 +51,7 @@ _EFFECT_COLORS: Dict[str, str] = {
     "Distortion":         "#7393B3",
     "Echo":               "#5C4033",
     "Expander":           "#C4A484",
+    "FilmGrain":          "#c49a4a",
     "Glow":               "#e8b84b",
     "Hue":                "#2d7b6b",
     "LensFlare":          "#7c29d1",
