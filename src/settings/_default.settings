@@ -120,6 +120,13 @@
     "setting": "timeline_height"
   },
   {
+    "value": 0,
+    "title": "",
+    "type": "hidden",
+    "category": "Qt",
+    "setting": "video_dock_width"
+  },
+  {
     "value": "thumbnail",
     "title": "",
     "type": "hidden",
@@ -1357,14 +1364,6 @@
     "restart": false,
     "setting": "actionSimple_View",
     "value": "Alt+Shift+0",
-    "type": "text"
-  },
-  {
-    "category": "Keyboard",
-    "title": "Advanced View",
-    "restart": false,
-    "setting": "actionAdvanced_View",
-    "value": "Alt+Shift+1",
     "type": "text"
   },
   {

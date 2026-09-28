@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-from qt_api import QRectF, Qt
-from qt_api import QColor, QPainter
+from qt_api import QPointF, QRectF, Qt
+from qt_api import QBrush, QColor, QLinearGradient, QPainter
 
 from .base import BasePainter
 
@@ -70,13 +70,30 @@ class PlaybackCachePainter(BasePainter):
         bar_height = min(self.cache_height, area.height())
         if bar_height <= 0.0:
             return
+        lane_height = min(
+            area.height(),
+            max(bar_height, float(getattr(self.w, "track_margin_top", 0.0) or 0.0)),
+        )
+        if lane_height <= 0.0:
+            lane_height = bar_height
+        lane_rect = QRectF(area.left(), area.top(), area.width(), lane_height)
 
         offset_px = float(getattr(self.w, "h_scroll_offset", 0.0) or 0.0)
 
         painter.save()
-        painter.setClipRect(area)
+        painter.setClipRect(lane_rect)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(self.cache_color)
+        track_theme = getattr(getattr(self.w, "theme", None), "track", None)
+        bg = QColor(getattr(track_theme, "background", QColor()))
+        bg2 = QColor(getattr(track_theme, "background2", QColor()))
+        if bg.isValid():
+            if bg2.isValid() and bg2 != bg:
+                grad = QLinearGradient(QPointF(lane_rect.topLeft()), QPointF(lane_rect.bottomLeft()))
+                grad.setColorAt(0, bg)
+                grad.setColorAt(1, bg2)
+                painter.fillRect(lane_rect, QBrush(grad))
+            else:
+                painter.fillRect(lane_rect, bg)
 
         top = area.top()
         for start_seconds, end_seconds in ranges:
@@ -88,7 +105,7 @@ class PlaybackCachePainter(BasePainter):
             if width <= 0.5:
                 continue
             rect = QRectF(start_px, top, width, bar_height)
-            rect = rect.intersected(area)
+            rect = rect.intersected(lane_rect)
             if rect.isNull():
                 continue
             painter.fillRect(rect, self.cache_color)

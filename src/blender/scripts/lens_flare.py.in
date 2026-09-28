@@ -116,19 +116,12 @@ if action:
     _set_kp(fc_z, 1, 300.0, params["end_z"])
 
 # Change the material settings (color, alpha, etc...)
-material_object = bpy.data.materials.get("Material.001")
+material_object = set_material_color("Material.001", params["diffuse_color"], emission_strength=params["strength"])
 if material_object and material_object.node_tree:
-    principled = material_object.node_tree.nodes.get("Principled BSDF")
-    if principled:
-        principled.inputs[0].default_value = _safe_rgba(params["diffuse_color"])
-        if len(principled.inputs) > 26:
-            principled.inputs[26].default_value = _safe_rgba(params["diffuse_color"])  # Emission color
-        strength_value = params["strength"]
-        if len(principled.inputs) > 27:
-            principled.inputs[27].default_value = (strength_value, strength_value, strength_value, 1.0)
-        alpha_input = principled.inputs.get("Alpha")
-        if alpha_input:
-            alpha_input.default_value = params["alpha"]
+    principled = _get_principled_node(material_object)
+    alpha_input = _input_socket(principled, "Alpha")
+    if alpha_input:
+        alpha_input.default_value = params["alpha"]
 
 # Change Composite Node settings
 glare_node = bpy.data.node_groups["Compositing Nodetree"].nodes["Glare"]
