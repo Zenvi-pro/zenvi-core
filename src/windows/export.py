@@ -1314,6 +1314,16 @@ class Export(QDialog):
                 elif "qp" in video_bitrate_text:
                     w.SetOption(openshot.VIDEO_STREAM, "qp", str(_parse_bitrate_to_bps(video_settings.get("video_bitrate"))))
 
+                # Improve compression efficiency for software codecs by using
+                # a longer GOP and allowing B-frames.
+                # Keep this limited to software encoders to avoid hardware-
+                # specific capability mismatches.
+                vcodec = (video_settings.get("vcodec") or "").lower()
+                if vcodec in {"libx264", "libx265", "libvpx-vp9"}:
+                    w.SetOption(openshot.VIDEO_STREAM, "g", "48")
+                    w.SetOption(openshot.VIDEO_STREAM, "allow_b_frames", "1")
+                    w.SetOption(openshot.VIDEO_STREAM, "max_b_frames", "3")
+
             w.Open()
 
             self.ExportStarted.emit(export_file_path, video_settings.get("start_frame"), video_settings.get("end_frame"))
@@ -1888,10 +1898,23 @@ class Export(QDialog):
         bitrate_mbps = bitrate_bits_per_sec / 1_000_000.0
         return f"{bitrate_mbps:.2f} Mb/s"
 
+    @staticmethod
+    def _is_quality_mode_rate(rate_text):
+        """Return True if a preset rate uses quality-mode units (crf/cqp/qp)."""
+        text = (rate_text or "").strip().lower()
+        return (" crf" in text) or (" cqp" in text) or (" qp" in text)
+
     def update_all_formats_bitrates(self):
         """Refresh dynamic video bitrates when using All Formats presets."""
         _ = get_app()._tr
         if self.cboSimpleProjectType.currentData() != _("All Formats"):
+            return
+
+        # Keep explicit quality-mode presets (crf/cqp/qp) untouched.
+        # Dynamic bpp-based Mbps values are only for bitrate-mode presets.
+        if any(self._is_quality_mode_rate(v) for v in getattr(self, "vbr", {}).values()):
+            return
+        if self._is_quality_mode_rate(self.txtVideoBitRate.text()):
             return
 
         dynamic_vbr = {}

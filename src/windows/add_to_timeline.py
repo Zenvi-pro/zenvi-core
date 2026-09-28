@@ -40,6 +40,7 @@ from classes.logger import log
 from classes.query import Clip, Transition
 from classes.app import get_app
 from classes.metrics import track_metric_screen
+from classes.clip_utils import apply_file_caption_to_clip
 from windows.views.add_to_timeline_treeview import TimelineTreeView
 
 import openshot
@@ -50,6 +51,38 @@ class AddToTimeline(QDialog):
     """ Add To timeline Dialog """
 
     ui_path = os.path.join(info.PATH, 'windows', 'ui', 'add-to-timeline.ui')
+
+    def _select_added_items(self, win, added_clip_ids):
+        """Select only the newly added clips, matching timeline drag/drop behavior."""
+        if not win or not added_clip_ids:
+            return
+
+        timeline_view = getattr(win, "timeline", None)
+        for idx, clip_id in enumerate(added_clip_ids):
+            if not clip_id:
+                continue
+            if timeline_view and hasattr(timeline_view, "AddSelectionJS"):
+                timeline_view.AddSelectionJS(str(clip_id), "clip", idx == 0)
+            else:
+                win.addSelection(str(clip_id), "clip", clear_existing=(idx == 0))
+
+        files_model = getattr(win, "files_model", None)
+        if files_model:
+            selection_model = getattr(files_model, "selection_model", None)
+            if selection_model:
+                selection_model.clearSelection()
+            list_selection_model = getattr(files_model, "list_selection_model", None)
+            if list_selection_model:
+                list_selection_model.clearSelection()
+
+        if timeline_view and hasattr(timeline_view, "setFocus"):
+            timeline_view.setFocus()
+        if timeline_view and hasattr(timeline_view, "geometry"):
+            timeline_geometry = getattr(timeline_view, "geometry", None)
+            if hasattr(timeline_geometry, "mark_dirty"):
+                timeline_geometry.mark_dirty()
+        if timeline_view and hasattr(timeline_view, "update"):
+            timeline_view.update()
 
     def btnMoveUpClicked(self, checked):
         """Callback for move up button click"""
@@ -178,6 +211,7 @@ class AddToTimeline(QDialog):
 
         # Init position
         position = start_position
+        added_clip_ids = []
 
         random_transition = False
         if transition_path == "random":
@@ -225,6 +259,9 @@ class AddToTimeline(QDialog):
             # TODO: Determine why this even happens, as it shouldn't be possible
             if not new_clip.get("reader"):
                 continue  # Skip to next file
+
+            # If the source file has stored caption text, attach a Caption effect to this new clip.
+            apply_file_caption_to_clip(new_clip, file)
 
             # Check for optional start and end attributes
             start_time = 0
@@ -403,14 +440,8 @@ class AddToTimeline(QDialog):
         if callable(extend_timeline):
             extend_timeline()
 
-        # Auto-select newly added clips
-        win = get_app().window
-        for idx, clip_id in enumerate(added_clip_ids):
-            if clip_id:
-                win.addSelection(str(clip_id), "clip", clear_existing=(idx == 0))
-        if added_clip_ids and hasattr(win.timeline, "geometry"):
-            win.timeline.geometry.mark_dirty()
-            win.timeline.update()
+        # Auto-select newly added clips, like timeline drag/drop does.
+        self._select_added_items(get_app().window, added_clip_ids)
 
         # Accept dialog
         super(AddToTimeline, self).accept()

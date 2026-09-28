@@ -147,6 +147,7 @@
       <string>Clear</string>
      </property>
      <addaction name="actionClearHistory"/>
+     <addaction name="actionClearOptimizedFiles"/>
      <addaction name="actionClearWaveformData"/>
     </widget>
     <addaction name="actionUndo"/>
@@ -1694,6 +1695,17 @@
    </property>
    <property name="toolTip">
     <string>Clear Waveform Display Data</string>
+   </property>
+  </action>
+  <action name="actionClearOptimizedFiles">
+   <property name="icon">
+    <iconset theme="edit-clear"/>
+   </property>
+   <property name="text">
+    <string>Optimized Videos</string>
+   </property>
+   <property name="toolTip">
+    <string>Delete project optimized videos</string>
    </property>
   </action>
  </widget>

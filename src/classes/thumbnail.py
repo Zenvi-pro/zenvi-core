@@ -53,6 +53,74 @@ from socketserver import ThreadingMixIn
 THUMBNAIL_DECODE_SCALE = 3.0
 
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
+
+# Optimize Preview pre-warms timeline thumbnails while it transcodes a proxy.
+# Frames are snapped onto a coarse grid (this many thumbnails per second of
+# source media) so that a nearby pre-warmed thumbnail can be served instead of
+# decoding the exact frame.
+THUMBNAIL_PREWARM_FPS = 4
+
+
+def ThumbnailFrameStepForFps(fps, target_fps=THUMBNAIL_PREWARM_FPS):
+    """Return the coarse thumbnail frame step for a source FPS."""
+    fps = float(fps or 0.0)
+    target_fps = max(1.0, float(target_fps or 1.0))
+    if fps <= 0.0:
+        return 1
+    return max(1, int(round(fps / target_fps)))
+
+
+def RoundFrameToThumbnailGrid(frame_number, fps, target_fps=THUMBNAIL_PREWARM_FPS):
+    """Round a requested frame to the nearest coarse thumbnail grid frame."""
+    frame_number = max(1, int(frame_number or 1))
+    step = ThumbnailFrameStepForFps(fps, target_fps=target_fps)
+    return max(1, int(round((frame_number - 1) / float(step))) * step + 1)
+
+
+def ThumbnailPathForFrame(file_id, thumbnail_frame, fingerprint=None):
+    """Return the canonical write path for a file/frame thumbnail.
+
+    Zenvi keeps thumbnails in the fingerprint-keyed media cache when the file
+    has a fingerprint, and under ``THUMBNAIL_PATH/<id>/<frame>.png`` otherwise
+    (see ``classes.media_cache``).
+    """
+    return preferred_thumbnail_path(str(file_id), int(thumbnail_frame or 1), fingerprint=fingerprint)
+
+
+def _file_fps(file):
+    """Best-effort FPS for a File record (0.0 when unknown)."""
+    try:
+        fps_data = file.data.get("fps", {}) if isinstance(getattr(file, "data", None), dict) else {}
+        fps_num = float(fps_data.get("num", 0.0) or 0.0)
+        fps_den = float(fps_data.get("den", 1.0) or 1.0)
+        return (fps_num / fps_den) if fps_num > 0.0 and fps_den > 0.0 else 0.0
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def GenerateThumbnailFromFrame(frame, thumb_path, width, height, mask, overlay, rotate=0.0):
+    """Create a thumbnail image from an already decoded libopenshot Frame."""
+    try:
+        scale = float(get_app().devicePixelRatio())
+    except Exception:
+        scale = 1.0
+    scale = max(1.0, scale)
+
+    _ensure_thumb_dir(thumb_path)
+    frame.Thumbnail(
+        thumb_path,
+        round(width * scale),
+        round(height * scale),
+        mask,
+        overlay,
+        "#000",
+        False,
+        "png",
+        85,
+        float(rotate or 0.0),
+    )
+
+
 def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     """Get thumbnail path by invoking HTTP thumbnail request"""
 
@@ -189,7 +257,7 @@ def _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, he
 def _thumb_device_scale():
     """Device pixel ratio used to size thumbnails (1.0 when no app is running)."""
     try:
-        return float(get_app().devicePixelRatio()) or 1.0
+        return float(get_app().devicePixelRatioF()) or 1.0
     except Exception:
         return 1.0
 
@@ -462,6 +530,12 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
         except Exception:
             fingerprint = None
         thumb_path = resolve_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
+        if not thumb_path and not no_cache:
+            # Serve the nearest pre-warmed thumbnail (Optimize Preview writes
+            # thumbnails on a coarse grid) instead of decoding this exact frame.
+            rounded_frame = RoundFrameToThumbnailGrid(file_frame, _file_fps(file))
+            if rounded_frame != file_frame:
+                thumb_path = resolve_thumbnail_path(file_id, rounded_frame, fingerprint=fingerprint)
         if not thumb_path:
             thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 

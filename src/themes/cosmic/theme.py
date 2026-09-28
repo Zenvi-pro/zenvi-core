@@ -445,7 +445,8 @@ QTabWidget#exportTabs QTabBar::tab,
 QTabWidget#tabCategories QTabBar::tab,
 QTabWidget#tabCredits QTabBar::tab,
 QTabWidget#tabChangelog QTabBar::tab,
-QTabWidget#tabWidget QTabBar::tab {
+QTabWidget#tabWidget QTabBar::tab,
+QTabWidget#generateTabs QTabBar::tab {
     color: #d4d4d4;
     font-size: 12px;
     min-width: 0;
@@ -462,7 +463,8 @@ QTabWidget#exportTabs QTabBar::tab:selected,
 QTabWidget#tabCategories QTabBar::tab:selected,
 QTabWidget#tabCredits QTabBar::tab:selected,
 QTabWidget#tabChangelog QTabBar::tab:selected,
-QTabWidget#tabWidget QTabBar::tab:selected {
+QTabWidget#tabWidget QTabBar::tab:selected,
+QTabWidget#generateTabs QTabBar::tab:selected {
     border-right: none;
     border-bottom: 2px solid #4d9cf6;
     background: transparent;

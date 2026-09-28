@@ -103,6 +103,38 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         if "resource" in effect and self._effect_has_reader_source(effect):
             effect.pop("resource", None)
 
+    def _migrate_optimized_asset_paths(self):
+        """Migrate legacy proxy asset folder paths from `proxies` to `optimized`."""
+        if not self.current_filepath:
+            return
+
+        asset_path = get_assets_path(self.current_filepath)
+        legacy_proxy_path = os.path.join(asset_path, "proxies")
+        optimized_path = os.path.join(asset_path, "optimized")
+
+        if os.path.isdir(legacy_proxy_path) and not os.path.exists(optimized_path):
+            shutil.move(legacy_proxy_path, optimized_path)
+            log.info("Migrated optimized assets folder to %s", optimized_path)
+
+        legacy_prefix = os.path.abspath(legacy_proxy_path) + os.sep
+        updated = 0
+        for file_data in self._data.get("files", []):
+            if not isinstance(file_data, dict):
+                continue
+            proxy_reader = file_data.get("proxy_reader")
+            if not isinstance(proxy_reader, dict):
+                continue
+            proxy_path = str(proxy_reader.get("path") or "")
+            abs_proxy_path = os.path.abspath(proxy_path) if proxy_path else ""
+            if abs_proxy_path.startswith(legacy_prefix):
+                relative_path = os.path.relpath(abs_proxy_path, os.path.abspath(legacy_proxy_path))
+                proxy_reader["path"] = os.path.join(optimized_path, relative_path)
+                updated += 1
+
+        info.PROXY_PATH = optimized_path
+        if updated:
+            log.info("Updated %s optimized reader path(s) to use %s", updated, optimized_path)
+
     def get(self, key):
         """Get copied value of a given key in data store"""
 
@@ -458,6 +490,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
                 info.PROTOBUF_DATA_PATH = os.path.join(get_assets_path(self.current_filepath), "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
+                info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
+
+            self._migrate_optimized_asset_paths()
 
             # Clear needs save flag
             self.has_unsaved_changes = False
@@ -1168,6 +1204,8 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             info.TITLE_PATH = os.path.join(get_assets_path(self.current_filepath), "title")
             info.BLENDER_PATH = os.path.join(get_assets_path(self.current_filepath), "blender")
             info.CLIPBOARD_PATH = os.path.join(get_assets_path(self.current_filepath), "clipboard")
+            info.PROXY_PATH = os.path.join(get_assets_path(self.current_filepath), "optimized")
+            info.COMFYUI_OUTPUT_PATH = os.path.join(get_assets_path(self.current_filepath), "comfyui-output")
 
             self.add_to_recent_files(file_path)
             self.has_unsaved_changes = False
@@ -1187,12 +1225,15 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             target_blender_path = os.path.join(asset_path, "blender")
             target_protobuf_path = os.path.join(asset_path, "protobuf_data")
             target_clipboard_path = os.path.join(asset_path, "clipboard")
+            target_proxy_path = os.path.join(asset_path, "optimized")
+            target_comfy_output_path = os.path.join(asset_path, "comfyui-output")
 
             # Create any missing target paths
             try:
                 for target_dir in [asset_path, target_thumb_path, target_title_path,
                                    target_blender_path, target_protobuf_path,
-                                   target_clipboard_path]:
+                                   target_clipboard_path, target_proxy_path,
+                                   target_comfy_output_path]:
                     if not os.path.exists(target_dir):
                         os.mkdir(target_dir)
             except OSError:
@@ -1207,12 +1248,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                 info.BLENDER_PATH = os.path.join(previous_asset_path, "blender")
                 info.PROTOBUF_DATA_PATH = os.path.join(previous_asset_path, "protobuf_data")
                 info.CLIPBOARD_PATH = os.path.join(previous_asset_path, "clipboard")
+                info.PROXY_PATH = os.path.join(previous_asset_path, "optimized")
+                info.COMFYUI_OUTPUT_PATH = os.path.join(previous_asset_path, "comfyui-output")
 
             # Track assets we copy/update
             copied_assets = {
                 "blender": set(),
                 "title": set(),
                 "clipboard": set(),
+                "proxy": set(),
+                "comfyui_output": set(),
             }
             reader_paths = {}
 
@@ -1245,6 +1290,20 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     if not os.path.exists(target_clipboard_filepath):
                         shutil.copy2(working_clipboard_path, target_clipboard_filepath)
 
+            # Copy all ComfyUI output files/folders (fully) to assets folder
+            if os.path.exists(info.COMFYUI_OUTPUT_PATH) and (
+                os.path.abspath(info.COMFYUI_OUTPUT_PATH) != os.path.abspath(target_comfy_output_path)
+            ):
+                for output_name in os.listdir(info.COMFYUI_OUTPUT_PATH):
+                    working_output_path = os.path.join(info.COMFYUI_OUTPUT_PATH, output_name)
+                    target_output_path = os.path.join(target_comfy_output_path, output_name)
+                    if os.path.isdir(working_output_path):
+                        if os.path.exists(target_output_path):
+                            shutil.rmtree(target_output_path, True)
+                        shutil.copytree(working_output_path, target_output_path)
+                    else:
+                        shutil.copy2(working_output_path, target_output_path)
+
             # Copy all protobuf files (if not found in target asset folder)
             if os.path.abspath(info.PROTOBUF_DATA_PATH) != os.path.abspath(target_protobuf_path):
                 for protobuf_path in os.listdir(info.PROTOBUF_DATA_PATH):
@@ -1252,6 +1311,16 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                     target_protobuf_filepath = os.path.join(target_protobuf_path, protobuf_path)
                     if not os.path.exists(target_protobuf_filepath):
                         shutil.copy2(working_protobuf_path, target_protobuf_filepath)
+
+            # Copy all optimized preview videos (if not found in target asset folder)
+            if os.path.isdir(info.PROXY_PATH) and (
+                os.path.abspath(info.PROXY_PATH) != os.path.abspath(target_proxy_path)
+            ):
+                for proxy_name in os.listdir(info.PROXY_PATH):
+                    working_proxy_path = os.path.join(info.PROXY_PATH, proxy_name)
+                    target_proxy_filepath = os.path.join(target_proxy_path, proxy_name)
+                    if os.path.isfile(working_proxy_path) and not os.path.exists(target_proxy_filepath):
+                        shutil.copy2(working_proxy_path, target_proxy_filepath)
 
             # Copy any necessary assets for File records
             for file in self._data["files"]:
@@ -1292,11 +1361,41 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
                             log.info("Copied clipboard %s to %s", asset_name, target_clipboard_path)
                     new_asset_path = os.path.join(target_clipboard_path, asset_name)
 
+                comfy_output_abs = os.path.abspath(info.COMFYUI_OUTPUT_PATH)
+                path_abs = os.path.abspath(path)
+                if path_abs.startswith(comfy_output_abs + os.sep):
+                    if os.path.abspath(os.path.dirname(path)) != os.path.abspath(target_comfy_output_path):
+                        relative_output_path = os.path.relpath(path_abs, comfy_output_abs)
+                        if relative_output_path not in copied_assets["comfyui_output"]:
+                            copied_assets["comfyui_output"].add(relative_output_path)
+                            log.info("Copied ComfyUI output %s to %s", relative_output_path, target_comfy_output_path)
+                        new_asset_path = os.path.join(target_comfy_output_path, relative_output_path)
+
                 # Update path in File object to new location
                 if new_asset_path:
                     file["path"] = new_asset_path
                     reader_paths[file_id] = new_asset_path
                     log.info("Set file %s path to %s", file_id, new_asset_path)
+
+                # Optimized preview videos generated into the working assets folder
+                # move with the project (externally linked proxies keep their path)
+                proxy_reader = file.get("proxy_reader")
+                proxy_path = proxy_reader.get("path") if isinstance(proxy_reader, dict) else ""
+                if proxy_path and info.PROXY_PATH in proxy_path:
+                    proxy_dir, proxy_name = os.path.split(proxy_path)
+                    if proxy_name not in copied_assets["proxy"]:
+                        if os.path.abspath(proxy_dir) != os.path.abspath(target_proxy_path):
+                            copied_assets["proxy"].add(proxy_name)
+                            source_proxy = os.path.join(proxy_dir, proxy_name)
+                            target_proxy = os.path.join(target_proxy_path, proxy_name)
+                            if os.path.isdir(source_proxy):
+                                if os.path.exists(target_proxy):
+                                    shutil.rmtree(target_proxy, True)
+                                shutil.copytree(source_proxy, target_proxy)
+                            elif os.path.exists(source_proxy) and not os.path.exists(target_proxy):
+                                shutil.copy2(source_proxy, target_proxy)
+                            log.info("Copied proxy %s to %s", proxy_name, target_proxy_path)
+                    proxy_reader["path"] = os.path.join(target_proxy_path, proxy_name)
 
             # Copy all Clip thumbnails and update reader paths
             for clip in self._data["clips"]:
