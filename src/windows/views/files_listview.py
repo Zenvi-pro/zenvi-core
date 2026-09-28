@@ -42,6 +42,7 @@ from classes.logger import log
 from classes.query import File
 from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
+from .optimized_preview_menu import add_optimized_preview_menu
 
 
 class FileCardDelegate(IndexingBadgeDelegate):
@@ -202,6 +203,7 @@ class FilesListView(QListView):
 
             # Core actions – the most common workflows
             add_bound_action(menu, self.win, "actionPreview_File", _("Preview File"), "actionPreview_File_trigger")
+            add_optimized_preview_menu(self.win, menu)
             add_bound_action(menu, self.win, "actionAdd_to_Timeline", _("Add to Timeline"), "actionAdd_to_Timeline_trigger")
             menu.addSeparator()
             add_bound_action(menu, self.win, "actionSplitFile", _("Split Clip"), "actionSplitFile_trigger")
