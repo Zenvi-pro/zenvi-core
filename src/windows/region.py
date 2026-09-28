@@ -214,35 +214,6 @@ class ObjectMaskPreviewWorker(QObject):
 
 
 
-def dialog_preview_reader_data(file_obj):
-    """Return the reader payload used to build the region dialog's preview clip.
-
-    Upstream resolves an optimized-preview (proxy) reader here; Zenvi has no
-    proxy service, so this always returns the file's own reader data with an
-    absolute path.
-    """
-    data = getattr(file_obj, "data", {}) if file_obj else {}
-    if not isinstance(data, dict):
-        return {}
-    resolved = json.loads(json.dumps(data))
-    source_path = ""
-    if hasattr(file_obj, "absolute_path"):
-        try:
-            source_path = str(file_obj.absolute_path() or "")
-        except Exception:
-            source_path = ""
-    if not source_path:
-        source_path = str(resolved.get("path") or "")
-    if source_path and not os.path.isabs(source_path):
-        source_path = os.path.join(info.PATH, source_path)
-    if source_path:
-        resolved["path"] = source_path
-    file_id = str(getattr(file_obj, "id", "") or resolved.get("id") or "")
-    if file_id:
-        resolved["id"] = file_id
-    return resolved
-
-
 class SelectRegion(QDialog):
     """ SelectRegion Dialog """
 

@@ -1313,6 +1313,12 @@ class TimelineHelperTests(unittest.TestCase):
                 types.SimpleNamespace(),
                 clip_data,
             )
+
+        self.assertEqual(
+            details,
+            {"position": 4.0, "layer": 1, "start": 0.0, "end": 1.0},
+        )
+
     def test_playhead_time_edit_commit_seeks_and_centers_on_new_playhead_frame(self):
         helper = types.SimpleNamespace()
         helper.current_frame = 1
@@ -1337,12 +1343,6 @@ class TimelineHelperTests(unittest.TestCase):
         self.assertEqual(helper.updated, 1)
         self.assertEqual(helper.seeks, [301])
         self.assertEqual(helper.center_calls, 1)
-
-
-        self.assertEqual(
-            details,
-            {"position": 4.0, "layer": 1, "start": 0.0, "end": 1.0},
-        )
 
     def test_find_missing_transition_details_ignores_existing_transition(self):
         clip_data = {"id": "B", "layer": 1, "position": 4.0, "start": 0.0, "end": 6.0}
