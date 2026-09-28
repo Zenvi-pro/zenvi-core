@@ -290,8 +290,10 @@ QLineEdit#txtChangeLogFilter_libopenshot:focus, QLineEdit#txtChangeLogFilter_lib
         # Set dock widget content margins to 0
         self.set_dock_margins()
 
-        # Move tabs to bottom
-        self.app.window.setTabPosition(Qt.TopDockWidgetArea, QTabWidget.South)
+        # Move tabs to bottom (all dock areas, since restoreState() does not persist tab positions)
+        for area in (Qt.TopDockWidgetArea, Qt.BottomDockWidgetArea,
+                     Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.app.window.setTabPosition(area, QTabWidget.South)
 
         # Main toolbar buttons
         toolbar_buttons = [

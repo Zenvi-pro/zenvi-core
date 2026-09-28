@@ -515,11 +515,7 @@ class TimelineWidgetBase(QWidget):
         keydrag.exited.connect(self._finishKeyframeDrag)
 
         resize.entered.connect(self._disable_playback_caching)
-        resize.exited.connect(self._enable_playback_caching)
-        playhead.entered.connect(self._disable_playback_caching)
-        playhead.exited.connect(self._enable_playback_caching)
         keydrag.entered.connect(self._disable_playback_caching)
-        keydrag.exited.connect(self._enable_playback_caching)
 
         sender, pressed_signal = self._event_signal("pressed")
 
@@ -572,10 +568,12 @@ class TimelineWidgetBase(QWidget):
         self._sm = sm
 
     def _disable_playback_caching(self):
-        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
-
-    def _enable_playback_caching(self):
-        openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
+        try:
+            is_playing = get_app().window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+        except Exception:
+            is_playing = False
+        if not is_playing:
+            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
     def _event_signal(self, name):
         return self.events, self._event_signal_bytes(name)

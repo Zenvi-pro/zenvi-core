@@ -84,9 +84,17 @@ class TimelineSync(UpdateInterface):
             return
 
         with self.timeline_lock:
-            # Disable video caching temporarily
-            caching_value = openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
+            # Enter edit mode for property updates — disable caching until the user seeks or plays.
+            # Only "update" actions represent manual property edits; structural changes like
+            # inserting/deleting clips should not interrupt caching. Also skip during playback
+            # so live property tweaks don't kill an in-progress cache fill.
+            if action and action.type == "update":
+                try:
+                    is_playing = self.window.preview_thread.player.Mode() == openshot.PLAYBACK_PLAY
+                except Exception:
+                    is_playing = False
+                if not is_playing:
+                    openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
             try:
                 proxy_service = getattr(self.window, "proxy_service", None)
@@ -135,8 +143,7 @@ class TimelineSync(UpdateInterface):
                 log.error("Error applying JSON to timeline object in libopenshot: %s. %s" %
                          (e, action.json(is_array=True)))
 
-            # Resume video caching original value
-            openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = caching_value
+            # Cache stays off — re-enabled when the user seeks or starts playback
 
     def MaxSizeChangedCB(self, new_size):
         """Callback for max sized change (i.e. max size of video widget)"""
@@ -146,10 +153,22 @@ class TimelineSync(UpdateInterface):
             QTimer.singleShot(0, self.window._finish_pending_preview_resize)
             return
 
+        if getattr(self.window, "_dock_interaction_active", False):
+            self.window._pending_preview_size = new_size
+            return
+
         # Increase based on DPI
         device_pixel_ratio = self.window.devicePixelRatioF()
         scaled_width = round(new_size.width() * device_pixel_ratio)
         scaled_height = round(new_size.height() * device_pixel_ratio)
+
+        if scaled_width < 1 or scaled_height < 1:
+            log.info(
+                "Skipping preview max size update for invalid size: %sx%s",
+                scaled_width,
+                scaled_height,
+            )
+            return
 
         log.info(f"Adjusting max size of preview image: {scaled_width}x{scaled_height}")
 
