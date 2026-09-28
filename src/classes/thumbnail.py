@@ -270,7 +270,10 @@ def GenerateThumbnail(file_path, thumb_path, thumbnail_frame, width, height, mas
     try:
         clip = openshot.Clip(file_path)
         reader = clip.Reader()
-        scale = get_app().devicePixelRatio()
+        try:
+            scale = float(get_app().devicePixelRatioF())
+        except Exception:
+            scale = 1.0
 
         if scale > 1.0:
             clip.scale_x.AddPoint(1.0, 1.0 * scale)

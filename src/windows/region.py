@@ -49,6 +49,126 @@ from windows.video_widget import VideoWidget
 
 import json
 
+
+class RegionAnnotatedSlider(QSlider):
+    frameClicked = pyqtSignal(int)
+
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setMouseTracking(True)
+        self._total_frames = 1
+        self._current_frame = 1
+        self._markers = []  # list of (frame, kind)
+        self._marker_positions = []  # list of (x, y, frame)
+
+    def set_frames(self, total_frames, current_frame, markers):
+        self._total_frames = int(max(1, total_frames or 1))
+        self._current_frame = int(max(1, current_frame or 1))
+        self._markers = sorted(list(markers or []), key=lambda item: int(item[0]))
+        self.update()
+
+    def _groove_rect(self):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        return self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+
+    def _handle_rect(self):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        return self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+
+    def _x_for_frame(self, frame):
+        groove = self._groove_rect()
+        left = float(groove.left())
+        right = float(groove.right())
+        span = max(1.0, right - left)
+        if self._total_frames <= 1:
+            return int(round(left))
+        ratio = float(max(1, min(self._total_frames, int(frame))) - 1) / float(max(1, self._total_frames - 1))
+        return int(round(left + ratio * span))
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return super().mousePressEvent(event)
+        handle = self._handle_rect().adjusted(-4, -4, 4, 4)
+        if handle.contains(event.pos()):
+            return super().mousePressEvent(event)
+        if not self._marker_positions:
+            return super().mousePressEvent(event)
+        click_x = int(event.pos().x())
+        click_y = int(event.pos().y())
+        nearest = min(
+            self._marker_positions,
+            key=lambda item: (int(item[0]) - click_x) * (int(item[0]) - click_x) + (int(item[1]) - click_y) * (int(item[1]) - click_y),
+        )
+        dx = abs(int(nearest[0]) - click_x)
+        dy = abs(int(nearest[1]) - click_y)
+        if dx <= 8 and dy <= 8:
+            self.setValue(int(nearest[2]))
+            self.frameClicked.emit(int(nearest[2]))
+            event.accept()
+            return
+        return super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        handle = self._handle_rect().adjusted(-4, -4, 4, 4)
+        if handle.contains(event.pos()):
+            self.unsetCursor()
+            return super().mouseMoveEvent(event)
+        if self._marker_positions:
+            x = int(event.pos().x())
+            y = int(event.pos().y())
+            nearest = min(
+                self._marker_positions,
+                key=lambda item: (int(item[0]) - x) * (int(item[0]) - x) + (int(item[1]) - y) * (int(item[1]) - y),
+            )
+            if abs(int(nearest[0]) - x) <= 8 and abs(int(nearest[1]) - y) <= 8:
+                self.setCursor(Qt.PointingHandCursor)
+            else:
+                self.unsetCursor()
+        else:
+            self.unsetCursor()
+        return super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.unsetCursor()
+        return super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        groove = self._groove_rect()
+        # Center markers on the slider groove line.
+        mid_y = int(groove.center().y())
+
+        self._marker_positions = []
+        for frame, kind in self._markers:
+            x = self._x_for_frame(frame)
+            self._marker_positions.append((x, mid_y, int(frame)))
+            if kind == "both":
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor("#53A0ED")))
+                painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
+                painter.setBrush(QBrush(QColor("#E05757")))
+                painter.drawEllipse(x, mid_y, 8, 8)
+            elif kind == "negative":
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor("#E05757")))
+                painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
+            else:
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor("#53A0ED")))
+                painter.drawEllipse(x - 4, mid_y - 4, 8, 8)
+
+        # Current-frame indicator
+        cx = self._x_for_frame(self._current_frame)
+        cur_pen = QPen(QColor("#EAF5FF"), 1)
+        painter.setPen(cur_pen)
+        painter.drawLine(cx, max(0, groove.top() - 5), cx, min(self.height() - 1, groove.bottom() + 5))
+        painter.end()
+
 class SelectRegion(QDialog):
     """ SelectRegion Dialog """
 
@@ -66,20 +186,60 @@ class SelectRegion(QDialog):
     SpeedSignal = pyqtSignal(float)
     StopSignal = pyqtSignal()
 
-    def __init__(self, file=None, clip=None):
+    def __init__(self, file=None, clip=None, selection_mode="rect", parent=None):
         _ = get_app()._tr
 
         # Create dialog class
-        super().__init__()
+        super().__init__(parent)
 
         # Load UI from designer
         ui_util.load_ui(self, self.ui_path)
 
         # Init UI
         ui_util.init_ui(self)
+        self._esc_shortcut = QShortcut(QKeySequence("Esc"), self)
+        self._esc_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        self._esc_shortcut.activated.connect(self.reject)
+        if parent is None:
+            self.setWindowFlags(
+                (self.windowFlags() & ~Qt.Dialog)
+                | Qt.Window
+                | Qt.WindowMinMaxButtonsHint
+                | Qt.WindowMaximizeButtonHint
+            )
+        else:
+            self.setWindowModality(Qt.WindowModal)
+        self.setSizeGripEnabled(True)
 
         # Track metrics
         track_metric_screen("cutting-screen")
+
+        self.selection_mode = str(selection_mode or "rect").strip().lower()
+        if self.selection_mode not in ("rect", "point", "annotate"):
+            self.selection_mode = "rect"
+        if self.selection_mode == "annotate":
+            # Replace stock UI slider with custom-painted annotation slider
+            # so marker dots are perfectly aligned to the slider groove.
+            original_slider = self.sliderVideo
+            custom_slider = RegionAnnotatedSlider(Qt.Horizontal, original_slider.parent())
+            custom_slider.setObjectName(original_slider.objectName())
+            custom_slider.setTracking(original_slider.hasTracking())
+            if hasattr(self, "horizontalLayout_3"):
+                self.horizontalLayout_3.replaceWidget(original_slider, custom_slider)
+            original_slider.hide()
+            original_slider.deleteLater()
+            self.sliderVideo = custom_slider
+            self.sliderVideo.frameClicked.connect(self._on_marker_frame_clicked)
+        self._selected_points = []
+        self._selected_points_negative = []
+        self._selected_payload = {}
+        self._selected_rect_normalized = None
+        self._selected_region_qimage = None
+        self.loop_playback = False
+        self.frame_annotations = {}
+        self._last_annotation_frame = 1
+        self._frame_has_local_keyframe = False
+        self._frame_edited = False
 
         self.start_frame = 1
         self.start_image = None
@@ -87,9 +247,12 @@ class SelectRegion(QDialog):
         self.end_image = None
         self.current_frame = 1
 
-        # Keep track of file object
+        # Keep track of file object (a ComfyUI region may start from a file with no clip)
         self.file = file
-        self.file_path = file.absolute_path()
+        if file and hasattr(file, "absolute_path"):
+            self.file_path = file.absolute_path()
+        else:
+            self.file_path = str(getattr(file, "data", {}).get("path", ""))
 
         # Optimize Preview: draw the region over the low-resolution proxy when one exists
         self.reader_data = dialog_preview_reader_data(file) if file else {}
@@ -97,19 +260,29 @@ class SelectRegion(QDialog):
         use_proxy = bool(proxy_path) and os.path.abspath(proxy_path) != os.path.abspath(self.file_path or "")
 
         # Create region clip with Reader
-        if use_proxy:
-            self.file_path = proxy_path
-            self.clip = openshot.Clip(proxy_path)
+        if clip:
+            if use_proxy:
+                # Optimize Preview: draw the region over the low-resolution proxy
+                self.file_path = proxy_path
+                self.clip = openshot.Clip(proxy_path)
+            else:
+                self.clip = openshot.Clip(clip.Reader())
+            self.clip.Open()
+            # Set region clip start and end
+            self.clip.Start(clip.Start())
+            self.clip.End(clip.End())
         else:
-            self.clip = openshot.Clip(clip.Reader())
-        self.clip.Open()
+            source_path = ""
+            if file:
+                if hasattr(file, "absolute_path"):
+                    source_path = file.absolute_path()
+                else:
+                    source_path = str(getattr(file, "data", {}).get("path", ""))
+            self.clip = openshot.Clip(source_path)
+            self.clip.Open()
+        self.clip.Id(get_app().project.generate_id())
 
-        # Set region clip start and end
-        self.clip.Start(clip.Start())
-        self.clip.End(clip.End())
-        self.clip.Id( get_app().project.generate_id() )
-
-        c_info = clip.Reader().info
+        c_info = self.clip.Reader().info
         self.fps = c_info.fps.ToInt()
         self.fps_num = c_info.fps.num
         self.fps_den = c_info.fps.den
@@ -121,17 +294,34 @@ class SelectRegion(QDialog):
         self.video_length = int(self.clip.Duration() * self.fps) + 1
 
         # Apply effects to region frames
-        for effect in clip.Effects():
-            self.clip.AddEffect(effect)
+        if clip:
+            for effect in clip.Effects():
+                self.clip.AddEffect(effect)
 
         # Open video file with Reader
         log.info(self.clip.Reader())
+
+        # Set instruction text first so it remains above the preview widget.
+        if self.selection_mode == "point":
+            self.lblInstructions.setText(
+                _("Click to add tracking point (SHIFT+Click for additional points, CTRL+Click for negative point)")
+            )
+        elif self.selection_mode == "annotate":
+            self.lblInstructions.setText(
+                _("Choose a tool and mark positive/negative points or rectangles. Scrub to edit selections by frame.")
+            )
+        else:
+            self.lblInstructions.setText(_("Draw a rectangle to select a region of the video frame."))
 
         # Add Video Widget (this dialog owns its own resize / max-size flow)
         self.videoPreview = VideoWidget(watch_project=False)
         self.videoPreview.win = self
         self.videoPreview.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self.verticalLayout.insertWidget(0, self.videoPreview)
+        self.videoPreview.region_selection_mode = self.selection_mode
+        self.videoPreview.regionAnnotationChanged.connect(self._on_video_annotation_changed)
+        self.verticalLayout.insertWidget(1, self.videoPreview)
+        if self.selection_mode == "annotate":
+            self._build_annotation_toolbar()
 
         # Set aspect ratio to match source content
         aspect_ratio = openshot.Fraction(self.width, self.height)
@@ -189,7 +379,13 @@ class SelectRegion(QDialog):
 
         # Add buttons
         self.cancel_button = QPushButton(_('Cancel'))
-        self.process_button = QPushButton(_('Select Region'))
+        if self.selection_mode == "rect":
+            process_label = _('Select Region')
+        elif self.selection_mode == "annotate":
+            process_label = _('Apply Selections')
+        else:
+            process_label = _('Select Point(s)')
+        self.process_button = QPushButton(process_label)
         self.buttonBox.addButton(self.process_button, QDialogButtonBox.AcceptRole)
         self.buttonBox.addButton(self.cancel_button, QDialogButtonBox.RejectRole)
 
@@ -198,16 +394,271 @@ class SelectRegion(QDialog):
         self.btnPlay.clicked.connect(self.btnPlay_clicked)
         self.sliderVideo.valueChanged.connect(self.sliderVideo_valueChanged)
         self.initialized = True
+        if self.selection_mode == "annotate":
+            self._load_frame_annotations(1)
+            self._update_defined_frames_label()
+            self._refresh_marker_bar()
 
-        get_app().window.SelectRegionSignal.emit(clip.Id())
+        get_app().window.SelectRegionSignal.emit(self.clip.Id())
 
     def actionPlay_Triggered(self):
         # Trigger play button (This action is invoked from the preview thread, so it must exist here)
         self.btnPlay.click()
 
+    def keyPressEvent(self, event):
+        if event and event.key() == Qt.Key_Escape:
+            self.reject()
+            event.accept()
+            return
+        return super(SelectRegion, self).keyPressEvent(event)
+
+    def _icon_path(self, name):
+        icon_name = str(name or "").strip()
+        path = os.path.join(info.PATH, "themes", "humanity", "images", icon_name)
+        if os.path.exists(path):
+            return path
+        return ""
+
+    def _build_annotation_toolbar(self):
+        _ = get_app()._tr
+        self.annotation_toolbar = QHBoxLayout()
+        self.annotation_toolbar.setContentsMargins(0, 0, 0, 0)
+        self.annotation_toolbar.setSpacing(6)
+
+        self.annotation_tool_group = QButtonGroup(self)
+        self.annotation_tool_group.setExclusive(True)
+        checked_style = (
+            "QToolButton:checked {"
+            "  background-color: palette(highlight);"
+            "  color: palette(highlighted-text);"
+            "  border: 1px solid palette(highlight);"
+            "}"
+        )
+
+        tool_defs = [
+            ("positive_point", _("Positive Point"), "ai-track-point-positive.svg"),
+            ("negative_point", _("Negative Point"), "ai-track-point-negative.svg"),
+            ("positive_rect", _("Positive Rectangle"), "ai-track-rect-positive.svg"),
+            ("negative_rect", _("Negative Rectangle"), "ai-track-rect-negative.svg"),
+        ]
+        self.annotation_tool_buttons = {}
+        for tool_id, tooltip, icon_name in tool_defs:
+            btn = QToolButton(self)
+            btn.setCheckable(True)
+            btn.setToolTip(tooltip)
+            btn.setIconSize(QSize(18, 18))
+            btn.setMinimumSize(QSize(28, 28))
+            icon_path = self._icon_path(icon_name)
+            if icon_path:
+                btn.setIcon(QIcon(icon_path))
+            else:
+                btn.setText(tooltip)
+            btn.setStyleSheet(checked_style)
+            btn.clicked.connect(lambda checked=False, t=tool_id: self._on_annotation_tool_changed(t))
+            self.annotation_tool_group.addButton(btn)
+            self.annotation_tool_buttons[tool_id] = btn
+            self.annotation_toolbar.addWidget(btn)
+
+        self.btnClearAnnotation = QToolButton(self)
+        self.btnClearAnnotation.setToolTip(_("Clear All Selections"))
+        self.btnClearAnnotation.setIconSize(QSize(18, 18))
+        self.btnClearAnnotation.setMinimumSize(QSize(28, 28))
+        trash_icon = self._icon_path("track-delete-enabled.svg")
+        if trash_icon:
+            self.btnClearAnnotation.setIcon(QIcon(trash_icon))
+        else:
+            self.btnClearAnnotation.setText(_("Reset"))
+        self.btnClearAnnotation.clicked.connect(self._clear_current_frame_annotations)
+        self.annotation_toolbar.addSpacing(8)
+        self.annotation_toolbar.addWidget(self.btnClearAnnotation)
+        self.annotation_toolbar.addStretch(1)
+
+        self.lblDefinedFrames = QLabel("")
+        self.annotation_toolbar.addWidget(self.lblDefinedFrames)
+        self.verticalLayout.insertLayout(1, self.annotation_toolbar)
+
+        # Default tool
+        default_btn = self.annotation_tool_buttons.get("positive_point")
+        if default_btn:
+            default_btn.setChecked(True)
+        self._on_annotation_tool_changed("positive_point")
+
+    def _on_annotation_tool_changed(self, tool_id):
+        if hasattr(self, "videoPreview") and self.videoPreview is not None:
+            self.videoPreview.region_annotation_tool = str(tool_id or "positive_point")
+
+    def _capture_current_annotation(self):
+        def _points_to_payload(items):
+            payload = []
+            for p in items or []:
+                try:
+                    payload.append({"x": float(p.x()), "y": float(p.y())})
+                except Exception:
+                    continue
+            return payload
+
+        def _rects_to_payload(items):
+            payload = []
+            for r in items or []:
+                if not isinstance(r, QRectF):
+                    continue
+                n = r.normalized()
+                payload.append({
+                    "x1": float(n.left()),
+                    "y1": float(n.top()),
+                    "x2": float(n.right()),
+                    "y2": float(n.bottom()),
+                })
+            return payload
+
+        return {
+            "positive_points": _points_to_payload(self.videoPreview.region_points_positive),
+            "negative_points": _points_to_payload(self.videoPreview.region_points_negative),
+            "positive_rects": _rects_to_payload(self.videoPreview.region_rects_positive),
+            "negative_rects": _rects_to_payload(self.videoPreview.region_rects_negative),
+        }
+
+    def _has_any_annotation(self, payload):
+        return bool(
+            (payload.get("positive_points") or [])
+            or (payload.get("negative_points") or [])
+            or (payload.get("positive_rects") or [])
+            or (payload.get("negative_rects") or [])
+        )
+
+    def _save_current_frame_annotations(self, force=False):
+        if self.selection_mode != "annotate":
+            return
+        frame = int(max(1, self.current_frame))
+        if (not force) and (not self._frame_has_local_keyframe) and (not self._frame_edited):
+            return
+        payload = self._capture_current_annotation()
+        if self._has_any_annotation(payload):
+            self.frame_annotations[frame] = payload
+        elif frame in self.frame_annotations:
+            self.frame_annotations.pop(frame, None)
+        self._frame_has_local_keyframe = frame in self.frame_annotations
+        self._frame_edited = False
+        self._update_defined_frames_label()
+
+    def _load_frame_annotations(self, frame):
+        if self.selection_mode != "annotate":
+            return
+        frame = int(max(1, frame))
+        payload = {}
+        inherited = False
+        if frame in self.frame_annotations:
+            payload = dict(self.frame_annotations.get(frame, {}))
+        else:
+            prior_frames = [f for f in self.frame_annotations.keys() if int(f) <= frame]
+            if prior_frames:
+                nearest = int(sorted(prior_frames)[-1])
+                payload = dict(self.frame_annotations.get(nearest, {}))
+                inherited = True
+        self.videoPreview.region_points_positive = [
+            QPointF(float(p.get("x", 0.0)), float(p.get("y", 0.0)))
+            for p in (payload.get("positive_points") or [])
+            if isinstance(p, dict)
+        ]
+        self.videoPreview.region_points_negative = [
+            QPointF(float(p.get("x", 0.0)), float(p.get("y", 0.0)))
+            for p in (payload.get("negative_points") or [])
+            if isinstance(p, dict)
+        ]
+        self.videoPreview.region_rects_positive = [
+            QRectF(
+                QPointF(float(r.get("x1", 0.0)), float(r.get("y1", 0.0))),
+                QPointF(float(r.get("x2", 0.0)), float(r.get("y2", 0.0))),
+            ).normalized()
+            for r in (payload.get("positive_rects") or [])
+            if isinstance(r, dict)
+        ]
+        self.videoPreview.region_rects_negative = [
+            QRectF(
+                QPointF(float(r.get("x1", 0.0)), float(r.get("y1", 0.0))),
+                QPointF(float(r.get("x2", 0.0)), float(r.get("y2", 0.0))),
+            ).normalized()
+            for r in (payload.get("negative_rects") or [])
+            if isinstance(r, dict)
+        ]
+        self.videoPreview.region_rect_drag_start = None
+        self.videoPreview.region_rect_drag_current = None
+        self.videoPreview.region_annotation_inherited = bool(inherited)
+        self.videoPreview.update()
+        self._frame_has_local_keyframe = frame in self.frame_annotations
+        self._frame_edited = False
+
+    def _clear_current_frame_annotations(self):
+        if self.selection_mode != "annotate":
+            return
+        self.frame_annotations = {}
+        self._frame_has_local_keyframe = False
+        self._frame_edited = False
+        self.videoPreview.region_points_positive = []
+        self.videoPreview.region_points_negative = []
+        self.videoPreview.region_rects_positive = []
+        self.videoPreview.region_rects_negative = []
+        self.videoPreview.region_rect_drag_start = None
+        self.videoPreview.region_rect_drag_current = None
+        self.videoPreview.region_annotation_inherited = False
+        self.videoPreview.update()
+        self._update_defined_frames_label()
+        self._refresh_marker_bar()
+
+    def _on_video_annotation_changed(self):
+        if self.selection_mode != "annotate":
+            return
+        self._frame_edited = True
+        self._save_current_frame_annotations(force=True)
+        self._refresh_marker_bar()
+
+    def _update_defined_frames_label(self):
+        if self.selection_mode != "annotate" or not hasattr(self, "lblDefinedFrames"):
+            return
+        frames = sorted(self.frame_annotations.keys())
+        if not frames:
+            self.lblDefinedFrames.setText("")
+            return
+        preview = ", ".join(str(f) for f in frames[:10])
+        if len(frames) > 10:
+            preview = "{} ...".format(preview)
+        self.lblDefinedFrames.setText(get_app()._tr("Frames: {}").format(preview))
+        self._refresh_marker_bar()
+
+    def _refresh_marker_bar(self):
+        if self.selection_mode != "annotate" or not hasattr(self, "sliderVideo"):
+            return
+        if not hasattr(self.sliderVideo, "set_frames"):
+            return
+        markers = []
+        for frame in sorted(self.frame_annotations.keys()):
+            payload = self.frame_annotations.get(frame, {}) or {}
+            has_pos = bool((payload.get("positive_points") or []) or (payload.get("positive_rects") or []))
+            has_neg = bool((payload.get("negative_points") or []) or (payload.get("negative_rects") or []))
+            kind = "both" if (has_pos and has_neg) else ("negative" if has_neg else "positive")
+            markers.append((int(frame), kind))
+        self.sliderVideo.set_frames(self.video_length, self.current_frame, markers)
+
+    def _on_marker_frame_clicked(self, frame_number):
+        frame_number = int(max(1, min(int(frame_number), int(self.video_length))))
+        self.sliderVideo.setValue(frame_number)
+
+    def selection_payload(self):
+        return dict(self._selected_payload or {})
+
+    def selected_rect_normalized(self):
+        if isinstance(self._selected_rect_normalized, dict):
+            return dict(self._selected_rect_normalized)
+        return None
+
+    def selected_region_qimage(self):
+        return self._selected_region_qimage
+
     def movePlayhead(self, frame_number):
         """Update the playhead position"""
 
+        if self.selection_mode == "annotate" and int(frame_number) != int(self.current_frame):
+            self._save_current_frame_annotations()
         self.current_frame = frame_number
         # Move slider to correct frame position
         self.sliderIgnoreSignal = True
@@ -223,6 +674,9 @@ class SelectRegion(QDialog):
 
         # Update label
         self.lblVideoTime.setText(timestamp)
+        if self.selection_mode == "annotate":
+            self._load_frame_annotations(frame_number)
+            self._refresh_marker_bar()
 
     def _target_preview_max_size(self):
         """Even-sized render bound: the viewport (in device pixels) capped at the source size."""
@@ -292,6 +746,11 @@ class SelectRegion(QDialog):
     def sliderVideo_valueChanged(self, new_frame):
         if self.preview_thread and not self.sliderIgnoreSignal:
             log.info('sliderVideo_valueChanged: %s' % new_frame)
+            if self.selection_mode == "annotate":
+                self._save_current_frame_annotations()
+                self.current_frame = int(new_frame)
+                self._load_frame_annotations(new_frame)
+                self._refresh_marker_bar()
 
             # Pause video
             self.btnPlay_clicked(force="pause")
@@ -305,8 +764,8 @@ class SelectRegion(QDialog):
         app = get_app()
         _ = app._tr
 
-        # Check if the sliderVideo is not at its minimum value
-        if self.sliderVideo.value() != self.sliderVideo.minimum():
+        # Legacy behavior for rect/point modes: require frame 1 selection.
+        if self.selection_mode in ("rect", "point") and self.sliderVideo.value() != self.sliderVideo.minimum():
             # Show a warning message box to the user
             QMessageBox.warning(self, _("Invalid Region"),
                                 _("Please choose a region at the beginning of the clip"))
@@ -315,7 +774,55 @@ class SelectRegion(QDialog):
             self.sliderVideo.setValue(self.sliderVideo.minimum())
             return
 
+        if self.selection_mode == "point" and not self.videoPreview.region_points_positive:
+            QMessageBox.warning(self, _("Invalid Selection"), _("Please select at least one point."))
+            return
+        if self.selection_mode == "rect":
+            top_left = getattr(self.videoPreview, "regionTopLeftHandle", None)
+            bottom_right = getattr(self.videoPreview, "regionBottomRightHandle", None)
+            if top_left is None or bottom_right is None:
+                QMessageBox.warning(self, _("Invalid Selection"), _("Please draw a rectangle region."))
+                return
+            curr_frame_size = getattr(self.videoPreview, "curr_frame_size", None)
+            if curr_frame_size and curr_frame_size.width() > 0 and curr_frame_size.height() > 0:
+                x1 = float(top_left.x()) / float(curr_frame_size.width())
+                y1 = float(top_left.y()) / float(curr_frame_size.height())
+                x2 = float(bottom_right.x()) / float(curr_frame_size.width())
+                y2 = float(bottom_right.y()) / float(curr_frame_size.height())
+                left = min(x1, x2)
+                top = min(y1, y2)
+                right = max(x1, x2)
+                bottom = max(y1, y2)
+                self._selected_rect_normalized = {
+                    "normalized_x": left,
+                    "normalized_y": top,
+                    "normalized_width": max(0.0, right - left),
+                    "normalized_height": max(0.0, bottom - top),
+                }
+            region_qimage = getattr(self.videoPreview, "region_qimage", None)
+            if region_qimage:
+                self._selected_region_qimage = region_qimage.copy()
+        if self.selection_mode == "annotate":
+            self._save_current_frame_annotations()
+            if not self.frame_annotations:
+                QMessageBox.warning(self, _("Invalid Selection"), _("Please select at least one point or rectangle."))
+                return
+            sorted_frames = sorted(self.frame_annotations.keys())
+            seed_frame = int(sorted_frames[0]) if sorted_frames else int(self.current_frame)
+            self._selected_payload = {
+                "version": 1,
+                "seed_frame": seed_frame,
+                "frames": {
+                    str(frame): dict(self.frame_annotations.get(frame, {}))
+                    for frame in sorted_frames
+                },
+            }
+        else:
+            self._selected_payload = {}
+
         # Continue with the rest of the accept method
+        self._selected_points = self.selected_points()
+        self._selected_points_negative = self.selected_points_negative()
         self.shutdownPlayer()
         get_app().window.SelectRegionSignal.emit("")
         super(SelectRegion, self).accept()
@@ -341,4 +848,18 @@ class SelectRegion(QDialog):
         get_app().window.SelectRegionSignal.emit("")
         super(SelectRegion, self).reject()
 
+    def selected_points(self):
+        if self._selected_points:
+            return list(self._selected_points)
+        points = []
+        for point in getattr(self.videoPreview, "region_points_positive", []) or []:
+            points.append({"x": float(point.x()), "y": float(point.y())})
+        return points
 
+    def selected_points_negative(self):
+        if self._selected_points_negative:
+            return list(self._selected_points_negative)
+        points = []
+        for point in getattr(self.videoPreview, "region_points_negative", []) or []:
+            points.append({"x": float(point.x()), "y": float(point.y())})
+        return points

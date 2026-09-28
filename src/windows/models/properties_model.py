@@ -39,7 +39,7 @@ from classes.waveform import get_audio_data
 from classes import info, updates
 from classes import openshot_rc  # noqa
 from classes.clip_utils import clamp_timing_to_media, clip_time_bounds
-from classes.query import Clip, Transition, Effect
+from classes.query import Clip, Transition, Effect, File
 from classes.logger import log
 from classes.app import get_app
 import openshot
@@ -67,6 +67,44 @@ class ClipStandardItemModel(QStandardItemModel):
 
 
 class PropertiesModel(updates.UpdateInterface):
+    def _reader_display_name(self, selected_item, reader_memo):
+        """Resolve a human-friendly reader display name from File.name when available."""
+        reader_json = json.loads(reader_memo or "{}")
+        reader_path = reader_json.get("path", "")
+        file_id = reader_json.get("id")
+
+        if getattr(selected_item, "data", None):
+            file_id = selected_item.data.get("file_id") or file_id
+
+        if file_id:
+            file_obj = File.get(id=file_id)
+            if file_obj:
+                file_name = str(file_obj.data.get("name", "")).strip()
+                if file_name:
+                    return file_name
+
+        return os.path.basename(reader_path)
+
+    def _resolve_tracked_object_id(self, raw_properties, tracked_objects_raw_properties):
+        """Resolve selected tracked object ID from properties payload."""
+        if not tracked_objects_raw_properties:
+            return None
+
+        selected_idx = raw_properties.get("selected_object_index", {}).get("value")
+        if selected_idx not in (None, "", "None"):
+            selected_idx = str(selected_idx)
+            if selected_idx in tracked_objects_raw_properties:
+                return selected_idx
+
+            # Newer tracked-object IDs are "<effect-uuid>-<index>".
+            suffix = f"-{selected_idx}"
+            for object_id in tracked_objects_raw_properties.keys():
+                if object_id.endswith(suffix):
+                    return object_id
+
+        # Fallback to first tracked object
+        return next(iter(tracked_objects_raw_properties.keys()))
+
     # This method is invoked by the UpdateManager each time a change happens (i.e UpdateInterface)
     def changed(self, action):
 
@@ -812,10 +850,7 @@ class PropertiesModel(updates.UpdateInterface):
                 # Don't output a value for colors
                 col.setText("")
             elif type == "reader":
-                reader_json = json.loads(memo or "{}")
-                reader_path = reader_json.get("path", "/")
-                fileName = os.path.basename(reader_path)
-                col.setText(fileName)
+                col.setText(self._reader_display_name(c, memo))
             elif type == "int" and label == "Track":
                 # Find track display name
                 all_tracks = get_app().project.get("layers")
@@ -933,10 +968,7 @@ class PropertiesModel(updates.UpdateInterface):
             elif type == "int":
                 col.setText("%d" % value)
             elif type == "reader":
-                reader_json = json.loads(property[1].get("memo") or "{}")
-                reader_path = reader_json.get("path", "/")
-                fileName = os.path.basename(reader_path)
-                col.setText("%s" % fileName)
+                col.setText(self._reader_display_name(c, property[1].get("memo")))
             else:
                 # Use numeric value
                 if value == "" or value is None:
@@ -1013,7 +1045,8 @@ class PropertiesModel(updates.UpdateInterface):
                 if len(all_raw_properties) == 1:
                     tracked_objects_raw_properties = raw_properties.pop('objects', None)
                     if tracked_objects_raw_properties:
-                        tracked_object_id = list(tracked_objects_raw_properties.keys())[0]
+                        tracked_object_id = self._resolve_tracked_object_id(
+                            raw_properties, tracked_objects_raw_properties)
                         tracked_object_properties = tracked_objects_raw_properties[tracked_object_id]
                         raw_properties.update(tracked_object_properties)
                 else:
