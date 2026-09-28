@@ -659,6 +659,26 @@ elif sys.platform == "darwin":
         else:
             log.warning(f"WARNING: {_dylib_name} not found in any search directory — openshot may not work in frozen build")
 
+    # OpenCV runtime for libopenshot >= 1.0 built with ENABLE_OPENCV (Tracker,
+    # Object Detector, Stabilizer). Release CI stages the dylibs with
+    # installer/fix_opencv_rpath.py and exports OPENCV_FREEZE_LIB_PATH; without
+    # it, fall back to <OPENCV_ROOT>/lib. Unset means "rely on cx_Freeze's own
+    # dependency scan", which is what pre-1.0 builds without OpenCV did.
+    _opencv_root = os.getenv("OPENCV_ROOT", "")
+    _opencv_lib_path = os.getenv("OPENCV_FREEZE_LIB_PATH", "") or (
+        os.path.join(_opencv_root, "lib") if _opencv_root else "")
+    if _opencv_lib_path:
+        if os.path.isdir(_opencv_lib_path):
+            build_exe_options.setdefault("bin_path_includes", []).append(_opencv_lib_path)
+            _opencv_dylibs = list(find_files(_opencv_lib_path, ["*.dylib"]))
+            for _dylib_path in _opencv_dylibs:
+                log.info(f"Bundling OpenCV runtime library {_dylib_path}")
+                external_so_files.append((_dylib_path, os.path.basename(_dylib_path)))
+            if not _opencv_dylibs:
+                log.warning(f"WARNING: no OpenCV dylibs found in {_opencv_lib_path}")
+        else:
+            log.warning(f"WARNING: OpenCV library path does not exist: {_opencv_lib_path}")
+
     # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
     # and thus cx_freeze is not able to detect them
     babl_ext_path = "/usr/local/lib/babl-0.1"
