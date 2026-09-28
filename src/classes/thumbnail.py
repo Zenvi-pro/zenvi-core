@@ -168,32 +168,6 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     return ''
 
 
-# Live recording previews save thumbnails on a coarse grid (frames per second)
-# so capture threads never write one PNG per source frame.
-THUMBNAIL_PREWARM_FPS = 4
-
-
-def ThumbnailFrameStepForFps(fps, target_fps=THUMBNAIL_PREWARM_FPS):
-    """Return the coarse thumbnail frame step for a source FPS."""
-    fps = float(fps or 0.0)
-    target_fps = max(1.0, float(target_fps or 1.0))
-    if fps <= 0.0:
-        return 1
-    return max(1, int(round(fps / target_fps)))
-
-
-def RoundFrameToThumbnailGrid(frame_number, fps, target_fps=THUMBNAIL_PREWARM_FPS):
-    """Round a requested frame to the nearest coarse thumbnail grid frame."""
-    frame_number = max(1, int(frame_number or 1))
-    step = ThumbnailFrameStepForFps(fps, target_fps=target_fps)
-    return max(1, int(round((frame_number - 1) / float(step))) * step + 1)
-
-
-def ThumbnailPathForFrame(file_id, thumbnail_frame):
-    """Return the canonical per-file thumbnail path (THUMBNAIL_PATH/{id}/{frame}.png)."""
-    return preferred_thumbnail_path(file_id, int(thumbnail_frame or 1))
-
-
 def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
     """Locate an existing thumbnail (legacy layouts + fingerprint cache)."""
     from classes.media_cache import resolve_thumbnail_path as _resolve
