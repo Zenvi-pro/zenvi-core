@@ -622,7 +622,12 @@ class AIChatWorker(QObject):
                 # falling back to REST which would re-run the entire agent.
                 if last_tool_result:
                     log.info("WebSocket failed (%s) but tool already succeeded, using tool result", final_error)
-                    self.response_ready.emit(last_tool_result)
+                    try:
+                        from classes.agent_tools.present import user_facing_receipt_text
+                        shown = user_facing_receipt_text(str(last_tool_result))
+                    except Exception:
+                        shown = str(last_tool_result)
+                    self.response_ready.emit(shown)
                     return
                 if final_response:
                     log.info("WebSocket failed (%s) but response already received", final_error)
@@ -3644,6 +3649,11 @@ class AIChatWindow(QDockWidget):
                 if sid in self._sessions:
                     self._sessions[sid]["awaiting_plan_answers"] = False
                 body = (text or "").strip()
+                try:
+                    from classes.agent_tools.present import user_facing_receipt_text
+                    body = user_facing_receipt_text(body).strip() or body
+                except Exception:
+                    pass
                 if not body or body == "Done.":
                     body = (
                         "Still working on the plan — say \"continue the plan\" "

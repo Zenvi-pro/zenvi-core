@@ -3,10 +3,57 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
+import os
 from typing import Any, Optional
 
 log = logging.getLogger("agent_tools.transcript")
+
+
+def _first_nonempty(*values) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _as_int_list(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            try:
+                out.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return out
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            parsed = parts
+        return _as_int_list(parsed)
+    try:
+        return [int(value)]
+    except (TypeError, ValueError):
+        return None
 
 
 def _fps_from_project(project) -> Any:
@@ -68,6 +115,123 @@ def _ensure_transcript(
     )
 
 
+def _no_audio_receipt(tool: str = "get_transcript_tool"):
+    from classes.agent_tools.present import NO_AUDIO_USER_MSG
+    from classes.agent_tools.receipt import ToolReceipt
+    return ToolReceipt.unchanged(tool, NO_AUDIO_USER_MSG, data={"reason": "no_audio"})
+
+
+def _is_no_audio_exc(exc: BaseException) -> bool:
+    from classes.agent_tools.present import is_no_audio_message
+    return is_no_audio_message(exc)
+
+
+def _words_payload(record_words, fps, *, generation: int) -> list[dict]:
+    from classes.frame_time import to_frame
+    words = []
+    for i, w in enumerate(record_words):
+        sf = to_frame(w.startSec, fps)
+        ef = to_frame(w.endSec, fps)
+        if ef <= sf:
+            ef = sf + 1
+        words.append({
+            "index": i,
+            "text": w.text,
+            "startFrame": sf,
+            "endFrame": ef,
+            "startSec": w.startSec,
+            "endSec": w.endSec,
+            "transcriptGeneration": generation,
+        })
+    return words
+
+
+def _want_full_words(detail_level: str = "", include_words=None, **_kw) -> bool:
+    if include_words is None and _kw.get("includeWords") is not None:
+        include_words = _kw.get("includeWords")
+    if include_words is None and _kw.get("include_words") is not None:
+        include_words = _kw.get("include_words")
+    if _as_bool(include_words, False):
+        return True
+    detail = _first_nonempty(detail_level, _kw.get("detail_level")).lower()
+    return detail in ("full", "all", "verbose", "words")
+
+
+def _compact_word_rows(words: list[dict]) -> list[list]:
+    return [[w["index"], w["text"], w["startFrame"]] for w in words]
+
+
+def _clip_transcript_payload(
+    words: list[dict],
+    *,
+    include_words: bool,
+    **meta,
+) -> dict:
+    row = dict(meta)
+    row["wordCount"] = len(words)
+    row["compactWords"] = _compact_word_rows(words)
+    row["transcriptGeneration"] = meta.get("transcriptGeneration") or (
+        words[0].get("transcriptGeneration") if words else 1
+    )
+    if include_words:
+        row["words"] = words
+    return row
+
+
+def _transcript_notes() -> list[str]:
+    return [
+        "Show data.script (or summary) to the user in full — never truncate mid-script "
+        "and never invent a message-limit excuse. "
+        "Use data.clips[].compactWords [index, text, startFrame] for remove_words_tool. "
+        "Pass detail_level='full' only if you need the verbose words array.",
+    ]
+
+
+def _file_transcript_receipt(
+    *,
+    file_id: str,
+    words: list[dict],
+    record,
+    warnings: Optional[list] = None,
+    summary_suffix: str = "",
+    include_words: bool = False,
+):
+    from classes.agent_tools.present import words_to_script
+    from classes.agent_tools.receipt import ToolReceipt
+
+    script = words_to_script(words)
+    if script:
+        summary = script
+    else:
+        summary = "No spoken dialogue found." + (
+            f" {summary_suffix}" if summary_suffix else ""
+        )
+    return ToolReceipt.applied(
+        "get_transcript_tool",
+        summary,
+        undo_steps=0,
+        warnings=list(warnings or []),
+        notes=_transcript_notes(),
+        data={
+            "script": script,
+            "wordCount": len(words),
+            "clips": [
+                _clip_transcript_payload(
+                    words,
+                    include_words=include_words,
+                    fileId=str(file_id),
+                    transcriptGeneration=record.generation,
+                ),
+            ],
+            "transcriptionSource": record.transcriptionSource,
+            "modelId": record.modelId,
+            "language": record.language,
+            "transcriptGeneration": record.generation,
+            "engine": record.transcriptionSource,
+        },
+    ).to_json()
+
+
 def transcribe_media(
     fileId: str = "",
     language: str = "auto",
@@ -80,6 +244,9 @@ def transcribe_media(
     from classes.agent_tools.receipt import ToolReceipt
     from classes.speech.cache import DEFAULT_MODEL_ID
     from classes.speech.map_timeline import resolve_media_path
+
+    fileId = _first_nonempty(fileId, _kw.get("file_id"))
+    force = _as_bool(force, False)
 
     if not fileId:
         return ToolReceipt.refused(
@@ -112,16 +279,28 @@ def transcribe_media(
             "transcribe_media_tool", "Error: Transcription cancelled.",
         ).to_json()
     except Exception as exc:
+        if _is_no_audio_exc(exc):
+            return _no_audio_receipt("transcribe_media_tool").to_json()
         return ToolReceipt.error(
             "transcribe_media_tool", f"Error: Transcription failed: {exc}",
         ).to_json()
 
+    from classes.agent_tools.present import words_to_script
+    script = words_to_script(record.words)
+    summary = script or (
+        f"Transcribed {len(record.words)} words ({record.language})."
+        if record.words else "No spoken dialogue found."
+    )
     return ToolReceipt.applied(
         "transcribe_media_tool",
-        f"Transcribed {len(record.words)} words ({record.language}).",
+        summary,
         undo_steps=0,
+        notes=[
+            "Show the transcript script to the user — never paste this receipt JSON.",
+        ],
         data={
             "fileId": str(fileId),
+            "script": script,
             "wordCount": len(record.words),
             "language": record.language,
             "modelId": record.modelId,
@@ -140,6 +319,8 @@ def get_transcript(
     modelId: str = "",
     force: bool = False,
     engine: str = "auto",
+    detail_level: str = "",
+    includeWords=None,
     **_kw,
 ):
     """Return spoken words in project frames for a clip, file, or whole track."""
@@ -147,6 +328,13 @@ def get_transcript(
     from classes.agent_tools.inspect_render import snapshot_project
     from classes.speech.cache import DEFAULT_MODEL_ID
     from classes.speech.map_timeline import clip_speed, resolve_media_path, words_for_clip
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    fileId = _first_nonempty(fileId, _kw.get("file_id"))
+    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
+        trackIndex = _kw.get("track_index")
+    force = _as_bool(force, False)
+    include_words = _want_full_words(detail_level, includeWords, **_kw)
 
     try:
         from classes.app import get_app
@@ -197,42 +385,16 @@ def get_transcript(
                 "get_transcript_tool", "Error: Transcription cancelled.",
             ).to_json()
         except Exception as exc:
+            if _is_no_audio_exc(exc):
+                return _no_audio_receipt().to_json()
             return ToolReceipt.error(
                 "get_transcript_tool", f"Error: Transcription failed: {exc}",
             ).to_json()
-        from classes.frame_time import to_frame
-        words = []
-        for i, w in enumerate(record.words):
-            sf = to_frame(w.startSec, fps)
-            ef = to_frame(w.endSec, fps)
-            if ef <= sf:
-                ef = sf + 1
-            words.append({
-                "index": i,
-                "text": w.text,
-                "startFrame": sf,
-                "endFrame": ef,
-                "startSec": w.startSec,
-                "endSec": w.endSec,
-                "transcriptGeneration": record.generation,
-            })
-        return ToolReceipt.applied(
-            "get_transcript_tool",
-            f"{len(words)} words from file.",
-            undo_steps=0,
-            data={
-                "clips": [{
-                    "fileId": str(fileId),
-                    "words": words,
-                    "transcriptGeneration": record.generation,
-                }],
-                "transcriptionSource": record.transcriptionSource,
-                "modelId": record.modelId,
-                "language": record.language,
-                "transcriptGeneration": record.generation,
-                "engine": record.transcriptionSource,
-            },
-        ).to_json()
+        words = _words_payload(record.words, fps, generation=record.generation)
+        return _file_transcript_receipt(
+            file_id=str(fileId), words=words, record=record,
+            include_words=include_words,
+        )
     else:
         # All clips, optionally filtered by UI track index.
         from classes.track_display import layer_number_to_display_index
@@ -253,10 +415,68 @@ def get_transcript(
                     continue
             targets.append(clip)
 
+    # Imports-only: timeline empty → transcribe media-bin video/audio files.
+    if not targets and not fileId and not clipId:
+        from classes.query import File
+        media_files = []
+        try:
+            media_files = list(File.filter() or [])
+        except Exception:
+            media_files = []
+        usable = []
+        for fobj in media_files:
+            data = getattr(fobj, "data", None)
+            if not isinstance(data, dict):
+                continue
+            path = resolve_media_path(data)
+            if not path or not os.path.isfile(path):
+                continue
+            media_type = str(data.get("media_type") or "").lower()
+            if media_type in ("image", "image/sequence", "font"):
+                continue
+            usable.append((str(data.get("id") or getattr(fobj, "id", "") or ""), path, data))
+        if len(usable) == 1:
+            only_id, only_path, _ = usable[0]
+            try:
+                record = _ensure_transcript(
+                    only_path, language=language or "auto", model_id=model,
+                    force=bool(force), engine=eng,
+                )
+            except InterruptedError:
+                return ToolReceipt.error(
+                    "get_transcript_tool", "Error: Transcription cancelled.",
+                ).to_json()
+            except Exception as exc:
+                if _is_no_audio_exc(exc):
+                    return _no_audio_receipt().to_json()
+                return ToolReceipt.error(
+                    "get_transcript_tool", f"Error: Transcription failed: {exc}",
+                ).to_json()
+            words = _words_payload(record.words, fps, generation=record.generation)
+            return _file_transcript_receipt(
+                file_id=only_id,
+                words=words,
+                record=record,
+                include_words=include_words,
+                warnings=[
+                    "Timeline had no clips — transcribed the single media-bin file. "
+                    "Place it on the timeline for clip-scoped word frames.",
+                ],
+                summary_suffix="(timeline was empty; transcribed the media-bin file.)",
+            )
+        if len(usable) > 1:
+            ids = ", ".join(fid for fid, _, _ in usable[:8] if fid) or "unknown"
+            return ToolReceipt.refused(
+                "get_transcript_tool",
+                "Error: Timeline is empty and multiple media-bin files exist. "
+                f"Pass fileId for one of: {ids}",
+            ).to_json()
+
     if not targets and not fileId:
         return ToolReceipt.refused(
             "get_transcript_tool",
-            "Error: No clips to transcribe. Pass clipId, fileId, or put clips on the timeline.",
+            "Error: No clips to transcribe. Pass clipId/timeline_clip_id, "
+            "fileId/file_id, put a clip on the timeline, or import media first.",
         ).to_json()
 
     generations: list[int] = []
@@ -284,7 +504,10 @@ def get_transcript(
                 "get_transcript_tool", "Error: Transcription cancelled.",
             ).to_json()
         except Exception as exc:
-            warnings.append(f"clip {cid}: {exc}")
+            if _is_no_audio_exc(exc):
+                warnings.append(f"clip {cid}: no audio track")
+            else:
+                warnings.append(f"clip {cid}: {exc}")
             continue
 
         pos = float(clip.get("position") or 0)
@@ -300,38 +523,53 @@ def get_transcript(
             speed=clip_speed(clip),
             generation=record.generation,
         )
-        clips_out.append({
-            "clipId": cid,
-            "fileId": str(clip.get("file_id") or ""),
-            "position": pos,
-            "start": start,
-            "end": end,
-            "words": mapped,
-            "transcriptGeneration": record.generation,
-            "compactWords": [
-                [w["index"], w["text"], w["startFrame"]] for w in mapped
-            ],
-        })
+        clips_out.append(
+            _clip_transcript_payload(
+                mapped,
+                include_words=include_words,
+                clipId=cid,
+                fileId=str(clip.get("file_id") or ""),
+                position=pos,
+                start=start,
+                end=end,
+                transcriptGeneration=record.generation,
+            )
+        )
         generations.append(record.generation)
         source = record.transcriptionSource
         language_out = record.language
         model_out = record.modelId
 
     if not clips_out:
+        if warnings and all(_is_no_audio_exc(w) or "no audio" in str(w).lower() for w in warnings):
+            return _no_audio_receipt().to_json()
         return ToolReceipt.error(
             "get_transcript_tool",
             "Error: Could not transcribe any clip. " + "; ".join(warnings[:3]),
         ).to_json()
 
-    # One generation pin for the whole receipt (max across clips).
+    from classes.agent_tools.present import words_to_script
     gen = max(generations) if generations else 1
-    word_count = sum(len(c["words"]) for c in clips_out)
+    texts = []
+    for clip in clips_out:
+        if clip.get("words"):
+            texts.extend(clip["words"])
+            continue
+        for row in clip.get("compactWords") or []:
+            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                texts.append({"text": row[1]})
+    script = words_to_script(texts)
+    summary = script or "No spoken dialogue found."
+    word_count = sum(int(c.get("wordCount") or 0) for c in clips_out)
     return ToolReceipt.applied(
         "get_transcript_tool",
-        f"{word_count} words across {len(clips_out)} clip(s).",
+        summary,
         undo_steps=0,
         warnings=warnings,
+        notes=_transcript_notes(),
         data={
+            "script": script,
+            "wordCount": word_count,
             "clips": clips_out,
             "transcriptionSource": source,
             "modelId": model_out,
@@ -366,6 +604,12 @@ def remove_words(
     from classes.tool_handlers import (
         _new_transaction_id,
     )
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    wordIndices = _as_int_list(wordIndices if wordIndices not in (None, "") else _kw.get("word_indices"))
+    fillerPreset = _first_nonempty(fillerPreset, _kw.get("filler_preset"))
+    if transcriptGeneration in (None, "") and _kw.get("transcript_generation") not in (None, ""):
+        transcriptGeneration = _kw.get("transcript_generation")
 
     if not clipId:
         return ToolReceipt.refused(
@@ -412,6 +656,8 @@ def remove_words(
             engine=engine or "auto",
         )
     except Exception as exc:
+        if _is_no_audio_exc(exc):
+            return _no_audio_receipt("remove_words_tool").to_json()
         return ToolReceipt.error(
             "remove_words_tool", f"Error: Transcription failed: {exc}",
         ).to_json()

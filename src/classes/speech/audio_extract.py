@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -11,6 +12,41 @@ from typing import Optional, Tuple
 log = logging.getLogger("speech.audio_extract")
 
 _SAMPLE_RATE = 16000
+
+
+def probe_has_audio(media_path: str) -> Tuple[Optional[bool], str]:
+    """Return ``(has_audio, error)``. *has_audio* is None when probe fails."""
+    if not media_path or not os.path.isfile(media_path):
+        return None, f"media not found: {media_path!r}"
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-hide_banner", "-loglevel", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=index",
+                "-of", "json",
+                media_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None, "ffprobe not found on PATH"
+    except subprocess.TimeoutExpired:
+        return None, "ffprobe timed out"
+    except Exception as exc:
+        return None, f"ffprobe failed: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip() or "ffprobe failed"
+        return None, err
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None, "ffprobe returned invalid JSON"
+    streams = data.get("streams") if isinstance(data, dict) else None
+    return bool(streams), ""
 
 
 def extract_mono_16k_wav(
@@ -27,6 +63,15 @@ def extract_mono_16k_wav(
     """
     if not media_path or not os.path.isfile(media_path):
         return "", f"media not found: {media_path!r}"
+
+    has_audio, probe_err = probe_has_audio(media_path)
+    if has_audio is False:
+        return (
+            "",
+            "no audio track in this media file (video-only / silent).",
+        )
+    if has_audio is None and probe_err:
+        log.debug("audio probe inconclusive for %s: %s", media_path, probe_err)
 
     if dest_path:
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
@@ -79,6 +124,10 @@ def extract_mono_16k_wav(
 
     if proc.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) <= 0:
         err = (proc.stderr or "").strip() or "ffmpeg audio extract failed"
+        if "does not contain any stream" in err.lower():
+            err = (
+                "no audio track in this media file (video-only / silent)."
+            )
         _cleanup(tmp, out, dest_path)
         return "", err
 

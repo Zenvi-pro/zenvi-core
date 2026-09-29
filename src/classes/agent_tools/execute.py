@@ -95,7 +95,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         from_handler_str,
         is_error_result,
     )
-    from classes.agent_tools.schema import HIDDEN_PARAMS, validate_args
+    from classes.agent_tools.schema import normalize_args, validate_args
     from classes.agent_tools.snapshot import mutation_result, timeline_snapshot
 
     clear_last_output()
@@ -106,17 +106,13 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         set_last_output(out)
         return out
 
-    args = dict(tool_args or {})
+    raw_args = dict(tool_args or {})
+    chat_session_id = raw_args.pop("chat_session_id", None)
+    transaction_id = raw_args.pop("transaction_id", None)
 
-    if "chat_session_id" in args:
-        if tool_name not in (
-            "split_file_add_clip_tool",
-            "add_clip_to_timeline_tool",
-            "place_motion_graphic_tool",
-            "import_stock_media_tool",
-            "import_files_tool",
-        ):
-            args.pop("chat_session_id", None)
+    # Coerce Assistant stringly stubs (trackIndex="", force="false") before
+    # validation and before the handler sees kwargs.
+    args = normalize_args(tool_name, raw_args)
 
     schema_err = validate_args(tool_name, args)
     if schema_err:
@@ -124,17 +120,17 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
         set_last_output(out)
         return out
 
-    public_args = {k: v for k, v in args.items() if k not in HIDDEN_PARAMS or k == "chat_session_id"}
-    if "chat_session_id" in args and tool_name in (
+    public_args = dict(args)
+    if chat_session_id is not None and tool_name in (
         "split_file_add_clip_tool",
         "add_clip_to_timeline_tool",
         "place_motion_graphic_tool",
         "import_stock_media_tool",
         "import_files_tool",
     ):
-        public_args["chat_session_id"] = args["chat_session_id"]
-    if "transaction_id" in (tool_args or {}):
-        public_args["transaction_id"] = tool_args["transaction_id"]
+        public_args["chat_session_id"] = chat_session_id
+    if transaction_id is not None:
+        public_args["transaction_id"] = transaction_id
 
     def _invoke() -> ToolOutput:
         app = _GET_APP()

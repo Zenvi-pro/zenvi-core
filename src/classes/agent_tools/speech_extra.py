@@ -52,10 +52,15 @@ def remove_silence(
 ):
     """Remove quiet non-speech gaps inside a clip and close them (one undo)."""
     from classes.agent_tools.receipt import ToolReceipt
-    from classes.agent_tools.transcript import apply_compacted_fragments
+    from classes.agent_tools.transcript import (
+        _first_nonempty,
+        apply_compacted_fragments,
+    )
     from classes.speech.vad import detect_speech_windows, silence_ranges_from_speech
     from classes.speech.word_ranges import compact_fragments_after_remove
     from classes.tool_handlers import _new_transaction_id
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
 
     if not clipId:
         return ToolReceipt.refused(
@@ -182,10 +187,15 @@ def add_captions(
 ):
     """Place timed dialogue captions from transcript (or import an SRT/VTT)."""
     from classes.agent_tools.receipt import ToolReceipt
-    from classes.agent_tools.transcript import get_transcript
+    from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.agent_tools.titles import add_title
     from classes.speech.captions import parse_srt_or_vtt, phrase_words
     from classes.agent_tools.receipt import parse_receipt
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    srtPath = _first_nonempty(srtPath, _kw.get("srt_path"))
+    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
+        trackIndex = _kw.get("track_index")
 
     try:
         from classes.app import get_app
@@ -314,8 +324,12 @@ def export_captions(
 ):
     """Export timeline (or clip) dialogue as SRT/VTT."""
     from classes.agent_tools.receipt import ToolReceipt, parse_receipt
-    from classes.agent_tools.transcript import get_transcript
+    from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.speech.captions import cues_to_srt, cues_to_vtt, phrase_words
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
+        trackIndex = _kw.get("track_index")
 
     if not path:
         return ToolReceipt.refused(
@@ -366,8 +380,12 @@ def detect_beats_tool_handler(
     **_kw,
 ):
     from classes.agent_tools.receipt import ToolReceipt
+    from classes.agent_tools.transcript import _first_nonempty
     from classes.speech.beats import detect_beats
     from classes.frame_time import to_frame
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    fileId = _first_nonempty(fileId, _kw.get("file_id"))
 
     try:
         from classes.app import get_app
@@ -449,10 +467,14 @@ def diarize_media(
 ):
     """Attach speakerIds to cached transcript words for a file/clip."""
     from classes.agent_tools.receipt import ToolReceipt
+    from classes.agent_tools.transcript import _first_nonempty
     from classes.speech.asr import transcribe_file
     from classes.speech.cache import DEFAULT_MODEL_ID, get_default_cache
     from classes.speech.diarize import diarize_file_words, speaker_turns
     from classes.speech.map_timeline import resolve_media_path, words_for_clip
+
+    clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
+    fileId = _first_nonempty(fileId, _kw.get("file_id"))
 
     try:
         from classes.app import get_app

@@ -201,10 +201,191 @@ def test_get_transcript_clip_with_fake_asr(tmp_cache, tmp_path):
         data = receipt["data"]
         assert data["transcriptionSource"] == "local"
         assert data["transcriptGeneration"] == 1
-        assert len(data["clips"][0]["words"]) == 3
-        assert data["clips"][0]["words"][1]["text"] == "um"
+        clip = data["clips"][0]
+        assert "words" not in clip  # compact by default
+        assert len(clip["compactWords"]) == 3
+        assert clip["compactWords"][1][1] == "um"
+        assert clip["wordCount"] == 3
+        assert "script" in data
+        assert "hello" in data["script"] and "world" in data["script"]
+        assert "hello" in receipt["summary"]
+        assert '"contract"' not in receipt["summary"]
     finally:
         asr_mod.reset_transcriber_factory()
+
+
+def test_get_transcript_include_words_adds_verbose_array(tmp_cache, tmp_path):
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk2.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{
+                "id": "c1",
+                "file_id": "f1",
+                "position": 0.0,
+                "start": 0.0,
+                "end": 2.0,
+                "layer": 0,
+                "reader": {"path": str(media)},
+            }],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+
+        def _fake_extract(path, **kw):
+            out = tmp_path / "out2.wav"
+            out.write_bytes(b"data")
+            return str(out), ""
+
+        with patch("classes.app.get_app", return_value=app), \
+             patch(
+                 "classes.agent_tools.inspect_render.snapshot_project",
+                 return_value=project,
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_data_for_clip",
+                 return_value={"path": str(media), "id": "f1"},
+             ), \
+             patch(
+                 "classes.speech.asr.extract_mono_16k_wav",
+                 side_effect=_fake_extract,
+             ), \
+             patch(
+                 "classes.clip_utils.project_fps_fraction",
+                 return_value=Fraction(30, 1),
+             ):
+            from classes.agent_tools.transcript import get_transcript
+            raw = get_transcript(clipId="c1", includeWords=True)
+        receipt = parse_receipt(raw)
+        words = receipt["data"]["clips"][0]["words"]
+        assert len(words) == 3
+        assert words[1]["text"] == "um"
+        assert "startFrame" in words[0]
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_get_transcript_no_audio_is_unchanged_not_error(tmp_cache, tmp_path):
+    from classes.agent_tools.present import NO_AUDIO_USER_MSG
+    from classes.speech import asr as asr_mod
+
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "silent.mp4"
+        media.write_bytes(b"fake")
+
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{
+                "id": "c1",
+                "file_id": "f1",
+                "position": 0.0,
+                "start": 0.0,
+                "end": 2.0,
+                "layer": 0,
+                "reader": {"path": str(media)},
+            }],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+
+        with patch("classes.app.get_app", return_value=app), \
+             patch(
+                 "classes.agent_tools.inspect_render.snapshot_project",
+                 return_value=project,
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_data_for_clip",
+                 return_value={"path": str(media), "id": "f1"},
+             ), \
+             patch(
+                 "classes.speech.asr.extract_mono_16k_wav",
+                 return_value=("", "no audio track in this media file (video-only / silent)."),
+             ), \
+             patch(
+                 "classes.clip_utils.project_fps_fraction",
+                 return_value=Fraction(30, 1),
+             ):
+            from classes.agent_tools.transcript import get_transcript
+            raw = get_transcript(clipId="c1")
+        receipt = parse_receipt(raw)
+        assert receipt["status"] == "unchanged"
+        assert receipt["summary"] == NO_AUDIO_USER_MSG
+        assert not receipt["summary"].startswith("Error")
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_user_facing_receipt_shows_script_not_json():
+    from classes.agent_tools.present import user_facing_receipt_text
+    from classes.agent_tools.receipt import ToolReceipt
+
+    receipt = ToolReceipt.applied(
+        "get_transcript_tool",
+        "Hi, I'm Yatharth.",
+        undo_steps=0,
+        data={
+            "script": "Hi, I'm Yatharth.\n\nWe built FlowCut.",
+            "clips": [{
+                "clipId": "c1",
+                "words": [
+                    {"index": 0, "text": "Hi,", "startFrame": 0},
+                    {"index": 1, "text": "I'm", "startFrame": 10},
+                    {"index": 2, "text": "Yatharth.", "startFrame": 20},
+                ],
+            }],
+        },
+    ).to_json()
+    shown = user_facing_receipt_text(receipt)
+    assert shown == "Hi, I'm Yatharth.\n\nWe built FlowCut."
+    assert "contract" not in shown
+    assert "startFrame" not in shown
+
+
+def test_user_facing_subagent_expands_full_script_artifact():
+    from classes.agent_tools.present import user_facing_receipt_text
+
+    long_script = "Word " * 200 + "Thanks."
+    blob = json.dumps({
+        "status": "ok",
+        "summary": "Transcribed the clip.",
+        "key_facts": [],
+        "artifacts": {"script": long_script},
+        "tools_used": ["get_transcript_tool"],
+    })
+    shown = user_facing_receipt_text(blob)
+    assert shown == long_script
+    assert "message limit" not in shown.lower()
+    assert shown.endswith("Thanks.")
+
+
+def test_user_facing_receipt_no_audio():
+    from classes.agent_tools.present import NO_AUDIO_USER_MSG, user_facing_receipt_text
+    from classes.agent_tools.receipt import ToolReceipt
+
+    raw = ToolReceipt.unchanged(
+        "get_transcript_tool", NO_AUDIO_USER_MSG, data={"reason": "no_audio"},
+    ).to_json()
+    assert user_facing_receipt_text(raw) == NO_AUDIO_USER_MSG
+
+
+def test_words_to_script_paragraphs():
+    from classes.agent_tools.present import words_to_script
+
+    script = words_to_script([
+        {"text": "Hi,"},
+        {"text": "there."},
+        {"text": "Next"},
+        {"text": "line."},
+    ])
+    assert script == "Hi, there.\n\nNext line."
 
 
 def test_remove_words_refuses_stale_generation(tmp_cache, tmp_path):

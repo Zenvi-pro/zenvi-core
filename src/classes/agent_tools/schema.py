@@ -346,11 +346,17 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "get_clips_with_full_metadata_tool": _obj({
         "file_id": _str(),
         "limit": _str_or_num(),
+        "detail_level": _str(description="summary (default) or full."),
     }),
     "get_timeline_placements_metadata_tool": _obj({
         "track": _str(),
+        "detail_level": _str(description="summary (default) or full."),
     }),
-    "get_timeline_state_tool": _obj({}),
+    "get_timeline_state_tool": _obj({
+        "detail_level": _str(
+            description="summary (default) or full — accepted for Assistant/LLM compat.",
+        ),
+    }),
     # Phase 3.8 new tools
     "add_effect_tool": _obj({
         "timeline_clip_id": _str(),
@@ -419,7 +425,11 @@ TOOL_SCHEMAS: dict[str, dict] = {
 
     "get_transcript_tool": _obj({
         "clipId": _str(description="Timeline clip id. Prefer this after edits."),
+        "timeline_clip_id": _str(
+            description="Alias for clipId (Assistant / list_clips naming).",
+        ),
         "fileId": _str(description="Media-bin file id (source seconds at timeline 0)."),
+        "file_id": _str(description="Alias for fileId."),
         "trackIndex": _int(minimum=0, description="UI track index; omit for all clips."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
         "modelId": _str(description="e.g. faster-whisper-base (whisper path only)."),
@@ -427,16 +437,24 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "engine": _str(
             description="auto|apple|whisper. auto=Apple SpeechAnalyzer on macOS 26+ when helper is present, else Whisper. Windows always Whisper.",
         ),
+        "detail_level": _str(
+            description="Omit for a compact receipt (script + compactWords). Pass 'full' to also include the verbose words array.",
+        ),
+        "includeWords": _bool(
+            description="If true, include the verbose per-word timing array (same as detail_level=full).",
+        ),
     }),
     "transcribe_media_tool": _obj({
         "fileId": _str(description="Media-bin file id."),
+        "file_id": _str(description="Alias for fileId."),
         "language": _str(description="BCP-47 / whisper code, or 'auto'."),
         "modelId": _str(description="e.g. faster-whisper-base"),
         "force": _bool(description="Ignore cache and re-run ASR."),
         "engine": _str(description="auto|apple|whisper"),
-    }, required=["fileId"]),
+    }),
     "remove_words_tool": _obj({
         "clipId": _str(description="Timeline clip to cut."),
+        "timeline_clip_id": _str(description="Alias for clipId."),
         "wordIndices": {
             "type": "array",
             "items": {"type": "integer", "minimum": 0},
@@ -452,20 +470,22 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "language": _str(),
         "modelId": _str(),
         "engine": _str(description="auto|apple|whisper"),
-    }, required=["clipId"]),
+    }),
 
     "remove_silence_tool": _obj({
         "clipId": _str(description="Timeline clip to tighten."),
+        "timeline_clip_id": _str(description="Alias for clipId."),
         "minPauseSec": _num(minimum=0.05, description="Minimum silence gap to remove."),
         "padSec": _num(minimum=0.0, description="Keep this much audio around speech."),
         "maxRemoveFraction": _num(
             minimum=0.1, maximum=0.99,
             description="Refuse if more than this fraction would be deleted.",
         ),
-    }, required=["clipId"]),
+    }),
 
     "add_captions_tool": _obj({
         "clipId": _str(),
+        "timeline_clip_id": _str(description="Alias for clipId."),
         "trackIndex": _int(minimum=0),
         "maxWords": _int(minimum=1, maximum=24),
         "maxChars": _int(minimum=8, maximum=120),
@@ -478,18 +498,23 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "path": _str(description="Destination .srt or .vtt path."),
         "format": _str(description="srt or vtt."),
         "clipId": _str(),
+        "timeline_clip_id": _str(description="Alias for clipId."),
         "trackIndex": _int(minimum=0),
         "language": _str(),
     }, required=["path"]),
 
     "detect_beats_tool": _obj({
         "fileId": _str(),
+        "file_id": _str(description="Alias for fileId."),
         "clipId": _str(),
+        "timeline_clip_id": _str(description="Alias for clipId."),
     }),
 
     "diarize_media_tool": _obj({
         "fileId": _str(),
+        "file_id": _str(description="Alias for fileId."),
         "clipId": _str(),
+        "timeline_clip_id": _str(description="Alias for clipId."),
         "maxSpeakers": _int(minimum=1, maximum=8),
         "language": _str(),
         "modelId": _str(),
@@ -502,6 +527,115 @@ TOOL_SCHEMAS: dict[str, dict] = {
     }, required=["query"]),
 
 }
+
+
+def _prop_types(prop: dict) -> set[str]:
+    raw = prop.get("type")
+    if isinstance(raw, list):
+        return {str(t) for t in raw}
+    if raw is None:
+        return set()
+    return {str(raw)}
+
+
+def normalize_args(tool_name: str, args: Optional[dict]) -> dict:
+    """Coerce Assistant/LLM stringly-typed args into schema shapes.
+
+    LangChain frontend stubs often advertise every field as ``str``, so models
+    send ``trackIndex=""`` / ``trackIndex="0"`` / ``force="false"``. Drop empty
+    optionals and coerce integers/booleans/arrays before jsonschema runs.
+    """
+    import json
+
+    payload = dict(args or {})
+    for hidden in HIDDEN_PARAMS:
+        payload.pop(hidden, None)
+
+    schema = TOOL_SCHEMAS.get(tool_name)
+    if schema is None:
+        return {k: v for k, v in payload.items() if v != ""}
+
+    props = schema.get("properties") or {}
+    out: dict[str, Any] = {}
+
+    for key, value in payload.items():
+        if key not in props:
+            # Keep unexpected keys so jsonschema can refuse them when
+            # additionalProperties is false. Only drop empty strings.
+            if value != "":
+                out[key] = value
+            continue
+
+        prop = props[key] if isinstance(props[key], dict) else {}
+        types = _prop_types(prop)
+
+        if value is None or value == "":
+            # Optional empty → omit (required fields still fail validation).
+            continue
+
+        if "integer" in types and not isinstance(value, bool):
+            if isinstance(value, int):
+                out[key] = value
+                continue
+            if isinstance(value, float) and value.is_integer():
+                out[key] = int(value)
+                continue
+            if isinstance(value, str):
+                text = value.strip()
+                if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+                    out[key] = int(text)
+                    continue
+            out[key] = value
+            continue
+
+        if "number" in types and not isinstance(value, bool):
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+                continue
+            if isinstance(value, str):
+                try:
+                    out[key] = float(value.strip())
+                    continue
+                except ValueError:
+                    pass
+            out[key] = value
+            continue
+
+        if "boolean" in types:
+            if isinstance(value, bool):
+                out[key] = value
+                continue
+            if isinstance(value, str):
+                low = value.strip().lower()
+                if low in ("1", "true", "yes", "on"):
+                    out[key] = True
+                    continue
+                if low in ("0", "false", "no", "off"):
+                    out[key] = False
+                    continue
+            out[key] = value
+            continue
+
+        if "array" in types and isinstance(value, str):
+            text = value.strip()
+            if not text:
+                continue
+            try:
+                parsed = json.loads(text)
+                out[key] = parsed
+                continue
+            except json.JSONDecodeError:
+                if "," in text:
+                    parts = [p.strip() for p in text.split(",") if p.strip()]
+                    if parts and all(p.isdigit() for p in parts):
+                        out[key] = [int(p) for p in parts]
+                        continue
+            out[key] = value
+            continue
+
+        out[key] = value
+
+    return out
 
 
 def get_schema(tool_name: str) -> Optional[dict]:
@@ -519,9 +653,7 @@ def validate_args(tool_name: str, args: Optional[dict]) -> Optional[str]:
     schema = TOOL_SCHEMAS.get(tool_name)
     if schema is None:
         return None
-    payload = dict(args or {})
-    for hidden in HIDDEN_PARAMS:
-        payload.pop(hidden, None)
+    payload = normalize_args(tool_name, args)
     try:
         Draft202012Validator(schema).validate(payload)
     except jsonschema.ValidationError as exc:

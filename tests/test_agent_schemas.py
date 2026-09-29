@@ -70,3 +70,46 @@ def test_mcp_iter_tool_defs_uses_strict_schemas():
     defs = {d["name"]: d for d in iter_tool_defs()}
     for name in tool_handlers.AGENT_TOOL_HANDLERS:
         assert defs[name]["inputSchema"]["additionalProperties"] is False
+
+
+def test_normalize_drops_empty_track_index_and_coerces_string_int():
+    from classes.agent_tools.schema import normalize_args
+
+    dropped = normalize_args("get_transcript_tool", {
+        "clipId": "c1",
+        "trackIndex": "",
+        "force": "false",
+    })
+    assert "trackIndex" not in dropped
+    assert dropped["force"] is False
+    assert dropped["clipId"] == "c1"
+
+    coerced = normalize_args("get_transcript_tool", {"trackIndex": "0", "force": "true"})
+    assert coerced["trackIndex"] == 0
+    assert coerced["force"] is True
+
+
+def test_validate_accepts_assistant_stringly_transcript_args():
+    assert validate_args("get_transcript_tool", {
+        "clipId": "c1",
+        "trackIndex": "",
+        "force": "false",
+    }) is None
+    assert validate_args("get_transcript_tool", {
+        "fileId": "f1",
+        "trackIndex": "0",
+    }) is None
+
+
+def test_validate_accepts_timeline_detail_level():
+    assert validate_args("get_timeline_state_tool", {"detail_level": "summary"}) is None
+    assert validate_args("get_timeline_state_tool", {}) is None
+
+
+def test_validate_accepts_transcript_aliases():
+    assert validate_args("get_transcript_tool", {
+        "timeline_clip_id": "PHM7T104LX",
+    }) is None
+    assert validate_args("get_transcript_tool", {
+        "file_id": "FZOEBK3JJZ",
+    }) is None

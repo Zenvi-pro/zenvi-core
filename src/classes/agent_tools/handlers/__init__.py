@@ -32,35 +32,16 @@ PHASE4_HANDLERS = {
     "inspect_media_tool": inspect_media,
 }
 
-def _audit_wrap(name, fn):
-    def _wrapped(*args, **kwargs):
-        from classes.speech.audit import audit, audit_receipt, enabled
-        if enabled():
-            audit("tool_call", tool=name, args={k: kwargs.get(k) for k in kwargs if k not in ("chat_session_id", "transaction_id")})
-        try:
-            out = fn(*args, **kwargs)
-        except Exception as exc:
-            if enabled():
-                audit("tool_exception", tool=name, error=str(exc))
-            raise
-        if isinstance(out, str):
-            return audit_receipt(name, out)
-        return out
-    _wrapped.__name__ = getattr(fn, "__name__", name)
-    _wrapped.__doc__ = getattr(fn, "__doc__", None)
-    return _wrapped
-
-
 PHASE5_HANDLERS = {
-    "get_transcript_tool": _audit_wrap("get_transcript_tool", get_transcript),
-    "remove_words_tool": _audit_wrap("remove_words_tool", remove_words),
-    "transcribe_media_tool": _audit_wrap("transcribe_media_tool", transcribe_media),
-    "remove_silence_tool": _audit_wrap("remove_silence_tool", remove_silence),
-    "add_captions_tool": _audit_wrap("add_captions_tool", add_captions),
-    "export_captions_tool": _audit_wrap("export_captions_tool", export_captions),
-    "detect_beats_tool": _audit_wrap("detect_beats_tool", detect_beats_tool_handler),
-    "diarize_media_tool": _audit_wrap("diarize_media_tool", diarize_media),
-    "search_media_local_tool": _audit_wrap("search_media_local_tool", search_media_local),
+    "get_transcript_tool": get_transcript,
+    "remove_words_tool": remove_words,
+    "transcribe_media_tool": transcribe_media,
+    "remove_silence_tool": remove_silence,
+    "add_captions_tool": add_captions,
+    "export_captions_tool": export_captions,
+    "detect_beats_tool": detect_beats_tool_handler,
+    "diarize_media_tool": diarize_media,
+    "search_media_local_tool": search_media_local,
 }
 
 PHASE3_DISPLAY_LABELS = {
