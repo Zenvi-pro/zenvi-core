@@ -48,10 +48,80 @@ from socketserver import ThreadingMixIn
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1/path
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1/
 #  http://127.0.0.1:33723/thumbnails/9ATJTBQ71V/1
+# Decode at a multiple of the thumbnail size so downscaling keeps detail
+# (only honoured by readers that expose SetMaxDecodeSize, libopenshot >= 1.0).
+THUMBNAIL_DECODE_SCALE = 3.0
+
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
 
+# Optimize Preview pre-warms timeline thumbnails while it transcodes a proxy.
+# Frames are snapped onto a coarse grid (this many thumbnails per second of
+# source media) so that a nearby pre-warmed thumbnail can be served instead of
+# decoding the exact frame.
+THUMBNAIL_PREWARM_FPS = 4
 
-def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
+
+def ThumbnailFrameStepForFps(fps, target_fps=THUMBNAIL_PREWARM_FPS):
+    """Return the coarse thumbnail frame step for a source FPS."""
+    fps = float(fps or 0.0)
+    target_fps = max(1.0, float(target_fps or 1.0))
+    if fps <= 0.0:
+        return 1
+    return max(1, int(round(fps / target_fps)))
+
+
+def RoundFrameToThumbnailGrid(frame_number, fps, target_fps=THUMBNAIL_PREWARM_FPS):
+    """Round a requested frame to the nearest coarse thumbnail grid frame."""
+    frame_number = max(1, int(frame_number or 1))
+    step = ThumbnailFrameStepForFps(fps, target_fps=target_fps)
+    return max(1, int(round((frame_number - 1) / float(step))) * step + 1)
+
+
+def ThumbnailPathForFrame(file_id, thumbnail_frame, fingerprint=None):
+    """Return the canonical write path for a file/frame thumbnail.
+
+    Zenvi keeps thumbnails in the fingerprint-keyed media cache when the file
+    has a fingerprint, and under ``THUMBNAIL_PATH/<id>/<frame>.png`` otherwise
+    (see ``classes.media_cache``).
+    """
+    return preferred_thumbnail_path(str(file_id), int(thumbnail_frame or 1), fingerprint=fingerprint)
+
+
+def _file_fps(file):
+    """Best-effort FPS for a File record (0.0 when unknown)."""
+    try:
+        fps_data = file.data.get("fps", {}) if isinstance(getattr(file, "data", None), dict) else {}
+        fps_num = float(fps_data.get("num", 0.0) or 0.0)
+        fps_den = float(fps_data.get("den", 1.0) or 1.0)
+        return (fps_num / fps_den) if fps_num > 0.0 and fps_den > 0.0 else 0.0
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def GenerateThumbnailFromFrame(frame, thumb_path, width, height, mask, overlay, rotate=0.0):
+    """Create a thumbnail image from an already decoded libopenshot Frame."""
+    try:
+        scale = float(get_app().devicePixelRatio())
+    except Exception:
+        scale = 1.0
+    scale = max(1.0, scale)
+
+    _ensure_thumb_dir(thumb_path)
+    frame.Thumbnail(
+        thumb_path,
+        round(width * scale),
+        round(height * scale),
+        mask,
+        overlay,
+        "#000",
+        False,
+        "png",
+        85,
+        float(rotate or 0.0),
+    )
+
+
+def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     """Get thumbnail path by invoking HTTP thumbnail request"""
 
     # Clear thumb cache (if requested)
@@ -67,13 +137,51 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False):
         file_id,
         thumbnail_frame,
         thumb_cache)
-    r = get(thumb_address)
-    if r.ok:
-        # Update thumbnail path to real one
-        return r.text
-    else:
-        return ''
+    attempts = max(1, int(attempts or 1))
+    for attempt in range(1, attempts + 1):
+        try:
+            r = get(thumb_address)
+        except Exception:
+            log.warning(
+                "Thumbnail path request failed file_id=%s frame=%s attempt=%s/%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                exc_info=1,
+            )
+            r = None
 
+        if r is not None and r.ok and r.text:
+            # Update thumbnail path to real one
+            return r.text
+
+        if r is not None:
+            log.warning(
+                "Thumbnail path request returned empty/miss file_id=%s frame=%s attempt=%s/%s status=%s",
+                file_id,
+                thumbnail_frame,
+                attempt,
+                attempts,
+                getattr(r, "status_code", "n/a"),
+            )
+
+        if attempt < attempts:
+            time.sleep(0.05)
+
+    return ''
+
+
+def resolve_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
+    """Locate an existing thumbnail (legacy layouts + fingerprint cache)."""
+    from classes.media_cache import resolve_thumbnail_path as _resolve
+    return _resolve(file_id, frame, fingerprint=fingerprint, thumb_root=thumb_root)
+
+
+def preferred_thumbnail_path(file_id, frame, fingerprint=None, thumb_root=None):
+    """Canonical path to write a newly generated thumbnail."""
+    from classes.media_cache import preferred_thumbnail_path as _preferred
+    return _preferred(file_id, frame, fingerprint=fingerprint, thumb_root=thumb_root)
 
 def _ensure_thumb_dir(thumb_path):
     parent_path = os.path.dirname(thumb_path)
@@ -146,67 +254,157 @@ def _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, he
         return False
 
 
-def _write_not_found_thumbnail(thumb_path):
-    not_found_path = os.path.join(info.IMAGES_PATH, "NotFound@2x.png")
+def _thumb_device_scale():
+    """Device pixel ratio used to size thumbnails (1.0 when no app is running)."""
+    try:
+        return float(get_app().devicePixelRatioF()) or 1.0
+    except Exception:
+        return 1.0
+
+
+def _reader_rotation(reader, source_path):
+    """Rotation (degrees) the thumbnail must still apply, or 0.0.
+
+    libopenshot >= 1.0 readers apply the source orientation metadata to the
+    frames they decode (OpenShot #6037), so rotating again here would turn
+    portrait media twice. Older readers hand out unrotated frames and the
+    'rotate' metadata still has to be honoured.
+    """
+    applies_orientation = getattr(reader, "ApplyOrientationMetadata", None)
+    if applies_orientation is not None:
+        try:
+            if applies_orientation():
+                return 0.0
+        except Exception:
+            log.debug("Could not query reader orientation handling for %s", source_path, exc_info=1)
+    rotate_data = None
+    try:
+        if reader.info.metadata.count("rotate"):
+            rotate_data = reader.info.metadata["rotate"]
+            return float(rotate_data)
+    except ValueError as ex:
+        log.warning("Could not parse rotation value %s: %s", rotate_data, ex)
+    except Exception:
+        log.warning("Error reading rotation metadata from %s", source_path, exc_info=1)
+    return 0.0
+
+
+def _thumbnail_reader_attempts():
+    """Reader inspection modes to try, cheapest first.
+
+    libopenshot >= 1.0 exposes Clip.CreateReader(path, inspect_reader): a
+    lightweight reader first, then an eagerly inspected one (fixes formats
+    such as webp that the quick path cannot open). Older libopenshot only has
+    the fully inspected Clip reader, so a single attempt is made.
+    """
+    if hasattr(openshot.Clip, "CreateReader"):
+        return (False, True)
+    return (True,)
+
+
+def _create_thumbnail_reader(source_path, inspect_reader):
+    """Return (reader, owner). *owner* keeps a legacy Clip alive while used."""
+    create_reader = getattr(openshot.Clip, "CreateReader", None)
+    if create_reader is not None:
+        return create_reader(source_path, inspect_reader), None
+    clip = openshot.Clip(source_path)
+    return clip.Reader(), clip
+
+
+def _frame_thumbnail(frame, thumb_path, thumb_width, thumb_height, mask, overlay, rotate):
+    """Write *frame* as a PNG thumbnail (cropping to fill on libopenshot >= 1.0)."""
+    args = (thumb_path, thumb_width, thumb_height, mask, overlay, "#000", False, "png", 85, float(rotate or 0.0))
+    scale_crop = getattr(openshot, "SCALE_CROP", None)
+    if scale_crop is not None:
+        try:
+            frame.Thumbnail(*args, scale_crop)
+            return
+        except TypeError:
+            # libopenshot < 1.0: Thumbnail() has no scale-mode argument
+            pass
+    frame.Thumbnail(*args)
+
+
+def _render_with_reader(source_path, source_frame, inspect_reader, thumb_path,
+                        thumb_width, thumb_height, mask, overlay):
+    """Render one frame of *source_path* to *thumb_path*; True when the file exists."""
+    reader = None
+    owner = None
+    try:
+        reader, owner = _create_thumbnail_reader(source_path, inspect_reader)
+        if not reader:
+            raise RuntimeError("No reader available for thumbnail generation")
+
+        if hasattr(reader, "SetMaxDecodeSize"):
+            decode_width = max(thumb_width, round(thumb_width * THUMBNAIL_DECODE_SCALE))
+            decode_height = max(thumb_height, round(thumb_height * THUMBNAIL_DECODE_SCALE))
+            reader.SetMaxDecodeSize(decode_width, decode_height)
+        reader.Open()
+
+        rotate = _reader_rotation(reader, source_path)
+        _frame_thumbnail(
+            reader.GetFrame(source_frame),
+            thumb_path,
+            thumb_width,
+            thumb_height,
+            mask,
+            overlay,
+            rotate,
+        )
+        return os.path.isfile(thumb_path)
+    finally:
+        for handle in (reader, owner):
+            if handle is not None:
+                try:
+                    handle.Close()
+                except Exception:
+                    pass
+
+
+def _write_not_found_thumbnail(thumb_path, width=None, height=None):
+    """Render the NotFound placeholder (SVG) at the requested thumbnail size."""
     _ensure_thumb_dir(thumb_path)
-    shutil.copyfile(not_found_path, thumb_path)
-    log.warning("Failed to generate thumbnail, using placeholder: %s", thumb_path)
+    scale = _thumb_device_scale()
+    width = width or info.LIST_ICON_SIZE.width()
+    height = height or info.LIST_ICON_SIZE.height()
+    not_found_path = os.path.join(info.IMAGES_PATH, "NotFound.svg")
+    try:
+        _render_with_reader(
+            not_found_path, 1, False, thumb_path,
+            round(width * scale), round(height * scale), "", "")
+        log.warning("Failed to generate thumbnail, using placeholder: %s", thumb_path)
+    except Exception:
+        log.warning("Failed to generate placeholder thumbnail from: %s", not_found_path, exc_info=1)
 
 
 def GenerateThumbnail(file_path, thumb_path, thumbnail_frame, width, height, mask, overlay):
     """Create thumbnail image, and check for rotate metadata (if any)"""
     if not file_path or not os.path.isfile(file_path):
-        _write_not_found_thumbnail(thumb_path)
+        _write_not_found_thumbnail(thumb_path, width, height)
         log.warning("Failed to generate thumbnail for missing file: %s", file_path)
         return
 
     _ensure_thumb_dir(thumb_path)
+    scale = _thumb_device_scale()
+    thumb_width = round(width * scale)
+    thumb_height = round(height * scale)
 
-    # Create a clip object and get the reader
-    try:
-        clip = openshot.Clip(file_path)
-        reader = clip.Reader()
-        scale = get_app().devicePixelRatio()
-
-        if scale > 1.0:
-            clip.scale_x.AddPoint(1.0, 1.0 * scale)
-            clip.scale_y.AddPoint(1.0, 1.0 * scale)
-
-        reader.Open()
-
-        rotate = 0.0
+    # Quick reader first, then retry with eager inspection (libopenshot >= 1.0)
+    for inspect_reader in _thumbnail_reader_attempts():
         try:
-            if reader.info.metadata.count("rotate"):
-                rotate_data = reader.info.metadata["rotate"]
-                rotate = float(rotate_data)
-        except ValueError as ex:
-            log.warning("Could not parse rotation value %s: %s", rotate_data, ex)
-        except Exception:
-            log.warning("Error reading rotation metadata from %s", file_path, exc_info=1)
-
-        reader.GetFrame(thumbnail_frame).Thumbnail(
-            thumb_path,
-            round(width * scale),
-            round(height * scale),
-            mask,
-            overlay,
-            "#000",
-            False,
-            "png",
-            85,
-            rotate,
-        )
-        reader.Close()
-        clip.Close()
-        if os.path.isfile(thumb_path):
-            return
-    except Exception as exc:
-        log.warning("libopenshot thumbnail failed for %s: %s", file_path, exc)
+            if _render_with_reader(file_path, thumbnail_frame, inspect_reader, thumb_path,
+                                   thumb_width, thumb_height, mask, overlay):
+                return
+        except Exception as exc:
+            log.warning("libopenshot thumbnail failed for %s (inspect=%s): %s",
+                        file_path, inspect_reader, exc)
 
     if _generate_thumbnail_ffmpeg(file_path, thumb_path, thumbnail_frame, width, height):
         return
 
-    _write_not_found_thumbnail(thumb_path)
+    # Any failure opening the reader (i.e. file missing or corrupt) use placeholder thumbnail
+    _write_not_found_thumbnail(thumb_path, width, height)
+    log.warning("Failed to generate thumbnail for missing file: %s", file_path)
 
 
 class httpThumbnailServer(ThreadingMixIn, HTTPServer):
@@ -325,29 +523,40 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html; charset=utf-8')
         self.end_headers()
 
-        # Locate thumbnail
-        thumb_path = os.path.join(info.THUMBNAIL_PATH, file_id, "%s.png" % file_frame)
-        if not os.path.exists(thumb_path) and file_frame == 1:
-            # Try ID with no frame # (for backwards compatibility)
-            thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file_id)
-        if not os.path.exists(thumb_path) and file_frame != 1:
-            # Try with ID and frame # in filename (for backwards compatibility)
-            thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s-%s.png" % (file_id, file_frame))
+        # Locate thumbnail (fingerprint cache + legacy layouts)
+        fingerprint = None
+        try:
+            fingerprint = file.data.get("fingerprint") if file and isinstance(file.data, dict) else None
+        except Exception:
+            fingerprint = None
+        thumb_path = resolve_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
+        if not thumb_path and not no_cache:
+            # Serve the nearest pre-warmed thumbnail (Optimize Preview writes
+            # thumbnails on a coarse grid) instead of decoding this exact frame.
+            rounded_frame = RoundFrameToThumbnailGrid(file_frame, _file_fps(file))
+            if rounded_frame != file_frame:
+                thumb_path = resolve_thumbnail_path(file_id, rounded_frame, fingerprint=fingerprint)
+        if not thumb_path:
+            thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 
         if not os.path.exists(thumb_path) or no_cache:
             # Generate thumbnail (since we can't find it)
+            thumb_path = preferred_thumbnail_path(file_id, file_frame, fingerprint=fingerprint)
 
             # Determine if video overlay should be applied to thumbnail
             overlay_path = ""
             if file.data["media_type"] == "video":
                 overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
 
-            # Create thumbnail image
+            # Create thumbnail image (sized like the project files list icons)
+            thumb_width = info.LIST_ICON_SIZE.width()
+            thumb_height = info.LIST_ICON_SIZE.height()
             GenerateThumbnail(
                 file_path,
                 thumb_path,
                 file_frame,
-                98, 64,
+                thumb_width,
+                thumb_height,
                 mask_path,
                 overlay_path)
 

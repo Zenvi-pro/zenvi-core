@@ -71,6 +71,20 @@ def test_requires_a_path(sent):
     assert sent == []
 
 
+def test_refuses_paths_outside_the_allowlist(sent):
+    for hostile in (
+        "/admin",
+        "/api/v1/account",
+        "/api/v1/billing/charge",
+        "/api/v2/models",
+        "/health",
+    ):
+        result = proxy.zenvi_api_request("GET", hostile)
+        assert result.startswith("Error:"), hostile
+        assert "not allowed" in result
+    assert sent == []
+
+
 def test_reports_a_signed_out_user_instead_of_calling_anonymously(monkeypatch):
     monkeypatch.setattr(proxy, "_backend_url", lambda: BASE)
     monkeypatch.setattr(proxy, "_access_token", lambda: None)
@@ -97,7 +111,7 @@ def test_sends_the_users_token_and_normalises_the_path(sent):
 
 
 def test_passes_body_and_query_through_as_json(sent):
-    proxy.zenvi_api_request("POST", "/api/v1/thing",
+    proxy.zenvi_api_request("POST", "/api/v1/chat/send",
                             body='{"name": "demo"}', query='{"limit": 10}')
     call = sent[0]
     assert call["json"] == {"name": "demo"}
@@ -125,7 +139,7 @@ def test_a_huge_response_is_truncated(monkeypatch):
         "request": staticmethod(lambda *a, **k: FakeResponse(200, big))})
     monkeypatch.setitem(sys.modules, "requests", fake)
 
-    result = proxy.zenvi_api_request("GET", "/api/v1/big")
+    result = proxy.zenvi_api_request("GET", "/api/v1/models")
     assert "truncated" in result
     assert len(result) < proxy.MAX_RESPONSE_CHARS * 2
 

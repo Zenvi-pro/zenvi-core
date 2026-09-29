@@ -201,11 +201,20 @@ class AutoUpdater:
                     return
                 time.sleep(1)
 
-            # If there is already a staged update, skip the network check
+            # If a staged package is already ready, skip re-download unless
+            # GitHub has something newer than what's staged.
             if has_pending_update():
-                log.info("AutoUpdater: Pending update already staged — skipping network check")
-                self._notify_ui_pending()
-                return
+                staged = read_manifest() or {}
+                staged_ver = staged.get("version", "")
+                if latest_version and staged_ver and is_version_newer(latest_version, staged_ver):
+                    log.info(
+                        "AutoUpdater: Staged %s is older than latest %s — re-downloading",
+                        staged_ver, latest_version,
+                    )
+                else:
+                    log.info("AutoUpdater: Pending update already staged — skipping network check")
+                    self._notify_ui_pending()
+                    return
 
             if release is None:
                 return
@@ -280,18 +289,12 @@ class AutoUpdater:
             name = asset.get("name", "")
             if not name.endswith(suffix):
                 continue
-            # Prefer an asset whose name contains the arch hint
             if arch_hint and arch_hint not in name.lower():
-                # Accept it only if we haven't found a better match
-                if download_url is None:
-                    download_url = asset.get("browser_download_url")
-                    asset_name = name
-                    asset_size = asset.get("size", 0)
                 continue
             download_url = asset.get("browser_download_url")
             asset_name = name
             asset_size = asset.get("size", 0)
-            break  # exact match found
+            break
 
         if not download_url:
             log.warning(

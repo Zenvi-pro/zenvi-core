@@ -2,7 +2,7 @@
 
 A floating QDockWidget with no title bar widget gets *native* window
 decorations, and window frame drags are never delivered to Qt on Windows or
-Linux — so the panel turns into an unrelated window that can't be dragged back
+Linux ΓÇö so the panel turns into an unrelated window that can't be dragged back
 in. These tests pin the two things that keep panels dockable there:
 
   1. floating panels keep a Qt-drawn (frameless) title bar, and
@@ -224,3 +224,21 @@ def test_assistant_docks_back_to_the_right(window):
 
     assert not dock.isFloating()
     assert window.dockWidgetArea(dock) == Qt.RightDockWidgetArea
+
+
+def test_floating_a_dock_marks_dock_interaction_active(window):
+    """Floating a dock tells the preview to hold its max-size updates (upstream #6016).
+
+    MainWindow._mark_dock_interaction_active() is what TimelineSync.MaxSizeChangedCB
+    checks before resizing the preview; the mixin calls it when present so a dock
+    drag does not churn the video cache.
+    """
+    calls = []
+    window._mark_dock_interaction_active = lambda: calls.append("marked")
+    window.style_dock_widgets = lambda: calls.append("restyled")
+
+    window.files.setFloating(True)
+    window._on_dock_top_level_changed(window.files, True)
+
+    # Interaction is flagged first, then the usual (idle) restyle still runs
+    assert calls == ["marked", "restyled"]

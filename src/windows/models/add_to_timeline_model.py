@@ -27,8 +27,8 @@
 
 import os
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QStandardItem, QStandardItemModel, QIcon
+from qt_api import Qt
+from qt_api import QStandardItem, QStandardItemModel, QIcon
 
 from classes import info
 from classes.logger import log

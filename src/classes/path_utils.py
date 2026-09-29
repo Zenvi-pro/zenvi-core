@@ -25,7 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+import html
 import os
+import re
 
 from classes import info
 from classes.app import get_app
@@ -100,6 +102,105 @@ def absolute_media_path(path_value, project_file=None):
     return os.path.normpath(os.path.join(base_folder, normalized))
 
 
+def comparable_media_path(path_value, project_file=None):
+    """Return a normalized absolute media path suitable for equality checks."""
+    resolved = absolute_media_path(path_value, project_file)
+    if not resolved:
+        return ""
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def media_paths_equal(path_a, path_b, project_file=None):
+    """Compare two media paths after token expansion and platform normalization."""
+    if not path_a or not path_b:
+        return False
+    return comparable_media_path(path_a, project_file) == comparable_media_path(path_b, project_file)
+
+
+def _media_roots():
+    """Remembered folders used to silently relink missing media."""
+    try:
+        app = get_app()
+        if app:
+            settings = app.get_settings()
+            roots = settings.get("media-roots") if settings else None
+            if isinstance(roots, list):
+                return [r for r in roots if isinstance(r, str) and r]
+    except Exception:
+        pass
+    return []
+
+
+def remember_media_root(folder):
+    """Persist *folder* in settings so later opens can relink silently."""
+    if not folder or not os.path.isdir(folder):
+        return
+    try:
+        app = get_app()
+        if not app:
+            return
+        settings = app.get_settings()
+        if not settings:
+            return
+        roots = settings.get("media-roots") or []
+        if not isinstance(roots, list):
+            roots = []
+        abs_folder = os.path.abspath(folder)
+        if abs_folder not in roots:
+            roots = [abs_folder] + [r for r in roots if r != abs_folder]
+            settings.set("media-roots", roots[:20])
+            settings.save()
+    except Exception:
+        pass
+
+
+def resolve_media_path(path_value, fingerprint=None, project_file=None, fingerprint_index=None):
+    """Resolve a media path, falling back to remembered roots and fingerprints.
+
+    Order: existing absolute/relative path, basename under media roots
+    (validated against fingerprint when available), then fingerprint match
+    against *fingerprint_index* ``{sha256: path}``.
+    """
+    resolved = absolute_media_path(path_value, project_file=project_file)
+    if resolved and os.path.exists(resolved):
+        return resolved
+
+    fp_digest = None
+    if isinstance(fingerprint, dict):
+        fp_digest = fingerprint.get("sha256") or None
+
+    def _candidate_matches(candidate):
+        if not candidate or not os.path.isfile(candidate):
+            return False
+        if not fp_digest:
+            return True
+        from classes.media_fingerprint import fingerprint as fingerprint_file
+        cand_fp = fingerprint_file(candidate)
+        return bool(cand_fp and cand_fp.get("sha256") == fp_digest)
+
+    basename = os.path.basename(path_value or "")
+    if basename and "%" not in basename:
+        for root in _media_roots():
+            candidate = os.path.join(root, basename)
+            if _candidate_matches(candidate):
+                return os.path.normpath(candidate)
+            # Also search one level of subdirs for common layouts.
+            try:
+                for name in os.listdir(root):
+                    sub = os.path.join(root, name, basename)
+                    if _candidate_matches(sub):
+                        return os.path.normpath(sub)
+            except OSError:
+                continue
+
+    if fp_digest and fingerprint_index:
+        hit = fingerprint_index.get(fp_digest)
+        if hit and os.path.isfile(hit):
+            return os.path.normpath(hit)
+
+    return resolved
+
+
 def relative_export_path(abs_path, export_folder):
     """Return path relative to export folder when possible."""
     if not abs_path:
@@ -144,3 +245,32 @@ def normalize_path(path_value):
     if not path_value:
         return ""
     return path_value.replace("\\", "/")
+
+
+def normalized_local_path(path_value):
+    """Return a normalized local filesystem path for storage/display."""
+    if not path_value:
+        return ""
+    return os.path.normpath(os.path.abspath(path_value))
+
+
+def comparable_local_path(path_value):
+    """Return a normalized local path suitable for equality checks."""
+    normalized = normalized_local_path(path_value)
+    if not normalized:
+        return ""
+    return os.path.normcase(normalized)
+
+
+def native_display_path(path_value):
+    """Return a display path using the current platform's separators."""
+    return normalized_local_path(path_value)
+
+
+def wrapped_path_html(path_value):
+    """Return HTML for a path that wraps cleanly after path separators."""
+    display_path = native_display_path(path_value)
+    if not display_path:
+        return ""
+    escaped_path = html.escape(display_path)
+    return re.sub(r"([/\\\\])", r"\1<wbr/>", escaped_path)

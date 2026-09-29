@@ -46,6 +46,7 @@ PATH = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  # Primary o
 PY_ABI = sysconfig.get_config_var('py_version_short')
 
 # Access info class (for version info)
+sys.path.append(os.path.join(PATH, 'src'))
 sys.path.append(os.path.join(PATH, 'src', 'classes'))
 import info
 
@@ -427,8 +428,6 @@ def main():
                         or "rejected".encode("UTF-8") in line
                 ):
                     error("Build-Mac-DMG Error: %s" % line)
-                if "Your image is ready".encode("UTF-8") in line:
-                    app_image_success = True
 
             # Rename DMG (to be consistent with other OS installers)
             for dmg_path in os.listdir(os.path.join(PATH, "build")):
@@ -439,13 +438,15 @@ def main():
                     os.rename(os.path.join(PATH, "build", dmg_path), app_build_path)
 
             # Was the DMG creation successful
+            app_image_success = os.path.exists(app_build_path) and os.path.getsize(app_build_path) > 0
             if not app_image_success or errors_detected:
                 # DMG failed
-                error("Build-Mac-DMG Error: Did not output 'Your image is ready'")
+                error("Build-Mac-DMG Error: DMG output file missing or empty")
                 needs_upload = False
 
                 # Delete build (since key signing might have failed)
-                os.remove(app_build_path)
+                if os.path.exists(app_build_path):
+                    os.remove(app_build_path)
 
         if platform.system() == "Windows":
             # Move python folder structure, since Cx_Freeze doesn't put it in the correct place

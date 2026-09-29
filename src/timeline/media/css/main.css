@@ -191,7 +191,15 @@ img { max-width: none; }
 }
 
 .track_disabled {
-  background: linear-gradient(to bottom, #141414, #0a0a0a) !important;
+  -webkit-filter: brightness(0.8) saturate(0.8);
+  filter: brightness(0.8) saturate(0.8);
+}
+
+.track_name.track_disabled,
+.clip.track_disabled,
+.transition.track_disabled {
+  -webkit-filter: brightness(0.8) saturate(0.8);
+  filter: brightness(0.8) saturate(0.8);
 }
 
 .track {
