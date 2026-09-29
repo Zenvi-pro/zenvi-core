@@ -116,6 +116,21 @@ def test_filler_preset_and_word_index_ranges():
     assert len(ranges) == 2
 
 
+def test_indices_for_matches_is_case_and_punct_insensitive():
+    from classes.speech.word_ranges import indices_for_matches
+
+    words = [
+        {"index": 0, "text": "built"},
+        {"index": 1, "text": "FlowCut."},
+        {"index": 2, "text": "FlowCut"},
+        {"index": 3, "text": "is"},
+        {"index": 4, "text": "flocut"},
+    ]
+    assert indices_for_matches(words, ["FlowCut", "flocut"]) == [1, 2, 4]
+    assert indices_for_matches(words, ["FLOWCUT"]) == [1, 2]
+    assert indices_for_matches(words, ["nope"]) == []
+
+
 def test_words_for_clip_maps_frames():
     fps = Fraction(30, 1)
     words = [Word("hi", 1.0, 1.5), Word("there", 2.0, 2.5)]

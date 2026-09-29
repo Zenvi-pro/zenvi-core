@@ -580,9 +580,29 @@ def get_transcript(
     ).to_json()
 
 
+def _as_str_list(value):
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        out = [str(item).strip() for item in value if str(item).strip()]
+        return out or None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parts = [p.strip() for p in text.split(",") if p.strip()]
+            return parts or None
+        return _as_str_list(parsed)
+    return [str(value).strip()] if str(value).strip() else None
+
+
 def remove_words(
     clipId: str = "",
     wordIndices=None,
+    matches=None,
     fillerPreset: str = "",
     transcriptGeneration=None,
     language: str = "auto",
@@ -599,6 +619,7 @@ def remove_words(
         FILLER_PRESETS,
         compact_fragments_after_remove,
         indices_for_filler_preset,
+        indices_for_matches,
         ranges_for_word_indices,
     )
     from classes.tool_handlers import (
@@ -607,6 +628,7 @@ def remove_words(
 
     clipId = _first_nonempty(clipId, _kw.get("timeline_clip_id"))
     wordIndices = _as_int_list(wordIndices if wordIndices not in (None, "") else _kw.get("word_indices"))
+    matches = _as_str_list(matches if matches not in (None, "") else _kw.get("matchTexts") or _kw.get("match_texts"))
     fillerPreset = _first_nonempty(fillerPreset, _kw.get("filler_preset"))
     if transcriptGeneration in (None, "") and _kw.get("transcript_generation") not in (None, ""):
         transcriptGeneration = _kw.get("transcript_generation")
@@ -703,6 +725,10 @@ def remove_words(
                 f"Use one of: {', '.join(sorted(FILLER_PRESETS))}.",
             ).to_json()
         indices = indices_for_filler_preset(mapped, fillerPreset)
+    if matches is not None:
+        matched = indices_for_matches(mapped, matches)
+        # Union with any preset hits; wordIndices below replace when provided.
+        indices = sorted(set(indices) | set(matched))
     if wordIndices is not None:
         try:
             indices = [int(i) for i in list(wordIndices)]
@@ -712,10 +738,13 @@ def remove_words(
             ).to_json()
 
     if not indices:
+        hint = ""
+        if matches:
+            hint = f" (no transcript words matched {matches!r})"
         return ToolReceipt.unchanged(
             "remove_words_tool",
-            "No words matched — nothing removed.",
-            data={"transcriptGeneration": record.generation},
+            f"No words matched — nothing removed.{hint}",
+            data={"transcriptGeneration": record.generation, "matches": matches or []},
         ).to_json()
 
     ranges = ranges_for_word_indices(mapped, indices, fps=fps)

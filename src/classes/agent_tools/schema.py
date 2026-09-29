@@ -93,6 +93,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "list_files_tool": _obj({}),
     "list_clips_tool": _obj({
         "layer": _str(description="Optional layer_number or UI track filter."),
+        "detail_level": _str(
+            description="summary (default) or full — accepted for Assistant/LLM compat; listing is always complete.",
+        ),
     }),
     "list_layers_tool": _obj({}),
     "list_markers_tool": _obj({}),
@@ -460,6 +463,15 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "items": {"type": "integer", "minimum": 0},
             "description": "Word indices from get_transcript_tool for this clip.",
         },
+        "matches": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Exact spoken tokens to cut (case/punct insensitive), e.g. "
+                "[\"FlowCut\", \"flocut\", \"um\"]. Prefer this when removing a "
+                "brand/name/phrase by text. Do NOT delete the clip from the timeline."
+            ),
+        },
         "fillerPreset": _str(
             description="Built-in preset: um_uh or english_fillers.",
         ),
@@ -491,6 +503,9 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "maxChars": _int(minimum=8, maximum=120),
         "language": _str(),
         "modelId": _str(),
+        "engine": _str(
+            description="auto|apple|whisper — same on-device ASR as get_transcript_tool (never cloud).",
+        ),
         "srtPath": _str(description="Import SRT/VTT instead of transcribing."),
     }),
 

@@ -104,6 +104,19 @@ def test_validate_accepts_assistant_stringly_transcript_args():
 def test_validate_accepts_timeline_detail_level():
     assert validate_args("get_timeline_state_tool", {"detail_level": "summary"}) is None
     assert validate_args("get_timeline_state_tool", {}) is None
+    assert validate_args("list_clips_tool", {"detail_level": "full"}) is None
+    assert validate_args("list_clips_tool", {}) is None
+
+
+def test_validate_accepts_remove_words_matches():
+    assert validate_args("remove_words_tool", {
+        "clipId": "c1",
+        "matches": ["FlowCut", "flocut"],
+    }) is None
+    assert validate_args("add_captions_tool", {
+        "clipId": "c1",
+        "engine": "auto",
+    }) is None
 
 
 def test_validate_accepts_transcript_aliases():

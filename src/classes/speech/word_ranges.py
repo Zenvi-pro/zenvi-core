@@ -103,6 +103,26 @@ def indices_for_filler_preset(
     return out
 
 
+def indices_for_matches(
+    words: Sequence[dict],
+    matches: Iterable[str],
+) -> list[int]:
+    """Indices whose normalized text equals any match token (case/punct insensitive)."""
+    bag = {normalize_word(str(m)) for m in (matches or []) if normalize_word(str(m))}
+    if not bag:
+        return []
+    out: list[int] = []
+    for w in words:
+        try:
+            idx = int(w["index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        token = normalize_word(str(w.get("text") or ""))
+        if token and token in bag:
+            out.append(idx)
+    return out
+
+
 def compact_fragments_after_remove(
     *,
     position: float,

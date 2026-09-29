@@ -182,10 +182,11 @@ def add_captions(
     maxChars=42,
     language: str = "auto",
     modelId: str = "",
+    engine: str = "auto",
     srtPath: str = "",
     **_kw,
 ):
-    """Place timed dialogue captions from transcript (or import an SRT/VTT)."""
+    """Place timed dialogue captions from on-device transcript (or import an SRT/VTT)."""
     from classes.agent_tools.receipt import ToolReceipt
     from classes.agent_tools.transcript import _first_nonempty, get_transcript
     from classes.agent_tools.titles import add_title
@@ -196,6 +197,7 @@ def add_captions(
     srtPath = _first_nonempty(srtPath, _kw.get("srt_path"))
     if trackIndex in (None, "") and _kw.get("track_index") not in (None, ""):
         trackIndex = _kw.get("track_index")
+    eng = _first_nonempty(engine, _kw.get("engine")) or "auto"
 
     try:
         from classes.app import get_app
@@ -224,16 +226,25 @@ def add_captions(
             ).to_json()
         source = "srt"
     else:
+        # Need the verbose words array (startSec/endSec) for phrasing — not compactWords.
         raw = get_transcript(
             clipId=clipId or "",
             trackIndex=trackIndex,
             language=language,
             modelId=modelId,
+            engine=eng,
+            includeWords=True,
         )
         receipt = parse_receipt(raw)
         if receipt.get("status") in ("error", "refused"):
             return raw if isinstance(raw, str) else ToolReceipt.error(
                 "add_captions_tool", receipt.get("summary", "Error: transcript failed"),
+            ).to_json()
+        if receipt.get("status") == "unchanged":
+            return ToolReceipt.unchanged(
+                "add_captions_tool",
+                str(receipt.get("summary") or "No spoken dialogue to caption."),
+                data=receipt.get("data") if isinstance(receipt.get("data"), dict) else {},
             ).to_json()
         data = receipt.get("data") or {}
         source = data.get("transcriptionSource") or "local"
@@ -343,7 +354,13 @@ def export_captions(
     except Exception as exc:
         return ToolReceipt.error("export_captions_tool", str(exc)).to_json()
 
-    raw = get_transcript(clipId=clipId or "", trackIndex=trackIndex, language=language)
+    raw = get_transcript(
+        clipId=clipId or "",
+        trackIndex=trackIndex,
+        language=language,
+        includeWords=True,
+        engine="auto",
+    )
     receipt = parse_receipt(raw)
     if receipt.get("status") in ("error", "refused"):
         return raw if isinstance(raw, str) else ToolReceipt.error(
