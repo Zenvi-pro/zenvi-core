@@ -28,6 +28,7 @@
  """
 
 import json
+from contextlib import ExitStack
 from copy import deepcopy
 import logging
 import os
@@ -46,12 +47,8 @@ from qt_api import QDialog
 from classes import info, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
-from classes.timeline_ops import (
-    aligned_positions,
-    close_all_gaps,
-    close_gap,
-    joined_transaction,
-)
+from classes.timeline_ops import aligned_positions, close_all_gaps, close_gap
+from classes.updates import nested_transaction
 from classes.color_presets import (
     COLOR_GRADE_CLASS_NAME,
     COLOR_PRESET_AUTO_CONTRAST,
@@ -2331,7 +2328,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Hide the waveform for the selected clip"""
 
         # Loop through each selected clip ID
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             for clip_id in clip_ids:
                 # Get existing clip object & clear audio_data
                 clip = Clip.get(id=clip_id)
@@ -2443,171 +2440,129 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         _ = get_app()._tr
 
         # Group transactions (joining one already in flight)
-        tid = get_app().updates.transaction_id
-        owns_transaction = not tid
-        if owns_transaction:
-            tid = self.get_uuid()
-            get_app().updates.transaction_id = tid
+        with nested_transaction(get_app().updates) as tid:
+            # Loop through each selected clip
+            for clip_id in clip_ids:
 
-        # Loop through each selected clip
-        for clip_id in clip_ids:
-
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            # Get # of tracks
-            all_tracks = get_app().project.get("layers")
-
-            reader = clip.data.get("reader", {})
-            has_audio = reader.get("has_audio")
-            has_audio = True if has_audio is None else bool(has_audio)
-            channels_value = reader.get("channels")
-            try:
-                channel_count = int(channels_value) if channels_value is not None else None
-            except (TypeError, ValueError):
-                channel_count = None
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
-            original_layer = clip.data.get("layer")
-
-            if (not has_audio) or (channel_count is not None and channel_count <= 0):
-                log.info("Split audio skipped for clip %s (no audio)", clip_id)
-                continue
-
-            def get_track_below(layer_number):
-                """Return the track number directly below the provided layer, creating one when needed."""
-                window = getattr(get_app(), "window", None)
-                create_below = getattr(window, "create_track_below", None)
-                if callable(create_below):
-                    return create_below(layer_number)
-
-                next_track_number = layer_number
-                found_track = False
-                for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                    if found_track:
-                        next_track_number = track.get("number")
-                        break
-                    if track.get("number") == layer_number:
-                        found_track = True
-                        continue
-                return next_track_number
-
-            # Get title of clip
-            clip_title = clip.data["title"]
-
-            # Audio-only clips reuse the source clip instead of deleting it
-            if not has_video:
-                if action == MenuSplitAudio.SINGLE:
-                    # Clear channel filter to all channels and keep the clip
-                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
-                    p_object = json.loads(p.Json())
-                    clip.data["channel_filter"] = {"Points": [p_object]}
-                    clip.save()
-
-                    # Generate waveform for existing clip
-                    log.info("Generate waveform for audio-only clip id: %s" % clip.id)
-                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
                     continue
 
-                if action == MenuSplitAudio.MULTIPLE:
-                    channels = channel_count
+                # Get # of tracks
+                all_tracks = get_app().project.get("layers")
 
-                    separate_clip_ids = []
-                    current_layer = original_layer
-                    for channel in range(0, channels):
-                        log.debug("Adding clip for channel %s" % channel)
+                reader = clip.data.get("reader", {})
+                has_audio = reader.get("has_audio")
+                has_audio = True if has_audio is None else bool(has_audio)
+                channels_value = reader.get("channels")
+                try:
+                    channel_count = int(channels_value) if channels_value is not None else None
+                except (TypeError, ValueError):
+                    channel_count = None
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+                original_layer = clip.data.get("layer")
 
-                        # Each clip is filtered to a different channel
-                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                if (not has_audio) or (channel_count is not None and channel_count <= 0):
+                    log.info("Split audio skipped for clip %s (no audio)", clip_id)
+                    continue
+
+                def get_track_below(layer_number):
+                    """Return the track number directly below the provided layer, creating one when needed."""
+                    window = getattr(get_app(), "window", None)
+                    create_below = getattr(window, "create_track_below", None)
+                    if callable(create_below):
+                        return create_below(layer_number)
+
+                    next_track_number = layer_number
+                    found_track = False
+                    for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
+                        if found_track:
+                            next_track_number = track.get("number")
+                            break
+                        if track.get("number") == layer_number:
+                            found_track = True
+                            continue
+                    return next_track_number
+
+                # Get title of clip
+                clip_title = clip.data["title"]
+
+                # Audio-only clips reuse the source clip instead of deleting it
+                if not has_video:
+                    if action == MenuSplitAudio.SINGLE:
+                        # Clear channel filter to all channels and keep the clip
+                        p = openshot.Point(1, -1.0, openshot.CONSTANT)
                         p_object = json.loads(p.Json())
                         clip.data["channel_filter"] = {"Points": [p_object]}
-
-                        # Explicitly keep video disabled and scale none
-                        p = openshot.Point(1, 0.0, openshot.CONSTANT)
-                        p_object = json.loads(p.Json())
-                        clip.data["has_video"] = {"Points": [p_object]}
-                        clip.data["scale"] = openshot.SCALE_NONE
-
-                        # Keep first clip on the same layer, others below
-                        target_layer = current_layer if channel == 0 else get_track_below(current_layer)
-                        clip.data['layer'] = target_layer
-                        current_layer = clip.data['layer']
-
-                        # Adjust the clip title
-                        channel_label = _("(channel %s)") % (channel + 1)
-                        clip.data["title"] = clip_title + " " + channel_label
-
-                        # Save changes
                         clip.save()
-                        separate_clip_ids.append(clip.id)
 
-                        # Prepare a new clip for the next channel
-                        if channel < channels - 1:
-                            clip.id = None
-                            clip.type = 'insert'
-                            clip.data.pop('id', None)
-                            if clip.key and len(clip.key) > 1:
-                                clip.key.pop(1)
+                        # Generate waveform for existing clip
+                        log.info("Generate waveform for audio-only clip id: %s" % clip.id)
+                        self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                        continue
 
-                    # Generate waveform for new clips
-                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
-                    continue
+                    if action == MenuSplitAudio.MULTIPLE:
+                        channels = channel_count
 
-            # Clear audio override
-            p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        separate_clip_ids = []
+                        current_layer = original_layer
+                        for channel in range(0, channels):
+                            log.debug("Adding clip for channel %s" % channel)
 
-            # Remove the ID property from the clip (so it becomes a new one)
-            clip.id = None
-            clip.type = 'insert'
-            clip.data.pop('id')
-            clip.key.pop(1)
+                            # Each clip is filtered to a different channel
+                            p = openshot.Point(1, channel, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["channel_filter"] = {"Points": [p_object]}
 
-            if action == MenuSplitAudio.SINGLE:
-                # Clear channel filter on new clip
-                p = openshot.Point(1, -1.0, openshot.CONSTANT)
+                            # Explicitly keep video disabled and scale none
+                            p = openshot.Point(1, 0.0, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["has_video"] = {"Points": [p_object]}
+                            clip.data["scale"] = openshot.SCALE_NONE
+
+                            # Keep first clip on the same layer, others below
+                            target_layer = current_layer if channel == 0 else get_track_below(current_layer)
+                            clip.data['layer'] = target_layer
+                            current_layer = clip.data['layer']
+
+                            # Adjust the clip title
+                            channel_label = _("(channel %s)") % (channel + 1)
+                            clip.data["title"] = clip_title + " " + channel_label
+
+                            # Save changes
+                            clip.save()
+                            separate_clip_ids.append(clip.id)
+
+                            # Prepare a new clip for the next channel
+                            if channel < channels - 1:
+                                clip.id = None
+                                clip.type = 'insert'
+                                clip.data.pop('id', None)
+                                if clip.key and len(clip.key) > 1:
+                                    clip.key.pop(1)
+
+                        # Generate waveform for new clips
+                        log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                        self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                        continue
+
+                # Clear audio override
+                p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
                 p_object = json.loads(p.Json())
-                clip.data["channel_filter"] = {"Points": [p_object]}
+                clip.data["has_audio"] = {"Points": [p_object]}
 
-                # Filter out video on the new clip
-                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
-                p_object = json.loads(p.Json())
-                clip.data["has_video"] = {"Points": [p_object]}
-                # Also set scale to None
-                # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
-                clip.data["scale"] = openshot.SCALE_NONE
+                # Remove the ID property from the clip (so it becomes a new one)
+                clip.id = None
+                clip.type = 'insert'
+                clip.data.pop('id')
+                clip.key.pop(1)
 
-                # Adjust the layer; place below the parent clip
-                target_layer = get_track_below(original_layer)
-                clip.data['layer'] = target_layer
-
-                # Adjust the clip title
-                channel_label = _("(all channels)")
-                clip.data["title"] = clip_title + " " + channel_label
-                # Save changes
-                clip.save()
-
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip id: %s" % clip.id)
-                self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
-
-            if action == MenuSplitAudio.MULTIPLE:
-                # Get # of channels on clip
-                channels = channel_count
-
-                # Loop through each channel
-                separate_clip_ids = []
-                current_layer = original_layer
-                for channel in range(0, channels):
-                    log.debug("Adding clip for channel %s" % channel)
-
-                    # Each clip is filtered to a different channel
-                    p = openshot.Point(1, channel, openshot.CONSTANT)
+                if action == MenuSplitAudio.SINGLE:
+                    # Clear channel filter on new clip
+                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
                     p_object = json.loads(p.Json())
                     clip.data["channel_filter"] = {"Points": [p_object]}
 
@@ -2619,55 +2574,88 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
                     clip.data["scale"] = openshot.SCALE_NONE
 
-                    # Adjust the layer, so this new audio clip doesn't overlap the parent
-                    target_layer = get_track_below(current_layer)
+                    # Adjust the layer; place below the parent clip
+                    target_layer = get_track_below(original_layer)
                     clip.data['layer'] = target_layer
-                    current_layer = clip.data['layer']
 
                     # Adjust the clip title
-                    channel_label = _("(channel %s)") % (channel + 1)
+                    channel_label = _("(all channels)")
                     clip.data["title"] = clip_title + " " + channel_label
-
                     # Save changes
                     clip.save()
-                    separate_clip_ids.append(clip.id)
 
-                    # Remove the ID property from the clip (so next time, it will create a new clip)
-                    clip.id = None
-                    clip.type = 'insert'
-                    clip.data.pop('id')
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip id: %s" % clip.id)
+                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
 
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                if action == MenuSplitAudio.MULTIPLE:
+                    # Get # of channels on clip
+                    channels = channel_count
 
-        for clip_id in clip_ids:
+                    # Loop through each channel
+                    separate_clip_ids = []
+                    current_layer = original_layer
+                    for channel in range(0, channels):
+                        log.debug("Adding clip for channel %s" % channel)
 
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+                        # Each clip is filtered to a different channel
+                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                        p_object = json.loads(p.Json())
+                        clip.data["channel_filter"] = {"Points": [p_object]}
 
-            reader = clip.data.get("reader", {})
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
+                        # Filter out video on the new clip
+                        p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
+                        p_object = json.loads(p.Json())
+                        clip.data["has_video"] = {"Points": [p_object]}
+                        # Also set scale to None
+                        # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
+                        clip.data["scale"] = openshot.SCALE_NONE
 
-            if not has_video:
-                continue
+                        # Adjust the layer, so this new audio clip doesn't overlap the parent
+                        target_layer = get_track_below(current_layer)
+                        clip.data['layer'] = target_layer
+                        current_layer = clip.data['layer']
 
-            # Filter out audio on the original clip
-            p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        # Adjust the clip title
+                        channel_label = _("(channel %s)") % (channel + 1)
+                        clip.data["title"] = clip_title + " " + channel_label
 
-            # Save filter on original clip
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            clip.save()
+                        # Save changes
+                        clip.save()
+                        separate_clip_ids.append(clip.id)
 
-        # Clear transaction
-        if owns_transaction:
-            get_app().updates.transaction_id = None
+                        # Remove the ID property from the clip (so next time, it will create a new clip)
+                        clip.id = None
+                        clip.type = 'insert'
+                        clip.data.pop('id')
+
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+
+            for clip_id in clip_ids:
+
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
+                    continue
+
+                reader = clip.data.get("reader", {})
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+
+                if not has_video:
+                    continue
+
+                # Filter out audio on the original clip
+                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
+                p_object = json.loads(p.Json())
+                clip.data["has_audio"] = {"Points": [p_object]}
+
+                # Save filter on original clip
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                clip.save()
 
     def Crop_Triggered(self, clip_ids, mode):
         """Add/remove/select the Crop effect based on mode"""
@@ -3731,13 +3719,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def RemoveGap_Triggered(self, found_start, found_end, layer_number):
         """Callback for removing gap context menus"""
         log.info(f"Removing gap from {found_start} to {found_end} on layer {layer_number}")
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             close_gap(found_start, found_end, layer_number)
 
     def RemoveAllGaps_Triggered(self, found_start, layer_number):
         """Callback for removing all gaps on a layer starting from the detected gap"""
         log.info(f"Removing all gaps on layer {layer_number} starting from {found_start}")
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             close_all_gaps(found_start, layer_number)
 
     def Paste_Triggered(self, action, clip_ids, tran_ids):
@@ -3777,7 +3765,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         nudge_duration = float(action) / fps_float  # Nudge duration in seconds
         log.debug(f"Nudging by {nudge_duration} seconds")
 
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             # Nudge all selected clips
             for clip_id in clip_ids:
                 clip = Clip.get(id=clip_id)
@@ -3809,7 +3797,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         positions = aligned_positions(
             [c.data for c in clips] + [t.data for t in trans], action == MenuAlign.RIGHT)
 
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             for clip in clips:
                 clip.data['position'] = positions[clip.id]
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
@@ -4001,9 +3989,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Group transactions (joining one already in flight, e.g. an agent tool
         # call that slices twice, so the whole edit stays one undo step)
-        owns_transaction = not get_app().updates.transaction_id
-        if owns_transaction:
-            get_app().updates.transaction_id = self.get_uuid()
+        transaction = ExitStack()
+        transaction.enter_context(nested_transaction(get_app().updates))
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -4180,8 +4167,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Save changes for the left or right slice
                 self.update_transition_data(trans.data, only_basic_props=False)
         finally:
-            if owns_transaction:
-                get_app().updates.transaction_id = None
+            transaction.close()
 
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)

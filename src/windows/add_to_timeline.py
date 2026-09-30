@@ -37,7 +37,8 @@ from classes import info, ui_util, time_parts
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
-from classes.timeline_ops import joined_transaction, place_files
+from classes.timeline_ops import place_files
+from classes.updates import nested_transaction
 from windows.views.add_to_timeline_treeview import TimelineTreeView
 
 
@@ -193,7 +194,7 @@ class AddToTimeline(QDialog):
         transition_path = self.cmbTransition.currentData()
 
         # Place every file (in the current order) in one undo step
-        with joined_transaction(get_app().updates):
+        with nested_transaction(get_app().updates):
             added_clip_ids, _transition_ids = place_files(
                 [{"file": file} for file in self.treeFiles.timeline_model.files],
                 self.txtStartTime.value(),

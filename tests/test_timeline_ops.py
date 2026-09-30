@@ -7,34 +7,6 @@ from classes.query import Clip, Transition
 from timeline_edit_fakes import fake_openshot
 
 
-class _Updates:
-    def __init__(self, tid=None):
-        self.transaction_id = tid
-
-
-def test_joined_transaction_owns_a_fresh_id_and_clears_it():
-    updates = _Updates()
-    with timeline_ops.joined_transaction(updates) as tid:
-        assert tid and updates.transaction_id == tid
-    assert updates.transaction_id is None
-
-
-def test_joined_transaction_joins_and_keeps_the_callers_id():
-    """An agent tool's group must survive a menu handler that joins it."""
-    updates = _Updates("outer")
-    with timeline_ops.joined_transaction(updates) as tid:
-        assert tid == "outer"
-    assert updates.transaction_id == "outer"
-
-
-def test_joined_transaction_clears_its_own_id_when_the_body_raises():
-    updates = _Updates()
-    with pytest.raises(RuntimeError):
-        with timeline_ops.joined_transaction(updates):
-            raise RuntimeError("boom")
-    assert updates.transaction_id is None
-
-
 def _positions(editor, ids):
     return [round(editor.clip(i)["position"], 3) for i in ids]
 
@@ -159,3 +131,15 @@ def test_place_files_dialog_default_also_wipes_in_the_first_clip(placing):
                                                 transition_path="/t/fade.svg", transition_length=1.0)
     assert len(tran_ids) == 2
     assert len(Clip.filter()) == 2
+
+
+def test_repeat_is_active_ignores_a_cache_left_behind_by_undo():
+    """Updates merge keys, so an undone repeat keeps its repeat_cache; only a
+    live loop has moved the in/out away from the cached ones."""
+    looped = {"start": 0.0, "end": 6.0, "repeat_cache": {"start": 1.0, "end": 3.0}}
+    undone = {"start": 1.0, "end": 3.0, "repeat_cache": {"start": 1.0, "end": 3.0}}
+    reset = {"start": 1.0, "end": 3.0, "repeat_cache": {}}
+    assert timeline_ops.repeat_is_active(looped)
+    assert not timeline_ops.repeat_is_active(undone)
+    assert not timeline_ops.repeat_is_active(reset)
+    assert not timeline_ops.repeat_is_active({"start": 0.0, "end": 2.0})

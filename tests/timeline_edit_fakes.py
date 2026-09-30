@@ -84,7 +84,7 @@ class FakeTimeline:
         return float(fps["num"]) / float(fps["den"])
 
     def _extend_timeline_to_fit_items(self):
-        self.calls.append(("extend",))
+        self.extended = getattr(self, "extended", 0) + 1
 
     # -- Slice ----------------------------------------------------------------
     def Slice_Triggered(self, action, clip_ids, trans_ids, playhead_position=0, ripple=False):
@@ -143,10 +143,13 @@ class FakeTimeline:
             if name in ("FREEZE", "FREEZE_ZOOM"):
                 data["end"] = end + float(speed)
             elif name == "NONE":
-                cache = data.pop("repeat_cache", None)
-                if cache:
+                from classes.timeline_ops import repeat_is_active
+                cache = data.get("repeat_cache")
+                if repeat_is_active(data):
                     start = cache["start"]
                     data["start"] = start
+                if "repeat_cache" in data:
+                    data["repeat_cache"] = {}
                 data["end"] = min(float(data["reader"]["duration"]), start + float(data["reader"]["duration"]))
                 data["time"] = {"Points": [_point(1, 1, 1)]}
             else:
@@ -177,7 +180,9 @@ class FakeTimeline:
             clip = Clip.get(id=cid)
             data = clip.data
             d = data["end"] - data["start"]
-            data["repeat_cache"] = {"start": data["start"], "end": data["end"], "duration": d, "properties": {}}
+            from classes.timeline_ops import repeat_is_active
+            if not repeat_is_active(data):
+                data["repeat_cache"] = {"start": data["start"], "end": data["end"], "duration": d, "properties": {}}
             span_frames = max(1, round(d * fps))
             total = sum(max(1, round(span_frames / abs((1 + ramp) ** k))) for k in range(passes))
             total += (passes - 1) * delay_frames

@@ -5,14 +5,12 @@ editor tools in ``classes/editor_tools/timeline_edit.py`` call these, so a rule
 such as "Remove All Gaps moves overlapping clips together" lives in one place.
 Everything here mutates through ``classes.query`` objects (``save()``), i.e.
 through the update manager, and never touches the transaction id itself:
-callers group the edits with :func:`joined_transaction`.
+callers group the edits with ``classes.updates.nested_transaction``.
 """
 
-import contextlib
 import json
 import os
 import random
-import uuid
 
 import openshot
 
@@ -20,32 +18,6 @@ from classes.query import Clip, Transition
 
 # Positions closer than this are the same instant (well under one frame at 240 fps).
 EPSILON = 1e-6
-
-
-# ---------------------------------------------------------------------------
-# Undo grouping
-# ---------------------------------------------------------------------------
-
-@contextlib.contextmanager
-def joined_transaction(updates):
-    """Group the enclosed mutations into one undo step.
-
-    Joins the transaction already in flight (an agent tool call, a composite
-    edit) instead of minting a new id and clearing it afterwards -- clearing
-    would split the caller's single user intent into several undo steps.
-    With nothing in flight it owns a fresh id and clears it on exit, which is
-    what the menu handlers always did.
-    """
-    tid = getattr(updates, "transaction_id", None)
-    if tid:
-        yield tid
-        return
-    tid = str(uuid.uuid4())
-    updates.transaction_id = tid
-    try:
-        yield tid
-    finally:
-        updates.transaction_id = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +203,27 @@ def shift_after(layer_number, from_seconds, amount, exclude_ids=()):
             item.save()
             moved.append(item)
     return moved
+
+
+# ---------------------------------------------------------------------------
+# Repeat (loop / ping-pong) state
+# ---------------------------------------------------------------------------
+
+def repeat_is_active(clip_data):
+    """True while Clip > Speed > Repeat is applied to a clip.
+
+    The presence of ``repeat_cache`` is not enough: project updates merge
+    keys, so undoing a repeat (or Speed > Reset) leaves the cache behind. A
+    live repeat always moved the clip's in/out away from the cached ones.
+    """
+    cache = clip_data.get("repeat_cache") if isinstance(clip_data, dict) else None
+    if not isinstance(cache, dict) or not cache:
+        return False
+    try:
+        return (abs(float(cache.get("start", 0.0)) - float(clip_data.get("start", 0.0))) > EPSILON
+                or abs(float(cache.get("end", 0.0)) - float(clip_data.get("end", 0.0))) > EPSILON)
+    except (TypeError, ValueError):
+        return True
 
 
 # ---------------------------------------------------------------------------

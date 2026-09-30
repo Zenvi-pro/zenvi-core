@@ -3133,9 +3133,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
 
         # Set transaction id (if not already set; an in-flight one is joined and kept)
-        owns_transaction = not get_app().updates.transaction_id
-        if owns_transaction:
-            get_app().updates.transaction_id = str(uuid.uuid4())
+        from contextlib import ExitStack
+        from classes.updates import nested_transaction
+        transaction = ExitStack()
+        transaction.enter_context(nested_transaction(get_app().updates))
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -3184,8 +3185,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             get_app().window.IgnoreUpdates.emit(False, True)
 
             # Clear transaction id
-            if owns_transaction:
-                get_app().updates.transaction_id = None
+            transaction.close()
 
             # Refresh preview
             get_app().window.refreshFrameSignal.emit()
