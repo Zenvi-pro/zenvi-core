@@ -506,3 +506,29 @@ def test_slice_at_playhead_with_nothing_sliceable_is_an_error(ed):
     ed.window.preview_thread.current_frame = 31
     out = ed.call("slice_clip_at_playhead_tool")
     assert out.startswith("Error:") and ed.fake.calls == []
+
+
+def _crossfaded(ed):
+    """A 0-4, B 3.5-7.5, C 7-11 on track 1 with 0.5 s transitions at 3.5 and 7."""
+    f = ed.add_file("video", duration=10.0)
+    a = ed.add_clip(f, position=0.0, end=4.0)
+    b = ed.add_clip(f, position=3.5, end=4.0)
+    c = ed.add_clip(f, position=7.0, end=4.0)
+    trans = []
+    for at in (3.5, 7.0):
+        t = Transition()
+        t.data = {"layer": T1, "position": at, "start": 0.0, "end": 0.5, "title": "Transition", "type": "Mask"}
+        t.save()
+        trans.append(t.id)
+    ed.mark()
+    return a, b, c, trans
+
+
+def test_ripple_trim_keeps_the_next_crossfade(ed):
+    """Regression: ripple only moved items starting after the old end, so the
+    clip overlapping the tail (crossfade partner) and its transition stayed put."""
+    a, b, c, (t_ab, t_bc) = _crossfaded(ed)
+    receipt(ed.call("trim_clips_tool", timeline_clip_ids=[b], trim_end_seconds=1, ripple=True))
+    assert pos(ed, c) == 6.0 and Transition.get(id=t_bc).data["position"] == 6.0
+    assert Transition.get(id=t_ab).data["position"] == 3.5 and pos(ed, b) == 3.5
+    one_step(ed)

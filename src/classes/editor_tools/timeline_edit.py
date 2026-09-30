@@ -391,7 +391,9 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
     hole left behind closes and the clips at the destination slide later to make room, e.g.
     move the first clip to the end of track 1: timeline_clip_ids=[intro], after_clip_id=<last
     clip>, ripple=true. position_seconds counts in the timeline as it is before the move.
-    Transitions stay where they are (only clips move). One undo step. Locked tracks are refused.
+    Transitions stay where they are (only clips move). On a crossfaded sequence an insertion
+    point falls inside the previous clip's tail and is refused: reorder first, then add the
+    transitions. One undo step. Locked tracks are refused.
     """
     from classes.query import Clip, Transition
 
@@ -650,9 +652,10 @@ def trim_clips(timeline_clip_ids=[], clip_query="", track="", scope="", trim_sta
         layer = int(c.data.get("layer") or 0)
         save_clip(c, start=ns, end=ne, duration=ne - ns, position=snap(np_))
         if ripple:
-            old_end = pos + (e - s)
+            # Everything that starts after this clip moves, including a clip that
+            # overlaps its tail (a crossfade partner) and the transition between them.
             delta = (ne - ns) - (e - s)
-            shifted += timeline_ops.shift_after(layer, old_end - tolerance(), delta, exclude_ids={c.id})
+            shifted += timeline_ops.shift_after(layer, pos + tolerance(), delta, exclude_ids={c.id})
         results.append({"timeline_clip_id": c.id, "title": title(c),
                         "before": {"position": r3(pos), "source_in": r3(s), "source_out": r3(e), "duration": r3(e - s)},
                         "after": {"position": r3(np_), "source_in": r3(ns), "source_out": r3(ne),

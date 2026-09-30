@@ -110,11 +110,16 @@ def _frames(seconds) -> float:
     return max(1, int(round(float(seconds) * fps))) / fps
 
 
-def _ripple_after(clip, old_end, old_duration, exclude=()):
+def _ripple_after(clip, start, old_duration):
+    """Move everything that starts after *clip* by its change in length.
+
+    Items starting inside it (a crossfade partner and its transition) move too,
+    so overlaps between neighbours survive.
+    """
     now = fresh(clip.id)
     new_duration = span(now.data)[1] - span(now.data)[0]
-    return timeline_ops.shift_after(_layer(clip), old_end - tolerance(), new_duration - old_duration,
-                                    exclude_ids={clip.id, *exclude})
+    return timeline_ops.shift_after(_layer(clip), start + tolerance(), new_duration - old_duration,
+                                    exclude_ids={clip.id})
 
 
 def _timing_receipt(clip, before_duration) -> dict:
@@ -213,7 +218,7 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
     tl = timeline_ui()
     results, shifted = [], []
     for c, duration, _new_duration, factor in sorted(plans, key=lambda p: -span(p[0].data)[0]):
-        old_end = span(c.data)[1]
+        start = span(c.data)[0]
         if reset:
             tl.Time_Triggered(MenuTime.NONE, [c.id], "1X", 0.0)
         if factor:
@@ -221,7 +226,7 @@ def set_clip_speed(timeline_clip_ids=[], clip_query="", track="", scope="", spee
         elif reverse:
             tl.Time_Triggered(MenuTime.REVERSE, [c.id], "1X", 0.0)
         if ripple:
-            shifted += _ripple_after(c, old_end, duration)
+            shifted += _ripple_after(c, start, duration)
         results.append(_timing_receipt(c, duration))
     results.reverse()
     extend_timeline()
@@ -299,11 +304,11 @@ def repeat_clip(timeline_clip_ids=[], clip_query="", track="", scope="", times=2
     tl = timeline_ui()
     results, shifted = [], []
     for c, duration, _nd in sorted(plans, key=lambda p: -span(p[0].data)[0]):
-        old_end = span(c.data)[1]
+        start = span(c.data)[0]
         tl.Repeat_Triggered("pingpong" if pattern == "ping_pong" else "loop", -1 if reverse else 1, int(times),
                             [c.id], delay_frames, ramp)
         if ripple:
-            shifted += _ripple_after(c, old_end, duration)
+            shifted += _ripple_after(c, start, duration)
         results.append(_timing_receipt(c, duration))
     results.reverse()
     refresh()
@@ -370,7 +375,7 @@ def freeze_frame(timeline_clip_id="", clip_query="", track="", at_seconds=-1.0, 
     if not ripple:
         hits = check_overlaps(new_overlaps({c.id: (_layer(c), start, end + hold)}), allow_overlap, "The freeze")
     timeline_ui().Time_Triggered(MenuTime.FREEZE_ZOOM if zoom else MenuTime.FREEZE, [c.id], f"{hold:.6g}", t)
-    shifted = _ripple_after(c, end, duration) if ripple else []
+    shifted = _ripple_after(c, start, duration) if ripple else []
     extend_timeline()
     refresh()
     receipt = _timing_receipt(c, duration)

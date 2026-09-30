@@ -328,3 +328,18 @@ def test_waveform_show_joins_the_undo_step_and_hide(ed):
     ed.mark()
     r = receipt(ed.call("set_clip_audio_video_tool", timeline_clip_ids=[a], waveform="hide"))
     assert r["changed"] is False and ed.undo_steps_since_mark() == 0
+
+
+def test_ripple_slow_motion_keeps_the_next_crossfade(ed):
+    from classes.query import Transition
+    f = ed.add_file("video", duration=20.0)
+    a = ed.add_clip(f, position=0.0, end=4.0, layer=T2)
+    b = ed.add_clip(f, position=3.5, end=4.0, layer=T2)
+    t = Transition()
+    t.data = {"layer": T2, "position": 3.5, "start": 0.0, "end": 0.5, "title": "Transition", "type": "Mask"}
+    t.save()
+    ed.mark()
+    receipt(ed.call("set_clip_speed_tool", timeline_clip_ids=[a], speed=0.5, ripple=True))
+    assert dur(ed, a) == 8.0 and pos(ed, b) == 7.5
+    assert Transition.get(id=t.id).data["position"] == 7.5
+    one_step(ed)
