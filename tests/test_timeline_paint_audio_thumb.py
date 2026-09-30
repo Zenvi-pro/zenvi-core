@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
-from PyQt5.QtWidgets import QApplication
 
 from windows.views.timeline_backend.paint.clip import ClipPainter
 
 
 @pytest.fixture(scope="module")
 def qapp():
-    # QPixmap needs a QGuiApplication when this runs under ZENVI_REAL_QT=1.
-    app = QApplication.instance() or QApplication([])
-    yield app
+    # Under the headless stub QPixmap is a MagicMock; with ZENVI_REAL_QT=1 a
+    # real QPixmap needs a QGuiApplication first.
+    if os.environ.get("ZENVI_REAL_QT") != "1":
+        yield None
+        return
+    from PyQt5.QtWidgets import QApplication
+
+    yield QApplication.instance() or QApplication([])
 
 
 class _StubPainter:
