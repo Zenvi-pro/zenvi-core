@@ -220,3 +220,39 @@ def test_pixel_stats_white_balance_and_saturation():
     s = analysis.compute_stats(d, p)
     assert s["cast"] == "warm (orange)" and s["suggested_grade"]["temperature"] < 0
     assert analysis.pixel_stats([(0, 0, 0, 0)]) is None
+
+
+def test_yolo_download_verifies_installs_and_cleans_up(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import os
+    import zipfile
+    from classes import http_client, info
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("pkg/model.onnx", b"onnx-bytes")
+        z.writestr("pkg/coco.names", b"person\ncar\n")
+    archive = buf.getvalue()
+    model = {"id": "yolo-test", "name": "YOLO test", "asset": "yolo-test.zip",
+             "sha256": hashlib.sha256(archive).hexdigest()}
+    manifest = {"base_url": "https://example.invalid/models", "models": [model]}
+    monkeypatch.setattr(info, "YOLO_PATH", str(tmp_path))
+    urls = []
+
+    def fake_download(url, path, label, report_progress=None, cancel_exceptions=()):
+        urls.append(url)
+        with open(path, "wb") as fh:
+            fh.write(archive)
+
+    monkeypatch.setattr(http_client, "download_file", fake_download)
+    effect_models.download_yolo_model(manifest, model)
+    assert urls == ["https://example.invalid/models/yolo-test.zip"]
+    assert open(effect_models.yolo_model_path(model), "rb").read() == b"onnx-bytes"
+    assert effect_models.yolo_installed_files_match(model)
+    assert sorted(os.listdir(tmp_path / "yolo-test")) == ["classes.names", "install.json", "model.onnx"]
+
+    bad = dict(model, id="yolo-bad", sha256="0" * 64)
+    with pytest.raises(ValueError):
+        effect_models.download_yolo_model(manifest, bad)
+    assert os.listdir(tmp_path / "yolo-bad") == [] and not effect_models.yolo_installed_files_match(bad)
