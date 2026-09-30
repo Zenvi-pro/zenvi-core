@@ -660,6 +660,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # User canceled prompt
                 return
 
+        self.new_project()
+
+    def new_project(self):
+        """Start a new empty project: File > New Project after its unsaved-changes prompt.
+
+        Discards the current project data and undo history; callers decide
+        about unsaved changes first (the menu asks, the agent tool refuses).
+        """
+        app = get_app()
+
         # Stop preview thread
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
@@ -799,34 +809,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionClearWaveformData_trigger(self):
         """Clear audio data from current project"""
-        files = File.filter()
-
-        # Transaction id to group all deletes together
-        get_app().updates.transaction_id = str(uuid.uuid4())
-
-        for file in files:
-            if "audio_data" in file.data.get("ui", {}):
-                file_path = file.data.get("path")
-                log.debug("File %s has audio data. Deleting it." % os.path.split(file_path)[1])
-                del file.data["ui"]["audio_data"]
-                file.data["ui"].pop("audio_data_format", None)
-                file.data["ui"].pop("audio_data_rms", None)
-                file.data["ui"].pop("audio_data_rate", None)
-                file.save()
-
-        clips = Clip.filter()
-        for clip in clips:
-            if "audio_data" in clip.data.get("ui", {}):
-                log.debug("Clip %s has audio data. Deleting it." % clip.id)
-                del clip.data["ui"]["audio_data"]
-                clip.data["ui"].pop("audio_data_format", None)
-                clip.data["ui"].pop("audio_data_rms", None)
-                clip.data["ui"].pop("audio_data_rate", None)
-                clip.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
-
+        from classes.waveform import clear_waveform_data
+        clear_waveform_data()
         get_app().window.actionClearWaveformData.setEnabled(False)
 
     def actionClearHistory_trigger(self):
@@ -856,8 +840,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         )
         self.actionClearOptimizedFiles.setEnabled(has_internal_optimized)
 
-    def save_project(self, file_path):
-        """ Save a project to a file path, and refresh the screen """
+    def save_project(self, file_path, raise_errors=False):
+        """ Save a project to a file path, and refresh the screen
+
+        With raise_errors the failure is raised to the caller (agent tools)
+        instead of being shown in a warning dialog.
+        """
         with self.lock:
             app = get_app()
             _ = app._tr  # Get translation function
@@ -879,6 +867,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
+                if raise_errors:
+                    raise
                 # Capture the message now: invoke_on_gui may defer _warn to run
                 # after this except block exits, and Python auto-deletes the
                 # "as ex" binding at that point, which would make a closure
@@ -967,8 +957,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 except Exception as e:
                     log.error(f"Failed to delete file {file_path}: {e}")
 
-    def open_project(self, file_path, clear_thumbnails=True):
-        """ Open a project from a file path, and refresh the screen """
+    def open_project(self, file_path, clear_thumbnails=True, interactive=True):
+        """ Open a project from a file path, and refresh the screen
+
+        interactive=False (agent tools): no "Save changes?" prompt (the caller
+        already decided), no missing-media dialog (missing files stay listed in
+        ``project.last_missing_media``), and a load failure is raised instead of
+        shown in a dialog. Returns True when the project was loaded.
+        """
 
         app = get_app()
         settings = app.get_settings()
@@ -979,7 +975,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # First check for empty file_path (probably user cancellation)
         if not file_path:
             # Ignore the request
-            return
+            return False
 
         # Stop preview thread
         self.SpeedSignal.emit(0)
@@ -995,7 +991,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         QCoreApplication.processEvents()
 
         # Do we have unsaved changes?
-        if app.project.needs_save():
+        if interactive and app.project.needs_save():
             ret = QMessageBox.question(
                 self,
                 _("Unsaved Changes"),
@@ -1006,7 +1002,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self.actionSave_trigger()
             elif ret == QMessageBox.Cancel:
                 # User canceled prompt
-                return
+                return False
 
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
@@ -1025,7 +1021,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self.clear_temporary_files()
 
                 # Load project file
-                app.project.load(file_path, clear_thumbnails)
+                app.project.load(file_path, clear_thumbnails, interactive=interactive)
 
                 # Set Window title
                 self.SetWindowTitle()
@@ -1075,6 +1071,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
+            if not interactive:
+                app.restoreOverrideCursor()
+                raise
             QMessageBox.warning(self, _("Error Opening Project"), str(ex))
         finally:
             self._project_loading = previous_project_loading
@@ -1086,6 +1085,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Restore normal cursor
         app.restoreOverrideCursor()
+        return loaded_project
 
     def clear_temporary_files(self):
         """Clear all user thumbnails"""
@@ -1422,7 +1422,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionExportFCPXML_trigger(self, checked=True):
         """Export XML (Final Cut Pro) File"""
-        export_xml()
+        try:
+            export_xml()
+        except OSError:
+            log.error("Final Cut Pro XML export failed", exc_info=1)
 
     def actionImportEDL_trigger(self, checked=True):
         """Import EDL File"""
@@ -2057,7 +2060,20 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             framePath = "%s.png" % framePath
 
         s.setDefaultPath(s.actionType.EXPORT, framePath)
-        log.info("Saving frame to %s", framePath)
+        if self.save_frame_to_path(framePath, self.preview_thread.current_frame):
+            self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
+        else:
+            self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
+
+    def save_frame_to_path(self, framePath, frame_number, image_format="PNG"):
+        """Render one timeline frame at full project resolution into an image file.
+
+        image_format is a Qt image format name ("PNG", "JPG"). Returns True when
+        the file was written (File > Save Current Frame core).
+        """
+        app = get_app()
+        log.info("Saving frame %s to %s", frame_number, framePath)
+        saved = False
 
         # Pause playback
         self.SpeedSignal.emit(0)
@@ -2086,13 +2102,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # (return is void, so we cannot check for success/fail here
             # - must use file modification timestamp)
             openshot.Timeline.GetFrame(
-                self.timeline_sync.timeline, self.preview_thread.current_frame).Save(framePath, 1.0)
-
-            # Show message to user
-            if os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime):
-                self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
-            else:
-                self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
+                self.timeline_sync.timeline, int(frame_number)).Save(framePath, 1.0, image_format)
+            saved = os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime)
 
             # Reset the MaxSize to match the preview and reset the preview cache
             viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
@@ -2105,6 +2116,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         finally:
             # Restore caching flag
             lib_settings.ENABLE_PLAYBACK_CACHING = True
+        return saved
 
     def renumber_all_layers(self, insert_at=None, stride=1000000):
         """Renumber all of the project's layers to be equidistant (in
@@ -2874,64 +2886,45 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Update profile (if changed)
         if result == QDialog.Accepted and profile:
-            # Clear any selections before changing the project profile
-            # to prevent invalid selection state from causing crashes
-            self.clearSelections()
-
-            proj = get_app().project
-
-            # Group transactions
-            tid = str(uuid.uuid4())
-
-            # Detect whether the project profile is actually changing
-            current_profile_desc = proj.get("profile")
-            current_width = proj.get("width")
-            current_height = proj.get("height")
-            current_fps = proj.get("fps")
-            profile_changed = any([
-                current_profile_desc != profile.info.description,
-                current_width != profile.info.width,
-                current_height != profile.info.height,
-                not current_fps,
-                current_fps.get("num") != profile.info.fps.num,
-                current_fps.get("den") != profile.info.fps.den
-            ])
-
-            # Get current FPS (prior to changing)
-            current_fps_float = float(current_fps["num"]) / float(current_fps["den"])
-            fps_factor = float(profile.info.fps.ToFloat() / current_fps_float)
-
-            # Get current playback frame
-            current_frame = self.preview_thread.current_frame
-            adjusted_frame = round(current_frame * fps_factor)
-
-            # Update timeline settings
-            get_app().updates.transaction_id = tid
-
-            # Apply new profile (and any FPS precision updates)
-            get_app().updates.update(["profile"], profile.info.description)
-            get_app().updates.update(["width"], profile.info.width)
-            get_app().updates.update(["height"], profile.info.height)
-            get_app().updates.update(["display_ratio"], {"num": profile.info.display_ratio.num, "den": profile.info.display_ratio.den})
-            get_app().updates.update(["pixel_ratio"], {"num": profile.info.pixel_ratio.num, "den": profile.info.pixel_ratio.den})
-            get_app().updates.update(["fps"], {"num": profile.info.fps.num, "den": profile.info.fps.den})
-            if profile_changed:
-                # Export dialog settings are profile-dependent; reset cache on profile changes.
-                get_app().updates.update(["export_settings"], None)
-
-            # Clear transaction id
-            get_app().updates.transaction_id = None
-
-            # Seek to the same location, adjusted for new frame rate
-            self.SeekSignal.emit(adjusted_frame)
-
-            # Refresh frame (since size of preview might have changed)
-            QTimer.singleShot(500, lambda: self.refreshFrameSignal.emit())
-            QTimer.singleShot(500, functools.partial(self.MaxSizeChanged.emit,
-                                                     self.videoPreview.size()))
+            from classes.project_profile import record_from_openshot_profile
+            self.apply_project_profile(record_from_openshot_profile(profile))
 
         # Enable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
+
+    def apply_project_profile(self, record, before_seek=None):
+        """Switch the project to a profile record (classes.project_profile) as one undo step.
+
+        Shared by the Choose Profile dialog and the agent tools. Joins the
+        caller's transaction; *before_seek* runs inside it, after the profile
+        keys changed (the tools reframe clips there). Returns whether the
+        profile changed.
+        """
+        from classes.project_profile import apply_profile_values
+        from classes.updates import nested_transaction
+
+        # Clear any selections before changing the project profile
+        # to prevent invalid selection state from causing crashes
+        self.clearSelections()
+
+        # Seek to the same location afterwards, adjusted for the new frame rate
+        current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
+        current_fps_float = float(current_fps["num"]) / float(current_fps["den"])
+        fps_factor = (float(record["fps_num"]) / float(record["fps_den"])) / current_fps_float
+        adjusted_frame = max(1, round(self.preview_thread.current_frame * fps_factor))
+
+        with nested_transaction(get_app().updates):
+            changed = apply_profile_values(record)
+            if before_seek:
+                before_seek()
+
+        self.SeekSignal.emit(adjusted_frame)
+
+        # Refresh frame (since size of preview might have changed)
+        QTimer.singleShot(500, lambda: self.refreshFrameSignal.emit())
+        QTimer.singleShot(500, functools.partial(self.MaxSizeChanged.emit,
+                                                 self.videoPreview.size()))
+        return changed
 
     def actionSplitFile_trigger(self):
         log.debug("actionSplitFile_trigger")
@@ -4500,76 +4493,79 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Clear the existing children
         self.restore_menu.clear()
 
-        # Get a list of recovery files matching the current project
-        recovery_files = []
-        if current_filepath:
-            recovery_dir = info.RECOVERY_PATH
-            base_no_ext = os.path.splitext(os.path.basename(current_filepath))[0]
-            recovery_files = [
-                f for f in os.listdir(recovery_dir)
-                if (f.endswith(".zip") or f.endswith(info.ALL_PROJECT_EXTS))
-                and "-" in f
-                and f.split("-", 1)[1].startswith(base_no_ext)
-            ]
+        # Get a list of recovery files matching the current project (latest first)
+        from classes.project_recovery import recovery_files_for
+        recovery_files = recovery_files_for(current_filepath)
 
         # Show just a placeholder menu, if we have no recovery files
         if not recovery_files:
             self.restore_menu.addAction(_("No Previous Versions Available")).setDisabled(True)
             return
 
-        # Sort files in descending order (latest first)
-        recovery_files.sort(reverse=True)
+        for timestamp, file_path in recovery_files:
+            friendly_time = self.time_ago_string(timestamp)
+            full_datetime = datetime.fromtimestamp(timestamp).strftime('%b %d, %H:%M')
 
-        for file_name in recovery_files:
-            # Extract timestamp from file name
-            try:
-                timestamp = int(file_name.split("-", 1)[0])
-                friendly_time = self.time_ago_string(timestamp)
-                full_datetime = datetime.fromtimestamp(timestamp).strftime('%b %d, %H:%M')
-                file_path = os.path.join(recovery_dir, file_name)
-
-                # Add each recovery file with a tooltip
-                new_action = self.restore_menu.addAction(f"{friendly_time} ({full_datetime})")
-                new_action.triggered.connect(functools.partial(self.restore_version_clicked, file_path))
-            except ValueError:
-                continue
+            # Add each recovery file with a tooltip
+            new_action = self.restore_menu.addAction(f"{friendly_time} ({full_datetime})")
+            new_action.triggered.connect(functools.partial(self.restore_version_clicked, file_path))
 
     def restore_version_clicked(self, file_path):
         """Restore a previous project file from the recovery folder"""
+        app = get_app()
+        current_filepath = app.project.current_filepath if app.project else None
+        try:
+            self.restore_recovery_file(file_path)
+            # Open the recovered project
+            self.OpenProjectSignal.emit(current_filepath)
+        except Exception as ex:
+            log.error(f"Error recovering project from `{file_path}` to `{current_filepath}`: {ex}", exc_info=True)
+
+    def restore_recovery_file(self, file_path):
+        """Put a recovery copy in place of the current project file (File > Recovery core).
+
+        The current file is first kept as ``<name>-<timestamp>-backup.zvn`` next
+        to it. Does not reopen the project; raises on failure. Returns
+        (restored_project_path, backup_path_or_None).
+        """
         with self.lock:
             app = get_app()
             current_filepath = app.project.current_filepath if app.project else None
-            _ = get_app()._tr
+            if not current_filepath:
+                raise ValueError("the project has never been saved, so it has no recovery versions")
+
+            # Rename the original project file
+            recovered_filename = (
+                os.path.splitext(os.path.basename(current_filepath))[0]
+                + f"-{int(time())}-backup{info.PROJECT_EXT}"
+            )
+            recovered_filepath = os.path.join(os.path.dirname(current_filepath), recovered_filename)
+            backup_path = None
+            if os.path.exists(current_filepath):
+                shutil.move(current_filepath, recovered_filepath)
+                backup_path = recovered_filepath
+                log.info(f"Backup current project to: {recovered_filepath}")
 
             try:
-                # Rename the original project file
-                recovered_filename = (
-                    os.path.splitext(os.path.basename(current_filepath))[0]
-                    + f"-{int(time())}-backup{info.PROJECT_EXT}"
-                )
-                recovered_filepath = os.path.join(os.path.dirname(current_filepath), recovered_filename)
-                if os.path.exists(current_filepath):
-                    shutil.move(current_filepath, recovered_filepath)
-                    log.info(f"Backup current project to: {recovered_filepath}")
-
                 # Unzip if the selected recovery file is a .zip file
                 if file_path.endswith(".zip"):
                     with zipfile.ZipFile(file_path, 'r') as zipf:
-                        # Extract over top original project file
-                        zipf.extractall(os.path.dirname(current_filepath))
                         extracted_files = zipf.namelist()
                         if len(extracted_files) != 1:
                             raise ValueError("Unexpected number of files in recovery zip.")
+                        # Extract over top original project file
+                        with zipf.open(extracted_files[0]) as src, open(current_filepath, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
                 else:
                     # Replace the original project file with the recovery file
                     shutil.copyfile(file_path, current_filepath)
-                log.info(f"Recovery file `{file_path}` restored to: `{current_filepath}`")
-
-                # Open the recovered project
-                self.OpenProjectSignal.emit(current_filepath)
-
-            except Exception as ex:
-                log.error(f"Error recovering project from `{file_path}` to `{current_filepath}`: {ex}", exc_info=True)
+            except Exception:
+                # Put the original back rather than leave no project file behind
+                if backup_path and not os.path.exists(current_filepath):
+                    shutil.move(backup_path, current_filepath)
+                raise
+            log.info(f"Recovery file `{file_path}` restored to: `{current_filepath}`")
+            return current_filepath, backup_path
 
     def remove_recent_project(self, file_path):
         """Remove a project from the Recent menu if Zenvi can't find it"""

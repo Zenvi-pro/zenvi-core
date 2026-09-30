@@ -423,3 +423,33 @@ def get_waveform_thread(file_id, clip_list, transaction_id):
             }},
             tid,
         )
+
+
+def clear_waveform_data():
+    """Drop cached waveform data from every file and clip (Edit > Clear > Waveform).
+
+    One undo step; joins the caller's transaction. Returns (files_cleared, clips_cleared).
+    """
+    from classes.updates import nested_transaction
+
+    ui_keys = ("audio_data_format", "audio_data_rms", "audio_data_rate")
+    cleared_files = cleared_clips = 0
+    with nested_transaction(get_app().updates):
+        for file in File.filter():
+            if "audio_data" in file.data.get("ui", {}):
+                log.debug("File %s has audio data. Deleting it.", file.id)
+                del file.data["ui"]["audio_data"]
+                for key in ui_keys:
+                    file.data["ui"].pop(key, None)
+                file.save()
+                cleared_files += 1
+
+        for clip in Clip.filter():
+            if "audio_data" in clip.data.get("ui", {}):
+                log.debug("Clip %s has audio data. Deleting it.", clip.id)
+                del clip.data["ui"]["audio_data"]
+                for key in ui_keys:
+                    clip.data["ui"].pop(key, None)
+                clip.save()
+                cleared_clips += 1
+    return cleared_files, cleared_clips

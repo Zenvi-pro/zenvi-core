@@ -130,8 +130,13 @@ def _db_to_volume(db_value):
     return max(0.0, min(1.0, linear))
 
 
-def export_edl():
-    """Export EDL File"""
+def export_edl(file_path=None):
+    """Export EDL File
+
+    EDL holds one track per file, so each non-empty track is written to
+    ``<file_path minus .edl>-<track name>.edl``. With no *file_path*, asks for
+    one (File > Export Project > EDL). Returns the written paths.
+    """
     app = get_app()
     _ = app._tr
 
@@ -150,10 +155,12 @@ def export_edl():
     else:
         for ext in (info.PROJECT_EXT, info.LEGACY_PROJECT_EXT):
             recommended_path = recommended_path.replace(ext, ".edl")
-    file_path = QFileDialog.getSaveFileName(app.window, _("Export EDL..."), recommended_path,
-                                            _("Edit Decision List (*.edl)"))[0]
+    if file_path is None:
+        file_path = QFileDialog.getSaveFileName(app.window, _("Export EDL..."), recommended_path,
+                                                _("Edit Decision List (*.edl)"))[0]
     if not file_path:
-        return
+        return []
+    written = []
 
     # Append .edl if needed
     if not file_path.endswith(".edl"):
@@ -182,7 +189,9 @@ def export_edl():
 
         # Generate EDL File (1 per track - limitation of EDL format)
         # TODO: Improve and move this into its own class
-        with open("%s-%s.edl" % (file_path.replace(".edl", ""), track_name), 'w', encoding="utf8") as f:
+        track_file_path = "%s-%s.edl" % (file_path[:-len(".edl")], track_name)
+        written.append(track_file_path)
+        with open(track_file_path, 'w', encoding="utf8") as f:
             # Add Header
             f.write("TITLE: %s - %s\n" % (file_name, track_name))
             f.write("FCM: %s\n\n" % ("DROP FRAME" if _is_drop_frame(fps_num, fps_den) else "NON-DROP FRAME"))
@@ -318,3 +327,5 @@ def export_edl():
 
             # Update counters
             track_count -= 1
+
+    return written

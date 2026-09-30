@@ -866,20 +866,6 @@ _last_split_file_id_by_chat_session = {}
 # Project tools
 # ---------------------------------------------------------------------------
 
-def get_project_info(**_kw) -> str:
-    try:
-        app = _get_app()
-        proj = app.project
-        profile = proj.get("profile") or "unknown"
-        fps = proj.get("fps") or {}
-        fps_str = "{}/{}".format(fps.get("num", ""), fps.get("den", 1))
-        duration = proj.get("duration") or 0
-        scale = proj.get("scale") or 0
-        return f"Project: profile={profile}, fps={fps_str}, duration={duration}, scale={scale}"
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def list_files(**_kw) -> str:
     try:
         import os
@@ -1083,40 +1069,6 @@ def list_markers(**_kw) -> str:
             return "No markers in project."
         lines = [f"  id={m.data.get('id','')} position={m.data.get('position',0)} name={m.data.get('name','')}" for m in markers]
         return f"Markers ({len(markers)}):\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def new_project(**_kw) -> str:
-    try:
-        app = _get_app()
-        app.project.new()
-        app.updates.load(app.project._data, reset_history=True)
-        return "New project created."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def save_project(file_path="", **_kw) -> str:
-    from classes import info
-    if not file_path or not isinstance(file_path, str):
-        return "Error: file_path is required."
-    file_path = file_path.strip()
-    if not file_path.endswith(info.ALL_PROJECT_EXTS):
-        file_path += info.PROJECT_EXT
-    try:
-        _get_app().window.save_project(file_path)
-        return f"Project saved to {file_path}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def open_project(file_path="", **_kw) -> str:
-    if not file_path:
-        return "Error: file_path is required."
-    try:
-        _get_app().window.OpenProjectSignal.emit(file_path.strip())
-        return f"Open project requested: {file_path}."
     except Exception as e:
         return f"Error: {e}"
 
@@ -1846,83 +1798,6 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
 # for small interactive edits. Chat/agent exports of a real project can take
 # hours; a short wait reports "Export failed" while encoding continues.
 _EXPORT_MAIN_THREAD_TIMEOUT = 6 * 60 * 60
-
-
-def export_video(show_dialog="true", output_path="", **_kw) -> str:
-    """Export the project. Opens the dialog by default; pass show_dialog=false with an output_path to render with no dialog.
-
-    The headless form is what an unattended MCP/harness run uses — it writes the
-    file directly instead of waiting for someone to complete an export dialog.
-    """
-    try:
-        open_ui = str(show_dialog).lower().strip() not in ("0", "false", "no")
-        path = (output_path or "").strip()
-        if open_ui and not path:
-            _run_on_main_thread(lambda: _get_app().window.actionExportVideo_trigger())
-            return "Export video dialog opened."
-        from windows.export import export_video_headless, get_default_export_settings
-        _, _, _, default_path = get_default_export_settings()
-        err = _run_on_main_thread(
-            lambda: export_video_headless(path or None, None, None, None),
-            timeout=_EXPORT_MAIN_THREAD_TIMEOUT,
-        )
-        if err:
-            return f"Export failed: {err}"
-        return f"Exported to {path or default_path}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def get_export_settings(**_kw) -> str:
-    try:
-        from windows.export import get_default_export_settings
-        app = _get_app()
-        video_settings, audio_settings, export_type, default_path = get_default_export_settings()
-        lines = [
-            f"Export type: {export_type}",
-            f"Default path: {default_path}",
-            "Video: {}x{}, {}/{} fps, codec {}, format {}, bitrate {}".format(
-                video_settings.get("width"), video_settings.get("height"),
-                video_settings.get("fps", {}).get("num"), video_settings.get("fps", {}).get("den"),
-                video_settings.get("vcodec"), video_settings.get("vformat"),
-                video_settings.get("video_bitrate")),
-            "Audio: codec {}, {} Hz, {} channels, bitrate {}".format(
-                audio_settings.get("acodec"), audio_settings.get("sample_rate"),
-                audio_settings.get("channels"), audio_settings.get("audio_bitrate")),
-            "Frame range: {} - {}".format(video_settings.get("start_frame"), video_settings.get("end_frame")),
-        ]
-        overrides = app.project.get("export_overrides") or {}
-        if overrides:
-            lines.append(f"Overrides: {overrides}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def set_export_setting(key="", value="", **_kw) -> str:
-    try:
-        app = _get_app()
-        overrides = dict(app.project.get("export_overrides") or {})
-        kl = key.lower().strip()
-        if kl in ("width", "height", "fps_num", "fps_den", "start_frame", "end_frame", "sample_rate", "channels"):
-            overrides[kl] = int(value.strip())
-        elif kl in ("video_codec", "vcodec"):
-            overrides["video_codec"] = value.strip()
-        elif kl in ("audio_codec", "acodec"):
-            overrides["audio_codec"] = value.strip()
-        elif kl in ("output_path", "path"):
-            overrides["output_path"] = value.strip()
-        elif kl in ("vformat", "format"):
-            overrides["vformat"] = value.strip()
-        else:
-            overrides[kl] = value.strip()
-        # try/finally: a leaked ignore_history=True would silently disable
-        # undo for every action that follows.
-        with _ignore_history(app):
-            app.updates.update(["export_overrides"], overrides)
-        return f"Set {kl} = {value}."
-    except Exception as e:
-        return f"Error: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -8454,14 +8329,10 @@ def duck_under_speech(
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
-    "get_project_info_tool": get_project_info,
     "list_files_tool": list_files,
     "list_clips_tool": list_clips,
     "list_layers_tool": list_layers,
     "list_markers_tool": list_markers,
-    "new_project_tool": new_project,
-    "save_project_tool": save_project,
-    "open_project_tool": open_project,
     # Playback
     "watch_clip_tool": watch_clip_and_play,
     "watch_clip_window_tool": watch_clip_window,
@@ -8488,9 +8359,6 @@ AGENT_TOOL_HANDLERS = {
     "import_files_tool": import_files,
     "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
-    "export_video_tool": export_video,
-    "get_export_settings_tool": get_export_settings,
-    "set_export_setting_tool": set_export_setting,
     # Clips
     "get_file_info_tool": get_file_info,
     "split_file_add_clip_tool": split_file_add_clip,
@@ -8540,14 +8408,10 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "get_project_info_tool": "Read project info",
     "list_files_tool": "List files",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
     "list_markers_tool": "List markers",
-    "new_project_tool": "New project",
-    "save_project_tool": "Save project",
-    "open_project_tool": "Open project",
     "watch_clip_tool": "Load and play clip",
     "watch_clip_window_tool": "Watch clip window",
     "play_tool": "Toggle playback",
@@ -8568,9 +8432,6 @@ TOOL_DISPLAY_LABELS = {
     "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files",
     "wait_until_project_indexed_tool": "Wait for indexing",
-    "export_video_tool": "Export video",
-    "get_export_settings_tool": "Read export settings",
-    "set_export_setting_tool": "Update export setting",
     "get_file_info_tool": "Read file info",
     "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
@@ -8659,9 +8520,7 @@ READ_ONLY_TOOLS = frozenset({
     "list_layers_tool",
     "list_markers_tool",
     "get_timeline_state_tool",
-    "get_project_info_tool",
     "get_file_info_tool",
-    "get_export_settings_tool",
     "list_transitions_tool",
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
@@ -8682,8 +8541,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_files_tool",
     # Polls indexing state for minutes — must never occupy the GUI thread.
     "wait_until_project_indexed_tool",
-    # A render takes minutes; it marshals itself with its own longer timeout.
-    "export_video_tool",
     # Downloads + re-encodes off the GUI thread; its timeline mutations
     # marshal to the main thread internally.
     "import_video_url_and_add_to_timeline_tool",
