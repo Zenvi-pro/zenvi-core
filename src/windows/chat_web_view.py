@@ -150,8 +150,12 @@ def try_attach_clipboard_media(chat) -> bool:
 def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool:
     """True when clipboard shortcuts should go to the assistant chat, not the timeline.
 
-    WebEngine often reports ``focusWidget() is None`` while the page still has
-    keyboard focus; also treat ``hasFocus()`` / focus-proxy ancestry as ownership.
+    Keyboard focus decides. A *focus_widget* inside the chat dock or its web
+    view means the chat owns the key; a focused widget anywhere else never
+    does, even with the chat under the mouse. WebEngine keeps focus on a
+    focus-proxy child of the view, so the proxy counts only while it has
+    focus: it is always a descendant of the view, so ancestry proves nothing.
+    *under_mouse* is a fallback only when no widget has focus at all.
     """
     if chat is None:
         return False
@@ -168,8 +172,8 @@ def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool
             widget = parent_fn() if callable(parent_fn) else None
         return False
 
-    if focus_widget is not None and _widget_in_chat(focus_widget):
-        return True
+    if focus_widget is not None:
+        return _widget_in_chat(focus_widget)
 
     if view is not None:
         try:
@@ -179,10 +183,7 @@ def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool
             pass
         try:
             focus_proxy = view.focusProxy() if callable(getattr(view, "focusProxy", None)) else None
-            if focus_proxy is not None and (
-                (hasattr(focus_proxy, "hasFocus") and focus_proxy.hasFocus())
-                or _widget_in_chat(focus_proxy)
-            ):
+            if focus_proxy is not None and hasattr(focus_proxy, "hasFocus") and focus_proxy.hasFocus():
                 return True
         except Exception:
             pass
@@ -232,7 +233,14 @@ def _chat_window_for_view(view):
 
 
 class ChatEditShortcutMixin:
-    """Claim edit keys so main-window timeline shortcuts do not steal them."""
+    """Claim edit keys so main-window timeline shortcuts do not steal them.
+
+    ShortcutOverride is accepted on the view and its children, so while the
+    chat has keyboard focus the main window's Undo / Copy / Paste shortcuts
+    never fire; the key press is handled here instead. QtWebKit delivers it to
+    the view (keyPressEvent). QtWebEngine delivers it to its focus-proxy child,
+    which would hand it straight to Chromium, so the child filter handles it.
+    """
 
     def _enable_edit_shortcuts(self):
         self.installEventFilter(self)
@@ -260,36 +268,35 @@ class ChatEditShortcutMixin:
         if event.type() == QEvent.ShortcutOverride and is_edit_shortcut(event):
             event.accept()
             return True
+        if event.type() == QEvent.KeyPress and obj is not self and self._handle_edit_key(event):
+            return True
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
-        name = edit_shortcut_name(event)
-        if name:
-            chat = _chat_window_for_view(self)
-            if name == "paste" and try_attach_clipboard_media(chat):
-                event.accept()
-                return
-            if name == "undo":
-                undo_fn = getattr(chat, "undo_chat_attachments", None) if chat else None
-                if callable(undo_fn) and undo_fn():
-                    event.accept()
-                    return
-                if trigger_web_edit_action(self, "undo"):
-                    event.accept()
-                    return
-                # Consume so the timeline Undo shortcut does not fire while chat focused.
-                event.accept()
-                return
-            if name == "redo":
-                if trigger_web_edit_action(self, "redo"):
-                    event.accept()
-                    return
-                event.accept()
-                return
-            if trigger_web_edit_action(self, name):
-                event.accept()
-                return
+        if self._handle_edit_key(event):
+            return
         super().keyPressEvent(event)
+
+    def _handle_edit_key(self, event) -> bool:
+        """Run an edit shortcut on the chat. True when the key press was consumed."""
+        name = edit_shortcut_name(event)
+        if not name:
+            return False
+        chat = _chat_window_for_view(self)
+        if name == "paste" and try_attach_clipboard_media(chat):
+            event.accept()
+            return True
+        if name == "undo":
+            undo_fn = getattr(chat, "undo_chat_attachments", None) if chat else None
+            if callable(undo_fn) and undo_fn():
+                event.accept()
+                return True
+        if trigger_web_edit_action(self, name) or name in ("undo", "redo"):
+            # Undo/Redo are consumed even with nothing to undo, so a focused
+            # chat never falls through to the timeline's Undo.
+            event.accept()
+            return True
+        return False
 
 
 def _dropped_paths(event):

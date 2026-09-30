@@ -1434,19 +1434,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionUndo_trigger(self, checked=True):
         log.info('actionUndo_trigger')
-        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
-
-        chat = getattr(self, "dockAIChat", None)
-        view = getattr(chat, "_chat_view", None) if chat is not None else None
-        under_mouse = bool(view is not None and view.underMouse())
-        focus = QApplication.focusWidget()
-        # When the assistant owns focus, undo stays in chat (attachments, then
-        # web text). Never fall through to the timeline from a focused chat.
-        if chat_owns_clipboard_keys(chat, focus, under_mouse):
-            if dispatch_chat_edit_action(chat, "undo", focus, under_mouse):
-                return
-            return
-
+        # Edit > Undo, the timeline toolbar and Ctrl/Cmd+Z outside the chat all
+        # undo the project. While the chat has keyboard focus it claims the key
+        # itself (ChatEditShortcutMixin: attachment chips, then page text), so
+        # this action never has to route to it.
         get_app().updates.undo()
 
         # Update the preview
@@ -1454,17 +1445,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionRedo_trigger(self, checked=True):
         log.info('actionRedo_trigger')
-        from windows.chat_web_view import chat_owns_clipboard_keys, dispatch_chat_edit_action
-
-        chat = getattr(self, "dockAIChat", None)
-        view = getattr(chat, "_chat_view", None) if chat is not None else None
-        under_mouse = bool(view is not None and view.underMouse())
-        focus = QApplication.focusWidget()
-        if chat_owns_clipboard_keys(chat, focus, under_mouse):
-            if dispatch_chat_edit_action(chat, "redo", focus, under_mouse):
-                return
-            return
-
         get_app().updates.redo()
 
         # Update the preview
