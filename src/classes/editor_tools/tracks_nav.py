@@ -163,21 +163,33 @@ def _state_matches(state: dict, expect: dict) -> bool:
     return True
 
 
-def _await_state(expect: dict, timeout: float = PLAYER_SETTLE_SECONDS) -> Tuple[bool, dict]:
-    """Wait (off the GUI thread) until the player state matches *expect*."""
-    def matches(st):
-        return _state_matches(st, expect)
+def _await_state(expect: dict, timeout: float = PLAYER_SETTLE_SECONDS) -> Tuple[str, dict]:
+    """Wait (off the GUI thread) until the player state matches *expect*.
 
+    Returns ("confirmed" | "timeout" | "unconfirmed", state). "unconfirmed":
+    called on the GUI thread, which must not block while the player catches up.
+    """
     state = _player_state()
-    if matches(state) or not _qt_event_loop() or _on_gui_thread():
-        return matches(state), state
+    if _state_matches(state, expect):
+        return "confirmed", state
+    if not _qt_event_loop():
+        return "timeout", state       # headless: nothing changes later
+    if _on_gui_thread():
+        return "unconfirmed", state
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         time.sleep(0.02)
         state = _player_state()
-        if matches(state):
-            return True, state
-    return False, state
+        if _state_matches(state, expect):
+            return "confirmed", state
+    return "timeout", state
+
+
+def _unconfirmed(receipt: dict, summary: str, status: str) -> str:
+    if status == "unconfirmed":
+        receipt["confirmed"] = False
+        summary += " (requested; the player had not confirmed it yet)"
+    return summary
 
 
 def _visible_range() -> Optional[Tuple[float, float]]:
@@ -781,14 +793,15 @@ def play(action="toggle", speed=None, frames=1):
         action = "play"
 
     plan = on_main(_start_transport, action, speed, int(frames))
-    settled, state = _await_state(plan["expect"])
-    if not settled:
+    status, state = _await_state(plan["expect"])
+    if status == "timeout":
         raise ToolError("asked the player to %s, but after %.0f s it reports %s at %s, speed %s "
                         "(is the preview loaded?)" % (plan["action"].replace("_", " "), PLAYER_SETTLE_SECONDS,
                                                       "playing" if state["playing"] else "paused",
                                                       state["timecode"], state["speed"]))
-    return ok(_transport_summary(plan["action"], state, plan["changed"]), action=plan["action"],
-              changed=plan["changed"], **state)
+    receipt = dict(state, action=plan["action"], changed=plan["changed"])
+    summary = _unconfirmed(receipt, _transport_summary(plan["action"], state, plan["changed"]), status)
+    return ok(summary, **receipt)
 
 
 # ---------------------------------------------------------------------------
@@ -970,15 +983,15 @@ def seek_playhead(seconds=None, frame=None, marker="", to="", track="", play=Fal
         slack = int(round(project_fps() * 2 * max(1.0, abs(float(plan["speed"] or 1)))))
     else:
         slack = 1
-    settled, state = _await_state({"frame": plan["frame"], "tolerance": slack})
-    if not settled:
+    status, state = _await_state({"frame": plan["frame"], "tolerance": slack})
+    if status == "timeout":
         raise ToolError("asked the player to go to frame %d, but after %.0f s it is at frame %d (%s)"
                         % (plan["frame"], PLAYER_SETTLE_SECONDS, state["frame"], state["timecode"]))
     started = False
     if play:
         started = on_main(_start_play_here)["changed"]
-        settled, state = _await_state({"playing": True})
-        if not settled:
+        status, state = _await_state({"playing": True})
+        if status == "timeout":
             raise ToolError("moved to %s but playback did not start within %.0f s"
                             % (state["timecode"], PLAYER_SETTLE_SECONDS))
     where = state["timecode"]
@@ -992,7 +1005,7 @@ def seek_playhead(seconds=None, frame=None, marker="", to="", track="", play=Fal
     if plan["note"]:
         receipt["note"] = plan["note"]
         summary += " Note: %s." % plan["note"]
-    return ok(summary, **receipt)
+    return ok(_unconfirmed(receipt, summary, status), **receipt)
 
 
 # ---------------------------------------------------------------------------

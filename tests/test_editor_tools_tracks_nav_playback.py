@@ -226,3 +226,16 @@ def test_seek_refusals(timeline):
     assert timeline.call("seek_playhead_tool", frame=0).startswith("Error")
     assert timeline.call("seek_playhead_tool", to="middle").startswith("Error")
     timeline.window.SeekSignal.emit.assert_not_called()
+
+
+def test_on_the_gui_thread_the_change_is_reported_as_unconfirmed(timeline, monkeypatch):
+    """The GUI thread cannot block while the player catches up: success, flagged unconfirmed."""
+    from classes.editor_tools import tracks_nav
+    monkeypatch.setattr(tracks_nav, "_qt_event_loop", lambda: True)
+    monkeypatch.setattr(tracks_nav, "_on_gui_thread", lambda: True)
+    timeline.player.frozen = True
+    out = timeline.call("play_tool", action="play")
+    assert not out.startswith("Error") and "not confirmed" in out
+    assert receipt(out)["confirmed"] is False
+    out = timeline.call("seek_playhead_tool", seconds=3)
+    assert receipt(out)["confirmed"] is False
