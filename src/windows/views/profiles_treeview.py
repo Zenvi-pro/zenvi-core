@@ -25,9 +25,9 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt, QItemSelectionModel, QRegExp, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QListView, QTreeView, QAbstractItemView, QSizePolicy, QAction
+from qt_api import Qt, QItemSelectionModel, QRegularExpression, pyqtSignal, QTimer
+from qt_api import QIcon
+from qt_api import QTreeView, QAbstractItemView, QSizePolicy, QAction
 
 from classes.app import get_app
 from windows.models.profiles_model import ProfilesModel
@@ -59,8 +59,8 @@ class ProfilesTreeView(QTreeView):
         """Filter transitions with proxy class"""
         self.is_filter_running = True
         self.model().setFilterCaseSensitivity(Qt.CaseInsensitive)
-        self.model().setFilterRegExp(QRegExp(filter_text.lower()))
-        self.model().sort(Qt.DescendingOrder)
+        self.model().setFilterRegularExpression(QRegularExpression(filter_text.lower()))
+        self.model().sort(0, Qt.DescendingOrder)
 
         # Format columns
         self.sortByColumn(0, Qt.DescendingOrder)
@@ -73,6 +73,12 @@ class ProfilesTreeView(QTreeView):
         if self.selectionModel().hasSelection():
             current = self.selectionModel().currentIndex()
             self.scrollTo(current)
+        else:
+            first_index = self.model().index(0, 1)
+            if not first_index.isValid():
+                first_index = self.model().index(0, 0)
+            if first_index.isValid():
+                self.select_profile(first_index)
 
     def select_profile(self, profile_index):
         """Select a specific profile Key"""
@@ -120,11 +126,11 @@ class ProfilesTreeView(QTreeView):
             delete_action.triggered.connect(lambda: get_app().window.actionProfileEdit_trigger(profile, delete=True, parent=self))
             menu.addAction(delete_action)
 
-        menu.popup(event.globalPos())
+        menu.show_at(event)
 
     def __init__(self, dialog, profiles, *args):
         # Invoke parent init
-        QListView.__init__(self, *args)
+        QTreeView.__init__(self, *args)
 
         # Get a reference to the window object
         self.parent = dialog
@@ -143,7 +149,6 @@ class ProfilesTreeView(QTreeView):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setWordWrap(True)
-        self.setStyleSheet('QTreeView::item { padding-top: 2px; }')
         self.columns = 7
         self.selected_profile_object = None
         self.last_inserted_row_index = None

@@ -293,6 +293,44 @@ class ZenviBackendClient:
             log.error("Failed to list models: %s", e)
             return []
 
+    def fetch_model_catalog(self) -> Dict[str, Any]:
+        """The whole ``GET /models`` payload: ``models`` plus ``default_model_id``.
+
+        One round trip for callers that want both, instead of ``list_models``
+        followed by ``get_default_model_id`` hitting the endpoint twice.
+        Returns ``{}`` on any failure.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            log.error("Failed to fetch model catalog: %s", e)
+            return {}
+
+    def list_cli_models(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Model-picker lineups for the CLI agent backends, keyed by backend id
+        (``claude_code``, ``codex``), from ``GET /models/cli``.
+
+        Built by the backend from each provider's live model list, so a new
+        release reaches the picker without a desktop update. Entries follow
+        the picker contract (id/name/featured/rank/tags/default) with bare
+        ids ready for the CLI's ``--model`` flag. ``{}`` on any failure, and
+        an older backend without the route answers the same way; callers keep
+        their built-in list in both cases.
+        """
+        try:
+            r = self.session.get(f"{self.api_url}/models/cli", timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                return {}
+            return {k: v for k, v in data.items() if isinstance(v, list)}
+        except Exception as e:
+            log.debug("CLI model lineups unavailable: %s", e)
+            return {}
+
     def get_default_model_id(self) -> str:
         """Get the default model ID."""
         try:
@@ -353,6 +391,7 @@ class ZenviBackendClient:
         action: Optional[str] = None,
         plan_id: Optional[str] = None,
         on_plan_event: Optional[Callable] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
         """
         Send a chat message via WebSocket with tool delegation support.
@@ -360,6 +399,9 @@ class ZenviBackendClient:
         Each incoming ``tool_call`` is dispatched to its own worker thread so
         the agent can fan out N concurrent tool calls and we ack them as soon
         as each one finishes.  The recv loop never blocks on tool execution.
+
+        *images* (optional) are vision parts for the current turn only
+        (``[{name, mime_type, image_base64, ...}]``).
         """
         try:
             import websocket
@@ -404,6 +446,8 @@ class ZenviBackendClient:
                 payload_data["action"] = action
             if plan_id:
                 payload_data["plan_id"] = plan_id
+            if images:
+                payload_data["images"] = list(images)
             _ws_send({"type": "user_message", "data": payload_data})
 
             # Track outstanding tool worker threads so we can drain them

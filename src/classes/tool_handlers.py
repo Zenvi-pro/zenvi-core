@@ -46,7 +46,7 @@ from classes.track_display import (
 )
 
 try:
-    from PyQt5.QtCore import (
+    from qt_api import (
         QObject, QThread, pyqtSignal, pyqtSlot,
         QEventLoop, QPointF, QTimer,
     )
@@ -60,7 +60,7 @@ except ImportError:
     QTimer = None
 
 try:
-    from PyQt5.QtWidgets import QApplication
+    from qt_api import QApplication
 except ImportError:
     QApplication = None
 
@@ -99,7 +99,7 @@ if pyqtSignal is not None:
 else:
 
     class _MainThreadDispatcher:
-        """Headless fallback when PyQt5 is unavailable."""
+        """Headless fallback when no Qt binding is available."""
 
         def run(self, fn):
             return fn()
@@ -1143,7 +1143,7 @@ def watch_clip_and_play(file_path: str = "", **_kw) -> str:
             return f"Error: File not found: {resolved_path}"
 
         from classes.query import File as _File
-        from PyQt5.QtCore import QUrl as _QUrl
+        from qt_api import QUrl as _QUrl
 
         app = _get_app()
         win = app.window
@@ -2332,7 +2332,7 @@ def add_clip_to_timeline(
                     pos_sec = pos_arg
 
                 if QPointF is None:
-                    from PyQt5.QtCore import QPointF as _QPointF
+                    from qt_api import QPointF as _QPointF
                     pos = _QPointF(pos_sec, 0.0)
                 else:
                     pos = QPointF(pos_sec, 0.0)
@@ -3990,7 +3990,7 @@ def _verify_decoded_alpha_pixels(path, *, force_libvpx=None) -> bool:
             return any(len(px) >= 4 and px[3] < 250 for px in samples)
         except Exception:
             try:
-                from PyQt5.QtGui import QImage
+                from qt_api import QImage
 
                 img = QImage(tmp_png)
                 if img.isNull():
@@ -4405,7 +4405,7 @@ def _bake_transition_video(
 def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, position, layer):
     """Remove the two source clips and place the baked transition clip on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -4427,7 +4427,7 @@ def _replace_timeline_clips_with_baked(clip_a_id, clip_b_id, baked_file_id, posi
 def _replace_timeline_clip_with_baked(clip_id, baked_file_id, position, layer):
     """Remove one source clip and place the baked replacement on the timeline."""
     from classes.query import Clip
-    from PyQt5.QtCore import QPointF
+    from qt_api import QPointF
 
     def _do():
         app = _get_app()
@@ -4519,6 +4519,52 @@ def _import_generated_video(video_path, *, preserve_alpha=None):
 
         _run_on_main_thread(_refresh_thumb, timeout=30)
     return f, None
+
+
+def _stamp_generated_video_metadata(file_obj, prompt=""):
+    """Agent-facing metadata for an AI-generated clip — does not enqueue Gemini.
+
+    Generated media is imported with skip_indexing=True, so without this the
+    scene panel and clip search have nothing to show for the clip the agent
+    just made. The generation prompt is the summary.
+
+    Returns False when the metadata could not be saved, True otherwise.
+    """
+    summary = (prompt or "").strip()
+    if not file_obj or not summary:
+        return True
+    try:
+        tags = file_obj.data.get("tags") if isinstance(file_obj.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        if "ai_generated" not in tag_list:
+            tag_list.append("ai_generated")
+        file_obj.data["tags"] = ", ".join(tag_list)
+
+        ai = file_obj.data.get("ai_metadata")
+        if not isinstance(ai, dict):
+            ai = {}
+        ai["short_summary"] = summary[:400]
+        ai["description"] = summary[:400]
+        # analyzed=True so get_effective_ai_metadata / Scene panel show the text.
+        ai["analyzed"] = True
+        ai["source"] = "ai_video_generation"
+        file_obj.data["ai_metadata"] = ai
+        if not file_obj.data.get("name"):
+            file_obj.data["name"] = summary[:120]
+        file_obj.save()
+        try:
+            _get_app().window.FileUpdated.emit(str(file_obj.id))
+        except Exception:
+            pass
+        return True
+    except Exception as exc:
+        log.warning("Could not stamp generated-video metadata: %s", exc)
+        return False
 
 
 def _download_motion_graphics_file(url, default_name="motion_segment.mp4"):
@@ -5085,7 +5131,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
     app = _get_app()
     prompt = (prompt or "").strip()
     if len(prompt) < 2:
@@ -5147,6 +5193,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     "Error: Video generated but failed to import into project files"
                     + (f": {import_err}" if import_err else ".")
                 )
+
+            stamped = _stamp_generated_video_metadata(f, prompt)
 
             # When inserting at a specific position, ripple downstream clips
             # forward so the generated clip doesn't overlap them.
@@ -5242,6 +5290,11 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
                     f"Do NOT regenerate — call add_clip_to_timeline_tool(file_id='{f.id}', "
                     f"track=<layer_number from list_layers_tool>, position_seconds=...)."
                 )
+            if not stamped:
+                return (
+                    f"{msg} Warning: the generated clip's metadata (name, tags, summary) "
+                    f"could not be saved for file_id={f.id}; it may be missing after reload."
+                )
             return msg
         except Exception as e:
             return f"Error: {e}"
@@ -5258,7 +5311,7 @@ def insert_v2v_into_clip(
 ) -> str:
     """Find best match in resolved clip, generate a V2V insert via Kling O1 Pro."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
@@ -5533,7 +5586,7 @@ def replace_object_in_clip(
 ) -> str:
     """Replace or update an object/visual element in a timeline clip using Kling O1 Pro V2V edit."""
     if QThread is None or QEventLoop is None:
-        return "Error: Requires PyQt5."
+        return "Error: Requires a Qt binding."
 
     resolved = _resolve_timeline_clip_for_tool(
         clip_query=clip_query, timeline_clip_id=timeline_clip_id, **_kw,
@@ -8553,6 +8606,23 @@ _EXTRA_TOOL_DISPLAY_LABELS = {
     "render_product_demo_tool": "Render product demo",
     "check_motion_graphics_health_tool": "Motion graphics health",
     "get_motion_graphics_job_status_tool": "Motion job status",
+    # The assistant harness contributes its own tool names to the transcript.
+    # `task` is the orchestrator handing work to a specialist; the file and
+    # shell tools only ever run inside the motion-graphics sandbox, on
+    # session/draft.html. Left to the generic fallback these read as "Task",
+    # "Bash" and "Edit" -- a coding runtime showing through a video editor.
+    "task": "Handing off to a specialist",
+    "bash": "Building the motion graphic",
+    "edit": "Editing the motion graphic",
+    "write": "Writing the motion graphic",
+    "read": "Reading the motion graphic",
+    "glob": "Looking through motion graphic files",
+    "grep": "Searching the motion graphic",
+    "question": "Asking you a question",
+    "todowrite": "Updating the task list",
+    # Denied to the assistant, but a refused call still lands in the transcript.
+    "webfetch": "Reading a web page",
+    "websearch": "Searching the web",
 }
 
 
@@ -8562,6 +8632,10 @@ def humanize_tool_name(tool_name: str) -> str:
         return TOOL_DISPLAY_LABELS[tool_name]
     if tool_name in _EXTRA_TOOL_DISPLAY_LABELS:
         return _EXTRA_TOOL_DISPLAY_LABELS[tool_name]
+    # The harness runtime's own names are all-lowercase keys here; match them
+    # however they arrive cased ("TodoWrite", "WebFetch").
+    if tool_name.lower() in _EXTRA_TOOL_DISPLAY_LABELS:
+        return _EXTRA_TOOL_DISPLAY_LABELS[tool_name.lower()]
     base = tool_name[:-5] if tool_name.endswith("_tool") else tool_name
     return base.replace("_", " ").strip().capitalize() or "Run tool"
 

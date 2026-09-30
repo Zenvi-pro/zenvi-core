@@ -132,14 +132,22 @@ def load_waveform(fingerprint):
         return None
 
 
-def save_waveform(fingerprint, audio_data):
+def save_waveform(fingerprint, audio_data, extra=None):
+    """Cache a file-level waveform. ``extra`` carries the peak/RMS metadata
+    keys (audio_data_rms, audio_data_format, audio_data_rate) alongside the
+    peak samples so a cache hit restores the same envelope the timeline drew."""
     path = waveform_path(fingerprint)
     if not path:
         return False
     try:
+        payload = {"audio_data": audio_data}
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if key != "audio_data" and value is not None:
+                    payload[key] = value
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"audio_data": audio_data}, fh)
+            json.dump(payload, fh)
         _touch(path)
         entry = entry_dir(fingerprint)
         if entry:
