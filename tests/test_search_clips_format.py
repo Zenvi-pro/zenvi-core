@@ -228,3 +228,12 @@ def test_ninth_best_by_rank_is_omitted_even_when_early():
     out = _run_search(hits)
     assert "start_seconds=0.000" not in out, out
     assert "start_seconds=100.000" in out, out
+
+
+def test_mcp_description_tells_external_agents_what_look_for_takes():
+    """MCP clients only see the first docstring paragraph - look_for must be in it."""
+    from classes.agent_mcp_server import _first_doc_paragraph
+
+    desc = _first_doc_paragraph(tool_handlers.search_clips)
+    assert "look_for" in desc
+    assert '"on_screen"' in desc and '"spoken"' in desc

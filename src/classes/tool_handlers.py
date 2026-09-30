@@ -2578,8 +2578,12 @@ def _detect_ordinal(query: str) -> int:
 
 def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
     """Project-wide video index search on this project's shared index.
+    look_for="on_screen" when the query describes who or what is visible ("the
+    guy with the iPad"), "spoken" when it describes what is said; omit for both.
 
-    Returns media_bin_file_id + timestamp (deeper than Gemini tags).
+    Returns media_bin_file_id + timestamp (deeper than Gemini tags). The first
+    paragraph above is the MCP tool description, the only place an external
+    agent learns what look_for takes.
     """
     q = str(query or "").strip()
     if not q:
