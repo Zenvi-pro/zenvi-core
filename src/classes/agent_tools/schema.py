@@ -477,9 +477,14 @@ TOOL_SCHEMAS: dict[str, dict] = {
         ),
         "transcriptGeneration": _int(
             minimum=1,
-            description="Pin from get_transcript; refuse on mismatch.",
+            description=(
+                "Pin from get_transcript when using wordIndices. Optional for "
+                "matches/fillerPreset cuts (stale pins are ignored)."
+            ),
         ),
-        "language": _str(),
+        "language": _str(
+            description="Prefer 'auto'. Do not pass detected language from a prior receipt.",
+        ),
         "modelId": _str(),
         "engine": _str(description="auto|apple|whisper"),
     }),

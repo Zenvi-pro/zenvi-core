@@ -218,13 +218,169 @@ def test_get_transcript_clip_with_fake_asr(tmp_cache, tmp_path):
         assert data["transcriptGeneration"] == 1
         clip = data["clips"][0]
         assert "words" not in clip  # compact by default
-        assert len(clip["compactWords"]) == 3
-        assert clip["compactWords"][1][1] == "um"
+        assert "compactWords" not in clip  # matches=[] cuts don't need the array
         assert clip["wordCount"] == 3
         assert "script" in data
         assert "hello" in data["script"] and "world" in data["script"]
-        assert "hello" in receipt["summary"]
+        assert "clipIds" in data and data["clipIds"] == ["c1"]
+        assert data.get("fileIds") == []
+        assert "clipId=c1" in receipt["summary"]
+        assert "Transcribed" in receipt["summary"]
+        assert "remove_words_tool" in receipt["summary"]
+        assert len(receipt["summary"]) < 500  # never dump the full script into summary
         assert '"contract"' not in receipt["summary"]
+        assert data["nextAction"] == "remove_words_tool"
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_file_only_transcript_does_not_label_file_as_clip_id():
+    from classes.agent_tools.transcript import (
+        _transcript_data_payload,
+        _short_transcript_summary,
+    )
+
+    summary = _short_transcript_summary(
+        word_count=1, source="local", file_ids=["LTQM6B501R"],
+    )
+    assert "fileId=LTQM6B501R" in summary
+    assert "clipId=LTQM6B501R" not in summary
+    assert "NOT a timeline" in summary or "not a timeline" in summary.lower()
+
+    data = _transcript_data_payload(
+        script="FlowCut",
+        word_count=1,
+        clips_out=[{"fileId": "LTQM6B501R", "wordCount": 1, "compactWords": []}],
+        source="local",
+        model_out="faster-whisper-base",
+        language_out="en",
+        generation=2,
+    )
+    assert data["clipIds"] == []
+    assert data["fileIds"] == ["LTQM6B501R"]
+    assert data["nextAction"] != "remove_words_tool"
+    assert "fileId" in data["nextAction"] or "timeline" in data["nextAction"]
+
+
+def test_remove_words_resolves_file_id_to_single_timeline_clip(tmp_cache, tmp_path):
+    """Passing a media-bin fileId as clipId must cut the timeline clip, not refuse."""
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{
+                "id": "BT5C75FYT5",
+                "file_id": "LTQM6B501R",
+                "position": 0.0,
+                "start": 0.0,
+                "end": 2.0,
+                "layer": 0,
+                "reader": {"path": str(media)},
+            }],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+        app.window = MagicMock()
+        updates = MagicMock()
+        app.updates = updates
+
+        def _fake_extract(path, **kw):
+            out = tmp_path / "out.wav"
+            out.write_bytes(b"data")
+            return str(out), ""
+
+        with patch("classes.app.get_app", return_value=app), \
+             patch(
+                 "classes.agent_tools.inspect_render.snapshot_project",
+                 return_value=project,
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_data_for_clip",
+                 return_value={"path": str(media), "id": "LTQM6B501R"},
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_for_id",
+                 return_value=MagicMock(data={"path": str(media), "id": "LTQM6B501R"}),
+             ), \
+             patch(
+                 "classes.speech.asr.extract_mono_16k_wav",
+                 side_effect=_fake_extract,
+             ), \
+             patch(
+                 "classes.clip_utils.project_fps_fraction",
+                 return_value=Fraction(30, 1),
+             ), \
+             patch(
+                 "classes.agent_tools.transcript.apply_compacted_fragments",
+                 return_value=(["BT5C75FYT5"], []),
+             ) as apply_mock:
+            from classes.agent_tools.transcript import remove_words
+            # Fake ASR words don't include FlowCut — use filler or wordIndices
+            raw = remove_words(clipId="LTQM6B501R", wordIndices="[1]")
+        receipt = parse_receipt(raw)
+        assert receipt["status"] == "applied", receipt.get("summary")
+        assert apply_mock.called
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_get_transcript_resolves_file_id_passed_as_clip_id(tmp_cache, tmp_path):
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{
+                "id": "BT5C75FYT5",
+                "file_id": "LTQM6B501R",
+                "position": 0.0,
+                "start": 0.0,
+                "end": 2.0,
+                "layer": 0,
+                "reader": {"path": str(media)},
+            }],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+
+        def _fake_extract(path, **kw):
+            out = tmp_path / "out.wav"
+            out.write_bytes(b"data")
+            return str(out), ""
+
+        with patch("classes.app.get_app", return_value=app), \
+             patch(
+                 "classes.agent_tools.inspect_render.snapshot_project",
+                 return_value=project,
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_data_for_clip",
+                 return_value={"path": str(media), "id": "LTQM6B501R"},
+             ), \
+             patch(
+                 "classes.speech.asr.extract_mono_16k_wav",
+                 side_effect=_fake_extract,
+             ), \
+             patch(
+                 "classes.clip_utils.project_fps_fraction",
+                 return_value=Fraction(30, 1),
+             ):
+            from classes.agent_tools.transcript import get_transcript
+            raw = get_transcript(clipId="LTQM6B501R")
+        receipt = parse_receipt(raw)
+        assert receipt["status"] == "applied", receipt.get("summary")
+        assert receipt["data"]["clipIds"] == ["BT5C75FYT5"]
+        assert "clipId=BT5C75FYT5" in receipt["summary"]
+        assert "Unknown clipId" not in receipt["summary"]
     finally:
         asr_mod.reset_transcriber_factory()
 
@@ -553,5 +709,116 @@ def test_remove_words_applies_fragments(tmp_cache, tmp_path):
         kwargs = apply_mock.call_args.kwargs
         assert kwargs["clip_id"] == "c1"
         assert kwargs["removed"] == pytest.approx(0.2)
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_cache_sibling_language_shares_record(tmp_cache, tmp_path):
+    """auto and en-ca must resolve to the same ASR row (highest generation)."""
+    media = tmp_path / "talk.wav"
+    media.write_bytes(b"RIFF" + b"\x00" * 64)
+    st = media.stat()
+    path = str(media.resolve())
+    stale = TranscriptRecord(
+        path=path,
+        size=st.st_size,
+        mtimeNs=st.st_mtime_ns,
+        modelId="apple-speech-analyzer",
+        language="en-ca",
+        requestLanguage="en-ca",
+        words=[Word("FlowCut", 0.0, 0.3)],
+        generation=1,
+    )
+    fresh = TranscriptRecord(
+        path=path,
+        size=st.st_size,
+        mtimeNs=st.st_mtime_ns,
+        modelId="apple-speech-analyzer",
+        language="en-CA",
+        requestLanguage="auto",
+        words=[Word("FlowCut", 0.0, 0.3), Word("hello", 0.4, 0.6)],
+        generation=9,
+        createdAt=stale.createdAt + 10,
+    )
+    tmp_cache.put(stale)
+    tmp_cache.put(fresh)
+    # Drop memory so lookup must reconcile disk siblings.
+    tmp_cache._mem.clear()
+    via_auto = tmp_cache.get(path, model_id="apple-speech-analyzer", language="auto")
+    via_enca = tmp_cache.get(path, model_id="apple-speech-analyzer", language="en-CA")
+    assert via_auto is not None and via_enca is not None
+    assert via_auto.generation == 9
+    assert via_enca.generation == 9
+    assert len(via_auto.words) == 2
+
+
+def test_remove_words_matches_ignores_stale_generation(tmp_cache, tmp_path):
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        st = media.stat()
+        tmp_cache.put(TranscriptRecord(
+            path=str(media.resolve()),
+            size=st.st_size,
+            mtimeNs=st.st_mtime_ns,
+            modelId="faster-whisper-base",
+            language="en",
+            requestLanguage="auto",
+            words=[
+                Word("hello", 0.0, 0.4),
+                Word("FlowCut", 0.5, 0.9),
+                Word("world", 1.0, 1.4),
+            ],
+            generation=1,
+        ))
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{
+                "id": "c1",
+                "file_id": "f1",
+                "position": 0.0,
+                "start": 0.0,
+                "end": 2.0,
+                "layer": 0,
+                "reader": {"path": str(media)},
+            }],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+
+        with patch("classes.app.get_app", return_value=app), \
+             patch(
+                 "classes.agent_tools.inspect_render.snapshot_project",
+                 return_value=project,
+             ), \
+             patch(
+                 "classes.agent_tools.transcript._file_data_for_clip",
+                 return_value={"path": str(media)},
+             ), \
+             patch(
+                 "classes.clip_utils.project_fps_fraction",
+                 return_value=Fraction(30, 1),
+             ), \
+             patch(
+                 "classes.agent_tools.transcript.apply_compacted_fragments",
+                 return_value=(["c2"], []),
+             ):
+            from classes.agent_tools.transcript import remove_words
+            raw = remove_words(
+                clipId="c1",
+                matches=["FlowCut", "flocut"],
+                transcriptGeneration=99,
+            )
+        receipt = parse_receipt(raw)
+        assert receipt["status"] == "applied", receipt.get("summary")
+        assert receipt["data"]["removedWordIndices"] == [1]
+        assert "FlowCut" not in receipt["data"]["script"]
+        assert "hello" in receipt["data"]["script"]
+        assert "world" in receipt["data"]["script"]
+        assert any("stale" in w.lower() for w in receipt.get("warnings") or [])
     finally:
         asr_mod.reset_transcriber_factory()

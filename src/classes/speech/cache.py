@@ -108,6 +108,11 @@ def file_identity(path: str) -> tuple[str, int, int]:
     return os.path.abspath(path), int(st.st_size), int(mtime_ns)
 
 
+def normalize_request_language(language: str) -> str:
+    """Canonical cache language tag (casefold; empty → auto)."""
+    return (language or "auto").strip().lower() or "auto"
+
+
 def cache_key(
     path: str,
     size: int,
@@ -115,9 +120,14 @@ def cache_key(
     model_id: str,
     language: str,
 ) -> str:
-    lang = (language or "auto").strip().lower() or "auto"
+    lang = normalize_request_language(language)
     model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
     return f"{os.path.abspath(path)}|{size}|{mtime_ns}|{model}|{lang}"
+
+
+def _identity_prefix(path: str, size: int, mtime_ns: int, model_id: str) -> str:
+    model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+    return f"{os.path.abspath(path)}|{int(size)}|{int(mtime_ns)}|{model}|"
 
 
 def default_cache_dir() -> str:
@@ -151,6 +161,95 @@ class TranscriptCache:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return os.path.join(self.root, f"{digest}.json")
 
+    def _load_disk(self, key: str) -> Optional[TranscriptRecord]:
+        disk = self._disk_path(key)
+        if not os.path.isfile(disk):
+            return None
+        try:
+            with open(disk, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return TranscriptRecord.from_dict(data)
+        except Exception as exc:
+            log.warning("transcript cache read failed: %s", exc)
+            return None
+
+    def _record_matches_identity(
+        self,
+        rec: TranscriptRecord,
+        *,
+        abspath: str,
+        size: int,
+        mtime_ns: int,
+        model_id: str,
+    ) -> bool:
+        model = (model_id or DEFAULT_MODEL_ID).strip() or DEFAULT_MODEL_ID
+        return (
+            rec.size == size
+            and rec.mtimeNs == mtime_ns
+            and os.path.abspath(rec.path) == abspath
+            and (rec.modelId or DEFAULT_MODEL_ID).strip() == model
+        )
+
+    def _find_sibling(
+        self,
+        *,
+        abspath: str,
+        size: int,
+        mtime_ns: int,
+        model_id: str,
+        prefer_lang: str,
+    ) -> Optional[TranscriptRecord]:
+        """Any cache row for this file+model, preferring *prefer_lang* then newest gen.
+
+        Agents often re-call with detected ``en-CA`` after an ``auto`` transcript
+        (or the reverse). Those must resolve to one record or remove_words sees
+        generation 1 while get_transcript returns generation N.
+        """
+        prefer = normalize_request_language(prefer_lang)
+        prefix = _identity_prefix(abspath, size, mtime_ns, model_id)
+        candidates: list[TranscriptRecord] = []
+
+        def _consider(rec: Optional[TranscriptRecord]) -> None:
+            if rec is None:
+                return
+            if not self._record_matches_identity(
+                rec, abspath=abspath, size=size, mtime_ns=mtime_ns, model_id=model_id,
+            ):
+                return
+            candidates.append(rec)
+
+        with self._lock:
+            for key, rec in list(self._mem.items()):
+                if key.startswith(prefix):
+                    _consider(rec)
+
+        try:
+            names = os.listdir(self.root)
+        except OSError:
+            names = []
+        for name in names:
+            if not name.endswith(".json") or ".partial" in name:
+                continue
+            disk_path = os.path.join(self.root, name)
+            try:
+                with open(disk_path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                rec = TranscriptRecord.from_dict(data)
+            except Exception:
+                continue
+            _consider(rec)
+
+        if not candidates:
+            return None
+
+        def _rank(rec: TranscriptRecord) -> tuple:
+            req = normalize_request_language(rec.requestLanguage or rec.language)
+            lang_rank = 2 if req == prefer else (1 if req == "auto" else 0)
+            # Generation first: a fresh auto ASR must beat a stale en-ca twin.
+            return (int(rec.generation or 0), lang_rank, float(rec.createdAt or 0))
+
+        return max(candidates, key=_rank)
+
     def get(
         self,
         path: str,
@@ -162,36 +261,48 @@ class TranscriptCache:
             abspath, size, mtime_ns = file_identity(path)
         except OSError:
             return None
-        key = cache_key(abspath, size, mtime_ns, model_id, language)
+        lang = normalize_request_language(language)
+        key = cache_key(abspath, size, mtime_ns, model_id, lang)
+        exact: Optional[TranscriptRecord] = None
         with self._lock:
             hit = self._mem.get(key)
             if hit is not None:
                 self._mem.move_to_end(key)
-                return hit
-            disk = self._disk_path(key)
-            if not os.path.isfile(disk):
-                return None
-            try:
-                with open(disk, "r", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                rec = TranscriptRecord.from_dict(data)
-            except Exception as exc:
-                log.warning("transcript cache read failed: %s", exc)
-                return None
-            # Identity must still match (stale rename / clock skew).
-            if (
-                rec.size != size
-                or rec.mtimeNs != mtime_ns
-                or os.path.abspath(rec.path) != abspath
-            ):
-                return None
-            self._mem[key] = rec
+                exact = hit
+            else:
+                rec = self._load_disk(key)
+                if rec is not None and self._record_matches_identity(
+                    rec, abspath=abspath, size=size, mtime_ns=mtime_ns, model_id=model_id,
+                ):
+                    self._mem[key] = rec
+                    self._mem.move_to_end(key)
+                    self._trim_locked()
+                    exact = rec
+
+        sibling = self._find_sibling(
+            abspath=abspath,
+            size=size,
+            mtime_ns=mtime_ns,
+            model_id=model_id,
+            prefer_lang=lang,
+        )
+        chosen = sibling
+        if exact is not None and (
+            sibling is None or int(exact.generation or 0) > int(sibling.generation or 0)
+        ):
+            chosen = exact
+        if chosen is None:
+            return None
+        # Alias into the requested key so the next lookup is O(1).
+        with self._lock:
+            self._mem[key] = chosen
             self._mem.move_to_end(key)
             self._trim_locked()
-            return rec
+        return chosen
 
     def put(self, record: TranscriptRecord) -> None:
-        req_lang = (record.requestLanguage or "auto").strip().lower() or "auto"
+        req_lang = normalize_request_language(record.requestLanguage)
+        record.requestLanguage = req_lang
         key = cache_key(
             record.path, record.size, record.mtimeNs, record.modelId, req_lang,
         )
@@ -215,6 +326,16 @@ class TranscriptCache:
             # Still keep memory hit so the session works.
         with self._lock:
             self._mem[key] = record
+            # Keep auto ↔ explicit language aliases pointing at the same record
+            # so remove_words(language=en-CA) and get_transcript(auto) agree.
+            abspath = os.path.abspath(record.path)
+            for alias_lang in ("auto", req_lang, normalize_request_language(record.language)):
+                if not alias_lang:
+                    continue
+                alias_key = cache_key(
+                    abspath, record.size, record.mtimeNs, record.modelId, alias_lang,
+                )
+                self._mem[alias_key] = record
             self._mem.move_to_end(key)
             self._trim_locked()
 
