@@ -268,6 +268,25 @@ def test_cursor_cli_row_follows_install_and_connect_status(qapp):
     assert panel._rows["cursor_cli"].action.isVisible() or not panel.isVisible()
 
 
+def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypatch):
+    """Cursor's lineup comes from the CLI; until it has listed one, the CLI's
+    own config picks the model and the footer says so."""
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    ar.set_live_lineups({})
+    connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
+
+    panel = _panel(FakeChat(connected, active="cursor_cli"))
+    assert "own config" in panel.footer.text()
+
+    ar.set_cli_lineup("cursor_cli", [{"id": "auto", "name": "Auto", "default": True}])
+    panel.refresh()
+    assert "chat panel" in panel.footer.text()
+
+    # Claude Code always has at least its built-in list.
+    assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+
+
 def test_selected_row_tracks_the_active_backend(qapp):
     panel = _panel(FakeChat(CONNECTED, active=CODEX))
     assert panel._rows[CODEX].property("selected") is True

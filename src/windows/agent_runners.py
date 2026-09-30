@@ -26,6 +26,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import uuid
 
 from qt_api import QObject, pyqtSignal, pyqtSlot
@@ -99,11 +100,35 @@ def live_lineup_for(backend: str) -> list:
         return [dict(m) for m in _live_lineups.get(backend, [])]
 
 
+# Lineups a CLI reported about itself (``cursor-agent models``), for a backend
+# whose models depend on the user's account. The backend's lineup still wins.
+_cli_lineups: dict = {}
+
+
+def set_cli_lineup(backend: str, rows) -> bool:
+    """Install what *backend*'s CLI listed; True when that changed the list.
+
+    An empty list is ignored so a failed read keeps the previous lineup.
+    """
+    rows = _clean_lineup(rows)
+    if not rows:
+        return False
+    with _live_lineups_lock:
+        if _cli_lineups.get(backend) == rows:
+            return False
+        _cli_lineups[backend] = rows
+    return True
+
+
 def models_for_backend(backend: str) -> list:
     """Model-picker entries for *backend* (see ``setModels`` in chat.js)."""
     live = live_lineup_for(backend)
     if live:
         return live
+    with _live_lineups_lock:
+        listed = [dict(m) for m in _cli_lineups.get(backend, [])]
+    if listed:
+        return listed
     if backend == BACKEND_CLAUDE:
         return [dict(m) for m in ClaudeCodeRunner.MODELS]
     if backend == BACKEND_CODEX:
@@ -680,6 +705,99 @@ def register_cursor(port: int, token: str):
     return True, connected
 
 
+# `cursor-agent models` prints "<id> - <name>" per model, flagging the one the
+# CLI uses when no --model is given with "(current)" and Cursor's own pick
+# with "(default)". Some names end in zero-width spaces.
+_CURSOR_MODEL_LINE = re.compile(r"^([A-Za-z0-9][\w.\-]*) - (.+)$")
+_CURSOR_MODEL_FLAGS = re.compile(
+    r"\s*\(((?:current|default)(?:\s*,\s*(?:current|default))*)\)\s*$")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def parse_cursor_models(text: str) -> list:
+    """Picker entries from ``cursor-agent models`` output, in the CLI's order.
+
+    The list depends on the account and runs to hundreds of ids, so only the
+    model the CLI would use anyway is featured; search reaches the rest.
+    """
+    rows, seen = [], set()
+    current = fallback = None
+    for line in _ANSI.sub("", text or "").splitlines():
+        match = _CURSOR_MODEL_LINE.match(line.replace("​", "").strip())
+        if not match or match.group(1) in seen:
+            continue
+        mid, name = match.group(1), match.group(2)
+        seen.add(mid)
+        flags = set()
+        marks = _CURSOR_MODEL_FLAGS.search(name)
+        if marks:
+            flags = {f.strip() for f in marks.group(1).split(",")}
+            name = name[:marks.start()]
+        row = {"id": mid, "name": " ".join(name.split()) or mid,
+               "rank": len(rows) + 1, "featured": False}
+        rows.append(row)
+        if "current" in flags and current is None:
+            current = row
+        if "default" in flags and fallback is None:
+            fallback = row
+    flagged = current or fallback
+    pick = flagged or (rows[0] if rows else None)
+    if pick is not None:
+        pick["featured"] = True
+        pick["default"] = True
+        if flagged is not None:
+            pick["tags"] = ["CLI default"]
+    return rows
+
+
+def probe_cursor_models(cli: str) -> list:
+    """Ask ``cursor-agent models`` for this account's lineup.
+
+    A network round trip (about 3 s): never call it on the GUI thread. ``[]``
+    when the CLI is logged out, offline, or prints something unrecognised.
+    """
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    try:
+        result = subprocess.run(
+            [cli, "models"], capture_output=True, encoding="utf-8", errors="replace",
+            timeout=30, env=_cli_child_env(), **kwargs,
+        )
+    except Exception:
+        log.debug("cursor-agent models failed", exc_info=True)
+        return []
+    if result.returncode != 0:
+        log.debug("cursor-agent models exited %s", result.returncode)
+        return []
+    return parse_cursor_models(result.stdout or "")
+
+
+# Re-read on this cadence (the same as the backend lineups) or when the CLI
+# binary / version changes; CLI detection calls in every 60 s.
+CURSOR_MODELS_TTL_S = 15 * 60
+_cursor_models_read = {"key": None, "at": 0.0}
+_cursor_models_lock = threading.Lock()
+
+
+def refresh_cursor_models(version) -> bool:
+    """Re-read Cursor's model list if it is due; True when the lineup changed.
+
+    Blocking (runs the CLI). A failed read keeps the lineup already shown.
+    """
+    cli = _which_cursor_cli()
+    if not cli:
+        return False
+    key = (cli, version or "")
+    now = time.monotonic()
+    with _cursor_models_lock:
+        last = _cursor_models_read
+        if last["key"] == key and now - last["at"] < CURSOR_MODELS_TTL_S:
+            return False
+        last["key"], last["at"] = key, now
+    return set_cli_lineup(BACKEND_CURSOR, probe_cursor_models(cli))
+
+
 class BaseAgentRunner(QObject):
     """Common signal surface + subprocess plumbing for CLI agent backends."""
 
@@ -1225,8 +1343,8 @@ class CursorCliRunner(BaseAgentRunner):
     CLI_NAME = "cursor-agent"
     DISPLAY_NAME = "Cursor CLI"
     BACKEND_ID = BACKEND_CURSOR
-    # The CLI's model list changes with the account (`--list-models`). There is
-    # no stable catalogue to pin, so the picker stays hidden like Codex.
+    # No built-in lineup: the models depend on the Cursor account, so the
+    # picker shows what `cursor-agent models` lists (refresh_cursor_models).
     MODELS: list = []
 
     def __init__(self, parent=None):

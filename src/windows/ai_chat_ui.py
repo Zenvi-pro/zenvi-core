@@ -3149,8 +3149,26 @@ class AIChatWindow(QDockWidget):
                 )
             except Exception as exc:
                 log.debug("CLI detection failed: %s", exc)
+                return
+            # Cursor's models depend on the account, so the CLI is asked. That
+            # is a network call, made after the status is already on screen.
+            cursor = status.get(BACKEND_CURSOR) or {}
+            if not cursor.get("installed"):
+                return
+            try:
+                from windows.agent_runners import refresh_cursor_models
+                if refresh_cursor_models(cursor.get("version")):
+                    QMetaObject.invokeMethod(self, "_on_cli_models", Qt.QueuedConnection)
+            except Exception as exc:
+                log.debug("Cursor model list failed: %s", exc)
 
         threading.Thread(target=run, daemon=True, name="cli-detect").start()
+
+    @pyqtSlot()
+    def _on_cli_models(self):
+        """A CLI listed a new model lineup: refresh the picker (GUI thread)."""
+        self._push_models_for_backend()
+        self._notify_agent_selector()
 
     @pyqtSlot(str)
     def _on_cli_status(self, status_json: str):

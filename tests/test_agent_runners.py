@@ -1315,3 +1315,86 @@ def test_register_cursor_refuses_a_non_object_server_table(monkeypatch, tmp_path
     ok, message = ar.register_cursor(7434, "tok123")
     assert ok is False and "not touching" in message
     assert cfg.read_text() == original
+
+
+# ── Cursor model lineup (asked of the CLI) ────────────────────────────────
+
+@pytest.fixture
+def fresh_cursor_lineup(monkeypatch):
+    import windows.agent_runners as ar
+    monkeypatch.setattr(ar, "_cli_lineups", {})
+    monkeypatch.setattr(ar, "_cursor_models_read", {"key": None, "at": 0.0})
+    ar.set_live_lineups({})
+    yield ar
+    ar.set_live_lineups({})
+
+
+def test_parse_cursor_models_reads_the_real_listing():
+    """cursor_models.txt is trimmed `cursor-agent models` output (2026.09.18)."""
+    from windows.agent_runners import parse_cursor_models
+
+    with open(os.path.join(_FIX, "cursor_models.txt"), encoding="utf-8") as fh:
+        rows = parse_cursor_models(fh.read())
+
+    assert [r["id"] for r in rows] == [
+        "auto", "gpt-5.3-codex", "composer-2.5", "claude-opus-5-thinking-high",
+        "claude-fable-5-thinking-high", "gemini-3.7-flash-high", "grok-4.7-low-fast",
+        "claude-opus-5-5-high", "kimi-k2.7-code",
+    ]
+    auto = rows[0]
+    assert auto["name"] == "Auto" and auto["default"] is True
+    assert auto["featured"] is True and auto["tags"] == ["CLI default"]
+    assert [r["id"] for r in rows if r["featured"]] == ["auto"], "search reaches the rest"
+    names = {r["id"]: r["name"] for r in rows}
+    assert names["grok-4.7-low-fast"] == "Grok 4.7 Low Fast"        # zero-width spaces gone
+    assert names["claude-fable-5-thinking-high"].endswith("(NO ZDR)")  # not a flag
+    assert [r["rank"] for r in rows] == list(range(1, len(rows) + 1))  # the CLI's order
+
+
+def test_parse_cursor_models_prefers_the_model_the_cli_is_set_to():
+    from windows.agent_runners import parse_cursor_models
+
+    rows = parse_cursor_models(
+        "\x1b[1mAvailable models\x1b[0m\n\nauto - Auto (default)\n"
+        "composer-2.5 - Composer 2.5 (current)\ncomposer-2.5 - duplicate\n")
+    assert [r["id"] for r in rows] == ["auto", "composer-2.5"]
+    assert [r["id"] for r in rows if r.get("default")] == ["composer-2.5"]
+    assert parse_cursor_models("Error: not logged in\n") == []
+
+
+def test_cursor_lineup_is_read_once_per_cli_version_and_kept_on_failure(
+        fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    calls = []
+    answers = [[{"id": "auto", "name": "Auto", "default": True}], []]
+    monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
+    monkeypatch.setattr(ar, "probe_cursor_models",
+                        lambda cli: calls.append(cli) or answers.pop(0))
+
+    assert ar.refresh_cursor_models("2026.09.18") is True
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
+    # Detection runs every minute; the CLI is not asked again until it is due.
+    assert ar.refresh_cursor_models("2026.09.18") is False
+    assert calls == ["/bin/cursor-agent"]
+    # An update is due at once. This read fails, and the list stays.
+    assert ar.refresh_cursor_models("2026.09.28") is False
+    assert len(calls) == 2
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
+
+
+def test_cursor_lineup_reaches_the_model_flag(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    ar.set_cli_lineup(ar.BACKEND_CURSOR, [
+        {"id": "auto", "name": "Auto", "default": True},
+        {"id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 1M High"},
+    ])
+    monkeypatch.setattr(ar, "_add_dir_args", lambda: [])
+    runner = ar.CursorCliRunner()
+    runner._cli_cwd = "/proj"
+    runner._model_id = runner._coerce_model("claude-opus-5-5-high")
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "claude-opus-5-5-high"
+    assert runner._coerce_model("claude-opus-5") == "", "not one of Cursor's ids"
+    # The backend's lineup, when it serves one, still wins (#202).
+    ar.set_live_lineups({ar.BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer"}]})
+    assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["composer-2.5"]
