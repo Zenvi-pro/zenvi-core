@@ -33,8 +33,8 @@ try:
 except ImportError:
     from xml.dom import minidom as xml
 
-from PyQt5.QtCore import Qt, QSortFilterProxyModel, QItemSelectionModel
-from PyQt5.QtGui import QIcon, QStandardItem, QStandardItemModel
+from qt_api import Qt, QSortFilterProxyModel, QItemSelectionModel
+from qt_api import QIcon, QStandardItem, QStandardItemModel
 
 import openshot
 

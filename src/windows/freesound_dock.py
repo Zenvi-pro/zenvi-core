@@ -8,12 +8,12 @@ import it into Project Files.
 
 from typing import Dict, Any
 
-from PyQt5.QtCore import (
+from qt_api import (
     Qt, QThread, pyqtSignal, QTimer, QRunnable, QThreadPool,
     pyqtSlot, QObject,
 )
-from PyQt5.QtGui import QPixmap, QColor, QPainter, QFont, QPen
-from PyQt5.QtWidgets import (
+from qt_api import QPixmap, QColor, QPainter, QFont, QPen
+from qt_api import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QScrollArea, QGridLayout,
     QLabel, QFrame, QProgressBar, QApplication,

@@ -136,12 +136,9 @@ else
     codesign -dv --verbose=4 "build/$OS_APP_NAME" 2>&1 || true
 fi
 
-echo "Building DMG"
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "build/$OS_APP_NAME" \
-    -ov -format UDZO \
-    "build/$OS_DMG_NAME"
+echo "Building branded DMG"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+bash "$SCRIPT_DIR/create-zenvi-dmg.sh" "build/$OS_APP_NAME" "build/$OS_DMG_NAME"
 
 if [ -n "$SIGN_IDENTITY" ]; then
     echo "Code Sign DMG"
