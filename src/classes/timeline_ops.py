@@ -324,10 +324,30 @@ def insert_placement_step(step):
     return clip.data.get("id"), transition_id
 
 
+def clip_json(path):
+    """libopenshot's default clip JSON for a media file (reads the file; rotation comes from its metadata)."""
+    return json.loads(openshot.Clip(path).Json())
+
+
+def paints_with_qt(path):
+    """True when libopenshot reads *path* by painting it with Qt (stills, SVG titles and transitions).
+
+    Qt painting (fonts in particular) must not run on a plain Python thread:
+    QFontCache's mutex against the GIL deadlocks the app. Video and audio go
+    through FFmpeg and are safe off the GUI thread.
+    """
+    from classes.image_types import is_image
+    return is_image({"path": str(path)}) or str(path).lower().endswith(".svg")
+
+
 def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.0,
                    transition_path=None, random_transitions=None, transition_length=2.0,
-                   image_length=10.0, zoom=None, transition_first_clip=True):
+                   image_length=10.0, zoom=None, transition_first_clip=True,
+                   read_clip_json=clip_json, read_transition_json=None):
     """Build the clips (and transitions) the Add to Timeline dialog would place, without saving.
+
+    read_clip_json / read_transition_json let a caller on a worker thread send
+    the reads that paint with Qt (see :func:`paints_with_qt`) to the GUI thread.
 
     Reads the media through libopenshot (slow: call it off the GUI thread when
     you can) and returns ``[{"clip": data, "transition": data or None}]`` for
@@ -357,8 +377,7 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
         filename = os.path.basename(file.data["path"])
 
         # Create clip object for this file
-        c = openshot.Clip(file.absolute_path())
-        new_clip = json.loads(c.Json())
+        new_clip = read_clip_json(file.absolute_path())
         new_clip["position"] = position
         new_clip["layer"] = track_num
         new_clip["file_id"] = file.id
@@ -463,7 +482,7 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
                 "end": min(transition_length, end_time - start_time),
                 "brightness": json.loads(brightness.Json()),
                 "contrast": json.loads(contrast.Json()),
-                "reader": transition_reader_json(path),
+                "reader": (read_transition_json or transition_reader_json)(path),
                 "replace_image": False,
             }
 

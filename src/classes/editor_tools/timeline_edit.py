@@ -323,12 +323,23 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
             core_entries.append({"file": en["file"], "start": None, "end": en["length"]})
         else:
             core_entries.append({"file": en["file"], "start": en["start"], "end": en["start"] + en["length"]})
-    # Reading the media is slow (libopenshot opens every file): do it here, off the
-    # GUI thread, then insert one clip per short main-thread hop.
+    # Reading the media is slow (libopenshot opens every file): video/audio are read here,
+    # off the GUI thread, then each clip is inserted in its own short main-thread hop.
+    # Stills, SVG titles and transition images are painted by Qt: that part runs on the GUI
+    # thread (Qt text rendering off a plain thread deadlocks against the GIL).
+    def _read_clip_json(path):
+        if timeline_ops.paints_with_qt(path):
+            return on_main(timeline_ops.clip_json, path)
+        return timeline_ops.clip_json(path)
+
+    def _read_transition_json(path):
+        return on_main(timeline_ops.transition_reader_json, path)
+
     steps = timeline_ops.plan_placement(
         core_entries, start, layer, fade=_FADES[fade], fade_length=float(fade_seconds),
         transition_path=trans_path, random_transitions=trans_random, transition_length=trans_len,
-        image_length=image_len, zoom=_ZOOMS[zoom], transition_first_clip=False)
+        image_length=image_len, zoom=_ZOOMS[zoom], transition_first_clip=False,
+        read_clip_json=_read_clip_json, read_transition_json=_read_transition_json)
     if not steps:
         raise ToolError("the editor placed no clips (the files have no readable media)")
 

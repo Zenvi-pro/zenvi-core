@@ -532,3 +532,24 @@ def test_ripple_trim_keeps_the_next_crossfade(ed):
     assert pos(ed, c) == 6.0 and Transition.get(id=t_bc).data["position"] == 6.0
     assert Transition.get(id=t_ab).data["position"] == 3.5 and pos(ed, b) == 3.5
     one_step(ed)
+
+
+def test_add_clips_paints_stills_and_transitions_on_the_gui_thread(ed, monkeypatch):
+    """Qt painting off a plain thread deadlocks (QFontCache vs GIL): the background-safe tool
+    sends image/SVG reads and transition images to on_main and reads video directly."""
+    from classes.editor_tools import timeline_edit
+    hopped = []
+    real_on_main = timeline_edit.on_main
+
+    def recording_on_main(func, *args, **kw):
+        hopped.append((getattr(func, "__name__", ""), args[0] if args and isinstance(args[0], str) else None))
+        return real_on_main(func, *args, **kw)
+
+    monkeypatch.setattr(timeline_edit, "on_main", recording_on_main)
+    video = ed.add_file("video", duration=5.0)
+    img = ed.add_file("image")
+    receipt(ed.call("add_clips_to_timeline_tool", file_ids=[video, img], transition="fade", image_seconds=3))
+    painted = [(name, arg) for name, arg in hopped if name in ("clip_json", "transition_reader_json")]
+    assert ("clip_json", "/media/sample_image.jpg") in painted
+    assert any(name == "transition_reader_json" and arg.endswith("fade.svg") for name, arg in painted)
+    assert ("clip_json", "/media/sample_video.mp4") not in painted
