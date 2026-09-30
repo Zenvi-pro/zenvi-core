@@ -64,6 +64,12 @@ _OVERLAP_ARG = boolean(
     "the tool refuses and says what is in the way.", False)
 _RIPPLE_NOTE = "Shift the later clips on the track to follow (close/open the room), like a ripple edit."
 
+# How long a background-safe tool waits for each short main-thread hop. Every
+# project update makes the preview drop its frame cache, which can take tens of
+# seconds on a loaded machine; giving up mid-way would leave a half-done edit
+# (the hop still runs later), so wait well past the 30 s GUI-dispatch default.
+HOP_TIMEOUT = 180
+
 
 def _clips_or_query_given(timeline_clip_ids, clip_query, scope) -> bool:
     return bool(timeline_clip_ids) or bool((clip_query or "").strip()) or bool((scope or "").strip())
@@ -329,11 +335,11 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
     # thread (Qt text rendering off a plain thread deadlocks against the GIL).
     def _read_clip_json(path):
         if timeline_ops.paints_with_qt(path):
-            return on_main(timeline_ops.clip_json, path)
+            return on_main(timeline_ops.clip_json, path, timeout=HOP_TIMEOUT)
         return timeline_ops.clip_json(path)
 
     def _read_transition_json(path):
-        return on_main(timeline_ops.transition_reader_json, path)
+        return on_main(timeline_ops.transition_reader_json, path, timeout=HOP_TIMEOUT)
 
     steps = timeline_ops.plan_placement(
         core_entries, start, layer, fade=_FADES[fade], fade_length=float(fade_seconds),
@@ -349,11 +355,11 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
 
     clip_ids, transition_ids = [], []
     for step in steps:
-        clip_id, transition_id = on_main(_insert, step)
+        clip_id, transition_id = on_main(_insert, step, timeout=HOP_TIMEOUT)
         clip_ids.append(clip_id)
         if transition_id:
             transition_ids.append(transition_id)
-    on_main(_finish_edit)
+    on_main(_finish_edit, timeout=HOP_TIMEOUT)
 
     placed = [clip_summary(fresh(cid)) for cid in clip_ids if fresh(cid)]
     end = max(p["end"] for p in placed)
@@ -940,7 +946,7 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
                 moved += timeline_ops.shift_after(layer, base, int(copies) * length)
             return moved
 
-        shifted = on_main(_open_room)
+        shifted = on_main(_open_room, timeout=HOP_TIMEOUT)
     else:
         hits = check_overlaps(new_overlaps({}, planned), allow_overlap, "The copies")
 
@@ -976,10 +982,10 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
 
     created, new_trans = [], []
     for k in range(int(copies)):
-        batch, batch_trans = on_main(_insert_copy, k)
+        batch, batch_trans = on_main(_insert_copy, k, timeout=HOP_TIMEOUT)
         created.append(batch)
         new_trans += batch_trans
-    on_main(_finish_edit)
+    on_main(_finish_edit, timeout=HOP_TIMEOUT)
     first = created[0][0]
     return ok(f"Made {int(copies)} cop{'y' if copies == 1 else 'ies'} of {len(clips)} clip(s); the first starts at "
               f"{first['position']:.2f} s on track {first['track']}"

@@ -553,3 +553,22 @@ def test_add_clips_paints_stills_and_transitions_on_the_gui_thread(ed, monkeypat
     assert ("clip_json", "/media/sample_image.jpg") in painted
     assert any(name == "transition_reader_json" and arg.endswith("fade.svg") for name, arg in painted)
     assert ("clip_json", "/media/sample_video.mp4") not in painted
+
+
+def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):
+    """A hop that outlives its wait still runs later, so giving up after 30 s left
+    half an edit live (seen: duplicate opened the room but inserted no copies)."""
+    from classes.editor_tools import timeline_edit
+    timeouts = []
+    real_on_main = timeline_edit.on_main
+
+    def recording_on_main(func, *args, timeout=None):
+        timeouts.append(timeout)
+        return real_on_main(func, *args, timeout=timeout)
+
+    monkeypatch.setattr(timeline_edit, "on_main", recording_on_main)
+    a, b = _seq(ed, 2)
+    receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a], copies=2, ripple=True))
+    f = ed.add_file("video", duration=3.0)
+    receipt(ed.call("add_clips_to_timeline_tool", file_ids=[f], track="2"))
+    assert timeouts and all(t == timeline_edit.HOP_TIMEOUT for t in timeouts)
