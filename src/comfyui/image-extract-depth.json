@@ -1,0 +1,37 @@
+{
+  "action_icon": "ai-action-extract-depth.svg",
+  "menu_category": "enhance",
+  "menu_order": 54,
+  "menu_parent": "extract",
+  "name": "Depth",
+  "open_dialog": false,
+  "output_type": "image",
+  "template_id": "image-extract-depth",
+  "workflow": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "__openshot_input__"
+      }
+    },
+    "2": {
+      "class_type": "DepthAnythingV2Preprocessor",
+      "inputs": {
+        "image": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "2",
+          0
+        ],
+        "filename_prefix": "openshot_depth"
+      }
+    }
+  }
+}

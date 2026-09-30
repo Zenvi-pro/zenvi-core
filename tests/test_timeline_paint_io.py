@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -65,6 +66,18 @@ def test_get_thumbnail_pixmap_queues_without_filesystem(monkeypatch):
     painter.w.thumbnail_manager.request_thumbnail.assert_called_once()
     assert painter._thumb_pending[("clip1", 1)] == 1
 
+    # Null cache entry must not re-queue forever after a failed load.
+    null_pix = MagicMock()
+    null_pix.isNull.return_value = True
+    painter.thumb_cache[("clip1", 1)] = null_pix
+    painter._thumb_pending.pop(("clip1", 1), None)
+    painter.w.thumbnail_manager.request_thumbnail.reset_mock()
+    result2 = painter._get_thumbnail_pixmap(
+        "clip1", "file1", 1, QRectF(), generation=1, allow_request=True
+    )
+    assert result2 is None
+    painter.w.thumbnail_manager.request_thumbnail.assert_not_called()
+
 
 def test_existing_thumb_path_is_inert():
     painter = _StubClipPainter()
@@ -74,16 +87,60 @@ def test_existing_thumb_path_is_inert():
 def test_thumbnail_worker_caps_queue():
     mod = _load_thumbnails_module()
     worker = mod._ThumbnailWorker()
-    worker._process_next = lambda: None
-    for i in range(mod._MAX_PENDING_JOBS + 20):
-        worker.request_thumbnail(f"c{i}", "f", i + 1, generation=1)
+    worker._schedule_drain = lambda: None
+    jobs = [
+        (f"c{i}", "f", i + 1, 1, False)
+        for i in range(mod._MAX_PENDING_JOBS + 20)
+    ]
+    worker.enqueue_batch(jobs)
     assert len(worker._queue) <= mod._MAX_PENDING_JOBS
 
 
 def test_thumbnail_worker_drops_stale_generation():
     mod = _load_thumbnails_module()
     worker = mod._ThumbnailWorker()
-    worker._process_next = lambda: None
-    worker.request_thumbnail("c1", "f", 1, generation=1)
-    worker.request_thumbnail("c2", "f", 2, generation=2)
+    worker._schedule_drain = lambda: None
+    worker.enqueue_batch([("c1", "f", 1, 1, False)])
+    worker.enqueue_batch([("c2", "f", 2, 2, False)])
     assert all(job[3] >= 2 for job in worker._queue)
+
+
+def test_manager_coalesces_before_cross_thread_emit(monkeypatch):
+    """Paint storms must not unbounded-queue Qt deliveries to the worker."""
+    mod = _load_thumbnails_module()
+
+    class _FakeTimer:
+        pending = []
+
+        @classmethod
+        def singleShot(cls, _ms, cb):
+            cls.pending.append(cb)
+
+        @classmethod
+        def flush(cls):
+            while cls.pending:
+                cls.pending.pop(0)()
+
+    _FakeTimer.pending = []
+    monkeypatch.setattr(mod, "QTimer", _FakeTimer)
+
+    emitted = []
+
+    manager = mod.TimelineThumbnailManager.__new__(mod.TimelineThumbnailManager)
+    QObject = __import__("PyQt5.QtCore", fromlist=["QObject"]).QObject
+    QObject.__init__(manager)
+    manager._pending = OrderedDict()
+    manager._emit_scheduled = False
+    manager._request_batch = SimpleNamespace(
+        emit=lambda jobs: emitted.append(list(jobs))
+    )
+    manager._clear_jobs = MagicMock()
+    manager._thread = MagicMock()
+    manager._worker = MagicMock()
+
+    for i in range(mod._MAX_PENDING_JOBS + 40):
+        manager.request_thumbnail(f"c{i}", "f", i + 1, generation=1)
+    _FakeTimer.flush()
+
+    assert len(emitted) == 1
+    assert len(emitted[0]) <= mod._MAX_PENDING_JOBS

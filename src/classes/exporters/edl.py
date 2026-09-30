@@ -28,7 +28,7 @@
 import os
 from operator import itemgetter
 
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes import frame_time as ft
@@ -144,7 +144,6 @@ def export_edl():
     fps_num = get_app().project.get("fps").get("num", 24)
     fps_den = get_app().project.get("fps").get("den", 1)
     fps = Fraction(int(fps_num), int(fps_den))
-    fps_float = float(fps)
 
     # Get EDL path
     recommended_path = app.project.current_filepath or ""
