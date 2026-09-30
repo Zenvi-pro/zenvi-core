@@ -375,6 +375,9 @@ def extract_watch_window(
             win_start, win_end, list(scene_ts) + list(cue_times),
         )
         sparse_pre = False
+        # Cuts outside the narrowed window were never watched: reporting them,
+        # or snapping a match onto one, would describe frames nobody looked at.
+        scene_ts = [t for t in scene_ts if win_start - 1e-3 <= t <= win_end + 1e-3]
     # Keep a frame on each side of every shot cut: a talking head otherwise
     # dedupes to one frame and the cut cannot be located.
     pre_cut = [max(win_start, t - PRE_CUT_SEC) for t in scene_ts]

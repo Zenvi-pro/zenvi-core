@@ -99,6 +99,20 @@ def test_wide_extract_uses_dense_second_pass(tmp_path):
     assert max(gaps) <= 0.5 + 1e-6
 
 
+def test_wide_extract_reports_only_the_cuts_inside_the_window_it_watched(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"not-a-real-mp4")
+    # A 60s window narrows to a dense 16s around the cluster of cuts at 10-14s;
+    # the lone cut at 50s is outside what was watched.
+    with patch("classes.watch_window._probe_duration", return_value=80.0):
+        with patch("classes.watch_window._scene_times", return_value=[10.0, 12.0, 14.0, 50.0]):
+            with patch("classes.watch_window._extract_one_jpeg", return_value=False):
+                out = extract_watch_window(str(src), 0.0, 60.0, query="action", duration=80.0)
+    assert out["window_end"] - out["window_start"] <= 16.0 + 1e-6
+    assert out["scene_times"] == [10.0, 12.0, 14.0]
+    assert all(out["window_start"] <= t <= out["window_end"] for t in out["scene_times"])
+
+
 def test_short_extract_keeps_both_sides_of_a_shot_cut(tmp_path):
     """A static talking head dedupes to one frame - the cut must still be seeable."""
     src = tmp_path / "clip.mp4"
