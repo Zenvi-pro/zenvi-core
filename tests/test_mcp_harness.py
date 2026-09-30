@@ -309,23 +309,39 @@ def test_index_wait_is_background_safe():
 # --- 5. headless export ----------------------------------------------------
 
 def test_export_video_headless_does_not_open_the_dialog(tmp_path, monkeypatch):
+    from classes.editor_tools import project_export_render as render
+
     monkeypatch.setattr(tool_handlers, "QThread", None, raising=False)
     app = _mock_app()
     app.window.actionExportVideo_trigger = MagicMock()
     out_file = str(tmp_path / "out.mp4")
 
     export_mod = types.ModuleType("windows.export")
-    export_mod.export_video_headless = MagicMock(return_value=None)
-    export_mod.get_default_export_settings = lambda: (None, None, None, out_file)
+
+    def _fake_headless(path, *_a, **_k):
+        open(path, "wb").write(b"\x00" * 64)
+
+    export_mod.export_video_headless = MagicMock(side_effect=_fake_headless)
     monkeypatch.setitem(sys.modules, "windows.export", export_mod)
+    plan = {"path": out_file, "export_type": "video_audio", "vformat": "mp4", "vcodec": "libx264",
+            "acodec": "aac", "width": 1920, "height": 1080, "fps_num": 30, "fps_den": 1, "fps": 30.0,
+            "pixel_ratio": {"num": 1, "den": 1}, "video_bitrate": "20 crf", "audio_bitrate": "160 kb/s",
+            "sample_rate": 48000, "channels": 2, "channel_layout": 3, "interlaced": False,
+            "start_seconds": 0.0, "end_seconds": 5.0, "start_frame": 1, "end_frame": 150, "range": "whole",
+            "profile": "FHD 1080p 30 fps", "profile_path": None, "notes": [], "preset": "MP4 (h.264)",
+            "preset_category": "All Formats", "quality": "High"}
+    monkeypatch.setattr(render, "build_export_plan", lambda *a, **k: dict(plan))
+    fake_query = types.ModuleType("classes.query")
+    fake_query.File = MagicMock(get=MagicMock(return_value=None))
+    monkeypatch.setitem(sys.modules, "classes.query", fake_query)
 
     with patch.object(tool_handlers, "_get_app", return_value=app):
-        out = tool_handlers.export_video(show_dialog="false", output_path=out_file)
+        out = tool_handlers.execute_tool("export_video_tool", {"output_path": out_file})
 
     app.window.actionExportVideo_trigger.assert_not_called()
     export_mod.export_video_headless.assert_called_once()
     assert export_mod.export_video_headless.call_args[0][0] == out_file
-    assert "Error" not in out
+    assert not out.startswith("Error"), out
 
 
 def _import_real_export_module(monkeypatch):
@@ -365,7 +381,9 @@ def _headless_export_env(monkeypatch, stored_settings, max_frame, export_type):
     fake_app = MagicMock(_tr=lambda s: s)
     # export_video_headless re-imports get_app from classes.app inside the
     # function, so patching export_mod.get_app alone is not enough.
-    monkeypatch.setattr("classes.app.get_app", lambda: fake_app, raising=False)
+    # classes.app may be the MagicMock stub _import_real_export_module installed,
+    # which is not an attribute of the classes package, so patch the module object.
+    monkeypatch.setattr(sys.modules["classes.app"], "get_app", lambda: fake_app, raising=False)
     monkeypatch.setattr(export_mod, "Export", _Win)
     monkeypatch.setattr(export_mod, "get_default_export_settings",
                         lambda: (stored_settings, {}, export_type, "/tmp/d.mp4"))
