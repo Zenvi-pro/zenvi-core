@@ -950,6 +950,15 @@ def test_coerce_model_honours_the_live_lineup(qapp, clear_live_lineups):
     assert codex._coerce_model("openai/gpt-5.6-sol") == ""
 
 
+# cursor_stream.jsonl is a trimmed capture of cursor-agent 2026.09.18 running
+# `-p --output-format stream-json --stream-partial-output` against an MCP
+# server named zenvi-editor: one tool schema lookup, a successful and a failing
+# MCP call, and one of Cursor's own shell calls.
+_CURSOR_FIRST = ("I'll inspect the zenvi-editor tool schemas, then call "
+                 "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+_CURSOR_LAST = "`city.mp4` could not be added because Track 1 is locked."
+
+
 def test_cursor_parser_emits_expected_signals(qapp):
     from windows.agent_runners import CursorCliRunner
     runner = CursorCliRunner()
@@ -958,11 +967,121 @@ def test_cursor_parser_emits_expected_signals(qapp):
     _feed(runner, "cursor_stream.jsonl")
 
     assert runner._cli_session_id == "cur-abc-123"
+    assert runner._cli_id_from_cli is True
+    started = [e[1] for e in events if e[0] == "tool_started" and e[1] != "thinking"]
+    assert started == ["look_up_tools", "list_files_tool", "add_clip_to_timeline_tool",
+                       "run_shell_command"]
     assert any(e[0] == "tool_started" and e[1] == "thinking" for e in events)
-    assert any(e[0] == "tool_started" and e[1] == "list_files" for e in events)
-    assert any(e[0] == "tool_completed" and "FIXTURE" in e[3] for e in events)
-    assert any(e[0] == "token" and "3 files" in e[1] for e in events)
-    assert any(e[0] == "response_ready" and "3 files" in e[1] for e in events)
+    # Every block that opened is closed, thinking included.
+    opened = [e[2] for e in events if e[0] == "tool_started"]
+    closed = [e[1] for e in events if e[0] == "tool_completed"]
+    assert sorted(opened) == sorted(closed)
+    names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
+    by_name = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
+    assert by_name["list_files_tool"][0] is True
+    assert "FIXTURE" in by_name["list_files_tool"][1]
+    # An MCP tool that raised still arrives as "success" with isError.
+    assert by_name["add_clip_to_timeline_tool"] == (
+        False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
+    assert by_name["run_shell_command"] == (True, "beach.mp4\ncity.mp4\n")
+    assert by_name["look_up_tools"][0] is True
+
+    # Every message streams exactly once: the CLI's whole-message repeat
+    # after the deltas is not shown a second time.
+    tokens = "".join(e[1] for e in events if e[0] == "token")
+    assert tokens == _CURSOR_FIRST + _CURSOR_LAST
+    # The reply keeps the messages apart, the way the chat committed them.
+    replies = [e[1] for e in events if e[0] == "response_ready"]
+    assert replies == [_CURSOR_FIRST + "\n\n" + _CURSOR_LAST]
+    assert not any(e[0] == "error" for e in events)
+
+
+def test_cursor_mcp_tool_args_are_the_tools_own(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    seen = []
+    runner.tool_started.connect(lambda c, n, a: seen.append((n, json.loads(a))))
+    _feed(runner, "cursor_stream.jsonl")
+
+    args = dict(seen)
+    assert args["add_clip_to_timeline_tool"] == {"file_name": "city.mp4", "position_seconds": 0}
+    assert args["list_files_tool"] == {}
+    # Cursor's own tools show what they work on, not the CLI's bookkeeping.
+    assert args["run_shell_command"] == {"command": "ls"}
+    assert args["look_up_tools"] == {"server": "zenvi-editor"}
+
+
+def test_cursor_native_tools_are_not_labelled_as_motion_graphics(qapp):
+    """Bare read/edit/glob/grep are the Zenvi harness's motion-graphics tools."""
+    from classes.tool_handlers import humanize_tool_name
+    from windows.agent_runners import _CURSOR_TOOL_NAMES, _cursor_tool_start
+
+    for kind in ("read", "edit", "write", "glob", "grep", "shell", "delete", "ls"):
+        name, _ = _cursor_tool_start(kind, {"args": {"path": "a.txt"}})
+        assert name == _CURSOR_TOOL_NAMES[kind]
+        assert "motion graphic" not in humanize_tool_name(name).lower(), kind
+    assert _cursor_tool_start("webSearch", {"args": {"query": "x"}}) == ("web_search", {"query": "x"})
+
+
+@pytest.mark.parametrize("result,expected", [
+    (None, (True, "")),
+    ({"success": {"content": [{"text": {"text": "a"}}, {"text": {"text": "b"}}],
+                  "isError": False}}, (True, "a\nb")),
+    ({"success": {"content": "plain"}}, (True, "plain")),
+    ({"success": {"exitCode": 2, "stdout": "", "stderr": "no such file",
+                  "interleavedOutput": "no such file"}}, (False, "no such file")),
+    ({"spawnError": {"command": "", "error": "no exit status"}}, (False, "no exit status")),
+    ({"error": {"error": "Path does not exist: /x"}}, (False, "Path does not exist: /x")),
+    ({"rejected": {"reason": "denied"}, "isBackground": False}, (False, "denied")),
+    ({"error": "boom"}, (False, "boom")),
+    ({"isBackground": False}, (True, "")),
+])
+def test_cursor_tool_result_reads_success_and_every_failure_shape(result, expected):
+    from windows.agent_runners import _cursor_tool_result
+    assert _cursor_tool_result(result) == expected
+
+
+def test_cursor_reply_without_partial_output_is_not_dropped(qapp):
+    """A message that never streamed as deltas is shown, not taken for a repeat."""
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    events = _collect(runner)
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "c1"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Done."}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Done."},
+    ):
+        runner._handle_event(ev)
+    assert [e[1] for e in events if e[0] == "token"] == ["Done."]
+    assert [e[1] for e in events if e[0] == "response_ready"] == ["Done."]
+
+
+def test_cursor_new_turn_forgets_the_last_turns_prose(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    events = _collect(runner)
+    _feed(runner, "cursor_stream.jsonl")
+    runner._final_text = ""   # run_request resets this per turn
+    for ev in (
+        {"type": "system", "subtype": "init", "session_id": "cur-abc-123"},
+        {"type": "assistant", "timestamp_ms": 1,
+         "message": {"content": [{"type": "text", "text": "Second turn."}]}},
+        {"type": "result", "subtype": "success", "is_error": False, "result": "Second turn."},
+    ):
+        runner._handle_event(ev)
+    assert [e[1] for e in events if e[0] == "response_ready"][-1] == "Second turn."
+
+
+def test_cursor_runner_takes_models_from_its_own_lineup(qapp, clear_live_lineups):
+    """_coerce_model looks the lineup up by BACKEND_ID; without it no Cursor
+    model could ever reach --model."""
+    from windows.agent_runners import BACKEND_CURSOR, CursorCliRunner, set_live_lineups
+
+    runner = CursorCliRunner()
+    assert runner.BACKEND_ID == BACKEND_CURSOR
+    set_live_lineups({BACKEND_CURSOR: [{"id": "composer-2.5", "name": "Composer 2.5"}]})
+    assert runner._coerce_model("composer-2.5") == "composer-2.5"
+    assert runner._coerce_model("claude-opus-5") == "", "another backend's model is dropped"
 
 
 def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
@@ -975,6 +1094,7 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     runner._cli_cwd = r"C:\proj"
     runner._cli_session_id = "cur-abc-123"
     runner._cli_started = True
+    runner._cli_id_from_cli = True
     argv = runner._build_argv("make a cut")
     assert argv[0] == runner._cli_path
     assert "-p" in argv

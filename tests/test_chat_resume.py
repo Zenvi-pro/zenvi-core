@@ -105,6 +105,54 @@ def test_codex_ignores_an_empty_thread_id(codex):
 
 
 # ---------------------------------------------------------------------------
+# Cursor CLI: mints its chat id and reports it in the init event
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cursor(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    runner._session_id = "tab-1"
+    runner._cli_cwd = "/proj"
+    return runner
+
+
+def test_cursor_first_turn_starts_a_new_chat(cursor):
+    cursor._cli_session_id = "seeded-uuid"
+    assert "--resume" not in cursor._build_argv("hello")
+
+
+def test_cursor_does_not_resume_a_seeded_placeholder(cursor):
+    """Stop before init leaves only our placeholder; that is not a Cursor chat."""
+    cursor._cli_session_id = "seeded-uuid"
+    cursor._cli_started = True
+    assert "--resume" not in cursor._build_argv("next message")
+
+
+def test_cursor_learns_its_chat_id_reports_it_and_resumes_it(cursor):
+    seen = []
+    cursor.cli_session_changed.connect(
+        lambda sid, cli, started, cwd: seen.append((sid, cli, started, cwd))
+    )
+    cursor._cli_started = True
+    cursor._handle_event({"type": "system", "subtype": "init", "session_id": "chat-9"})
+
+    assert cursor._cli_session_id == "chat-9"
+    assert seen and seen[-1][:2] == ("tab-1", "chat-9")
+    argv = cursor._build_argv("and then?")
+    assert argv[argv.index("--resume") + 1] == "chat-9"
+
+
+def test_a_restored_cursor_tab_resumes(cursor):
+    """What _make_worker seeds from the stored row must be enough to resume."""
+    cursor._cli_session_id = "chat-from-disk"
+    cursor._cli_started = True
+    cursor._cli_id_from_cli = True
+    argv = cursor._build_argv("continue")
+    assert argv[argv.index("--resume") + 1] == "chat-from-disk"
+
+
+# ---------------------------------------------------------------------------
 # Resume state across Stop and a moved project folder
 # ---------------------------------------------------------------------------
 

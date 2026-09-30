@@ -1173,6 +1173,7 @@ class CursorCliRunner(BaseAgentRunner):
 
     CLI_NAME = "cursor-agent"
     DISPLAY_NAME = "Cursor CLI"
+    BACKEND_ID = BACKEND_CURSOR
     # The CLI's model list changes with the account (`--list-models`). There is
     # no stable catalogue to pin, so the picker stays hidden like Codex.
     MODELS: list = []
@@ -1180,8 +1181,18 @@ class CursorCliRunner(BaseAgentRunner):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._think_seq = 0
+        self._begin_turn()
+
+    def _begin_turn(self):
+        """Drop the previous turn's stream state (each run opens with ``init``)."""
         self._think_id = ""
         self._think_open = False
+        # Prose between two tool starts: the unit the chat freezes into its own
+        # bubble when a tool begins (AIChatWindow._on_tool_started).
+        self._segments = []
+        self._segment = ""
+        # Text of the message streaming now, which the CLI then repeats whole.
+        self._message = ""
 
     def _ensure_ready(self):
         if self._server is None:
@@ -1202,7 +1213,9 @@ class CursorCliRunner(BaseAgentRunner):
         if self._model_id:
             argv += ["--model", self._model_id]
         argv += _add_dir_args()
-        if self._cli_started and self._cli_session_id:
+        # Cursor mints the conversation id and reports it in ``init``, so only
+        # an id heard from the CLI is resumed, never the placeholder we seed.
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
             argv += ["--resume", self._cli_session_id]
         argv.append(text)
         return argv
@@ -1210,6 +1223,7 @@ class CursorCliRunner(BaseAgentRunner):
     def _handle_event(self, ev: dict):
         etype = ev.get("type")
         if etype == "system" and ev.get("subtype") == "init":
+            self._begin_turn()
             session_id = ev.get("session_id") or ""
             if session_id:
                 self._cli_session_id = session_id
@@ -1217,12 +1231,7 @@ class CursorCliRunner(BaseAgentRunner):
                 self._emit_cli_session()
             return
         if etype == "assistant":
-            for block in (ev.get("message") or {}).get("content") or []:
-                if block.get("type") == "text":
-                    txt = block.get("text") or ""
-                    if txt:
-                        self._final_text += txt
-                        self.token_received.emit(txt)
+            self._handle_assistant(ev)
             return
         if etype == "thinking":
             self._handle_thinking(ev)
@@ -1231,13 +1240,50 @@ class CursorCliRunner(BaseAgentRunner):
             self._handle_tool_call(ev)
             return
         if etype == "result":
+            self._close_thinking()
             if ev.get("is_error"):
                 self._last_error = ev.get("result") or "The agent reported an error."
             else:
-                self._emit_response(ev.get("result") or self._final_text)
+                # Not ``result`` itself: it glues the turn's messages together
+                # with no separator, so the chat could not tell which of them it
+                # has already shown (AIChatWindow._final_segment_text).
+                self._emit_response(self._final_text or ev.get("result") or "")
             return
         if etype == "error":
             self._last_error = ev.get("message") or self._last_error
+
+    def _handle_assistant(self, ev: dict):
+        text = "".join(
+            block.get("text") or ""
+            for block in (ev.get("message") or {}).get("content") or []
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+        if not text:
+            return
+        # --stream-partial-output streams a message as deltas and then sends it
+        # again whole. Deltas carry a timestamp and no model_call_id; the repeat
+        # has a model_call_id or no timestamp. Only a repeat of exactly what
+        # streamed is dropped, so nothing is lost if the CLI stops repeating.
+        partial = "timestamp_ms" in ev and "model_call_id" not in ev
+        if not partial and self._message and text.strip() == self._message.strip():
+            self._message = ""
+            return
+        self._message += text
+        self._segment += text
+        self._final_text = "\n\n".join(self._segments + [self._segment])
+        self.token_received.emit(text)
+
+    def _start_block(self, call_id: str, name: str, args: dict):
+        """Emit ``tool_started``, closing the prose segment the way the chat does."""
+        if self._segment.strip():
+            self._segments.append(self._segment)
+        self._segment = ""
+        self.tool_started.emit(call_id, name, json.dumps(args, default=str))
+
+    def _close_thinking(self):
+        if self._think_open:
+            self.tool_completed.emit(self._think_id, True, "")
+            self._think_open = False
 
     def _handle_thinking(self, ev: dict):
         subtype = ev.get("subtype")
@@ -1246,69 +1292,134 @@ class CursorCliRunner(BaseAgentRunner):
                 self._think_seq += 1
                 self._think_id = "think_%d" % self._think_seq
                 self._think_open = True
-                self.tool_started.emit(self._think_id, "thinking", "{}")
+                self._start_block(self._think_id, "thinking", {})
             self.tool_log.emit(self._think_id, ev.get("text") or "")
             return
-        if subtype == "completed" and self._think_open:
-            self.tool_completed.emit(self._think_id, True, "")
-            self._think_open = False
+        if subtype == "completed":
+            self._close_thinking()
 
     def _handle_tool_call(self, ev: dict):
         subtype = ev.get("subtype")
         call_id = ev.get("call_id") or ""
-        name, args, result = _cursor_tool_parts(ev.get("tool_call"))
+        kind, payload = _cursor_tool_payload(ev.get("tool_call"))
         if subtype == "started":
-            self.tool_started.emit(
-                call_id, name, json.dumps(args, default=str) if isinstance(args, dict) else "{}")
+            self._close_thinking()
+            # A tool call ends the message that was streaming.
+            self._message = ""
+            name, args = _cursor_tool_start(kind, payload)
+            self._start_block(call_id, name, args)
             return
         if subtype == "completed":
-            ok = ev.get("is_error") is not True
-            self.tool_completed.emit(call_id, ok, result)
+            ok, text = _cursor_tool_result(payload.get("result"))
+            self.tool_completed.emit(call_id, ok, text)
 
 
-def _cursor_tool_parts(tool_call):
-    """Name, args, and result text from a Cursor ``tool_call`` payload."""
+# Cursor's own tools, keyed by their ``<kind>ToolCall`` field. Spelled out so
+# the chat reads them as work on the user's files: bare "read", "edit", "glob"
+# and "grep" are the Zenvi Assistant harness's motion-graphics tools as far as
+# humanize_tool_name is concerned.
+_CURSOR_TOOL_NAMES = {
+    "shell": "run_shell_command",
+    "read": "read_file",
+    "edit": "edit_file",
+    "write": "write_file",
+    "delete": "delete_file",
+    "grep": "search_files",
+    "glob": "find_files",
+    "ls": "list_directory",
+    "getMcpTools": "look_up_tools",
+}
+
+# Arguments that say what a Cursor tool is working on. The rest are CLI
+# bookkeeping (shell parse trees, call ids, sandbox flags).
+_CURSOR_ARG_KEYS = (
+    "command", "path", "targetDirectory", "globPattern", "pattern", "query",
+    "searchTerm", "url", "server", "toolName",
+)
+
+
+def _cursor_tool_payload(tool_call):
+    """``(kind, payload)`` of a ``tool_call`` field, e.g. ``("mcp", {...})``."""
     if not isinstance(tool_call, dict):
-        return "tool", {}, ""
+        return "", {}
     for key, value in tool_call.items():
-        if not (isinstance(key, str) and key.endswith("ToolCall") and isinstance(value, dict)):
-            continue
-        args = value.get("args") if isinstance(value.get("args"), dict) else {}
-        name = args.get("toolName") or args.get("name") or args.get("command") or ""
-        if not name:
-            name = key[: -len("ToolCall")] or "tool"
-        inner = args.get("args") if isinstance(args.get("args"), dict) else args
-        return _strip_mcp_prefix(str(name)), inner, _cursor_result_text(value.get("result"))
-    tool = tool_call.get("tool")
-    if isinstance(tool, dict) and tool.get("case"):
-        value = tool.get("value") if isinstance(tool.get("value"), dict) else {}
-        args = value.get("args") if isinstance(value.get("args"), dict) else {}
-        name = args.get("toolName") or args.get("name") or args.get("command") or ""
-        if not name:
-            name = str(tool.get("case") or "tool")
-            if name.endswith("ToolCall"):
-                name = name[: -len("ToolCall")] or "tool"
-        inner = args.get("args") if isinstance(args.get("args"), dict) else args
-        return _strip_mcp_prefix(str(name)), inner, _cursor_result_text(value.get("result"))
-    name = tool_call.get("name") or "tool"
-    args = tool_call.get("arguments") or tool_call.get("args") or {}
-    if not isinstance(args, dict):
-        args = {}
-    return _strip_mcp_prefix(str(name)), args, _cursor_result_text(tool_call.get("result"))
+        if isinstance(key, str) and key.endswith("ToolCall") and isinstance(value, dict):
+            return key[: -len("ToolCall")], value
+    tool = tool_call.get("tool")   # {"tool": {"case": "...ToolCall", "value": {...}}}
+    if isinstance(tool, dict) and isinstance(tool.get("value"), dict):
+        case = str(tool.get("case") or "")
+        return (case[: -len("ToolCall")] if case.endswith("ToolCall") else case), tool["value"]
+    return "", tool_call
 
 
-def _cursor_result_text(result) -> str:
+def _cursor_tool_start(kind: str, payload: dict):
+    """The tool name the chat labels, and the arguments worth showing."""
+    args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+    if kind == "mcp":
+        # args.name is "<server>-<tool>"; toolName is the tool alone.
+        name = args.get("toolName") or ""
+        if not name:
+            name = str(args.get("name") or "")
+            server = args.get("providerIdentifier") or args.get("serverIdentifier") or ""
+            if server and name.startswith(server + "-"):
+                name = name[len(server) + 1:]
+        inner = args.get("args") if isinstance(args.get("args"), dict) else {}
+        return _strip_mcp_prefix(str(name)) or "mcp_tool", inner
+    if kind:
+        name = _CURSOR_TOOL_NAMES.get(kind) or re.sub(r"(?<!^)(?=[A-Z])", "_", kind).lower()
+        return name, {k: args[k] for k in _CURSOR_ARG_KEYS if args.get(k) not in (None, "")}
+    name = payload.get("name") or "tool"
+    raw = payload.get("arguments") or payload.get("args") or {}
+    return _strip_mcp_prefix(str(name)), raw if isinstance(raw, dict) else {}
+
+
+def _cursor_tool_result(result):
+    """``(ok, text)`` for a finished Cursor tool call.
+
+    The CLI wraps a result in one key: ``success`` (an MCP tool that raised
+    is still a ``success``, with ``isError``), or ``error`` / ``spawnError`` /
+    ``rejected`` and the like when the call itself failed. Flags such as
+    ``isBackground`` can sit next to it.
+    """
     if result is None:
-        return ""
-    if isinstance(result, str):
-        return result
-    if isinstance(result, dict):
-        if "content" in result:
-            return _content_to_text(result.get("content"))
-        if result.get("text"):
-            return str(result.get("text"))
-        return json.dumps(result, default=str)
-    return str(result)
+        return True, ""
+    if not isinstance(result, dict):
+        return True, str(result)
+    if "success" in result:
+        body = result.get("success")
+        if not isinstance(body, dict):
+            return True, "" if body is None else str(body)
+        ok = body.get("isError") is not True and body.get("exitCode") in (None, 0)
+        if "content" in body:
+            return ok, _cursor_content_text(body.get("content"))
+        for key in ("interleavedOutput", "stdout", "output", "text"):
+            if body.get(key):
+                return ok, str(body[key])
+        return ok, json.dumps(body, default=str)
+    for kind, body in result.items():
+        if isinstance(body, dict):
+            message = body.get("error") or body.get("message") or body.get("reason") or ""
+            return False, str(message or kind)
+        if isinstance(body, str) and body:
+            return False, body
+    return True, ""
+
+
+def _cursor_content_text(content) -> str:
+    """A result's ``content``: a string, or MCP items with the text one level
+    deeper than usual (``{"text": {"text": "..."}}``)."""
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, dict):
+                text = text.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts)
+    return _content_to_text(content)
 
 
 # ---------------------------------------------------------------------------
