@@ -107,24 +107,24 @@ def _url_list(**kw) -> dict:
 TOOL_SCHEMAS: dict[str, dict] = {
     "get_project_info_tool": _obj({}),
     "list_files_tool": _obj({}),
-"list_clips_tool": _obj({
+    "list_clips_tool": _obj({
         "layer": _str(description="Optional layer_number or UI track filter."),
         "detail_level": _str(description="Sent by the assistant backend; ignored here."),
     }),
     "list_layers_tool": _obj({}),
     "list_markers_tool": _obj({}),
     "new_project_tool": _obj({}),
-"save_project_tool": _obj({
+    "save_project_tool": _obj({
         "file_path": _str(description="Optional destination path; empty saves in place."),
     }),
-"open_project_tool": _obj({
+    "open_project_tool": _obj({
         "file_path": _str(description="Project file path."),
     }, required=["file_path"]),
-"watch_clip_tool": _obj({
+    "watch_clip_tool": _obj({
         "file_path": _str(description="Media path to import, place and play."),
         "query": _str(),
     }),
-"watch_clip_window_tool": _obj({
+    "watch_clip_window_tool": _obj({
         "query": _str(),
         "start": _str_or_num(),
         "end": _str_or_num(),
@@ -143,8 +143,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "redo_tool": _obj({
         "steps": _str_or_num(),
     }),
-"add_track_tool": _obj({}),
-"add_marker_tool": _obj({}),
+    "add_track_tool": _obj({}),
+    "add_marker_tool": _obj({}),
     "delete_from_timeline_tool": _obj({
         "timeline_clip_id": _str(),
         "clip_query": _str(),
@@ -154,7 +154,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "position_near": _opt_str_or_num(),
         "include_transitions": _bool(),
     }),
-"remove_clip_tool": _obj({
+    "remove_clip_tool": _obj({
         "timeline_clip_id": _str(),
         "clip_query": _str(),
         "track": _str(),
@@ -165,12 +165,12 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "track": _str(),
         "include_transitions": _bool(),
     }),
-"analyze_timeline_audio_tool": _obj({
+    "analyze_timeline_audio_tool": _obj({
         "track": _str(),
         "timeline_clip_id": _str(),
         "detail": _str(description="'summary' (default) or 'windows'."),
     }),
-"set_clip_volume_tool": _obj({
+    "set_clip_volume_tool": _obj({
         "timeline_clip_id": _str(),
         "clip_query": _str(),
         "track": _str(),
@@ -204,7 +204,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "folder": _str(),
         "skip_indexing": _str(),
     }),
-"wait_until_project_indexed_tool": _obj({
+    "wait_until_project_indexed_tool": _obj({
         "timeout_seconds": _str_or_num(),
     }),
     "export_video_tool": _obj({
@@ -216,10 +216,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "key": _str(),
         "value": {"type": ["string", "number", "boolean", "null"]},
     }, required=["key"]),
-"get_file_info_tool": _obj({
+    "get_file_info_tool": _obj({
         "file_id": _str(),
     }, required=["file_id"]),
-"split_file_add_clip_tool": _obj({
+    "split_file_add_clip_tool": _obj({
         "file_id": _str(),
         "query": _str(),
         "start_seconds": _str_or_num(),
@@ -239,7 +239,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "query": _str(),
         "full_file": _str(),
     }),
-"import_video_url_and_add_to_timeline_tool": _obj({
+    "import_video_url_and_add_to_timeline_tool": _obj({
         "video_url": _str(),
         "position_seconds": _str_or_num(),
         "track": _str_or_num(),
@@ -249,13 +249,13 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "duration_seconds": _str_or_num(),
         "full_file": _str_or_bool(),
     }),
-"slice_clip_at_playhead_tool": _obj({}),
-"search_clips_tool": _obj({
+    "slice_clip_at_playhead_tool": _obj({}),
+    "search_clips_tool": _obj({
         "query": _str(),
         "top_k": _str_or_num(),
         "look_for": _str(description="Sent by the assistant backend; ignored here."),
     }, required=["query"]),
-"search_clip_scenes_tool": _obj({
+    "search_clip_scenes_tool": _obj({
         "query": _str(),
         "top_k": _str_or_num(),
         "timeline_clip_id": _str(),
@@ -265,7 +265,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "position_near": _opt_str_or_num(),
     }, required=["query"]),
     "get_project_catalog_tool": _obj({}),
-"slice_clip_at_best_match_tool": _obj({
+    "slice_clip_at_best_match_tool": _obj({
         "query": _str(),
         "occurrence": _str_or_num(),
         "timeline_clip_id": _str(),
@@ -274,15 +274,15 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "start_seconds": _str_or_num(description="Sent by the assistant backend; ignored here."),
         "end_seconds": _str_or_num(description="Sent by the assistant backend; ignored here."),
     }, required=["query"]),
-"suggest_motion_graphics_placements_tool": _obj({
+    "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),
         "beat_count": _str_or_num(),
     }),
-"propose_overlay_windows_tool": _obj({
+    "propose_overlay_windows_tool": _obj({
         "beat_count": _str_or_num(),
         "prefer_transparent": _str_or_bool(),
     }),
-"place_motion_graphic_tool": _obj({
+    "place_motion_graphic_tool": _obj({
         "file_id": _str(),
         "mode": _str(description="'overlay' (default), 'gap' or 'cut_in'."),
         "position_seconds": _str_or_num(),
@@ -291,27 +291,27 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "layout_region": _str(),
         "query": _str(),
     }),
-"fetch_motion_graphics_video_tool": _obj({
+    "fetch_motion_graphics_video_tool": _obj({
         "segment_urls": _url_list(),
         "supabase_url": _str(),
         "supabase_path": _str(),
         "render_job_id": _str(),
         "label": _str(),
     }),
-"fetch_remotion_video_from_supabase_tool": _obj({
+    "fetch_remotion_video_from_supabase_tool": _obj({
         "segment_urls": _url_list(),
         "supabase_url": _str(),
         "supabase_path": _str(),
         "render_job_id": _str(),
         "label": _str(),
     }),
-"generate_video_and_add_to_timeline_tool": _obj({
+    "generate_video_and_add_to_timeline_tool": _obj({
         "prompt": _str(),
         "position_seconds": _str_or_num(),
         "track": _str(),
         "duration_seconds": _str_or_num(),
     }, required=["prompt"]),
-"modify_clip_tool": _obj({
+    "modify_clip_tool": _obj({
         "mode": _str(description="'replace' (default) or another handler mode."),
         "description": _str(),
         "query": _str(),
@@ -323,27 +323,27 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "occurrence": _str_or_num(),
         "position_near": _opt_str_or_num(),
     }),
-"generate_transition_clip_tool": _obj({
+    "generate_transition_clip_tool": _obj({
         "clip_a_id": _str(),
         "clip_b_id": _str(),
         "clip_a_query": _str(),
         "clip_b_query": _str(),
         "prompt_hint": _str(),
     }),
-"list_transitions_tool": _obj({
+    "list_transitions_tool": _obj({
         "category": _str(description="'all' (default), 'common' or 'extra'."),
     }),
     "search_transitions_tool": _obj({
         "query": _str(),
     }, required=["query"]),
-"apply_transition_tool": _obj({
+    "apply_transition_tool": _obj({
         "clip1_id": _str(),
         "clip2_id": _str(description="Required when placement is 'between'."),
         "transition_name": _str(),
         "duration": _str_or_num(description="Seconds."),
         "placement": _str(description="'between' (default), 'start' or 'end'."),
     }, required=["clip1_id"]),
-"generate_tts_and_add_to_timeline_tool": _obj({
+    "generate_tts_and_add_to_timeline_tool": _obj({
         "text": _str(),
         "voice": _str(),
         "model": _str(),
@@ -351,7 +351,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "track": _str_or_num(),
         "position": _str_or_num(description="Timeline position in seconds."),
     }, required=["text"]),
-"import_stock_media_tool": _obj({
+    "import_stock_media_tool": _obj({
         "source": _str(description="'pexels' or 'freesound'; empty with local_path."),
         "video_id": _str_or_num(),
         "link": _str(),
@@ -363,17 +363,17 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "resummarize_project_file_tool": _obj({
         "file_id": _str(),
     }, required=["file_id"]),
-"reindex_project_file_tool": _obj({
+    "reindex_project_file_tool": _obj({
         "file_id": _str(),
         "force": _str_or_bool(),
     }, required=["file_id"]),
-"get_clips_with_full_metadata_tool": _obj({
+    "get_clips_with_full_metadata_tool": _obj({
         "detail_level": _str(),
     }),
-"get_timeline_placements_metadata_tool": _obj({
+    "get_timeline_placements_metadata_tool": _obj({
         "detail_level": _str(),
     }),
-"get_timeline_state_tool": _obj({
+    "get_timeline_state_tool": _obj({
         "detail_level": _str(description="Sent by the assistant backend; ignored here."),
     }),
     # Phase 3.8 new tools
