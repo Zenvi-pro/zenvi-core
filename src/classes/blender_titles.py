@@ -68,14 +68,14 @@ def animation_details(xml_path: str) -> dict:
         animation = {"title": _text(doc, "title"), "path": xml_path, "service": _text(doc, "service"),
                      "params": []}
         for param in doc.getElementsByTagName("param"):
-            item = {"default": ""}
+            item: dict = {"default": ""}
             for att in ("title", "description", "name", "type"):
                 if param.attributes.get(att) is not None:
                     item[att] = param.attributes[att].value
             for tag in ("min", "max", "step", "digits", "default"):
                 for p in param.getElementsByTagName(tag):
                     if p.childNodes:
-                        item[tag] = p.firstChild.data
+                        item[tag] = getattr(p.firstChild, "data", "")
             try:
                 item["values"] = dict(
                     (p.attributes["name"].value, p.attributes["num"].value)
@@ -249,8 +249,10 @@ def render(command: str, blend_path: str, script_path: str, timeout: float,
     saved = 0
     lines = []
     deadline = time.monotonic() + float(timeout)
+    stdout = proc.stdout
+    assert stdout is not None  # stdout=PIPE
     try:
-        for raw in iter(proc.stdout.readline, b""):
+        for raw in iter(stdout.readline, b""):
             line = raw.decode("utf-8", errors="ignore").rstrip()
             if line:
                 lines.append(line)

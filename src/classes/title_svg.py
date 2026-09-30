@@ -213,8 +213,13 @@ def line_nodes(xmldoc) -> list:
     return [n for n in tspan_nodes(xmldoc) if _first_text_child(n) is not None]
 
 
+def _line_text(node) -> str:
+    child = _first_text_child(node)
+    return child.data if child is not None else ""
+
+
 def line_texts(xmldoc) -> List[str]:
-    return [_first_text_child(n).data for n in line_nodes(xmldoc)]
+    return [_line_text(n) for n in line_nodes(xmldoc)]
 
 
 def set_line_texts(xmldoc, texts: Iterable[str], nodes=None) -> None:
@@ -459,7 +464,7 @@ def fields(xmldoc) -> List[TextField]:
     slots: List[TextField] = []
     by_text = {}
     for node in line_nodes(xmldoc):
-        text = _first_text_child(node).data
+        text = _line_text(node)
         key = text.strip()
         slot = by_text.get(key) if key else None
         if slot is None:

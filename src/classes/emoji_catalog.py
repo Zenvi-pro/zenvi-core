@@ -195,7 +195,7 @@ def add_emoji_file(filepath: str, emoji_name: Optional[str] = None):
     import openshot
     from classes.query import File
 
-    existing = File.get(path=filepath)
+    existing = File.get(path=filepath)  # pyright: ignore[reportArgumentType]  (File.get takes **kwargs)
     if existing:
         return existing
     clip = openshot.Clip(filepath)
