@@ -431,3 +431,13 @@ def test_a_missing_template_font_becomes_the_title_editors_fallback(tt, monkeypa
     assert title_svg.editor_font_family("DejaVu Sans", ["Noto Sans Armenian", "Arial Black", "Arial"]) == "Arial"
     assert title_svg.editor_font_family("DejaVu Sans", ["DejaVu Sans Mono", "Arial"]) == "DejaVu Sans Mono"
     assert title_svg.editor_font_family("Nope", []) == ""
+
+
+def test_undo_of_a_title_edit_is_reported_as_a_change(tt):
+    rec = receipt(tt.call("add_title_tool", text="Day 1", template="Standard_1"))
+    tt.call("edit_title_tool", timeline_clip_id=rec["timeline_clip_id"], text="Day 2")
+    out = tt.call("undo_tool", steps=1)
+    assert not out.startswith("Error"), out
+    assert tt.clip(rec["timeline_clip_id"])["reader"]["path"] == rec["path"]
+    out = tt.call("redo_tool", steps=1)
+    assert not out.startswith("Error"), out
