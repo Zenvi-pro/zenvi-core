@@ -51,6 +51,9 @@ SOCIAL_PRESETS = {
     "cinema_4k": (3840, 2160, 24, "MP4 (h.264)", ("4k cinema", "4k film", "cinematic 4k", "4k 24 fps")),
 }
 
+# A frame-rate change rescales every keyframe and reloads the timeline on the GUI thread.
+PROFILE_TIMEOUT = 120
+
 # libopenshot ScaleType / GravityType
 SCALE_CROP, SCALE_FIT = 0, 1
 GRAVITY_CENTER = 4
@@ -466,7 +469,7 @@ def set_project_profile(profile="", width=0, height=0, fps=0, orientation="", fr
         raise ToolError("say what to change: profile (name or social preset), width+height, fps, orientation, "
                         "from_file_id, or reframe")
     record = _target_record(profile, width, height, fps, orientation, from_file_id)
-    result = on_main(lambda: apply_profile_and_reframe(record, reframe))
+    result = on_main(lambda: apply_profile_and_reframe(record, reframe), timeout=PROFILE_TIMEOUT)
     return _profile_receipt(result, before, record, reframe, social_preset(profile)[0] if profile else None)
 
 
@@ -557,7 +560,7 @@ def set_project_setting(fps=None, fps_num=None, fps_den=None, width=None, height
             app.updates.update([key], value)
         return result
 
-    result = on_main(_apply)
+    result = on_main(_apply, timeout=PROFILE_TIMEOUT)
     if save_as_default and (sample_rate is not None or layout):
         s = app.get_settings()
         if sample_rate is not None:
