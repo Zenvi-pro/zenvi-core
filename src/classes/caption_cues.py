@@ -178,37 +178,80 @@ def cues_to_srt(cues: Iterable[Cue]) -> str:
 # Phrasing long transcript cues into readable captions
 # ---------------------------------------------------------------------------
 
-def split_cue(cue: Cue, max_words: int = 8, max_chars: int = 42) -> List[Cue]:
-    """Split a long cue into chunks of <= max_words words / <= max_chars characters.
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+_PUNCT = (",", ";", ":", ".", "!", "?", "…")
 
-    Time is shared out by character count (transcript cues carry no word
-    timings). A one-word tail too short to read on its own joins the chunk before.
+
+def _fits(words: List[str], max_words: int, max_chars: int) -> bool:
+    return len(words) <= max_words and len(" ".join(words)) <= max_chars
+
+
+def _break_sentence(words: List[str], max_words: int, max_chars: int) -> List[List[str]]:
+    """Best caption breaks for one sentence (a small line-breaking DP).
+
+    Each caption fits the limits; the cost favours few, evenly full captions that
+    end at punctuation and avoids one-word captions.
     """
-    words = str(cue.text or "").split()
+    n = len(words)
+    best = [float("inf")] * (n + 1)
+    back = [0] * (n + 1)
+    best[0] = 0.0
+    for i in range(1, n + 1):
+        for j in range(max(0, i - max_words), i):
+            group = words[j:i]
+            length = len(" ".join(group))
+            if length > max_chars and len(group) > 1:
+                continue
+            cost = 1.0 + 6.0 * ((max_chars - length) / float(max_chars)) ** 2
+            if i < n and not group[-1].endswith(_PUNCT):
+                cost += 2.0
+            if len(group) == 1 and i < n:
+                cost += 3.0
+            if best[j] + cost < best[i]:
+                best[i] = best[j] + cost
+                back[i] = j
+    groups = []
+    i = n
+    while i > 0:
+        groups.append(words[back[i]:i])
+        i = back[i]
+    return list(reversed(groups))
+
+
+def _phrases(text: str, max_words: int, max_chars: int) -> List[List[str]]:
+    """Word groups for one cue: sentences that fit stay whole, longer ones are broken well."""
+    out: List[List[str]] = []
+    for sentence in _SENTENCE_END.split(text.strip()):
+        words = sentence.split()
+        if not words:
+            continue
+        out.extend([words] if _fits(words, max_words, max_chars) else
+                   _break_sentence(words, max_words, max_chars))
+    return out
+
+
+def split_cue(cue: Cue, max_words: int = 8, max_chars: int = 42) -> List[Cue]:
+    """Split a long cue into readable captions of <= max_words words / <= max_chars characters.
+
+    Sentence ends always break; longer sentences break where the captions come out
+    evenly full and end at punctuation, never leaving a lone word. Time is shared
+    out by character count (transcript cues carry no word timings).
+    """
     max_words = max(1, int(max_words))
     max_chars = max(8, int(max_chars))
+    words = str(cue.text or "").split()
     if not words:
         return []
-    if len(words) <= max_words and len(" ".join(words)) <= max_chars:
+    if _fits(words, max_words, max_chars):
         return [Cue(cue.start, cue.end, " ".join(words))]
-    chunks: List[List[str]] = []
-    current: List[str] = []
-    for word in words:
-        if current and (len(current) >= max_words or len(" ".join(current + [word])) > max_chars):
-            chunks.append(current)
-            current = []
-        current.append(word)
-    if current:
-        chunks.append(current)
-    if len(chunks) > 1 and len(chunks[-1]) == 1 and len(chunks[-1][0]) <= 3:
-        chunks[-2].extend(chunks.pop())
-    total = sum(len(" ".join(c)) + 1 for c in chunks)
+    groups = _phrases(" ".join(words), max_words, max_chars)
+    total = sum(len(" ".join(g)) + 1 for g in groups)
     span = max(0.0, cue.end - cue.start)
     out = []
     t = cue.start
-    for i, chunk in enumerate(chunks):
-        share = span * (len(" ".join(chunk)) + 1) / float(total)
-        end = cue.end if i == len(chunks) - 1 else t + share
-        out.append(Cue(t, end, " ".join(chunk)))
+    for i, group in enumerate(groups):
+        text = " ".join(group)
+        end = cue.end if i == len(groups) - 1 else t + span * (len(text) + 1) / float(total)
+        out.append(Cue(t, end, text))
         t = end
     return out

@@ -83,6 +83,15 @@ def test_long_transcript_cues_are_phrased():
     assert caption_cues.split_cue(Cue(0, 1, "short one"), 8, 42)[0].text == "short one"
 
 
+def test_phrasing_breaks_at_sentences_and_never_leaves_a_lone_word():
+    # found live on the talking head: word-count splitting gave "downtown. The latte art here is" / "incredible."
+    cue = Cue(0, 10, "First stop is my favorite coffee shop downtown. The latte art here is incredible.")
+    texts = [c.text for c in caption_cues.split_cue(cue, 8, 42)]
+    assert texts[-1] == "The latte art here is incredible."
+    assert all(len(t.split()) > 1 for t in texts)
+    assert "downtown. The" not in " | ".join(texts)
+
+
 # ---------------------------------------------------------------------------
 # add_captions_tool
 # ---------------------------------------------------------------------------
