@@ -409,6 +409,29 @@ def test_copy_offset_and_exact_timing(editor):
     assert xs(editor.clip(dst)["alpha"]) == [1.0, 31.0]
 
 
+def test_copying_a_fade_from_a_trimmed_clip_keeps_its_start(editor):
+    """Found live: the trimmed source's default point at X=1 (alpha 1, before its visible start) and
+    its fade start at X=61 (alpha 0) both stretched onto the target's first frame, and the wrong one
+    won, so the copied fade-in vanished."""
+    f = editor.add_file("video")
+    src = editor.add_clip(f, start=2.0, end=12.5, alpha=pts((1, 1.0), (61, 0.0), (121, 1.0), (316, 1.0), (376, 0.0)))
+    dst = editor.add_clip(f, position=20.0, end=6.0)
+    receipt(editor.call("copy_clip_keyframes_tool", source_clip_id=src, timeline_clip_ids=[dst], groups=["alpha"]))
+    curve = editor.clip(dst)["alpha"]
+    assert xs(curve)[0] == 1.0 and ys(curve)[0] == 0.0
+    assert ys(curve) == [0.0, 1.0, 1.0, 0.0] and xs(curve)[-1] == 181.0
+
+
+def test_points_outside_the_source_range_become_exact_edge_values(editor):
+    f = editor.add_file("video")
+    src = editor.add_clip(f, start=2.0, end=12.0, scale_x=pts((1, 1.0), (661, 2.0)))  # visible 61-361
+    dst = editor.add_clip(f, position=20.0, end=10.0)
+    receipt(editor.call("copy_clip_keyframes_tool", source_clip_id=src, timeline_clip_ids=[dst], groups=["scale"],
+                        timing="offset"))
+    curve = editor.clip(dst)["scale_x"]
+    assert xs(curve) == [1.0, 301.0] and ys(curve) == [pytest.approx(1 + 60 / 660), pytest.approx(1 + 360 / 660)]
+
+
 def test_copy_all_leaves_the_speed_curve_unless_exact(editor):
     f = editor.add_file("video")
     src = editor.add_clip(f, end=10.0, time=pts((1, 1.0), (301, 150.0)), volume=pts((1, 0.2)))

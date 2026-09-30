@@ -17,7 +17,7 @@ from classes.editor_tools._base import (
     refresh_preview, resolve_clip, resolve_clips, string, th, ui_track_number,
 )
 from classes.editor_tools._registry import editor_tool
-from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, default_keyframe_value
+from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, default_keyframe_value, keyframe_value
 
 # The Clip menu's Copy > Keyframes groups (keyframe_rules is the one definition).
 KEYFRAME_GROUPS = tuple(COPY_KEYFRAME_GROUPS)
@@ -724,22 +724,37 @@ def copy_clip_keyframes(source_clip_id="", source_query="", source_track="", tim
 
 
 def _retime_points(points, src, dst, timing):
-    """Map keyframe X from the source clip's frames onto the target's."""
+    """Map keyframe X from the source clip's frames onto the target's.
+
+    Only the source's visible part is mapped: points outside it (e.g. the
+    default point at X=1 of a trimmed clip) are replaced by the curve's exact
+    value at the visible edges, so they cannot land on the target's first
+    frame and override the start of a fade.
+    """
     pts = copy.deepcopy(sorted((p for p in points if isinstance(p, dict) and isinstance(p.get("co"), dict)),
                                key=lambda p: float(p["co"]["X"])))
     if timing == "exact" or len(pts) <= 1:
         return pts
     s0, e0 = src.first_frame, src.end_frame
     s1, e1 = dst.first_frame, dst.end_frame
+    inside = [p for p in pts if s0 <= float(p["co"]["X"]) <= e0]
+    curve = {"Points": pts}
+    xs = {float(p["co"]["X"]) for p in inside}
+    if s0 not in xs and float(pts[0]["co"]["X"]) < s0:
+        inside.insert(0, cpm.make_point(s0, keyframe_value(curve, s0), BEZIER))
+    if e0 not in xs and float(pts[-1]["co"]["X"]) > e0:
+        edge = cpm.make_point(e0, keyframe_value(curve, e0), int(pts[-1].get("interpolation", BEZIER)))
+        inside.append(edge)
     scale = (e1 - s1) / float(e0 - s0) if timing == "stretch" and e0 > s0 else 1.0
-    out, seen = [], set()
-    for p in pts:
-        x = s1 + (float(p["co"]["X"]) - s0) * scale
-        x = max(1, int(round(x)))
-        if x in seen:
-            continue
-        seen.add(x)
+    out = []
+    for p in inside:
+        x = max(1, int(round(s1 + (float(p["co"]["X"]) - s0) * scale)))
         p["co"]["X"] = float(x)
+        if out and float(out[-1]["co"]["X"]) == x:
+            if x == s1:
+                continue  # the first point at the target's start is the start of the move
+            out[-1] = p
+            continue
         out.append(p)
     return out
 
