@@ -2554,6 +2554,14 @@ def search_clip_scenes(
     timeline_clip_id="",
     **_kw,
 ) -> str:
+    """Find where something happens inside ONE timeline clip (semantic video search within its trimmed range).
+
+    For "where in the interview does she mention pricing?" or "find the goal in this clip".
+    Returns keep in/out and peak times relative to the clip's start (m:ss). Uses the clip's
+    video index; when the video is not indexed (or the index search fails) it falls back to
+    the clip's scene descriptions and says so. Read-only. For the whole project use
+    search_clips_tool.
+    """
     try:
         k = int(float(top_k)) if str(top_k).strip() else 5
     except Exception:
@@ -3414,6 +3422,14 @@ def slice_clip_at_best_match(
     timeline_clip_id="",
     **_kw,
 ) -> str:
+    """Cut a timeline clip where a described moment happens, or at explicit source times.
+
+    query is either a description ("when the dog jumps") -- searched in the clip's video
+    index, confirmed by watching, moved off speech -- or a range in the clip's SOURCE time
+    ("from 4 seconds to 10 seconds", "0:04 to 0:10"), which cuts so that range becomes its own
+    segment. No match, an unindexed video or a cut outside the clip is an Error and nothing
+    is cut.
+    """
     try:
         from classes.api_client import get_backend_client
 
@@ -5906,7 +5922,14 @@ def generate_transition_clip(
     prompt_hint="",
     **_kw,
 ) -> str:
-    """Generate a baked clip A + AI morph + clip B for two timeline clips (Kling O1 Pro)."""
+    """Join two neighbouring clips on one track with a 5 s AI morph (cloud generation, uses credits).
+
+    The last frame of clip A morphs into the first frame of clip B; A, the morph and B are baked
+    into one new clip that replaces both (and any transition at their cut) in one undo step, and
+    later clips on the track move right to make room. Pass clip_a_id/clip_b_id (any order) or
+    queries; clips on different tracks, with clips between them, or on a locked track are
+    refused before anything is generated.
+    """
     from classes.query import Clip
     _get_app()
 
@@ -6498,7 +6521,15 @@ def modify_clip(
     timeline_clip_id="",
     **kwargs,
 ) -> str:
-    """AI-edit a timeline clip resolved by tags/query: replace or insert footage."""
+    """AI-edit footage in a timeline clip (cloud video-to-video, uses credits): replace an object/look, or insert a new shot.
+
+    mode="replace": regenerates the clip's first duration_seconds (default 5, max 10) with the
+    change in description ("make the car red"); that part of the clip is replaced and the rest
+    of the original continues after it. mode="insert": finds the moment described by the clip's
+    index (or 80 % in), generates a ~3-5 s continuation shot and bakes it into the clip with
+    crossfades; the clip gets longer and later clips on its track move right. The originals
+    are replaced (not stacked on) in one undo step. Locked tracks are refused.
+    """
     m = (mode or "replace").lower().strip()
     if m not in ("replace", "insert"):
         return f"Error: mode must be 'replace' or 'insert', got {mode!r}."
