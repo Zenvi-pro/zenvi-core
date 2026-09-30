@@ -8125,12 +8125,19 @@ def set_clip_volume(
         has_waveform = bool((clip_data.get("ui") or {}).get("audio_data"))
 
         def _do_set():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present; only mint
+            # (and clear) an id when called without one (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 _write_volume_points(clip_obj, points)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, {file_id: [clip_id]} if (has_waveform and file_id) else {}, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
@@ -8426,15 +8433,21 @@ def duck_under_speech(
                     refreshed.setdefault(fid, []).append(entry["id"])
 
         def _do_duck():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 for bed_entry, pts, _w, _g in planned:
                     _write_volume_points(bed_entry["clip"], pts)
                 for speech_entry, pts in boosted:
                     _write_volume_points(speech_entry["clip"], pts)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, refreshed, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
