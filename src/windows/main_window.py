@@ -3132,8 +3132,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
 
-        # Set transaction id (if not already set)
-        get_app().updates.transaction_id = get_app().updates.transaction_id or str(uuid.uuid4())
+        # Set transaction id (if not already set; an in-flight one is joined and kept)
+        owns_transaction = not get_app().updates.transaction_id
+        if owns_transaction:
+            get_app().updates.transaction_id = str(uuid.uuid4())
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -3182,23 +3184,20 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             get_app().window.IgnoreUpdates.emit(False, True)
 
             # Clear transaction id
-            get_app().updates.transaction_id = None
+            if owns_transaction:
+                get_app().updates.transaction_id = None
 
             # Refresh preview
             get_app().window.refreshFrameSignal.emit()
 
     def ripple_delete_gap(self, ripple_start, layer, total_gap):
-        """Remove the ripple gap and adjust subsequent items on the same layer"""
-        clips = [clip for clip in Clip.filter(layer=layer) if clip.data.get("position", 0.0) > ripple_start]
-        transitions = [tran for tran in Transition.filter(layer=layer) if tran.data.get("position", 0.0) > ripple_start]
+        """Remove the ripple gap and adjust subsequent items on the same layer.
 
-        for clip in clips:
-            clip.data["position"] -= total_gap
-            clip.save()
-
-        for trans in transitions:
-            trans.data["position"] -= total_gap
-            trans.save()
+        Items overlapping the removed one (a crossfade partner) stop where it
+        began instead of being pushed before it (or to a negative position).
+        """
+        from classes.timeline_ops import close_gap_at
+        close_gap_at(layer, ripple_start, total_gap)
 
     def actionRippleSelect(self):
         """Selects ALL clips or transitions to the right of the current selected item"""

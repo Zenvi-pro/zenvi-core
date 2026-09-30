@@ -84,13 +84,15 @@ def slot_transaction(updates, transaction_id=None):
 
     Cleared in a ``finally``: a guarded slot that raises mid-save must not
     leave a dead transaction id behind, or every later edit is silently
-    grouped into that one undo step.  A slot called without an id leaves an
-    in-flight transaction alone.
+    grouped into that one undo step.  A slot called without an id, or with
+    the id of the transaction already in flight (a menu handler that joined
+    an agent tool's undo group), leaves that transaction alone.
     """
-    if transaction_id:
+    owns = bool(transaction_id) and transaction_id != updates.transaction_id
+    if owns:
         updates.transaction_id = transaction_id
     try:
         yield
     finally:
-        if transaction_id:
+        if owns:
             updates.transaction_id = None

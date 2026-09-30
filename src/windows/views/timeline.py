@@ -46,6 +46,12 @@ from qt_api import QDialog
 from classes import info, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
+from classes.timeline_ops import (
+    aligned_positions,
+    close_all_gaps,
+    close_gap,
+    joined_transaction,
+)
 from classes.color_presets import (
     COLOR_GRADE_CLASS_NAME,
     COLOR_PRESET_AUTO_CONTRAST,
@@ -2325,11 +2331,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Hide the waveform for the selected clip"""
 
         # Loop through each selected clip ID
-        for clip_id in clip_ids:
-            # Get existing clip object & clear audio_data
-            clip = Clip.get(id=clip_id)
-            clip.data = {"ui": {"audio_data": []}}
-            clip.save()
+        with joined_transaction(get_app().updates):
+            for clip_id in clip_ids:
+                # Get existing clip object & clear audio_data
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
+                clip.data = {"ui": {"audio_data": []}}
+                clip.save()
 
     def fileAudioDataReady_Triggered(self, file_id, ui_data, tid):
         log.debug("fileAudioDataReady_Triggered received for file: %s" % file_id)
@@ -2433,9 +2442,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get translation method
         _ = get_app()._tr
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight)
+        tid = get_app().updates.transaction_id
+        owns_transaction = not tid
+        if owns_transaction:
+            tid = self.get_uuid()
+            get_app().updates.transaction_id = tid
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -2654,7 +2666,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.save()
 
         # Clear transaction
-        get_app().updates.transaction_id = None
+        if owns_transaction:
+            get_app().updates.transaction_id = None
 
     def Crop_Triggered(self, clip_ids, mode):
         """Add/remove/select the Crop effect based on mode"""
@@ -3718,91 +3731,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def RemoveGap_Triggered(self, found_start, found_end, layer_number):
         """Callback for removing gap context menus"""
         log.info(f"Removing gap from {found_start} to {found_end} on layer {layer_number}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        gap_size = found_end - found_start
-        for clip in Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number):
-            if clip.data.get("position", 0.0) > found_start:
-                clip.data["position"] -= gap_size
-                clip.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with joined_transaction(get_app().updates):
+            close_gap(found_start, found_end, layer_number)
 
     def RemoveAllGaps_Triggered(self, found_start, layer_number):
         """Callback for removing all gaps on a layer starting from the detected gap"""
         log.info(f"Removing all gaps on layer {layer_number} starting from {found_start}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        # Combine and sort the clips and transitions by their position
-        clips_and_transitions = sorted(
-            Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number),
-            key=lambda c: c.data.get("position", 0.0)
-        )
-
-        # Build groups of overlapping clips/transitions so overlapping items move together
-        groups = []
-        current_group = []
-        current_group_start = None
-        current_group_end = None
-
-        for item in clips_and_transitions:
-            left_edge = item.data.get("position", 0.0)
-            right_edge = left_edge + (item.data.get("end", 0.0) - item.data.get("start", 0.0))
-
-            if current_group and left_edge <= current_group_end:
-                current_group.append(item)
-                current_group_end = max(current_group_end, right_edge)
-            else:
-                if current_group:
-                    groups.append((current_group_start, current_group_end, current_group))
-                current_group = [item]
-                current_group_start = left_edge
-                current_group_end = right_edge
-
-        if current_group:
-            groups.append((current_group_start, current_group_end, current_group))
-
-        # Track the end of the last processed group (after shifting) and cumulative offset
-        last_end = found_start
-        total_offset = 0.0
-        modified_items = []
-
-        for group_start, group_end, group_items in groups:
-            # Skip groups that end before the first detected gap
-            if group_end <= found_start:
-                last_end = max(last_end, group_end)
-                continue
-
-            # Calculate where this group would start after prior shifts
-            shifted_start = group_start - total_offset
-
-            # If there is still a gap, close it and increase the total offset
-            if shifted_start > last_end:
-                gap_size = shifted_start - last_end
-                total_offset += gap_size
-                shifted_start -= gap_size
-                log.info(f"Removing gap from {last_end} to {last_end + gap_size} on layer {layer_number}")
-
-            # Shift the entire overlapping group together
-            for item in group_items:
-                item.data["position"] -= total_offset
-                modified_items.append(item)
-
-            last_end = group_end - total_offset
-
-        # Save only the modified items
-        for item in modified_items:
-            item.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with joined_transaction(get_app().updates):
+            close_all_gaps(found_start, layer_number)
 
     def Paste_Triggered(self, action, clip_ids, tran_ids):
         """Callback for paste context menus"""
@@ -3841,110 +3777,45 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         nudge_duration = float(action) / fps_float  # Nudge duration in seconds
         log.debug(f"Nudging by {nudge_duration} seconds")
 
-        # Nudge all selected clips
-        for clip_id in clip_ids:
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                continue
+        with joined_transaction(get_app().updates):
+            # Nudge all selected clips
+            for clip_id in clip_ids:
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(clip.data['position'] + nudge_duration, 0.0)
-            clip.data['position'] = new_position
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                # Apply the nudge and ensure the position doesn't go below 0
+                new_position = max(clip.data['position'] + nudge_duration, 0.0)
+                clip.data['position'] = new_position
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-        # Nudge all selected transitions
-        for tran_id in tran_ids:
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                continue
+            # Nudge all selected transitions
+            for tran_id in tran_ids:
+                tran = Transition.get(id=tran_id)
+                if not tran:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(tran.data['position'] + nudge_duration, 0.0)
-            tran.data['position'] = new_position
-            self.update_transition_data(tran.data, only_basic_props=False)
+                # Apply the nudge and ensure the position doesn't go below 0
+                new_position = max(tran.data['position'] + nudge_duration, 0.0)
+                tran.data['position'] = new_position
+                self.update_transition_data(tran.data, only_basic_props=False)
 
     def Align_Triggered(self, action, clip_ids, tran_ids):
         """Callback for alignment context menus"""
         log.debug(action)
 
-        left_edge = -1.0
-        right_edge = -1.0
+        clips = [c for c in (Clip.get(id=clip_id) for clip_id in clip_ids) if c]
+        trans = [t for t in (Transition.get(id=tran_id) for tran_id in tran_ids) if t]
+        positions = aligned_positions(
+            [c.data for c in clips] + [t.data for t in trans], action == MenuAlign.RIGHT)
 
-        # Loop through each selected clip (find furthest left and right edge)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            position = float(clip.data["position"])
-            start_of_clip = float(clip.data["start"])
-            end_of_clip = float(clip.data["end"])
-
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_clip - start_of_clip) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_clip - start_of_clip)
-
-        # Loop through each selected transition (find furthest left and right edge)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            position = float(tran.data["position"])
-            start_of_tran = float(tran.data["start"])
-            end_of_tran = float(tran.data["end"])
-
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_tran - start_of_tran) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_tran - start_of_tran)
-
-        # Loop through each selected clip (update position to align clips)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                clip.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(clip.data["position"])
-                start_of_clip = float(clip.data["start"])
-                end_of_clip = float(clip.data["end"])
-                right_clip_edge = position + (end_of_clip - start_of_clip)
-
-                clip.data['position'] = position + (right_edge - right_clip_edge)
-
-            # Save changes
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-
-        # Loop through each selected transition (update position to align clips)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                tran.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(tran.data["position"])
-                start_of_tran = float(tran.data["start"])
-                end_of_tran = float(tran.data["end"])
-                right_tran_edge = position + (end_of_tran - start_of_tran)
-
-                tran.data['position'] = position + (right_edge - right_tran_edge)
-
-            # Save changes
-            self.update_transition_data(tran.data, only_basic_props=False)
+        with joined_transaction(get_app().updates):
+            for clip in clips:
+                clip.data['position'] = positions[clip.id]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            for tran in trans:
+                tran.data['position'] = positions[tran.id]
+                self.update_transition_data(tran.data, only_basic_props=False)
 
     def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
         """Callback for fade context menus — fades both alpha (video) and volume (audio)"""
@@ -4128,9 +3999,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get locked tracks from project
         locked_layers = [t.get("number") for t in get_app().project.get("layers") if t.get("lock")]
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight, e.g. an agent tool
+        # call that slices twice, so the whole edit stays one undo step)
+        owns_transaction = not get_app().updates.transaction_id
+        if owns_transaction:
+            get_app().updates.transaction_id = self.get_uuid()
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -4307,7 +4180,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Save changes for the left or right slice
                 self.update_transition_data(trans.data, only_basic_props=False)
         finally:
-            get_app().updates.transaction_id = None
+            if owns_transaction:
+                get_app().updates.transaction_id = None
 
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
@@ -4473,7 +4347,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -4663,7 +4537,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip:
