@@ -330,8 +330,11 @@ def add_track(position="top", relative_to="", name="", count=1):
 
     rows = _tracks()
     added = [r for r in rows if r["track_id"] in created_ids]
-    where = {"top": "at the top", "bottom": "at the bottom"}.get(
-        position, "%s %s" % (position, relative_to))
+    if position in ("above", "below"):
+        # Name the reference track by its number after the insert.
+        where = "%s %s" % (position, _track_title(_track_row(relative_layer)))
+    else:
+        where = "at the %s" % position
     if len(added) == 1:
         summary = "Added %s %s." % (_track_title(added[0]), where)
     else:
@@ -501,8 +504,8 @@ def _marker_listing(rows: Optional[List[dict]] = None, limit: int = 12) -> str:
     return "markers: " + text + (" ..." if len(rows) > limit else "")
 
 
-_COLOR_NOTE = ("color is stored with the marker and shown by list_markers_tool (the timeline "
-               "draws every marker with the same icon).")
+_COLOR_NOTE = ("the timeline tints the marker's icon with it (blue = the default icon) and shows "
+               "the marker's name next to it.")
 
 
 @editor_tool(
@@ -749,7 +752,7 @@ def _transport_summary(action: str, state: dict, changed: bool) -> str:
     if state["playing"]:
         speed = state["speed"]
         how = "backwards at %gx" % abs(speed) if speed < 0 else "at %gx" % speed
-        return ("Already playing %s (%s)." if not changed else "Playing %s from %s.") % (how, at)
+        return ("Already playing %s (now at %s)." if not changed else "Playing %s, now at %s.") % (how, at)
     return ("Already paused at %s." if not changed else "Paused at %s.") % at
 
 

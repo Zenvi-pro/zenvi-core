@@ -47,6 +47,9 @@ def test_add_track_at_the_bottom_renumbers_the_ui_tracks(editor):
 
 
 def test_add_track_above_and_below_a_track(editor):
+    out = editor.call("add_track_tool", position="below", relative_to="1", name="Low")
+    assert 'Added track 1 "Low" below track 2.' in out    # the old track 1 is now track 2
+    editor.undo()
     receipt(editor.call("add_track_tool", position="above", relative_to="2", name="Above2"))
     assert layer_by_label(editor, "Above2")["number"] == 2500000
     receipt(editor.call("add_track_tool", position="below", relative_to="2", name="Below2"))
