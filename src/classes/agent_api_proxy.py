@@ -411,9 +411,10 @@ def capture_editor_screenshot_tool(path: str = "", target: str = "window",
         return "Saved %s screenshot: %s (%dx%d)" % (key, out, pixmap.width(), pixmap.height())
 
     try:
-        return _run_on_main_thread(_grab, timeout=20)
+        result = _run_on_main_thread(_grab, timeout=20)
     except Exception as exc:
         return "Error: screenshot failed: %s" % exc
+    return str(result) if result is not None else "Error: screenshot failed: no result."
 
 
 # Tools the in-app MCP server exposes on top of the editor tools. These are for
