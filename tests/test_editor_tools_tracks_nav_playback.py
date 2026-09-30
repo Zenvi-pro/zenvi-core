@@ -75,6 +75,13 @@ def test_fast_forward_and_rewind_step_the_speed_like_l_and_j(timeline):
     assert receipt(timeline.call("play_tool", action="rewind"))["speed"] == -1
 
 
+def test_play_while_fast_forwarding_returns_to_normal_speed(timeline):
+    timeline.player.position = 300
+    receipt(timeline.call("play_tool", action="play", speed=4))
+    data = receipt(timeline.call("play_tool", action="play"))
+    assert data["speed"] == 1 and data["changed"] is True
+
+
 def test_step_frames(timeline):
     timeline.player.position = 100
     data = receipt(timeline.call("play_tool", action="step_forward", frames=5))

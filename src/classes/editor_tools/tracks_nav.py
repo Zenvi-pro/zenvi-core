@@ -678,14 +678,14 @@ def _start_transport(action: str, speed, frames: int) -> dict:
 
     if action == "play":
         wanted = 1 if speed is None else speed
-        if state["playing"] and (speed is None or state["speed"] == speed):
+        if state["playing"] and state["speed"] == wanted:
             return {"action": action, "expect": {"playing": True}, "changed": False}
-        if not win.should_play(0 if speed is None else speed):
+        if not win.should_play(0 if wanted == 1 else wanted):
             raise _at_end_error(state)
         if not state["playing"]:
-            win.actionPlay_trigger()
-        if speed is not None:
-            win.SpeedSignal.emit(float(speed))
+            win.actionPlay_trigger()          # the Play button: normal speed
+        if wanted != 1 or state["playing"]:
+            win.SpeedSignal.emit(float(wanted))
         return {"action": action, "expect": {"playing": True, "speed": wanted}, "changed": True}
 
     if action == "pause":
@@ -761,9 +761,9 @@ def _transport_summary(action: str, state: dict, changed: bool) -> str:
 def play(action="toggle", speed=None, frames=1):
     """Control preview playback: play, pause, stop, fast-forward, rewind, play at a speed, or step frames.
 
-    Always pass action: 'play' starts playback from the playhead (does nothing
-    if already playing), 'pause' pauses it, 'toggle' flips it like the Space
-    bar, 'stop' pauses and returns to the start. 'fast_forward' / 'rewind'
+    Always pass action: 'play' plays from the playhead at normal speed (does
+    nothing if it already is), 'pause' pauses, 'toggle' flips it like the
+    Space bar, 'stop' pauses and returns to the start. 'fast_forward' / 'rewind'
     change speed one step like the L / J keys; action='play' with speed=2 plays
     at double speed, speed=-1 backwards. 'step_forward' / 'step_back' pause and
     move `frames` frames. The result is the player's real state (playing,
