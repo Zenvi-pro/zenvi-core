@@ -239,3 +239,25 @@ def test_on_the_gui_thread_the_change_is_reported_as_unconfirmed(timeline, monke
     assert receipt(out)["confirmed"] is False
     out = timeline.call("seek_playhead_tool", seconds=3)
     assert receipt(out)["confirmed"] is False
+
+
+@pytest.mark.parametrize("fps, seconds, frame, timecode", [
+    ((24, 1), 32, 769, "00:00:32,00"),
+    ((60, 1), 1.5, 91, "00:00:01,30"),
+    ((30000, 1001), 32, 960, "00:00:31,28"),   # 29.97: frame 960 starts at 31.998 s
+])
+def test_seek_and_markers_follow_the_project_frame_rate(fps, seconds, frame, timecode):
+    from editor_tools_harness import make_editor
+    editor = make_editor(fps=fps)
+    try:
+        f = editor.add_file("video", duration=60.0)
+        editor.add_clip(f)
+        install_player(editor, last_frame=frame + 1000)
+        data = receipt(editor.call("seek_playhead_tool", seconds=seconds))
+        assert data["frame"] == frame and data["timecode"] == timecode
+        # Markers snap to this frame rate's grid.
+        mark = receipt(editor.call("add_marker_tool", position_seconds=seconds + 0.004, name="M"))["marker"]
+        assert mark["frame"] == frame
+        assert receipt(editor.call("seek_playhead_tool", marker="M"))["frame"] == frame
+    finally:
+        editor.stop()
