@@ -158,7 +158,10 @@ class FakeFilesModel:
 @pytest.fixture
 def tt(editor, tmp_path, monkeypatch):
     """The editor fixture plus the titles-text fakes; titles are written under tmp_path."""
+    import classes
     from classes import info
+    # A test elsewhere leaves a fake classes.query in sys.modules; the package attribute is the real one.
+    monkeypatch.setitem(sys.modules, "classes.query", classes.query)
     monkeypatch.setattr(info, "TITLE_PATH", str(tmp_path / "title"), raising=False)
     monkeypatch.setattr(info, "BLENDER_PATH", str(tmp_path / "blender"), raising=False)
     monkeypatch.setattr(info, "USER_TITLES_PATH", str(tmp_path / "title_templates"), raising=False)
