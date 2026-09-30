@@ -424,3 +424,11 @@ def test_clear_all_deletes_the_project_copies(editor, proxies, tmp_path):
     r = _receipt(editor.call("manage_optimized_previews_tool", action="clear_all", confirm=True))
     assert r["unlinked"] == 1 and r["deleted"] == 2 and not os.path.exists(inside) and not os.path.exists(stray)
     assert "proxy_reader" not in editor.file(v) and editor.undo_steps_since_mark() == 1
+
+
+def test_stills_report_no_duration_and_audio_layout(editor):
+    img = editor.add_file("image")
+    aud = editor.add_file("audio", channel_layout=3)
+    rows = {f["file_id"]: f for f in _receipt(editor.call("list_project_files_tool", detail="full"))["files"]}
+    assert rows[img]["duration"] is None and rows[img]["media_duration"] is None
+    assert rows[img]["channel_layout"] == "none" and rows[aud]["channel_layout"] == "stereo"
