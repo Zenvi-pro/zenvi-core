@@ -5,8 +5,25 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_query_module():
+    """_install_fake_query_module replaces classes.query; put the real one back.
+
+    Left in sys.modules, the fake File (no .save) broke every later test that
+    imports classes.query (e.g. the editor harness in test_undo_property_edits).
+    """
+    saved = sys.modules.get("classes.query")
+    yield
+    if saved is None:
+        sys.modules.pop("classes.query", None)
+    else:
+        sys.modules["classes.query"] = saved
 
 
 def _install_fake_query_module(fake_file):

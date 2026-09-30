@@ -430,11 +430,12 @@ def clear_waveform_data():
 
     One undo step; joins the caller's transaction. Returns (files_cleared, clips_cleared).
     """
+    from classes import app as app_module
     from classes.updates import nested_transaction
 
     ui_keys = ("audio_data_format", "audio_data_rms", "audio_data_rate")
     cleared_files = cleared_clips = 0
-    with nested_transaction(get_app().updates):
+    with nested_transaction(app_module.get_app().updates):
         for file in File.filter():
             if "audio_data" in file.data.get("ui", {}):
                 log.debug("File %s has audio data. Deleting it.", file.id)

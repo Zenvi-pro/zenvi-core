@@ -268,6 +268,8 @@ def test_export_files_to_folder(studio, tmp_path, monkeypatch):
     fake.nameOfExport = lambda f: "shot [0.00 - 1.00].mp4"
     fake.copyFileToFolder = lambda f, dest: open(os.path.join(dest, "shot [0.00 - 1.00].mp4"), "wb").write(b"d")
     monkeypatch.setitem(sys.modules, "windows.export_clips", fake)
+    import windows
+    monkeypatch.setattr(windows, "export_clips", fake, raising=False)
     monkeypatch.setitem(sys.modules, "openshot", types.ModuleType("openshot"))
     dest = tmp_path / "handoff"
     data = _receipt(studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(dest)))
@@ -291,6 +293,8 @@ def test_subclip_renders_run_on_a_qthread_not_the_worker(studio, tmp_path, monke
     fake.startAndEndFrames = lambda c: (31, 60)
     fake.setupWriter = lambda c, w: None
     monkeypatch.setitem(sys.modules, "windows.export_clips", fake)
+    import windows  # an earlier test may have imported the real module as a package attribute
+    monkeypatch.setattr(windows, "export_clips", fake, raising=False)
     writes = []
     fake_os = types.ModuleType("openshot")
     fake_os.FFmpegWriter = lambda path: MagicMock(WriteFrame=lambda fr: writes.append(fr),
