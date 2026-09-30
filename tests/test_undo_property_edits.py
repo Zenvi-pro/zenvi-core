@@ -42,3 +42,19 @@ def test_a_waveform_cache_refresh_is_not_a_content_change():
     base = {"id": "c", "layer": 1, "alpha": {"Points": []}}
     assert _clip_content_digest(base) == _clip_content_digest(dict(base, ui={"audio_data": [1, 2, 3]}))
     assert _clip_content_digest(base) != _clip_content_digest(dict(base, alpha={"Points": [1]}))
+
+
+def test_undo_of_a_relink_reports_a_change(editor):
+    """Regression: a relink changes only the clips' readers; undo called it 'did not change'."""
+    f = editor.add_file("video")
+    c = editor.add_clip(f)
+    clip = Clip.get(id=c)
+    clip.data = {"reader": dict(clip.data["reader"], path="/moved/sample_video.mp4")}
+    clip.save()
+    out = editor.call("undo_tool", steps=1)
+    assert not out.startswith("Error"), out
+    assert editor.clip(c)["reader"]["path"] == "/media/sample_video.mp4"
+    from classes.tool_handlers import _clip_content_digest
+    base = {"id": "c", "reader": {"path": "/a.mp4", "duration": 5.0, "metadata": {"x": 1}}}
+    assert _clip_content_digest(base) == _clip_content_digest(
+        dict(base, reader=dict(base["reader"], metadata={"x": 2})))

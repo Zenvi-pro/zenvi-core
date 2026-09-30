@@ -506,6 +506,10 @@ def _clip_content_digest(data):
     """
     try:
         rest = {k: v for k, v in data.items() if k not in _SIGNATURE_SKIP_KEYS}
+        # The reader is mostly cached metadata, but which media it plays is the
+        # clip: a relink or a new image-sequence frame rate changes only this.
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        rest["_media"] = [reader.get(k) for k in ("path", "duration", "fps", "video_length")]
         return hash(json.dumps(rest, sort_keys=True, default=str))
     except Exception:
         return None
