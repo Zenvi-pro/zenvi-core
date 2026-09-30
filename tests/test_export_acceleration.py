@@ -32,6 +32,8 @@ from classes.export_acceleration.hw_encode import (
 from classes.export_acceleration.smart_render import (
     analyze_smart_render_spans,
     clip_smart_render_reasons,
+    clip_transform_reasons,
+    decide_smart_render,
 )
 from classes.export_acceleration.background_render import (
     BackgroundRenderManager,
@@ -342,8 +344,41 @@ def test_resolve_audio_codec_keeps_libmp3lame(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _clip(path, *, position=0.0, start=0.0, end=2.0, width=1920, height=1080, vcodec="h264"):
+def _pt(y):
+    return {"Points": [{"co": {"X": 1.0, "Y": y}}]}
+
+
+def _identity_color_grade():
     return {
+        "class_name": "ColorGrade",
+        "type": "ColorGrade",
+        "contrast": _pt(0.0),
+        "exposure": _pt(0.0),
+        "temperature": _pt(0.0),
+        "tint": _pt(0.0),
+        "shadows": _pt(0.0),
+        "highlights": _pt(0.0),
+        "vibrance": _pt(0.0),
+        "saturation": _pt(1.0),
+        "mix": _pt(1.0),
+        "lut_intensity": _pt(1.0),
+        "lut_path": "",
+    }
+
+
+def _clip(
+    path,
+    *,
+    position=0.0,
+    start=0.0,
+    end=2.0,
+    width=1920,
+    height=1080,
+    vcodec="h264",
+    with_color_grade=False,
+):
+    """OpenShot-shaped clip: location/rotation at 0, scale/volume/time/alpha at 1."""
+    clip = {
         "position": position,
         "start": start,
         "end": end,
@@ -354,14 +389,65 @@ def _clip(path, *, position=0.0, start=0.0, end=2.0, width=1920, height=1080, vc
             "fps": {"num": 30, "den": 1},
             "vcodec": vcodec,
         },
-        "scale_x": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
-        "scale_y": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
+        "scale_x": _pt(1.0),
+        "scale_y": _pt(1.0),
+        "location_x": _pt(0.0),
+        "location_y": _pt(0.0),
+        "rotation": _pt(0.0),
+        "shear_x": _pt(0.0),
+        "shear_y": _pt(0.0),
+        "volume": _pt(1.0),
+        "alpha": _pt(1.0),
+        "time": _pt(1.0),
         "effects": [],
     }
+    if with_color_grade:
+        clip["effects"] = [_identity_color_grade()]
+    return clip
 
 
-def test_clip_reasons_for_effect():
-    clip = _clip("/tmp/x.mp4")
+def test_identity_openshot_clip_has_no_transform_reasons(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), with_color_grade=True)
+    assert clip_transform_reasons(clip) == []
+    reasons = clip_smart_render_reasons(
+        clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
+    )
+    assert reasons == []
+
+
+def test_location_zero_is_not_translated(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    assert "translated" not in clip_transform_reasons(clip)
+    clip["location_x"] = _pt(0.5)
+    assert "translated" in clip_transform_reasons(clip)
+
+
+def test_time_keyframe_identity_not_speed_change(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    assert "speed-change" not in clip_transform_reasons(clip)
+    clip["time"] = {"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 2, "Y": 2}}]}
+    assert "speed-change" in clip_transform_reasons(clip)
+
+
+def test_identity_color_grade_allowed_real_grade_blocked(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), with_color_grade=True)
+    assert "has-effects" not in clip_transform_reasons(clip)
+    clip["effects"][0]["contrast"] = _pt(0.4)
+    assert "has-effects" in clip_transform_reasons(clip)
+
+
+def test_clip_reasons_for_effect(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
     clip["effects"] = [{"type": "Brightness"}]
     reasons = clip_smart_render_reasons(
         clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
@@ -369,12 +455,24 @@ def test_clip_reasons_for_effect():
     assert "has-effects" in reasons
 
 
-def test_clip_reasons_resolution_mismatch():
-    clip = _clip("/tmp/x.mp4", width=1280, height=720)
+def test_clip_reasons_resolution_mismatch(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), width=1280, height=720)
     reasons = clip_smart_render_reasons(
         clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
     )
     assert "resolution-mismatch" in reasons
+
+
+def test_identity_crop_dict_not_cropped(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path))
+    clip["crop"] = {"x": _pt(0.0), "y": _pt(0.0), "right": _pt(1.0), "bottom": _pt(1.0)}
+    assert "cropped" not in clip_transform_reasons(clip)
+    clip["crop"]["x"] = _pt(0.2)
+    assert "cropped" in clip_transform_reasons(clip)
 
 
 def test_analyze_spans_marks_overlap_as_encode(tmp_path):
@@ -399,7 +497,6 @@ def test_analyze_spans_marks_overlap_as_encode(tmp_path):
         end_frame=90,
     )
     assert any(s.kind == "encode" for s in spans)
-    # Overlap region must not be copy-only for the whole timeline
     assert not all(s.kind == "copy" for s in spans)
 
 
@@ -409,7 +506,7 @@ def test_analyze_eligible_single_clip(tmp_path):
     project = {
         "fps": {"num": 30, "den": 1},
         "duration": 2,
-        "clips": [_clip(str(path))],
+        "clips": [_clip(str(path), with_color_grade=True)],
         "transitions": [],
     }
     spans = analyze_smart_render_spans(
@@ -423,6 +520,107 @@ def test_analyze_eligible_single_clip(tmp_path):
     )
     assert spans
     assert all(s.kind == "copy" for s in spans)
+
+
+def test_decide_full_copy_matched_h264(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [_clip(str(path))],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1920,
+        export_height=1080,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+    )
+    assert decision.mode == "full_copy"
+
+
+def test_decide_passthrough_hevc_to_h264_export(tmp_path):
+    path = tmp_path / "phone.mov"
+    path.write_bytes(b"fake")
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [_clip(str(path), width=1920, height=1080, vcodec="hevc", with_color_grade=True)],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        vformat="mp4",
+    )
+    assert decision.mode == "source_passthrough"
+    assert decision.clip is not None
+
+
+def test_decide_passthrough_blocked_by_real_effect(tmp_path):
+    path = tmp_path / "phone.mov"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), vcodec="hevc")
+    clip["effects"] = [{"type": "Brightness"}]
+    project = {"fps": {"num": 30, "den": 1}, "clips": [clip], "transitions": []}
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+    )
+    assert decision.mode == "none"
+
+
+def test_decide_partial_when_second_clip_has_effect(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clean = _clip(str(path), position=0.0, end=1.0)
+    dirty = _clip(str(path), position=1.0, end=2.0)
+    dirty["effects"] = [{"type": "Brightness"}]
+    project = {
+        "fps": {"num": 30, "den": 1},
+        "clips": [clean, dirty],
+        "transitions": [],
+    }
+    decision = decide_smart_render(
+        project,
+        export_width=1920,
+        export_height=1080,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        allow_partial=True,
+    )
+    assert decision.mode == "partial"
+    assert any(s.kind == "copy" for s in decision.spans)
+    assert any(s.kind == "encode" for s in decision.spans)
+
+
+def test_trimmed_clip_still_eligible(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clip = _clip(str(path), start=1.0, end=3.0)
+    assert clip_transform_reasons(clip) == []
+    reasons = clip_smart_render_reasons(
+        clip, export_width=1920, export_height=1080, export_fps=30, export_vcodec="libx264"
+    )
+    assert reasons == []
 
 
 # ---------------------------------------------------------------------------

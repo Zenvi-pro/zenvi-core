@@ -75,6 +75,7 @@ try:
     from classes.export_acceleration.hw_decode import force_software_decode
     from classes.export_acceleration.smart_render import (
         analyze_smart_render_spans,
+        decide_smart_render,
         try_smart_render_export,
     )
 except Exception:  # pragma: no cover - import soft-fail for partial installs
@@ -86,6 +87,7 @@ except Exception:  # pragma: no cover - import soft-fail for partial installs
     maybe_apply_hardware_bitrate = None
     force_software_decode = None
     analyze_smart_render_spans = None
+    decide_smart_render = None
     try_smart_render_export = None
 
 MAX_FPS_SPINBOX_VALUE = 2147483647
@@ -1183,56 +1185,107 @@ class Export(QDialog):
             format_of_progress_string = "%4.1f%% "
             fps_encode = 0
 
-            # Smart render (Phase 4): when the whole range is stream-copy
-            # eligible, skip composite/encode entirely. Mixed copy+encode
-            # falls through to the normal pipeline for correctness.
+            # Smart render: full copy, source passthrough, or partial copy+encode.
             smart_enabled = bool(
                 try_smart_render_export
-                and analyze_smart_render_spans
+                and decide_smart_render
                 and (self.s.get("exportSmartRender") if self.s else True)
                 and export_type in [_("Video & Audio"), _("Video Only")]
             )
             if smart_enabled:
-                spans = analyze_smart_render_spans(
+                _sf = int(video_settings.get("start_frame"))
+                _ef = int(video_settings.get("end_frame"))
+                _fps_num = int((video_settings.get("fps") or {}).get("num", 30))
+                _fps_den = int((video_settings.get("fps") or {}).get("den", 1) or 1)
+
+                def _encode_smart_span(span_start, span_end, out_path):
+                    """Encode one timeline span into out_path for partial smart render."""
+                    try:
+                        writer = openshot.FFmpegWriter(out_path)
+                        vc = video_settings.get("vcodec") or "libx264"
+                        if not isinstance(vc, str):
+                            vc = str(vc)
+                        pr_dict = video_settings.get("pixel_ratio") or {}
+                        video_bps = _parse_bitrate_to_bps(video_settings.get("video_bitrate"))
+                        if export_type in [_("Video & Audio"), _("Video Only")]:
+                            writer.SetVideoOptions(
+                                True,
+                                vc,
+                                openshot.Fraction(_fps_num, _fps_den),
+                                int(video_settings.get("width")),
+                                int(video_settings.get("height")),
+                                openshot.Fraction(
+                                    int(pr_dict.get("num", 1)),
+                                    int(pr_dict.get("den", 1) or 1),
+                                ),
+                                False,
+                                False,
+                                video_bps,
+                            )
+                        if export_type in [_("Video & Audio"), _("Audio Only")]:
+                            ac = audio_settings.get("acodec") or "aac"
+                            if not isinstance(ac, str):
+                                ac = str(ac)
+                            audio_bps = _parse_bitrate_to_bps(audio_settings.get("audio_bitrate"))
+                            writer.SetAudioOptions(
+                                True,
+                                ac,
+                                int(audio_settings.get("sample_rate", 48000)),
+                                int(audio_settings.get("channels", 2)),
+                                int(audio_settings.get(
+                                    "channel_layout", openshot.LAYOUT_STEREO
+                                )),
+                                audio_bps,
+                            )
+                        writer.Open()
+                        for frame in range(int(span_start), int(span_end) + 1):
+                            if not self.exporting:
+                                writer.Close()
+                                return False
+                            writer.WriteFrame(self.timeline.GetFrame(frame))
+                        writer.Close()
+                        return os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+                    except Exception:
+                        log.warning(
+                            "Smart-render encode_span failed (%s-%s)",
+                            span_start,
+                            span_end,
+                            exc_info=True,
+                        )
+                        return False
+
+                result = try_smart_render_export(
                     self.project._data,
-                    export_width=int(video_settings.get("width", 1920)),
-                    export_height=int(video_settings.get("height", 1080)),
-                    export_fps=float(video_settings.get("fps", {}).get("num", 30))
-                    / float(video_settings.get("fps", {}).get("den", 1) or 1),
-                    export_vcodec=str(video_settings.get("vcodec") or "libx264"),
-                    start_frame=int(video_settings.get("start_frame")),
-                    end_frame=int(video_settings.get("end_frame")),
+                    export_file_path=export_file_path,
+                    video_settings=video_settings,
+                    start_frame=_sf,
+                    end_frame=_ef,
+                    encode_span=_encode_smart_span,
+                    enabled=True,
+                    allow_passthrough=True,
+                    allow_partial=True,
                 )
-                if spans and all(s.kind == "copy" for s in spans):
+                if result:
                     self.ExportStarted.emit(
                         export_file_path,
                         video_settings.get("start_frame"),
                         video_settings.get("end_frame"),
                     )
-                    result = try_smart_render_export(
-                        self.project._data,
-                        export_file_path=export_file_path,
-                        video_settings=video_settings,
-                        start_frame=int(video_settings.get("start_frame")),
-                        end_frame=int(video_settings.get("end_frame")),
-                        encode_span=lambda *_args: False,  # pure-copy path only
-                        enabled=True,
+                    max_frame = _ef
+                    end_time_export = time.time()
+                    start_time_export = end_time_export
+                    fps_encode = 0
+                    mode = result.get("mode") or "full_copy"
+                    log.info("Smart render (%s) succeeded: %s", mode, result)
+                    self.ExportFrame.emit(
+                        "",
+                        video_settings.get("start_frame"),
+                        video_settings.get("end_frame"),
+                        max_frame,
+                        "100.0%% ",
                     )
-                    if result:
-                        max_frame = int(video_settings.get("end_frame"))
-                        end_time_export = time.time()
-                        start_time_export = end_time_export
-                        fps_encode = 0
-                        log.info("Smart render (full copy) succeeded: %s", result)
-                        self.ExportFrame.emit(
-                            "",
-                            video_settings.get("start_frame"),
-                            video_settings.get("end_frame"),
-                            max_frame,
-                            "100.0%% ",
-                        )
-                        export_ok = True
-                        return
+                    export_ok = True
+                    return
 
             # Start video cache thread
             self.cache_thread.Reader(self.timeline)

@@ -31,6 +31,7 @@ from classes.export_acceleration.export_pipeline import (
 )
 from classes.export_acceleration.smart_render import (
     analyze_smart_render_spans,
+    decide_smart_render,
     try_smart_render_export,
 )
 from classes.export_acceleration.background_render import (
@@ -52,6 +53,7 @@ __all__ = [
     "PipelineCancelled",
     "run_pipelined_export",
     "analyze_smart_render_spans",
+    "decide_smart_render",
     "try_smart_render_export",
     "BackgroundRenderManager",
     "content_hash_for_segment",
