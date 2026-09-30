@@ -90,6 +90,7 @@ def test_analyze_tool_renders_clip_alone_and_compares(fx, monkeypatch, tmp_path)
 
     bright = _hist([(200, 10)])
     monkeypatch.setattr(analysis, "render_frame", render)
+    monkeypatch.setattr(analysis, "frame_pixels", lambda f, r=None: [(200, 200, 200, 255)] * 30)
     monkeypatch.setattr(analysis, "scope_data", lambda f, r=None: {
         "luma": bright, "red": bright, "green": bright, "blue": bright, "vectorscope": [], "vectorscope_size": 0,
         "clipped_shadows": 0, "clipped_highlights": 0, "total_pixels": 10})
@@ -206,3 +207,16 @@ def test_object_mask_prompts_in_source_pixels():
     assert ctx["rect_x1"] == pytest.approx(192) and ctx["rect_y2"] == pytest.approx(648)
     assert ctx["object_mask_selection"]["frames"]["31"]["positive_points"] == [{"x": 960.0, "y": 270.0}]
     assert json.dumps(ctx)
+
+
+def test_pixel_stats_white_balance_and_saturation():
+    warm_greys = [(160, 150, 130, 255)] * 90 + [(250, 20, 20, 255)] * 10 + [(0, 0, 0, 0)] * 50
+    p = analysis.pixel_stats(warm_greys)
+    assert p["neutral_warmth"] == pytest.approx(0.118, abs=0.002) and p["neutral_pct"] == 90.0
+    assert p["saturation_p90"] > 0.9 and 0.2 < p["saturation_mean"] < 0.3
+    gray = _hist([(150, 100)])
+    d = {"luma": gray, "red": gray, "green": gray, "blue": gray, "vectorscope": [], "vectorscope_size": 0,
+         "clipped_shadows": 0, "clipped_highlights": 0, "total_pixels": 100}
+    s = analysis.compute_stats(d, p)
+    assert s["cast"] == "warm (orange)" and s["suggested_grade"]["temperature"] < 0
+    assert analysis.pixel_stats([(0, 0, 0, 0)]) is None

@@ -164,8 +164,84 @@ def _mean(hist) -> float:
     return sum(i * n for i, n in enumerate(hist)) / total / (len(hist) - 1) if total else 0.0
 
 
-def compute_stats(d: dict) -> dict:
-    """Numbers a colorist reads off the scopes, from FrameScope data (pure; unit-tested)."""
+def frame_pixels(frame, region: Optional[dict] = None, target_width: int = 160) -> list:
+    """A small RGBA sample of *frame* ([(r, g, b, a)] 0-255), for per-pixel white balance and saturation.
+
+    libopenshot saves a downscaled PNG to a temp file (worker thread); QImage reads it back.
+    Returns [] when Qt is unavailable, so callers fall back to the scope histograms.
+    """
+    import tempfile
+    try:
+        from qt_api import QImage
+    except ImportError:
+        return []
+    width = max(1, int(frame.GetWidth()))
+    scale = min(1.0, float(target_width) / width)
+    fd, path = tempfile.mkstemp(prefix="zenvi-frame-", suffix=".png")
+    os.close(fd)
+    try:
+        frame.Save(path, scale, "PNG", 100)
+        img = QImage(path)
+        if img.isNull():
+            return []
+        img = img.convertToFormat(QImage.Format_RGBA8888)
+        w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+        ptr = img.constBits()
+        ptr.setsize(bpl * h)
+        data = bytes(ptr)
+    except Exception:
+        return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    x0, y0, x1, y1 = 0, 0, w, h
+    if region:
+        x0, y0 = int(region["x"] * w), int(region["y"] * h)
+        x1 = max(x0 + 1, int(round((region["x"] + region["width"]) * w)))
+        y1 = max(y0 + 1, int(round((region["y"] + region["height"]) * h)))
+    out = []
+    for yy in range(y0, min(y1, h)):
+        row = yy * bpl
+        for xx in range(x0, min(x1, w)):
+            o = row + xx * 4
+            out.append((data[o], data[o + 1], data[o + 2], data[o + 3]))
+    return out
+
+
+def pixel_stats(pixels: list) -> Optional[dict]:
+    """HSV saturation and the white balance of near-neutral mid-tones from an RGBA sample (pure)."""
+    sats, neutral = [], [0.0, 0.0, 0.0, 0]
+    for r, g, b, a in pixels:
+        if a < 128:
+            continue
+        r, g, b = r / 255.0, g / 255.0, b / 255.0
+        hi, lo = max(r, g, b), min(r, g, b)
+        sat = (hi - lo) / hi if hi > 0 else 0.0
+        sats.append(sat)
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        if 0.25 <= luma <= 0.92 and sat < 0.25:
+            neutral[0] += r
+            neutral[1] += g
+            neutral[2] += b
+            neutral[3] += 1
+    if not sats:
+        return None
+    sats.sort()
+    out = {"saturation_mean": round(sum(sats) / len(sats), 3),
+           "saturation_p90": round(sats[min(len(sats) - 1, int(0.9 * len(sats)))], 3),
+           "neutral_pct": round(100.0 * neutral[3] / len(sats), 1)}
+    if neutral[3] >= max(20, 0.03 * len(sats)):
+        nr, ng, nb = (neutral[i] / neutral[3] for i in range(3))
+        out["neutral_rgb"] = [round(nr, 3), round(ng, 3), round(nb, 3)]
+        out["neutral_warmth"] = round(nr - nb, 3)
+        out["neutral_green_magenta"] = round(ng - (nr + nb) / 2.0, 3)
+    return out
+
+
+def compute_stats(d: dict, pixels: Optional[dict] = None) -> dict:
+    """Numbers a colorist reads off the scopes: FrameScope data plus an optional pixel_stats() sample."""
     luma = d["luma"]
     counted = sum(luma)
     if counted <= 0:
@@ -178,6 +254,7 @@ def compute_stats(d: dict) -> dict:
     size = int(d.get("vectorscope_size") or 0)
     vec = d.get("vectorscope") or []
     chroma_hist = [0] * 101  # 0 .. 0.5 UV magnitude in 0.005 steps
+    nu = nv = nn = 0.0  # near-neutral pixels (whites, greys): their tint is the white balance
     if size > 1 and len(vec) == size * size:
         c = (size - 1) / 2.0
         for idx, n in enumerate(vec):
@@ -186,13 +263,31 @@ def compute_stats(d: dict) -> dict:
             y, x = divmod(idx, size)
             u = (x - c) / c * _U_MAX
             v = (c - y) / c * _V_MAX
-            k = min(100, int(round(math.hypot(u, v) / 0.005)))
-            chroma_hist[k] += n
+            chroma = math.hypot(u, v)
+            chroma_hist[min(100, int(round(chroma / 0.005)))] += n
+            if chroma < 0.06:
+                nu, nv, nn = nu + u * n, nv + v * n, nn + n
     chroma_total = sum(chroma_hist)
     chroma_mean = sum(i * 0.005 * n for i, n in enumerate(chroma_hist)) / chroma_total if chroma_total else 0.0
     gray = sum(chroma_hist[:7]) / chroma_total if chroma_total else 0.0
-    cast = "neutral"
-    if abs(warmth) >= 0.04 or abs(green_magenta) >= 0.04:
+    cast, neutral_uv = "neutral", None
+    if pixels and "neutral_warmth" in pixels:
+        w, gm = pixels["neutral_warmth"], pixels["neutral_green_magenta"]
+        if max(abs(w), abs(gm)) >= 0.025:
+            if abs(w) >= abs(gm):
+                cast = "warm (orange)" if w > 0 else "cool (blue)"
+            else:
+                cast = "green" if gm > 0 else "magenta"
+    elif chroma_total and nn / chroma_total >= 0.05:
+        # U > 0 = blue, U < 0 = yellow/orange; V > 0 = red/magenta, V < 0 = green.
+        neutral_uv = (nu / nn, nv / nn)
+        mu, mv = neutral_uv
+        if max(abs(mu), abs(mv)) >= 0.008:
+            if abs(mu) >= abs(mv):
+                cast = "cool (blue)" if mu > 0 else "warm (orange)"
+            else:
+                cast = "magenta" if mv > 0 else "green"
+    elif abs(warmth) >= 0.04 or abs(green_magenta) >= 0.04:  # few neutral pixels: fall back to mean RGB
         if abs(warmth) >= abs(green_magenta):
             cast = "warm (orange)" if warmth > 0 else "cool (blue)"
         else:
@@ -206,11 +301,14 @@ def compute_stats(d: dict) -> dict:
         "warmth": warmth,
         "green_magenta": green_magenta,
         "cast": cast,
+        "neutral_tint_uv": [round(neutral_uv[0], 4), round(neutral_uv[1], 4)] if neutral_uv else None,
         "chroma_mean": round(chroma_mean, 4),
         "chroma_p90": round(_percentile(chroma_hist, 0.9) * 0.5, 4),
         "gray_pct": round(100.0 * gray, 1),
         "transparent_pct": round(100.0 * (1.0 - counted / float(total)), 1),
     }
+    if pixels:
+        stats.update(pixels)
     stats["verdict"] = _verdict(stats)
     stats["suggested_grade"] = _suggest(stats)
     return stats
@@ -233,11 +331,12 @@ def _verdict(s: dict) -> list:
         out.append("flat / low contrast (p5-p95 %.2f)" % (p95 - p5))
     elif p95 - p5 > 0.9:
         out.append("very high contrast")
+    sat = s.get("saturation_mean")
     if s["gray_pct"] > 97:
         out.append("black and white")
-    elif s["chroma_mean"] < 0.03:
+    elif (sat is not None and sat < 0.12) or (sat is None and s["chroma_mean"] < 0.03):
         out.append("muted colors")
-    elif s["chroma_mean"] > 0.14:
+    elif (sat is not None and sat > 0.55) or (sat is None and s["chroma_mean"] > 0.14):
         out.append("very saturated")
     if s["cast"] != "neutral":
         out.append(f"{s['cast']} cast")
@@ -256,11 +355,24 @@ def _suggest(s: dict) -> dict:
         out["shadows"] = 0.15
     if s["luma"]["p95"] - s["luma"]["p5"] < 0.4:
         out["contrast"] = 0.2
-    if abs(s["warmth"]) >= 0.04:
-        out["temperature"] = round(max(-0.4, min(0.4, -2.0 * s["warmth"])), 2)
-    if abs(s["green_magenta"]) >= 0.04:
-        out["tint"] = round(max(-0.4, min(0.4, 3.0 * s["green_magenta"])), 2)
-    if s["gray_pct"] < 97 and s["chroma_mean"] < 0.03:
+    uv = s.get("neutral_tint_uv")
+    if "neutral_warmth" in s:
+        if s["cast"] != "neutral":
+            if abs(s["neutral_warmth"]) >= 0.025:
+                out["temperature"] = round(max(-0.4, min(0.4, -3.0 * s["neutral_warmth"])), 2)
+            if abs(s["neutral_green_magenta"]) >= 0.025:
+                out["tint"] = round(max(-0.4, min(0.4, 4.0 * s["neutral_green_magenta"])), 2)
+    elif uv and s["cast"] != "neutral":
+        if abs(uv[0]) >= 0.008:
+            out["temperature"] = round(max(-0.4, min(0.4, 12.0 * uv[0])), 2)
+        if abs(uv[1]) >= 0.008:
+            out["tint"] = round(max(-0.4, min(0.4, -12.0 * uv[1])), 2)
+    elif s["cast"] != "neutral":
+        if abs(s["warmth"]) >= 0.04:
+            out["temperature"] = round(max(-0.4, min(0.4, -2.0 * s["warmth"])), 2)
+        if abs(s["green_magenta"]) >= 0.04:
+            out["tint"] = round(max(-0.4, min(0.4, 3.0 * s["green_magenta"])), 2)
+    if "muted colors" in (s.get("verdict") or _verdict(s)):
         out["saturation"] = 1.25
     return out
 
@@ -315,9 +427,10 @@ def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None
                          region=None, compare_without_effects=False, save_frame_path=""):
     """Measure a frame the way the scopes do, as numbers, to grade objectively and to check that an
     effect or grade did what was asked: luma percentiles p1-p99 and mean (0 = black, 1 = white),
-    clipped shadows/highlights %, mean RGB, warmth (R-B) and green/magenta balance with a cast label,
-    chroma (UV saturation: ~0.02 muted, 0.05-0.1 natural, >0.14 very saturated), gray_pct (100 = black
-    and white), transparent_pct (share keyed out / transparent), a plain-words verdict and
+    clipped shadows/highlights %, mean RGB, warmth (R-B), green/magenta balance, the white-balance cast
+    of near-neutral pixels (neutral_tint_uv, cast label),
+    saturation_mean (HSV 0-1: <0.12 muted, 0.2-0.4 natural, >0.55 very saturated), chroma (UV),
+    gray_pct (100 = black and white), transparent_pct (share keyed out / transparent), a plain-words verdict and
     suggested_grade values for color_grade_clip_tool. Renders off the GUI thread; changes nothing.
 
     Use it before grading ("it's too dark", "fix the colors", "match the look") and after, to verify
@@ -344,7 +457,7 @@ def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None
             raise ToolError(f"folder {parent} does not exist")
     rendered = render_frame(clip_data, t)
     try:
-        stats = compute_stats(scope_data(rendered.frame, region_r))
+        stats = compute_stats(scope_data(rendered.frame, region_r), pixel_stats(frame_pixels(rendered.frame, region_r)))
         if save_frame_path:
             rendered.frame.Save(save_frame_path, 1.0, "PNG", 100)
         size = [int(rendered.frame.GetWidth()), int(rendered.frame.GetHeight())]
@@ -360,7 +473,8 @@ def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None
     if compare_without_effects:
         before = render_frame(clip_data, t, strip="all")
         try:
-            receipt["without_effects"] = compute_stats(scope_data(before.frame, region_r))
+            receipt["without_effects"] = compute_stats(scope_data(before.frame, region_r),
+                                                       pixel_stats(frame_pixels(before.frame, region_r)))
         finally:
             before.close()
     if save_frame_path:
