@@ -326,3 +326,21 @@ def test_random_transitions_and_default_length(tl):
     r = _receipt(tl.call("add_transitions_between_clips_tool", track="1", transition="random", duration_seconds=0))
     assert len(r["added"]) == 2 and all(x["duration"] == 0.5 for x in r["added"])
     assert all(x["mask"] for x in r["added"])
+
+
+def test_flip_wipe_side_keeps_the_clip_order(tl):
+    """Live finding: invert or reverse alone shows the later clip first; both together flip the side."""
+    a, b, c, t1, t2 = crossfaded(tl)
+    rows = {r["transition_id"]: r for r in _receipt(tl.call("list_timeline_transitions_tool"))["transitions"]}
+    assert rows[t1]["order"] == "earlier_to_later"
+    _receipt(tl.call("update_transition_tool", transition_ids=[t1], mask="wipe_left_to_right",
+                     flip_wipe_side=True))
+    data = transition(tl, t1)
+    assert data["mask_invert"] is True and ops.direction_of(data) == "reversed"
+    row = _receipt(tl.call("list_timeline_transitions_tool", timeline_clip_id=a))["transitions"][0]
+    assert row["order"] == "earlier_to_later"
+    tl.call("reverse_transition_tool", transition_ids=[t1])
+    row = _receipt(tl.call("list_timeline_transitions_tool", timeline_clip_id=a))["transitions"][0]
+    assert row["order"] == "later_first"
+    assert tl.call("update_transition_tool", transition_ids=[t1], flip_wipe_side=True,
+                   invert_mask=False).startswith("Error")

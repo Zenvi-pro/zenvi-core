@@ -173,6 +173,10 @@ def describe_transition(t) -> dict:
     pair = joined_pair(data)
     if pair:
         out["between_clip_ids"] = [pair[0].id, pair[1].id]
+        # Reversing OR inverting alone makes the later clip show first and the earlier one
+        # flash back before the cut; both together wipe from the other side, in order.
+        forward = (out["direction"] == "default") != out["invert_mask"]
+        out["order"] = "earlier_to_later" if forward else "later_first"
         a1 = _span(pair[0].data)[1]
         b0 = _span(pair[1].data)[0]
         out["clip_overlap"] = round(max(0.0, a1 - b0), 3)
@@ -328,9 +332,11 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
     """List the transitions placed on the timeline, with what each one does.
 
     For each: id, mask shape (fade, wipe_left_to_right, circle_in_to_out...), track, start,
-    end and duration (timeline seconds), direction ('default' = the earlier/lower clip wipes
-    away; 'reversed'), edge softness (contrast), audio crossfade, and the two clips it joins
-    (between_clip_ids + their overlap) or the clip edge it fades (on_clip_start/on_clip_end).
+    end and duration (timeline seconds), direction of the curve ('default' / 'reversed'),
+    edge softness (contrast), audio crossfade, and either the two clips it joins
+    (between_clip_ids, their overlap, and order: 'earlier_to_later' as expected, or
+    'later_first' = the later clip shows first and flashes back) or the clip edge it fades
+    (on_clip_start = fade in, on_clip_end = fade out).
     Use before changing, reversing, copying or removing a transition. The catalog of
     transitions you can add is list_transitions_tool / search_transitions_tool. Read-only.
     """
@@ -371,9 +377,11 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
                        "any list_transitions_tool name) or an image file path. '' = keep.", ""),
         "mask_file_id": string("Use this project image file (e.g. a gradient or logo) as the wipe shape. '' = keep.",
                                ""),
-        "invert_mask": nullable(boolean("Invert the mask image: a wipe runs from the other side (left-to-right "
-                                        "becomes right-to-left, circle-out becomes circle-in) while still going "
-                                        "from the earlier clip to the later one.")),
+        "flip_wipe_side": boolean("Wipe from the other side (left-to-right becomes right-to-left, circle-out "
+                                  "becomes circle-in) and still go from the earlier clip to the later one. Works for "
+                                  "any mask (inverts it and reverses its curve).", False),
+        "invert_mask": nullable(boolean("Raw 'mask invert' property. Alone it makes the later clip show first "
+                                        "(it flashes back before the cut); use flip_wipe_side instead.")),
         "contrast": nullable(number("Edge hardness of the wipe: 0 = very soft/blurry edge, 3 = the default soft "
                                     "edge, 20 = a hard line.", minimum=0, maximum=20)),
         "brightness_keyframes": array(KEYFRAME_ITEM, "Replace the progress curve (brightness): 1 = not started, "
@@ -390,7 +398,7 @@ def list_timeline_transitions(track="", timeline_clip_id="", at_seconds=None):
 )
 def update_transition(transition_ids=None, between_clip_ids=None, track="", at_seconds=None, scope="",
                       duration_seconds=0.0, keep_overlap=False, ripple=True, position_seconds=None, mask="",
-                      mask_file_id="", invert_mask=None, contrast=None, brightness_keyframes=None,
+                      mask_file_id="", flip_wipe_side=False, invert_mask=None, contrast=None, brightness_keyframes=None,
                       contrast_keyframes=None, interpolation="", audio_crossfade=None, replace_image=None):
     """Change a transition on the timeline: length, position, wipe shape, softness, curves, audio crossfade.
 
@@ -398,10 +406,12 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
     the later clip (and, with ripple=true, everything after it on that track) moves so the
     clips overlap by 2 s and the transition covers the overlap; other tracks never move. On
     a fade at a clip's start/end the transition keeps that edge. The progress curve is
-    rescaled to the new length. "Use a circle wipe instead" -> mask="circle_in_to_out";
-    "make the wipe go the other way" -> invert_mask=true (reverse_transition_tool instead
-    plays it backwards); "harder edge" -> contrast=20. Changes every chosen transition in
-    one undo step. Refused on locked tracks. Never deletes clips.
+    rescaled to the new length (with the default soft edge the visible dissolve is shorter
+    than the transition; a lower contrast makes it more gradual). "Use a circle wipe
+    instead" -> mask="circle_in_to_out"; "make the wipe go the other way" ->
+    flip_wipe_side=true (or the mirrored mask, e.g. wipe_right_to_left); "harder edge" ->
+    contrast=20. Changes every chosen transition in one undo step. Refused on locked
+    tracks. Never deletes clips.
     Example: between_clip_ids=["A","B"], duration_seconds=2.
     """
     from classes.query import File
@@ -413,10 +423,13 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
         new_dur = snap_seconds(new_dur)
         if new_dur < _frame():
             raise ToolError("duration_seconds must be at least one frame")
-    if not (new_dur or position_seconds is not None or mask or mask_file_id or invert_mask is not None
+    if flip_wipe_side and invert_mask is not None:
+        raise ToolError("pass flip_wipe_side or invert_mask, not both")
+    if not (new_dur or position_seconds is not None or mask or mask_file_id or flip_wipe_side
+            or invert_mask is not None
             or contrast is not None or brightness_keyframes or contrast_keyframes or interpolation
             or audio_crossfade is not None or replace_image is not None):
-        raise ToolError("nothing to change: pass duration_seconds, position_seconds, mask, invert_mask, contrast, "
+        raise ToolError("nothing to change: pass duration_seconds, position_seconds, mask, flip_wipe_side, contrast, "
                         "keyframes, interpolation, audio_crossfade or replace_image")
     if mask and mask_file_id:
         raise ToolError("pass mask or mask_file_id, not both")
@@ -519,6 +532,9 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
                 p["interpolation"] = code
         if invert_mask is not None:
             data["mask_invert"] = bool(invert_mask)
+        if flip_wipe_side:
+            data["mask_invert"] = not bool(data.get("mask_invert"))
+            transition_ops.reverse_transition_data(data)
         if audio_crossfade is not None:
             data["fade_audio_hint"] = bool(audio_crossfade)
         if replace_image is not None:
@@ -570,11 +586,12 @@ def update_transition(transition_ids=None, between_clip_ids=None, track="", at_s
 def reverse_transition(transition_ids=None, between_clip_ids=None, track="", at_seconds=None, scope=""):
     """Reverse transitions (Transition menu > Reverse Transition): play the transition backwards.
 
-    Mirrors the progress and edge curves in time: a fade-out becomes a fade-in, and a wipe
-    between two clips runs the opposite way in time. "Reverse that wipe" usually means this;
-    to keep the A-to-B progression and only flip the wipe's side, use
-    update_transition_tool(invert_mask=true). Several transitions in one undo step
-    (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
+    Mirrors the progress and edge curves in time. Right for a fade on ONE clip edge: a
+    fade-in becomes a fade-out and back. On a crossfade/wipe BETWEEN two clips it makes the
+    later clip show first and the earlier one flash back before the cut (the receipt's
+    order becomes 'later_first'), which is rarely wanted: for "make the wipe go the other
+    way" use update_transition_tool(flip_wipe_side=true). Several transitions in one undo
+    step (scope='track' reverses a whole track). Refused on locked tracks; never deletes clips.
     """
     targets = resolve_transitions(transition_ids, between_clip_ids, track, at_seconds, scope)
     _ensure_unlocked(targets)
