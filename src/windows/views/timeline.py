@@ -36,24 +36,137 @@ import time
 import uuid
 from functools import partial
 from operator import itemgetter
-from random import uniform
 
 import openshot
-from PyQt5.QtCore import pyqtSlot, Qt, QCoreApplication, QTimer, pyqtSignal, QPointF
-from PyQt5.QtGui import QCursor, QKeySequence
-from PyQt5.QtWidgets import QDialog
+from qt_api import pyqtSlot, Qt, QCoreApplication, QTimer, pyqtSignal, QPointF, QIcon
+from qt_api import modifiers_has
+from qt_api import QCursor, QKeySequence
+from qt_api import QDialog
 
 from classes import frame_time as ft
 from classes import info, updates
 from classes.app import get_app
-from classes.clip_utils import project_fps_fraction
+from classes.bridge_guard import guarded_slot, slot_transaction
+from classes.color_presets import (
+    COLOR_GRADE_CLASS_NAME,
+    COLOR_PRESET_AUTO_CONTRAST,
+    COLOR_PRESET_BOOST_COLOR,
+    COLOR_PRESET_LIFT_SHADOWS,
+    COLOR_PRESET_RESET,
+    COLOR_PRESET_WARM_UP,
+    apply_color_grade_preset,
+    is_color_grade_effect,
+)
+from classes.film_grain_presets import (
+    FILM_GRAIN_CLASS_NAME,
+    FILM_GRAIN_PRESET_16MM_CLASSIC,
+    FILM_GRAIN_PRESET_35MM_CLASSIC,
+    FILM_GRAIN_PRESET_35MM_FINE,
+    FILM_GRAIN_PRESET_35MM_GRITTY,
+    FILM_GRAIN_PRESET_HIGH_ISO,
+    FILM_GRAIN_PRESET_NONE,
+    FILM_GRAIN_PRESET_SUPER_8,
+    apply_film_grain_preset,
+    is_film_grain_effect,
+)
+
+LOOK_EFFECT_UI_MENU = "look"
+
+LOOK_RESET_EFFECT_CLASSES = {
+    COLOR_GRADE_CLASS_NAME,
+    FILM_GRAIN_CLASS_NAME,
+}
+
+LOOK_EFFECT_PRESETS = {
+    "AnalogTape": {
+        "none": {},
+        "subtle": {
+            "bleed": 0.25,
+            "noise": 0.18,
+            "softness": 0.15,
+            "static_bands": 0.05,
+            "stripe": 0.06,
+            "tracking": 0.20,
+        },
+        "vhs": {
+            "bleed": 0.55,
+            "noise": 0.35,
+            "softness": 0.35,
+            "static_bands": 0.18,
+            "stripe": 0.20,
+            "tracking": 0.45,
+        },
+        "heavy": {
+            "bleed": 0.85,
+            "noise": 0.60,
+            "softness": 0.55,
+            "static_bands": 0.35,
+            "stripe": 0.40,
+            "tracking": 0.75,
+        },
+    },
+    "Blur": {
+        "none": {},
+        "soft_focus": {"horizontal_radius": 3.0, "vertical_radius": 3.0, "sigma": 1.5, "iterations": 2.0},
+        "medium": {"horizontal_radius": 8.0, "vertical_radius": 8.0, "sigma": 4.0, "iterations": 3.0},
+        "heavy": {"horizontal_radius": 20.0, "vertical_radius": 20.0, "sigma": 8.0, "iterations": 4.0},
+    },
+    "Glow": {
+        "none": {},
+        "soft_white": {"mode": 0, "opacity": 0.35, "blur_radius": 18.0, "spread": 0.15, "color": "#ffffffff"},
+        "warm": {"mode": 0, "opacity": 0.45, "blur_radius": 24.0, "spread": 0.20, "color": "#ffd28cff"},
+        "neon": {"mode": 0, "opacity": 0.65, "blur_radius": 16.0, "spread": 0.35, "color": "#35d7ffff"},
+        "inner": {"mode": 1, "opacity": 0.45, "blur_radius": 12.0, "spread": 0.25, "color": "#ffffffff"},
+    },
+    "Shadow": {
+        "none": {},
+        "subtle": {"opacity": 0.30, "blur_radius": 12.0, "spread": 0.05, "distance": 8.0, "angle": 135.0, "color": "#000000ff"},
+        "soft": {"opacity": 0.45, "blur_radius": 28.0, "spread": 0.10, "distance": 14.0, "angle": 135.0, "color": "#000000ff"},
+        "strong": {"opacity": 0.70, "blur_radius": 18.0, "spread": 0.25, "distance": 16.0, "angle": 135.0, "color": "#000000ff"},
+        "long": {"opacity": 0.45, "blur_radius": 24.0, "spread": 0.12, "distance": 44.0, "angle": 135.0, "color": "#000000ff"},
+    },
+    "Sharpen": {
+        "none": {},
+        "subtle": {"amount": 4.0, "radius": 1.5, "threshold": 0.0},
+        "medium": {"amount": 9.0, "radius": 2.5, "threshold": 0.0},
+        "strong": {"amount": 16.0, "radius": 3.5, "threshold": 0.0},
+    },
+}
+
+from classes.camera_motion import (
+    KEN_BURNS_AUTO,
+    KEN_BURNS_BOTTOM_TO_TOP,
+    KEN_BURNS_LEFT_TO_RIGHT,
+    KEN_BURNS_RIGHT_TO_LEFT,
+    KEN_BURNS_TOP_TO_BOTTOM,
+    PAN_AUTO,
+    PAN_DOWN,
+    PAN_LEFT,
+    PAN_LEFT_TO_RIGHT,
+    PAN_RIGHT,
+    PAN_RIGHT_TO_LEFT,
+    PAN_TOP_TO_BOTTOM,
+    PAN_BOTTOM_TO_TOP,
+    PAN_UP,
+    camera_pan_keyframes,
+    ken_burns_keyframes,
+    push_pull_keyframes,
+    source_dimensions_from_reader,
+)
 from classes.effect_init import effect_options
-from classes.file_drop import mime_has_file_drop, urls_from_mime
+from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
+from classes.path_utils import absolute_media_path
 from classes.clipboard import ClipboardManager
 from classes.thumbnail import GetThumbPath
-from classes.waveform import get_audio_data
+from classes.waveform import (
+    ABSOLUTE_WAVEFORM_FORMAT,
+    WAVEFORM_FORMAT_KEY,
+    WAVEFORM_RATE_KEY,
+    WAVEFORM_RMS_KEY,
+    get_audio_data,
+)
 from classes.ai_metadata_utils import apply_metadata_to_clip_data, merge_basic_clip_props
 from classes.timeline_clip_context import resolve_root_ai_metadata
 from .timeline_backend.enums import (
@@ -63,13 +176,16 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media
+from classes.clip_utils import (
+    clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
+)
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
 # Constants used by this file
 JS_SCOPE_SELECTOR = "$('body').scope()"
+MICROPHONE_ICON = "tool-microphone.svg"
 ViewClass = None
 
 # Setup timeline
@@ -93,7 +209,7 @@ else:
             except ImportError as ex:
                 log.error("Import failure loading timeline web backends", exc_info=True)
                 raise RuntimeError(
-                    "Need PyQt5.QtWebKitWidgets (preferred on Windows) or PyQt5.QtWebEngineWidgets"
+                    "Need QtWebKitWidgets (preferred on Windows) or QtWebEngineWidgets for the active Qt binding"
                 ) from ex
     else:
         try:
@@ -104,8 +220,68 @@ else:
             except ImportError as ex:
                 log.error("Import failure loading WebKit backend", exc_info=True)
                 raise RuntimeError(
-                    "Need PyQt5.QtWebEngineWidgets or PyQt5.QtWebKitWidgets"
+                    "Need QtWebEngineWidgets or QtWebKitWidgets for the active Qt binding"
                 ) from ex
+
+log.info("Timeline backend: %s (%s)", info.WEB_BACKEND, getattr(ViewClass, "__name__", "unknown"))
+
+# ── Animation preset helpers ──────────────────────────────────────────────────
+
+from animation_presets import PRESETS as _ANIMATION_PRESETS, KEYFRAME_EASING as _KEYFRAME_EASING
+
+# JSON animation name for each MenuAnimate value
+_JSON_ANIM = {
+    MenuAnimate.BACK_IN_DOWN:    "backInDown",
+    MenuAnimate.BACK_IN_LEFT:    "backInLeft",
+    MenuAnimate.BACK_IN_RIGHT:   "backInRight",
+    MenuAnimate.BACK_IN_UP:      "backInUp",
+    MenuAnimate.BOUNCE_IN:       "bounceIn",
+    MenuAnimate.BOUNCE_IN_DOWN:  "bounceInDown",
+    MenuAnimate.BOUNCE_IN_LEFT:  "bounceInLeft",
+    MenuAnimate.BOUNCE_IN_RIGHT: "bounceInRight",
+    MenuAnimate.BOUNCE_IN_UP:    "bounceInUp",
+    MenuAnimate.BACK_OUT_DOWN:   "backOutDown",
+    MenuAnimate.BACK_OUT_LEFT:   "backOutLeft",
+    MenuAnimate.BACK_OUT_RIGHT:  "backOutRight",
+    MenuAnimate.BACK_OUT_UP:     "backOutUp",
+    MenuAnimate.BOUNCE_OUT:      "bounceOut",
+    MenuAnimate.BOUNCE_OUT_DOWN: "bounceOutDown",
+    MenuAnimate.BOUNCE_OUT_LEFT: "bounceOutLeft",
+    MenuAnimate.BOUNCE_OUT_RIGHT:"bounceOutRight",
+    MenuAnimate.BOUNCE_OUT_UP:   "bounceOutUp",
+    MenuAnimate.BOUNCE:          "bounce",
+    MenuAnimate.FLASH:           "flash",
+    MenuAnimate.PULSE:           "pulse",
+    MenuAnimate.RUBBER_BAND:     "rubberBand",
+    MenuAnimate.SHAKE_X:         "shakeX",
+    MenuAnimate.SHAKE_Y:         "shakeY",
+    MenuAnimate.SWING:           "swing",
+    MenuAnimate.TADA:            "tada",
+    MenuAnimate.WOBBLE:          "wobble",
+    MenuAnimate.JELLO:           "jello",
+    MenuAnimate.HEART_BEAT:      "heartBeat",
+}
+
+_EMPHASIS_ACTIONS = frozenset({
+    MenuAnimate.BOUNCE, MenuAnimate.FLASH, MenuAnimate.PULSE,
+    MenuAnimate.RUBBER_BAND, MenuAnimate.SHAKE_X, MenuAnimate.SHAKE_Y,
+    MenuAnimate.SWING, MenuAnimate.TADA,
+    MenuAnimate.WOBBLE, MenuAnimate.JELLO, MenuAnimate.HEART_BEAT,
+})
+
+_IN_ACTIONS = frozenset({
+    MenuAnimate.BACK_IN_DOWN, MenuAnimate.BACK_IN_LEFT,
+    MenuAnimate.BACK_IN_RIGHT, MenuAnimate.BACK_IN_UP,
+    MenuAnimate.BOUNCE_IN, MenuAnimate.BOUNCE_IN_DOWN,
+    MenuAnimate.BOUNCE_IN_LEFT, MenuAnimate.BOUNCE_IN_RIGHT,
+    MenuAnimate.BOUNCE_IN_UP,
+})
+
+
+def _event_posf(event):
+    if hasattr(event, "posF"):
+        return event.posF()
+    return event.position()
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -118,13 +294,94 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     clipAudioDataReady = pyqtSignal(str, object, str)
     fileAudioDataReady = pyqtSignal(str, object, str)
 
+    def _microphone_icon(self):
+        return QIcon(os.path.join(info.PATH, "themes/cosmic/images", MICROPHONE_ICON))
+
+    def _show_recording_dock_deferred(self, start_time=None, track_number=None):
+        """Open recording after context-menu event handling has unwound."""
+        QTimer.singleShot(
+            50,
+            lambda: self.window.show_audio_recording_dock(
+                start_time=start_time,
+                track_number=track_number,
+            )
+        )
+
+    def _recording_track_for_clip(self, clip):
+        """Prefer the nearest lower unlocked track with room for a voiceover."""
+        try:
+            clip_data = clip.data if isinstance(clip.data, dict) else {}
+            source_track = int(clip_data.get("layer", 1) or 1)
+            start = float(clip_data.get("position", 0.0) or 0.0)
+            duration = max(
+                0.0,
+                float(clip_data.get("end", 0.0) or 0.0) - float(clip_data.get("start", 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            return 1
+
+        end = start + max(duration, 0.001)
+        try:
+            tracks = sorted(
+                Track.filter(),
+                key=lambda t: int(t.data.get("number", 0) or 0),
+                reverse=True,
+            )
+        except Exception:
+            tracks = []
+
+        candidate_numbers = [
+            int(track.data.get("number", 0) or 0)
+            for track in tracks
+            if int(track.data.get("number", 0) or 0) < source_track
+            and not track.data.get("lock", False)
+        ]
+        if not candidate_numbers:
+            return source_track
+
+        occupied = {}
+        for existing in Clip.filter():
+            data = existing.data if isinstance(existing.data, dict) else {}
+            try:
+                layer = int(data.get("layer", 0) or 0)
+                left = float(data.get("position", 0.0) or 0.0)
+                right = left + max(0.0, float(data.get("end", 0.0) or 0.0) - float(data.get("start", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                continue
+            occupied.setdefault(layer, []).append((left, right))
+
+        for track_number in candidate_numbers:
+            has_overlap = any(left < end and right > start for left, right in occupied.get(track_number, []))
+            if not has_overlap:
+                return track_number
+        return source_track
+
+    def _record_from_clip(self, clip):
+        """Seek to a clip's first frame and open Recording on a free lower track."""
+        clip_data = clip.data if isinstance(clip.data, dict) else {}
+        try:
+            position = max(0.0, float(clip_data.get("position", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            position = 0.0
+        try:
+            fps = get_app().project.get("fps")
+            fps_value = float(fps["num"]) / float(fps["den"])
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            fps_value = 30.0
+        frame_number = max(1, int(round(position * fps_value)) + 1)
+        self.PlayheadMoved(frame_number, True)
+        self._show_recording_dock_deferred(
+            start_time=position,
+            track_number=self._recording_track_for_clip(clip),
+        )
+
     def connect_playback(self):
         """Connect playback signals to new experimental qwidget based timeline"""
         if ViewClass == TimelineWidget:
             # Propagate to timeline qwidget
             TimelineWidget.connect_playback(self)
 
-    @pyqtSlot()
+    @guarded_slot()
     def page_ready(self):
         """Document.Ready event has fired, and is initialized"""
         self.document_is_ready = True
@@ -132,12 +389,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Set the thumbnail server address immediately (required before any clips are rendered)
         self.run_js(JS_SCOPE_SELECTOR + ".setThumbAddress('" + self.get_thumb_address() + "');")
 
-    @pyqtSlot(result=str)
+    @guarded_slot(result=str)
     def get_uuid(self):
         """Get a unique id (used for generating a transaction id for the undo/redo system)"""
         return str(uuid.uuid4())
 
-    @pyqtSlot(result=str)
+    @guarded_slot(result=str)
     def get_thumb_address(self):
         """Return the thumbnail HTTP server address"""
         thumb_server_details = self.window.http_server_thread.server_address
@@ -149,7 +406,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         thumb_address = "http://%s:%s/thumbnails/" % (thumb_server_details[0], thumb_server_details[1])
         return thumb_address
 
-    @pyqtSlot(str, str, str)
+    @guarded_slot(str, str, str)
     def StartKeyframeDrag(self, object_type, object_id, transaction_id):
         """Begin a keyframe drag operation"""
         self.keyframe_transaction_id = transaction_id
@@ -158,15 +415,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Ignore UI updates without showing the wait cursor
         self.window.IgnoreUpdates.emit(True, False)
         self.show_wait_spinner = False
-        obj = None
-        if object_type == "clip":
-            obj = Clip.get(id=object_id)
-        elif object_type == "transition":
-            obj = Transition.get(id=object_id)
-        if obj:
-            self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        try:
+            obj = None
+            if object_type == "clip":
+                obj = Clip.get(id=object_id)
+            elif object_type == "transition":
+                obj = Transition.get(id=object_id)
+            if obj:
+                self.keyframe_drag_original[object_id] = json.loads(json.dumps(obj.data))
+        except Exception:
+            # The drag never starts, so undo the suppression it turned on --
+            # otherwise the timeline stops refreshing until the next restart.
+            self.keyframe_transaction_id = None
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.show_wait_spinner = True
+            self.window.IgnoreUpdates.emit(False, False)
+            raise
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def FinalizeKeyframeDrag(self, object_type, object_id):
         """Finalize a keyframe drag operation and record history"""
         obj = None
@@ -175,18 +442,31 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif object_type == "transition":
             obj = Transition.get(id=object_id)
         self.show_wait_spinner = True
-        original = self.keyframe_drag_original.pop(object_id, None)
-        if obj:
-            get_app().updates.transaction_id = self.keyframe_transaction_id
-            get_app().updates.ignore_history = True
-            obj.save()
-            if original:
-                get_app().updates.apply_last_action_to_history(original)
-        get_app().updates.transaction_id = None
-        get_app().updates.ignore_history = False
-        self.keyframe_transaction_id = None
-        # Re-enable UI updates
-        self.window.IgnoreUpdates.emit(False, False)
+        original = self.keyframe_drag_original.get(object_id)
+        try:
+            if obj:
+                get_app().updates.transaction_id = self.keyframe_transaction_id
+                get_app().updates.ignore_history = True
+                obj.save()
+                if original:
+                    get_app().updates.apply_last_action_to_history(original)
+                    if (
+                        object_type == "clip"
+                        and self._clip_volume_curve_changed(original, getattr(obj, "data", None))
+                        and self._clip_has_visible_waveform(obj)
+                    ):
+                        self.Show_Waveform_Triggered(
+                            [obj.id],
+                            transaction_id=self.keyframe_transaction_id,
+                        )
+            # Only drop the pre-drag snapshot once history has taken it
+            self.keyframe_drag_original.pop(object_id, None)
+        finally:
+            get_app().updates.transaction_id = None
+            get_app().updates.ignore_history = False
+            self.keyframe_transaction_id = None
+            # Re-enable UI updates
+            self.window.IgnoreUpdates.emit(False, False)
 
     def _collect_clip_ids_from_value(self, value, clip_ids):
         """Recursively collect clip ids from an update payload without walking audio samples"""
@@ -223,6 +503,19 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     return True
         return False
 
+    def _clip_has_visible_waveform(self, clip):
+        """Return True when a clip currently has waveform samples displayed."""
+        if not clip or not isinstance(getattr(clip, "data", None), dict):
+            return False
+        audio_data = clip.data.get("ui", {}).get("audio_data")
+        return isinstance(audio_data, list) and len(audio_data) > 0
+
+    def _clip_volume_curve_changed(self, original_data, current_data):
+        """Return True when a clip's volume keyframe payload changed."""
+        if not isinstance(original_data, dict) or not isinstance(current_data, dict):
+            return False
+        return original_data.get("volume") != current_data.get("volume")
+
     def _assign_new_effect_ids(self, clip_data):
         """Assign new unique IDs to each effect on the provided clip data."""
         if not isinstance(clip_data, dict):
@@ -236,10 +529,27 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if isinstance(effect, dict):
                 effect["id"] = get_app().project.generate_id()
 
+    def _select_inserted_paste_items(self, inserted_items):
+        """Replace the current selection with newly inserted pasted items."""
+        if not inserted_items:
+            return
+
+        if ViewClass == TimelineWidget:
+            TimelineWidget.clear_all_selections(self)
+            for index, (item_id, item_type) in enumerate(inserted_items):
+                self._select_timeline_item(item_id, item_type, clear_existing=(index == 0))
+            return
+
+        self.ClearAllSelections()
+        for index, (item_id, item_type) in enumerate(inserted_items):
+            self.AddSelectionJS(item_id, item_type, clear_existing=(index == 0))
+
     def _handle_paste_callback(self, clip_ids, tran_ids, callback_data):
         """Handle clipboard data insertion after resolving timeline coordinates."""
         position = callback_data.get("position", 0.0)
         layer_id = callback_data.get("track", 0)
+        inserted_new_items = False
+        inserted_items = []
 
         tid = self.get_uuid()
         get_app().updates.transaction_id = tid
@@ -267,6 +577,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 target_f = ft.to_frame(float(target_position), fps)
                 delta_f = target_f - left_f
                 layer_diff = target_layer - top_most_layer if target_layer != -1 else 0
+                layer_map = {}
+                if target_layer != -1:
+                    source_layers = sorted(
+                        {
+                            int(obj.data.get("layer", 0))
+                            for obj in objects
+                            if obj.data.get("layer") is not None
+                        },
+                        reverse=True,
+                    )
+                    target_layers = TimelineView._track_stack_from(self, target_layer, len(source_layers))
+                    layer_map = dict(zip(source_layers, target_layers))
 
                 for obj in objects:
                     obj.type = "insert"
@@ -275,8 +597,22 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self._assign_new_effect_ids(obj.data)
                     old_f = ft.to_frame(float(obj.data.get("position", 0.0)), fps)
                     obj.data["position"] = ft.to_seconds(old_f + delta_f, fps)
-                    obj.data["layer"] = obj.data.get("layer", 0) + layer_diff
+                    old_layer = obj.data.get("layer", 0)
+                    try:
+                        old_layer_key = int(old_layer)
+                    except (TypeError, ValueError):
+                        old_layer_key = old_layer
+                    obj.data["layer"] = layer_map.get(old_layer_key, obj.data.get("layer", 0) + layer_diff)
+                    TimelineView._ensure_layers_exist(self, [obj.data.get("layer")])
                     obj.save()
+                    item_id = getattr(obj, "id", None) or obj.data.get("id")
+                    item_type = None
+                    if isinstance(obj, Clip):
+                        item_type = "clip"
+                    elif isinstance(obj, Transition):
+                        item_type = "transition"
+                    if item_id and item_type:
+                        inserted_items.append((str(item_id), item_type))
 
             def apply_clipboard_data(target_obj, clipboard_data, excluded_keys=None):
                 excluded_keys = excluded_keys or []
@@ -313,6 +649,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             if isinstance(copied_object, list):
                 adjust_positions_and_layers(copied_object, position, layer_id)
+                inserted_new_items = True
 
             for clip_id in clip_ids:
                 clip = Clip.get(id=clip_id)
@@ -337,8 +674,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         copied_object.data,
                         excluded_keys=["id", "position", "layer", "start", "end"],
                     )
+
+            if inserted_new_items:
+                self._extend_timeline_to_fit_items()
+                self._select_inserted_paste_items(inserted_items)
         finally:
             get_app().updates.transaction_id = None
+
+    def _ensure_layers_exist(self, layers):
+        window = getattr(get_app(), "window", None)
+        ensure = getattr(window, "ensure_tracks_for_layers", None)
+        if callable(ensure):
+            ensure(list(layers or []))
+
+    def _track_stack_from(self, layer_number, count):
+        window = getattr(get_app(), "window", None)
+        stack = getattr(window, "track_stack_from", None)
+        if callable(stack):
+            return stack(layer_number, count)
+
+        try:
+            layer_number = int(layer_number)
+        except (TypeError, ValueError):
+            layer_number = 0
+        return [max(1, layer_number - index) for index in range(max(0, int(count or 0)))]
 
     def _qwidget_paste_coordinates(self, local_pos, clip_ids, tran_ids):
         """Resolve paste coordinates for the QWidget timeline backend."""
@@ -349,11 +708,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if hasattr(self, "_seconds_from_x"):
             seconds = max(0.0, float(self._seconds_from_x(local_pos.x())))
 
+        local_posf = QPointF(local_pos)
         track_number = None
         if hasattr(self, "geometry"):
             self.geometry.ensure()
-            for track_rect, track, _name_rect in getattr(self.geometry, "track_rects", []):
-                if track_rect.contains(local_pos):
+            track_iter = getattr(self.geometry, "iter_tracks", None)
+            if callable(track_iter):
+                track_entries = track_iter()
+            else:
+                track_entries = getattr(self.geometry, "track_rects", [])
+
+            for track_rect, track, _name_rect in track_entries:
+                if track_rect.contains(local_posf):
                     track_number = track.data.get("number")
                     break
 
@@ -438,6 +804,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if ViewClass == TimelineWidget:
                 TimelineWidget.changed(self, None)
             return
+
+        if ViewClass == TimelineWidget and self._pending_trim_refresh:
+            pending = self._pending_trim_refresh
+            item_id = pending.get("id")
+            if item_id and action and action.key and action.key[0] in ["clips", "transitions"]:
+                if self._action_contains_item_id(action, item_id):
+                    self._apply_pending_trim_refresh()
 
         try:
             # Duplicate UpdateAction, and remove unused action attribute (old_values)
@@ -542,7 +915,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return True
         return False
 
-    @pyqtSlot(str, bool, bool, bool, str)
+    @guarded_slot(str, bool, bool, bool, str)
     def update_clip_data(
         self, clip_json, only_basic_props=True, ignore_reader=False,
         ignore_refresh=False, transaction_id=None
@@ -561,6 +934,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Failed to parse json, do nothing
             log.warning('Failed to parse clip JSON data', exc_info=1)
             return
+        auto_transition = bool(clip_data.pop("_auto_transition", False))
 
         self._apply_effect_colors(clip_data)
 
@@ -597,21 +971,28 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if ignore_reader and "reader" in existing_clip.data:
             existing_clip.data.pop("reader")
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
+        # Save clip (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_clip.save()
+            except Exception:
+                # Do not leave the in-memory clip on data that never persisted
+                if old_data:
+                    existing_clip.data = old_data
+                raise
 
-        # Save clip
-        existing_clip.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+            # Keep the automatic transition in the same undo step as the clip
+            # move that produced the overlap (one gesture, one undo).
+            if auto_transition:
+                missing_transition = self._find_missing_transition_details(existing_clip.data)
+                if missing_transition is not None:
+                    self.add_missing_transition(json.dumps(missing_transition))
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
 
     # Add missing transition
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def add_missing_transition(self, transition_json):
         if not get_app().get_settings().get("automatic_transitions"):
             log.debug("Skipping auto transition (disabled in settings)")
@@ -623,9 +1004,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Open up QtImageReader for transition Image
-        transition_reader = openshot.QtImageReader(
-            os.path.join(info.PATH, "transitions", "common", "fade.svg"))
+        transition_path = os.path.join(info.PATH, "transitions", "common", "fade.svg")
+        reader_data = self._load_transition_reader_data(transition_path)
+        if not reader_data:
+            log.warning("Unable to load default transition image: %s", transition_path)
+            return
 
         # Generate transition object
         transition_object = openshot.Mask()
@@ -647,18 +1030,188 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "end": transition_details["end"],
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
-            "reader": json.loads(transition_reader.Json()),
+            "reader": reader_data,
+            "fade_audio_hint": True,
             "replace_image": False
         }
 
         # Send to update manager
         self.update_transition_data(transitions_data, only_basic_props=False)
 
+    def _find_missing_transition_details(self, clip_data):
+        """Return auto-transition details for one overlap on the clip's layer, or None."""
+        if not isinstance(clip_data, dict):
+            return None
+
+        try:
+            clip_layer = int(clip_data.get("layer", 0))
+            original_left = float(clip_data.get("position", 0.0))
+            original_duration = float(clip_data.get("end", 0.0)) - float(clip_data.get("start", 0.0))
+        except (TypeError, ValueError):
+            return None
+        if original_duration <= 0.0:
+            return None
+
+        original_right = original_left + original_duration
+        original_id = clip_data.get("id")
+        transition_size = None
+
+        def _clip_pos(clip_obj):
+            try:
+                return float(((clip_obj.data or {}).get("position", 0.0)))
+            except (TypeError, ValueError):
+                return 0.0
+
+        same_layer_clips = sorted(Clip.filter(layer=clip_layer), key=_clip_pos)
+        for clip in same_layer_clips:
+            data = clip.data if isinstance(clip.data, dict) else {}
+            if data.get("id") == original_id:
+                continue
+            try:
+                clip_left = float(data.get("position", 0.0))
+                clip_right = clip_left + (float(data.get("end", 0.0)) - float(data.get("start", 0.0)))
+            except (TypeError, ValueError):
+                continue
+
+            if original_left < clip_right and original_left > clip_left:
+                transition_size = {
+                    "position": original_left,
+                    "layer": clip_layer,
+                    "start": 0.0,
+                    "end": (clip_right - original_left),
+                }
+            elif original_right > clip_left and original_right < clip_right:
+                transition_size = {
+                    "position": clip_left,
+                    "layer": clip_layer,
+                    "start": 0.0,
+                    "end": (original_right - clip_left),
+                }
+
+            if transition_size is not None and transition_size["end"] >= 0.5:
+                break
+            if transition_size is not None and transition_size["end"] < 0.5:
+                transition_size = None
+
+        if transition_size is None:
+            return None
+
+        new_left = transition_size["position"]
+        new_right = transition_size["position"] + (transition_size["end"] - transition_size["start"])
+        tolerance = 0.01
+        for tran in Transition.filter(layer=clip_layer):
+            tran_data = tran.data if isinstance(tran.data, dict) else {}
+            try:
+                tran_left = float(tran_data.get("position", 0.0))
+                tran_right = tran_left + (float(tran_data.get("end", 0.0)) - float(tran_data.get("start", 0.0)))
+            except (TypeError, ValueError):
+                continue
+            if abs(tran_left - new_left) < tolerance or abs(tran_right - new_right) < tolerance:
+                return None
+
+        return transition_size
+
     def _scale_keyframes(self, keyframe, factor):
         """Scale the X values of keyframe points"""
         for point in keyframe.get("Points", []):
             if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
                 point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
+
+    def _anchor_transition_endpoint_keyframes(self, transition_data, total_frames):
+        """Keep static transition endpoint keyframes anchored to the clip edges."""
+        if total_frames <= 0 or not isinstance(transition_data, dict):
+            return
+        last_frame = int(total_frames) + 1
+        for prop in ("brightness", "contrast"):
+            keyframe = transition_data.get(prop)
+            points = keyframe.get("Points") if isinstance(keyframe, dict) else None
+            if not isinstance(points, list) or len(points) < 2:
+                continue
+            first = points[0].get("co") if isinstance(points[0], dict) else None
+            last = points[-1].get("co") if isinstance(points[-1], dict) else None
+            if isinstance(first, dict):
+                first["X"] = 1
+            if isinstance(last, dict):
+                last["X"] = last_frame
+
+    def _transition_mask_reader(self, transition_data, fallback_data=None):
+        """Return reader metadata for a transition payload."""
+        if isinstance(transition_data, dict):
+            for key in ("mask_reader", "reader"):
+                reader = transition_data.get(key)
+                if isinstance(reader, dict):
+                    return reader
+        if isinstance(fallback_data, dict):
+            for key in ("mask_reader", "reader"):
+                reader = fallback_data.get(key)
+                if isinstance(reader, dict):
+                    return reader
+        return {}
+
+    def _transition_uses_static_mask(self, transition_data, fallback_data=None):
+        """Return True when a transition uses a static single-image mask."""
+        reader = self._transition_mask_reader(transition_data, fallback_data)
+        if "has_single_image" in reader:
+            return bool(reader.get("has_single_image"))
+        return bool(is_single_image_media(reader))
+
+    def _transition_reader_changed(self, transition_data, fallback_data=None):
+        """Return True when the transition reader source changed."""
+        new_reader = self._transition_mask_reader(transition_data, fallback_data)
+        old_reader = self._transition_mask_reader(fallback_data, None)
+
+        if not isinstance(fallback_data, dict):
+            return False
+        if not new_reader and not old_reader:
+            return False
+
+        for key in ("id", "path", "type", "has_single_image", "video_length", "duration"):
+            if new_reader.get(key) != old_reader.get(key):
+                return True
+        return new_reader != old_reader
+
+    def _build_transition_default_keyframes(self, duration, start_value, end_value, contrast_value):
+        """Build default brightness/contrast keyframes for a transition."""
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        duration = max(0.0, float(duration or 0.0))
+
+        brightness = openshot.Keyframe()
+        brightness.AddPoint(1, float(start_value), openshot.BEZIER)
+        if float(start_value) != float(end_value):
+            brightness.AddPoint(round(duration * fps_float) + 1, float(end_value), openshot.BEZIER)
+        contrast = openshot.Keyframe(float(contrast_value))
+        return json.loads(brightness.Json()), json.loads(contrast.Json())
+
+    def _set_transition_mask_defaults(self, transition_data, fallback_data=None):
+        """Normalize timing/keyframes for static vs animated transition masks."""
+        if not isinstance(transition_data, dict):
+            return transition_data
+
+        start = float(transition_data.get("start", 0.0) or 0.0)
+        end = float(transition_data.get("end", start) or start)
+        if end < start:
+            end = start
+        duration = max(0.0, end - start)
+
+        if self._transition_uses_static_mask(transition_data, fallback_data):
+            transition_data["start"] = 0.0
+            transition_data["end"] = duration
+            brightness, contrast = self._build_transition_default_keyframes(duration, 1.0, -1.0, 3.0)
+            mode = "static"
+        else:
+            transition_data["start"] = start
+            transition_data["end"] = end
+            brightness, contrast = self._build_transition_default_keyframes(duration, 0.0, 0.0, 0.0)
+            mode = "animated"
+
+        transition_data["duration"] = max(
+            0.0,
+            float(transition_data.get("end", 0.0) or 0.0) - float(transition_data.get("start", 0.0) or 0.0),
+        )
+        transition_data["brightness"] = brightness
+        transition_data["contrast"] = contrast
+        return transition_data
 
     def _reverse_keyframes(self, keyframe, total_frames):
         """Reverse keyframe positions, swapping handles"""
@@ -699,8 +1252,111 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             key=lambda p: p.get("co", {}).get("X", 0)
         )
 
+    def _infer_transition_drop_side(self, transition_data):
+        """Return 'left' or 'right' based on which side of a clip the transition overlaps."""
+        if not isinstance(transition_data, dict):
+            return None
+
+        try:
+            layer = int(transition_data.get("layer", 0))
+            position = float(transition_data.get("position", 0.0))
+            start = float(transition_data.get("start", 0.0))
+            end = float(transition_data.get("end", 0.0))
+        except (TypeError, ValueError):
+            return None
+
+        duration = max(0.0, end - start)
+        if duration <= 0.0:
+            return None
+
+        tran_left = position
+        tran_right = position + duration
+        tran_mid = (tran_left + tran_right) / 2.0
+
+        best_match = None
+        for clip in Clip.filter(layer=layer):
+            clip_data = clip.data if isinstance(clip.data, dict) else {}
+            try:
+                clip_left = float(clip_data.get("position", 0.0))
+                clip_start = float(clip_data.get("start", 0.0))
+                clip_end = float(clip_data.get("end", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+            clip_duration = max(0.0, clip_end - clip_start)
+            if clip_duration <= 0.0:
+                continue
+
+            clip_right = clip_left + clip_duration
+            overlap = min(tran_right, clip_right) - max(tran_left, clip_left)
+            if overlap <= 0.0:
+                continue
+
+            clip_mid = (clip_left + clip_right) / 2.0
+            side = "left" if tran_mid <= clip_mid else "right"
+            edge_dist = abs(tran_mid - (clip_left if side == "left" else clip_right))
+            score = (-overlap, edge_dist)
+            if best_match is None or score < best_match[0]:
+                best_match = (score, side)
+
+        return best_match[1] if best_match else None
+
+    def _auto_orient_transition_keyframes(self, transition_data):
+        """Apply fade-in orientation on left-edge drops (right edge keeps default orientation)."""
+        target_side = self._infer_transition_drop_side(transition_data)
+        if target_side not in ("left", "right"):
+            return
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        try:
+            duration = float(transition_data.get("end", 0.0)) - float(transition_data.get("start", 0.0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        total_frames = max(1, round(max(0.0, duration) * fps_float))
+
+        # Infer current direction from brightness keyframe values when possible.
+        current_side = None
+        brightness = transition_data.get("brightness")
+        if isinstance(brightness, dict):
+            points = brightness.get("Points", [])
+            keyed = []
+            for point in points:
+                co = point.get("co") if isinstance(point, dict) else None
+                if not isinstance(co, dict):
+                    continue
+                x = co.get("X")
+                y = co.get("Y")
+                if x is None or y is None:
+                    continue
+                try:
+                    keyed.append((float(x), float(y)))
+                except (TypeError, ValueError):
+                    continue
+            if len(keyed) >= 2:
+                keyed.sort(key=lambda k: k[0])
+                first_y = keyed[0][1]
+                last_y = keyed[-1][1]
+                if first_y < last_y:
+                    current_side = "right"
+                elif first_y > last_y:
+                    current_side = "left"
+
+        # Only auto-flip when the current direction is clearly inferable.
+        # This avoids rewriting customized/non-monotonic transition curves.
+        if current_side is None:
+            return
+
+        if current_side == target_side:
+            return
+
+        for prop in ("brightness", "contrast"):
+            keyframe = transition_data.get(prop)
+            if isinstance(keyframe, dict):
+                self._reverse_keyframes(keyframe, total_frames)
+
     # Javascript callable function to update the project data when a transition changes
-    @pyqtSlot(str, bool, bool, str)
+    @guarded_slot(str, bool, bool, str)
     def update_transition_data(self, transition_json, only_basic_props=True, ignore_refresh=False, transaction_id=None):
         """Create an updateAction and send it to the update manager.
         Transaction ID is for undo/redo grouping (if any)"""
@@ -710,6 +1366,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             transition_data = json.loads(transition_json)
         else:
             transition_data = transition_json
+        auto_direction = bool(transition_data.pop("_auto_direction", False))
 
         # Search for matching transition in project data (if any)
         existing_item = Transition.get(id=transition_data["id"])
@@ -728,6 +1385,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         new_duration = existing_item.data.get("end", 0.0) - existing_item.data.get("start", 0.0)
         old_frames = round(old_duration * fps_float) if old_duration > 0 else 0
         new_frames = round(new_duration * fps_float) if new_duration > 0 else 0
+        uses_static_mask = self._transition_uses_static_mask(existing_item.data, old_data)
 
         if old_data and only_basic_props:
             if "brightness" in old_data:
@@ -735,11 +1393,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if "contrast" in old_data:
                 existing_item.data["contrast"] = old_data["contrast"]
 
-            if old_frames and new_frames and old_frames != new_frames:
+            if uses_static_mask and old_frames and new_frames and old_frames != new_frames:
                 scale = new_frames / old_frames
                 for prop in ("brightness", "contrast"):
                     if prop in existing_item.data:
                         self._scale_keyframes(existing_item.data[prop], scale)
+            if uses_static_mask and new_frames:
+                self._anchor_transition_endpoint_keyframes(existing_item.data, new_frames)
+        elif old_data and self._transition_reader_changed(existing_item.data, old_data):
+            self._set_transition_mask_defaults(existing_item.data, old_data)
+
+        if auto_direction and uses_static_mask:
+            self._auto_orient_transition_keyframes(existing_item.data)
 
         # Only include the basic properties (performance boost)
         if only_basic_props and not old_data:
@@ -756,15 +1421,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if self.delete_invalid_timeline_item(existing_item):
             return
 
-        # Set transaction id (if any)
-        if transaction_id:
-            get_app().updates.transaction_id = transaction_id
-
-        # Save transition
-        existing_item.save()
-
-        if transaction_id:
-            get_app().updates.transaction_id = None
+        # Save transition (transaction id cleared even if the save raises)
+        with slot_transaction(get_app().updates, transaction_id):
+            try:
+                existing_item.save()
+            except Exception:
+                if old_data:
+                    existing_item.data = old_data
+                raise
 
         # Notify UI to ignore OR not ignore updates
         self.window.IgnoreUpdates.emit(ignore_refresh, self.show_wait_spinner)
@@ -774,9 +1438,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.ignore()
 
     # Javascript callable function to show clip or transition content menus, passing in type to show
-    @pyqtSlot(float)
+    @guarded_slot(float)
     def ShowPlayheadMenu(self, position=None):
         log.debug('ShowPlayheadMenu: %s' % position)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -814,11 +1479,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
             # Show context menu
             self.context_menu_cursor_position = QCursor.pos()
-            return menu.popup(self.context_menu_cursor_position)
+            return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowEffectMenu(self, effect_id=None):
         log.debug('ShowEffectMenu: %s' % effect_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -841,11 +1507,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot(float, int)
+    @guarded_slot(float, int)
     def ShowTimelineMenu(self, position, layer_number):
         log.debug('ShowTimelineMenu: position: %s, layer: %s' % (position, layer_number))
+        self._context_menu_paste_data = {
+            "position": max(0.0, float(position)),
+            "track": int(layer_number),
+        }
 
         # Get translation method
         _ = get_app()._tr
@@ -857,8 +1527,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Get clipboard
         copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
-        if copied_object:
-            print(f"Copied object found: {type(copied_object).__name__}")
 
         # Determine if clipboard has FULL clip or transition data (or a list of multiple objects)
         has_clipboard = False
@@ -927,11 +1595,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot()
+    def ShowProperties(self):
+        """Show the Properties dock (triggered by double-click on a clip/transition)."""
+        self.window.actionProperties.trigger()
+
+    @guarded_slot(str)
     def ShowClipMenu(self, clip_id=None):
         log.debug('ShowClipMenu: %s' % clip_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -950,13 +1624,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
+        # Determine visual/audio capability from reader and clip properties
+        _reader = clip.data.get("reader", {}) if clip else {}
+        clip_has_visual = bool(_reader.get("has_video", True)) or bool(clip.data.get("waveform", False))
+        clip_has_audio = bool(_reader.get("has_audio", True))
+
         # Get playhead position
         playhead_position = float(self.window.preview_thread.current_frame - 1) / fps_float
 
         # Get clipboard
         copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
-        if copied_object:
-            print(f"Copied object found: {type(copied_object).__name__}")
         has_clipboard = False
         if copied_object and isinstance(copied_object, Clip):
             has_clipboard = True
@@ -1041,146 +1718,202 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Add menu to parent
             menu.addMenu(Alignment_Menu)
 
-        # Fade In Menu
+        # Fade Menu
         Fade_Menu = StyledContextMenu(title=_("Fade"), parent=self)
         Fade_None = Fade_Menu.addAction(_("No Fade"))
         Fade_None.triggered.connect(partial(self.Fade_Triggered, MenuFade.NONE, clip_ids))
         Fade_Menu.addSeparator()
-        for position, position_label in [
-            ("Start of Clip", _("Start of Clip")),
-            ("End of Clip", _("End of Clip")),
-            ("Entire Clip", _("Entire Clip"))
-        ]:
-            Position_Menu = StyledContextMenu(title=position_label, parent=self)
 
-            if position == "Start of Clip":
-                Fade_In_Fast = Position_Menu.addAction(_("Fade In (Fast)"))
-                Fade_In_Fast.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.IN_FAST, clip_ids, position))
-                Fade_In_Slow = Position_Menu.addAction(_("Fade In (Slow)"))
-                Fade_In_Slow.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.IN_SLOW, clip_ids, position))
+        Fade_In_Menu = StyledContextMenu(title=_("Fade In"), parent=self)
+        Fade_In_Fast = Fade_In_Menu.addAction(_("Fast"))
+        Fade_In_Fast.triggered.connect(partial(self.Fade_Triggered, MenuFade.IN_FAST, clip_ids, "Start of Clip"))
+        Fade_In_Slow = Fade_In_Menu.addAction(_("Slow"))
+        Fade_In_Slow.triggered.connect(partial(self.Fade_Triggered, MenuFade.IN_SLOW, clip_ids, "Start of Clip"))
+        Fade_Menu.addMenu(Fade_In_Menu)
 
-            elif position == "End of Clip":
-                Fade_Out_Fast = Position_Menu.addAction(_("Fade Out (Fast)"))
-                Fade_Out_Fast.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.OUT_FAST, clip_ids, position))
-                Fade_Out_Slow = Position_Menu.addAction(_("Fade Out (Slow)"))
-                Fade_Out_Slow.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.OUT_SLOW, clip_ids, position))
+        Fade_Out_Menu = StyledContextMenu(title=_("Fade Out"), parent=self)
+        Fade_Out_Fast = Fade_Out_Menu.addAction(_("Fast"))
+        Fade_Out_Fast.triggered.connect(partial(self.Fade_Triggered, MenuFade.OUT_FAST, clip_ids, "End of Clip"))
+        Fade_Out_Slow = Fade_Out_Menu.addAction(_("Slow"))
+        Fade_Out_Slow.triggered.connect(partial(self.Fade_Triggered, MenuFade.OUT_SLOW, clip_ids, "End of Clip"))
+        Fade_Menu.addMenu(Fade_Out_Menu)
 
-            else:
-                Fade_In_Out_Fast = Position_Menu.addAction(_("Fade In and Out (Fast)"))
-                Fade_In_Out_Fast.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.IN_OUT_FAST, clip_ids, position))
-                Fade_In_Out_Slow = Position_Menu.addAction(_("Fade In and Out (Slow)"))
-                Fade_In_Out_Slow.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.IN_OUT_SLOW, clip_ids, position))
-                Position_Menu.addSeparator()
-                Fade_In_Slow = Position_Menu.addAction(_("Fade In (Entire Clip)"))
-                Fade_In_Slow.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.IN_SLOW, clip_ids, position))
-                Fade_Out_Slow = Position_Menu.addAction(_("Fade Out (Entire Clip)"))
-                Fade_Out_Slow.triggered.connect(partial(
-                    self.Fade_Triggered, MenuFade.OUT_SLOW, clip_ids, position))
+        Fade_In_Out_Menu = StyledContextMenu(title=_("Fade In and Out"), parent=self)
+        Fade_In_Out_Fast = Fade_In_Out_Menu.addAction(_("Fast"))
+        Fade_In_Out_Fast.triggered.connect(partial(self.Fade_Triggered, MenuFade.IN_OUT_FAST, clip_ids, "Entire Clip"))
+        Fade_In_Out_Slow = Fade_In_Out_Menu.addAction(_("Slow"))
+        Fade_In_Out_Slow.triggered.connect(partial(self.Fade_Triggered, MenuFade.IN_OUT_SLOW, clip_ids, "Entire Clip"))
+        Fade_Menu.addMenu(Fade_In_Out_Menu)
 
-            Fade_Menu.addMenu(Position_Menu)
         menu.addMenu(Fade_Menu)
 
-        # Animate Menu
-        Animate_Menu = StyledContextMenu(title=_("Animate"), parent=self)
-        Animate_None = Animate_Menu.addAction(_("No Animation"))
+        # ── Motion Menu ───────────────────────────────────────────────────────
+        Animate_Menu = StyledContextMenu(title=_("Motion"), parent=self)
+        Animate_None = Animate_Menu.addAction(_("No Motion"))
         Animate_None.triggered.connect(partial(self.Animate_Triggered, MenuAnimate.NONE, clip_ids))
         Animate_Menu.addSeparator()
-        for position, position_label in [
-            ("Start of Clip", _("Start of Clip")),
-            ("End of Clip", _("End of Clip")),
-            ("Entire Clip", _("Entire Clip"))
-        ]:
-            Position_Menu = StyledContextMenu(title=position_label, parent=self)
 
-            # Scale
-            Scale_Menu = StyledContextMenu(title=_("Zoom"), parent=self)
-            Animate_In_50_100 = Scale_Menu.addAction(_("Zoom In (50% to 100%)"))
-            Animate_In_50_100.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.IN_50_100, clip_ids, position))
-            Animate_In_75_100 = Scale_Menu.addAction(_("Zoom In (75% to 100%)"))
-            Animate_In_75_100.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.IN_75_100, clip_ids, position))
-            Animate_In_100_150 = Scale_Menu.addAction(_("Zoom In (100% to 150%)"))
-            Animate_In_100_150.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.IN_100_150, clip_ids, position))
-            Animate_Out_100_75 = Scale_Menu.addAction(_("Zoom Out (100% to 75%)"))
-            Animate_Out_100_75.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.OUT_100_75, clip_ids, position))
-            Animate_Out_100_50 = Scale_Menu.addAction(_("Zoom Out (100% to 50%)"))
-            Animate_Out_100_50.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.OUT_100_50, clip_ids, position))
-            Animate_Out_150_100 = Scale_Menu.addAction(_("Zoom Out (150% to 100%)"))
-            Animate_Out_150_100.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.OUT_150_100, clip_ids, position))
-            Position_Menu.addMenu(Scale_Menu)
+        def _motion_act(menu_obj, label, action):
+            act = menu_obj.addAction(label)
+            act.triggered.connect(partial(self.Animate_Triggered, action, clip_ids))
 
-            # Center to Edge
-            Center_Edge_Menu = StyledContextMenu(title=_("Center to Edge"), parent=self)
-            Animate_Center_Top = Center_Edge_Menu.addAction(_("Center to Top"))
-            Animate_Center_Top.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.CENTER_TOP, clip_ids, position))
-            Animate_Center_Left = Center_Edge_Menu.addAction(_("Center to Left"))
-            Animate_Center_Left.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.CENTER_LEFT, clip_ids, position))
-            Animate_Center_Right = Center_Edge_Menu.addAction(_("Center to Right"))
-            Animate_Center_Right.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.CENTER_RIGHT, clip_ids, position))
-            Animate_Center_Bottom = Center_Edge_Menu.addAction(_("Center to Bottom"))
-            Animate_Center_Bottom.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.CENTER_BOTTOM, clip_ids, position))
-            Position_Menu.addMenu(Center_Edge_Menu)
+        def _motion_sub(title, items):
+            sub = StyledContextMenu(title=title, parent=self)
+            for label, action in items:
+                _motion_act(sub, label, action)
+            return sub
 
-            # Edge to Center
-            Edge_Center_Menu = StyledContextMenu(title=_("Edge to Center"), parent=self)
-            Animate_Top_Center = Edge_Center_Menu.addAction(_("Top to Center"))
-            Animate_Top_Center.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.TOP_CENTER, clip_ids, position))
-            Animate_Left_Center = Edge_Center_Menu.addAction(_("Left to Center"))
-            Animate_Left_Center.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.LEFT_CENTER, clip_ids, position))
-            Animate_Right_Center = Edge_Center_Menu.addAction(_("Right to Center"))
-            Animate_Right_Center.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.RIGHT_CENTER, clip_ids, position))
-            Animate_Bottom_Center = Edge_Center_Menu.addAction(_("Bottom to Center"))
-            Animate_Bottom_Center.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.BOTTOM_CENTER, clip_ids, position))
-            Position_Menu.addMenu(Edge_Center_Menu)
+        # ── In ▶ ───────────────────────────────────────────────────────────────
+        In_Menu = StyledContextMenu(title=_("In"), parent=self)
+        In_Menu.addMenu(_motion_sub(_("Back In"), [
+            (_("From Bottom"), MenuAnimate.BACK_IN_UP),
+            (_("From Left"),   MenuAnimate.BACK_IN_LEFT),
+            (_("From Right"),  MenuAnimate.BACK_IN_RIGHT),
+            (_("From Top"),    MenuAnimate.BACK_IN_DOWN),
+        ]))
+        _motion_act(In_Menu, _("Blur In"),   MenuAnimate.BLUR_IN)
+        In_Menu.addMenu(_motion_sub(_("Bounce In"), [
+            (_("Center"),      MenuAnimate.BOUNCE_IN),
+            (_("From Bottom"), MenuAnimate.BOUNCE_IN_UP),
+            (_("From Left"),   MenuAnimate.BOUNCE_IN_LEFT),
+            (_("From Right"),  MenuAnimate.BOUNCE_IN_RIGHT),
+            (_("From Top"),    MenuAnimate.BOUNCE_IN_DOWN),
+        ]))
+        _motion_act(In_Menu, _("Pop In"),    MenuAnimate.POP_IN)
+        In_Menu.addMenu(_motion_sub(_("Slide In"), [
+            (_("From Bottom"), MenuAnimate.SLIDE_IN_BOTTOM),
+            (_("From Left"),   MenuAnimate.SLIDE_IN_LEFT),
+            (_("From Right"),  MenuAnimate.SLIDE_IN_RIGHT),
+            (_("From Top"),    MenuAnimate.SLIDE_IN_TOP),
+        ]))
+        _motion_act(In_Menu, _("Spiral In"), MenuAnimate.SPIRAL_IN)
+        In_Menu.addMenu(_motion_sub(_("Wipe In"), [
+            (_("Circle Expand"),  MenuAnimate.WIPE_IN_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.WIPE_IN_CIRCLE_SHRINK),
+            (_("From Bottom"),    MenuAnimate.WIPE_IN_BOTTOM),
+            (_("From Left"),      MenuAnimate.WIPE_IN_LEFT),
+            (_("From Right"),     MenuAnimate.WIPE_IN_RIGHT),
+            (_("From Top"),       MenuAnimate.WIPE_IN_TOP),
+        ]))
+        In_Menu.addMenu(_motion_sub(_("Blur Wipe In"), [
+            (_("Circle Expand"),  MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK),
+            (_("From Bottom"),    MenuAnimate.BLUR_WIPE_IN_BOTTOM),
+            (_("From Left"),      MenuAnimate.BLUR_WIPE_IN_LEFT),
+            (_("From Right"),     MenuAnimate.BLUR_WIPE_IN_RIGHT),
+            (_("From Top"),       MenuAnimate.BLUR_WIPE_IN_TOP),
+        ]))
+        Animate_Menu.addMenu(In_Menu)
 
-            # Edge to Edge
-            Edge_Edge_Menu = StyledContextMenu(title=_("Edge to Edge"), parent=self)
-            Animate_Top_Bottom = Edge_Edge_Menu.addAction(_("Top to Bottom"))
-            Animate_Top_Bottom.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.TOP_BOTTOM, clip_ids, position))
-            Animate_Left_Right = Edge_Edge_Menu.addAction(_("Left to Right"))
-            Animate_Left_Right.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.LEFT_RIGHT, clip_ids, position))
-            Animate_Right_Left = Edge_Edge_Menu.addAction(_("Right to Left"))
-            Animate_Right_Left.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.RIGHT_LEFT, clip_ids, position))
-            Animate_Bottom_Top = Edge_Edge_Menu.addAction(_("Bottom to Top"))
-            Animate_Bottom_Top.triggered.connect(partial(
-                self.Animate_Triggered, MenuAnimate.BOTTOM_TOP, clip_ids, position))
-            Position_Menu.addMenu(Edge_Edge_Menu)
+        # ── Out ▶ ──────────────────────────────────────────────────────────────
+        Out_Menu = StyledContextMenu(title=_("Out"), parent=self)
+        Out_Menu.addMenu(_motion_sub(_("Back Out"), [
+            (_("To Bottom"), MenuAnimate.BACK_OUT_DOWN),
+            (_("To Left"),   MenuAnimate.BACK_OUT_LEFT),
+            (_("To Right"),  MenuAnimate.BACK_OUT_RIGHT),
+            (_("To Top"),    MenuAnimate.BACK_OUT_UP),
+        ]))
+        _motion_act(Out_Menu, _("Blur Out"),  MenuAnimate.BLUR_OUT)
+        Out_Menu.addMenu(_motion_sub(_("Bounce Out"), [
+            (_("Center"),    MenuAnimate.BOUNCE_OUT),
+            (_("To Bottom"), MenuAnimate.BOUNCE_OUT_DOWN),
+            (_("To Left"),   MenuAnimate.BOUNCE_OUT_LEFT),
+            (_("To Right"),  MenuAnimate.BOUNCE_OUT_RIGHT),
+            (_("To Top"),    MenuAnimate.BOUNCE_OUT_UP),
+        ]))
+        _motion_act(Out_Menu, _("Pop Out"),   MenuAnimate.POP_OUT)
+        Out_Menu.addMenu(_motion_sub(_("Slide Out"), [
+            (_("To Bottom"), MenuAnimate.SLIDE_OUT_BOTTOM),
+            (_("To Left"),   MenuAnimate.SLIDE_OUT_LEFT),
+            (_("To Right"),  MenuAnimate.SLIDE_OUT_RIGHT),
+            (_("To Top"),    MenuAnimate.SLIDE_OUT_TOP),
+        ]))
+        _motion_act(Out_Menu, _("Spiral Out"), MenuAnimate.SPIRAL_OUT)
+        Out_Menu.addMenu(_motion_sub(_("Wipe Out"), [
+            (_("Circle Expand"),  MenuAnimate.WIPE_OUT_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.WIPE_OUT_CIRCLE_SHRINK),
+            (_("To Bottom"),      MenuAnimate.WIPE_OUT_BOTTOM),
+            (_("To Left"),        MenuAnimate.WIPE_OUT_LEFT),
+            (_("To Right"),       MenuAnimate.WIPE_OUT_RIGHT),
+            (_("To Top"),         MenuAnimate.WIPE_OUT_TOP),
+        ]))
+        Out_Menu.addMenu(_motion_sub(_("Blur Wipe Out"), [
+            (_("Circle Expand"),  MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND),
+            (_("Circle Shrink"),  MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK),
+            (_("To Bottom"),      MenuAnimate.BLUR_WIPE_OUT_BOTTOM),
+            (_("To Left"),        MenuAnimate.BLUR_WIPE_OUT_LEFT),
+            (_("To Right"),       MenuAnimate.BLUR_WIPE_OUT_RIGHT),
+            (_("To Top"),         MenuAnimate.BLUR_WIPE_OUT_TOP),
+        ]))
+        Animate_Menu.addMenu(Out_Menu)
 
-            # Random Animation
-            Position_Menu.addSeparator()
-            Random = Position_Menu.addAction(_("Random"))
-            Random.triggered.connect(partial(self.Animate_Triggered, MenuAnimate.RANDOM, clip_ids, position))
+        # ── Emphasis ▶ ─────────────────────────────────────────────────────────
+        Animate_Menu.addMenu(_motion_sub(_("Emphasis"), [
+            (_("Bounce"),      MenuAnimate.BOUNCE),
+            (_("Flash"),       MenuAnimate.FLASH),
+            (_("Heartbeat"),   MenuAnimate.HEART_BEAT),
+            (_("Jello"),       MenuAnimate.JELLO),
+            (_("Pulse"),       MenuAnimate.PULSE),
+            (_("Rubber Band"), MenuAnimate.RUBBER_BAND),
+            (_("Shake X"),     MenuAnimate.SHAKE_X),
+            (_("Shake Y"),     MenuAnimate.SHAKE_Y),
+            (_("Swing"),       MenuAnimate.SWING),
+            (_("Tada"),        MenuAnimate.TADA),
+            (_("Wobble"),      MenuAnimate.WOBBLE),
+        ]))
 
-            # Add Sub-Menu's to Position menu
-            Animate_Menu.addMenu(Position_Menu)
+        # ── Camera ▶ ───────────────────────────────────────────────────────────
+        Camera_Menu = StyledContextMenu(title=_("Camera"), parent=self)
+        Camera_Menu.addMenu(_motion_sub(_("Zoom"), [
+            (_("In"),  MenuAnimate.CAM_PUSH_IN),
+            (_("Out"), MenuAnimate.CAM_PULL_OUT),
+        ]))
+        Camera_Menu.addMenu(_motion_sub(_("Pan"), [
+            (_("Auto Direction"), MenuAnimate.CAM_PAN_AUTO),
+            (_("Left to Right"),  MenuAnimate.CAM_PAN_RIGHT),
+            (_("Right to Left"),  MenuAnimate.CAM_PAN_LEFT),
+            (_("Top to Bottom"),  MenuAnimate.CAM_PAN_DOWN),
+            (_("Bottom to Top"),  MenuAnimate.CAM_PAN_UP),
+        ]))
+        Zoom_Pan_Menu = StyledContextMenu(title=_("Zoom & Pan").replace("&", "&&"), parent=self)
+        Zoom_Pan_Menu.addMenu(_motion_sub(_("In"), [
+            (_("Auto Direction"),  MenuAnimate.KEN_BURNS_IN),
+            (_("Left to Right"),   MenuAnimate.KEN_BURNS_IN_LEFT_TO_RIGHT),
+            (_("Right to Left"),   MenuAnimate.KEN_BURNS_IN_RIGHT_TO_LEFT),
+            (_("Top to Bottom"),   MenuAnimate.KEN_BURNS_IN_TOP_TO_BOTTOM),
+            (_("Bottom to Top"),   MenuAnimate.KEN_BURNS_IN_BOTTOM_TO_TOP),
+        ]))
+        Zoom_Pan_Menu.addMenu(_motion_sub(_("Out"), [
+            (_("Auto Direction"),  MenuAnimate.KEN_BURNS_OUT),
+            (_("Left to Right"),   MenuAnimate.KEN_BURNS_OUT_LEFT_TO_RIGHT),
+            (_("Right to Left"),   MenuAnimate.KEN_BURNS_OUT_RIGHT_TO_LEFT),
+            (_("Top to Bottom"),   MenuAnimate.KEN_BURNS_OUT_TOP_TO_BOTTOM),
+            (_("Bottom to Top"),   MenuAnimate.KEN_BURNS_OUT_BOTTOM_TO_TOP),
+        ]))
+        Camera_Menu.addMenu(Zoom_Pan_Menu)
+        Animate_Menu.addMenu(Camera_Menu)
 
-        # Add Each position menu
-        menu.addMenu(Animate_Menu)
+        # ── Credits ▶ ──────────────────────────────────────────────────────────
+        Animate_Menu.addMenu(_motion_sub(_("Credits"), [
+            (_("Scroll Up"),   MenuAnimate.CREDITS_UP),
+            (_("Scroll Down"), MenuAnimate.CREDITS_DOWN),
+        ]))
 
-        # Rotate Menu
+        if clip_has_visual:
+            menu.addMenu(Animate_Menu)
+
+        # Transform Menu (Rotate, Crop, Layout)
+        Transform_Menu = StyledContextMenu(title=_("Transform"), parent=self)
+        # Zenvi: interactive transform handles on the preview (toolbar action)
+        Transform_Action = self.window.actionTransform
+        Transform_Action.triggered.connect(
+            partial(self.Transform_Triggered, MenuTransform.DEFAULT, clip_ids))
+        Transform_Menu.addAction(Transform_Action)
+        Transform_Menu.addSeparator()
+        No_Transform = Transform_Menu.addAction(_("No Transform"))
+        No_Transform.triggered.connect(partial(self.No_Transform_Triggered, clip_ids))
+        Transform_Menu.addSeparator()
+
         Rotation_Menu = StyledContextMenu(title=_("Rotate"), parent=self)
         Rotation_None = Rotation_Menu.addAction(_("No Rotation"))
         Rotation_None.triggered.connect(partial(
@@ -1195,7 +1928,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         Rotation_180_Flip = Rotation_Menu.addAction(_("Rotate 180 (Flip)"))
         Rotation_180_Flip.triggered.connect(partial(
             self.Rotate_Triggered, MenuRotate.FLIP_180, clip_ids))
-        menu.addMenu(Rotation_Menu)
+        Transform_Menu.addMenu(Rotation_Menu)
 
         Crop_Menu = StyledContextMenu(title=_("Crop"), parent=self)
         Crop_None = Crop_Menu.addAction(_("No Crop"))
@@ -1205,9 +1938,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         Crop_NoResize.triggered.connect(partial(self.Crop_Triggered, clip_ids, 'crop'))
         Crop_Resize = Crop_Menu.addAction(_("Crop (Resize)"))
         Crop_Resize.triggered.connect(partial(self.Crop_Triggered, clip_ids, 'resize'))
-        menu.addMenu(Crop_Menu)
+        Transform_Menu.addMenu(Crop_Menu)
 
-        # Layout Menu
         Layout_Menu = StyledContextMenu(title=_("Layout"), parent=self)
         Layout_None = Layout_Menu.addAction(_("Reset Layout"))
         Layout_None.triggered.connect(partial(
@@ -1235,11 +1967,145 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         Layout_Bottom_All_Without_Aspect = Layout_Menu.addAction(_("Show All (Distort)"))
         Layout_Bottom_All_Without_Aspect.triggered.connect(partial(
             self.Layout_Triggered, MenuLayout.ALL_WITHOUT_ASPECT, clip_ids))
-        menu.addMenu(Layout_Menu)
+        Transform_Menu.addMenu(Layout_Menu)
 
-        # Time Menu
-        Time_Menu = StyledContextMenu(title=_("Time"), parent=self)
-        Time_None = Time_Menu.addAction(_("Reset Time"))
+        if clip_has_visual:
+            menu.addMenu(Transform_Menu)
+
+        if clip_has_visual:
+            # Look Menu (color, film, focus, and lighting presets)
+            Look_Menu = StyledContextMenu(title=_("Look"), parent=self)
+            Reset_Look = Look_Menu.addAction(_("Reset Look"))
+            Reset_Look.triggered.connect(partial(self.Reset_Look_Triggered, clip_ids))
+            Look_Menu.addSeparator()
+
+            Color_Menu = StyledContextMenu(title=_("Color"), parent=self)
+            Auto_Contrast = Color_Menu.addAction(_("Auto Contrast"))
+            Auto_Contrast.triggered.connect(partial(self.Color_Triggered, COLOR_PRESET_AUTO_CONTRAST, clip_ids))
+            Lift_Shadows = Color_Menu.addAction(_("Lift Shadows"))
+            Lift_Shadows.triggered.connect(partial(self.Color_Triggered, COLOR_PRESET_LIFT_SHADOWS, clip_ids))
+            Warm_Up = Color_Menu.addAction(_("Warm Up"))
+            Warm_Up.triggered.connect(partial(self.Color_Triggered, COLOR_PRESET_WARM_UP, clip_ids))
+            Boost_Color = Color_Menu.addAction(_("Boost Color"))
+            Boost_Color.triggered.connect(partial(self.Color_Triggered, COLOR_PRESET_BOOST_COLOR, clip_ids))
+            Look_Menu.addMenu(Color_Menu)
+
+            Film_Menu = StyledContextMenu(title=_("Film"), parent=self)
+            Film_Grain_Menu = StyledContextMenu(title=_("Film Grain"), parent=self)
+            Film_Grain_None = Film_Grain_Menu.addAction(_("No Film Grain"))
+            Film_Grain_None.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_NONE, clip_ids))
+            Film_Grain_Menu.addSeparator()
+            Film_Grain_35mm_Fine = Film_Grain_Menu.addAction(_("35mm Fine"))
+            Film_Grain_35mm_Fine.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_35MM_FINE, clip_ids))
+            Film_Grain_35mm_Classic = Film_Grain_Menu.addAction(_("35mm Classic"))
+            Film_Grain_35mm_Classic.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_35MM_CLASSIC, clip_ids))
+            Film_Grain_35mm_Gritty = Film_Grain_Menu.addAction(_("35mm Gritty"))
+            Film_Grain_35mm_Gritty.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_35MM_GRITTY, clip_ids))
+            Film_Grain_16mm_Classic = Film_Grain_Menu.addAction(_("16mm Classic"))
+            Film_Grain_16mm_Classic.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_16MM_CLASSIC, clip_ids))
+            Film_Grain_Super_8 = Film_Grain_Menu.addAction(_("Super 8"))
+            Film_Grain_Super_8.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_SUPER_8, clip_ids))
+            Film_Grain_High_ISO = Film_Grain_Menu.addAction(_("High ISO"))
+            Film_Grain_High_ISO.triggered.connect(partial(
+                self.Film_Grain_Triggered, FILM_GRAIN_PRESET_HIGH_ISO, clip_ids))
+            Film_Menu.addMenu(Film_Grain_Menu)
+
+            self._add_effect_preset_menu(
+                Film_Menu,
+                _("Analog Tape"),
+                "AnalogTape",
+                _("No Analog Tape"),
+                [
+                    (_("Subtle"), "subtle"),
+                    (_("VHS"), "vhs"),
+                    (_("Heavy"), "heavy"),
+                ],
+                clip_ids,
+            )
+
+            Look_Menu.addMenu(Film_Menu)
+
+            Focus_Menu = StyledContextMenu(title=_("Focus"), parent=self)
+            self._add_effect_preset_menu(
+                Focus_Menu,
+                _("Sharpen"),
+                "Sharpen",
+                _("No Sharpen"),
+                [
+                    (_("Subtle"), "subtle"),
+                    (_("Medium"), "medium"),
+                    (_("Strong"), "strong"),
+                ],
+                clip_ids,
+            )
+            self._add_effect_preset_menu(
+                Focus_Menu,
+                _("Blur"),
+                "Blur",
+                _("No Blur"),
+                [
+                    (_("Soft Focus"), "soft_focus"),
+                    (_("Medium"), "medium"),
+                    (_("Heavy"), "heavy"),
+                ],
+                clip_ids,
+            )
+
+            if Focus_Menu.actions():
+                Look_Menu.addMenu(Focus_Menu)
+
+            Lighting_Menu = StyledContextMenu(title=_("Lighting"), parent=self)
+            self._add_effect_preset_menu(
+                Lighting_Menu,
+                _("Shadow"),
+                "Shadow",
+                _("No Shadow"),
+                [
+                    (_("Subtle"), "subtle"),
+                    (_("Soft"), "soft"),
+                    (_("Strong"), "strong"),
+                    (_("Long"), "long"),
+                ],
+                clip_ids,
+            )
+            self._add_effect_preset_menu(
+                Lighting_Menu,
+                _("Glow"),
+                "Glow",
+                _("No Glow"),
+                [
+                    (_("Soft White"), "soft_white"),
+                    (_("Warm"), "warm"),
+                    (_("Neon"), "neon"),
+                    (_("Inner Glow"), "inner"),
+                ],
+                clip_ids,
+            )
+
+            if Lighting_Menu.actions():
+                Look_Menu.addMenu(Lighting_Menu)
+
+            Look_Menu.addSeparator()
+            Adjust_Colors = Look_Menu.addAction(
+                QIcon(os.path.join(info.PATH, "themes/cosmic/images/view-color.svg")),
+                _("Adjust Colors"))
+            Adjust_Colors.triggered.connect(partial(self.Adjust_Colors_Triggered, clip_ids))
+            Analyze_Colors = Look_Menu.addAction(
+                QIcon(os.path.join(info.PATH, "themes/cosmic/images/view-analysis.svg")),
+                _("Analyze Colors"))
+            Analyze_Colors.triggered.connect(lambda: get_app().window.show_scope_video_docks())
+
+            menu.addMenu(Look_Menu)
+
+        # Speed Menu
+        Time_Menu = StyledContextMenu(title=_("Speed"), parent=self)
+        Time_None = Time_Menu.addAction(_("Reset"))
         Time_None.triggered.connect(partial(self.Time_Triggered, MenuTime.NONE, clip_ids, '1X'))
         Time_Menu.addSeparator()
 
@@ -1250,8 +2116,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         Time_Menu.addSeparator()
         for speed, speed_values in [
-            (_("Fast"), ['2X', '4X', '8X', '16X']),
-            (_("Slow"), ['1/2X', '1/4X', '1/8X', '1/16X'])
+            (_("Speed Up"), ['2X', '4X', '8X', '16X']),
+            (_("Slow Down"), ['1/2X', '1/4X', '1/8X', '1/16X'])
         ]:
             Speed_Menu = StyledContextMenu(title=speed, parent=self)
 
@@ -1308,69 +2174,84 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Add menu to parent
         menu.addMenu(Time_Menu)
 
-        # Volume Menu
+        # Audio Menu (Record, Volume, Separate Audio, Waveform, Analyze Levels)
+        Audio_Menu = StyledContextMenu(title=_("Audio"), parent=self)
+        audio_menu_has_actions = False
+        Record_Voiceover = Audio_Menu.addAction(
+            self._microphone_icon(),
+            _("Record"))
+        Record_Voiceover.triggered.connect(lambda: self._record_from_clip(clip))
+        audio_menu_has_actions = True
+        Audio_Menu.addSeparator()
+
         Volume_Menu = StyledContextMenu(title=_("Volume"), parent=self)
         Volume_None = Volume_Menu.addAction(_("Reset Volume"))
         Volume_None.triggered.connect(partial(self.Volume_Triggered, MenuVolume.NONE, clip_ids))
         Volume_Menu.addSeparator()
-        for position, position_label in [
-            ("Start of Clip", _("Start of Clip")),
-            ("End of Clip", _("End of Clip")),
-            ("Entire Clip", _("Entire Clip"))
-        ]:
-            Position_Menu = StyledContextMenu(title=position_label, parent=self)
 
-            if position == "Start of Clip":
-                Fade_In_Fast = Position_Menu.addAction(_("Fade In (Fast)"))
-                Fade_In_Fast.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_IN_FAST, clip_ids, position))
-                Fade_In_Slow = Position_Menu.addAction(_("Fade In (Slow)"))
-                Fade_In_Slow.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_IN_SLOW, clip_ids, position))
+        Vol_Level_Menu = StyledContextMenu(title=_("Level"), parent=self)
+        for level in reversed(range(0, 140, 10)):
+            vol_action = Vol_Level_Menu.addAction(_("Level {level}%").format(level=level))
+            vol_action.triggered.connect(partial(self.Volume_Triggered, MenuVolume.LEVEL, clip_ids, "Entire Clip", level))
+        Volume_Menu.addMenu(Vol_Level_Menu)
 
-            elif position == "End of Clip":
-                Fade_Out_Fast = Position_Menu.addAction(_("Fade Out (Fast)"))
-                Fade_Out_Fast.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_OUT_FAST, clip_ids, position))
-                Fade_Out_Slow = Position_Menu.addAction(_("Fade Out (Slow)"))
-                Fade_Out_Slow.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_OUT_SLOW, clip_ids, position))
+        Volume_Menu.addSeparator()
 
-            else:
-                Fade_In_Out_Fast = Position_Menu.addAction(_("Fade In and Out (Fast)"))
-                Fade_In_Out_Fast.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_IN_OUT_FAST, clip_ids, position))
-                Fade_In_Out_Slow = Position_Menu.addAction(_("Fade In and Out (Slow)"))
-                Fade_In_Out_Slow.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_IN_OUT_SLOW, clip_ids, position))
-                Position_Menu.addSeparator()
-                Fade_In_Slow = Position_Menu.addAction(_("Fade In (Entire Clip)"))
-                Fade_In_Slow.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_IN_SLOW, clip_ids, position))
-                Fade_Out_Slow = Position_Menu.addAction(_("Fade Out (Entire Clip)"))
-                Fade_Out_Slow.triggered.connect(partial(
-                    self.Volume_Triggered, MenuVolume.FADE_OUT_SLOW, clip_ids, position))
+        Vol_Fade_In_Menu = StyledContextMenu(title=_("Fade In"), parent=self)
+        Vol_Fade_In_Fast = Vol_Fade_In_Menu.addAction(_("Fast"))
+        Vol_Fade_In_Fast.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_IN_FAST, clip_ids, "Start of Clip"))
+        Vol_Fade_In_Slow = Vol_Fade_In_Menu.addAction(_("Slow"))
+        Vol_Fade_In_Slow.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_IN_SLOW, clip_ids, "Start of Clip"))
+        Volume_Menu.addMenu(Vol_Fade_In_Menu)
 
-            # Add levels
-            Position_Menu.addSeparator()
+        Vol_Fade_Out_Menu = StyledContextMenu(title=_("Fade Out"), parent=self)
+        Vol_Fade_Out_Fast = Vol_Fade_Out_Menu.addAction(_("Fast"))
+        Vol_Fade_Out_Fast.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_OUT_FAST, clip_ids, "End of Clip"))
+        Vol_Fade_Out_Slow = Vol_Fade_Out_Menu.addAction(_("Slow"))
+        Vol_Fade_Out_Slow.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_OUT_SLOW, clip_ids, "End of Clip"))
+        Volume_Menu.addMenu(Vol_Fade_Out_Menu)
 
-            # Volume levels menu optinos
-            for level in reversed(range(0, 140, 10)):
-                action = Position_Menu.addAction(_("Level {level}%").format(level=level))
-                action.triggered.connect(partial(self.Volume_Triggered, MenuVolume.LEVEL, clip_ids, position, level))
+        Vol_Fade_In_Out_Menu = StyledContextMenu(title=_("Fade In and Out"), parent=self)
+        Vol_Fade_In_Out_Fast = Vol_Fade_In_Out_Menu.addAction(_("Fast"))
+        Vol_Fade_In_Out_Fast.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_IN_OUT_FAST, clip_ids, "Entire Clip"))
+        Vol_Fade_In_Out_Slow = Vol_Fade_In_Out_Menu.addAction(_("Slow"))
+        Vol_Fade_In_Out_Slow.triggered.connect(partial(self.Volume_Triggered, MenuVolume.FADE_IN_OUT_SLOW, clip_ids, "Entire Clip"))
+        Volume_Menu.addMenu(Vol_Fade_In_Out_Menu)
 
-            Volume_Menu.addMenu(Position_Menu)
-        menu.addMenu(Volume_Menu)
+        if clip_has_audio:
+            Audio_Menu.addMenu(Volume_Menu)
 
-        # Add separate audio menu
-        Split_Audio_Channels_Menu = StyledContextMenu(title=_("Separate Audio"), parent=self)
+        Split_Audio_Channels_Menu = StyledContextMenu(title=_("Separate"), parent=self)
         Split_Single_Clip = Split_Audio_Channels_Menu.addAction(_("Single Clip (all channels)"))
         Split_Single_Clip.triggered.connect(partial(
             self.Split_Audio_Triggered, MenuSplitAudio.SINGLE, clip_ids))
         Split_Multiple_Clips = Split_Audio_Channels_Menu.addAction(_("Multiple Clips (each channel)"))
         Split_Multiple_Clips.triggered.connect(partial(
             self.Split_Audio_Triggered, MenuSplitAudio.MULTIPLE, clip_ids))
-        menu.addMenu(Split_Audio_Channels_Menu)
+        if clip_has_audio:
+            Audio_Menu.addMenu(Split_Audio_Channels_Menu)
+
+        if clip_has_audio:
+            Audio_Menu.addSeparator()
+        if self._clip_has_audio(clip):
+            if self._clip_has_visible_waveform(clip):
+                ToggleWaveform = Audio_Menu.addAction(
+                    QIcon(os.path.join(info.PATH, "themes/cosmic/images/view-waveform-flat.svg")),
+                    _("Hide Waveform"))
+                ToggleWaveform.triggered.connect(partial(self.Hide_Waveform_Triggered, clip_ids))
+            else:
+                ToggleWaveform = Audio_Menu.addAction(
+                    QIcon(os.path.join(info.PATH, "themes/cosmic/images/view-waveform.svg")),
+                    _("Show Waveform"))
+                ToggleWaveform.triggered.connect(partial(self.Show_Waveform_Triggered, clip_ids))
+        if clip_has_audio:
+            Analyze_Levels = Audio_Menu.addAction(
+                QIcon(os.path.join(info.PATH, "themes/cosmic/images/view-analysis.svg")),
+                _("Analyze Levels"))
+            Analyze_Levels.triggered.connect(lambda: get_app().window.show_scope_audio_dock())
+
+        if audio_menu_has_actions:
+            menu.addMenu(Audio_Menu)
 
         # If Playhead overlapping clip
         if clip:
@@ -1404,22 +2285,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                 menu.addMenu(Slice_Menu)
 
-        # Transform menu
-        Transform_Action = self.window.actionTransform
-        Transform_Action.triggered.connect(
-            partial(self.Transform_Triggered, MenuTransform.DEFAULT, clip_ids))
-        menu.addAction(Transform_Action)
-
-        # Add clip display menu (waveform or thumbnail)
-        menu.addSeparator()
-        Waveform_Menu = StyledContextMenu(title=_("Display"), parent=self)
-        ShowWaveform = Waveform_Menu.addAction(_("Show Waveform"))
-        ShowWaveform.triggered.connect(partial(self.Show_Waveform_Triggered, clip_ids))
-        HideWaveform = Waveform_Menu.addAction(_("Show Thumbnail"))
-        HideWaveform.triggered.connect(partial(self.Hide_Waveform_Triggered, clip_ids))
-        menu.addMenu(Waveform_Menu)
-
         # Properties
+        menu.addSeparator()
         menu.addAction(self.window.actionProperties)
 
         # Remove Clip Menu
@@ -1428,7 +2295,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
     def Transform_Triggered(self, action, clip_ids):
         log.debug("Transform_Triggered")
@@ -1451,6 +2318,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         for clip_id in clip_ids:
             # Get existing clip object
             clip = Clip.get(id=clip_id)
+            if not clip:
+                log.warning("Skipping waveform request for missing clip: %s", clip_id)
+                continue
             file_id = clip.data.get("file_id")
 
             if file_id not in files:
@@ -1479,7 +2349,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         file = File.get(id=file_id)
         if file:
-            file.data = ui_data
+            # Prefer fingerprint cache for file-level waveforms so .zvn stays small.
+            audio_data = None
+            waveform_ui = {}
+            if isinstance(ui_data, dict):
+                waveform_ui = ui_data.get("ui") or {}
+                audio_data = waveform_ui.get("audio_data")
+            fp = file.data.get("fingerprint") if isinstance(file.data, dict) else None
+            if fp and isinstance(audio_data, list):
+                try:
+                    from classes.media_cache import save_waveform
+                    if save_waveform(fp, audio_data, extra=waveform_ui):
+                        # Keep a tiny marker in project JSON so UI knows a waveform exists.
+                        file.data = {"ui": {"audio_data": ["__cached__"]}}
+                    else:
+                        file.data = ui_data
+                except Exception:
+                    file.data = ui_data
+            else:
+                file.data = ui_data
             file.save()
 
         # Clear transaction id
@@ -1499,6 +2387,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         get_app().window.actionClearWaveformData.setEnabled(True)
         clip = Clip.get(id=clip_id)
         if clip:
+            existing_ui = clip.data.get("ui", {}) if isinstance(clip.data, dict) else {}
+            incoming_ui = ui_data.get("ui") if isinstance(ui_data, dict) else None
+            incoming_audio = incoming_ui.get("audio_data") if isinstance(incoming_ui, dict) else None
+            preserve_existing_waveform = (
+                incoming_audio is None and isinstance(existing_ui.get("audio_data"), list)
+            )
+
+            # Preserve the current waveform preview while fresh waveform samples
+            # are still being generated in the background.
+            if preserve_existing_waveform:
+                merged_ui = dict(existing_ui)
+                if isinstance(incoming_ui, dict):
+                    merged_ui.update(incoming_ui)
+                merged_ui["audio_data"] = existing_ui.get("audio_data")
+                ui_data = dict(ui_data or {})
+                ui_data["ui"] = merged_ui
+
+            if isinstance(ui_data, dict):
+                clip_ui = ui_data.get("ui")
+                if not isinstance(clip_ui, dict):
+                    clip_ui = {}
+                    ui_data["ui"] = clip_ui
+                if not preserve_existing_waveform and isinstance(clip_ui.get("audio_data"), list):
+                    clip_ui["waveform_token"] = str(tid or self.get_uuid())
             clip.data = ui_data
             clip.save()
             if hasattr(self, "clip_painter"):
@@ -1512,13 +2424,15 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback when thumbnail needs to be updated"""
         clips = Clip.filter(id=clip_id)
         for clip in clips:
-            # Force thumbnail image to be refreshed (for a particular frame #)
-            GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
-
             if ViewClass == TimelineWidget:
-                TimelineWidget.update_thumbnail(self, clip_id, thumbnail_frame)
+                # Force regen on the thumbnail worker — never GetThumbPath
+                # (HTTP + disk) on the GUI thread.
+                TimelineWidget.update_thumbnail(
+                    self, clip_id, thumbnail_frame, force_regen=True
+                )
             else:
-                # Pass to javascript timeline (and render)
+                # Web timeline: refresh disk path, then tell JS to redraw.
+                GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
                 self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
 
     def Split_Audio_Triggered(self, action, clip_ids):
@@ -1561,7 +2475,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 continue
 
             def get_track_below(layer_number):
-                """Return the track number directly below the provided layer (or the same layer if none found)."""
+                """Return the track number directly below the provided layer, creating one when needed."""
+                window = getattr(get_app(), "window", None)
+                create_below = getattr(window, "create_track_below", None)
+                if callable(create_below):
+                    return create_below(layer_number)
+
                 next_track_number = layer_number
                 found_track = False
                 for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
@@ -1611,7 +2530,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                         # Keep first clip on the same layer, others below
                         target_layer = current_layer if channel == 0 else get_track_below(current_layer)
-                        clip.data['layer'] = max(target_layer, 0)
+                        clip.data['layer'] = target_layer
                         current_layer = clip.data['layer']
 
                         # Adjust the clip title
@@ -1699,7 +2618,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                     # Adjust the layer, so this new audio clip doesn't overlap the parent
                     target_layer = get_track_below(current_layer)
-                    clip.data['layer'] = max(target_layer, 0)
+                    clip.data['layer'] = target_layer
                     current_layer = clip.data['layer']
 
                     # Adjust the clip title
@@ -1785,9 +2704,383 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.addSelection(clip_ids[0], 'clip', True)
             self.window.KeyFrameTransformSignal.emit('', '')
 
+    def _clip_has_video(self, clip):
+        if not clip:
+            return False
+        reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
+        has_video = reader.get("has_video")
+        return True if has_video is None else bool(has_video)
+
+    def _clip_has_audio(self, clip):
+        if not clip:
+            return False
+        reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
+        has_audio = reader.get("has_audio")
+        return True if has_audio is None else bool(has_audio)
+
+    def _clip_has_visual(self, clip):
+        """Return True if the clip has video OR has waveform rendering enabled."""
+        if not clip:
+            return False
+        reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
+        has_video = reader.get("has_video")
+        if has_video is None or bool(has_video):
+            return True
+        return bool(clip.data.get("waveform", False))
+
+    def _clip_has_visible_waveform(self, clip):
+        """Return True when a clip currently has waveform samples displayed."""
+        if not clip or not isinstance(getattr(clip, "data", None), dict):
+            return False
+        audio_data = clip.data.get("ui", {}).get("audio_data")
+        return isinstance(audio_data, list) and len(audio_data) > 0
+
+    def _create_color_grade_effect_json(self):
+        effect = openshot.EffectInfo().CreateEffect(COLOR_GRADE_CLASS_NAME)
+        if effect is None:
+            raise RuntimeError("Unable to create Color Grade effect")
+        effect.Id(get_app().project.generate_id())
+        return json.loads(effect.Json())
+
+    def _create_film_grain_effect_json(self):
+        effect = openshot.EffectInfo().CreateEffect(FILM_GRAIN_CLASS_NAME)
+        if effect is None:
+            raise RuntimeError("Unable to create Film Grain effect")
+        effect.Id(get_app().project.generate_id())
+        return json.loads(effect.Json())
+
+    def _can_create_effect(self, class_name):
+        return openshot.EffectInfo().CreateEffect(class_name) is not None
+
+    def _add_effect_preset_menu(self, parent_menu, title, class_name, reset_label, preset_items, clip_ids):
+        if not self._can_create_effect(class_name):
+            return None
+
+        preset_menu = StyledContextMenu(title=title, parent=self)
+        reset_action = preset_menu.addAction(reset_label)
+        reset_action.triggered.connect(partial(
+            self._apply_effect_preset, class_name, "none", clip_ids))
+        preset_menu.addSeparator()
+
+        for label, preset_name in preset_items:
+            preset_action = preset_menu.addAction(label)
+            preset_action.triggered.connect(partial(
+                self._apply_effect_preset, class_name, preset_name, clip_ids))
+
+        parent_menu.addMenu(preset_menu)
+        return preset_menu
+
+    def _create_effect_json(self, class_name):
+        effect = openshot.EffectInfo().CreateEffect(class_name)
+        if effect is None:
+            raise RuntimeError("Unable to create {} effect".format(class_name))
+        effect.Id(get_app().project.generate_id())
+        return json.loads(effect.Json())
+
+    def _is_look_managed_effect(self, effect_json, class_name=None):
+        if not isinstance(effect_json, dict):
+            return False
+        if effect_json.get("ui-menu") != LOOK_EFFECT_UI_MENU:
+            return False
+        return class_name is None or effect_json.get("class_name") == class_name
+
+    def _parse_effect_color(self, value):
+        if not isinstance(value, str):
+            return None
+        color = value.strip()
+        if color.startswith("#"):
+            color = color[1:]
+        if len(color) not in (6, 8):
+            return None
+        try:
+            red = int(color[0:2], 16)
+            green = int(color[2:4], 16)
+            blue = int(color[4:6], 16)
+            alpha = int(color[6:8], 16) if len(color) == 8 else 255
+        except ValueError:
+            return None
+        return {
+            "red": red,
+            "green": green,
+            "blue": blue,
+            "alpha": alpha,
+        }
+
+    def _set_effect_property_value(self, effect_json, property_name, value):
+        property_data = effect_json.get(property_name)
+        color_channels = self._parse_effect_color(value)
+        if color_channels and isinstance(property_data, dict):
+            for channel, channel_value in color_channels.items():
+                channel_data = property_data.get(channel)
+                if isinstance(channel_data, dict) and isinstance(channel_data.get("Points"), list):
+                    channel_data["Points"] = [
+                        json.loads(openshot.Point(1, float(channel_value), openshot.BEZIER).Json())
+                    ]
+        elif isinstance(property_data, dict) and isinstance(property_data.get("Points"), list):
+            property_data["Points"] = [json.loads(openshot.Point(1, float(value), openshot.BEZIER).Json())]
+        elif property_name in effect_json:
+            effect_json[property_name] = value
+
+    def _apply_effect_preset(self, class_name, preset_name, clip_ids):
+        """Apply a simple Look effect preset, or remove the effect for the none preset."""
+        presets = LOOK_EFFECT_PRESETS.get(class_name, {})
+        if preset_name not in presets:
+            return
+
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip or not self._clip_has_visual(clip):
+                continue
+
+            original_clip_data = json.loads(json.dumps(clip.data))
+            effects = clip.data.get("effects")
+            if not isinstance(effects, list):
+                effects = list(effects) if effects else []
+                clip.data["effects"] = effects
+
+            matching_indexes = [
+                index for index, effect_json in enumerate(effects)
+                if self._is_look_managed_effect(effect_json, class_name)
+            ]
+
+            if preset_name == "none":
+                if not matching_indexes:
+                    continue
+                clip.data["effects"] = [
+                    effect_json for effect_json in effects
+                    if not self._is_look_managed_effect(effect_json, class_name)
+                ]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                get_app().updates.apply_last_action_to_history(original_clip_data)
+                continue
+
+            try:
+                preset_effect = self._create_effect_json(class_name)
+            except RuntimeError:
+                continue
+            preset_effect["ui-menu"] = LOOK_EFFECT_UI_MENU
+
+            if matching_indexes:
+                existing_effect = effects[matching_indexes[0]]
+                if existing_effect.get("id"):
+                    preset_effect["id"] = existing_effect["id"]
+                if "order" in existing_effect:
+                    preset_effect["order"] = existing_effect["order"]
+
+            for property_name, value in presets[preset_name].items():
+                self._set_effect_property_value(preset_effect, property_name, value)
+
+            if matching_indexes:
+                effects[matching_indexes[0]] = preset_effect
+                for index in reversed(matching_indexes[1:]):
+                    del effects[index]
+            else:
+                effects.append(preset_effect)
+
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            get_app().updates.apply_last_action_to_history(original_clip_data)
+
+    def Reset_Look_Triggered(self, clip_ids):
+        """Remove all effects managed by the clip Look menu."""
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip or not self._clip_has_visual(clip):
+                continue
+
+            effects = clip.data.get("effects")
+            if not isinstance(effects, list):
+                continue
+
+            filtered_effects = [
+                effect_json for effect_json in effects
+                if not isinstance(effect_json, dict)
+                or (
+                    effect_json.get("class_name") not in LOOK_RESET_EFFECT_CLASSES
+                    and not self._is_look_managed_effect(effect_json)
+                )
+            ]
+            if len(filtered_effects) == len(effects):
+                continue
+
+            original_clip_data = json.loads(json.dumps(clip.data))
+            clip.data["effects"] = filtered_effects
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            get_app().updates.apply_last_action_to_history(original_clip_data)
+
+    def _ensure_color_grade_effect(self, clip):
+        if not clip or not self._clip_has_visual(clip):
+            return None, False
+
+        effects = clip.data.get("effects")
+        if not isinstance(effects, list):
+            effects = list(effects) if effects else []
+            clip.data["effects"] = effects
+
+        for effect_json in effects:
+            if is_color_grade_effect(effect_json):
+                return effect_json, False
+
+        effect_json = self._create_color_grade_effect_json()
+        effects.append(effect_json)
+        return effect_json, True
+
+    def Color_Triggered(self, preset_name, clip_ids):
+        """Apply or reset Color Grade presets for selected clips."""
+        # One undo step for the whole selection (Zenvi: one intent = one transaction)
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+        try:
+            self._apply_color_preset(preset_name, clip_ids)
+        finally:
+            get_app().updates.transaction_id = None
+
+    def _apply_color_preset(self, preset_name, clip_ids):
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip or not self._clip_has_visual(clip):
+                continue
+
+            original_clip_data = json.loads(json.dumps(clip.data))
+            effects = clip.data.get("effects")
+            if not isinstance(effects, list):
+                effects = list(effects) if effects else []
+                clip.data["effects"] = effects
+
+            matching_indexes = [
+                index for index, effect_json in enumerate(effects)
+                if is_color_grade_effect(effect_json)
+            ]
+
+            if preset_name == COLOR_PRESET_RESET:
+                if not matching_indexes:
+                    continue
+                clip.data["effects"] = [
+                    effect_json for effect_json in effects
+                    if not is_color_grade_effect(effect_json)
+                ]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                get_app().updates.apply_last_action_to_history(original_clip_data)
+                continue
+
+            preset_effect = apply_color_grade_preset(
+                self._create_color_grade_effect_json(),
+                preset_name,
+            )
+
+            if matching_indexes:
+                existing_effect = effects[matching_indexes[0]]
+                if existing_effect.get("id"):
+                    preset_effect["id"] = existing_effect["id"]
+                if "order" in existing_effect:
+                    preset_effect["order"] = existing_effect["order"]
+                effects[matching_indexes[0]] = preset_effect
+                for index in reversed(matching_indexes[1:]):
+                    del effects[index]
+            else:
+                effects.append(preset_effect)
+
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            get_app().updates.apply_last_action_to_history(original_clip_data)
+
+    def Film_Grain_Triggered(self, preset_name, clip_ids):
+        """Apply Film Grain presets for selected clips."""
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip or not self._clip_has_visual(clip):
+                continue
+
+            original_clip_data = json.loads(json.dumps(clip.data))
+            effects = clip.data.get("effects")
+            if not isinstance(effects, list):
+                effects = list(effects) if effects else []
+                clip.data["effects"] = effects
+
+            matching_indexes = [
+                index for index, effect_json in enumerate(effects)
+                if is_film_grain_effect(effect_json)
+            ]
+
+            if preset_name == FILM_GRAIN_PRESET_NONE:
+                if not matching_indexes:
+                    continue
+                clip.data["effects"] = [
+                    effect_json for effect_json in effects
+                    if not is_film_grain_effect(effect_json)
+                ]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                get_app().updates.apply_last_action_to_history(original_clip_data)
+                continue
+
+            source_effect = (
+                effects[matching_indexes[0]]
+                if matching_indexes
+                else self._create_film_grain_effect_json()
+            )
+            preset_effect = apply_film_grain_preset(source_effect, preset_name)
+
+            if matching_indexes:
+                existing_effect = effects[matching_indexes[0]]
+                if existing_effect.get("id"):
+                    preset_effect["id"] = existing_effect["id"]
+                if "order" in existing_effect:
+                    preset_effect["order"] = existing_effect["order"]
+                for index in reversed(matching_indexes[1:]):
+                    del effects[index]
+                effects[matching_indexes[0]] = preset_effect
+            else:
+                effects.append(preset_effect)
+
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            get_app().updates.apply_last_action_to_history(original_clip_data)
+
+    def Adjust_Colors_Triggered(self, clip_ids):
+        """Ensure a Color Grade effect exists and open the video scopes."""
+        # Adding the effect to several clips is one undo step
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+        try:
+            first_effect_id, first_clip_id = self._ensure_color_grade_effects(clip_ids)
+        finally:
+            get_app().updates.transaction_id = None
+
+        get_app().window.show_color_grading_docks()
+        if first_effect_id:
+            self.addSelection(first_effect_id, "effect", True)
+            self.window.KeyFrameTransformSignal.emit(first_effect_id, first_clip_id)
+
+    def _ensure_color_grade_effects(self, clip_ids):
+        first_effect_id = None
+        first_clip_id = None
+        for clip_id in clip_ids:
+            clip = Clip.get(id=clip_id)
+            if not clip or not self._clip_has_visual(clip):
+                continue
+
+            original_clip_data = json.loads(json.dumps(clip.data))
+            effect_json, changed = self._ensure_color_grade_effect(clip)
+            if not first_effect_id and effect_json and effect_json.get("id"):
+                first_effect_id = effect_json.get("id")
+                first_clip_id = clip_id
+            if changed:
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                get_app().updates.apply_last_action_to_history(original_clip_data)
+        return first_effect_id, first_clip_id
+
     def Layout_Triggered(self, action, clip_ids):
         """Callback for the layout context menus"""
         log.debug(action)
+
+        if action in (MenuLayout.ALL_WITH_ASPECT, MenuLayout.ALL_WITHOUT_ASPECT):
+            for clip_id in clip_ids:
+                clip = Clip.get(id=clip_id)
+                if clip:
+                    self.show_all_clips(
+                        clip,
+                        action == MenuLayout.ALL_WITHOUT_ASPECT,
+                        clip_ids=clip_ids,
+                    )
+                    break
+            return
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -1848,213 +3141,476 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 clip.data["location_x"] = {"Points": [p_object]}
                 clip.data["location_y"] = {"Points": [p_object]}
 
-            if action == MenuLayout.ALL_WITH_ASPECT:
-                # Update all intersecting clips
-                self.show_all_clips(clip, False)
+            # Save changes
+            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-            elif action == MenuLayout.ALL_WITHOUT_ASPECT:
-                # Update all intersecting clips
-                self.show_all_clips(clip, True)
+    def Animate_Triggered(self, action, clip_ids, transaction_id=None):
+        """Apply one-click motion presets to selected clips.
 
-            else:
-                # Save changes
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+        Each MenuAnimate action encodes the animation type and its zone:
+          In actions  → first 1 second of the clip
+          Out actions → last 1 second of the clip
+          Continuous  → entire clip duration
+          Pan actions → entire clip, also sets scale mode to SCALE_CROP
 
-    def Animate_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
-        """Callback for the animate context menus"""
+        Keyframe coordinates follow OpenShot conventions:
+          location ±1.0 ≈ one full frame dimension (offscreen)
+          scale    1.0  = 100%
+          rotation degrees (positive = clockwise)
+          shear    dimensionless skew factor
+          origin   0.0–1.0 (0 = top/left edge, 0.5 = center, 1.0 = bottom/right)
+        """
         log.debug(action)
-
-        # Create a transaction ID for all operations in this function (if not provided)
         tid = transaction_id or self.get_uuid()
-
         try:
-            # Set transaction ID
             get_app().updates.transaction_id = tid
 
-            # Loop through each selected clip
             for clip_id in clip_ids:
-
-                # Get existing clip object
                 clip = Clip.get(id=clip_id)
                 if not clip:
-                    # Invalid clip, skip to next item
                     continue
 
-                # Get framerate
                 fps = get_app().project.get("fps")
                 fps_float = float(fps["num"]) / float(fps["den"])
 
-                # Get existing clip object
-                start_of_clip = round(float(clip.data["start"]) * fps_float) + 1
-                end_of_clip = round(float(clip.data["end"]) * fps_float) + 1
+                # Clip frame boundaries (1-based, relative to clip content start)
+                s = round(float(clip.data["start"]) * fps_float) + 1   # first frame
+                e = round(float(clip.data["end"])   * fps_float) + 1   # last frame
+                dur = max(1, e - s)                                     # total frames
 
-                # Determine the beginning and ending of this animation
-                # ["Start of Clip", "End of Clip", "Entire Clip"]
-                start_animation = start_of_clip
-                end_animation = end_of_clip
-                if position == "Start of Clip":
-                    start_animation = start_of_clip
-                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
-                elif position == "End of Clip":
-                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
-                    end_animation = end_of_clip
+                # 1-second enter / exit zones clamped to clip length
+                zone = max(1, round(fps_float))
+                in_end    = min(s + zone, e)   # end of "In" zone
+                out_start = max(s, e - zone)   # start of "Out" zone
+
+                # Emphasis: fixed 1-second window at playhead (if inside clip).
+                # preview_thread.current_frame is timeline-global, while clip
+                # keyframes are stored in the clip's local/source frame space.
+                try:
+                    timeline_frame = int(self.window.preview_thread.current_frame or 1)
+                except Exception:
+                    timeline_frame = 1
+                try:
+                    timeline_seconds = max(0.0, (timeline_frame - 1) / fps_float)
+                    clip_position = float(clip.data.get("position", 0.0))
+                    clip_playhead = round(
+                        (float(clip.data["start"]) + timeline_seconds - clip_position) * fps_float
+                    ) + 1
+                except Exception:
+                    clip_playhead = s
+                if s <= clip_playhead <= e:
+                    emph_start = clip_playhead
+                else:
+                    emph_start = s
+                emph_end = min(emph_start + zone, e)
+
+                # ── helpers ───────────────────────────────────────────────────
+                def kf(frame, val, interp=openshot.BEZIER):
+                    """Build a keyframe point dict."""
+                    return json.loads(openshot.Point(int(frame), val, interp).Json())
+
+                def add(key, *pts):
+                    """Append keyframe points to a clip channel."""
+                    for p in pts:
+                        self.AddPoint(clip.data[key], p)
+
+                # Read current clip state from the live timeline BEFORE any edits
+                c = self.window.timeline_sync.timeline.GetClip(clip_id)
+
+                _PROP_IDENTITY = {
+                    'scale_x': 1.0, 'scale_y': 1.0,
+                    'location_x': 0.0, 'location_y': 0.0,
+                    'alpha': 1.0, 'rotation': 0.0,
+                    'shear_x': 0.0, 'shear_y': 0.0,
+                }
+
+                def _base(prop, frame):
+                    """Return the clip's current value of prop at frame (identity fallback)."""
+                    if c is not None:
+                        obj = getattr(c, prop, None)
+                        if obj is not None:
+                            return obj.GetValue(int(round(frame)))
+                    return _PROP_IDENTITY.get(prop, 0.0)
+
+                def _rel(prop, preset_val, base_val):
+                    """Adjust a preset value relative to the clip's current base value.
+                    Scale/alpha are multiplicative; location/rotation/shear are additive."""
+                    if prop in ('scale_x', 'scale_y', 'alpha'):
+                        return preset_val * base_val
+                    return preset_val + base_val
+
+                clip.data["gravity"] = openshot.GRAVITY_CENTER
+
+                # ── RESET (always runs first for non-NONE actions) ─────────────
+                # Clears all previous motion keyframes and removes Blur/Mask effects
+                # added by prior motion presets so animations are never additive.
+                def _reset_motion():
+                    clip.data["scale"]      = openshot.SCALE_FIT
+                    clip.data["scale_x"]    = {"Points": [kf(s, 1.0)]}
+                    clip.data["scale_y"]    = {"Points": [kf(s, 1.0)]}
+                    clip.data["location_x"] = {"Points": [kf(s, 0.0)]}
+                    clip.data["location_y"] = {"Points": [kf(s, 0.0)]}
+                    clip.data["rotation"]   = {"Points": [kf(s, 0.0)]}
+                    clip.data["shear_x"]    = {"Points": [kf(s, 0.0)]}
+                    clip.data["shear_y"]    = {"Points": [kf(s, 0.0)]}
+                    clip.data["alpha"]      = {"Points": [kf(s, 1.0)]}
+                    clip.data["origin_x"]   = {"Points": [kf(s, 0.5)]}
+                    clip.data["origin_y"]   = {"Points": [kf(s, 0.5)]}
+                    effects = clip.data.get("effects", [])
+                    clip.data["effects"] = [
+                        eff for eff in (effects if isinstance(effects, list) else [])
+                        if not isinstance(eff, dict)
+                        or (
+                            eff.get("class_name") not in ("Blur", "Mask")
+                            or eff.get("ui-menu") == LOOK_EFFECT_UI_MENU
+                        )
+                    ]
+
+                def _make_wipe_fx(svg_filename, t_start, t_end, brightness_start, brightness_end,
+                                  contrast=20.0):
+                    """Attach a Mask effect (wipe) to clip.data using the given SVG transition."""
+                    svg_path = os.path.join(info.PATH, "transitions", "common", svg_filename)
+                    reader_json = self._get_transition_reader_json(svg_path)
+                    if not reader_json:
+                        return
+                    effect = openshot.EffectInfo().CreateEffect("Mask")
+                    fx = json.loads(effect.Json())
+                    fx["id"] = get_app().project.generate_id()
+                    fx["mask_reader"] = deepcopy(reader_json)
+                    fx["reader"]      = deepcopy(reader_json)
+                    fx["brightness"]  = {"Points": [
+                        kf(t_start, brightness_start, openshot.LINEAR),
+                        kf(t_end,   brightness_end,   openshot.LINEAR),
+                    ]}
+                    fx["contrast"] = {"Points": [kf(t_start, contrast)]}
+                    clip.data["effects"].append(fx)
+
+                def _make_blur_fx(t_start, r_start, t_end, r_end):
+                    """Attach a Blur effect (horizontal + vertical radius) to clip.data."""
+                    effect = openshot.EffectInfo().CreateEffect("Blur")
+                    fx = json.loads(effect.Json())
+                    fx["id"] = get_app().project.generate_id()
+                    fx["horizontal_radius"] = {"Points": [kf(t_start, r_start, openshot.LINEAR),
+                                                          kf(t_end,   r_end,   openshot.LINEAR)]}
+                    fx["vertical_radius"]   = {"Points": [kf(t_start, r_start, openshot.LINEAR),
+                                                          kf(t_end,   r_end,   openshot.LINEAR)]}
+                    clip.data["effects"].append(fx)
+
+                def _apply_preset(preset_name, t_start, t_end, resting_frame):
+                    """Apply an animation preset scaled to [t_start, t_end] frames.
+
+                    Values are applied relative to the clip's current state at resting_frame:
+                    scale/alpha are multiplied by the base value; location/rotation/shear
+                    are offset by it.  Easing handles from KEYFRAME_EASING are applied to
+                    consecutive point pairs.  The zone [t_start, t_end] is cleared of
+                    existing keyframes for each touched property before insertion.
+                    """
+                    preset = _ANIMATION_PRESETS.get(preset_name, {})
+                    if not preset:
+                        return
+                    src_dur = 30.0  # source frames span 1–31
+                    tgt_dur = max(1, t_end - t_start)
+
+                    for prop, points in preset.items():
+                        if prop not in clip.data:
+                            continue
+
+                        base = _base(prop, resting_frame)
+
+                        # Clear previous keyframes in the animation zone
+                        self._remove_keypoints_in_range(clip.data[prop], t_start, t_end)
+
+                        # Anchor keyframes at both zone boundaries so no drift occurs
+                        # when the first/last preset frame doesn't map exactly to t_start/t_end.
+                        # Preset keyframes that land on t_start or t_end will overwrite these.
+                        self.AddPoint(clip.data[prop], kf(t_start, base))
+                        self.AddPoint(clip.data[prop], kf(t_end,   base))
+
+                        # Scale frame positions, adjust values, and record easing names
+                        scaled = []
+                        for pt in points:
+                            src_frame = pt[0]
+                            src_val   = pt[1]
+                            easing    = pt[2] if len(pt) > 2 else None
+                            norm      = (src_frame - 1) / src_dur
+                            tgt_frame = t_start + round(norm * tgt_dur)
+                            adj_val   = _rel(prop, src_val, base)
+                            scaled.append((tgt_frame, adj_val, easing))
+
+                        # Build point dicts and apply cubic-bezier handles
+                        for i, (tgt_frame, adj_val, easing) in enumerate(scaled):
+                            p = kf(tgt_frame, adj_val)
+                            # handle_right on current point (controls curve TO next point)
+                            if easing and easing in _KEYFRAME_EASING:
+                                x1, y1, x2, y2 = _KEYFRAME_EASING[easing]
+                                p['handle_right'] = {'X': x1, 'Y': y1}
+                            # handle_left on current point (controls curve FROM previous)
+                            if i > 0:
+                                prev_easing = scaled[i - 1][2]
+                                if prev_easing and prev_easing in _KEYFRAME_EASING:
+                                    _, _, x2, y2 = _KEYFRAME_EASING[prev_easing]
+                                    p['handle_left'] = {'X': x2, 'Y': y2}
+                            self.AddPoint(clip.data[prop], p)
+
+                # SVG filename → enum mappings for Wipe In (brightness 1 → -1)
+                # and Wipe Out (brightness -1 → 1, same SVG file)
+                _WIPE_SVG = {
+                    MenuAnimate.WIPE_IN_CIRCLE_EXPAND:  "circle_in_to_out.svg",
+                    MenuAnimate.WIPE_IN_CIRCLE_SHRINK:  "circle_out_to_in.svg",
+                    MenuAnimate.WIPE_IN_FADE:           "fade.svg",
+                    MenuAnimate.WIPE_IN_LEFT:           "wipe_left_to_right.svg",
+                    MenuAnimate.WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
+                    MenuAnimate.WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
+                    MenuAnimate.WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
+                    MenuAnimate.WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
+                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    MenuAnimate.WIPE_OUT_FADE:          "fade.svg",
+                    MenuAnimate.WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
+                    MenuAnimate.WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
+                    MenuAnimate.WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
+                    MenuAnimate.WIPE_OUT_BOTTOM:        "wipe_bottom_to_top.svg",
+                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND:  "circle_in_to_out.svg",
+                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK:  "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_IN_LEFT:           "wipe_left_to_right.svg",
+                    MenuAnimate.BLUR_WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
+                    MenuAnimate.BLUR_WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
+                    MenuAnimate.BLUR_WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_BOTTOM:        "wipe_bottom_to_top.svg",
+                }
+
+                def _camera_context():
+                    reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
+                    source_width, source_height = source_dimensions_from_reader(reader)
+                    try:
+                        project_width = get_app().project.get("width")
+                        project_height = get_app().project.get("height")
+                    except Exception:
+                        project_width, project_height = None, None
+                    return project_width, project_height, source_width, source_height
+
+                def _apply_camera_motion(values):
+                    clip.data["scale"] = openshot.SCALE_CROP
+                    for prop in ("scale_x", "scale_y", "location_x", "location_y"):
+                        self._remove_keypoints_in_range(clip.data[prop], s, e)
+                    add("scale_x", kf(s, values.scale_x[0]), kf(e, values.scale_x[1]))
+                    add("scale_y", kf(s, values.scale_y[0]), kf(e, values.scale_y[1]))
+                    add("location_x", kf(s, values.location_x[0]), kf(e, values.location_x[1]))
+                    add("location_y", kf(s, values.location_y[0]), kf(e, values.location_y[1]))
 
                 if action == MenuAnimate.NONE:
-                    # Clear all keyframes
-                    default_zoom = openshot.Point(start_animation, 1.0, openshot.BEZIER)
-                    default_zoom_object = json.loads(default_zoom.Json())
-                    default_loc = openshot.Point(start_animation, 0.0, openshot.BEZIER)
-                    default_loc_object = json.loads(default_loc.Json())
-                    clip.data["gravity"] = openshot.GRAVITY_CENTER
-                    clip.data["scale_x"] = {"Points": [default_zoom_object]}
-                    clip.data["scale_y"] = {"Points": [default_zoom_object]}
-                    clip.data["location_x"] = {"Points": [default_loc_object]}
-                    clip.data["location_y"] = {"Points": [default_loc_object]}
+                    _reset_motion()
 
-                if action in [
-                    MenuAnimate.IN_50_100,
-                    MenuAnimate.IN_75_100,
-                    MenuAnimate.IN_100_150,
-                    MenuAnimate.OUT_100_75,
-                    MenuAnimate.OUT_100_50,
-                    MenuAnimate.OUT_150_100
-                ]:
-                    # Scale animation
-                    start_scale = 1.0
-                    end_scale = 1.0
-                    if action == MenuAnimate.IN_50_100:
-                        start_scale = 0.5
-                    elif action == MenuAnimate.IN_75_100:
-                        start_scale = 0.75
-                    elif action == MenuAnimate.IN_100_150:
-                        end_scale = 1.5
-                    elif action == MenuAnimate.OUT_100_75:
-                        end_scale = 0.75
-                    elif action == MenuAnimate.OUT_100_50:
-                        end_scale = 0.5
-                    elif action == MenuAnimate.OUT_150_100:
-                        start_scale = 1.5
+                else:
+                    # Ensure effects list exists (reset not called here)
+                    if not isinstance(clip.data.get("effects"), list):
+                        clip.data["effects"] = []
 
-                    # Add keyframes
-                    start = openshot.Point(start_animation, start_scale, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, end_scale, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    clip.data["gravity"] = openshot.GRAVITY_CENTER
-                    self.AddPoint(clip.data["scale_x"], start_object)
-                    self.AddPoint(clip.data["scale_x"], end_object)
-                    self.AddPoint(clip.data["scale_y"], start_object)
-                    self.AddPoint(clip.data["scale_y"], end_object)
+                    # ── SLIDE IN ──────────────────────────────────────────────
+                    if action == MenuAnimate.SLIDE_IN_LEFT:
+                        bx = _base('location_x', in_end)
+                        self._remove_keypoints_in_range(clip.data["location_x"], s, in_end)
+                        add("location_x", kf(s, bx - 1.0), kf(in_end, bx))
+                    elif action == MenuAnimate.SLIDE_IN_RIGHT:
+                        bx = _base('location_x', in_end)
+                        self._remove_keypoints_in_range(clip.data["location_x"], s, in_end)
+                        add("location_x", kf(s, bx + 1.0), kf(in_end, bx))
+                    elif action == MenuAnimate.SLIDE_IN_TOP:
+                        by = _base('location_y', in_end)
+                        self._remove_keypoints_in_range(clip.data["location_y"], s, in_end)
+                        add("location_y", kf(s, by - 1.0), kf(in_end, by))
+                    elif action == MenuAnimate.SLIDE_IN_BOTTOM:
+                        by = _base('location_y', in_end)
+                        self._remove_keypoints_in_range(clip.data["location_y"], s, in_end)
+                        add("location_y", kf(s, by + 1.0), kf(in_end, by))
 
-                if action in [
-                    MenuAnimate.CENTER_TOP,
-                    MenuAnimate.CENTER_LEFT,
-                    MenuAnimate.CENTER_RIGHT,
-                    MenuAnimate.CENTER_BOTTOM,
-                    MenuAnimate.TOP_CENTER,
-                    MenuAnimate.LEFT_CENTER,
-                    MenuAnimate.RIGHT_CENTER,
-                    MenuAnimate.BOTTOM_CENTER,
-                    MenuAnimate.TOP_BOTTOM,
-                    MenuAnimate.LEFT_RIGHT,
-                    MenuAnimate.RIGHT_LEFT,
-                    MenuAnimate.BOTTOM_TOP
-                ]:
-                    # Location animation
-                    animate_start_x = 0.0
-                    animate_end_x = 0.0
-                    animate_start_y = 0.0
-                    animate_end_y = 0.0
-                    # Center to edge...
-                    if action == MenuAnimate.CENTER_TOP:
-                        animate_end_y = -1.0
-                    elif action == MenuAnimate.CENTER_LEFT:
-                        animate_end_x = -1.0
-                    elif action == MenuAnimate.CENTER_RIGHT:
-                        animate_end_x = 1.0
-                    elif action == MenuAnimate.CENTER_BOTTOM:
-                        animate_end_y = 1.0
+                    # ── SLIDE OUT ─────────────────────────────────────────────
+                    elif action == MenuAnimate.SLIDE_OUT_LEFT:
+                        bx = _base('location_x', out_start)
+                        self._remove_keypoints_in_range(clip.data["location_x"], out_start, e)
+                        add("location_x", kf(out_start, bx), kf(e, bx - 1.0))
+                    elif action == MenuAnimate.SLIDE_OUT_RIGHT:
+                        bx = _base('location_x', out_start)
+                        self._remove_keypoints_in_range(clip.data["location_x"], out_start, e)
+                        add("location_x", kf(out_start, bx), kf(e, bx + 1.0))
+                    elif action == MenuAnimate.SLIDE_OUT_TOP:
+                        by = _base('location_y', out_start)
+                        self._remove_keypoints_in_range(clip.data["location_y"], out_start, e)
+                        add("location_y", kf(out_start, by), kf(e, by - 1.0))
+                    elif action == MenuAnimate.SLIDE_OUT_BOTTOM:
+                        by = _base('location_y', out_start)
+                        self._remove_keypoints_in_range(clip.data["location_y"], out_start, e)
+                        add("location_y", kf(out_start, by), kf(e, by + 1.0))
 
-                    # Edge to Center
-                    elif action == MenuAnimate.TOP_CENTER:
-                        animate_start_y = -1.0
-                    elif action == MenuAnimate.LEFT_CENTER:
-                        animate_start_x = -1.0
-                    elif action == MenuAnimate.RIGHT_CENTER:
-                        animate_start_x = 1.0
-                    elif action == MenuAnimate.BOTTOM_CENTER:
-                        animate_start_y = 1.0
+                    # ── BLUR IN — blur 50→0 + alpha fade ─────────────────────
+                    elif action == MenuAnimate.BLUR_IN:
+                        _make_blur_fx(s, 50.0, in_end, 0.0)
+                        ba = _base('alpha', in_end)
+                        self._remove_keypoints_in_range(clip.data["alpha"], s, in_end)
+                        add("alpha", kf(s, 0.0), kf(in_end, ba))
 
-                    # Edge to Edge
-                    elif action == MenuAnimate.TOP_BOTTOM:
-                        animate_start_y = -1.0
-                        animate_end_y = 1.0
-                    elif action == MenuAnimate.LEFT_RIGHT:
-                        animate_start_x = -1.0
-                        animate_end_x = 1.0
-                    elif action == MenuAnimate.RIGHT_LEFT:
-                        animate_start_x = 1.0
-                        animate_end_x = -1.0
-                    elif action == MenuAnimate.BOTTOM_TOP:
-                        animate_start_y = 1.0
-                        animate_end_y = -1.0
+                    # ── BLUR OUT — alpha fade + blur 0→50 ─────────────────────
+                    elif action == MenuAnimate.BLUR_OUT:
+                        _make_blur_fx(out_start, 0.0, e, 50.0)
+                        ba = _base('alpha', out_start)
+                        self._remove_keypoints_in_range(clip.data["alpha"], out_start, e)
+                        add("alpha", kf(out_start, ba), kf(e, 0.0))
 
-                    # Add keyframes
-                    start_x = openshot.Point(start_animation, animate_start_x, openshot.BEZIER)
-                    start_x_object = json.loads(start_x.Json())
-                    end_x = openshot.Point(end_animation, animate_end_x, openshot.BEZIER)
-                    end_x_object = json.loads(end_x.Json())
-                    start_y = openshot.Point(start_animation, animate_start_y, openshot.BEZIER)
-                    start_y_object = json.loads(start_y.Json())
-                    end_y = openshot.Point(end_animation, animate_end_y, openshot.BEZIER)
-                    end_y_object = json.loads(end_y.Json())
-                    clip.data["gravity"] = openshot.GRAVITY_CENTER
-                    self.AddPoint(clip.data["location_x"], start_x_object)
-                    self.AddPoint(clip.data["location_x"], end_x_object)
-                    self.AddPoint(clip.data["location_y"], start_y_object)
-                    self.AddPoint(clip.data["location_y"], end_y_object)
+                    # ── WIPE IN — Mask effect, brightness 1 → -1 ──────────────
+                    elif action in (MenuAnimate.WIPE_IN_CIRCLE_EXPAND,
+                                    MenuAnimate.WIPE_IN_CIRCLE_SHRINK,
+                                    MenuAnimate.WIPE_IN_FADE,
+                                    MenuAnimate.WIPE_IN_LEFT, MenuAnimate.WIPE_IN_RIGHT,
+                                    MenuAnimate.WIPE_IN_TOP,  MenuAnimate.WIPE_IN_BOTTOM):
+                        _make_wipe_fx(_WIPE_SVG[action], s, in_end, 1.0, -1.0)
 
-                if action == MenuAnimate.RANDOM:
-                    # Location animation
-                    animate_start_x = uniform(-0.5, 0.5)
-                    animate_end_x = uniform(-0.15, 0.15)
-                    animate_start_y = uniform(-0.5, 0.5)
-                    animate_end_y = uniform(-0.15, 0.15)
+                    # ── WIPE OUT — Mask effect, brightness -1 → 1 ─────────────
+                    elif action in (MenuAnimate.WIPE_OUT_CIRCLE_EXPAND,
+                                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK,
+                                    MenuAnimate.WIPE_OUT_FADE,
+                                    MenuAnimate.WIPE_OUT_LEFT, MenuAnimate.WIPE_OUT_RIGHT,
+                                    MenuAnimate.WIPE_OUT_TOP,  MenuAnimate.WIPE_OUT_BOTTOM):
+                        _make_wipe_fx(_WIPE_SVG[action], out_start, e, -1.0, 1.0)
 
-                    # Scale animation
-                    start_scale = uniform(0.5, 1.5)
-                    end_scale = uniform(0.85, 1.15)
+                    # ── BLUR WIPE IN — blur 50→0, then wipe reveals ───────────
+                    elif action in (MenuAnimate.BLUR_WIPE_IN_CIRCLE_EXPAND,
+                                    MenuAnimate.BLUR_WIPE_IN_CIRCLE_SHRINK,
+                                    MenuAnimate.BLUR_WIPE_IN_LEFT, MenuAnimate.BLUR_WIPE_IN_RIGHT,
+                                    MenuAnimate.BLUR_WIPE_IN_TOP,  MenuAnimate.BLUR_WIPE_IN_BOTTOM):
+                        _make_blur_fx(s, 50.0, in_end, 0.0)
+                        _make_wipe_fx(_WIPE_SVG[action], s, in_end, 1.0, -1.0, contrast=10.0)
 
-                    # Add keyframes
-                    start = openshot.Point(start_animation, start_scale, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, end_scale, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    clip.data["gravity"] = openshot.GRAVITY_CENTER
-                    self.AddPoint(clip.data["scale_x"], start_object)
-                    self.AddPoint(clip.data["scale_x"], end_object)
-                    self.AddPoint(clip.data["scale_y"], start_object)
-                    self.AddPoint(clip.data["scale_y"], end_object)
+                    # ── BLUR WIPE OUT — wipe hides, blur 0→50 ─────────────────
+                    elif action in (MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND,
+                                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK,
+                                    MenuAnimate.BLUR_WIPE_OUT_LEFT, MenuAnimate.BLUR_WIPE_OUT_RIGHT,
+                                    MenuAnimate.BLUR_WIPE_OUT_TOP,  MenuAnimate.BLUR_WIPE_OUT_BOTTOM):
+                        _make_blur_fx(out_start, 0.0, e, 50.0)
+                        _make_wipe_fx(_WIPE_SVG[action], out_start, e, -1.0, 1.0, contrast=10.0)
 
-                    # Add keyframes
-                    start_x = openshot.Point(start_animation, animate_start_x, openshot.BEZIER)
-                    start_x_object = json.loads(start_x.Json())
-                    end_x = openshot.Point(end_animation, animate_end_x, openshot.BEZIER)
-                    end_x_object = json.loads(end_x.Json())
-                    start_y = openshot.Point(start_animation, animate_start_y, openshot.BEZIER)
-                    start_y_object = json.loads(start_y.Json())
-                    end_y = openshot.Point(end_animation, animate_end_y, openshot.BEZIER)
-                    end_y_object = json.loads(end_y.Json())
-                    clip.data["gravity"] = openshot.GRAVITY_CENTER
-                    self.AddPoint(clip.data["location_x"], start_x_object)
-                    self.AddPoint(clip.data["location_x"], end_x_object)
-                    self.AddPoint(clip.data["location_y"], start_y_object)
-                    self.AddPoint(clip.data["location_y"], end_y_object)
+                    # ── POP ───────────────────────────────────────────────────
+                    elif action == MenuAnimate.POP_IN:
+                        peak = in_end - max(1, round(0.2 * (in_end - s)))
+                        bsx = _base('scale_x', in_end)
+                        bsy = _base('scale_y', in_end)
+                        ba  = _base('alpha',   in_end)
+                        for prop in ("scale_x", "scale_y", "alpha"):
+                            self._remove_keypoints_in_range(clip.data[prop], s, in_end)
+                        add("scale_x", kf(s, 0.0), kf(peak, 1.1 * bsx), kf(in_end, bsx))
+                        add("scale_y", kf(s, 0.0), kf(peak, 1.1 * bsy), kf(in_end, bsy))
+                        add("alpha",   kf(s, 0.0), kf(in_end, ba))
+                    elif action == MenuAnimate.POP_OUT:
+                        peak = out_start + max(1, round(0.2 * (e - out_start)))
+                        bsx = _base('scale_x', out_start)
+                        bsy = _base('scale_y', out_start)
+                        ba  = _base('alpha',   out_start)
+                        for prop in ("scale_x", "scale_y", "alpha"):
+                            self._remove_keypoints_in_range(clip.data[prop], out_start, e)
+                        add("scale_x", kf(out_start, bsx), kf(peak, 1.1 * bsx), kf(e, 0.0))
+                        add("scale_y", kf(out_start, bsy), kf(peak, 1.1 * bsy), kf(e, 0.0))
+                        add("alpha",   kf(out_start, ba), kf(e, 0.0))
 
-                # Save changes
+                    # ── SPIRAL ────────────────────────────────────────────────
+                    elif action == MenuAnimate.SPIRAL_IN:
+                        br  = _base('rotation', in_end)
+                        bsx = _base('scale_x',  in_end)
+                        bsy = _base('scale_y',  in_end)
+                        ba  = _base('alpha',    in_end)
+                        for prop in ("rotation", "scale_x", "scale_y", "alpha"):
+                            self._remove_keypoints_in_range(clip.data[prop], s, in_end)
+                        add("rotation", kf(s, -360.0 + br), kf(in_end, br))
+                        add("scale_x",  kf(s, 0.0),         kf(in_end, bsx))
+                        add("scale_y",  kf(s, 0.0),         kf(in_end, bsy))
+                        add("alpha",    kf(s, 0.0),         kf(in_end, ba))
+                    elif action == MenuAnimate.SPIRAL_OUT:
+                        br  = _base('rotation', out_start)
+                        bsx = _base('scale_x',  out_start)
+                        bsy = _base('scale_y',  out_start)
+                        ba  = _base('alpha',    out_start)
+                        for prop in ("rotation", "scale_x", "scale_y", "alpha"):
+                            self._remove_keypoints_in_range(clip.data[prop], out_start, e)
+                        add("rotation", kf(out_start, br),  kf(e, 360.0 + br))
+                        add("scale_x",  kf(out_start, bsx), kf(e, 0.0))
+                        add("scale_y",  kf(out_start, bsy), kf(e, 0.0))
+                        add("alpha",    kf(out_start, ba),  kf(e, 0.0))
+
+                    # ── JSON PRESETS (Back/Bounce/Flip In/Out + all Emphasis) ──
+                    elif action in _JSON_ANIM:
+                        if action in _EMPHASIS_ACTIONS:
+                            _apply_preset(_JSON_ANIM[action], emph_start, emph_end, emph_start)
+                        elif action in _IN_ACTIONS:
+                            _apply_preset(_JSON_ANIM[action], s, in_end, in_end)
+                        else:
+                            _apply_preset(_JSON_ANIM[action], out_start, e, out_start)
+
+                    # ── CAMERA: PUSH IN / PULL OUT (zoom, SCALE_CROP) ──────────
+                    elif action == MenuAnimate.CAM_PUSH_IN:
+                        _apply_camera_motion(push_pull_keyframes(zoom_in=True))
+                    elif action == MenuAnimate.CAM_PULL_OUT:
+                        _apply_camera_motion(push_pull_keyframes(zoom_in=False))
+
+                    # ── CAMERA: PAN (axis-aware SCALE_CROP framing) ───────────
+                    elif action in (MenuAnimate.CAM_PAN_AUTO,
+                                    MenuAnimate.CAM_PAN_LEFT,  MenuAnimate.CAM_PAN_RIGHT,
+                                    MenuAnimate.CAM_PAN_UP,    MenuAnimate.CAM_PAN_DOWN):
+                        pan_direction = {
+                            MenuAnimate.CAM_PAN_AUTO: PAN_AUTO,
+                            MenuAnimate.CAM_PAN_LEFT: PAN_LEFT,
+                            MenuAnimate.CAM_PAN_RIGHT: PAN_RIGHT,
+                            MenuAnimate.CAM_PAN_UP: PAN_UP,
+                            MenuAnimate.CAM_PAN_DOWN: PAN_DOWN,
+                        }[action]
+                        _apply_camera_motion(camera_pan_keyframes(pan_direction, *_camera_context()))
+
+                    # ── CAMERA: KEN BURNS (axis-aware zoom + drift) ───────────
+                    elif action in (
+                            MenuAnimate.KEN_BURNS_IN, MenuAnimate.KEN_BURNS_OUT,
+                            MenuAnimate.KEN_BURNS_IN_LEFT_TO_RIGHT,
+                            MenuAnimate.KEN_BURNS_IN_RIGHT_TO_LEFT,
+                            MenuAnimate.KEN_BURNS_IN_TOP_TO_BOTTOM,
+                            MenuAnimate.KEN_BURNS_IN_BOTTOM_TO_TOP,
+                            MenuAnimate.KEN_BURNS_OUT_LEFT_TO_RIGHT,
+                            MenuAnimate.KEN_BURNS_OUT_RIGHT_TO_LEFT,
+                            MenuAnimate.KEN_BURNS_OUT_TOP_TO_BOTTOM,
+                            MenuAnimate.KEN_BURNS_OUT_BOTTOM_TO_TOP):
+                        direction = {
+                            MenuAnimate.KEN_BURNS_IN: KEN_BURNS_AUTO,
+                            MenuAnimate.KEN_BURNS_OUT: KEN_BURNS_AUTO,
+                            MenuAnimate.KEN_BURNS_IN_LEFT_TO_RIGHT: KEN_BURNS_LEFT_TO_RIGHT,
+                            MenuAnimate.KEN_BURNS_IN_RIGHT_TO_LEFT: KEN_BURNS_RIGHT_TO_LEFT,
+                            MenuAnimate.KEN_BURNS_IN_TOP_TO_BOTTOM: KEN_BURNS_TOP_TO_BOTTOM,
+                            MenuAnimate.KEN_BURNS_IN_BOTTOM_TO_TOP: KEN_BURNS_BOTTOM_TO_TOP,
+                            MenuAnimate.KEN_BURNS_OUT_LEFT_TO_RIGHT: KEN_BURNS_LEFT_TO_RIGHT,
+                            MenuAnimate.KEN_BURNS_OUT_RIGHT_TO_LEFT: KEN_BURNS_RIGHT_TO_LEFT,
+                            MenuAnimate.KEN_BURNS_OUT_TOP_TO_BOTTOM: KEN_BURNS_TOP_TO_BOTTOM,
+                            MenuAnimate.KEN_BURNS_OUT_BOTTOM_TO_TOP: KEN_BURNS_BOTTOM_TO_TOP,
+                        }[action]
+                        zoom_in = action in (
+                            MenuAnimate.KEN_BURNS_IN,
+                            MenuAnimate.KEN_BURNS_IN_LEFT_TO_RIGHT,
+                            MenuAnimate.KEN_BURNS_IN_RIGHT_TO_LEFT,
+                            MenuAnimate.KEN_BURNS_IN_TOP_TO_BOTTOM,
+                            MenuAnimate.KEN_BURNS_IN_BOTTOM_TO_TOP)
+                        _apply_camera_motion(ken_burns_keyframes(zoom_in, direction, *_camera_context()))
+
+                    # ── CREDITS (full scroll, SCALE_CROP) ─────────────────────
+                    elif action == MenuAnimate.CREDITS_UP:
+                        clip.data["scale"] = openshot.SCALE_CROP
+                        add("location_y",
+                            kf(s,  1.0, openshot.LINEAR),
+                            kf(e, -1.0, openshot.LINEAR))
+                    elif action == MenuAnimate.CREDITS_DOWN:
+                        clip.data["scale"] = openshot.SCALE_CROP
+                        add("location_y",
+                            kf(s, -1.0, openshot.LINEAR),
+                            kf(e,  1.0, openshot.LINEAR))
+
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
         finally:
-            # Reset transaction id only if we created it (not if it was passed in)
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
@@ -2071,6 +3627,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Replace points with new list
         keyframe["Points"] = cleaned_points
+
+    def _remove_keypoints_in_range(self, points_data, frame_start, frame_end):
+        """Remove all keyframe points with X in [frame_start, frame_end]."""
+        points_data["Points"] = [
+            p for p in points_data["Points"]
+            if not (frame_start <= p.get("co", {}).get("X", -1) <= frame_end)
+        ]
 
 
     def Copy_Triggered(self, action, clip_ids, tran_ids, effect_ids):
@@ -2254,6 +3817,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback for paste context menus"""
         log.debug(action)
 
+        if ViewClass == TimelineWidget and self._context_menu_paste_data and not clip_ids and not tran_ids:
+            paste_data = dict(self._context_menu_paste_data)
+            self._context_menu_paste_data = None
+            self._handle_paste_callback(clip_ids, tran_ids, paste_data)
+            return
+
         # Get global mouse position
         if self.context_menu_cursor_position:
             global_mouse_pos = self.context_menu_cursor_position
@@ -2385,12 +3954,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.update_transition_data(tran.data, only_basic_props=False)
 
     def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
-        """Callback for fade context menus"""
+        """Callback for fade context menus — fades both alpha (video) and volume (audio)"""
         log.debug(action)
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
+        clips_with_waveforms = []
 
         # Create a transaction ID for all operations in this function (if not provided)
         tid = transaction_id or self.get_uuid()
@@ -2405,7 +3975,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Get existing clip object
                 clip = Clip.get(id=clip_id)
                 if not clip:
-                    # Invalid clip, skip to next item
                     continue
 
                 start_of_clip = round(float(clip.data["start"]) * fps_float) + 1
@@ -2428,9 +3997,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
                     end_animation = end_of_clip
 
-                # Fade in and out (special case)
+                # Fade in and out (special case) — recurse for start + end independently
                 if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
-                    # Call this method for the start and end of the clip
                     if action == MenuFade.IN_OUT_FAST:
                         self.Fade_Triggered(MenuFade.IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
                         self.Fade_Triggered(MenuFade.OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
@@ -2439,46 +4007,81 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                         self.Fade_Triggered(MenuFade.OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
                     return
 
+                reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
+                fade_alpha = bool(reader.get("has_video", True)) or bool(clip.data.get("waveform", False))
+                fade_volume = bool(reader.get("has_audio", True))
+
                 if action == MenuFade.NONE:
-                    # Clear all keyframes
-                    p = openshot.Point(1, 1.0, openshot.BEZIER)
-                    p_object = json.loads(p.Json())
-                    clip.data['alpha'] = {"Points": [p_object]}
+                    p_object = json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())
+                    if fade_alpha:
+                        clip.data['alpha'] = {"Points": [p_object]}
+                    if fade_volume:
+                        clip.data['volume'] = {"Points": [p_object]}
 
-                if action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
-                    # Add keyframes
-                    start = openshot.Point(start_animation, 0.0, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, 1.0, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    self.AddPoint(clip.data['alpha'], start_object)
-                    self.AddPoint(clip.data['alpha'], end_object)
+                elif action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
+                    # Clear the full slow-fade zone (3 sec from start) so Fast can replace Slow
+                    # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
+                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
 
-                if action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
-                    # Add keyframes
-                    start = openshot.Point(start_animation, 1.0, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, 0.0, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    self.AddPoint(clip.data['alpha'], start_object)
-                    self.AddPoint(clip.data['alpha'], end_object)
+                    # Read the steady-state value at the zone boundary BEFORE clearing —
+                    # any previous fade has fully settled there.
+                    c = self.window.timeline_sync.timeline.GetClip(clip_id)
+                    target_alpha = c.alpha.GetValue(int(round(fade_in_zone_end))) if c else 1.0
+                    target_vol = c.volume.GetValue(int(round(fade_in_zone_end))) if c else 1.0
+
+                    if fade_alpha:
+                        self._remove_keypoints_in_range(clip.data['alpha'], start_of_clip, fade_in_zone_end)
+                        self.AddPoint(clip.data['alpha'], json.loads(openshot.Point(start_animation, 0.0, openshot.BEZIER).Json()))
+                        self.AddPoint(clip.data['alpha'], json.loads(openshot.Point(end_animation, target_alpha, openshot.BEZIER).Json()))
+                    if fade_volume:
+                        self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, fade_in_zone_end)
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(start_animation, 0.0, openshot.BEZIER).Json()))
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, target_vol, openshot.BEZIER).Json()))
+
+                elif action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
+                    # Clear the full slow-fade zone (3 sec from end) so Fast can replace Slow
+                    # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
+                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+
+                    # Read the steady-state value at the zone boundary BEFORE clearing —
+                    # any previous fade starts at or after this point.
+                    c = self.window.timeline_sync.timeline.GetClip(clip_id)
+                    source_alpha = c.alpha.GetValue(int(round(fade_out_zone_start))) if c else 1.0
+                    source_vol = c.volume.GetValue(int(round(fade_out_zone_start))) if c else 1.0
+
+                    if fade_alpha:
+                        self._remove_keypoints_in_range(clip.data['alpha'], fade_out_zone_start, end_of_clip)
+                        self.AddPoint(clip.data['alpha'], json.loads(openshot.Point(start_animation, source_alpha, openshot.BEZIER).Json()))
+                        self.AddPoint(clip.data['alpha'], json.loads(openshot.Point(end_animation, 0.0, openshot.BEZIER).Json()))
+                    if fade_volume:
+                        self._remove_keypoints_in_range(clip.data['volume'], fade_out_zone_start, end_of_clip)
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(start_animation, source_vol, openshot.BEZIER).Json()))
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, 0.0, openshot.BEZIER).Json()))
 
                 # Save changes
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+
+                # Track clips with waveforms for refresh
+                if clip.data.get("ui", {}).get("audio_data", []):
+                    clips_with_waveforms.append(clip.id)
+
+            # Refresh waveforms affected by volume change
+            if clips_with_waveforms:
+                self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=tid)
         finally:
             # Reset transaction id only if we created it (not if it was passed in)
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
-    @pyqtSlot(str, str, float)
+    @guarded_slot(str, str, float)
     def RazorSliceAtCursor(self, clip_id, trans_id, cursor_position):
         """Callback from javascript that the razor tool was clicked"""
 
         # Determine slice mode (keep both [default], keep left [shift], keep right [ctrl]
         slice_mode = MenuSlice.KEEP_BOTH
-        if int(QCoreApplication.instance().keyboardModifiers() & Qt.ControlModifier) > 0:
+        if modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ControlModifier):
             slice_mode = MenuSlice.KEEP_RIGHT
-        elif int(QCoreApplication.instance().keyboardModifiers() & Qt.ShiftModifier) > 0:
+        elif modifiers_has(QCoreApplication.instance().keyboardModifiers(), Qt.ShiftModifier):
             slice_mode = MenuSlice.KEEP_LEFT
 
         if clip_id:
@@ -2542,7 +4145,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         try:
             if ViewClass == TimelineWidget:
-                self._flush_pending_clip_overrides(clip_ids)
+                flush_overrides = getattr(self, "_flush_pending_clip_overrides", None)
+                if callable(flush_overrides):
+                    flush_overrides(clip_ids)
 
             # Snap playhead once; KEEP_LEFT advances one frame past the cut.
             playhead_position = ft.snap(float(playhead_position), fps)
@@ -2675,6 +4280,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     trans.data["end"] = ft.to_seconds(cut_f, fps)
                     trans.data["start"] = ft.to_seconds(start_f, fps)
                     trans.data["position"] = ft.to_seconds(pos_f, fps)
+                    trans.data["duration"] = max(0.0, trans.data["end"] - trans.data["start"])
 
                     if ripple:
                         removed_duration = original_duration - (trans.data["end"] - trans.data["start"])
@@ -2685,6 +4291,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     trans.data["position"] = ft.to_seconds(play_f, fps)
                     trans.data["start"] = new_start
                     trans.data["end"] = ft.to_seconds(end_f, fps)
+                    trans.data["duration"] = max(0.0, trans.data["end"] - new_start)
                     if ripple:
                         removed_duration = original_duration - (trans.data["end"] - new_start)
                         trans.data["position"] = ft.to_seconds(pos_f, fps)
@@ -2698,20 +4305,27 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     trans.data["end"] = new_tran_end
                     trans.data["start"] = ft.to_seconds(start_f, fps)
                     trans.data["position"] = ft.to_seconds(pos_f, fps)
+                    trans.data["duration"] = max(0.0, new_tran_end - trans.data["start"])
 
-                    right_tran_data = deepcopy(trans.data)
-                    right_tran = Transition()
+                    # Split into two transitions (left and right side). Query a
+                    # fresh object and deep-copy its data so the new transition
+                    # does not share references with the left side.
+                    right_tran = Transition.get(id=trans_id)
+                    if not right_tran:
+                        continue
+                    right_tran_data = deepcopy(right_tran.data)
+                    right_tran_key = list(right_tran.key)
                     right_tran.id = None
                     right_tran.type = 'insert'
                     right_tran.data = right_tran_data
                     right_tran.data.pop('id', None)
-                    right_tran_key = list(trans.key)
                     if len(right_tran_key) > 1:
                         right_tran_key.pop(1)
                     right_tran.key = right_tran_key
                     right_tran.data["position"] = ft.to_seconds(play_f, fps)
                     right_tran.data["start"] = new_tran_end
                     right_tran.data["end"] = ft.to_seconds(end_f, fps)
+                    right_tran.data["duration"] = max(0.0, right_tran.data["end"] - float(new_tran_end))
                     right_tran.save()
 
                 # Save changes for the left or right slice
@@ -2723,7 +4337,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             get_app().window.IgnoreUpdates.emit(False, True)
 
             if ViewClass == TimelineWidget:
-                self._sync_timeline_geometry_after_edit()
+                sync_geometry = getattr(self, "_sync_timeline_geometry_after_edit", None)
+                if callable(sync_geometry):
+                    sync_geometry()
 
             if new_starting_frame != -1:
                 # Seek to new position (if needed)
@@ -2748,132 +4364,77 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Callback for volume context menus"""
         log.debug(action)
 
-        # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
 
-        # Create a transaction ID for all operations in this function (if not provided)
         tid = transaction_id or self.get_uuid()
 
         try:
-            # Set transaction ID
             get_app().updates.transaction_id = tid
 
-            # Loop through each selected clip
             for clip_id in clip_ids:
-
-                # Get existing clip object
                 clip = Clip.get(id=clip_id)
                 if not clip:
-                    # Invalid clip, skip to next item
                     continue
 
                 start_of_clip = round(float(clip.data["start"]) * fps_float) + 1
                 end_of_clip = round(float(clip.data["end"]) * fps_float) + 1
 
-                # Determine the beginning and ending of this animation
-                # ["Start of Clip", "End of Clip", "Entire Clip"]
+                # Speed-dependent animation boundaries
                 start_animation = start_of_clip
                 end_animation = end_of_clip
-                if position == "Start of Clip" and action in [
-                    MenuVolume.FADE_IN_FAST,
-                    MenuVolume.FADE_OUT_FAST
-                ]:
-                    start_animation = start_of_clip
+                if position == "Start of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
                     end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
-
-                elif position == "Start of Clip" and action in [
-                    MenuVolume.FADE_IN_SLOW,
-                    MenuVolume.FADE_OUT_SLOW
-                ]:
-                    start_animation = start_of_clip
+                elif position == "Start of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
                     end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
-
-                elif position == "End of Clip" and action in [
-                    MenuVolume.FADE_IN_FAST,
-                    MenuVolume.FADE_OUT_FAST
-                ]:
+                elif position == "End of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
                     start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
-                    end_animation = end_of_clip
-
-                elif position == "End of Clip" and action in [
-                    MenuVolume.FADE_IN_SLOW,
-                    MenuVolume.FADE_OUT_SLOW
-                ]:
+                elif position == "End of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
                     start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
-                    end_animation = end_of_clip
 
-                elif position == "Start of Clip":
-                    # Only used when setting levels (a single keyframe)
-                    start_animation = start_of_clip
-                    end_animation = start_of_clip
-
-                elif position == "End of Clip":
-                    # Only used when setting levels (a single keyframe)
-                    start_animation = end_of_clip
-                    end_animation = end_of_clip
-
-                # Fade in and out (special case)
-                if position == "Entire Clip" and action == MenuVolume.FADE_IN_OUT_FAST:
-                    # Call this method for the start and end of the clip
-                    self.Volume_Triggered(MenuVolume.FADE_IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
-                    self.Volume_Triggered(MenuVolume.FADE_OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
-                    return
-                if position == "Entire Clip" and action == MenuVolume.FADE_IN_OUT_SLOW:
-                    # Call this method for the start and end of the clip
-                    self.Volume_Triggered(MenuVolume.FADE_IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
-                    self.Volume_Triggered(MenuVolume.FADE_OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
+                # Fade in and out — recurse for start + end independently
+                if position == "Entire Clip" and action in [MenuVolume.FADE_IN_OUT_FAST, MenuVolume.FADE_IN_OUT_SLOW]:
+                    if action == MenuVolume.FADE_IN_OUT_FAST:
+                        self.Volume_Triggered(MenuVolume.FADE_IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
+                        self.Volume_Triggered(MenuVolume.FADE_OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
+                    else:
+                        self.Volume_Triggered(MenuVolume.FADE_IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
+                        self.Volume_Triggered(MenuVolume.FADE_OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
                     return
 
                 if action == MenuVolume.NONE:
-                    # Clear all keyframes
-                    p = openshot.Point(1, 1.0, openshot.BEZIER)
-                    p_object = json.loads(p.Json())
-                    clip.data['volume'] = {"Points": [p_object]}
+                    clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())]}
 
-                if action in [
-                    MenuVolume.FADE_IN_FAST,
-                    MenuVolume.FADE_IN_SLOW
-                ]:
-                    # Add keyframes
-                    start = openshot.Point(start_animation, 0.0, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, 1.0, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    self.AddPoint(clip.data['volume'], start_object)
-                    self.AddPoint(clip.data['volume'], end_object)
+                elif action == MenuVolume.LEVEL:
+                    # Replace entire volume curve with a flat keyframe at the chosen level
+                    clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, float(level) / 100.0, openshot.BEZIER).Json())]}
 
-                if action in [
-                    MenuVolume.FADE_OUT_FAST,
-                    MenuVolume.FADE_OUT_SLOW
-                ]:
-                    # Add keyframes
-                    start = openshot.Point(start_animation, 1.0, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(end_animation, 0.0, openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    self.AddPoint(clip.data['volume'], start_object)
-                    self.AddPoint(clip.data['volume'], end_object)
+                elif action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_IN_SLOW]:
+                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    c = self.window.timeline_sync.timeline.GetClip(clip_id)
+                    target_vol = c.volume.GetValue(int(round(fade_in_zone_end))) if c else 1.0
+                    self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, fade_in_zone_end)
+                    self.AddPoint(clip.data['volume'], json.loads(openshot.Point(start_animation, 0.0, openshot.BEZIER).Json()))
+                    self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, target_vol, openshot.BEZIER).Json()))
 
-                if action == MenuVolume.LEVEL:
-                    # Add keyframes
-                    p = openshot.Point(start_animation, float(level) / 100.0, openshot.BEZIER)
-                    p_object = json.loads(p.Json())
-                    self.AddPoint(clip.data['volume'], p_object)
+                elif action in [MenuVolume.FADE_OUT_FAST, MenuVolume.FADE_OUT_SLOW]:
+                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+                    c = self.window.timeline_sync.timeline.GetClip(clip_id)
+                    source_vol = c.volume.GetValue(int(round(fade_out_zone_start))) if c else 1.0
+                    self._remove_keypoints_in_range(clip.data['volume'], fade_out_zone_start, end_of_clip)
+                    self.AddPoint(clip.data['volume'], json.loads(openshot.Point(start_animation, source_vol, openshot.BEZIER).Json()))
+                    self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, 0.0, openshot.BEZIER).Json()))
 
                 # Save changes
                 self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
 
-                # Add any clips with waveforms to a list
                 if clip.data.get("ui", {}).get("audio_data", []):
                     clips_with_waveforms.append(clip.id)
 
-            # Update waveforms of all clips that have them
             if clips_with_waveforms:
                 self.Show_Waveform_Triggered(clips_with_waveforms, transaction_id=tid)
         finally:
-            # Reset transaction id only if we created it (not if it was passed in)
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
@@ -2917,6 +4478,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
+    def No_Transform_Triggered(self, clip_ids):
+        """Reset rotation, crop, and layout for all selected clips in a single undo step."""
+        tid = self.get_uuid()
+        get_app().updates.transaction_id = tid
+        try:
+            self.Rotate_Triggered(MenuRotate.NONE, clip_ids)
+            self.Crop_Triggered(clip_ids, 'none')
+            self.Layout_Triggered(MenuLayout.NONE, clip_ids)
+        finally:
+            get_app().updates.transaction_id = None
+
     def Time_Triggered(self, action, clip_ids, speed="1X", playhead_position=0.0):
         """Callback for time context menus"""
         log.debug(action)
@@ -2948,6 +4520,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 freeze_seconds = float(speed)
 
                 original_duration = clip.data["duration"]
+                original_end = float(clip.data["end"])
                 log.info('Updating timing for clip ID {}, original duration: {}'.format(clip.id, original_duration))
                 log.debug(clip.data)
 
@@ -2961,9 +4534,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 start_animation_frames_value = start_animation_frames
                 end_animation_seconds = start_animation_seconds + freeze_seconds
                 end_animation_frames = round(end_animation_seconds * fps_float) + 1
-                end_of_clip_seconds = float(clip.data["duration"])
+                end_of_clip_seconds = float(clip.data["end"])
                 end_of_clip_frames = round((end_of_clip_seconds) * fps_float) + 1
-                end_of_clip_frames_value = round((original_duration) * fps_float) + 1
+                end_of_clip_frames_value = round((original_end) * fps_float) + 1
 
                 # Determine volume start and end
                 start_volume_value = 1.0
@@ -3141,7 +4714,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             self.Repeat_Triggered(pattern, direction, passes, clip_ids, delay_frames, ramp)
 
 
-    @pyqtSlot(str, float, float)
+    @guarded_slot(str, float, float)
     def RetimeClip(self, clip_id, new_end, new_position):
         """Public slot to retime a clip from the timeline UI (Timing Mode)."""
         clip = Clip.get(id=clip_id)
@@ -3159,6 +4732,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         ui_data = clip.data.get("ui")
         if isinstance(ui_data, dict) and "audio_data" in ui_data:
             ui_data.pop("audio_data", None)
+            ui_data.pop("audio_data_rms", None)
+            ui_data.pop("audio_data_rate", None)
+            ui_data.pop("audio_data_format", None)
 
         tid = str(uuid.uuid4())
         self.update_clip_data(
@@ -3172,18 +4748,29 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if has_waveform:
             self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
 
-    def show_all_clips(self, clip, stretch=False):
+    def show_all_clips(self, clip, stretch=False, clip_ids=None):
         """ Show all clips at the same time (arranged col by col, row by row)  """
         from math import sqrt
 
-        # Get list of nearby clips
+        # Get selected clips when available. Older callers without clip_ids keep
+        # the legacy "nearby clips" behavior.
         available_clips = []
-        start_position = float(clip.data["position"])
-        for c in Clip.filter():
-            if (float(c.data["position"]) >= (start_position - 0.5)
-               and float(c.data["position"]) <= (start_position + 0.5)):
-                # add to list
-                available_clips.append(c)
+        if clip_ids:
+            selected_ids = {str(clip_id) for clip_id in clip_ids}
+            for c in Clip.filter():
+                clip_id = str(getattr(c, "id", c.data.get("id")))
+                if clip_id in selected_ids:
+                    available_clips.append(c)
+        else:
+            start_position = float(clip.data["position"])
+            for c in Clip.filter():
+                if (float(c.data["position"]) >= (start_position - 0.5)
+                   and float(c.data["position"]) <= (start_position + 0.5)):
+                    # add to list
+                    available_clips.append(c)
+
+        if not available_clips:
+            return
 
         # Get the number of rows
         number_of_clips = len(available_clips)
@@ -3223,11 +4810,17 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 else:
                     selected_clip.data["scale"] = openshot.SCALE_FIT
 
+                if stretch:
+                    scale_x = width
+                    scale_y = height
+                else:
+                    scale_x = scale_y = min(width, height)
+
                 # Set scale keyframes
-                w = openshot.Point(1, width, openshot.BEZIER)
+                w = openshot.Point(1, scale_x, openshot.BEZIER)
                 w_object = json.loads(w.Json())
                 selected_clip.data["scale_x"] = {"Points": [w_object]}
-                h = openshot.Point(1, height, openshot.BEZIER)
+                h = openshot.Point(1, scale_y, openshot.BEZIER)
                 h_object = json.loads(h.Json())
                 selected_clip.data["scale_y"] = {"Points": [h_object]}
                 x_point = openshot.Point(1, X, openshot.BEZIER)
@@ -3274,9 +4867,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             tran.data = tran_data_copy
             self.update_transition_data(tran.data, only_basic_props=False)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowTransitionMenu(self, tran_id=None):
         log.info('ShowTransitionMenu: %s' % tran_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -3300,8 +4894,6 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Get clipboard
         copied_object = ClipboardManager.from_mime(get_app().clipboard().mimeData())
-        if copied_object:
-            print(f"Copied object found: {type(copied_object).__name__}")
         has_clipboard = False
         if copied_object and isinstance(copied_object, Transition):
             has_clipboard = True
@@ -3409,11 +5001,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowTrackMenu(self, layer_id=None):
         log.info('ShowTrackMenu: %s', layer_id)
+        self._context_menu_paste_data = None
 
         # Get translation method
         _ = get_app()._tr
@@ -3484,11 +5077,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def ShowMarkerMenu(self, marker_id=None):
         log.info('ShowMarkerMenu: %s' % marker_id)
+        self._context_menu_paste_data = None
 
         if marker_id not in self.window.selected_markers:
             self.window.selected_markers = [marker_id]
@@ -3498,9 +5092,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Show context menu
         self.context_menu_cursor_position = QCursor.pos()
-        return menu.popup(self.context_menu_cursor_position)
+        return menu.show_at(self.context_menu_cursor_position)
 
-    @pyqtSlot()
+    @guarded_slot()
     def EnableCacheThread(self):
         log.debug('EnableCacheThread: Start caching frames on timeline')
 
@@ -3510,16 +5104,106 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Refresh frame to ensure our last frame after scrubbing
         # is the final frame shown. Due to some unknown reason, this
         # is required for an accurate end to srubbing
-        QTimer.singleShot(50, self.window.refreshFrameSignal.emit)
+        QTimer.singleShot(50, lambda: self.window.refreshFrameSignal.emit())
 
-    @pyqtSlot()
+    @guarded_slot()
     def DisableCacheThread(self):
         log.debug('DisableCacheThread: Stop caching frames on timeline')
 
         # Disable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = False
 
-    @pyqtSlot(str, int)
+    @guarded_slot()
+    def TrimPreviewMode(self):
+        self.window.TrimPreviewMode.emit()
+
+    @guarded_slot()
+    def TimelinePreviewMode(self):
+        self.window.TimelinePreviewMode.emit()
+
+    @guarded_slot()
+    def BeginTrimRefresh(self):
+        setattr(self.window, "_trim_refresh_pending", True)
+
+    @guarded_slot(str, str)
+    def RefreshTrimmedTimelineItem(self, item_json, edge):
+        try:
+            item_data = json.loads(item_json) if not isinstance(item_json, dict) else item_json
+        except Exception:
+            log.debug("Failed to parse trim JSON data", exc_info=True)
+            return
+
+        setattr(self.window, "_trim_refresh_pending", True)
+        if ViewClass == TimelineWidget:
+            item_id = item_data.get("id")
+            self._pending_trim_refresh = {
+                "id": item_id,
+                "edge": edge,
+                "data": item_data,
+            }
+            QTimer.singleShot(0, self._apply_pending_trim_refresh)
+            return
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
+
+    def _action_contains_item_id(self, action, item_id):
+        if not action or not item_id:
+            return False
+        for part in action.key or []:
+            if isinstance(part, dict) and part.get("id") == item_id:
+                return True
+        values = getattr(action, "values", None)
+        if isinstance(values, dict) and values.get("id") == item_id:
+            return True
+        return False
+
+    def _apply_pending_trim_refresh(self):
+        pending = self._pending_trim_refresh
+        if not pending:
+            return
+        self._pending_trim_refresh = None
+        item_data = pending.get("data") or {}
+        edge = pending.get("edge")
+
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"]) if fps else 0.0
+        if fps_float <= 0.0:
+            return
+
+        position = float(item_data.get("position", 0.0) or 0.0)
+        start = float(item_data.get("start", 0.0) or 0.0)
+        end = float(item_data.get("end", start) or start)
+        duration = max(0.0, end - start)
+        frame_duration = 1.0 / fps_float
+
+        if edge == "left":
+            target_seconds = position
+        else:
+            target_seconds = position + max(0.0, duration - frame_duration)
+
+        target_frame = max(1, int(round(target_seconds * fps_float)) + 1)
+        self.window.LoadTimelineAndSeekSignal.emit(target_frame)
+        QTimer.singleShot(0, lambda: setattr(self.window, "_trim_refresh_pending", False))
+
+    @guarded_slot(str, int)
     def PreviewClipFrame(self, clip_id, frame_number):
 
         # Get existing clip object
@@ -3562,7 +5246,31 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Seek to frame
         self.window.SeekSignal.emit(frame_number)
 
-    @pyqtSlot(int)
+    def PreviewTransitionFrame(self, transition_id, frame_number):
+        """Preview a specific source frame of a transition mask while trimming."""
+        transition = Transition.get(id=transition_id)
+        if not transition:
+            return
+
+        transition_data = transition.data if isinstance(transition.data, dict) else {}
+        reader = self._transition_mask_reader(transition_data)
+        preview_path = absolute_media_path(reader.get("path")) if isinstance(reader, dict) else None
+        if not preview_path:
+            return
+
+        try:
+            frame_number = max(int(frame_number or 1), 1)
+        except (TypeError, ValueError):
+            frame_number = 1
+
+        # Load the mask source into the Player (ignored if already loaded)
+        self.window.LoadFileSignal.emit(preview_path)
+        self.window.SpeedSignal.emit(0)
+
+        # Seek to frame
+        self.window.SeekSignal.emit(frame_number)
+
+    @guarded_slot(int)
     def SeekToKeyframe(self, frame_number):
         """Seek to a specific frame when a keyframe point is clicked"""
 
@@ -3572,7 +5280,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Display properties (if not visible)
         self.window.actionProperties.trigger()
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def PlayheadMoved(self, position_frames):
 
         # Load the timeline into the Player (ignored if this has already happened)
@@ -3585,7 +5293,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Notify main window of current frame
             self.window.SeekSignal.emit(position_frames)
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def movePlayhead(self, position_frames):
         """ Move the playhead since the position has changed inside OpenShot (probably due to the video player) """
         if ViewClass == TimelineWidget:
@@ -3594,7 +5302,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get access to timeline scope and set scale to zoom slider value (passed in)
         self.run_js(JS_SCOPE_SELECTOR + ".movePlayheadToFrame(%s);" % (str(position_frames)))
 
-    @pyqtSlot()
+    @guarded_slot()
     def centerOnPlayhead(self):
         """ Center the timeline on the current playhead position """
         if ViewClass == TimelineWidget:
@@ -3603,7 +5311,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Execute JavaScript to center the timeline
         self.run_js(JS_SCOPE_SELECTOR + '.centerOnPlayhead();')
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetSnappingMode(self, enable_snapping):
         """ Enable / Disable snapping mode """
         # Init snapping state (1 = snapping, 0 = no snapping)
@@ -3612,7 +5320,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setSnappingMode(%s);" % int(enable_snapping))
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetRazorMode(self, enable_razor):
         """ Enable / Disable razor mode """
         # Init razor state (1 = razor, 0 = no razor)
@@ -3621,7 +5329,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setRazorMode(%s);" % int(enable_razor))
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetTimingMode(self, enable_timing):
         """ Enable / Disable timing mode """
         # Init timing state (1 = timing, 0 = no timing)
@@ -3630,7 +5338,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         else:
             self.run_js(JS_SCOPE_SELECTOR + ".setTimingMode(%s);" % int(enable_timing))
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def SetPropertyFilter(self, property):
         """ Filter a specific property name """
         if ViewClass == TimelineWidget:
@@ -3638,7 +5346,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return
         self.run_js(JS_SCOPE_SELECTOR + ".setPropertyFilter('%s');" % property)
 
-    @pyqtSlot(int)
+    @guarded_slot(int)
     def SetPlayheadFollow(self, enable_follow):
         """ Enable / Disable playhead follow on seek """
         if ViewClass == TimelineWidget:
@@ -3646,7 +5354,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             return
         self.run_js(JS_SCOPE_SELECTOR + ".setFollow({});".format(int(enable_follow)))
 
-    @pyqtSlot(str, str, bool)
+    @guarded_slot(str, str, bool)
     def addSelection(self, item_id, item_type, clear_existing=False):
         """ Add the selected item to the current selection """
         self.window.SelectionAdded.emit(item_id, item_type, clear_existing)
@@ -3675,12 +5383,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         elif item_type == "effect":
             self.run_js(JS_SCOPE_SELECTOR + ".selectEffect('{}', {}, null);".format(item_id, clear_js))
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def removeSelection(self, item_id, item_type):
         """ Remove the selected clip from the selection """
         self.window.SelectionRemoved.emit(item_id, item_type)
 
-    @pyqtSlot(str, str)
+    @guarded_slot(str, str)
     def qt_log(self, level="INFO", message=None):
         levels = {
             "DEBUG": logging.DEBUG,
@@ -3695,11 +5403,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             level = levels.get(level, logging.INFO)
         self.log_fn(level, message)
 
-    @pyqtSlot()
+    @guarded_slot()
     def zoomIn(self):
         get_app().window.sliderZoomWidget.zoomIn()
 
-    @pyqtSlot()
+    @guarded_slot()
     def zoomOut(self):
         get_app().window.sliderZoomWidget.zoomOut()
 
@@ -3734,14 +5442,98 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Start or restart timer to redraw audio
             self.redraw_audio_timer.start()
 
-        # Only update scale if different
-        current_scale = float(get_app().project.get("scale") or 15.0)
+        # Only update scale if different. Normalize to avoid startup float noise
+        # such as 14.999999999999998 vs 15.0 from dirtying a fresh project.
+        current_scale = round(float(get_app().project.get("scale") or 15.0), 6)
+        new_scale = round(float(newScale), 6)
 
         # Save current zoom
-        if newScale != current_scale:
+        if abs(new_scale - current_scale) > 1e-6:
             get_app().updates.ignore_history = True
-            get_app().updates.update(["scale"], newScale)
+            get_app().updates.update(["scale"], new_scale)
             get_app().updates.ignore_history = False
+
+    def _mime_text_payload(self, mime):
+        """Return text payload from a mime object, if available."""
+        try:
+            text = mime.text()
+        except Exception:
+            text = ""
+        if text:
+            return text
+        for fmt in ("text/plain", "application/json"):
+            try:
+                raw = mime.data(fmt)
+            except Exception:
+                raw = None
+            if not raw:
+                continue
+            try:
+                return bytes(raw).decode("utf-8", "ignore")
+            except Exception:
+                try:
+                    return raw.data().decode("utf-8", "ignore")
+                except Exception:
+                    continue
+        return ""
+
+    def _mime_json_list(self, mime):
+        """Parse a JSON list from mime text, if present."""
+        payload = self._mime_text_payload(mime)
+        if not payload:
+            return []
+        try:
+            data_list = json.loads(payload)
+        except Exception:
+            return []
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+        return data_list
+
+    def _parse_js_position_result(self, result):
+        """Normalize JS position results into a dict."""
+        if isinstance(result, dict):
+            return result
+        if result is None:
+            return None
+        if isinstance(result, (bytes, bytearray)):
+            try:
+                result = result.decode("utf-8", "ignore")
+            except Exception:
+                return None
+        if isinstance(result, str):
+            if not result:
+                return None
+            try:
+                parsed = json.loads(result)
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    def _run_js_position(self, x, y, callback):
+        """Run getJavaScriptPosition and normalize its result."""
+        code = (
+            "(function(){"
+            "try{var r="
+            + JS_SCOPE_SELECTOR
+            + ".getJavaScriptPosition("
+            + str(x)
+            + ","
+            + str(y)
+            + ");return JSON.stringify(r);}catch(e){return JSON.stringify({error:String(e)});}"
+            "})()"
+        )
+
+        def _wrapped(result):
+            parsed = self._parse_js_position_result(result)
+            if parsed is None:
+                log.warning("Timeline js_position: empty result (%s)", result)
+            elif parsed.get("error"):
+                log.warning("Timeline js_position error: %s", parsed.get("error"))
+            callback(parsed)
+
+        self.run_js(code, _wrapped)
 
     # An item is being dragged onto the timeline (mouse is entering the timeline now)
     def dragEnterEvent(self, event):
@@ -3757,32 +5549,36 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Initialize a list to hold file data (either from mime data or newly created files)
         data_list = []
-        initial_pos = event.posF()
+        initial_pos = _event_posf(event)
+        drop_tid = None
 
         # Get FPS and scaling information
         fps = project_fps_fraction()
         fps_float = float(fps)
         snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
 
-        # Handle URL-based OS file drop
-        if mime_has_file_drop(event.mimeData()):
-            self.item_type = "clip"
-            urls = urls_from_mime(event.mimeData())
-
-            imported = get_app().window.files_model.process_urls(
-                urls, import_quietly=True, prevent_image_seq=True
-            ) or []
-            for file in imported:
-                if file and getattr(file, "id", None):
-                    data_list.append(file.id)
-
         # Handle text-based mime data (clips or transitions)
-        elif event.mimeData().html():
-            self.item_type = event.mimeData().html()
-            data_list = json.loads(event.mimeData().text())
+        mime = event.mimeData()
+        if mime.html():
+            self.item_type = mime.html()
+            data_list = self._mime_json_list(mime)
 
-            if not isinstance(data_list, list):
-                data_list = [data_list]
+        # Handle URL-based OS file drop. A Project Files drag also carries URLs,
+        # so this only imports when the text branch found no ids -- otherwise
+        # every file would be placed twice (see os_drop_file_ids).
+        def _import_os_drop(urls):
+            nonlocal drop_tid
+            # One gesture: import + place clips share this tid (process_urls nests).
+            drop_tid = self.get_uuid()
+            get_app().updates.transaction_id = drop_tid
+            return get_app().window.files_model.process_urls(
+                urls, import_quietly=True, prevent_image_seq=True
+            )
+
+        os_drop_ids = os_drop_file_ids(mime, data_list, _import_os_drop)
+        if os_drop_ids:
+            self.item_type = "clip"
+            data_list = os_drop_ids
 
         # If no valid item type, return
         if not self.item_type:
@@ -3796,12 +5592,20 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         # Nested callback to handle JavaScript position response
         def handle_js_position(pos, js_position_data):
-            # Group drag/drop transactions
-            tid = self.get_uuid()
+            # Group drag/drop transactions (reuse OS-drop tid when present)
+            tid = drop_tid if drop_tid else self.get_uuid()
             get_app().updates.transaction_id = tid
 
+            if not js_position_data:
+                log.warning("Timeline dragEnter js_position: empty result")
+                return
             js_position = snap_to_grid(js_position_data.get('position', 0.0))
             js_nearest_track = js_position_data.get('track', 0)
+            if not js_nearest_track:
+                try:
+                    js_nearest_track = int(self.timeline_sync.timeline.GetTrackCount())
+                except Exception:
+                    js_nearest_track = 0
 
             pos.setX(js_position)
 
@@ -3823,21 +5627,37 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if new_item:
                     pos += QPointF(new_item["end"] - new_item["start"], 0)
 
+            get_app().updates.transaction_id = None
+
             # After all items are added, initialize manual move once for the group
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
 
         # Get JS position and pass initial position to the callback
-        self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
-                    .format(initial_pos.x(), initial_pos.y()), partial(handle_js_position, initial_pos))
+        def _deferred_js_position():
+            self._run_js_position(
+                initial_pos.x(),
+                initial_pos.y(),
+                partial(handle_js_position, initial_pos),
+            )
+        QTimer.singleShot(0, _deferred_js_position)
 
         # Accept the event
         event.accept()
 
     # Add Clip
-    def addClip(self, file_id, position, track, ignore_refresh=False, call_manual_move=True):
+    def addClip(
+        self,
+        file_id,
+        position,
+        track,
+        ignore_refresh=False,
+        call_manual_move=True,
+        auto_transition=False,
+    ):
         # Retrieve File object by file_id
         file = File.get(id=file_id)
         if not file:
+            log.warning("addClip: file_id not found: %s", file_id)
             return  # Skip if the file is not found
 
         # Get file name and path
@@ -3861,6 +5681,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Skip clips that are missing a 'reader' attribute
         if not new_clip.get("reader"):
             return  # Skip this clip
+
+        # If the source file has stored caption text (e.g. ComfyUI Whisper
+        # captions), attach a Caption effect to this new clip.
+        apply_file_caption_to_clip(new_clip, file)
 
         # Audio-only media must not composite video (cover-art MP3s otherwise
         # paint an opaque frame over every lower layer)
@@ -3917,41 +5741,87 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Quantize drop position — pixel coords are never frame-aligned.
         new_clip["position"] = snap_to_grid(position.x())
         new_clip["layer"] = track
+        if auto_transition:
+            new_clip["_auto_transition"] = True
 
         # Add the clip to the timeline
+        self._ensure_layers_exist([track])
         self.update_clip_data(new_clip, only_basic_props=False, ignore_refresh=ignore_refresh)
 
         # Track the added clip
         self.item_ids.append(new_clip.get('id'))
+
+        # Generate waveform data by default for audio-only clips.
+        reader = new_clip.get("reader", {}) if isinstance(new_clip.get("reader"), dict) else {}
+        has_video = reader.get("has_video")
+        has_video = True if has_video is None else bool(has_video)
+        has_audio = reader.get("has_audio")
+        has_audio = True if has_audio is None else bool(has_audio)
+        clip_id = new_clip.get("id")
+        if has_audio and not has_video and clip_id:
+            self.Show_Waveform_Triggered([clip_id])
 
         # Trigger manual move event to initialize UI snapping
         if call_manual_move:
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}', '{}');".format(self.item_type, json.dumps(self.item_ids)))
         return new_clip
 
-    @pyqtSlot(list)
+    @guarded_slot(list)
     def ScrollbarChanged(self, new_positions):
         """Timeline scrollbars changed"""
         get_app().window.TimelineScrolled.emit(new_positions)
 
     # Resize timeline
-    @pyqtSlot(float)
+    @guarded_slot(float)
     def resizeTimeline(self, new_duration):
         """Resize the duration of the timeline"""
         log.debug(f"Changing timeline to length: {new_duration}")
         get_app().updates.update_untracked(["duration"], new_duration)
         get_app().window.TimelineResize.emit()
 
+    def _get_transition_reader_json(self, file_path, create=True):
+        """Return cached transition reader JSON, creating it when requested."""
+        if not file_path:
+            return None
+        normalized_path = os.path.normpath(str(file_path))
+
+        reader_cache = getattr(self, "_transition_reader_json_cache", None)
+        if reader_cache is None:
+            reader_cache = {}
+            self._transition_reader_json_cache = reader_cache
+
+        cache_key = os.path.abspath(normalized_path)
+        reader_json = reader_cache.get(cache_key)
+        if reader_json is None and create:
+            reader_json = self._load_transition_reader_data(normalized_path)
+            if isinstance(reader_json, dict):
+                reader_cache[cache_key] = deepcopy(reader_json)
+        return deepcopy(reader_json) if isinstance(reader_json, dict) else None
+
     # Add Transition
-    def addTransition(self, file_path, position, track, ignore_refresh=False, call_manual_move=True):
+    def addTransition(
+        self,
+        file_path,
+        position,
+        track,
+        ignore_refresh=False,
+        call_manual_move=True,
+        defer_reader=False,
+    ):
         # Get FPS from project
         fps = project_fps_fraction()
         fps_float = float(fps)
         snap_to_grid = lambda t, _fps=fps: ft.snap(float(t or 0.0), _fps)
         duration = snap_to_grid(get_app().get_settings().get("default-transition-length"))
+        file_path = os.path.normpath(str(file_path))
 
-        # Open up QtImageReader for transition Image
-        transition_reader = openshot.QtImageReader(file_path)
+        # Defer expensive SVG raster reader creation during drag-preview.
+        reader_json = self._get_transition_reader_json(file_path, create=not defer_reader)
+        if not defer_reader and not isinstance(reader_json, dict):
+            log.warning("Unable to add transition, invalid reader path: %s", file_path)
+            return None
+        if not isinstance(reader_json, dict):
+            reader_json = {"path": file_path}
 
         # Create Keyframes for brightness and contrast
         brightness = openshot.Keyframe()
@@ -3969,13 +5839,18 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             "position": snap_to_grid(position.x()),
             "start": 0,
             "end": duration,
+            "resource": file_path,
             "brightness": json.loads(brightness.Json()),
             "contrast": json.loads(contrast.Json()),
-            "reader": json.loads(transition_reader.Json()),
+            "reader": deepcopy(reader_json),
             "replace_image": False
         }
 
+        # Default transition to fade-in on clip left edge, fade-out on right edge.
+        self._auto_orient_transition_keyframes(transition_data)
+
         # Send to update manager
+        self._ensure_layers_exist([track])
         self.update_transition_data(transition_data, only_basic_props=False, ignore_refresh=ignore_refresh)
 
         # Track the added transition
@@ -3985,6 +5860,56 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if call_manual_move:
             self.run_js(JS_SCOPE_SELECTOR + ".startManualMove('{}','{}');".format(self.item_type, json.dumps(self.item_ids)))
         return transition_data
+
+    def _get_transition_reader_json(self, file_path, create=True):
+        """Return cached transition reader JSON, creating it when requested."""
+        if not file_path:
+            return None
+        normalized_path = os.path.normpath(str(file_path))
+
+        reader_cache = getattr(self, "_transition_reader_json_cache", None)
+        if reader_cache is None:
+            reader_cache = {}
+            self._transition_reader_json_cache = reader_cache
+
+        cache_key = os.path.abspath(normalized_path)
+        reader_json = reader_cache.get(cache_key)
+        if reader_json is None and create:
+            reader_json = self._load_transition_reader_data(normalized_path)
+            if isinstance(reader_json, dict):
+                reader_cache[cache_key] = deepcopy(reader_json)
+        return deepcopy(reader_json) if isinstance(reader_json, dict) else None
+
+    def _load_transition_reader_data(self, file_path):
+        """Build transition reader JSON, with a platform-safe fallback path."""
+        if not file_path:
+            return None
+        if not os.path.exists(file_path):
+            log.warning("Transition file does not exist: %s", file_path)
+            return None
+
+        try:
+            transition_reader = openshot.QtImageReader(file_path)
+            return json.loads(transition_reader.Json())
+        except Exception:
+            log.debug("QtImageReader failed for transition: %s", file_path, exc_info=1)
+
+        clip = None
+        try:
+            clip = openshot.Clip(file_path)
+            reader = clip.Reader()
+            if reader:
+                return json.loads(reader.Json())
+        except Exception:
+            log.debug("Clip reader fallback failed for transition: %s", file_path, exc_info=1)
+        finally:
+            if clip:
+                try:
+                    clip.Close()
+                except Exception:
+                    pass
+
+        return None
 
     # Add Effect
     def addEffect(self, effect_names, event_position):
@@ -4010,6 +5935,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 ):
                     log.info("Applying effect {} to clip ID {}".format(name, clip.id))
                     log.debug(clip)
+                    original_clip_data = json.loads(json.dumps(clip.data))
 
                     # Handle custom effect dialogs
                     if name in effect_options:
@@ -4058,6 +5984,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
                     # Update clip data for project
                     self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                    get_app().updates.apply_last_action_to_history(original_clip_data)
 
         # Find position from javascript
         self.run_js(JS_SCOPE_SELECTOR + ".getJavaScriptPosition({}, {});"
@@ -4096,6 +6023,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not effect_name:
             return
         log.info("Applying effect %s to clip ID %s", effect_name, clip.id)
+        original_clip_data = json.loads(json.dumps(clip.data))
         if effect_name in effect_options:
             effect_params = effect_options.get(effect_name)
             from windows.process_effect import ProcessEffect
@@ -4124,6 +6052,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip.data["effects"] = effects
         effects.append(effect_json)
         self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+        get_app().updates.apply_last_action_to_history(original_clip_data)
 
     # Without defining this method, the 'copy' action doesn't show with cursor
     def dragMoveEvent(self, event):
@@ -4134,7 +6063,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
         # Get cursor position
-        pos = event.posF()
+        pos = _event_posf(event)
 
         # Move clip on timeline
         if self.item_type in ["clip", "transition"]:
@@ -4151,21 +6080,91 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Accept the event
         event.accept()
 
+        def cleanup_drop():
+            self.new_item = False
+            self.item_type = None
+            self.item_ids = []
+            get_app().updates.transaction_id = None
+
+        # If drag enter didn't build item_ids, fall back to parsing drop mime data.
+        if self.item_type in ["clip", "transition"] and not self.item_ids:
+            mime = event.mimeData()
+            data_list = []
+            data_list = self._mime_json_list(mime)
+            if not data_list and mime.hasUrls():
+                urls = mime.urls()
+                get_app().window.files_model.process_urls(urls, import_quietly=True, prevent_image_seq=True)
+                for uri in urls:
+                    filepath = uri.toLocalFile()
+                    if not os.path.exists(filepath) or not os.path.isfile(filepath):
+                        continue
+                    for file in File.filter(path=filepath):
+                        if file:
+                            data_list.append(file.id)
+            if data_list:
+                pos = _event_posf(event)
+
+                def handle_js_position(pos, js_position_data):
+                    tid = self.get_uuid()
+                    get_app().updates.transaction_id = tid
+
+                    fps_float = float(get_app().project.get("fps")["num"]) / float(get_app().project.get("fps")["den"])
+                    snap_to_grid = lambda t: round(t * fps_float) / fps_float
+                    if not js_position_data:
+                        log.warning("Timeline drop fallback js_position: empty result")
+                        cleanup_drop()
+                        return
+                    js_position = snap_to_grid(js_position_data.get('position', 0.0))
+                    js_nearest_track = js_position_data.get('track', 0)
+                    if not js_nearest_track:
+                        try:
+                            js_nearest_track = int(self.timeline_sync.timeline.GetTrackCount())
+                        except Exception:
+                            js_nearest_track = 0
+                    pos.setX(js_position)
+
+                    self.item_ids = []
+                    for index, drag_id in enumerate(data_list):
+                        ignore_refresh = False if index == len(data_list) - 1 else True
+                        if self.item_type == "clip":
+                            self.addClip(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
+                        elif self.item_type == "transition":
+                            self.addTransition(drag_id, pos, js_nearest_track, ignore_refresh, call_manual_move=False)
+
+                    if self.item_ids:
+                        self.run_js(
+                            JS_SCOPE_SELECTOR + ".updateRecentItemJSON('{}', '{}', '{}');"
+                            .format(self.item_type, json.dumps(self.item_ids), get_app().updates.transaction_id)
+                        )
+                    cleanup_drop()
+
+                def _deferred_drop_position():
+                    self._run_js_position(
+                        pos.x(),
+                        pos.y(),
+                        partial(handle_js_position, pos),
+                    )
+                QTimer.singleShot(0, _deferred_drop_position)
+                return
+
         if self.item_type == "effect":
-            pos = event.posF()
-            data = json.loads(event.mimeData().text())
+            pos = _event_posf(event)
+            data = self._mime_json_list(event.mimeData())
             self.addEffect(data, pos)
 
         elif self.item_type in ["clip", "transition"] and self.item_ids:
             # Update most recent clip or transition
             self.run_js(JS_SCOPE_SELECTOR + ".updateRecentItemJSON('{}', '{}', '{}');"
                         .format(self.item_type, json.dumps(self.item_ids), get_app().updates.transaction_id))
+            # Keep Delete scoped to timeline items after drop, not project files.
+            files_model = getattr(self.window, "files_model", None)
+            if files_model:
+                files_model.selection_model.clearSelection()
+                files_model.list_selection_model.clearSelection()
+            self.setFocus(Qt.OtherFocusReason)
 
         # Cleanup after drop
-        self.new_item = False
-        self.item_type = None
-        self.item_ids = []
-        get_app().updates.transaction_id = None
+        cleanup_drop()
 
     def dragLeaveEvent(self, event):
         """A drag is in-progress and the user moves mouse outside of timeline"""
@@ -4194,6 +6193,110 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.new_item = False
         self.item_type = None
         self.item_ids = []
+
+    def set_audio_recording_previews(self, previews):
+        """Draw transient recording clips without committing project data."""
+        preview_clips = []
+        for preview in previews or []:
+            if not isinstance(preview, dict):
+                continue
+            try:
+                duration = max(0.05, float(preview.get("duration") or 0.0))
+            except (TypeError, ValueError):
+                duration = 0.05
+            source_type = str(preview.get("source_type") or "recording")
+            preview_id = str(preview.get("id") or "recording-preview-%s" % source_type)
+            file_id = str(preview.get("file_id") or "")
+            has_audio = source_type == "mic"
+            has_video = source_type in ("screen", "webcam")
+            try:
+                fps_value = float(preview.get("fps") or getattr(self, "fps_float", 30.0) or 30.0)
+            except (TypeError, ValueError):
+                fps_value = 30.0
+            fps_value = max(1.0, fps_value)
+            video_length = max(1, int(round(duration * fps_value)))
+            reader = {
+                "has_audio": has_audio,
+                "has_video": has_video,
+                "media_type": "audio" if has_audio and not has_video else "video",
+                "path": "",
+                "duration": duration,
+                "start": 0.0,
+                "end": duration,
+                "video_length": video_length,
+                "fps": {"num": int(round(fps_value)), "den": 1},
+            }
+            if file_id:
+                reader["id"] = file_id
+            if has_video:
+                try:
+                    reader["width"] = int(preview.get("width") or 1280)
+                    reader["height"] = int(preview.get("height") or 720)
+                except (TypeError, ValueError):
+                    reader["width"] = 1280
+                    reader["height"] = 720
+
+            preview_clip = Clip()
+            preview_clip.id = preview_id
+            try:
+                position = max(0.0, float(preview.get("position") or 0.0))
+            except (TypeError, ValueError):
+                position = 0.0
+            try:
+                track = int(preview.get("track") or 1)
+            except (TypeError, ValueError):
+                track = 1
+            preview_clip.data = {
+                "id": preview_clip.id,
+                "file_id": file_id,
+                "title": preview.get("title") or get_app()._tr("Recording"),
+                "position": position,
+                "layer": track,
+                "start": 0.0,
+                "end": duration,
+                "duration": duration,
+                "reader": reader,
+            }
+            if has_audio:
+                audio_data = list(preview.get("audio_data") or [])
+                audio_rms = list(preview.get(WAVEFORM_RMS_KEY) or [])
+                preview_clip.data["ui"] = {
+                    "audio_data": audio_data,
+                    WAVEFORM_RMS_KEY: audio_rms,
+                    WAVEFORM_RATE_KEY: int(preview.get(WAVEFORM_RATE_KEY) or 20),
+                    WAVEFORM_FORMAT_KEY: ABSOLUTE_WAVEFORM_FORMAT,
+                    "waveform_token": "%s:%s" % (len(audio_data), len(audio_rms)),
+                }
+                preview_clip.data["waveform"] = True
+            preview_clips.append(preview_clip)
+
+        self._recording_preview_clips = preview_clips
+        if hasattr(self, "geometry"):
+            self.geometry.mark_dirty()
+        # Keep recording previews paint-only. Do not update project data or clear
+        # playback/backend caches while capture is active.
+        self.update()
+
+    def set_audio_recording_preview(self, preview_id, position, track, duration, audio_data):
+        """Draw a transient recording clip without committing project data."""
+        duration = max(0.05, float(duration or 0.0))
+        self.set_audio_recording_previews([{
+            "id": str(preview_id),
+            "source_type": "mic",
+            "position": max(0.0, float(position or 0.0)),
+            "track": int(track or 1),
+            "duration": duration,
+            "audio_data": list(audio_data or []),
+        }])
+
+    def clear_audio_recording_preview(self):
+        """Remove the transient recording clip from the timeline view."""
+        if not getattr(self, "_recording_preview_clips", None):
+            return
+        self._recording_preview_clips = []
+        if hasattr(self, "geometry"):
+            self.geometry.mark_dirty()
+        self.update()
 
     def redraw_audio_onTimeout(self):
         """Timer is ready to redraw audio (if any)"""
@@ -4246,6 +6349,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Get the JSON from the cache object (i.e. which frames are cached)
                 cache_json = cache_object.Json()
                 cache_dict = json.loads(cache_json)
+                if not isinstance(cache_dict, dict):
+                    return
                 cache_version = cache_dict["version"]
 
                 if self.cache_renderer_version == cache_version:
@@ -4269,9 +6374,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.run_js(JS_SCOPE_SELECTOR + ".refreshTimeline();")
 
     def __init__(self, window):
-        super().__init__()
         if ViewClass == TimelineWidget:
             TimelineWidget.__init__(self)
+        else:
+            super().__init__()
         self.setObjectName("TimelineView")
 
         app = get_app()
@@ -4279,6 +6385,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         self.setAcceptDrops(True)
         self.last_position_frames = None
         self.context_menu_cursor_position = None
+        self._context_menu_paste_data = None
+        self._pending_trim_refresh = None
 
         # Get logger
         self.log_fn = log.log

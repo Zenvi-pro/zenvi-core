@@ -33,8 +33,8 @@
  You should have received a copy of the GNU General Public License
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
-from PyQt5.QtWidgets import QPushButton, QDialog, QDialogButtonBox, QLabel, QFileDialog, QMessageBox
-from PyQt5.QtCore import Qt
+from qt_api import QPushButton, QDialog, QDialogButtonBox, QLabel, QFileDialog, QMessageBox
+from qt_api import Qt, QTimer
 from classes import ui_util
 from classes import info
 from classes.app import get_app
@@ -50,13 +50,26 @@ def makeLegalFileName(s: str):
     s = re.sub(r'[^\w\s-]', '', s.lower())
     return s.strip() #clean leading or trailing spaces
 
-def copyFileToFolder(f , destination_folder: str):
+SEQUENCE_FORMAT_RE = re.compile(r"%(?:0\d+)?d")
+
+
+def isImageSequence(file_object) -> bool:
+    """Return whether a Project File path represents an image sequence."""
+    path = file_object.data.get("path")
+    if not path:
+        return False
+    return bool(SEQUENCE_FORMAT_RE.search(os.path.basename(path)))
+
+
+def copyFileToFolder(f, destination_folder: str):
     """Takes a file object, gives it a suffix, and copies it"""
+    source_path = f.data.get("path")
     new_file_path = nameOfExport(f)
-    if os.path.exists(new_file_path):
+    destination_path = os.path.join(destination_folder, new_file_path)
+    if os.path.exists(destination_path):
         return
-    log.info(f"copying {f.data.get('path')} to {os.path.join( destination_folder, new_file_path )}")
-    shutil.copy(f.data.get("path"), os.path.join( destination_folder, new_file_path ))
+    log.info(f"copying {source_path} to {destination_path}")
+    shutil.copy(source_path, destination_path)
 
 def notClip(file_obj):
     return not isClip(file_obj)
@@ -66,6 +79,11 @@ def isClip(file_object) -> bool:
        and "end" in file_object.data:
         return True
     return False
+
+def fileDurationSeconds(file_obj) -> float:
+    fps = file_obj.data.get("fps")
+    fps = int(fps.get("num")) / int(fps.get("den"))
+    return int(file_obj.data.get("video_length", 0)) / fps
 
 def nameOfExport(file_obj) -> str:
     if isClip(file_obj):
@@ -80,31 +98,54 @@ def nameOfExport(file_obj) -> str:
     else:
         name, ext = os.path.splitext(os.path.split(file_obj.data.get("path"))[1])
         name = makeLegalFileName(name)
-        fps = file_obj.data.get("fps")
-        fps = int(fps.get("num")) / int(fps.get("den"))
-        length_in_seconds = int(file_obj.data.get("video_length",0)) / fps
+        length_in_seconds = fileDurationSeconds(file_obj)
         suffix = f"[0.00 - {format(length_in_seconds, '.2f')}]"
         return f"{name} {suffix}{ext}"
 
+def nameOfImageSequenceExport(file_obj) -> str:
+    name, _ = os.path.splitext(os.path.split(file_obj.data.get("path"))[1])
+    name = file_obj.data.get("name", name)
+    name, _ = os.path.splitext(name)
+    name = makeLegalFileName(SEQUENCE_FORMAT_RE.sub("", name))
+    length_in_seconds = fileDurationSeconds(file_obj)
+    suffix = f"[0.00 - {format(length_in_seconds, '.2f')}]"
+    return f"{name} {suffix}.mp4"
+
+def imageSequenceAsClip(file_obj):
+    clip_obj = type("ImageSequenceClip", (), {})()
+    clip_obj.data = dict(file_obj.data)
+    clip_obj.data["start"] = 0.0
+    clip_obj.data["end"] = fileDurationSeconds(file_obj)
+    return clip_obj
+
 def framesInClip(cl):
-    fps = cl.data.get("fps").get("num") / cl.data.get("fps").get("den")
-    seconds = cl.data.get('end') - cl.data.get('start')
-    return seconds * fps + 1
+    start_frame, end_frame = startAndEndFrames(cl)
+    return max(0, end_frame - start_frame + 1)
+
 
 def startAndEndFrames(clip):
-    timeToFrame = lambda t, fps: round((t * fps) + 1)
     fps = clip.data.get("fps").get("num") / clip.data.get("fps").get("den")
-    start_time = clip.data.get("start")
-    end_time = clip.data.get("end")
-    return (timeToFrame(start_time, fps), timeToFrame(end_time, fps))
+    start_time = float(clip.data.get("start", 0.0))
+    end_time = float(clip.data.get("end", start_time))
+
+    start_frame = max(1, int(round(start_time * fps)) + 1)
+    end_frame = max(start_frame - 1, int(round(end_time * fps)))
+    return (start_frame, end_frame)
+
+def positiveInt(value, default: int) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 def setupWriter(clip, writer):
-    # TODO: allow for audio clips
     # Set video options
     pr = clip.data.get("pixel_ratio", {"num": 1, "den": 1})
     pixel_ratio = openshot.Fraction(pr.get("num"), pr.get("den"))
     fps = clip.data.get("fps", {"num": 30, "den": 1})
     frames_per_second = openshot.Fraction(fps.get("num",1), fps.get("den",1))
+    has_audio = bool(clip.data.get("has_audio", False))
 
     writer.SetVideoOptions(True,
                            "libx264",
@@ -117,12 +158,12 @@ def setupWriter(clip, writer):
                            22)
     writer.PrepareStreams()
     # Set audio options
-    writer.SetAudioOptions(True,
+    writer.SetAudioOptions(has_audio,
                            "aac",
-                           clip.data.get("sample_rate", 48000),
-                           clip.data.get("channels", 2),
-                           clip.data.get("channel_layout", 3),
-                           clip.data.get("audio_bit_rate", 192000) )
+                           positiveInt(clip.data.get("sample_rate"), 48000),
+                           positiveInt(clip.data.get("channels"), 2),
+                           positiveInt(clip.data.get("channel_layout"), 3),
+                           positiveInt(clip.data.get("audio_bit_rate"), 192000))
     writer.PrepareStreams()
     writer.Open()
 
@@ -142,15 +183,18 @@ class clipExportWindow(QDialog):
         self.file_objs = export_clips_arg
         self._getDestination()
         self._createWidgets()
+        QTimer.singleShot(0, self._exportPressed)
 
     def _getDestination(self):
         settings = get_app().get_settings()
-        fd = QFileDialog()
-        fd.setOption(QFileDialog.ShowDirsOnly)
-        fd.setDirectory(
-            settings.getDefaultPath(settings.actionType.EXPORT)
+        parent = get_app().window
+        default_path = settings.getDefaultPath(settings.actionType.EXPORT)
+        chosen_destination = QFileDialog.getExistingDirectory(
+            parent,
+            _("Choose Target Folder"),
+            default_path,
+            QFileDialog.ShowDirsOnly,
         )
-        chosen_destination = fd.getExistingDirectory()
 
         # if dialog is canceled, use default path
         if chosen_destination:
@@ -161,21 +205,18 @@ class clipExportWindow(QDialog):
 
     def _createWidgets(self):
         self.FilePickerArea.addWidget(QLabel(_("Export To %s") % self.export_destination))
-        self.export_button = QPushButton(_("Export"))
-        self.export_button.clicked.connect(self._exportPressed)
         self.done_button = QPushButton(_("Done"))
         self.done_button.clicked.connect(self.done)
         self.cancel_button = QPushButton(_("Cancel"))
         self.cancel_button.clicked.connect(self._cancelButtonClicked)
 
         # Make progress bar look like the one in the export dialog
-        from PyQt5.QtGui import QPalette
+        from qt_api import QPalette
         p = QPalette()
         p.setColor(QPalette.Highlight, Qt.green)
         self.progressExportVideo.setPalette(p)
 
         self.buttonBox.addButton(self.cancel_button, QDialogButtonBox.ActionRole)
-        self.buttonBox.addButton(self.export_button, QDialogButtonBox.ActionRole)
         self.buttonBox.addButton(self.done_button, QDialogButtonBox.ActionRole)
         self.done_button.setHidden(True)
         self.progressExportVideo.setValue(0)
@@ -188,46 +229,90 @@ class clipExportWindow(QDialog):
 
     def _exportPressed(self):
         clips = list(filter(isClip, self.file_objs))
-        files = list(filter(notClip, self.file_objs))
+        sequence_files = list(filter(isImageSequence, filter(notClip, self.file_objs)))
+        files = [f for f in filter(notClip, self.file_objs) if not isImageSequence(f)]
         # Total number of frames
         self._updateDialogExportStarting()
         total_frames, frames_written = 0, 0
         for c in clips:
             total_frames += framesInClip(c)
+        for f in sequence_files:
+            total_frames += int(f.data.get("video_length",0))
         for f in files:
             total_frames += int(f.data.get("video_length",0))
         for f in files:
-            copyFileToFolder(f, self.export_destination)
-            frames_written+=int(f.data.get("video_length",0))
-        for c in clips:
-            export_path = os.path.join(self.export_destination, f"{nameOfExport(c)}")
-            if(os.path.exists(export_path)):
-                log.info("Export path exists. Skipping render")
-                frames_written += framesInClip(c)
-                self._updateProgressBar(frames_written, total_frames)
-                get_app().processEvents()
-                continue
-            w = openshot.FFmpegWriter(export_path)
             try:
-                setupWriter(c, w)
+                copyFileToFolder(f, self.export_destination)
             except Exception as ex:
-                log.error("Error Exporting Clip: "+str(ex))
-                QMessageBox.warning(self, _("Error Exporting Clip"),
-                                    _("The following error occurred while exporting this clip: \n%s") % str(ex))
-                log.info("Removing this clip from total_frames")
-                total_frames -= int(framesInClip(c))
-                if os.path.exists(export_path):
-                    log.info("Removing incomplete file %s" % export_path)
-                    os.remove(export_path)
+                log.error("Error Exporting File: %s", ex, exc_info=True)
+                QMessageBox.warning(self, _("Error Exporting File"),
+                                    _("The following error occurred while exporting this file: \n%s") % str(ex))
+                total_frames -= int(f.data.get("video_length", 0))
                 continue
+            frames_written += int(f.data.get("video_length", 0))
+            self._updateProgressBar(frames_written, total_frames)
+            get_app().processEvents()
+            if self.canceled:
+                log.info("Export Canceled. Exiting Dialog")
+                self.done(0)
+                return
+        for f in sequence_files:
+            export_path = os.path.join(self.export_destination, f"{nameOfImageSequenceExport(f)}")
+            frames_written, total_frames = self._exportClip(
+                imageSequenceAsClip(f),
+                export_path,
+                frames_written,
+                total_frames,
+            )
+            if self.canceled:
+                self.done(0)
+                return
+        for c in clips:
+            frames_written, total_frames = self._exportClip(
+                c,
+                os.path.join(self.export_destination, f"{nameOfExport(c)}"),
+                frames_written,
+                total_frames,
+            )
+            if self.canceled:
+                self.done(0)
+                return
+        log.info("Finished exporting")
+        self._updateProgressBar(frames_written, total_frames)
+        self._updateDialogExportFinished()
 
-            start_frame, end_frame = startAndEndFrames(c)
+    def _exportClip(self, clip, export_path: str, frames_written: int, total_frames: int):
+        if os.path.exists(export_path):
+            log.info("Export path exists. Skipping render")
+            frames_written += framesInClip(clip)
+            self._updateProgressBar(frames_written, total_frames)
+            get_app().processEvents()
+            return frames_written, total_frames
 
-            clip_reader = openshot.Clip(c.data.get("path"))
+        w = openshot.FFmpegWriter(export_path)
+        try:
+            setupWriter(clip, w)
+        except Exception as ex:
+            log.error("Error Exporting Clip: "+str(ex))
+            QMessageBox.warning(self, _("Error Exporting Clip"),
+                                _("The following error occurred while exporting this clip: \n%s") % str(ex))
+            log.info("Removing this clip from total_frames")
+            total_frames -= int(framesInClip(clip))
+            if os.path.exists(export_path):
+                log.info("Removing incomplete file %s" % export_path)
+                os.remove(export_path)
+            return frames_written, total_frames
+
+        clip_reader = None
+        export_error = False
+        remove_partial_export = False
+        try:
+            start_frame, end_frame = startAndEndFrames(clip)
+            clip_reader = openshot.Clip(clip.data.get("path"))
             clip_reader.Open()
 
             log.info(f"Starting to write frames to {export_path}")
-            for frame in range(start_frame, end_frame):
+            for frame in range(start_frame, end_frame + 1):
                 w.WriteFrame(clip_reader.GetFrame(frame))
                 if frame % 5 == 0:
                     self._updateProgressBar(frames_written, total_frames)
@@ -235,18 +320,29 @@ class clipExportWindow(QDialog):
                 frames_written += 1
                 if self.canceled:
                     log.info("Export Canceled. Deleting partial export")
-                    os.remove(export_path)
+                    remove_partial_export = True
                     break
-            clip_reader.Close()
+        except Exception as ex:
+            log.error("Error Exporting Clip: %s", ex, exc_info=True)
+            QMessageBox.warning(self, _("Error Exporting Clip"),
+                                _("The following error occurred while exporting this clip: \n%s") % str(ex))
+            total_frames -= int(framesInClip(clip))
+            export_error = True
+            remove_partial_export = True
+        finally:
+            if clip_reader:
+                clip_reader.Close()
             w.Close()
-            if self.canceled:
-                log.info("Reader and Writer closed. Exiting Dialog")
-                self.done(0)
-                break
-            log.info("Finished Exporting Clip: %s" % export_path)
-        log.info("Finished exporting")
-        self._updateProgressBar(frames_written, total_frames)
-        self._updateDialogExportFinished()
+        if remove_partial_export and os.path.exists(export_path):
+            log.info("Removing incomplete file %s" % export_path)
+            os.remove(export_path)
+        if export_error:
+            return frames_written, total_frames
+        if self.canceled:
+            log.info("Reader and Writer closed. Exiting Dialog")
+            return frames_written, total_frames
+        log.info("Finished Exporting Clip: %s" % export_path)
+        return frames_written, total_frames
 
     def _updateProgressBar(self, count: int, total: int):
         if total==0:
@@ -275,5 +371,4 @@ class clipExportWindow(QDialog):
 
     def _updateDialogExportStarting(self):
         self.exporting=True
-        self.export_button.hide()
         self.setWindowTitle(_("Exporting"))

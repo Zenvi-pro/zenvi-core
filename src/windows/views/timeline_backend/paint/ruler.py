@@ -25,8 +25,8 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import (
+from qt_api import QPointF, QRectF, Qt
+from qt_api import (
     QBrush,
     QFont,
     QFontMetrics,
@@ -40,6 +40,12 @@ from classes.app import get_app
 from classes.time_parts import secondsToTime
 
 from .base import BasePainter
+
+
+def _text_width(metrics, text):
+    if hasattr(metrics, "horizontalAdvance"):
+        return metrics.horizontalAdvance(text)
+    return metrics.width(text)
 
 
 class RulerPainter(BasePainter):
@@ -91,7 +97,7 @@ class RulerPainter(BasePainter):
         if left_rect.width() <= 0 or left_rect.height() <= 0:
             return left_rect
         if self.name_bg2 != self.name_bg:
-            grad = QLinearGradient(left_rect.topLeft(), left_rect.bottomLeft())
+            grad = QLinearGradient(QPointF(left_rect.topLeft()), QPointF(left_rect.bottomLeft()))
             grad.setColorAt(0, self.name_bg)
             grad.setColorAt(1, self.name_bg2)
             painter.fillRect(left_rect, QBrush(grad))
@@ -111,23 +117,37 @@ class RulerPainter(BasePainter):
             painter.setPen(self.tick_pen)
         return left_rect
 
-    def _prime_factors(self, n: int):
-        factors = []
-        d = 2
-        while d * d <= n:
-            while n % d == 0:
-                factors.append(d)
-                n //= d
-            d += 1
-        if n > 1:
-            factors.append(n)
-        return factors
+    def _nice_frame_intervals(self, fps):
+        fps_frames = max(1, int(round(fps)))
+        intervals = set()
+
+        for frames in (1, 2, 3, 5, 10, 15):
+            if frames < fps_frames:
+                intervals.add(frames)
+
+        for fraction in (0.2, 0.25, 1.0 / 3.0, 0.5, 1.0):
+            raw_frames = fps_frames * fraction
+            frames = int(round(raw_frames))
+            if frames >= 1 and abs(raw_frames - frames) < 1e-6:
+                intervals.add(frames)
+
+        for seconds in (2, 3, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600):
+            intervals.add(fps_frames * seconds)
+
+        return sorted(intervals)
 
     def _frames_per_tick(self, pps, fps):
-        frames = 1
-        factors = self._prime_factors(round(fps))
-        while (frames / fps) * pps < 40:
-            frames *= factors.pop(0) if factors else 2
+        if pps <= 0 or fps <= 0:
+            return 1
+
+        min_spacing = 44.0
+        for frames in self._nice_frame_intervals(fps):
+            if (frames / fps) * pps >= min_spacing:
+                return frames
+
+        frames = self._nice_frame_intervals(fps)[-1]
+        while (frames / fps) * pps < min_spacing:
+            frames *= 2
         return frames
 
     def paint(self, painter: QPainter):
@@ -140,7 +160,7 @@ class RulerPainter(BasePainter):
 
         rect = QRectF(self.w.track_name_width, 0, width, self.w.ruler_height)
         if self.bg2.isValid() and self.bg != self.bg2:
-            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad = QLinearGradient(QPointF(rect.topLeft()), QPointF(rect.bottomLeft()))
             grad.setColorAt(0, self.bg)
             grad.setColorAt(1, self.bg2)
             painter.fillRect(rect, QBrush(grad))
@@ -185,7 +205,7 @@ class RulerPainter(BasePainter):
                 tt = secondsToTime(t, fps_info["num"], fps_info["den"])
                 if frame == 0:
                     lbl = f"{int(tt['min'])}:{tt['sec']}"
-                    text_w = tick_metrics.width(lbl)
+                    text_w = _text_width(tick_metrics, lbl)
                     text_rect = QRectF(
                         x + 2,
                         label_top,
@@ -197,7 +217,7 @@ class RulerPainter(BasePainter):
                     lbl = f"{tt['hour']}:{tt['min']}:{tt['sec']}"
                     if fpt < round(fps_float):
                         lbl += f",{tt['frame']}"
-                    text_w = tick_metrics.width(lbl)
+                    text_w = _text_width(tick_metrics, lbl)
                     text_rect = QRectF(
                         x - text_w / 2,
                         label_top,

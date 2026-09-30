@@ -31,7 +31,7 @@ from urllib.parse import unquote, urlparse
 from xml.dom import minidom, Node
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import frame_time as ft
 from fractions import Fraction
@@ -393,7 +393,7 @@ def import_xml():
                     thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
                 else:
                     # Audio file
-                    thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+                    thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
                 # Create Clip object
                 clip = Clip()

@@ -183,6 +183,11 @@ App.directive("tlTransition", function () {
           scope.setDragging(true);
           resize_disabled = false;
 
+          if (scope.Qt) {
+            timeline.DisableCacheThread();
+            timeline.TrimPreviewMode();
+          }
+
           // Set bounding box
           setBoundingBox(scope, $(this), "trimming");
 
@@ -208,6 +213,10 @@ App.directive("tlTransition", function () {
         },
         stop: function (e, ui) {
           scope.setDragging(false);
+          if (scope.Qt) {
+            timeline.EnableCacheThread();
+            timeline.TimelinePreviewMode();
+          }
 
           stopTransitionKeyframePreview();
 
@@ -270,7 +279,15 @@ App.directive("tlTransition", function () {
 
           // update transition in Qt (very important =)
           if (scope.Qt) {
-            timeline.update_transition_data(JSON.stringify(scope.transition), true, false, null);
+            timeline.BeginTrimRefresh();
+            var transitionPayload = Object.assign({}, scope.transition, {
+              _auto_direction: true
+            });
+            timeline.update_transition_data(JSON.stringify(transitionPayload), true, false, null);
+          }
+
+          if (scope.Qt) {
+            timeline.RefreshTrimmedTimelineItem(JSON.stringify(scope.transition), dragLoc);
           }
 
           dragLoc = null;

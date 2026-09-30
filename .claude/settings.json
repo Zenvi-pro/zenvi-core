@@ -1,0 +1,27 @@
+{
+  "disableClaudeAiConnectors": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__claude_ai_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"claude.ai connectors are disabled in the zenvi-core repo and all of its worktrees.\"}}\\n'",
+            "statusMessage": "Blocking claude.ai connector"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${PORT_GUARD:-$CLAUDE_PROJECT_DIR/scripts/upstream-port/hooks/port-guard.py}\"; if [ -f \"$f\" ]; then python3 \"$f\"; else exit 0; fi",
+            "statusMessage": "Checking upstream-port guard rails"
+          }
+        ]
+      }
+    ]
+  }
+}

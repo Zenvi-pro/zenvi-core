@@ -28,7 +28,7 @@
 import os
 from operator import itemgetter
 
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes import frame_time as ft
