@@ -23,7 +23,7 @@ from classes.editor_tools._base import (
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
     color_hex_alpha, color_keyframes, constant, installed_font_families,
-    is_vertical, new_effect_json, overlay_file, overlay_file_path, create_track, place_clip,
+    fresh_effect, is_vertical, new_effect_json, overlay_file, overlay_file_path, create_track, place_clip,
     plan_overlay_track, project_size, resolve_font, track_info,
 )
 
@@ -594,6 +594,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         overlay = (overlay_file_path(w, h), span_start, span_end)
 
     props = cap_style.properties(lines=2)
+    caption_template = new_effect_json("Caption")   # refuses here when libopenshot has no Caption
 
     def _commit():
         from classes.query import Clip
@@ -626,7 +627,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
                 effect["caption_text"] = caption_cues.build_caption_text(shifted)
                 entry["replaced"] = True
             else:
-                effect = new_effect_json("Caption")
+                effect = fresh_effect(caption_template)
                 effect.update(copy.deepcopy(props))
                 effect["caption_text"] = caption_cues.build_caption_text(shifted)
                 effects.append(effect)

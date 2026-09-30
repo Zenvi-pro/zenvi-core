@@ -12,8 +12,9 @@ from classes.editor_tools._base import (
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
-    GRAVITY, SCREEN_POSITIONS, color_hex_alpha, color_keyframes, constant, installed_font_families, new_effect_json, overlay_file, overlay_file_path, create_track,
-    place_clip, plan_overlay_track, project_size, resolve_font, track_info,
+    GRAVITY, SCREEN_POSITIONS, color_hex_alpha, color_keyframes, constant, create_track, fresh_effect,
+    installed_font_families, new_effect_json, overlay_file, overlay_file_path, place_clip,
+    plan_overlay_track, project_size, resolve_font, track_info,
 )
 
 TIMER_ROLE = "timer"
@@ -135,6 +136,8 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
         "apply_before_clip": False,
     }
 
+    timer_template = new_effect_json("Timer")   # refuses here when libopenshot has no Timer
+
     if attach_id:
         def _attach():
             from classes.query import Clip
@@ -146,7 +149,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
                 raise ToolError(f"clip {c.id} is on locked track {ui_track_number(layer)}; unlock it first")
             start = float(c.data.get("start") or 0.0)
             length = float(c.data.get("end") or 0.0) - start
-            effect = new_effect_json("Timer")
+            effect = fresh_effect(timer_template)
             effect.update(copy.deepcopy(props))
             effect["time_source"] = TIME_SOURCE
             offset = start_at_seconds - start if mode in ("count_up", "count_down") else start_at_seconds
@@ -179,7 +182,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
         f = overlay_file(carrier)
         if created:
             create_track(layer, "Timer")
-        effect = new_effect_json("Timer")
+        effect = fresh_effect(timer_template)
         effect.update(copy.deepcopy(props))
         effect["time_source"] = TIME_CLIP
         effect["start_time"] = constant(start_at_seconds)
@@ -203,8 +206,8 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
 # search_emojis_tool / add_emoji_tool
 # ---------------------------------------------------------------------------
 
-GROUP_IDS = ["", "smileys-emotion", "people-body", "animals-nature", "food-drink", "travel-places",
-             "activities", "objects", "symbols", "flags", "extras-openmoji", "extras-unicode", "user"]
+GROUP_IDS = ["", "smileys-emotion", "animals-nature", "food-drink", "travel-places", "activities", "objects",
+             "symbols", "extras-openmoji", "user"]
 
 
 @editor_tool(
@@ -221,6 +224,9 @@ GROUP_IDS = ["", "smileys-emotion", "people-body", "animals-nature", "food-drink
 )
 def search_emojis(query="", group="", limit=10):
     """Find emoji in the Emojis dock's 1,239 OpenMoji stickers by name, character, code or group.
+
+    The set has faces, animals, food, travel, activities, objects and symbols (no
+    people, hands or flags).
 
     Use when the user wants to see options ("what fire emojis are there", "show me food
     emoji") or when add_emoji_tool picked the wrong one. Each match has the emoji

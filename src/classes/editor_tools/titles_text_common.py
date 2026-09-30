@@ -323,6 +323,13 @@ def new_effect_json(class_name: str) -> dict:
     return data
 
 
+def fresh_effect(template: dict) -> dict:
+    """A copy of an effect made by new_effect_json with its own project id (no libopenshot call)."""
+    data = copy.deepcopy(template)
+    data["id"] = project().generate_id()
+    return data
+
+
 OVERLAY_ROLE = "text_overlay"
 OVERLAY_FILE_NAME = "Text Overlay.svg"
 
