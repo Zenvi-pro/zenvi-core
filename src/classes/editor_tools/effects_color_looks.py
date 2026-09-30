@@ -25,6 +25,7 @@ from classes.editor_tools._base import (
     number,
     obj,
     ok,
+    on_main,
     parse_color,
     refresh_preview,
     resolve_clip,
@@ -34,7 +35,6 @@ from classes.editor_tools._base import (
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.effects_color import (
     TARGETS,
-    apply_on_main,
     catalog,
     clip_effects,
     compatibility_problem,
@@ -585,7 +585,7 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
         updates.update(["clips", {"id": clip.id}], values)
         refresh_preview()
 
-    apply_on_main(_apply)
+    on_main(_apply)
     summary = f"Keyed out {hex_color} ({color_source}, {method}, fuzz {fuzz:g}, halo {halo:g}) on clip {clip.id}."
     receipt = {"timeline_clip_id": clip.id, "effect_id": target.get("id"), "key_color": hex_color,
                "key_color_source": color_source, "method": method, "fuzz": fuzz, "halo": halo}

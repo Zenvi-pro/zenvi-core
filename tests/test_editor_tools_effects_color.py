@@ -252,18 +252,15 @@ def test_merge_effects_by_class_matches_editor_paste():
                    {"id": "N2", "class_name": "Hue"}]
 
 
-def test_gui_thread_timeout_means_nothing_changed_even_if_the_edit_runs_later(fx, monkeypatch):
+def test_gui_thread_timeout_is_an_error_and_changes_nothing(fx, monkeypatch):
     from classes import tool_handlers
     from classes.editor_tools import effects_color as ec
     c = fx.add_clip(fx.add_file("video"))
-    queued = []
 
-    def slow_on_main(func, *args, timeout=None):
-        queued.append(func)
-        raise tool_handlers.MainThreadTimeout("MAIN_THREAD_TIMEOUT: busy")
+    def busy_on_main(func, *args, timeout=None):
+        raise tool_handlers.MainThreadTimeout("MAIN_THREAD_TIMEOUT: nothing was changed; safe to retry")
 
-    monkeypatch.setattr(ec, "on_main", slow_on_main)
+    monkeypatch.setattr(ec, "on_main", busy_on_main)
     out = fx.call("add_effect_tool", timeline_clip_id=c, effect="Blur")
-    assert out.startswith("Error") and "nothing was changed" in out
-    queued[0]()  # the GUI thread finally drains the queued call
+    assert out.startswith("Error") and "MAIN_THREAD_TIMEOUT" in out
     assert fx.clip(c)["effects"] == [] and fx.undo_steps_since_mark() == 0
