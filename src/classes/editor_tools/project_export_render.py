@@ -18,6 +18,8 @@ from __future__ import annotations
 import glob
 import os
 import re
+import threading
+import time
 from typing import Optional
 
 from classes.editor_tools._base import (
@@ -545,6 +547,33 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
     (reframe='fill'), otherwise landscape footage renders with bars.
     Example: {"preset": "Instagram Reels", "start": 0, "end": 5}
     """
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        running = dict(_RUNNING_EXPORT)
+        raise ToolError(
+            f"an export is already running (to {running.get('path', '?')}, started "
+            f"{running.get('started', '?')}); this call did nothing. Wait for it to finish, then check the "
+            "file -- a render keeps going even when a tool call times out")
+    try:
+        return _export_video_locked(preset, quality, export_type, range, start, end, output_path, folder,
+                                    file_name, profile, width, height, fps, container, video_codec, audio_codec,
+                                    video_bitrate, audio_bitrate, sample_rate, channels, interlaced,
+                                    image_format, overwrite, show_dialog)
+    finally:
+        _RUNNING_EXPORT.clear()
+        _EXPORT_LOCK.release()
+
+
+# One render at a time: the render runs on the GUI thread for minutes, and a
+# second call (an agent retrying after its own call timed out) would queue
+# behind it and then re-render over the same file.
+_EXPORT_LOCK = threading.Lock()
+_RUNNING_EXPORT: dict = {}
+
+
+def _export_video_locked(preset, quality, export_type, range, start, end, output_path, folder, file_name,
+                         profile, width, height, fps, container, video_codec, audio_codec, video_bitrate,
+                         audio_bitrate, sample_rate, channels, interlaced, image_format, overwrite,
+                         show_dialog):
     if show_dialog:
         def _open():
             from windows.export import Export
@@ -576,6 +605,7 @@ def export_video(preset="", quality="", export_type="auto", range="", start=0, e
 
     video, audio = _settings_for(plan)
     label = _tr(_TYPE_LABELS[plan["export_type"]])
+    _RUNNING_EXPORT.update(path=path, started=time.strftime("%H:%M:%S"))
     fps_differs = any("rescaled" in n for n in plan["notes"])
 
     def _render():
