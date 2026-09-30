@@ -427,4 +427,7 @@ def test_a_missing_template_font_becomes_the_title_editors_fallback(tt, monkeypa
     rec = receipt(tt.call("add_title_tool", text="Kept", template="Standard_1", position_seconds=6))
     assert "font_replaced" not in rec
     assert title_svg.editor_font_family("DejaVu Sans", ["Arial"]) == "Arial"
+    # macOS ships many script-specific "Noto Sans X" families: an exact fallback name wins
+    assert title_svg.editor_font_family("DejaVu Sans", ["Noto Sans Armenian", "Arial Black", "Arial"]) == "Arial"
+    assert title_svg.editor_font_family("DejaVu Sans", ["DejaVu Sans Mono", "Arial"]) == "DejaVu Sans Mono"
     assert title_svg.editor_font_family("Nope", []) == ""

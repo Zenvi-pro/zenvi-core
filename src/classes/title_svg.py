@@ -412,13 +412,21 @@ def background_color(xmldoc) -> Tuple[str, float]:
 def editor_font_family(requested: str, families) -> str:
     """The installed family the Title Editor uses for *requested* ('' = Qt's default font).
 
-    Same rule as TitleEditor.get_font: the first installed family containing the
-    requested name, else the first one containing a FALLBACK_FONTS name.
+    The requested family (exact, else the first installed family containing its name,
+    as TitleEditor.get_font always did), else the first FALLBACK_FONTS entry installed
+    under exactly that name, and only then one merely containing it -- so on macOS
+    "Arial" wins over "Noto Sans Armenian" for the DejaVu Sans templates.
     """
     families = list(families or [])
-    for font in families:
-        if requested and requested in font:
-            return font
+    if requested:
+        if requested in families:
+            return requested
+        for font in families:
+            if requested in font:
+                return font
+    for fallback in FALLBACK_FONTS:
+        if fallback in families:
+            return fallback
     for fallback in FALLBACK_FONTS:
         for font in families:
             if fallback in font:
