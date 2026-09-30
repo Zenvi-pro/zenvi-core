@@ -540,6 +540,10 @@ def _clip_content_digest(data):
     """
     try:
         rest = {k: v for k, v in data.items() if k not in _SIGNATURE_SKIP_KEYS}
+        # The reader is skipped for size, but its path is what swapping a clip's
+        # media changes (an edited title points its clips at the new SVG).
+        reader = data.get("reader")
+        rest["reader_path"] = reader.get("path") if isinstance(reader, dict) else None
         return hash(json.dumps(rest, sort_keys=True, default=str))
     except Exception:
         return None
