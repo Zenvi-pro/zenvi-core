@@ -89,22 +89,14 @@ def _iterate_keyframe_lists(value):
 
 
 def _scale_points(points, start_x, new_end_x, scale):
-    """Scale keyframe X offsets from start_x; first keyframe never moves."""
+    """Scale keyframe X offsets from start_x; first keyframe never moves.
+
+    Every point scales proportionally, including the last one: a keyframe
+    that sat at the old end lands on new_end_x through the scale itself, and
+    one mid-clip must stay mid-clip (a fade must not stretch to the end).
+    """
     if not isinstance(points, list):
         return
-    last_original_x = None
-    for point in points:
-        if not isinstance(point, dict):
-            continue
-        co = point.get("co", {})
-        if not isinstance(co, dict):
-            continue
-        x = co.get("X")
-        if x is None:
-            continue
-        if last_original_x is None or x > last_original_x:
-            last_original_x = x
-
     for point in points:
         if not isinstance(point, dict):
             continue
@@ -114,11 +106,7 @@ def _scale_points(points, start_x, new_end_x, scale):
         x = co.get("X")
         if x is None or x < start_x:
             continue
-        # Absorb rounding in the last keyframe so the end lands exactly.
-        if last_original_x is not None and x == last_original_x:
-            nx = new_end_x
-        else:
-            nx = start_x + ft.round_half_up((x - start_x) * scale)
+        nx = start_x + ft.round_half_up((x - start_x) * scale)
         if nx < start_x:
             nx = start_x
         elif nx > new_end_x:
