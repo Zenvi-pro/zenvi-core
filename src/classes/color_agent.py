@@ -1,0 +1,1010 @@
+"""
+ColorGrade merge / summarize / inspect helpers for agent colour tools.
+
+Pure JSON transforms live here so unit tests do not need Qt or libopenshot.
+Handlers in tool_handlers.py own clip resolve, undo, and FrameScope I/O.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+from typing import Any, Optional
+
+
+COLOR_GRADE_CLASS_NAME = "ColorGrade"
+
+# Scalar ColorGrade knobs and their neutral defaults (OpenShot Y values).
+SCALAR_DEFAULTS = {
+    "temperature": 0.0,
+    "tint": 0.0,
+    "exposure": 0.0,
+    "contrast": 0.0,
+    "highlights": 0.0,
+    "shadows": 0.0,
+    "saturation": 1.0,
+    "vibrance": 0.0,
+    "mix": 1.0,
+    "lut_intensity": 1.0,
+}
+
+SCALAR_KEYS = tuple(SCALAR_DEFAULTS.keys())
+
+# Agent-facing aliases → ColorGrade keys
+SCALAR_ALIASES = {
+    "temp": "temperature",
+    "sat": "saturation",
+    "lut_strength": "lut_intensity",
+    "lutIntensity": "lut_intensity",
+}
+
+CURVE_KEYS = ("curve_all", "curve_red", "curve_green", "curve_blue")
+CURVE_ALIASES = {
+    "masterCurve": "curve_all",
+    "master_curve": "curve_all",
+    "redCurve": "curve_red",
+    "red_curve": "curve_red",
+    "greenCurve": "curve_green",
+    "green_curve": "curve_green",
+    "blueCurve": "curve_blue",
+    "blue_curve": "curve_blue",
+}
+WHEEL_NAMES = ("global", "shadows", "midtones", "highlights")
+
+# Stable Look / LUT IDs for later list_looks / apply_look (Phase 6.3).
+# Soft ColorGrade presets from color_presets.py — reset removes the effect.
+LOOK_PRESET_IDS = (
+    "reset",
+    "auto_contrast",
+    "lift_shadows",
+    "warm_up",
+    "boost_color",
+)
+
+# Relative paths under src/colors/ (info.COLORS_PATH). Basename without .cube
+# is the LUT look id; category folder is the vibe tag family.
+LUT_CATALOG = (
+    ("cinematic_&_blockbuster", (
+        "bold_red_cinema", "city_neon_cinema", "cool_cinema", "dreamy_cinema",
+        "elegant_dark_cinema", "heroic_cinema", "romantic_cinema", "sunlit_cinema",
+        "teal_&_orange_cinema", "teal_cinema", "warm_cinema",
+    )),
+    ("dark_&_moody", (
+        "city_night_film", "cold_shadows", "cool_haze", "dramatic_warmth",
+        "icy_drama", "mystic_emerald_drama", "night_glow", "noir_era",
+        "retro_red_shadows", "spy_night", "teal_horror", "woodland_drama",
+    )),
+    ("film_stock_&_vintage", (
+        "classic_film", "dark_orange_film", "emerald_film", "faded_memories",
+        "golden_wood_film", "golden_years_film", "green_film_pop", "low_key_film",
+        "red_film", "standard_film", "vintage_400_film", "vintage_green_film",
+        "warm_roast_film",
+    )),
+    ("teal_&_orange_vibes", (
+        "moonlight_orange", "signature_teal_&_orange", "sunset_orange",
+        "teal_punch", "tropical_teal", "western_sunset",
+    )),
+    ("utility_&_correction", (
+        "clean_&_denoise", "protect_highlights", "warm_correction",
+    )),
+    ("vibrant_&_colorful", (
+        "color_pop", "photo_contrast", "valentine_pop", "warm_pop", "warm_to_cool",
+    )),
+)
+
+FILM_GRAIN_LOOK_IDS = (
+    "none",
+    "35mm_fine",
+    "35mm_classic",
+    "35mm_gritty",
+    "16mm_classic",
+    "super_8",
+    "high_iso",
+)
+
+
+def lut_relative_path(category: str, look_id: str) -> str:
+    return f"{category}/{look_id}.cube"
+
+
+def is_color_grade_effect(effect_json: Any) -> bool:
+    return isinstance(effect_json, dict) and effect_json.get("class_name") == COLOR_GRADE_CLASS_NAME
+
+
+def find_color_grade(effects: Any) -> Optional[dict]:
+    if not isinstance(effects, list):
+        return None
+    for effect in effects:
+        if is_color_grade_effect(effect):
+            return effect
+    return None
+
+
+def is_film_grain_effect(effect_json: Any) -> bool:
+    return isinstance(effect_json, dict) and effect_json.get("class_name") == "FilmGrain"
+
+
+def find_film_grain(effects: Any) -> Optional[dict]:
+    if not isinstance(effects, list):
+        return None
+    for effect in effects:
+        if is_film_grain_effect(effect):
+            return effect
+    return None
+
+
+_GRAIN_SCALAR_KEYS = (
+    "amount",
+    "size",
+    "softness",
+    "clump",
+    "shadows",
+    "midtones",
+    "highlights",
+    "color_amount",
+    "color_variation",
+    "evolution",
+    "coherence",
+)
+
+
+def summarize_film_grain(effect_json: Optional[dict]) -> dict:
+    """Compact FilmGrain effect → agent-facing inspect JSON."""
+    if not isinstance(effect_json, dict) or not is_film_grain_effect(effect_json):
+        return {"present": False}
+    summary: dict[str, Any] = {
+        "present": True,
+        "id": effect_json.get("id"),
+    }
+    for key in _GRAIN_SCALAR_KEYS:
+        summary[key] = scalar_y(effect_json, key)
+    return summary
+
+
+def grain_meaningfully_differs(
+    subject: Optional[dict],
+    reference: Optional[dict],
+    *,
+    eps: float = 0.03,
+) -> bool:
+    sub = subject if isinstance(subject, dict) else {}
+    ref = reference if isinstance(reference, dict) else {}
+    if bool(sub.get("present")) != bool(ref.get("present")):
+        return True
+    if not sub.get("present"):
+        return False
+    for key in _GRAIN_SCALAR_KEYS:
+        try:
+            a = float(sub.get(key) if sub.get(key) is not None else 0.0)
+            b = float(ref.get(key) if ref.get(key) is not None else 0.0)
+        except (TypeError, ValueError):
+            continue
+        if abs(a - b) >= eps:
+            return True
+    return False
+
+
+def match_grain_action(subject_effect: Optional[dict], reference_effect: Optional[dict]) -> dict:
+    """How to make subject's FilmGrain look like reference's.
+
+    Returns {"mode": "noop"|"reset"|"paste", "grain": optional paste object}.
+    """
+    sub_sum = summarize_film_grain(subject_effect)
+    ref_sum = summarize_film_grain(reference_effect)
+    if not grain_meaningfully_differs(sub_sum, ref_sum):
+        return {"mode": "noop"}
+    if not ref_sum.get("present"):
+        return {"mode": "reset"}
+    paste = copy.deepcopy(reference_effect)
+    if isinstance(paste, dict):
+        paste.pop("id", None)
+        paste.pop("order", None)
+    return {"mode": "paste", "grain": paste}
+
+
+def _constant_property(value: float) -> dict:
+    return {
+        "Points": [
+            {
+                "co": {"X": 1.0, "Y": float(value)},
+                "handle_left": {"X": 0.5, "Y": 1.0},
+                "handle_right": {"X": 0.5, "Y": 0.0},
+                "handle_type": 0,
+                "interpolation": 0,
+            }
+        ]
+    }
+
+
+def scalar_y(effect_json: dict, key: str, default: Optional[float] = None) -> Optional[float]:
+    raw = effect_json.get(key)
+    if isinstance(raw, dict):
+        points = raw.get("Points")
+        if isinstance(points, list) and points:
+            co = points[0].get("co") if isinstance(points[0], dict) else None
+            if isinstance(co, dict) and "Y" in co:
+                try:
+                    return float(co["Y"])
+                except (TypeError, ValueError):
+                    pass
+    if default is not None:
+        return float(default)
+    if key in SCALAR_DEFAULTS:
+        return float(SCALAR_DEFAULTS[key])
+    return None
+
+
+def set_scalar(effect_json: dict, key: str, value: float) -> None:
+    effect_json[key] = _constant_property(value)
+
+
+def _curve_node(node_id: int, x_value: float, y_value: float) -> dict:
+    return {
+        "id": int(node_id),
+        "x": _constant_property(x_value),
+        "y": _constant_property(y_value),
+        "left_handle_x": _constant_property(0.5),
+        "left_handle_y": _constant_property(1.0),
+        "right_handle_x": _constant_property(0.5),
+        "right_handle_y": _constant_property(0.0),
+        "interpolation": 0,
+        "handle_type": 0,
+    }
+
+
+def points_to_curve(points: list, enabled: bool = True) -> dict:
+    nodes = []
+    for index, point in enumerate(points):
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            x_value, y_value = float(point[0]), float(point[1])
+        elif isinstance(point, dict):
+            x_value = float(point.get("x", point.get("X", 0.0)))
+            y_value = float(point.get("y", point.get("Y", 0.0)))
+        else:
+            raise ValueError(f"Invalid curve point: {point!r}")
+        nodes.append(_curve_node(index, x_value, y_value))
+    if len(nodes) < 2:
+        raise ValueError("Curves need at least two points")
+    return {
+        "enabled": _constant_property(1.0 if enabled else 0.0),
+        "nodes": nodes,
+    }
+
+
+def _color_keyframes(hex_color: str) -> dict:
+    rgb = hex_color.lstrip("#")
+    if len(rgb) != 6:
+        raise ValueError(f"Wheel color must be #RRGGBB, got {hex_color!r}")
+    return {
+        "red": _constant_property(int(rgb[0:2], 16)),
+        "green": _constant_property(int(rgb[2:4], 16)),
+        "blue": _constant_property(int(rgb[4:6], 16)),
+        "alpha": _constant_property(255),
+    }
+
+
+def _wheel_entry(color: str = "#ffffff", amount: float = 0.0, luma: float = 0.0) -> dict:
+    return {
+        "color": color,
+        "color_keyframes": _color_keyframes(color),
+        "amount": float(amount),
+        "amount_keyframes": _constant_property(amount),
+        "luma": float(luma),
+        "luma_keyframes": _constant_property(luma),
+    }
+
+
+def default_wheels_data() -> dict:
+    return {
+        "enabled_keyframes": _constant_property(1.0),
+        "global": _wheel_entry(),
+        "shadows": _wheel_entry(),
+        "midtones": _wheel_entry(),
+        "highlights": _wheel_entry(),
+    }
+
+
+def default_curve_data() -> dict:
+    return {
+        "enabled": _constant_property(1.0),
+        "nodes": [
+            _curve_node(0, 0.0, 0.0),
+            _curve_node(1, 1.0, 1.0),
+        ],
+    }
+
+
+def blank_color_grade(effect_id: str = "") -> dict:
+    """Neutral ColorGrade payload without calling libopenshot."""
+    payload = {
+        "class_name": COLOR_GRADE_CLASS_NAME,
+        "name": "Color Grade",
+        "lut_path": "",
+        "wheels": default_wheels_data(),
+        "curve_all": default_curve_data(),
+        "curve_red": default_curve_data(),
+        "curve_green": default_curve_data(),
+        "curve_blue": default_curve_data(),
+    }
+    for key, value in SCALAR_DEFAULTS.items():
+        set_scalar(payload, key, value)
+    if effect_id:
+        payload["id"] = effect_id
+    return payload
+
+
+def create_color_grade_effect_json(generate_id) -> dict:
+    """Create a ColorGrade via libopenshot when available; else blank stub."""
+    try:
+        import openshot
+
+        effect = openshot.EffectInfo().CreateEffect(COLOR_GRADE_CLASS_NAME)
+        if effect is None:
+            raise RuntimeError("CreateEffect returned None")
+        effect_id = generate_id()
+        effect.Id(effect_id)
+        payload = json.loads(effect.Json())
+        if not payload.get("id"):
+            payload["id"] = effect_id
+        return payload
+    except Exception:
+        return blank_color_grade(generate_id() if callable(generate_id) else "")
+
+
+def parse_clip_ids(
+    clip_ids=None,
+    clipIds=None,
+    timeline_clip_id="",
+    clipId="",
+) -> list[str]:
+    """Normalize clip id args from agent tool calls into a de-duplicated list."""
+    collected: list[str] = []
+
+    def _extend(raw):
+        if raw is None or raw == "":
+            return
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                _extend(item)
+            return
+        text = str(raw).strip()
+        if not text:
+            return
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                for item in parsed:
+                    _extend(item)
+                return
+        for part in text.split(","):
+            piece = part.strip().strip('"').strip("'")
+            if piece:
+                collected.append(piece)
+
+    _extend(clip_ids)
+    _extend(clipIds)
+    _extend(timeline_clip_id)
+    _extend(clipId)
+
+    seen = set()
+    ordered = []
+    for cid in collected:
+        if cid not in seen:
+            seen.add(cid)
+            ordered.append(cid)
+    return ordered
+
+
+def _coerce_float(value, name: str) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if out != out or out in (float("inf"), float("-inf")):
+        raise ValueError(f"{name} must be a finite number")
+    return out
+
+
+def _merge_wheel(existing: dict, patch: dict) -> dict:
+    base = copy.deepcopy(existing) if isinstance(existing, dict) else _wheel_entry()
+    color = patch.get("color") or patch.get("hex")
+    if color is not None:
+        color_str = str(color).strip()
+        if not color_str.startswith("#"):
+            color_str = "#" + color_str
+        base["color"] = color_str
+        base["color_keyframes"] = _color_keyframes(color_str)
+    if "amount" in patch and patch["amount"] is not None:
+        amount = _coerce_float(patch["amount"], "wheel.amount")
+        base["amount"] = amount
+        base["amount_keyframes"] = _constant_property(amount)
+    if "luma" in patch and patch["luma"] is not None:
+        luma = _coerce_float(patch["luma"], "wheel.luma")
+        base["luma"] = luma
+        base["luma_keyframes"] = _constant_property(luma)
+    return base
+
+
+# Relative nudges resolved against the current grade before merge.
+DELTA_KEYS = {
+    "temperature_delta": "temperature",
+    "tint_delta": "tint",
+}
+
+
+def resolve_relative_deltas(effect_json: dict, patch: dict) -> dict:
+    """Turn temperature_delta / tint_delta into absolute scalars on *effect_json*."""
+    if not isinstance(patch, dict):
+        raise ValueError("color patch must be an object")
+    out = dict(patch)
+    for dkey, target in DELTA_KEYS.items():
+        if dkey not in out or out[dkey] is None or out[dkey] == "":
+            continue
+        delta = _coerce_float(out.pop(dkey), dkey)
+        if target in out and out[target] not in (None, ""):
+            raise ValueError(f"pass {target} or {dkey}, not both")
+        cur = scalar_y(effect_json or {}, target)
+        if cur is None:
+            cur = float(SCALAR_DEFAULTS.get(target, 0.0))
+        out[target] = max(-1.0, min(1.0, float(cur) + delta))
+    return out
+
+
+def validate_color_patch(patch: dict) -> None:
+    """Raise ValueError before opening an undo group."""
+    if not isinstance(patch, dict):
+        raise ValueError("color patch must be an object")
+    if patch.get("color") is not None and not isinstance(patch.get("color"), dict):
+        raise ValueError("'color' paste object must be a dict")
+    for key, raw in list(patch.items()):
+        if key in DELTA_KEYS and raw is not None and not isinstance(raw, bool):
+            _coerce_float(raw, key)
+            continue
+        canon = SCALAR_ALIASES.get(key, key)
+        if canon in SCALAR_KEYS and raw is not None and not isinstance(raw, bool):
+            _coerce_float(raw, canon)
+    lut = patch.get("lut")
+    if lut is not None:
+        if not isinstance(lut, dict):
+            raise ValueError("lut must be an object with path and optional strength")
+        if lut.get("strength") is not None:
+            _coerce_float(lut["strength"], "lut.strength")
+        if lut.get("intensity") is not None:
+            _coerce_float(lut["intensity"], "lut.intensity")
+    wheels = patch.get("wheels")
+    if wheels is not None:
+        if not isinstance(wheels, dict):
+            raise ValueError("wheels must be an object")
+        for name, wheel in wheels.items():
+            if name == "enabled":
+                continue
+            if name not in WHEEL_NAMES:
+                raise ValueError(f"Unknown wheel '{name}'")
+            if wheel is not None and not isinstance(wheel, dict):
+                raise ValueError(f"wheels.{name} must be an object")
+            if isinstance(wheel, dict):
+                if wheel.get("amount") is not None:
+                    _coerce_float(wheel["amount"], f"wheels.{name}.amount")
+                if wheel.get("luma") is not None:
+                    _coerce_float(wheel["luma"], f"wheels.{name}.luma")
+                color = wheel.get("color") or wheel.get("hex")
+                if color is not None:
+                    rgb = str(color).lstrip("#")
+                    if len(rgb) != 6:
+                        raise ValueError(f"wheels.{name}.color must be #RRGGBB")
+                    int(rgb, 16)
+    for alias, canon in list(CURVE_ALIASES.items()) + [(k, k) for k in CURVE_KEYS]:
+        if alias not in patch and canon not in patch:
+            continue
+        points = patch.get(alias, patch.get(canon))
+        if points is None:
+            continue
+        if isinstance(points, dict) and "nodes" in points:
+            continue
+        if not isinstance(points, list) or len(points) < 2:
+            raise ValueError(f"{canon} needs a list of at least two [x,y] points")
+        points_to_curve(points)
+
+
+def merge_color_grade(effect_json: dict, patch: dict) -> dict:
+    """Merge agent patch into an existing ColorGrade effect (unset fields kept)."""
+    validate_color_patch(patch)
+    payload = copy.deepcopy(effect_json or {})
+    if not is_color_grade_effect(payload):
+        payload["class_name"] = COLOR_GRADE_CLASS_NAME
+    patch = resolve_relative_deltas(payload, patch)
+
+    # Full paste replaces color-bearing fields but keeps id/order.
+    color_obj = patch.get("color")
+    if isinstance(color_obj, dict):
+        keep_id = payload.get("id")
+        keep_order = payload.get("order")
+        payload = copy.deepcopy(color_obj)
+        payload["class_name"] = COLOR_GRADE_CLASS_NAME
+        if keep_id:
+            payload["id"] = keep_id
+        if keep_order is not None:
+            payload["order"] = keep_order
+        # Continue so additional top-level fields in the same call can nudge.
+
+    for key, raw in patch.items():
+        if key in ("color", "lut", "wheels", "reset") or key in CURVE_KEYS or key in CURVE_ALIASES:
+            continue
+        canon = SCALAR_ALIASES.get(key, key)
+        if canon in SCALAR_KEYS and raw is not None:
+            set_scalar(payload, canon, _coerce_float(raw, canon))
+
+    if "lut_path" in patch and patch["lut_path"] is not None:
+        payload["lut_path"] = str(patch["lut_path"])
+    lut = patch.get("lut")
+    if isinstance(lut, dict):
+        if lut.get("path") is not None:
+            payload["lut_path"] = str(lut["path"])
+        strength = lut.get("strength", lut.get("intensity"))
+        if strength is not None:
+            set_scalar(payload, "lut_intensity", _coerce_float(strength, "lut.strength"))
+
+    wheels_patch = patch.get("wheels")
+    if isinstance(wheels_patch, dict):
+        wheels = payload.get("wheels")
+        if not isinstance(wheels, dict):
+            wheels = default_wheels_data()
+        else:
+            wheels = copy.deepcopy(wheels)
+        for name in WHEEL_NAMES:
+            if name in wheels_patch and wheels_patch[name] is not None:
+                wheels[name] = _merge_wheel(wheels.get(name), wheels_patch[name])
+        payload["wheels"] = wheels
+
+    for alias, canon in list(CURVE_ALIASES.items()) + [(k, k) for k in CURVE_KEYS]:
+        if alias not in patch:
+            continue
+        points = patch[alias]
+        if points is None:
+            continue
+        if isinstance(points, dict) and "nodes" in points:
+            payload[canon] = copy.deepcopy(points)
+        else:
+            payload[canon] = points_to_curve(points)
+
+    return payload
+
+
+def summarize_color_grade(effect_json: Optional[dict]) -> dict:
+    if not is_color_grade_effect(effect_json):
+        return {"present": False}
+    summary = {
+        "present": True,
+        "id": effect_json.get("id"),
+        "lut_path": effect_json.get("lut_path") or "",
+    }
+    for key in SCALAR_KEYS:
+        summary[key] = scalar_y(effect_json, key)
+    return summary
+
+
+def grades_meaningfully_differ(
+    subject: Optional[dict],
+    reference: Optional[dict],
+    *,
+    eps: float = 0.02,
+) -> bool:
+    """True when ColorGrade knobs/LUT differ enough that a copy/reset is needed."""
+    sub = subject if isinstance(subject, dict) else {}
+    ref = reference if isinstance(reference, dict) else {}
+    if bool(sub.get("present")) != bool(ref.get("present")):
+        return True
+    if not sub.get("present"):
+        return False
+    if str(sub.get("lut_path") or "") != str(ref.get("lut_path") or ""):
+        return True
+    for key in SCALAR_KEYS:
+        try:
+            a = float(sub.get(key) if sub.get(key) is not None else SCALAR_DEFAULTS.get(key, 0.0))
+            b = float(ref.get(key) if ref.get(key) is not None else SCALAR_DEFAULTS.get(key, 0.0))
+        except (TypeError, ValueError):
+            continue
+        if abs(a - b) >= eps:
+            return True
+    return False
+
+
+def match_grade_action(subject_effect: Optional[dict], reference_effect: Optional[dict]) -> dict:
+    """How to make subject's ColorGrade look like reference's (knob-level).
+
+    Returns {"mode": "noop"|"reset"|"paste", "color": optional paste object}.
+    """
+    sub_sum = summarize_color_grade(subject_effect)
+    ref_sum = summarize_color_grade(reference_effect)
+    if not grades_meaningfully_differ(sub_sum, ref_sum):
+        return {"mode": "noop"}
+    if not ref_sum.get("present"):
+        return {"mode": "reset"}
+    paste = copy.deepcopy(reference_effect)
+    # Drop identity so apply_color keeps/creates the subject's effect id.
+    if isinstance(paste, dict):
+        paste.pop("id", None)
+        paste.pop("order", None)
+    return {"mode": "paste", "color": paste}
+
+
+def _hist_mean(bins: list) -> Optional[float]:
+    if not bins:
+        return None
+    total = 0.0
+    weighted = 0.0
+    n = len(bins)
+    for i, count in enumerate(bins):
+        try:
+            c = float(count)
+        except (TypeError, ValueError):
+            continue
+        total += c
+        weighted += c * (i / max(n - 1, 1))
+    if total <= 0:
+        return None
+    return weighted / total
+
+
+def summarize_scope_video(video: Optional[dict]) -> dict:
+    """Compact FrameScope video payload → agent-facing inspect JSON."""
+    if not isinstance(video, dict) or not video.get("present"):
+        return {"present": False}
+
+    summary = {"present": True}
+    scope_summary = video.get("summary") if isinstance(video.get("summary"), dict) else {}
+    summary["avg_luma"] = scope_summary.get("avg_luma")
+    summary["clipped_shadows"] = scope_summary.get("clipped_shadows")
+    summary["clipped_highlights"] = scope_summary.get("clipped_highlights")
+
+    hist = video.get("histogram") if isinstance(video.get("histogram"), dict) else {}
+    channel_means = {}
+    for channel in ("luma", "red", "green", "blue"):
+        mean = _hist_mean(list(hist.get(channel) or []))
+        if mean is not None:
+            channel_means[channel] = round(mean, 4)
+    if channel_means:
+        summary["channel_means"] = channel_means
+        r = channel_means.get("red")
+        g = channel_means.get("green")
+        b = channel_means.get("blue")
+        if r is not None and b is not None:
+            summary["warm_cool"] = round(r - b, 4)
+        if g is not None and r is not None and b is not None:
+            summary["green_magenta"] = round(g - ((r + b) / 2.0), 4)
+
+    return summary
+
+
+def scope_look_distance(subject: dict, reference: dict) -> Optional[float]:
+    """Scalar how-different two isolated scope summaries look (0 ≈ same)."""
+    if not isinstance(subject, dict) or not isinstance(reference, dict):
+        return None
+    if not subject.get("present") or not reference.get("present"):
+        return None
+    parts: list[float] = []
+    for key, weight in (
+        ("avg_luma", 1.0),
+        ("warm_cool", 1.2),
+        ("green_magenta", 1.0),
+    ):
+        a, b = subject.get(key), reference.get(key)
+        if a is None or b is None:
+            continue
+        try:
+            parts.append(abs(float(a) - float(b)) * weight)
+        except (TypeError, ValueError):
+            continue
+    sub_cm = subject.get("channel_means") if isinstance(subject.get("channel_means"), dict) else {}
+    ref_cm = reference.get("channel_means") if isinstance(reference.get("channel_means"), dict) else {}
+    for ch in ("red", "green", "blue"):
+        a, b = sub_cm.get(ch), ref_cm.get(ch)
+        if a is None or b is None:
+            continue
+        try:
+            parts.append(abs(float(a) - float(b)) * 0.8)
+        except (TypeError, ValueError):
+            continue
+    if not parts:
+        return None
+    return round(sum(parts), 4)
+
+
+def reference_gap_hints(subject: dict, reference: dict) -> dict:
+    """Map scope differences to apply_color knob hints."""
+    gap = {}
+    hints = []
+    if not subject.get("present") or not reference.get("present"):
+        return {"gap": gap, "hints": hints}
+
+    sub_luma = subject.get("avg_luma")
+    ref_luma = reference.get("avg_luma")
+    if sub_luma is not None and ref_luma is not None:
+        delta = float(ref_luma) - float(sub_luma)
+        gap["avg_luma"] = round(delta, 4)
+        if abs(delta) >= 0.015:
+            # Rough exposure nudge toward reference (~±1.0 exposure spans a lot).
+            exposure_hint = round(max(-0.5, min(0.5, delta * 0.8)), 3)
+            hints.append({"exposure": exposure_hint, "reason": "match average luma"})
+
+    sub_warm = subject.get("warm_cool")
+    ref_warm = reference.get("warm_cool")
+    if sub_warm is not None and ref_warm is not None:
+        delta = float(ref_warm) - float(sub_warm)
+        gap["warm_cool"] = round(delta, 4)
+        if abs(delta) >= 0.012:
+            temp_hint = round(max(-0.4, min(0.4, delta * 0.6)), 3)
+            hints.append({"temperature": temp_hint, "reason": "match warm/cool balance"})
+
+    sub_gm = subject.get("green_magenta")
+    ref_gm = reference.get("green_magenta")
+    if sub_gm is not None and ref_gm is not None:
+        delta = float(ref_gm) - float(sub_gm)
+        gap["green_magenta"] = round(delta, 4)
+        if abs(delta) >= 0.01:
+            tint_hint = round(max(-0.3, min(0.3, delta * 0.5)), 3)
+            hints.append({"tint": tint_hint, "reason": "match green/magenta balance"})
+
+    distance = scope_look_distance(subject, reference)
+    if distance is not None:
+        gap["look_distance"] = distance
+
+    return {"gap": gap, "hints": hints}
+
+
+# --- Looks catalog / resolve / match (Phase 6.3) ---------------------------------
+
+_LOOK_PRESET_META = {
+    "reset": {
+        "label": "Reset Color",
+        "description": "Remove ColorGrade from the clip",
+        "vibe_tags": ["neutral", "reset"],
+    },
+    "auto_contrast": {
+        "label": "Auto Contrast",
+        "description": "Mild S-curve contrast with lifted shadows",
+        "vibe_tags": ["contrast", "punchy", "documentary"],
+    },
+    "lift_shadows": {
+        "label": "Lift Shadows",
+        "description": "Open shadows, soft contrast",
+        "vibe_tags": ["soft", "interview", "low_contrast"],
+    },
+    "warm_up": {
+        "label": "Warm Up",
+        "description": "Warmer temperature and slight vibrance",
+        "vibe_tags": ["warm", "tungsten", "cozy", "golden"],
+    },
+    "boost_color": {
+        "label": "Boost Color",
+        "description": "Higher saturation and vibrance with mild S-curve",
+        "vibe_tags": ["vibrant", "saturated", "pop", "instagram"],
+    },
+}
+
+_CATEGORY_VIBE_TAGS = {
+    "cinematic_&_blockbuster": ["cinematic", "blockbuster", "film"],
+    "dark_&_moody": ["dark", "moody", "night", "noir", "horror"],
+    "film_stock_&_vintage": ["vintage", "film_stock", "analog", "retro"],
+    "teal_&_orange_vibes": ["teal_orange", "cinematic", "hollywood"],
+    "utility_&_correction": ["utility", "correction", "neutral"],
+    "vibrant_&_colorful": ["vibrant", "colorful", "pop"],
+}
+
+_GRAIN_META = {
+    "none": {"label": "No Film Grain", "vibe_tags": ["clean"]},
+    "35mm_fine": {"label": "35mm Fine", "vibe_tags": ["film", "subtle", "35mm"]},
+    "35mm_classic": {"label": "35mm Classic", "vibe_tags": ["film", "35mm", "cinematic"]},
+    "35mm_gritty": {"label": "35mm Gritty", "vibe_tags": ["film", "gritty", "35mm"]},
+    "16mm_classic": {"label": "16mm Classic", "vibe_tags": ["film", "16mm", "documentary"]},
+    "super_8": {"label": "Super 8", "vibe_tags": ["vintage", "super8", "home_movie"]},
+    "high_iso": {"label": "High ISO", "vibe_tags": ["grainy", "night", "high_iso"]},
+}
+
+
+def list_looks_catalog(query: str = "") -> dict:
+    """Return agent-facing Look / LUT / Film Grain catalog (optionally filtered)."""
+    q = str(query or "").strip().lower()
+    looks = []
+
+    for look_id, meta in _LOOK_PRESET_META.items():
+        entry = {
+            "id": look_id,
+            "kind": "color_preset",
+            "label": meta["label"],
+            "description": meta["description"],
+            "vibe_tags": list(meta["vibe_tags"]),
+        }
+        if _look_matches(entry, q):
+            looks.append(entry)
+
+    for category, look_ids in LUT_CATALOG:
+        cat_tags = list(_CATEGORY_VIBE_TAGS.get(category, []))
+        for look_id in look_ids:
+            entry = {
+                "id": look_id,
+                "kind": "lut",
+                "label": look_id.replace("_", " "),
+                "description": f"LUT pack {category}",
+                "category": category,
+                "lut_path": lut_relative_path(category, look_id),
+                "vibe_tags": cat_tags + [look_id.replace("_", " "), category.replace("_", " ")],
+            }
+            if _look_matches(entry, q):
+                looks.append(entry)
+
+    for grain_id, meta in _GRAIN_META.items():
+        entry = {
+            "id": f"grain:{grain_id}",
+            "kind": "film_grain",
+            "grain_id": grain_id,
+            "label": meta["label"],
+            "description": "Film Grain look",
+            "vibe_tags": list(meta["vibe_tags"]),
+        }
+        if _look_matches(entry, q):
+            looks.append(entry)
+
+    return {"ok": True, "count": len(looks), "looks": looks, "query": query or ""}
+
+
+def _look_matches(entry: dict, query: str) -> bool:
+    if not query:
+        return True
+    hay = " ".join(
+        [
+            str(entry.get("id") or ""),
+            str(entry.get("label") or ""),
+            str(entry.get("description") or ""),
+            str(entry.get("category") or ""),
+            str(entry.get("lut_path") or ""),
+            " ".join(entry.get("vibe_tags") or []),
+        ]
+    ).lower()
+    tokens = [t for t in query.replace(",", " ").split() if t]
+    return all(token in hay for token in tokens)
+
+
+def resolve_look_id(look_id: str) -> dict:
+    """Resolve lookId / lutPath string into an actionable look descriptor."""
+    raw = str(look_id or "").strip()
+    if not raw:
+        raise ValueError("lookId is required")
+
+    lowered = raw.lower()
+    if lowered.startswith("grain:"):
+        grain_id = raw.split(":", 1)[1].strip()
+        if grain_id not in FILM_GRAIN_LOOK_IDS:
+            raise ValueError(f"Unknown film grain look '{grain_id}'")
+        return {"kind": "film_grain", "grain_id": grain_id, "id": f"grain:{grain_id}"}
+
+    if lowered in LOOK_PRESET_IDS:
+        return {"kind": "color_preset", "preset_name": lowered, "id": lowered}
+
+    if lowered.endswith(".cube") or "/" in raw or "\\" in raw or raw.startswith("@colors"):
+        return {"kind": "lut", "lut_path": raw, "id": raw}
+
+    matches = []
+    for category, look_ids in LUT_CATALOG:
+        for lid in look_ids:
+            if lid == raw or lid.lower() == lowered:
+                matches.append((category, lid))
+    if len(matches) == 1:
+        category, lid = matches[0]
+        return {
+            "kind": "lut",
+            "id": lid,
+            "lut_path": lut_relative_path(category, lid),
+            "category": category,
+        }
+    if len(matches) > 1:
+        options = ", ".join(lut_relative_path(c, i) for c, i in matches)
+        raise ValueError(f"Ambiguous LUT id '{raw}'; use one of: {options}")
+
+    if lowered in FILM_GRAIN_LOOK_IDS:
+        return {"kind": "film_grain", "grain_id": lowered, "id": f"grain:{lowered}"}
+
+    raise ValueError(
+        f"Unknown lookId '{raw}'. Call list_looks_tool to see preset, LUT, and grain ids."
+    )
+
+
+def hints_to_color_patch(hints: list) -> dict:
+    """Collapse reference_gap_hints list into a single apply_color merge patch."""
+    patch: dict[str, float] = {}
+    for hint in hints or []:
+        if not isinstance(hint, dict):
+            continue
+        for key, value in hint.items():
+            if key == "reason" or value is None:
+                continue
+            if key in SCALAR_KEYS or key in SCALAR_ALIASES:
+                canon = SCALAR_ALIASES.get(key, key)
+                try:
+                    patch[canon] = float(value) + float(patch.get(canon, 0.0))
+                except (TypeError, ValueError):
+                    continue
+    return patch
+
+
+def resolve_lut_filesystem_path(
+    lut_path: str, colors_path: str = "", user_colors_path: str = ""
+) -> str:
+    """Map agent lut_path to an absolute path when possible."""
+    raw = str(lut_path or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("@colors/"):
+        raw = raw[len("@colors/"):]
+    if os.path.isabs(raw) and os.path.isfile(raw):
+        return raw
+    candidates = []
+    if colors_path:
+        candidates.append(os.path.join(colors_path, raw))
+    if user_colors_path:
+        candidates.append(os.path.join(user_colors_path, raw))
+    candidates.append(raw)
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return os.path.normpath(path)
+    if colors_path:
+        return os.path.normpath(os.path.join(colors_path, raw))
+    return raw
+
+
+def apply_soft_color_preset(effect_json: dict, preset_name: str) -> dict:
+    """Apply a soft ColorGrade Look preset (same numbers as color_presets.py).
+
+    Implemented here so agent tools do not require a real libopenshot import
+    just to build the payload (headless tests + validate-before-undo).
+    """
+    name = str(preset_name or "").strip().lower()
+    if name == "reset":
+        raise ValueError("reset removes ColorGrade; do not call apply_soft_color_preset")
+    if name not in LOOK_PRESET_IDS:
+        raise ValueError(f"Unknown color preset: {preset_name}")
+
+    payload = copy.deepcopy(effect_json or {})
+    payload["class_name"] = COLOR_GRADE_CLASS_NAME
+    for key, value in SCALAR_DEFAULTS.items():
+        set_scalar(payload, key, value)
+    payload["lut_path"] = ""
+    payload["wheels"] = default_wheels_data()
+    payload["curve_all"] = default_curve_data()
+    payload["curve_red"] = default_curve_data()
+    payload["curve_green"] = default_curve_data()
+    payload["curve_blue"] = default_curve_data()
+
+    if name == "auto_contrast":
+        set_scalar(payload, "contrast", 0.18)
+        set_scalar(payload, "highlights", -0.08)
+        set_scalar(payload, "shadows", 0.08)
+        set_scalar(payload, "vibrance", 0.06)
+        payload["curve_all"] = points_to_curve(
+            [[0.0, 0.0], [0.25, 0.22], [0.75, 0.80], [1.0, 1.0]]
+        )
+    elif name == "lift_shadows":
+        set_scalar(payload, "exposure", 0.08)
+        set_scalar(payload, "contrast", -0.03)
+        set_scalar(payload, "highlights", -0.05)
+        set_scalar(payload, "shadows", 0.22)
+        payload["curve_all"] = points_to_curve(
+            [[0.0, 0.06], [0.35, 0.40], [1.0, 1.0]]
+        )
+    elif name == "warm_up":
+        # Subtle — "a bit warmer", not a sunburn LUT.
+        set_scalar(payload, "temperature", 0.10)
+        set_scalar(payload, "tint", 0.02)
+        set_scalar(payload, "vibrance", 0.04)
+    elif name == "boost_color":
+        set_scalar(payload, "contrast", 0.08)
+        set_scalar(payload, "saturation", 1.18)
+        set_scalar(payload, "vibrance", 0.22)
+        payload["curve_all"] = points_to_curve(
+            [[0.0, 0.0], [0.20, 0.16], [0.80, 0.86], [1.0, 1.0]]
+        )
+    return payload

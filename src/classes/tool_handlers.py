@@ -8451,6 +8451,1298 @@ def duck_under_speech(
         return f"Error: {e}"
 
 
+def _parse_color_patch_kwargs(kwargs: dict) -> dict:
+    """Build a merge patch from tool kwargs (scalars, lut, wheels, curves, color)."""
+    from classes import color_agent as ca
+
+    patch = {}
+    color_raw = kwargs.get("color")
+    if color_raw not in (None, ""):
+        if isinstance(color_raw, str):
+            try:
+                color_raw = json.loads(color_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("color must be a JSON object") from exc
+        if not isinstance(color_raw, dict):
+            raise ValueError("color must be an object")
+        patch["color"] = color_raw
+
+    for key in (
+        list(ca.SCALAR_KEYS)
+        + list(ca.SCALAR_ALIASES.keys())
+        + list(ca.DELTA_KEYS.keys())
+    ):
+        if key in kwargs and kwargs[key] not in (None, ""):
+            patch[key] = kwargs[key]
+
+    if kwargs.get("lut_path") not in (None, ""):
+        patch["lut_path"] = kwargs["lut_path"]
+    lut_raw = kwargs.get("lut")
+    if lut_raw not in (None, ""):
+        if isinstance(lut_raw, str):
+            try:
+                lut_raw = json.loads(lut_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("lut must be a JSON object") from exc
+        patch["lut"] = lut_raw
+
+    wheels_raw = kwargs.get("wheels")
+    if wheels_raw not in (None, ""):
+        if isinstance(wheels_raw, str):
+            try:
+                wheels_raw = json.loads(wheels_raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("wheels must be a JSON object") from exc
+        patch["wheels"] = wheels_raw
+
+    curve_keys = list(ca.CURVE_KEYS) + list(ca.CURVE_ALIASES.keys())
+    for key in curve_keys:
+        if key in kwargs and kwargs[key] not in (None, ""):
+            raw = kwargs[key]
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{key} must be JSON points") from exc
+            patch[key] = raw
+    return patch
+
+
+def _write_clip_effects(clip_obj, effects):
+    clip_obj.data = {"effects": list(effects)}
+    clip_obj.save()
+
+
+def _selected_timeline_clip_ids():
+    """Clip ids currently selected in the editor (empty if none / unavailable)."""
+    try:
+        window = _get_app().window
+        selected = list(getattr(window, "selected_clips", None) or [])
+        return [str(cid) for cid in selected if cid]
+    except Exception:
+        return []
+
+
+def _all_timeline_clip_ids():
+    """Every timeline clip id (stable order from project)."""
+    try:
+        from classes.query import Clip
+
+        out = []
+        for clip in Clip.filter() or []:
+            cid = str(getattr(clip, "id", "") or "").strip()
+            if cid and cid not in out:
+                out.append(cid)
+        return out
+    except Exception:
+        return []
+
+
+def _playhead_timeline_clip_ids():
+    """Clip ids intersecting the playhead (may be multiple on stacked tracks)."""
+    try:
+        from classes.query import Clip
+
+        app = _get_app()
+        fps = app.project.get("fps") or {"num": 30, "den": 1}
+        try:
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps_float = 30.0
+        frame = int(getattr(app.window.preview_thread, "current_frame", 1) or 1)
+        playhead_sec = max(0.0, (frame - 1) / max(fps_float, 1e-6))
+        out = []
+        for clip in Clip.filter(intersect=playhead_sec) or []:
+            cid = str(getattr(clip, "id", "") or "").strip()
+            if cid and cid not in out:
+                out.append(cid)
+        return out
+    except Exception:
+        return []
+
+
+def _resolve_color_target_ids(
+    clip_ids="",
+    clipIds="",
+    timeline_clip_id="",
+    clipId="",
+    all_clips=False,
+):
+    """Resolve which timeline clips a colour tool should mutate.
+
+    Order: explicit ids → all/both/* token or all_clips → selection → playhead.
+    """
+    from classes import color_agent as ca
+
+    raw_bits = [
+        str(clip_ids or "").strip(),
+        str(clipIds or "").strip(),
+        str(timeline_clip_id or "").strip(),
+        str(clipId or "").strip(),
+    ]
+    joined = " ".join(b for b in raw_bits if b).strip().lower()
+    want_all = bool(all_clips) or joined in ("all", "*", "both", "every", "everything")
+    if not want_all:
+        # JSON list / comma list that is only the all-token
+        try:
+            parsed = ca.parse_clip_ids(
+                clip_ids=clip_ids,
+                clipIds=clipIds,
+                timeline_clip_id=timeline_clip_id,
+                clipId=clipId,
+            )
+        except Exception:
+            parsed = []
+        if parsed and all(str(p).strip().lower() in ("all", "*", "both") for p in parsed):
+            want_all = True
+        elif parsed:
+            return parsed
+
+    if want_all:
+        return _all_timeline_clip_ids()
+
+    selected = _selected_timeline_clip_ids()
+    if selected:
+        return selected
+    under_playhead = _playhead_timeline_clip_ids()
+    if under_playhead:
+        return under_playhead
+    return []
+
+
+def _color_target_error(action: str) -> str:
+    available = _all_timeline_clip_ids()
+    avail = ", ".join(available[:12]) if available else "(none)"
+    if len(available) > 12:
+        avail += ", …"
+    return (
+        f"Error: {action} needs a target clip. Select clip(s), park the playhead "
+        f"on a clip, pass timeline_clip_id / clipIds, or clipIds=\"all\" for every "
+        f"timeline clip. On timeline now: {avail}"
+    )
+
+
+def apply_color(
+    clipIds="",
+    clip_ids="",
+    timeline_clip_id="",
+    clipId="",
+    reset="false",
+    color="",
+    exposure="",
+    contrast="",
+    saturation="",
+    vibrance="",
+    temperature="",
+    tint="",
+    temperature_delta="",
+    tint_delta="",
+    highlights="",
+    shadows="",
+    mix="",
+    lut_path="",
+    lut_intensity="",
+    lut="",
+    wheels="",
+    curve_all="",
+    curve_red="",
+    curve_green="",
+    curve_blue="",
+    masterCurve="",
+    redCurve="",
+    greenCurve="",
+    blueCurve="",
+    all_clips="false",
+    **kwargs,
+) -> str:
+    """Merge ColorGrade knobs/curves/wheels/LUT onto timeline clip(s); one undo.
+
+    Pass clipIds (JSON list or comma-separated) and only the fields to change.
+    Unset fields are kept (merge). reset=true removes ColorGrade. color= pastes
+    a full grade object. temperature_delta / tint_delta nudge from the current
+    grade (clamped to [-1, 1]). Validate-before-undo: bad args leave history
+    untouched. If no clip ids are passed: selected clips, else clip(s) under the
+    playhead. clipIds=\"all\" / all_clips=true grades every timeline clip.
+    """
+    try:
+        from classes import color_agent as ca
+
+        all_flag = str(all_clips or kwargs.get("allClips", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        ids = _resolve_color_target_ids(
+            clip_ids=clip_ids,
+            clipIds=clipIds,
+            timeline_clip_id=timeline_clip_id,
+            clipId=clipId,
+            all_clips=all_flag,
+        )
+        if not ids:
+            return _color_target_error("apply_color")
+
+        reset_flag = str(reset or "").strip().lower() in ("1", "true", "yes", "on")
+        merged_kwargs = {
+            "color": color,
+            "exposure": exposure if exposure != "" else kwargs.get("exposure", ""),
+            "contrast": contrast if contrast != "" else kwargs.get("contrast", ""),
+            "saturation": saturation if saturation != "" else kwargs.get("saturation", ""),
+            "vibrance": vibrance if vibrance != "" else kwargs.get("vibrance", ""),
+            "temperature": temperature if temperature != "" else kwargs.get("temperature", ""),
+            "tint": tint if tint != "" else kwargs.get("tint", ""),
+            "temperature_delta": (
+                temperature_delta if temperature_delta != ""
+                else kwargs.get("temperature_delta", "")
+            ),
+            "tint_delta": tint_delta if tint_delta != "" else kwargs.get("tint_delta", ""),
+            "highlights": highlights if highlights != "" else kwargs.get("highlights", ""),
+            "shadows": shadows if shadows != "" else kwargs.get("shadows", ""),
+            "mix": mix if mix != "" else kwargs.get("mix", ""),
+            "lut_path": lut_path if lut_path != "" else kwargs.get("lut_path", ""),
+            "lut_intensity": lut_intensity if lut_intensity != "" else kwargs.get("lut_intensity", ""),
+            "lut": lut if lut != "" else kwargs.get("lut", ""),
+            "wheels": wheels if wheels != "" else kwargs.get("wheels", ""),
+            "curve_all": curve_all if curve_all != "" else kwargs.get("curve_all", ""),
+            "curve_red": curve_red if curve_red != "" else kwargs.get("curve_red", ""),
+            "curve_green": curve_green if curve_green != "" else kwargs.get("curve_green", ""),
+            "curve_blue": curve_blue if curve_blue != "" else kwargs.get("curve_blue", ""),
+            "masterCurve": masterCurve if masterCurve != "" else kwargs.get("masterCurve", ""),
+            "redCurve": redCurve if redCurve != "" else kwargs.get("redCurve", ""),
+            "greenCurve": greenCurve if greenCurve != "" else kwargs.get("greenCurve", ""),
+            "blueCurve": blueCurve if blueCurve != "" else kwargs.get("blueCurve", ""),
+            "temp": kwargs.get("temp", ""),
+            "sat": kwargs.get("sat", ""),
+        }
+        # Drop empty string markers so merge only sees provided fields.
+        merged_kwargs = {k: v for k, v in merged_kwargs.items() if v not in (None, "")}
+
+        patch = {}
+        if not reset_flag:
+            patch = _parse_color_patch_kwargs(merged_kwargs)
+            if not patch:
+                return (
+                    "Error: apply_color needs reset=true or at least one colour "
+                    "field (exposure, wheels, lut, color, …)."
+                )
+            ca.validate_color_patch(patch)
+
+        app = _get_app()
+        receipts = []
+        warnings = []
+        error_box = [None]
+
+        def _do_apply():
+            from classes.query import Clip as _Clip
+
+            tid = _new_transaction_id()
+            app.updates.transaction_id = tid
+            changed = 0
+            try:
+                for cid in ids:
+                    clip_obj = _Clip.get(id=cid)
+                    if not clip_obj:
+                        warnings.append(f"clip {cid} not found")
+                        continue
+                    data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+                    effects = list(data.get("effects") or [])
+                    if reset_flag:
+                        new_effects = [e for e in effects if not ca.is_color_grade_effect(e)]
+                        if len(new_effects) == len(effects):
+                            receipts.append({
+                                "timeline_clip_id": cid,
+                                "status": "noop",
+                                "color": {"present": False},
+                            })
+                            continue
+                        _write_clip_effects(clip_obj, new_effects)
+                        changed += 1
+                        receipts.append({
+                            "timeline_clip_id": cid,
+                            "status": "reset",
+                            "color": {"present": False},
+                        })
+                        continue
+
+                    existing = ca.find_color_grade(effects)
+                    if existing is None:
+                        effect = ca.create_color_grade_effect_json(
+                            app.project.generate_id
+                        )
+                        effects.append(effect)
+                        existing = effect
+                    merged = ca.merge_color_grade(existing, patch)
+                    # Replace first ColorGrade; drop duplicates.
+                    replaced = False
+                    new_effects = []
+                    for effect in effects:
+                        if ca.is_color_grade_effect(effect):
+                            if not replaced:
+                                new_effects.append(merged)
+                                replaced = True
+                        else:
+                            new_effects.append(effect)
+                    if not replaced:
+                        new_effects.append(merged)
+                    _write_clip_effects(clip_obj, new_effects)
+                    changed += 1
+                    receipts.append({
+                        "timeline_clip_id": cid,
+                        "status": "applied",
+                        "effect_id": merged.get("id"),
+                        "color": ca.summarize_color_grade(merged),
+                    })
+                if changed == 0 and not receipts:
+                    error_box[0] = "Error: no matching timeline clips."
+            finally:
+                app.updates.transaction_id = None
+            try:
+                app.window.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_apply)
+        else:
+            _do_apply()
+
+        if error_box[0]:
+            return error_box[0]
+        if not receipts:
+            return "Error: no clips were updated."
+        return json.dumps({
+            "ok": True,
+            "clips": receipts,
+            "warnings": warnings,
+            "undo": "one step",
+        })
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _framescope_from_frame(frame) -> dict:
+    """Run FrameScope on an openshot Frame object."""
+    import openshot
+    from classes import color_agent as ca
+
+    scope = openshot.FrameScope()
+    try:
+        scope.SetWaveformColumns(128)
+    except Exception:
+        pass
+    try:
+        scope.SetVectorscopeSize(96)
+    except Exception:
+        pass
+    scope.SetFrame(frame)
+    if not scope.HasVideo():
+        return {"present": False}
+    video = {
+        "present": True,
+        "histogram": {
+            "luma": list(scope.GetVideoHistogramLuma()),
+            "red": list(scope.GetVideoHistogramRed()),
+            "green": list(scope.GetVideoHistogramGreen()),
+            "blue": list(scope.GetVideoHistogramBlue()),
+        },
+        "summary": {
+            "avg_luma": scope.GetVideoAverageLuma(),
+            "clipped_shadows": scope.GetVideoClippedShadows(),
+            "clipped_highlights": scope.GetVideoClippedHighlights(),
+        },
+    }
+    return ca.summarize_scope_video(video)
+
+
+def _measure_frame_scopes(frame_number: int) -> dict:
+    """Run FrameScope on a composited timeline frame (safe off the GUI thread)."""
+    app = _get_app()
+    timeline = getattr(getattr(app.window, "timeline_sync", None), "timeline", None)
+    if not timeline:
+        return {"present": False, "error": "no timeline"}
+    try:
+        frame = timeline.GetFrame(int(frame_number))
+        return _framescope_from_frame(frame)
+    except Exception as exc:
+        return {"present": False, "error": str(exc)}
+
+
+def _clip_local_frame_number(clip_data: dict, timeline_frame: int, fps_float: float) -> int:
+    """Map a timeline frame into a 1-based frame on a solo timeline (clip at position 0)."""
+    try:
+        pos = float(clip_data.get("position") or 0)
+        start = float(clip_data.get("start") or 0)
+        end = float(clip_data.get("end") or (start + 1.0 / max(fps_float, 1e-6)))
+        duration = max(1.0 / max(fps_float, 1e-6), end - start)
+        timeline_sec = max(0.0, (int(timeline_frame) - 1) / max(fps_float, 1e-6))
+        # Time into the clip's trimmed window.
+        local_sec = timeline_sec - pos
+        if local_sec < 0 or local_sec > duration:
+            local_sec = duration * 0.5
+        return max(1, int(local_sec * fps_float) + 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _frame_to_jpeg_b64(frame, long_edge: int = 480, quality: int = 72) -> str:
+    """Encode an openshot Frame as a small JPEG base64 string (empty on failure)."""
+    import base64
+
+    if frame is None:
+        return ""
+    path = ""
+    try:
+        try:
+            w = max(1, int(frame.GetWidth()))
+            h = max(1, int(frame.GetHeight()))
+        except Exception:
+            w, h = long_edge, long_edge
+        scale = min(1.0, float(long_edge) / float(max(w, h)))
+        fd, path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        frame.Save(path, float(scale), "JPG", int(quality))
+        with open(path, "rb") as fh:
+            return base64.b64encode(fh.read()).decode("ascii")
+    except Exception as exc:
+        log.debug("_frame_to_jpeg_b64 failed: %s", exc)
+        return ""
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def _render_clip_isolated(
+    clip_data: dict,
+    timeline_frame: int,
+    fps_float: float,
+    *,
+    with_jpeg: bool = True,
+) -> dict:
+    """Solo-render one clip (effects on) → scopes + optional preview JPEG.
+
+    Track/layer count does not matter: overlapping clips on other tracks are
+    not in this temporary timeline, so match/inspect cannot false-zero.
+    """
+    import openshot
+    from classes.query import File
+
+    if not isinstance(clip_data, dict):
+        return {"scopes": {"present": False, "error": "invalid clip"}, "preview_jpeg": ""}
+
+    app = _get_app()
+    project = app.project
+    try:
+        width = int(project.get("width") or 1280)
+        height = int(project.get("height") or 720)
+        sample_rate = int(project.get("sample_rate") or 48000)
+        channels = int(project.get("channels") or 2)
+        channel_layout = int(project.get("channel_layout") or 3)
+        fps = project.get("fps") or {"num": 30, "den": 1}
+        fps_num = int(fps.get("num", 30) or 30)
+        fps_den = int(fps.get("den", 1) or 1)
+    except (TypeError, ValueError):
+        width, height, sample_rate, channels, channel_layout = 1280, 720, 48000, 2, 3
+        fps_num, fps_den = 30, 1
+
+    # Smaller preview size for speed when available.
+    try:
+        tl = getattr(getattr(app.window, "timeline_sync", None), "timeline", None)
+        pw = int(getattr(tl, "preview_width", 0) or 0)
+        ph = int(getattr(tl, "preview_height", 0) or 0)
+        if pw > 0 and ph > 0:
+            width, height = min(pw, 640), min(ph, 360)
+    except Exception:
+        width, height = min(width, 640), min(height, 360)
+
+    solo = copy.deepcopy(clip_data)
+    solo["position"] = 0.0
+    solo["layer"] = 1000000
+    try:
+        reader = solo.get("reader") if isinstance(solo.get("reader"), dict) else {}
+        path = str(reader.get("path") or "").strip()
+        if not path or not os.path.exists(path):
+            fid = str(solo.get("file_id") or reader.get("id") or "").strip()
+            if fid:
+                fobj = File.get(id=fid)
+                if fobj and hasattr(fobj, "absolute_path"):
+                    ap = fobj.absolute_path()
+                    if ap:
+                        if not isinstance(solo.get("reader"), dict):
+                            solo["reader"] = {}
+                        solo["reader"]["path"] = ap
+    except Exception:
+        pass
+
+    local_frame = _clip_local_frame_number(clip_data, timeline_frame, fps_float)
+    temp = None
+    try:
+        temp = openshot.Timeline(
+            width,
+            height,
+            openshot.Fraction(fps_num, fps_den),
+            sample_rate,
+            channels,
+            channel_layout,
+        )
+        try:
+            temp.SetMaxSize(int(width), int(height))
+        except Exception:
+            pass
+        clip_os = openshot.Clip()
+        clip_os.SetJson(json.dumps(solo))
+        temp.AddClip(clip_os)
+        temp.Open()
+        frame = temp.GetFrame(int(local_frame))
+        scopes = _framescope_from_frame(frame)
+        scopes["isolated"] = True
+        scopes["local_frame"] = int(local_frame)
+        jpeg = _frame_to_jpeg_b64(frame) if with_jpeg else ""
+        return {"scopes": scopes, "preview_jpeg": jpeg, "local_frame": int(local_frame)}
+    except Exception as exc:
+        fallback = _measure_frame_scopes(timeline_frame)
+        fallback["isolated"] = False
+        fallback["warning"] = f"isolated render failed ({exc}); used composited timeline"
+        return {"scopes": fallback, "preview_jpeg": "", "local_frame": 0}
+    finally:
+        if temp is not None:
+            try:
+                temp.Close()
+            except Exception:
+                pass
+
+
+def _measure_clip_isolated_scopes(clip_data: dict, timeline_frame: int, fps_float: float) -> dict:
+    """Back-compat: scopes only from an isolated clip render."""
+    return _render_clip_isolated(
+        clip_data, timeline_frame, fps_float, with_jpeg=False
+    ).get("scopes") or {"present": False}
+
+
+def inspect_color(
+    clipId="",
+    timeline_clip_id="",
+    clip_id="",
+    atFrame="",
+    at_frame="",
+    reference="",
+    referenceClipId="",
+    include_preview="true",
+    **_kw,
+) -> str:
+    """Measure graded look at a frame: isolated scopes + ColorGrade + preview JPEG.
+
+    Renders the clip alone (track-agnostic). Optional reference adds gap hints and
+    a second preview. preview_jpeg fields are base64 JPEGs for vision.
+    """
+    try:
+        from classes import color_agent as ca
+        from classes.query import Clip
+
+        ids = _resolve_color_target_ids(
+            clipIds=clipId or clip_id,
+            timeline_clip_id=timeline_clip_id,
+        )
+        if not ids:
+            return _color_target_error("inspect_color")
+        cid = ids[0]
+        want_jpeg = str(include_preview if include_preview not in (None, "") else "true").strip().lower() not in (
+            "0", "false", "no", "off",
+        )
+
+        app = _get_app()
+        fps = app.project.get("fps") or {"num": 30, "den": 1}
+        try:
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps_float = 30.0
+
+        def _read_subject():
+            clip_obj = Clip.get(id=cid)
+            if not clip_obj:
+                return None, None, None, f"Error: clip {cid} not found."
+            data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+            effects = data.get("effects")
+            grade = ca.summarize_color_grade(ca.find_color_grade(effects))
+            grain = ca.summarize_film_grain(ca.find_film_grain(effects))
+            frame_arg = atFrame if atFrame not in (None, "") else at_frame
+            if frame_arg not in (None, ""):
+                try:
+                    frame_number = max(1, int(float(frame_arg)))
+                except (TypeError, ValueError):
+                    return None, None, None, None, "Error: atFrame must be an integer frame number."
+            else:
+                try:
+                    frame_number = int(getattr(app.window.preview_thread, "current_frame", 1) or 1)
+                except Exception:
+                    frame_number = 1
+                try:
+                    pos = float(data.get("position") or 0)
+                    start = float(data.get("start") or 0)
+                    end = float(data.get("end") or start)
+                    duration = max(0.0, end - start)
+                    playhead_sec = (frame_number - 1) / max(fps_float, 1e-6)
+                    if playhead_sec < pos or playhead_sec > pos + duration:
+                        frame_number = max(1, int(pos * fps_float) + 1)
+                except (TypeError, ValueError):
+                    pass
+            return data, grade, grain, frame_number, None
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            data, grade, grain, frame_number, err = _run_on_main_thread(_read_subject)
+        else:
+            data, grade, grain, frame_number, err = _read_subject()
+        if err:
+            return err
+
+        rendered = _render_clip_isolated(
+            data or {}, frame_number, fps_float, with_jpeg=want_jpeg
+        )
+        scopes = rendered.get("scopes") or {"present": False}
+        result = {
+            "ok": True,
+            "timeline_clip_id": cid,
+            "atFrame": frame_number,
+            "color": grade,
+            "film_grain": grain,
+            "scopes": scopes,
+            "preview_jpeg": rendered.get("preview_jpeg") or "",
+        }
+
+        ref_id = str(reference or referenceClipId or "").strip()
+        if ref_id:
+            def _read_ref():
+                ref_clip = Clip.get(id=ref_id)
+                if not ref_clip:
+                    return None, None, None, None, f"reference clip {ref_id} not found"
+                rdata = ref_clip.data if isinstance(ref_clip.data, dict) else {}
+                reffects = rdata.get("effects")
+                rgrade = ca.summarize_color_grade(ca.find_color_grade(reffects))
+                rgrain = ca.summarize_film_grain(ca.find_film_grain(reffects))
+                try:
+                    pos = float(rdata.get("position") or 0)
+                    start = float(rdata.get("start") or 0)
+                    end = float(rdata.get("end") or start)
+                    duration = max(0.0, end - start)
+                    ref_frame = max(1, int((pos + duration * 0.5) * fps_float) + 1)
+                except (TypeError, ValueError):
+                    ref_frame = frame_number
+                return rdata, rgrade, rgrain, ref_frame, None
+
+            if QThread is not None and QThread.currentThread() is not app.thread():
+                rdata, rgrade, rgrain, ref_frame, ref_err = _run_on_main_thread(_read_ref)
+            else:
+                rdata, rgrade, rgrain, ref_frame, ref_err = _read_ref()
+            if ref_err:
+                result["warnings"] = [ref_err]
+            else:
+                ref_rendered = _render_clip_isolated(
+                    rdata or {}, ref_frame, fps_float, with_jpeg=want_jpeg
+                )
+                ref_scopes = ref_rendered.get("scopes") or {"present": False}
+                result["reference"] = {
+                    "timeline_clip_id": ref_id,
+                    "atFrame": ref_frame,
+                    "color": rgrade,
+                    "film_grain": rgrain,
+                    "scopes": ref_scopes,
+                    "preview_jpeg": ref_rendered.get("preview_jpeg") or "",
+                }
+                result["reference_preview_jpeg"] = ref_rendered.get("preview_jpeg") or ""
+                result.update(ca.reference_gap_hints(scopes, ref_scopes))
+                result["grades_differ"] = ca.grades_meaningfully_differ(grade, rgrade)
+                result["grain_differ"] = ca.grain_meaningfully_differs(grain, rgrain)
+
+        return json.dumps(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def list_looks(query="", vibe="", **_kw) -> str:
+    """List ColorGrade presets, LUT packs, and Film Grain looks with vibe tags.
+
+    Optional query/vibe filters the catalog (e.g. query='teal cinematic').
+    """
+    try:
+        from classes import color_agent as ca
+
+        q = " ".join(p for p in (str(query or ""), str(vibe or "")) if p).strip()
+        return json.dumps(ca.list_looks_catalog(q))
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def _create_film_grain_effect_json(generate_id) -> dict:
+    try:
+        import openshot
+        from classes.film_grain_presets import FILM_GRAIN_CLASS_NAME
+
+        effect = openshot.EffectInfo().CreateEffect(FILM_GRAIN_CLASS_NAME)
+        if effect is None:
+            raise RuntimeError("CreateEffect returned None")
+        effect_id = generate_id()
+        effect.Id(effect_id)
+        payload = json.loads(effect.Json())
+        if not payload.get("id"):
+            payload["id"] = effect_id
+        return payload
+    except Exception:
+        from classes.film_grain_presets import FILM_GRAIN_CLASS_NAME
+
+        return {"class_name": FILM_GRAIN_CLASS_NAME, "id": generate_id() if callable(generate_id) else ""}
+
+
+def apply_look(
+    clipIds="",
+    clip_ids="",
+    timeline_clip_id="",
+    clipId="",
+    lookId="",
+    look_id="",
+    lutPath="",
+    lut_path="",
+    lutIntensity="",
+    lut_intensity="",
+    mix="",
+    stackGrain="",
+    stack_grain="",
+    grainPreset="",
+    grain_preset="",
+    all_clips="false",
+    **_kw,
+) -> str:
+    """Apply a Look preset, LUT, or Film Grain to clip(s); one undo.
+
+    Pass lookId from list_looks_tool (warm_up, teal_cinema, grain:35mm_classic, …)
+    or lutPath to a .cube. Optional mix / stackGrain / grainPreset. Soft presets
+    replace ColorGrade knobs (same as the Look menu); LUT merges onto existing grade.
+    Target resolution: explicit ids → selection → playhead; clipIds=\"all\" / all_clips
+    for every timeline clip.
+    """
+    try:
+        from classes import color_agent as ca
+
+        all_flag = str(all_clips or _kw.get("allClips", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        ids = _resolve_color_target_ids(
+            clip_ids=clip_ids,
+            clipIds=clipIds,
+            timeline_clip_id=timeline_clip_id,
+            clipId=clipId,
+            all_clips=all_flag,
+        )
+        if not ids:
+            return _color_target_error("apply_look")
+
+        raw_look = str(lookId or look_id or "").strip()
+        raw_lut = str(lutPath or lut_path or "").strip()
+        if not raw_look and not raw_lut:
+            return "Error: apply_look requires lookId or lutPath."
+
+        resolved = ca.resolve_look_id(raw_look) if raw_look else {"kind": "lut", "lut_path": raw_lut, "id": raw_lut}
+        if raw_lut and resolved.get("kind") != "lut":
+            return "Error: pass either lookId or lutPath for a LUT, not both conflicting kinds."
+        if raw_lut:
+            resolved = {"kind": "lut", "lut_path": raw_lut, "id": raw_lut}
+
+        intensity_arg = lutIntensity if lutIntensity not in (None, "") else lut_intensity
+        mix_arg = mix
+        grain_arg = (
+            stackGrain if stackGrain not in (None, "")
+            else stack_grain if stack_grain not in (None, "")
+            else grainPreset if grainPreset not in (None, "")
+            else grain_preset
+        )
+
+        lut_intensity_val = None
+        if intensity_arg not in (None, ""):
+            lut_intensity_val = float(intensity_arg)
+        mix_val = None
+        if mix_arg not in (None, ""):
+            mix_val = float(mix_arg)
+
+        grain_id = None
+        if grain_arg not in (None, ""):
+            g = str(grain_arg).strip()
+            if g.lower() in ("1", "true", "yes", "on"):
+                grain_id = "35mm_classic"
+            else:
+                grain_resolved = ca.resolve_look_id(
+                    g if g.startswith("grain:") else f"grain:{g}"
+                )
+                grain_id = grain_resolved["grain_id"]
+        elif resolved.get("kind") == "film_grain":
+            grain_id = resolved["grain_id"]
+
+        # Openshot-backed helpers only after args validate (keeps Error: clean).
+        from classes.film_grain_presets import (
+            FILM_GRAIN_PRESET_NONE,
+            apply_film_grain_preset,
+            is_film_grain_effect,
+        )
+        from classes import info
+
+        # Validate LUT path up front (no undo on bad id).
+        abs_lut = ""
+        if resolved.get("kind") == "lut":
+            abs_lut = ca.resolve_lut_filesystem_path(
+                resolved["lut_path"],
+                colors_path=getattr(info, "COLORS_PATH", ""),
+                user_colors_path=getattr(info, "USER_COLORS_PATH", ""),
+            )
+
+        app = _get_app()
+        receipts = []
+        warnings = []
+        error_box = [None]
+
+        def _do_look():
+            from classes.query import Clip as _Clip
+
+            tid = _new_transaction_id()
+            app.updates.transaction_id = tid
+            changed = 0
+            try:
+                for cid in ids:
+                    clip_obj = _Clip.get(id=cid)
+                    if not clip_obj:
+                        warnings.append(f"clip {cid} not found")
+                        continue
+                    data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+                    effects = list(data.get("effects") or [])
+                    receipt = {"timeline_clip_id": cid, "look": resolved.get("id")}
+
+                    if resolved.get("kind") == "color_preset":
+                        preset_name = resolved["preset_name"]
+                        if preset_name == "reset":
+                            new_effects = [
+                                e for e in effects if not ca.is_color_grade_effect(e)
+                            ]
+                            if len(new_effects) == len(effects) and not grain_id:
+                                receipt["status"] = "noop"
+                                receipts.append(receipt)
+                                continue
+                            effects = new_effects
+                            receipt["status"] = "reset"
+                        else:
+                            existing = ca.find_color_grade(effects)
+                            base = ca.create_color_grade_effect_json(app.project.generate_id)
+                            if existing and existing.get("id"):
+                                base["id"] = existing["id"]
+                            if existing and "order" in existing:
+                                base["order"] = existing["order"]
+                            graded = ca.apply_soft_color_preset(base, preset_name)
+                            if mix_val is not None:
+                                ca.set_scalar(graded, "mix", mix_val)
+                            # Replace first ColorGrade only.
+                            replaced = False
+                            new_effects = []
+                            for effect in effects:
+                                if ca.is_color_grade_effect(effect):
+                                    if not replaced:
+                                        new_effects.append(graded)
+                                        replaced = True
+                                else:
+                                    new_effects.append(effect)
+                            if not replaced:
+                                new_effects.append(graded)
+                            effects = new_effects
+                            receipt["status"] = "preset"
+                            receipt["color"] = ca.summarize_color_grade(graded)
+
+                    elif resolved.get("kind") == "lut":
+                        existing = ca.find_color_grade(effects)
+                        if existing is None:
+                            existing = ca.create_color_grade_effect_json(
+                                app.project.generate_id
+                            )
+                            effects.append(existing)
+                        patch = {"lut": {"path": abs_lut or resolved["lut_path"]}}
+                        if lut_intensity_val is not None:
+                            patch["lut"]["strength"] = lut_intensity_val
+                        if mix_val is not None:
+                            patch["mix"] = mix_val
+                        merged = ca.merge_color_grade(existing, patch)
+                        replaced = False
+                        new_effects = []
+                        for effect in effects:
+                            if ca.is_color_grade_effect(effect):
+                                if not replaced:
+                                    new_effects.append(merged)
+                                    replaced = True
+                            else:
+                                new_effects.append(effect)
+                        if not replaced:
+                            new_effects.append(merged)
+                        effects = new_effects
+                        receipt["status"] = "lut"
+                        receipt["lut_path"] = merged.get("lut_path")
+                        receipt["color"] = ca.summarize_color_grade(merged)
+                        if abs_lut and not os.path.isfile(abs_lut):
+                            warnings.append(f"LUT file not found on disk: {abs_lut}")
+
+                    # Optional / primary film grain
+                    apply_grain = grain_id or (
+                        resolved.get("kind") == "film_grain" and resolved.get("grain_id")
+                    )
+                    if apply_grain:
+                        gid = grain_id or resolved.get("grain_id")
+                        grain_indexes = [
+                            i for i, e in enumerate(effects) if is_film_grain_effect(e)
+                        ]
+                        if gid == FILM_GRAIN_PRESET_NONE:
+                            effects = [
+                                e for e in effects if not is_film_grain_effect(e)
+                            ]
+                            receipt["grain"] = "none"
+                        else:
+                            source = (
+                                effects[grain_indexes[0]]
+                                if grain_indexes
+                                else _create_film_grain_effect_json(app.project.generate_id)
+                            )
+                            grain_effect = apply_film_grain_preset(source, gid)
+                            if grain_indexes:
+                                if effects[grain_indexes[0]].get("id"):
+                                    grain_effect["id"] = effects[grain_indexes[0]]["id"]
+                                for index in reversed(grain_indexes[1:]):
+                                    del effects[index]
+                                effects[grain_indexes[0]] = grain_effect
+                            else:
+                                effects.append(grain_effect)
+                            receipt["grain"] = gid
+                        if resolved.get("kind") == "film_grain":
+                            receipt["status"] = receipt.get("status") or "grain"
+
+                    if receipt.get("status") is None and not apply_grain:
+                        receipt["status"] = "noop"
+                        receipts.append(receipt)
+                        continue
+
+                    _write_clip_effects(clip_obj, effects)
+                    changed += 1
+                    receipts.append(receipt)
+                if changed == 0 and not receipts:
+                    error_box[0] = "Error: no matching timeline clips."
+            finally:
+                app.updates.transaction_id = None
+            try:
+                app.window.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_look)
+        else:
+            _do_look()
+
+        if error_box[0]:
+            return error_box[0]
+        if not receipts:
+            return "Error: no clips were updated."
+        return json.dumps({
+            "ok": True,
+            "clips": receipts,
+            "warnings": warnings,
+            "undo": "one step",
+        })
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def match_color_to_reference(
+    clipId="",
+    timeline_clip_id="",
+    clip_id="",
+    reference="",
+    referenceClipId="",
+    dry_run="false",
+    dryRun="",
+    **_kw,
+) -> str:
+    """Make SUBJECT clip look like REFERENCE (track-agnostic).
+
+    1) Solo-render both clips (images + scopes) — overlapping tracks cannot
+       false-match.
+    2) Sync ColorGrade (paste/reset/scope-nudge) AND FilmGrain (incl. 35mm).
+    3) Returns before/after preview_jpeg for vision.
+    """
+    try:
+        from classes import color_agent as ca
+        from classes.query import Clip
+
+        ids = ca.parse_clip_ids(
+            clipIds=clipId or clip_id,
+            timeline_clip_id=timeline_clip_id,
+        )
+        if not ids:
+            return "Error: match_color_to_reference requires clipId (subject to change)."
+        ref_id = str(reference or referenceClipId or "").strip()
+        if not ref_id:
+            return "Error: match_color_to_reference requires reference or referenceClipId."
+        if ids[0] == ref_id:
+            return "Error: subject and reference are the same clip."
+
+        dry = str(dry_run or dryRun or "").strip().lower() in ("1", "true", "yes", "on")
+
+        inspect_json = inspect_color(
+            clipId=ids[0],
+            reference=ref_id,
+            include_preview="true",
+        )
+        if str(inspect_json).startswith("Error:"):
+            return inspect_json
+        payload = json.loads(inspect_json)
+
+        app = _get_app()
+
+        def _effects(cid):
+            clip_obj = Clip.get(id=cid)
+            if not clip_obj:
+                return None, None, {}
+            data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+            effects = data.get("effects")
+            return (
+                ca.find_color_grade(effects),
+                ca.find_film_grain(effects),
+                data,
+            )
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            sub_effect, sub_grain, sub_data = _run_on_main_thread(lambda: _effects(ids[0]))
+            ref_effect, ref_grain, _ref_data = _run_on_main_thread(lambda: _effects(ref_id))
+        else:
+            sub_effect, sub_grain, sub_data = _effects(ids[0])
+            ref_effect, ref_grain, _ref_data = _effects(ref_id)
+
+        action = ca.match_grade_action(sub_effect, ref_effect)
+        grain_action = ca.match_grain_action(sub_grain, ref_grain)
+        hints = payload.get("hints") or []
+        scope_patch = ca.hints_to_color_patch(hints)
+        before_jpeg = payload.get("preview_jpeg") or ""
+        ref_jpeg = (
+            (payload.get("reference") or {}).get("preview_jpeg")
+            or payload.get("reference_preview_jpeg")
+            or ""
+        )
+        look_distance = None
+        try:
+            look_distance = (payload.get("gap") or {}).get("look_distance")
+            if look_distance is None:
+                look_distance = ca.scope_look_distance(
+                    payload.get("scopes") or {},
+                    (payload.get("reference") or {}).get("scopes") or {},
+                )
+        except Exception:
+            look_distance = None
+        looks_differ = (
+            bool(payload.get("grades_differ"))
+            or bool(payload.get("grain_differ"))
+            or (look_distance is not None and float(look_distance) >= 0.03)
+            or grain_action.get("mode") != "noop"
+        )
+
+        result = {
+            "ok": True,
+            "timeline_clip_id": ids[0],
+            "reference": ref_id,
+            "gap": payload.get("gap") or {},
+            "hints": hints,
+            "grades_differ": bool(payload.get("grades_differ")),
+            "grain_differ": bool(payload.get("grain_differ")) or grain_action.get("mode") != "noop",
+            "film_grain": payload.get("film_grain"),
+            "reference_film_grain": (payload.get("reference") or {}).get("film_grain"),
+            "looks_differ": looks_differ,
+            "look_distance": look_distance,
+            "match_mode": action.get("mode"),
+            "grain_mode": grain_action.get("mode"),
+            "scopes": payload.get("scopes"),
+            "reference_scopes": (payload.get("reference") or {}).get("scopes"),
+            "before_preview_jpeg": before_jpeg,
+            "reference_preview_jpeg": ref_jpeg,
+            "subject_preview_jpeg": before_jpeg,
+            "vision": (
+                "Compare BEFORE vs REFERENCE images (and AFTER after apply). "
+                "Film grain / 35mm is part of the look — match removes or copies it."
+            ),
+        }
+
+        color_mode = action.get("mode")
+        apply_color_kwargs = {}
+        messages = []
+        if color_mode == "reset":
+            apply_color_kwargs = {"reset": True}
+            result["proposed_patch"] = {"reset": True}
+            messages.append("Will reset subject ColorGrade (reference has none).")
+        elif color_mode == "paste":
+            apply_color_kwargs = {"color": json.dumps(action.get("color") or {})}
+            result["proposed_patch"] = {"color": "paste_from_reference"}
+            messages.append("Will copy reference ColorGrade knobs/LUT onto subject.")
+        elif scope_patch:
+            apply_color_kwargs = dict(scope_patch)
+            result["proposed_patch"] = scope_patch
+            result["match_mode"] = "scopes"
+            messages.append("Grades similar; will nudge via isolated scope gap.")
+        else:
+            result["proposed_patch"] = {}
+
+        if grain_action.get("mode") == "reset":
+            result["proposed_grain"] = "remove"
+            messages.append("Will remove FilmGrain / 35mm (reference has none).")
+        elif grain_action.get("mode") == "paste":
+            result["proposed_grain"] = "paste_from_reference"
+            messages.append("Will copy reference FilmGrain onto subject.")
+        else:
+            result["proposed_grain"] = "noop"
+
+        if not apply_color_kwargs and grain_action.get("mode") == "noop":
+            result["applied"] = False
+            result["match_mode"] = "vision"
+            result["message"] = (
+                "Knobs/scopes/grain are close — decide from the BEFORE vs "
+                "REFERENCE images. If they still look different, call "
+                "apply_color_tool or apply_look_tool (grain:none) then inspect."
+            )
+            return json.dumps(result)
+
+        result["message"] = " ".join(messages) if messages else "Will sync look."
+
+        if dry:
+            result["applied"] = False
+            return json.dumps(result)
+
+        # One undo: ColorGrade + FilmGrain together.
+        error_box = [None]
+        apply_receipt = {"timeline_clip_id": ids[0], "color": None, "grain": None}
+
+        def _do_match():
+            from classes.query import Clip as _Clip
+            from classes.film_grain_presets import is_film_grain_effect as _is_grain
+
+            clip_obj = _Clip.get(id=ids[0])
+            if not clip_obj:
+                error_box[0] = f"Error: clip {ids[0]} not found."
+                return
+            data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
+            effects = list(data.get("effects") or [])
+            tid = _new_transaction_id()
+            app.updates.transaction_id = tid
+            try:
+                if apply_color_kwargs.get("reset"):
+                    effects = [e for e in effects if not ca.is_color_grade_effect(e)]
+                    apply_receipt["color"] = "reset"
+                elif apply_color_kwargs:
+                    if "color" in apply_color_kwargs:
+                        paste = action.get("color") or {}
+                        if isinstance(paste, str):
+                            paste = json.loads(paste)
+                        patch = {"color": paste}
+                        apply_receipt["color"] = "paste"
+                    else:
+                        patch = dict(apply_color_kwargs)
+                        apply_receipt["color"] = "scopes"
+                    existing = ca.find_color_grade(effects)
+                    if existing is None:
+                        effect = ca.create_color_grade_effect_json(
+                            app.project.generate_id
+                        )
+                        effects.append(effect)
+                        existing = effect
+                    merged = ca.merge_color_grade(existing, patch)
+                    new_effects = []
+                    replaced = False
+                    for effect in effects:
+                        if ca.is_color_grade_effect(effect):
+                            if not replaced:
+                                new_effects.append(merged)
+                                replaced = True
+                        else:
+                            new_effects.append(effect)
+                    if not replaced:
+                        new_effects.append(merged)
+                    effects = new_effects
+
+                if grain_action.get("mode") == "reset":
+                    effects = [e for e in effects if not _is_grain(e)]
+                    apply_receipt["grain"] = "removed"
+                elif grain_action.get("mode") == "paste":
+                    paste_g = grain_action.get("grain") or {}
+                    grain_indexes = [
+                        i for i, e in enumerate(effects) if _is_grain(e)
+                    ]
+                    new_g = copy.deepcopy(paste_g)
+                    if not isinstance(new_g, dict):
+                        new_g = {}
+                    new_g["class_name"] = "FilmGrain"
+                    if grain_indexes:
+                        if effects[grain_indexes[0]].get("id"):
+                            new_g["id"] = effects[grain_indexes[0]]["id"]
+                        elif not new_g.get("id"):
+                            new_g["id"] = app.project.generate_id()
+                        for index in reversed(grain_indexes[1:]):
+                            del effects[index]
+                        effects[grain_indexes[0]] = new_g
+                    else:
+                        if not new_g.get("id"):
+                            new_g["id"] = app.project.generate_id()
+                        effects.append(new_g)
+                    apply_receipt["grain"] = "paste"
+
+                _write_clip_effects(clip_obj, effects)
+            finally:
+                app.updates.transaction_id = None
+            try:
+                app.window.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            _run_on_main_thread(_do_match)
+        else:
+            _do_match()
+
+        if error_box[0]:
+            return error_box[0]
+
+        result["applied"] = True
+        result["apply_receipt"] = apply_receipt
+        result["undo"] = "one step"
+
+        try:
+            fps = app.project.get("fps") or {"num": 30, "den": 1}
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            fps_float = 30.0
+        after_frame = int(payload.get("atFrame") or 1)
+
+        def _reload_subject():
+            clip_obj = Clip.get(id=ids[0])
+            if not clip_obj:
+                return {}
+            return clip_obj.data if isinstance(clip_obj.data, dict) else {}
+
+        if QThread is not None and QThread.currentThread() is not app.thread():
+            after_data = _run_on_main_thread(_reload_subject)
+        else:
+            after_data = _reload_subject()
+        after = _render_clip_isolated(
+            after_data or sub_data or {}, after_frame, fps_float, with_jpeg=True
+        )
+        result["after_preview_jpeg"] = after.get("preview_jpeg") or ""
+        result["after_scopes"] = after.get("scopes")
+        result["after_film_grain"] = ca.summarize_film_grain(
+            ca.find_film_grain((after_data or {}).get("effects"))
+        )
+        return json.dumps(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
@@ -8516,6 +9808,12 @@ AGENT_TOOL_HANDLERS = {
     "list_transitions_tool": list_transitions,
     "search_transitions_tool": search_transitions,
     "apply_transition_tool": apply_transition,
+    # Colour grade (Phase 6 — ColorGrade / FrameScope)
+    "apply_color_tool": apply_color,
+    "inspect_color_tool": inspect_color,
+    "list_looks_tool": list_looks,
+    "apply_look_tool": apply_look,
+    "match_color_to_reference_tool": match_color_to_reference,
     # TTS
     "generate_tts_and_add_to_timeline_tool": generate_tts_and_add_to_timeline,
     # Stock / planning
@@ -8582,6 +9880,11 @@ TOOL_DISPLAY_LABELS = {
     "list_transitions_tool": "List transitions",
     "search_transitions_tool": "Search transitions",
     "apply_transition_tool": "Apply transition",
+    "apply_color_tool": "Apply color grade",
+    "inspect_color_tool": "Inspect color",
+    "list_looks_tool": "List looks",
+    "apply_look_tool": "Apply look",
+    "match_color_to_reference_tool": "Match color to reference",
     "generate_tts_and_add_to_timeline_tool": "Add narration (TTS)",
     "import_stock_media_tool": "Import stock media",
     "resummarize_project_file_tool": "Resummarize file",
@@ -8658,6 +9961,8 @@ READ_ONLY_TOOLS = frozenset({
     "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
+    "inspect_color_tool",
+    "list_looks_tool",
 })
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
@@ -8666,6 +9971,9 @@ READ_ONLY_TOOLS = frozenset({
 # doing so would block the GUI for the duration of the network call (up to
 # 30 minutes for TwelveLabs indexing) and serialize parallel agent calls.
 BACKGROUND_SAFE_TOOLS = frozenset({
+    "inspect_color_tool",
+    "match_color_to_reference_tool",
+    "list_looks_tool",
     "reindex_project_file_tool",
     # Probing a folder of media can outlast the 30s dispatcher budget; the
     # add_files call marshals itself with its own, longer timeout.

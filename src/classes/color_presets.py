@@ -152,10 +152,9 @@ def apply_color_grade_preset(effect_json, preset_name):
             {"x": 1.0, "y": 1.0},
         ])
     elif preset_name == COLOR_PRESET_WARM_UP:
-        _set_scalar(payload, "temperature", 0.18)
-        _set_scalar(payload, "tint", 0.03)
-        _set_scalar(payload, "saturation", 1.05)
-        _set_scalar(payload, "vibrance", 0.08)
+        _set_scalar(payload, "temperature", 0.10)
+        _set_scalar(payload, "tint", 0.02)
+        _set_scalar(payload, "vibrance", 0.04)
     elif preset_name == COLOR_PRESET_BOOST_COLOR:
         _set_scalar(payload, "contrast", 0.08)
         _set_scalar(payload, "saturation", 1.18)
