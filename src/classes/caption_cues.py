@@ -17,7 +17,7 @@ clip frame number, so a clip trimmed to start at 12 s shows the cue written as
 / ``GetFrame`` (Caption.cpp): cue text runs until the next ``dd:dd`` (so a
 ``10:30`` inside text would cut the cue short), lines starting with ``NOTE`` or
 one character long are not drawn. ``safe_line`` rewrites text so every line is
-drawn as written.
+drawn as written (zero-width spaces; ``display_text`` removes them again).
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List, Tuple
 
-ZERO_WIDTH = "​"
-RATIO_COLON = "∶"   # looks like ':' but does not end a cue
+ZERO_WIDTH = "\u200b"
+RATIO_COLON = "\u2236"   # older captions used this look-alike; display_text still undoes it
 
 # libopenshot Caption.cpp, process_regex()
 _CAPTION_RE = re.compile(
@@ -96,8 +96,13 @@ def parse_caption_text(caption_text: str) -> List[Cue]:
 
 
 def safe_line(line: str) -> str:
-    """Rewrite one line so libopenshot draws all of it (see module docstring)."""
-    line = _TIME_IN_TEXT.sub(RATIO_COLON, line)
+    """Rewrite one line so libopenshot draws all of it (see module docstring).
+
+    A zero-width space before a colon between digits ("10" ZWSP ":30") stops the
+    cue-end lookahead yet renders as "10:30" in every font (a look-alike colon is
+    missing from many fonts and came out as "10 : 30").
+    """
+    line = _TIME_IN_TEXT.sub(ZERO_WIDTH + ":", line)
     if line.startswith("NOTE"):
         line = ZERO_WIDTH + line
     if _utf16_len(line) == 1:

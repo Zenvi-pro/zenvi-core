@@ -47,9 +47,10 @@ def test_libopenshot_would_cut_a_cue_at_a_time_in_its_text_and_safe_text_prevent
     raw = "00:00:01:000 --> 00:00:04:000\nMeet at 10:30 today\n\n"
     assert caption_cues.parse_caption_text(raw)[0].text == "Meet at"
     safe, changed = caption_cues.safe_text("Meet at 10:30 today")
-    assert changed and safe == "Meet at 10∶30 today"
+    assert changed and safe == "Meet at 10\u200b:30 today"
     text = caption_cues.build_caption_text([Cue(1, 4, safe)])
     assert caption_cues.display_text(caption_cues.parse_caption_text(text)[0].text) == "Meet at 10:30 today"
+    assert caption_cues.display_text("old 10\u223630 style") == "old 10:30 style"
 
 
 def test_safe_text_keeps_one_letter_and_note_lines_drawable():
@@ -176,7 +177,7 @@ def test_captions_from_the_indexed_transcript(tt):
     cues = caption_cues.parse_caption_text(_caption(tt, clip)["caption_text"])
     assert rec["source"] == "transcript" and len(cues) >= 3
     assert all(len(caption_cues.display_text(c.text).split()) <= 6 for c in cues)
-    assert caption_cues.display_text(cues[-1].text) == "at 10:30" and "∶" in cues[-1].text
+    assert caption_cues.display_text(cues[-1].text) == "at 10:30" and "\u200b:" in cues[-1].text
     assert any("adjusted" in w for w in rec["warnings"])
 
 
