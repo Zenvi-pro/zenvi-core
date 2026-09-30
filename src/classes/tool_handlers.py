@@ -1335,8 +1335,12 @@ def _locked_track_error(app, layer_num):
     return ""
 
 
-def _delete_one_clip(app, resolved) -> str:
-    """Delete a single resolved timeline clip. The caller owns the transaction."""
+def _delete_one_clip(app, resolved, ripple=False) -> str:
+    """Delete a single resolved timeline clip. The caller owns the transaction.
+
+    With *ripple*, later clips on the same track move left to close the gap,
+    inside the same undo step (the Shift+Delete rule, timeline_ops.close_gap_at).
+    """
     win = app.window
     clip_obj = resolved.clip
     clip_id = str(getattr(clip_obj, "id", "") or "")
@@ -1350,6 +1354,11 @@ def _delete_one_clip(app, resolved) -> str:
     except (TypeError, ValueError):
         position = 0.0
     title = str(clip_data.get("title") or clip_data.get("label") or "clip")
+    try:
+        length = max(0.0, float(clip_data.get("end", 0.0) or 0.0) - float(clip_data.get("start", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        length = 0.0
+    moved = []
 
     locked = _locked_track_error(app, layer_num)
     if locked:
@@ -1368,6 +1377,9 @@ def _delete_one_clip(app, resolved) -> str:
             except Exception:
                 pass
             clip_obj.delete()
+            if ripple:
+                from classes.timeline_ops import close_gap_at
+                moved.extend(close_gap_at(layer_num, position, length))
 
             # A deleted clip may still be referenced by the preview widget's
             # transform state; clear it before the next paint dereferences a freed
@@ -1386,6 +1398,12 @@ def _delete_one_clip(app, resolved) -> str:
     else:
         _do_delete()
 
+    if ripple:
+        return (
+            f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
+            f"at {position:.2f}s and closed the gap: {len(moved)} later item(s) on "
+            f"that track moved left. 1 undo step."
+        )
     return (
         f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
         f"at {position:.2f}s. Other clips on that track are unchanged "
@@ -1464,6 +1482,7 @@ def delete_from_timeline(
     occurrence: str = "0",
     position_near=None,
     include_transitions: bool = True,
+    ripple: bool = False,
     **_kw,
 ) -> str:
     """Delete from the timeline: one clip placement, or an entire track.
@@ -1478,7 +1497,8 @@ def delete_from_timeline(
     scope is normally "auto": a clip id or query deletes ONE placement, a bare
     track clears the track. Pass scope="clip" or scope="track" to force the
     branch. include_transitions also removes transitions sitting on the track
-    (track scope only). Deleting leaves a gap - it never ripples the timeline.
+    (track scope only). Deleting leaves a gap unless ripple=true, which closes
+    it: later clips on the same track move left (one clip only).
 
     The whole call is a single undo step, whether it removes one clip or fifty.
     """
@@ -1545,7 +1565,8 @@ def delete_from_timeline(
             # a track-wide delete.
             return resolved.error or "Error: Could not resolve timeline clip."
 
-        return _delete_one_clip(app, resolved)
+        wants_ripple = ripple is True or str(ripple).strip().lower() in ("1", "true", "yes", "on")
+        return _delete_one_clip(app, resolved, ripple=wants_ripple)
     except Exception as e:
         return f"Error: {e}"
 
@@ -8042,12 +8063,19 @@ def set_clip_volume(
         has_waveform = bool((clip_data.get("ui") or {}).get("audio_data"))
 
         def _do_set():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present; only mint
+            # (and clear) an id when called without one (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 _write_volume_points(clip_obj, points)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, {file_id: [clip_id]} if (has_waveform and file_id) else {}, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
@@ -8343,15 +8371,21 @@ def duck_under_speech(
                     refreshed.setdefault(fid, []).append(entry["id"])
 
         def _do_duck():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 for bed_entry, pts, _w, _g in planned:
                     _write_volume_points(bed_entry["clip"], pts)
                 for speech_entry, pts in boosted:
                     _write_volume_points(speech_entry["clip"], pts)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, refreshed, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():

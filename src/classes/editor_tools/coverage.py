@@ -154,6 +154,7 @@ OUT_OF_SCOPE = {
 LEGACY_COVERAGE = {
     "clip.add": ["add_clip_to_timeline_tool"],
     "clip.delete": ["delete_from_timeline_tool"],
+    "clip.ripple_delete": ["delete_from_timeline_tool"],  # ripple=true
     "files.import": ["import_files_tool"],
     "files.subclip": ["split_file_add_clip_tool"],
     "transition.list": ["list_transitions_tool", "search_transitions_tool"],
