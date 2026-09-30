@@ -115,7 +115,7 @@ def iter_tool_defs() -> list:
     tool is listed in ``UNSCHEMATIZED`` (should be empty in production).
     """
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
-    from classes.agent_tools.schema import TOOL_SCHEMAS, UNSCHEMATIZED, get_schema
+    from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):

@@ -8,7 +8,7 @@ Failures keep ``summary`` starting with ``Error:`` for existing classifiers.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 CONTRACT_VERSION = 3
