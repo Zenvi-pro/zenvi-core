@@ -161,4 +161,6 @@ LEGACY_COVERAGE = {
     "audio.levels": ["set_clip_volume_tool", "duck_under_speech_tool", "analyze_timeline_audio_tool"],
     "ai.search": ["search_clips_tool", "search_clip_scenes_tool", "slice_clip_at_best_match_tool"],
     "ai.stock_media": ["import_stock_media_tool"],
+    "ai.video_generation": ["generate_video_and_add_to_timeline_tool", "modify_clip_tool",
+                            "generate_transition_clip_tool"],
 }

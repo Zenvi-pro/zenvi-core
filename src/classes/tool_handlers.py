@@ -27,7 +27,6 @@ from typing import Optional
 from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
-    apply_audio_only_clip_overrides,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     file_looks_like_image,
@@ -6123,105 +6122,6 @@ def add_transition_to_clip(clip_id="", transition_name="", position="start", dur
 
 
 # ---------------------------------------------------------------------------
-# TTS tools (frontend-delegated: timeline insertion for generated speech)
-# ---------------------------------------------------------------------------
-
-
-def generate_tts_and_add_to_timeline(
-    text="",
-    voice="alloy",
-    model="tts-1",
-    speed=1.0,
-    track=0,
-    position=0.0,
-    **kwargs,
-) -> str:
-    """Generate narration via backend TTS API and add MP3 to the timeline."""
-    try:
-        narration = (text or "").strip()
-        if not narration:
-            return "Error: No text provided for narration."
-
-        from classes.api_client import get_backend_client
-
-        client = get_backend_client()
-        resp = client.generate_tts(
-            text=narration,
-            voice=(voice or "alloy"),
-            model=(model or "tts-1"),
-            speed=float(speed or 1.0),
-        )
-        if not resp.get("success"):
-            return f"Error: {resp.get('error', 'TTS generation failed')}"
-
-        import base64
-
-        from classes.assets import durable_media_path
-
-        raw = base64.b64decode(resp.get("audio_base64") or "")
-        if not raw:
-            return "Error: TTS returned empty audio."
-
-        out_path = durable_media_path(ext=".mp3")
-        with open(out_path, "wb") as f:
-            f.write(raw)
-
-        return add_tts_audio_to_timeline(
-            audio_path=out_path,
-            track=track,
-            position=position,
-            **kwargs,
-        )
-    except Exception as e:
-        log.error("generate_tts_and_add_to_timeline: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def add_tts_audio_to_timeline(audio_path="", track=0, position=0.0, **kwargs) -> str:
-    """Add a generated TTS audio file to the timeline (internal; prefer generate_tts_and_add_to_timeline_tool)."""
-    try:
-        from classes.query import File, Clip
-        app = _get_app()
-
-        if not audio_path or not os.path.isfile(audio_path):
-            return f"Error: Audio file not found: {audio_path}"
-
-        file_data = {
-            "path": audio_path,
-            "id": str(uuid_module.uuid4()),
-            "media_type": "audio",
-        }
-        clip_data = {
-            "id": str(uuid_module.uuid4()),
-            "file_id": file_data["id"],
-            "layer": int(track),
-            "position": float(position),
-            "start": 0,
-            "end": 0,
-            "reader": {"path": audio_path, "has_audio": True, "has_video": False},
-        }
-        import openshot
-
-        apply_audio_only_clip_overrides(
-            clip_data, file_data,
-            constant_interpolation=openshot.CONSTANT, scale_none=openshot.SCALE_NONE,
-        )
-
-        # Must run on Qt main thread — app.updates dispatches to Qt listeners
-        def _do_insert():
-            app.updates.insert(["files"], file_data)
-            app.updates.insert(["clips"], clip_data)
-
-        # File + clip insert is one user action -> one undo step.
-        _run_on_main_thread(_atomic(app, _do_insert))
-
-        return f"Added TTS audio to timeline at position {position}s on track {track}."
-    except Exception as e:
-        log.error("add_tts_audio_to_timeline: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-# ---------------------------------------------------------------------------
 # Stock media / resummarize / reindex / planning handlers
 # ---------------------------------------------------------------------------
 
@@ -8375,8 +8275,7 @@ AGENT_TOOL_HANDLERS = {
     "list_transitions_tool": list_transitions,
     "search_transitions_tool": search_transitions,
     "apply_transition_tool": apply_transition,
-    # TTS
-    "generate_tts_and_add_to_timeline_tool": generate_tts_and_add_to_timeline,
+    # generate_tts_and_add_to_timeline_tool: classes.editor_tools.ai_generation_tts
     # Stock / planning
     "import_stock_media_tool": import_stock_media,
     "resummarize_project_file_tool": resummarize_project_file,
@@ -8439,7 +8338,6 @@ TOOL_DISPLAY_LABELS = {
     "list_transitions_tool": "List transitions",
     "search_transitions_tool": "Search transitions",
     "apply_transition_tool": "Apply transition",
-    "generate_tts_and_add_to_timeline_tool": "Add narration (TTS)",
     "import_stock_media_tool": "Import stock media",
     "resummarize_project_file_tool": "Resummarize file",
     "reindex_project_file_tool": "Reindex file",

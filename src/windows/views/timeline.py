@@ -306,52 +306,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
     def _recording_track_for_clip(self, clip):
         """Prefer the nearest lower unlocked track with room for a voiceover."""
-        try:
-            clip_data = clip.data if isinstance(clip.data, dict) else {}
-            source_track = int(clip_data.get("layer", 1) or 1)
-            start = float(clip_data.get("position", 0.0) or 0.0)
-            duration = max(
-                0.0,
-                float(clip_data.get("end", 0.0) or 0.0) - float(clip_data.get("start", 0.0) or 0.0),
-            )
-        except (TypeError, ValueError):
-            return 1
-
-        end = start + max(duration, 0.001)
-        try:
-            tracks = sorted(
-                Track.filter(),
-                key=lambda t: int(t.data.get("number", 0) or 0),
-                reverse=True,
-            )
-        except Exception:
-            tracks = []
-
-        candidate_numbers = [
-            int(track.data.get("number", 0) or 0)
-            for track in tracks
-            if int(track.data.get("number", 0) or 0) < source_track
-            and not track.data.get("lock", False)
-        ]
-        if not candidate_numbers:
-            return source_track
-
-        occupied = {}
-        for existing in Clip.filter():
-            data = existing.data if isinstance(existing.data, dict) else {}
-            try:
-                layer = int(data.get("layer", 0) or 0)
-                left = float(data.get("position", 0.0) or 0.0)
-                right = left + max(0.0, float(data.get("end", 0.0) or 0.0) - float(data.get("start", 0.0) or 0.0))
-            except (TypeError, ValueError):
-                continue
-            occupied.setdefault(layer, []).append((left, right))
-
-        for track_number in candidate_numbers:
-            has_overlap = any(left < end and right > start for left, right in occupied.get(track_number, []))
-            if not has_overlap:
-                return track_number
-        return source_track
+        from classes.recording_placement import recording_track_for_clip
+        clip_data = clip.data if isinstance(clip.data, dict) else {}
+        return recording_track_for_clip(
+            clip_data,
+            [t.data for t in Track.filter() if isinstance(t.data, dict)],
+            [c.data for c in Clip.filter() if isinstance(c.data, dict)],
+        )
 
     def _record_from_clip(self, clip):
         """Seek to a clip's first frame and open Recording on a free lower track."""
@@ -366,7 +327,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             fps_value = 30.0
         frame_number = max(1, int(round(position * fps_value)) + 1)
-        self.PlayheadMoved(frame_number, True)
+        self.PlayheadMoved(frame_number)
         self._show_recording_dock_deferred(
             start_time=position,
             track_number=self._recording_track_for_clip(clip),
