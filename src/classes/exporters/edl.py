@@ -173,7 +173,12 @@ def export_edl(file_path=None):
     file_name = os.path.splitext(file_name_with_ext)[0]
 
     all_tracks = get_app().project.get("layers")
-    track_count = len(all_tracks)
+    # UI track number (1 = bottom), the name the Timeline shows for an unlabeled track.
+    # A countdown that skipped empty tracks mis-named every track below an empty one.
+    ui_track_number = {
+        t.get("number"): index
+        for index, t in enumerate(sorted(all_tracks, key=itemgetter('number')), start=1)
+    }
     for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
         existing_track = Track.get(number=track.get("number"))
         if not existing_track:
@@ -182,7 +187,7 @@ def export_edl(file_path=None):
             continue
 
         # Track name
-        track_name = track.get("label") or "TRACK %s" % track_count
+        track_name = track.get("label") or "TRACK %s" % ui_track_number[track.get("number")]
         clips_on_track = sorted(Clip.filter(layer=track.get("number")), key=lambda c: c.data.get('position', 0.0))
         if not clips_on_track:
             continue
@@ -325,7 +330,5 @@ def export_edl(file_path=None):
                 event_index += 1
                 f.write("\n")
 
-            # Update counters
-            track_count -= 1
 
     return written

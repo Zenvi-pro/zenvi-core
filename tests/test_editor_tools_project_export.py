@@ -414,3 +414,15 @@ def test_clearing_undo_history_needs_confirmation(editor):
     data = _receipt(editor.call("reset_caches_and_history_tool", target="undo_history", confirm=True))
     assert data["undo_steps_cleared"] >= 1 and len(editor.manager.actionHistory) == 0
     assert editor.store.has_unsaved_changes is True
+
+
+def test_edl_files_are_named_after_the_real_track_numbers(editor, tmp_path):
+    """Regression: a countdown that skipped empty tracks named UI track 3 'TRACK 5'."""
+    f = editor.add_file("video")
+    editor.add_clip(f, layer=1000000)
+    editor.add_clip(f, layer=3000000)  # tracks 4 and 5 above stay empty
+    data = _receipt(editor.call("export_project_file_tool", format="edl", file_path=str(tmp_path / "cut.edl")))
+    names = sorted(os.path.basename(p) for p in data["files"])
+    assert names == ["cut-TRACK 1.edl", "cut-TRACK 3.edl"]
+    body = open(tmp_path / "cut-TRACK 3.edl").read()
+    assert body.startswith("TITLE: cut - TRACK 3") and "sample_video.mp4" in body
