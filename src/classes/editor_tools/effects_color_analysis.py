@@ -562,7 +562,8 @@ def screen_fuzz_from_histograms(hists: list) -> float:
             for i, n in enumerate(h[channel]):
                 total[i] += n
         spread = max(spread, (_percentile(total, 0.9) - _percentile(total, 0.1)) * 255)
-    return float(max(20, min(80, round(15 + 0.8 * spread))))
+    # Live on a patchy screen: spread 22 -> fuzz 33 keyed 69%, fuzz 55 keyed 91% (edges under-sample mid-frame patches).
+    return float(max(20, min(80, round(15 + 1.6 * spread))))
 
 
 def sample_screen_color(clip, sample_time=None) -> tuple:
