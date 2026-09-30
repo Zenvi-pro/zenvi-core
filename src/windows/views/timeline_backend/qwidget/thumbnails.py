@@ -86,7 +86,7 @@ def existing_thumb_path(file_id, frame, fingerprint=None):
     return resolve_thumbnail_path(file_id, frame, fingerprint=fingerprint) or ""
 
 
-def load_thumbnail_image(file_id, frame, *, clear_cache=False):
+def load_thumbnail_image(file_id, frame, *, clear_cache=False, attempts=1):
     """Load a thumbnail off the GUI thread as a QImage (thread-safe).
 
     Tries an existing on-disk file first, then asks GetThumbPath to generate.
@@ -94,7 +94,7 @@ def load_thumbnail_image(file_id, frame, *, clear_cache=False):
     path = ""
     if clear_cache:
         try:
-            path = GetThumbPath(file_id, frame, clear_cache=True) or ""
+            path = GetThumbPath(file_id, frame, clear_cache=True, attempts=attempts) or ""
         except Exception:
             log.warning(
                 "Thumbnail force-refresh failed for file_id=%s frame=%s",
@@ -109,7 +109,7 @@ def load_thumbnail_image(file_id, frame, *, clear_cache=False):
             path = prewarmed_thumb_path(file_id, frame)
         if not path:
             try:
-                path = GetThumbPath(file_id, frame) or ""
+                path = GetThumbPath(file_id, frame, attempts=attempts) or ""
             except Exception:
                 log.warning(
                     "Thumbnail request failed for file_id=%s frame=%s",
@@ -135,10 +135,14 @@ class _ThumbnailWorker(QObject):
     """Worker object that resolves thumbnail images on a background thread."""
 
     thumbnail_ready = pyqtSignal(str, int, object, int)
+    _max_pending = _MAX_PENDING_JOBS
+    _attempts = 1
 
-    def __init__(self):
+    def __init__(self, max_pending=_MAX_PENDING_JOBS, attempts=1):
         super().__init__()
         self._queue = deque()
+        self._max_pending = max_pending
+        self._attempts = attempts
         self._processing = False
         self._current_generation = 0
         self._drain_scheduled = False
@@ -160,16 +164,19 @@ class _ThumbnailWorker(QObject):
                 self._queue = deque(
                     j for j in self._queue if j[3] >= self._current_generation
                 )
+            clip_id, frame = str(clip_id or ""), int(frame or 0)
+            clear_cache = bool(clear_cache)
+            # One queued job per slot: a repeat request replaces the waiting
+            # one, and never drops a force-refresh it was merged with.
+            for queued in self._queue:
+                if queued[0] == clip_id and queued[2] == frame:
+                    self._queue.remove(queued)
+                    clear_cache = clear_cache or queued[4]
+                    break
             self._queue.append(
-                (
-                    str(clip_id or ""),
-                    str(file_id or ""),
-                    int(frame or 0),
-                    generation,
-                    bool(clear_cache),
-                )
+                (clip_id, str(file_id or ""), frame, generation, clear_cache)
             )
-        while len(self._queue) > _MAX_PENDING_JOBS:
+        while self._max_pending and len(self._queue) > self._max_pending:
             self._queue.popleft()
         self._schedule_drain()
 
@@ -200,7 +207,7 @@ class _ThumbnailWorker(QObject):
                 image = QImage()
                 if clip_id and file_id and frame > 0:
                     image, _path = load_thumbnail_image(
-                        file_id, frame, clear_cache=clear_cache
+                        file_id, frame, clear_cache=clear_cache, attempts=self._attempts
                     )
                 self.thumbnail_ready.emit(clip_id, frame, image, generation)
         finally:
@@ -215,17 +222,24 @@ class TimelineThumbnailManager(QObject):
     Requests are coalesced and bounded on the caller thread before any
     cross-thread Qt queued delivery, so paint storms cannot unbounded-queue
     the worker event loop.
+
+    The Project Files model runs its own instance with ``max_pending=None``:
+    its rows are not repainted into asking again, so no request may be dropped
+    (there is at most one per file anyway).
     """
 
     thumbnail_ready = pyqtSignal(str, int, object, int)
     _request_batch = pyqtSignal(object)
     _clear_jobs = pyqtSignal()
+    _max_pending = _MAX_PENDING_JOBS
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, max_pending=_MAX_PENDING_JOBS, attempts=1,
+                 thread_name="timeline_thumbnail"):
         super().__init__(parent)
         self._thread = QThread(self)
-        self._thread.setObjectName("timeline_thumbnail")
-        self._worker = _ThumbnailWorker()
+        self._thread.setObjectName(thread_name)
+        self._max_pending = max_pending
+        self._worker = _ThumbnailWorker(max_pending=max_pending, attempts=attempts)
         self._worker.moveToThread(self._thread)
         self._pending = OrderedDict()
         self._emit_scheduled = False
@@ -237,23 +251,25 @@ class TimelineThumbnailManager(QObject):
     def request_thumbnail(
         self, clip_id, file_id, frame, generation, clear_cache=False
     ):
-        """Queue a thumbnail request (coalesced, ≤64 outstanding)."""
+        """Queue a thumbnail request (coalesced per slot, at most max_pending outstanding)."""
         clip_id = str(clip_id or "")
         file_id = str(file_id or "")
         frame = int(frame or 0)
         generation = int(generation or 0)
         key = (clip_id, frame)
-        # Newer generation / force-refresh for the same slot replaces older.
+        clear_cache = bool(clear_cache)
+        # Newer generation for the same slot replaces older; a force-refresh
+        # already pending for the slot is kept.
         if key in self._pending:
-            self._pending.pop(key, None)
+            clear_cache = clear_cache or self._pending.pop(key)[4]
         self._pending[key] = (
             clip_id,
             file_id,
             frame,
             generation,
-            bool(clear_cache),
+            clear_cache,
         )
-        while len(self._pending) > _MAX_PENDING_JOBS:
+        while self._max_pending and len(self._pending) > self._max_pending:
             self._pending.popitem(last=False)
         if not self._emit_scheduled:
             self._emit_scheduled = True
@@ -280,15 +296,17 @@ class TimelineThumbnailManager(QObject):
         self.clear_pending()
         was_running = self._thread.isRunning()
         if was_running:
+            name = self._thread.objectName()
             self._thread.quit()
             stopped = self._thread.wait(2000)
             log.info(
-                "Timeline thumbnail thread stop result running_before=%s running_after=%s",
+                "Thumbnail thread %s stop result running_before=%s running_after=%s",
+                name,
                 was_running,
                 self._thread.isRunning(),
             )
             if not stopped:
-                log.warning("Timeline thumbnail thread did not stop within 2 seconds")
+                log.warning("Thumbnail thread %s did not stop within 2 seconds", name)
         self._worker.deleteLater()
         self._thread.deleteLater()
         self._thread = None
