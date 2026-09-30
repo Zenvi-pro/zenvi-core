@@ -27,7 +27,6 @@
 """
 
 import os
-import re
 import shutil
 import sys
 import functools
@@ -51,12 +50,12 @@ from qt_api import (
 
 import openshot
 
-from classes import info, ui_util, tabstops
+from classes import info, ui_util, tabstops, title_svg
 from classes.logger import log
 from classes.app import get_app
 from classes.metrics import track_metric_screen
 from windows.color_picker import ColorPicker, draw_checkerboard
-from classes.style_tools import style_to_dict, dict_to_style, set_if_existing
+from classes.style_tools import style_to_dict
 from windows.views.titles_listview import TitlesListView
 
 
@@ -149,6 +148,7 @@ class TitleEditor(QDialog):
 
         self.display_name = ""
         self.tspan_nodes = None
+        self.line_nodes = []
 
         self.default_font_family = "DejaVu Sans"
         self.qfont = self.get_font(self.default_font_family)
@@ -227,14 +227,8 @@ class TitleEditor(QDialog):
             if type(child) == QLineEdit and child.objectName() != "txtFileName":
                 text_list.append(child.text())
 
-        # Update text values in the SVG
-        for i, node in enumerate(self.tspan_nodes):
-            if len(node.childNodes) > 0 and i <= (len(text_list) - 1):
-                new_text_node = self.xmldoc.createTextNode(text_list[i])
-                old_text_node = node.childNodes[0]
-                node.removeChild(old_text_node)
-                # add new text node
-                node.appendChild(new_text_node)
+        # Update text values in the SVG (one box per line node, see title_svg.line_nodes)
+        title_svg.set_line_texts(self.xmldoc, text_list, self.line_nodes)
 
         # Something changed, so update temp SVG
         self.update_timer.start()
@@ -354,8 +348,9 @@ class TitleEditor(QDialog):
 
         # Parse the svg object
         self.xmldoc = minidom.parse(self.filename)
-        # get the text elements
+        # get the text elements (every tspan for styling; the ones holding text are the lines)
         self.tspan_nodes = self.xmldoc.getElementsByTagName('tspan')
+        self.line_nodes = title_svg.line_nodes(self.xmldoc)
 
         # Detect font from template (or default font as a fallback)
         self.detect_font()
@@ -394,38 +389,18 @@ class TitleEditor(QDialog):
             name = _("TitleFileName (%d)")
             offset = 0
             if self.duplicate and self.edit_file_path:
-                # Re-use current name
-                name = os.path.basename(self.edit_file_path)
-                # Splits the filename into:
-                #  [base-part][optional space][([number])].svg
-                # Match groups are:
-                #  1: Base name ("title", "Title-2", "Title number 3000")
-                #  2: Space(s) preceding groups 3+4, IFF 3/4 are a match
-                #  3: The entire parenthesized number ("(1)", "(20)", "(1000)")
-                #  4: Just the number inside the parens ("1", "20", "1000")
-                match = re.match(r"^(.+?)(\s*)(\(([0-9]*)\))?\.svg$", name)
-                # Make sure the new title has " (%d)" appended by default
-                name = match.group(1) + " (%d)"
-                if match.group(4):
-                    # Filename already contained a number -> start counting from there
-                    offset = int(match.group(4))
-                    # -> only include space(s) if there before
-                    name = match.group(1) + match.group(2) + "(%d)"
+                # Re-use current name: "Title.svg" -> "Title (1)", "Title (3).svg" -> "Title (4)"
+                name, offset = title_svg.duplicate_pattern(os.path.basename(self.edit_file_path))
             # Find an unused file name
-            for i in range(1, 1000):
-                curname = name % (offset + i)
-                possible_path = os.path.join(info.TITLE_PATH, "%s.svg" % curname)
-                if not os.path.exists(possible_path):
-                    self.txtFileName.setText(curname)
-                    break
+            curname = title_svg.free_name(name, offset, info.TITLE_PATH)
+            if curname:
+                self.txtFileName.setText(curname)
         self.txtFileName.setFixedHeight(28)
         layout.addRow(label, self.txtFileName)
 
         # Get text values
         title_text = []
-        for i, node in enumerate(self.tspan_nodes):
-            if len(node.childNodes) < 1:
-                continue
+        for i, node in enumerate(self.line_nodes):
             text = node.childNodes[0].data
             title_text.append(text)
 
@@ -538,10 +513,9 @@ class TitleEditor(QDialog):
         if not self.filename.endswith("svg"):
             self.filename = self.filename + ".svg"
         try:
-            file = open(os.fsencode(self.filename), "wb")  # wb needed for windows support
-            file.write(bytes(xmldoc.toxml(), 'UTF-8'))
-            file.close()
-        except IOError as inst:
+            # Staged next to the target, then renamed: no half-written title on disk
+            title_svg.write(xmldoc, self.filename)
+        except OSError as inst:
             log.error("Error writing SVG title: {}".format(inst))
 
     def save_and_reload(self):
@@ -673,27 +647,7 @@ class TitleEditor(QDialog):
 
     def get_ref_color(self, id):
         """Get the color value from a reference id (i.e. linearGradient3267)"""
-        for ref_node in self.xmldoc.getElementsByTagName("defs")[0].childNodes:
-            if ref_node.attributes and "id" in ref_node.attributes:
-                ref_node_id = ref_node.attributes["id"].value
-                if id == ref_node_id:
-                    # Found a matching color reference
-                    if "xlink:href" in ref_node.attributes:
-                        # look up color reference again
-                        xlink_ref_id = ref_node.attributes["xlink:href"].value[1:]
-                        return self.get_ref_color(xlink_ref_id)
-                    if "href" in ref_node.attributes:
-                        # look up color reference again
-                        xlink_ref_id = ref_node.attributes["href"].value[1:]
-                        return self.get_ref_color(xlink_ref_id)
-                    elif ref_node.childNodes:
-                        for stop_node in ref_node.childNodes:
-                            if stop_node.nodeName == "stop":
-                                # get color from stop
-                                ard = style_to_dict(stop_node.getAttribute("style"))
-                                if "stop-color" in ard:
-                                    return ard.get("stop-color")
-        return ""
+        return title_svg.ref_color(self.xmldoc, id)
 
     def update_background_color_button(self):
         """Updates the color shown on the background color button"""
@@ -723,60 +677,24 @@ class TitleEditor(QDialog):
     def set_font_attributes(self, font_size_ratio=1.0):
         '''sets the QFont properties to all SVG: TEXT and TSPAN nodes'''
         log.debug(f"Setting font-family to {self.qfont.family()}.")
-
-        # Loop through each TEXT element
-        for text_child in self.text_nodes + self.tspan_nodes:
-            # set the style elements for the main text node
-            s = text_child.getAttribute("style")
-            ard = style_to_dict(s)
-            if self.qfont.family():
-                ard["font-family"] = f"'{self.qfont.family()}'"
-            if self.qfont.italic():
-                ard["font-style"] = "italic"
-            else:
-                ard["font-style"] = "normal"
-            if self.qfont.bold():
-                ard["font-weight"] = "bold"
-            else:
-                ard["font-weight"] = "normal"
-            if font_size_ratio != 1.0:
-                new_font_size_pixel = 100
-                if 'font-size' in ard:
-                    new_font_size_pixel = font_size_ratio * float(ard['font-size'][:-2])
-                set_if_existing(ard, "font-size", f"{new_font_size_pixel}px")
-            self.title_style_string = dict_to_style(ard)
-
-            # set the text node
-            text_child.setAttribute("style", self.title_style_string)
+        self.title_style_string = title_svg.apply_font(
+            list(self.text_nodes) + list(self.tspan_nodes),
+            family=self.qfont.family() or None,
+            italic=bool(self.qfont.italic()),
+            bold=bool(self.qfont.bold()),
+            font_size_ratio=font_size_ratio)
         log.debug("Updated font styles to %s", self.title_style_string)
 
     def set_bg_style(self, color, alpha):
         '''sets the background color'''
 
         if self.rect_node:
-            # Turn the style attribute into a dict for modification
-            s = self.rect_node[0].getAttribute("style")
-            ard = style_to_dict(s)
-            ard.update({
-                "fill": color,
-                "opacity": str(alpha),
-                })
-            # Convert back to a string and update the node in the xml doc
-            self.bg_style_string = dict_to_style(ard)
-            self.rect_node[0].setAttribute("style", self.bg_style_string)
+            self.bg_style_string = title_svg.set_background(self.rect_node, color, alpha)
             log.debug("Updated background style to %s", self.bg_style_string)
 
     def set_font_color_elements(self, color, alpha):
-        # Loop through each TEXT element
-        for text_child in self.text_nodes + self.tspan_nodes:
-            # SET TEXT PROPERTIES
-            s = text_child.getAttribute("style")
-            ard = style_to_dict(s)
-            ard.update({
-                "fill": color,
-                "opacity": str(alpha),
-                })
-            text_child.setAttribute("style", dict_to_style(ard))
+        # Fill every line; opacity once per line (nested opacities multiply in SVG)
+        title_svg.set_text_color(self.text_nodes, self.tspan_nodes, color, alpha)
         log.debug("Set text node style, fill:%s opacity:%s", color, alpha)
 
     def accept(self):
