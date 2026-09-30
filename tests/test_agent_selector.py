@@ -235,7 +235,7 @@ def test_panel_reports_each_status(qapp):
     assert "claude" in panel._rows[CLAUDE].desc.text()
 
     panel = _panel(FakeChat({}))       # nothing probed yet
-    assert panel._rows[CLAUDE].word.text() == "checkingΓÇª"
+    assert panel._rows[CLAUDE].word.text() == "checking…"
 
     # The built-in assistant is always ready and never offers Connect.
     assert panel._rows["zenvi"].word.text() == "ready"
@@ -280,7 +280,7 @@ def test_connect_marks_the_row_busy_then_reports_the_result(qapp):
 
     panel._on_connect_requested(CODEX)
     assert chat.connects == [CODEX]
-    assert panel._rows[CODEX].word.text() == "connectingΓÇª"
+    assert panel._rows[CODEX].word.text() == "connecting…"
     assert not panel._rows[CODEX].action.isEnabled()
 
     panel.on_connect_result(CODEX, False, "codex config write failed\ndetail")
@@ -395,5 +395,10 @@ def test_close_event_guards_the_timeline_shutdown(qapp):
     before = body[:call]
     guard = before.rindex("try:")
     assert "except" in body[call:], "thumbnail shutdown is not inside a try/except"
-    assert re.search(r"try:\s*\n\s+timeline_widget = getattr", before[guard:]), \
-        "the getattr that raises must itself be inside the try"
+    # Other statements may open the block (the qt_api isdeleted import does),
+    # as long as every line up to the getattr is indented under the try.
+    line_start = before.rindex("\n", 0, guard) + 1
+    assert re.match(
+        r"([ \t]*)try:[ \t]*\n(?:\1[ \t][^\n]*\n|\n)*?\1[ \t]+timeline_widget = getattr",
+        before[line_start:],
+    ), "the getattr that raises must itself be inside the try"
