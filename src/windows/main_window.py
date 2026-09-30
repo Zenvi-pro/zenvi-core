@@ -69,6 +69,7 @@ from classes.logger import log
 from classes.metrics import track_metric_session, track_metric_screen
 from classes.path_utils import comparable_local_path, native_display_path, normalized_local_path
 from classes.query import File, Clip, Transition, Marker, Track, Effect
+from classes import track_ops
 from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.clipboard import ClipboardManager
 from classes.proxy_service import ProxyService
@@ -2130,83 +2131,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def renumber_all_layers(self, insert_at=None, stride=1000000):
         """Renumber all of the project's layers to be equidistant (in
         increments of stride), leaving room for future insertion/reordering.
-        Inserts a new track, if passed an insert_at index"""
-
-        app = get_app()
-
-        # Don't track renumbering in undo history
-        app.updates.ignore_history = True
-
-        tracks = sorted(app.project.get("layers"), key=lambda x: x['number'])
-
-        log.warning("######## RENUMBERING TRACKS ########")
-        log.info("Tracks before: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
-
-        # Leave placeholder for new track, if insert requested
-        if insert_at is not None and int(insert_at) < len(tracks) + 1:
-            tracks.insert(int(insert_at), "__gap__")
-
-        # Statistics for end-of-function logging
-        renum_count = len(tracks)
-        renum_min = stride
-        renum_max = renum_count * stride
-
-        # Collect items to renumber
-        targets = []
-        for (idx, layer) in enumerate(tracks):
-            newnum = (idx + 1) * stride
-
-            # Check for insertion placeholder
-            if isinstance(layer, str) and layer == "__gap__":
-                insert_num = newnum
-                continue
-
-            # Look up track info
-            oldnum = layer.get('number')
-            cur_track = Track.get(number=oldnum)
-            if not cur_track:
-                log.error('Track number %s not found', oldnum)
-                continue
-
-            # Find track elements
-            cur_clips = list(Clip.filter(layer=oldnum))
-            cur_trans = list(Transition.filter(layer=oldnum))
-
-            # Collect items to be updated with new layer number
-            targets.append({
-                "number": newnum,
-                "track": cur_track,
-                "clips": cur_clips,
-                "trans": cur_trans,
-            })
-
-        # Renumber everything
-        for layer in targets:
-            try:
-                num = layer["number"]
-                layer["track"].data["number"] = num
-                layer["track"].save()
-
-                for item in layer["clips"] + layer["trans"]:
-                    item.data["layer"] = num
-                    item.save()
-            except (AttributeError, IndexError, ValueError):
-                # Ignore references to deleted objects
-                continue
-
-        # Re-enable undo tracking for new track insertion
-        app.updates.ignore_history = False
-
-        # Create new track and insert at gap point, if requested
-        if insert_at is not None:
-            track = Track()
-            track.data = {"number": insert_num, "y": 0, "label": "", "lock": False}
-            track.save()
-
-        log.info("Renumbered {} tracks from {} to {}{}".format(
-            renum_count, renum_min, renum_max,
-            " (inserted {} at {})".format(insert_num, insert_at) if insert_at else "")
-        )
+        Inserts a new track, if passed an insert_at index. One undo step
+        (see classes.track_ops.renumber_tracks)."""
+        return track_ops.renumber_tracks(insert_at=insert_at, stride=stride)
 
     def show_audio_recording_dock(self, start_time=None, track_number=None):
         """Show the Recording dock, pre-filling context when provided."""
@@ -2365,113 +2292,34 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionAddTrack_trigger(self, checked=True):
         log.info("actionAddTrack_trigger")
+        # New track above every existing track
+        track_ops.insert_track("top")
 
-        # Get # of tracks
-        all_tracks = get_app().project.get("layers")
-        all_tracks.sort(key=lambda x: x['number'], reverse=True)
-        track_number = all_tracks[0].get("number") + 1000000
-
-        # Create new track above existing layer(s)
-        track = Track()
-        track.data = {"number": track_number, "y": 0, "label": "", "lock": False}
-        track.save()
+    def _selected_track_layer(self):
+        """Layer number of the track the Track menu was opened on, or None."""
+        selected_layer_id = self.selected_tracks[0] if self.selected_tracks else None
+        existing_track = Track.get(id=selected_layer_id) if selected_layer_id else None
+        if not existing_track:
+            # Log error and fail silently
+            log.error('No track object found with id: %s', selected_layer_id)
+            return None
+        return int(existing_track.data["number"])
 
     def actionAddTrackAbove_trigger(self, checked=True):
-        # Get selected track
-        all_tracks = get_app().project.get("layers")
-        selected_layer_id = self.selected_tracks[0]
-
-        log.info("adding track above %s", selected_layer_id)
-
-        # Get track data for selected track
-        existing_track = Track.get(id=selected_layer_id)
-        if not existing_track:
-            # Log error and fail silently
-            log.error('No track object found with id: %s', selected_layer_id)
+        selected_layer_num = self._selected_track_layer()
+        if selected_layer_num is None:
             return
-        selected_layer_num = int(existing_track.data["number"])
-
-        # Find track above selected track (if any)
-        try:
-            tracks = sorted(all_tracks, key=lambda x: x['number'])
-            existing_index = tracks.index(existing_track.data)
-        except ValueError:
-            log.warning("Could not find track %s", selected_layer_num, exc_info=1)
-            return
-        try:
-            next_index = existing_index + 1
-            next_layer = tracks[next_index]
-            delta = abs(selected_layer_num - next_layer.get('number'))
-        except IndexError:
-            delta = 2000000
-
-        # Calculate new track number (based on gap delta)
-        if delta > 2:
-            # New track number (pick mid point in track number gap)
-            new_track_num = selected_layer_num + int(round(delta / 2.0))
-
-            # Create new track and insert
-            track = Track()
-            track.data = {"number": new_track_num, "y": 0, "label": "", "lock": False}
-            track.save()
-        else:
-            # Track numbering is too tight, renumber them all and insert
-            self.renumber_all_layers(insert_at=next_index)
-
-        tracks = sorted(get_app().project.get("layers"), key=lambda x: x['number'])
-
-        # Temporarily for debugging
-        log.info("Tracks after: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
+        log.info("adding track above %s", selected_layer_num)
+        # Midpoint of the gap above (renumbers every track if it is too small)
+        track_ops.insert_track("above", selected_layer_num)
 
     def actionAddTrackBelow_trigger(self, checked=True):
-        # Get selected track
-        all_tracks = get_app().project.get("layers")
-        selected_layer_id = self.selected_tracks[0]
-
-        log.info("adding track below %s", selected_layer_id)
-
-        # Get track data for selected track
-        existing_track = Track.get(id=selected_layer_id)
-        if not existing_track:
-            # Log error and fail silently
-            log.error('No track object found with id: %s', selected_layer_id)
+        selected_layer_num = self._selected_track_layer()
+        if selected_layer_num is None:
             return
-        selected_layer_num = int(existing_track.data["number"])
-
-        # Get track below selected track (if any)
-        try:
-            tracks = sorted(all_tracks, key=lambda x: x['number'])
-            existing_index = tracks.index(existing_track.data)
-        except ValueError:
-            log.warning("Could not find track %s", selected_layer_num, exc_info=1)
-            return
-
-        if existing_index > 0:
-            prev_index = existing_index - 1
-            prev_layer = tracks[prev_index]
-            delta = abs(selected_layer_num - prev_layer.get('number'))
-        else:
-            delta = selected_layer_num
-
-        # Calculate new track number (based on gap delta)
-        if delta > 2:
-            # New track number (pick mid point in track number gap)
-            new_track_num = selected_layer_num - int(round(delta / 2.0))
-
-            log.info("New track num %s (delta %s)", new_track_num, delta)
-
-            # Create new track and insert
-            track = Track()
-            track.data = {"number": new_track_num, "y": 0, "label": "", "lock": False}
-            track.save()
-        else:
-            # Track numbering is too tight, renumber them all and insert
-            self.renumber_all_layers(insert_at=existing_index)
-
-        tracks = sorted(get_app().project.get("layers"), key=lambda x: x['number'])
-
-        # Temporarily for debugging
-        log.info("Tracks after: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
+        log.info("adding track below %s", selected_layer_num)
+        # Midpoint of the gap below (renumbers every track if it is too small)
+        track_ops.insert_track("below", selected_layer_num)
 
     def actionSnappingTool_trigger(self, checked=True):
         log.info("actionSnappingTool_trigger")
@@ -2527,228 +2375,71 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Calculate position in seconds
         position = (player.Position() - 1) / fps_float
 
-        # Look for existing Marker
-        marker = Marker()
-        marker.data = {
-            "position": position,
-            "icon": "blue.png",
-            "vector": "blue",
-            }
-        marker.save()
+        # Add a (default blue) marker at the playhead
+        track_ops.add_marker(position)
         self.timeline.setFocus(Qt.OtherFocusReason)
 
     def findAllMarkerPositions(self):
         """Build and return a list of all seekable locations for the currently-selected timeline elements"""
-
-        def getTimelineObjectPositions(obj):
-            """Add clip/transition boundaries & keyframes for timeline navigation"""
-            positions = []
-
-            fps = get_app().project.get("fps")
-            fps_float = float(fps["num"]) / float(fps["den"])
-            frame_duration = float(fps["den"]) / float(fps["num"])
-
-            clip_start_time = obj.data["position"]
-            clip_orig_time = clip_start_time - obj.data["start"]
-            # Last frame on clip is -1 frame's duration
-            clip_stop_time = clip_orig_time + obj.data["end"] - frame_duration
-
-            # add clip boundaries
-            positions.append(clip_start_time)
-            positions.append(clip_stop_time)
-
-            def add_keyframe_positions(value):
-                if isinstance(value, dict):
-                    points = value.get("Points")
-                    if isinstance(points, list):
-                        for point in points:
-                            try:
-                                keyframe_time = (
-                                    (point["co"]["X"] - 1) / fps_float
-                                    - obj.data["start"] + obj.data["position"]
-                                )
-                                if clip_start_time < keyframe_time < clip_stop_time:
-                                    positions.append(keyframe_time)
-                            except (TypeError, KeyError):
-                                pass
-                        return
-                    for child in value.values():
-                        add_keyframe_positions(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        add_keyframe_positions(child)
-
-            # add all object keyframes
-            for property in obj.data:
-                add_keyframe_positions(obj.data[property])
-
-            return positions
-
-        # We can always jump to the beginning of the timeline
-        all_marker_positions = [0]
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        frame_duration = float(fps["den"]) / float(fps["num"])
-
-        # If nothing is selected, also add the end of the last clip
+        last_frame = None
         if not self.selected_clips + self.selected_transitions + self.selected_effects:
             last_frame = get_app().window.timeline_sync.GetLastFrame()
-            all_marker_positions.append((last_frame - 1) / fps_float)
+        return track_ops.navigation_positions(
+            self.selected_clips, self.selected_transitions, self.selected_effects, last_frame)
 
-        # Get list of marker and important positions (like selected clip bounds)
-        for marker in Marker.filter():
-            all_marker_positions.append(marker.data["position"])
+    def _seek_to_marker(self, direction):
+        """Seek to the previous (direction < 0) or next marker / edge / keyframe."""
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        current_position = (self.preview_thread.current_frame - 1) / fps_float
+        closest_position = track_ops.adjacent_position(
+            self.findAllMarkerPositions(), current_position, direction)
 
-        if self.selected_effects:
-            # Only include keyframes for selected effects
-            for effect_id in self.selected_effects:
-                effect = Effect.get(id=effect_id)
-                if not effect:
-                    continue
-                parent = effect.parent
-                clip_start_time = parent["position"]
-                clip_orig_time = clip_start_time - parent["start"]
-                clip_stop_time = clip_orig_time + parent["end"] - frame_duration
-                # Always include parent clip boundaries
-                all_marker_positions.extend([clip_start_time, clip_stop_time])
+        # Seek to marker position (if any)
+        if closest_position is not None:
+            frame_to_seek = track_ops.seconds_to_seek_frame(
+                closest_position, get_app().window.timeline_sync.GetLastFrame())
+            self.SeekSignal.emit(frame_to_seek)
 
-                def add_effect_keyframe_positions(value):
-                    if isinstance(value, dict):
-                        points = value.get("Points")
-                        if isinstance(points, list):
-                            for point in points:
-                                try:
-                                    keyframe_time = (point["co"]["X"] - 1) / fps_float + clip_orig_time
-                                    if clip_start_time < keyframe_time < clip_stop_time:
-                                        all_marker_positions.append(keyframe_time)
-                                except (TypeError, KeyError):
-                                    pass
-                            return
-                        for child in value.values():
-                            add_effect_keyframe_positions(child)
-                    elif isinstance(value, list):
-                        for child in value:
-                            add_effect_keyframe_positions(child)
-
-                for prop in effect.data:
-                    add_effect_keyframe_positions(effect.data[prop])
-        else:
-            # Loop through selected clips (and add key positions)
-            for clip_id in self.selected_clips:
-                selected_clip = Clip.get(id=clip_id)
-                if selected_clip:
-                    all_marker_positions.extend(getTimelineObjectPositions(selected_clip))
-
-            # Loop through selected transitions (and add key positions)
-            for tran_id in self.selected_transitions:
-                selected_tran = Transition.get(id=tran_id)
-                if selected_tran:
-                    all_marker_positions.extend(getTimelineObjectPositions(selected_tran))
-
-        # remove duplicates
-        all_marker_positions = list(set(all_marker_positions))
-
-        return all_marker_positions
+            # Keep properties in sync with the seek target. Avoid forcing
+            # refreshFrameSignal here: it can queue a stale seek to the old
+            # player position and overwrite this navigation jump.
+            get_app().window.propertyTableView.select_frame(frame_to_seek)
+        self.timeline.setFocus(Qt.OtherFocusReason)
 
     def actionPreviousMarker_trigger(self, checked=True):
         log.info("actionPreviousMarker_trigger")
-
-        # Calculate current position (in seconds)
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        current_position = (self.preview_thread.current_frame - 1) / fps_float
-        all_marker_positions = self.findAllMarkerPositions()
-
-        # Loop through all markers, and find the closest one to the left
-        closest_position = None
-        for marker_position in sorted(all_marker_positions):
-            # Is marker smaller than position?
-            if marker_position < current_position and (abs(marker_position - current_position) > 0.001):
-                # Is marker larger than previous marker
-                if closest_position and marker_position > closest_position:
-                    # Set a new closest marker
-                    closest_position = marker_position
-                elif not closest_position:
-                    # First one found
-                    closest_position = marker_position
-
-        # Seek to marker position (if any)
-        if closest_position is not None:
-            # Seek
-            frame_to_seek = round(closest_position * fps_float) + 1
-            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
-            self.SeekSignal.emit(frame_to_seek)
-
-            # Keep properties in sync with the seek target. Avoid forcing
-            # refreshFrameSignal here: it can queue a stale seek to the old
-            # player position and overwrite this navigation jump.
-            get_app().window.propertyTableView.select_frame(frame_to_seek)
-        self.timeline.setFocus(Qt.OtherFocusReason)
+        self._seek_to_marker(-1)
 
     def actionNextMarker_trigger(self, checked=True):
         log.info("actionNextMarker_trigger")
-
-        # Calculate current position (in seconds)
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        current_position = (self.preview_thread.current_frame - 1) / fps_float
-        all_marker_positions = self.findAllMarkerPositions()
-
-        # Loop through all markers, and find the closest one to the right
-        closest_position = None
-        for marker_position in sorted(all_marker_positions):
-            # Is marker smaller than position?
-            if marker_position > current_position and (abs(marker_position - current_position) > 0.001):
-                # Is marker larger than previous marker
-                if closest_position and marker_position < closest_position:
-                    # Set a new closest marker
-                    closest_position = marker_position
-                elif not closest_position:
-                    # First one found
-                    closest_position = marker_position
-
-        # Seek to marker position (if any)
-        if closest_position is not None:
-            # Seek
-            frame_to_seek = round(closest_position * fps_float) + 1
-            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
-            self.SeekSignal.emit(frame_to_seek)
-
-            # Keep properties in sync with the seek target. Avoid forcing
-            # refreshFrameSignal here: it can queue a stale seek to the old
-            # player position and overwrite this navigation jump.
-            get_app().window.propertyTableView.select_frame(frame_to_seek)
-        self.timeline.setFocus(Qt.OtherFocusReason)
+        self._seek_to_marker(1)
 
     def actionCenterOnPlayhead_trigger(self, checked=True):
         """ Center the timeline on the current playhead position """
         self.timeline.centerOnPlayhead()
 
-    def handleSeekPreviousFrame(self):
-        """Handle previous-frame keypress"""
+    def step_frames(self, delta):
+        """Pause and move the playhead by *delta* frames (the frame-step keys); returns the target frame."""
         player = get_app().window.preview_thread.player
-        frame_num = player.Position() - 1
+        frame_num = max(1, player.Position() + int(delta))
 
-        # Seek to previous frame
+        # Seek to the frame, paused
         get_app().window.PauseSignal.emit()
         get_app().window.SpeedSignal.emit(0)
         get_app().window.previewFrameSignal.emit(frame_num)
 
         # Notify properties dialog
         get_app().window.propertyTableView.select_frame(frame_num)
+        return frame_num
+
+    def handleSeekPreviousFrame(self):
+        """Handle previous-frame keypress"""
+        self.step_frames(-1)
 
     def handleSeekNextFrame(self):
         """Handle next-frame keypress"""
-        player = get_app().window.preview_thread.player
-        frame_num = player.Position() + 1
-
-        # Seek to next frame
-        get_app().window.PauseSignal.emit()
-        get_app().window.SpeedSignal.emit(0)
-        get_app().window.previewFrameSignal.emit(frame_num)
-
-        # Notify properties dialog
-        get_app().window.propertyTableView.select_frame(frame_num)
+        self.step_frames(1)
 
     def handlePlayPauseToggleSignal(self):
         """Handle play-pause-toggle keypress"""
@@ -3294,21 +2985,24 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if refresh:
             self.refreshFrameSignal.emit()
 
+    def deselect_removed_item(self, item_id, item_type):
+        """Drop a clip/transition that is about to be deleted from the selection.
+
+        Updates the properties view and transform handles right away, so nothing
+        keeps a reference to the deleted object.
+        """
+        self.removeSelection(item_id, item_type)
+        self.emit_selection_signal()
+        self.show_property_timeout()
+
     def actionRemoveTrack_trigger(self):
         log.debug('actionRemoveTrack_trigger')
 
         # Get translation function
         _ = get_app()._tr
 
-        # Transaction id to group all deletes together
-        get_app().updates.transaction_id = str(uuid.uuid4())
-
         track_id = self.selected_tracks[0]
         max_track_number = len(get_app().project.get("layers"))
-
-        # Get details of selected track
-        selected_track = Track.get(id=track_id)
-        selected_track_number = int(selected_track.data["number"])
 
         # Don't allow user to delete final track
         if max_track_number == 1:
@@ -3316,26 +3010,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             QMessageBox.warning(self, _("Error Removing Track"), _("You must keep at least 1 track"))
             return
 
-        # Remove all clips on this track first
-        for clip in Clip.filter(layer=selected_track_number):
-            # Clear selected clips (and immediately update properties/handles to avoid stale references)
-            self.removeSelection(clip.id, "clip")
-            self.emit_selection_signal()
-            self.show_property_timeout()
-            clip.delete()
-
-        # Remove all transitions on this track first
-        for trans in Transition.filter(layer=selected_track_number):
-            self.removeSelection(trans.id, "transition")
-            self.emit_selection_signal()
-            self.show_property_timeout()
-            trans.delete()
-
-        # Remove track
-        selected_track.delete()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        # Remove the track with its clips and transitions (one undo step)
+        track_ops.remove_track(track_id, on_item_removed=self.deselect_removed_item)
 
         # Clear selected track
         self.selected_tracks = []
@@ -3346,26 +3022,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionLockTrack_trigger(self):
         """Callback for locking a track"""
         log.debug('actionLockTrack_trigger')
-
-        # Get details of track
-        track_id = self.selected_tracks[0]
-        selected_track = Track.get(id=track_id)
-
-        # Lock track and save
-        selected_track.data['lock'] = True
-        selected_track.save()
+        track_ops.set_track_lock(self.selected_tracks[0], True)
 
     def actionUnlockTrack_trigger(self):
         """Callback for unlocking a track"""
         log.info('actionUnlockTrack_trigger')
-
-        # Get details of track
-        track_id = self.selected_tracks[0]
-        selected_track = Track.get(id=track_id)
-
-        # Lock track and save
-        selected_track.data['lock'] = False
-        selected_track.save()
+        track_ops.set_track_lock(self.selected_tracks[0], False)
 
     def actionRenameTrack_trigger(self):
         """Callback for renaming track"""
@@ -3391,17 +3053,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         text, ok = QInputDialog.getText(self, _('Rename Track'), _('Track Name:'), text=track_name)
         if ok:
             # Update track
-            selected_track.data["label"] = text
-            selected_track.save()
+            track_ops.rename_track(track_id, text)
 
     def actionRemoveMarker_trigger(self):
         log.info('actionRemoveMarker_trigger')
-
-        for marker_id in self.selected_markers:
-            marker = Marker.filter(id=marker_id)
-            for m in marker:
-                # Remove track
-                m.delete()
+        track_ops.remove_markers(list(self.selected_markers))
 
     def actionZoomToTimeline(self):
         self.sliderZoomWidget.zoomToTimeline()

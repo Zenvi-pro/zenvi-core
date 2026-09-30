@@ -1088,18 +1088,6 @@ def list_layers(**_kw) -> str:
         return f"Error: {e}"
 
 
-def list_markers(**_kw) -> str:
-    try:
-        from classes.query import Marker
-        markers = Marker.filter()
-        if not markers:
-            return "No markers in project."
-        lines = [f"  id={m.data.get('id','')} position={m.data.get('position',0)} name={m.data.get('name','')}" for m in markers]
-        return f"Markers ({len(markers)}):\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
 # ---------------------------------------------------------------------------
 # Playback & history
 # ---------------------------------------------------------------------------
@@ -1161,14 +1149,6 @@ def watch_clip_and_play(file_path: str = "", **_kw) -> str:
         return f"Loaded and playing: {os.path.basename(resolved_path)}"
     except Exception as e:
         log.error("watch_clip_and_play failed: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def play(**_kw) -> str:
-    try:
-        _get_app().window.actionPlay_trigger()
-        return "Playback toggled."
-    except Exception as e:
         return f"Error: {e}"
 
 
@@ -1307,22 +1287,6 @@ def redo(steps=1, **_kw) -> str:
 # ---------------------------------------------------------------------------
 # Timeline / view
 # ---------------------------------------------------------------------------
-
-def add_track(**_kw) -> str:
-    try:
-        _get_app().window.actionAddTrackBelow_trigger()
-        return "Track added."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def add_marker(**_kw) -> str:
-    try:
-        _get_app().window.actionAddMarker_trigger()
-        return "Marker added."
-    except Exception as e:
-        return f"Error: {e}"
-
 
 def _locked_track_error(app, layer_num):
     """Return an error string if *layer_num* is a locked track, else ''."""
@@ -8359,18 +8323,18 @@ AGENT_TOOL_HANDLERS = {
     "list_files_tool": list_files,
     "list_clips_tool": list_clips,
     "list_layers_tool": list_layers,
-    "list_markers_tool": list_markers,
+    # list_markers_tool: classes.editor_tools.tracks_nav
+    # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
     "watch_clip_tool": watch_clip_and_play,
     "watch_clip_window_tool": watch_clip_window,
-    "play_tool": play,
+    # play_tool: classes.editor_tools.tracks_nav
     "go_to_start_tool": go_to_start,
     "go_to_end_tool": go_to_end,
     "undo_tool": undo,
     "redo_tool": redo,
     # Timeline
-    "add_track_tool": add_track,
-    "add_marker_tool": add_marker,
+    # add_track_tool, add_marker_tool: classes.editor_tools.tracks_nav
     "delete_from_timeline_tool": delete_from_timeline,
     # Deprecated aliases -- kept dispatchable for stored plans and in-flight
     # sessions; the backend catalog exposes delete_from_timeline_tool only.
@@ -8438,16 +8402,12 @@ TOOL_DISPLAY_LABELS = {
     "list_files_tool": "List files",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
-    "list_markers_tool": "List markers",
     "watch_clip_tool": "Load and play clip",
     "watch_clip_window_tool": "Watch clip window",
-    "play_tool": "Toggle playback",
     "go_to_start_tool": "Seek to start",
     "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
-    "add_track_tool": "Add track",
-    "add_marker_tool": "Add marker",
     "delete_from_timeline_tool": "Delete from timeline",
     "remove_clip_tool": "Delete from timeline",
     "delete_clips_on_track_tool": "Delete from timeline",
@@ -8545,7 +8505,6 @@ READ_ONLY_TOOLS = frozenset({
     "list_files_tool",
     "list_clips_tool",
     "list_layers_tool",
-    "list_markers_tool",
     "get_timeline_state_tool",
     "get_file_info_tool",
     "list_transitions_tool",
