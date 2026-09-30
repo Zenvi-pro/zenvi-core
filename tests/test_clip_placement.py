@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 from classes.clip_placement import (
     DEFAULT_WATCH_QUERY,
     blind_trim_rejected,
+    butt_against_previous_clip,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
     end_bounds_keep_window,
@@ -159,3 +160,16 @@ def test_end_seconds_that_agrees_with_the_duration_bounds_the_window():
 def test_end_seconds_a_different_duration_overrides_is_not_a_bound():
     assert end_bounds_keep_window(0.0, 5.0, 20.0) is False
     assert end_bounds_keep_window(15.0, 4.0, 20.0) is False
+
+
+def test_butt_moves_only_a_position_planned_on_a_resized_clips_end():
+    resized = [(5.8, 5.3)]  # planned to end at 5.8s, snapping made it end at 5.3s
+    assert butt_against_previous_clip(5.8, resized) == 5.3
+    assert butt_against_previous_clip(5.85, resized) == 5.3  # rounded plan
+    assert butt_against_previous_clip(6.3, resized) == 6.3   # deliberate gap
+    assert butt_against_previous_clip(4.8, resized) == 4.8   # deliberate overlap
+    assert butt_against_previous_clip(5.8, []) == 5.8
+
+
+def test_butt_picks_the_nearest_planned_end():
+    assert butt_against_previous_clip(9.0, [(9.05, 8.7), (8.98, 9.4)]) == 9.4

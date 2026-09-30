@@ -2154,6 +2154,37 @@ def split_file_add_clip(
         return f"Error: {e}"
 
 
+# Where a placement was planned to end, for each one whose length snapping or a
+# watch changed: {timeline_clip_id: (position placed at, planned timeline end)}.
+# A later position planned on that end is what butt_against_previous_clip fixes.
+_planned_end_by_clip_id = {}
+
+
+def _resized_placements_on_track(track_num) -> list:
+    """(planned_end, actual_end) for clips on *track_num* this tool resized.
+
+    A clip moved since it was placed is skipped: its plan no longer says where
+    the next clip was meant to go. Must run on the main thread.
+    """
+    from classes.query import Clip
+
+    out = []
+    for c in Clip.filter():
+        d = c.data if isinstance(getattr(c, "data", None), dict) else {}
+        plan = _planned_end_by_clip_id.get(str(getattr(c, "id", "") or ""))
+        if not plan or d.get("layer", 0) != track_num:
+            continue
+        placed_at, planned_end = plan
+        try:
+            pos = float(d.get("position", 0) or 0)
+            actual_end = pos + float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if abs(pos - placed_at) <= 1e-6:
+            out.append((planned_end, actual_end))
+    return out
+
+
 def add_clip_to_timeline(
     file_id="",
     position_seconds="",
@@ -2353,16 +2384,8 @@ def add_clip_to_timeline(
                 elif _is_audio_only:
                     pos_sec = pos_arg
                 else:
-                    from classes import audio_mix as am
-
                     pos_sec = butt_against_previous_clip(
-                        pos_arg,
-                        [
-                            (c.data.get("position", 0),
-                             c.data.get("position", 0) + c.data.get("end", 0) - c.data.get("start", 0))
-                            for c in Clip.filter() if c.data.get("layer", 0) == track_num
-                        ],
-                        max_shift=am.MAX_CUE_SHIFT_SEC + am.CHAPTER_MAGNET_SEC,
+                        pos_arg, _resized_placements_on_track(track_num),
                     )
 
                 if QPointF is None:
@@ -2402,6 +2425,18 @@ def add_clip_to_timeline(
                     win.timeline.update_clip_data(
                         new_clip, only_basic_props=False, ignore_refresh=False
                     )
+                new_id = str((new_clip or {}).get("id") or "")
+                if new_id:
+                    # The caller planned this clip to end at its own position plus
+                    # the length it asked for; snapping, a watch or butting can
+                    # move the real end, and the next planned position with it.
+                    planned_end = (pos_sec if pos_arg is None else pos_arg) + (trim_dur or source_len)
+                    try:
+                        actual_end = pos_sec + float(new_clip.get("end", 0)) - float(new_clip.get("start", 0))
+                    except (TypeError, ValueError):
+                        actual_end = planned_end
+                    if abs(actual_end - planned_end) > 1e-6:
+                        _planned_end_by_clip_id[new_id] = (pos_sec, planned_end)
                 result_box[0] = (new_clip, pos_sec, track_num, snapped)
             except Exception as exc:
                 error_box[0] = str(exc)

@@ -58,19 +58,30 @@ def compute_clip_trim_bounds(
     return start_sec, end_sec
 
 
-def butt_against_previous_clip(position: float, spans, *, max_shift: float) -> float:
-    """Timeline position that closes a snap-sized gap or overlap with the clip before.
+# A planned position this close to where the clip before it was planned to end
+# was planned against that clip (agents round their arithmetic).
+PLANNED_POSITION_TOLERANCE_SEC = 0.1
 
-    Snapping a placement onto phrase edges changes its length after the caller
-    already planned where the next clip goes, so that planned position lands a
-    fraction of a second off the clip before it: a black gap, or an overlap.
-    A miss no wider than a snap can move an edge is that artefact; a wider one
-    was meant. *spans* are (start, end) timeline seconds on the same track.
+
+def butt_against_previous_clip(
+    position: float, resized, *, tolerance: float = PLANNED_POSITION_TOLERANCE_SEC,
+) -> float:
+    """Timeline position that closes the gap or overlap a resized clip left behind.
+
+    Snapping a placement onto phrase edges (or a watch trimming it) changes its
+    length after the caller already planned where the next clip goes, so that
+    planned position lands a fraction of a second off the clip before it: a
+    black gap, or an overlap. *resized* holds (planned_end, actual_end) timeline
+    seconds for clips on the same track whose length changed that way. A
+    position on one of those planned ends moves to where that clip really ends;
+    any other position - a deliberate gap or overlap included - is kept.
     """
-    prev_end = max((end for start, end in spans if start < position), default=None)
-    if prev_end is not None and abs(position - prev_end) <= max_shift:
-        return prev_end
-    return position
+    best = None
+    for planned_end, actual_end in resized or ():
+        miss = abs(float(position) - float(planned_end))
+        if miss <= tolerance and (best is None or miss < best[0]):
+            best = (miss, float(actual_end))
+    return best[1] if best is not None else position
 
 
 def default_underlay_layer_number(layers) -> int:

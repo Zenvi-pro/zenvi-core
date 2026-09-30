@@ -25,7 +25,14 @@ sys.modules.setdefault("PyQt5.QtWidgets", MagicMock(QApplication=MagicMock))
 from classes import tool_handlers  # noqa: E402
 
 
-def _run_add(file_data, timeline_clips=(), **kwargs):
+@pytest.fixture(autouse=True)
+def _no_placement_plans_between_tests():
+    tool_handlers._planned_end_by_clip_id.clear()
+    yield
+    tool_handlers._planned_end_by_clip_id.clear()
+
+
+def _run_add(file_data, timeline_clips=(), clip_id="C1", **kwargs):
     watch_calls = []
     kwargs.setdefault("position_seconds", "0")
 
@@ -47,7 +54,7 @@ def _run_add(file_data, timeline_clips=(), **kwargs):
     query_mod = MagicMock()
     query_mod.File.get.return_value = file_obj
     query_mod.Track.get.return_value = MagicMock(data={"number": 1000000})
-    query_mod.Clip.filter.return_value = [MagicMock(data=d) for d in timeline_clips]
+    query_mod.Clip.filter.return_value = [MagicMock(id=d.get("id"), data=d) for d in timeline_clips]
 
     app = MagicMock()
 
@@ -60,7 +67,7 @@ def _run_add(file_data, timeline_clips=(), **kwargs):
 
     app.project.get.side_effect = project_get
     app.window.selected_tracks = []
-    placed = {"id": "C1", "start": 0.0, "end": float(file_data.get("end") or file_data.get("duration") or 5)}
+    placed = {"id": clip_id, "start": 0.0, "end": float(file_data.get("end") or file_data.get("duration") or 5)}
     app.window.timeline.addClip.return_value = placed
 
     with patch.object(tool_handlers, "_watch_confirm_cut", fake_watch):
@@ -397,33 +404,84 @@ def test_duration_alone_on_a_dialogue_heavy_window_still_errors():
 # --- #167 item 3: cue snapping changes a clip's length after the agent planned
 # the next position, which left a black gap (or an overlap) between clips. ---
 
-@pytest.mark.parametrize("planned, neighbour_layer, expected", [
-    (5.8, 1000000, 5.3),   # previous clip snapped 0.5s shorter -> close the gap
-    (5.0, 1000000, 5.3),   # previous clip snapped 0.3s longer -> no overlap
-    (10.0, 1000000, 10.0),  # a gap wider than any snap is deliberate
-    (5.8, 2000000, 5.8),   # a clip on another track is not a neighbour
-])
-def test_placement_butts_against_a_neighbour_that_snapping_resized(
-    planned, neighbour_layer, expected,
-):
-    out, _calls, _placed = _run_add(
-        {
-            "path": "/clips/long.mp4",
-            "name": "long.mp4",
-            "duration": 600.0,
-            "start": 0.0,
-            "end": 600.0,
-            "has_video": True,
-        },
-        # Asked for source 2.2-8.0 at 0s; snapping shortened it to end at 5.3s.
-        timeline_clips=[{"position": 0.0, "start": 2.2, "end": 7.5, "layer": neighbour_layer}],
-        start_seconds="30",
-        end_seconds="35",
-        position_seconds=str(planned),
+def _talk(cues):
+    return {
+        "path": "/clips/talk.mp4",
+        "name": "talk.mp4",
+        "duration": 600.0,
+        "start": 0.0,
+        "end": 600.0,
+        "has_video": True,
+        "ai_metadata": {"transcript_cues": cues},
+    }
+
+
+# Asked for source 2.2-8.0 at 0s (planned to end at 5.8s); 8.0 is inside the
+# 7.5-10.5 phrase, so snapping pulls the out-point back and it ends at 5.3s.
+_SNAPS_SHORTER = _talk([{"start": 2.2, "end": 7.5}, {"start": 7.5, "end": 10.5}])
+# Asked for source 2.2-7.0 at 0s (planned to end at 4.8s); snapping lets the
+# 6.0-7.5 phrase finish, so it ends at 5.3s.
+_SNAPS_LONGER = _talk([{"start": 2.2, "end": 6.0}, {"start": 6.0, "end": 7.5}])
+
+
+def _place_resized_neighbour(file_data, *, end):
+    """Place clip A at 0s through the tool so snapping resizes it."""
+    out, _calls, placed = _run_add(
+        dict(file_data), clip_id="A", start_seconds="2.2", end_seconds=str(end),
     )
     assert not out.startswith("Error:"), out
-    pos = float(re.search(r"at position ([0-9.]+)s", out).group(1))
+    assert abs((placed["end"] - placed["start"]) - 5.3) < 1e-6, placed
+    return {"id": "A", "position": 0.0, "start": placed["start"], "end": placed["end"],
+            "layer": 1000000}
+
+
+def _place_next(file_data, neighbour, planned):
+    out, _calls, _placed = _run_add(
+        dict(file_data), timeline_clips=[neighbour], clip_id="B",
+        start_seconds="30", end_seconds="35", position_seconds=str(planned),
+    )
+    assert not out.startswith("Error:"), out
+    return float(re.search(r"at position ([0-9.]+)s", out).group(1)), out
+
+
+@pytest.mark.parametrize("planned, expected", [
+    (5.8, 5.3),    # planned on A's requested end -> close the 0.5s gap
+    (5.85, 5.3),   # the same plan, rounded
+    (6.8, 6.8),    # a deliberate 1s gap after A's planned end
+    (6.3, 6.3),    # a deliberate 1s gap after where A really ends
+    (4.8, 4.8),    # a deliberate 0.5s overlap, e.g. for a dissolve
+])
+def test_only_a_position_planned_on_a_snapped_clips_end_is_butted(planned, expected):
+    neighbour = _place_resized_neighbour(_SNAPS_SHORTER, end=8.0)
+    pos, out = _place_next(_SNAPS_SHORTER, neighbour, planned)
     assert abs(pos - expected) < 1e-6, out
+    if expected != planned:
+        assert "butt against the previous clip" in out
+
+
+def test_a_position_planned_on_a_lengthened_clips_end_does_not_overlap_it():
+    neighbour = _place_resized_neighbour(_SNAPS_LONGER, end=7.0)
+    pos, out = _place_next(_SNAPS_LONGER, neighbour, 4.8)
+    assert abs(pos - 5.3) < 1e-6, out
+
+
+def test_a_resized_clip_on_another_track_is_not_a_neighbour():
+    neighbour = dict(_place_resized_neighbour(_SNAPS_SHORTER, end=8.0), layer=2000000)
+    pos, out = _place_next(_SNAPS_SHORTER, neighbour, 5.8)
+    assert abs(pos - 5.8) < 1e-6, out
+
+
+def test_a_neighbour_moved_since_it_was_placed_does_not_move_the_next_clip():
+    neighbour = dict(_place_resized_neighbour(_SNAPS_SHORTER, end=8.0), position=3.0)
+    pos, out = _place_next(_SNAPS_SHORTER, neighbour, 5.8)
+    assert abs(pos - 5.8) < 1e-6, out
+
+
+def test_a_clip_this_tool_never_resized_keeps_the_planned_gap():
+    # Same 0.5s gap, but nothing says the caller planned against a longer clip.
+    neighbour = {"id": "X", "position": 0.0, "start": 2.2, "end": 7.5, "layer": 1000000}
+    pos, out = _place_next(_SNAPS_SHORTER, neighbour, 5.8)
+    assert abs(pos - 5.8) < 1e-6, out
 
 
 def test_end_seconds_alone_still_bounds_the_window():
