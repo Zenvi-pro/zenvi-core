@@ -5,6 +5,7 @@ import os
 import sys
 import time
 import types
+import zipfile
 from unittest.mock import MagicMock
 
 import pytest
@@ -218,6 +219,11 @@ def test_recent_projects_list_and_forget(editor, settings, tmp_path):
 
 # --- recovery -------------------------------------------------------------
 
+def _zip(path, inner):
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(inner, "{}")
+
+
 @pytest.fixture
 def recovery_dir(tmp_path, monkeypatch):
     d = tmp_path / "recovery"
@@ -229,9 +235,10 @@ def recovery_dir(tmp_path, monkeypatch):
 def test_recovery_versions_match_the_project_name_exactly(editor, recovery_dir, tmp_path):
     editor.store.current_filepath = str(tmp_path / "trip.zvn")
     now = int(time.time())
-    (recovery_dir / f"{now - 600}-trip.zip").write_bytes(b"z")
-    (recovery_dir / f"{now - 60}-trip.zip").write_bytes(b"z")
-    (recovery_dir / f"{now}-trip-2.zip").write_bytes(b"z")  # another project
+    for name in (f"{now - 600}-trip.zip", f"{now - 60}-trip.zip", f"{now}-trip-2.zip"):
+        _zip(recovery_dir / name, "trip.zvn")
+    with zipfile.ZipFile(recovery_dir / f"{now - 30}-trip.zip", "w"):
+        pass  # empty copy written by an older first save: not restorable, not listed
     data = _receipt(editor.call("list_recovery_versions_tool"))
     assert [v["version"] for v in data["versions"]] == [1, 2]
     assert data["versions"][0]["path"].endswith(f"{now - 60}-trip.zip")
@@ -241,7 +248,7 @@ def test_restore_recovery_version(editor, recovery_dir, tmp_path):
     proj = tmp_path / "trip.zvn"
     proj.write_text("{}")
     editor.store.current_filepath = str(proj)
-    (recovery_dir / f"{int(time.time())}-trip.zip").write_bytes(b"z")
+    _zip(recovery_dir / f"{int(time.time())}-trip.zip", "trip.zvn")
     assert "only 1" in editor.call("restore_recovery_version_tool", version=2)
     editor.store.has_unsaved_changes = True
     assert "unsaved changes" in editor.call("restore_recovery_version_tool")

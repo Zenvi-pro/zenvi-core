@@ -909,6 +909,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         recovery_filename = f"{timestamp}-{file_name}.zip"
         recovery_path = os.path.join(info.RECOVERY_PATH, recovery_filename)
 
+        if not os.path.isfile(file_path):
+            # First save / Save As to a new path: nothing on disk to keep yet. Zipping
+            # anyway left an empty archive that Recovery listed but could not restore.
+            return
+
         try:
             with zipfile.ZipFile(recovery_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 zipf.write(file_path, os.path.basename(file_path))
@@ -916,6 +921,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.manage_recovery_files(daily_limit, historical_limit, file_name)
         except Exception as e:
             log.error(f"Failed to create zipped recovery file {recovery_path}: {e}")
+            try:
+                os.unlink(recovery_path)
+            except OSError:
+                pass
 
     def manage_recovery_files(self, daily_limit, historical_limit, file_name):
         """Ensures recovery files adhere to the configured daily and historical limits."""
