@@ -179,6 +179,16 @@ def test_mirror_percent_and_bool_values(editor):
     assert ys(d["scale_x"]) == [-1.0] and ys(d["volume"]) == [0.8] and d["waveform"] is True
 
 
+def test_a_negative_scale_on_an_edge_anchored_clip_is_set_but_warned(editor):
+    c = editor.add_clip(editor.add_file("video"), gravity=2)
+    r = receipt(editor.call("set_clip_properties_tool", timeline_clip_ids=[c], properties={"scale_x": -0.5}))
+    assert ys(editor.clip(c)["scale_x"]) == [-0.5]
+    assert "off-screen" in r["clips"][0]["warnings"][0]
+    r = receipt(editor.call("set_clip_properties_tool", timeline_clip_ids=[c],
+                            properties={"gravity": "Top Center"}))
+    assert "warnings" not in r["clips"][0]
+
+
 def test_locked_tracks_are_refused_by_id_and_skipped_by_scope(editor):
     f = editor.add_file("video")
     editor.add_track(2000000, "Top")

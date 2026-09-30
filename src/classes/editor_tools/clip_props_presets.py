@@ -17,7 +17,7 @@ from classes.editor_tools._base import (
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.clip_props import TARGETS, resolve_targets, save_clip_values
-from classes.editor_tools.clip_props_model import ClipTime, curve_points
+from classes.editor_tools.clip_props_model import ClipTime, curve_points, mirror_blocker
 
 
 @dataclass(frozen=True)
@@ -181,6 +181,8 @@ def _applies(preset: Preset, data: dict):
         return "audio-only clip (no picture to move or transform)"
     if preset.category == "volume" and not _has_audio(data):
         return "clip has no sound"
+    if preset.call == "flip":
+        return mirror_blocker(preset.args[0], data.get("gravity", 4))
     return None
 
 
@@ -375,6 +377,9 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
     volume_fade_in_fast, volume_fade_in_slow, volume_fade_out, _fast, _slow,
     volume_fade_in_out, _fast, _slow.
 
+    flip_horizontal/flip_vertical mirror in place only when the clip's gravity is
+    centred on that axis (Center, Top Center, Bottom Center for left-right); a
+    corner PiP is refused with how to fix it.
     Motion presets are relative to the clip's current look and only replace
     keyframes inside their zone, so they combine (e.g. zoom_in plus fade_in).
     Re-applying a blur or wipe motion adds another Blur/Mask effect; use

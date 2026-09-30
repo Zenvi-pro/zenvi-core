@@ -282,3 +282,25 @@ def test_flip_negates_scale_and_keeps_animation(editor, timeline):
     receipt(editor.call("apply_clip_preset_tool", timeline_clip_ids=[c], preset="flip_horizontal"))
     assert [p["co"]["Y"] for p in editor.clip(c)["scale_x"]["Points"]] == [1.0, 1.2]
     assert editor.undo_steps_since_mark() == 2
+
+
+@pytest.mark.parametrize("gravity,preset,allowed", [
+    (2, "flip_horizontal", False), (2, "flip_vertical", False),   # Top Right: edge on both axes
+    (5, "flip_horizontal", False), (5, "flip_vertical", True),    # Right: centred vertically
+    (1, "flip_horizontal", True), (1, "flip_vertical", False),    # Top Center: centred horizontally
+    (4, "flip_horizontal", True), (4, "flip_vertical", True),     # Center
+])
+def test_flip_only_mirrors_clips_centred_on_that_axis(editor, timeline, gravity, preset, allowed):
+    """libopenshot 1.0 draws a mirrored clip outward from its anchor: a top-right PiP would vanish."""
+    c = editor.add_clip(editor.add_file("video"), end=10.0, gravity=gravity,
+                        scale_x={"Points": [{"co": {"X": 1.0, "Y": 0.5}}]},
+                        scale_y={"Points": [{"co": {"X": 1.0, "Y": 0.5}}]})
+    out = editor.call("apply_clip_preset_tool", timeline_clip_ids=[c], preset=preset)
+    if allowed:
+        receipt(out)
+        key = "scale_x" if preset == "flip_horizontal" else "scale_y"
+        assert editor.clip(c)[key]["Points"][0]["co"]["Y"] == -0.5
+        assert editor.undo_steps_since_mark() == 1
+    else:
+        assert out.startswith("Error") and "off-screen" in out and "set gravity to" in out
+        assert editor.undo_steps_since_mark() == 0

@@ -191,7 +191,8 @@ def get_clip_properties(timeline_clip_id="", clip_query="", track="", at_seconds
             "{\"composite\": \"multiply\"} (blend mode: Normal, Darken, Multiply, Color Burn, Lighten, Screen, "
             "Color Dodge, Add, Overlay, Soft Light, Hard Light, Difference, Exclusion), {\"scale_x\": 0.4, "
             "\"scale_y\": 0.4}, {\"location_x\": 0.25} (-1..1 = one frame width), {\"rotation\": 15} (degrees), "
-            "{\"scale_x\": -1} (mirror), {\"corner_radius\": 0.1, \"margin\": 0.04}, {\"volume\": 0.8} "
+            "{\"scale_x\": -1} (mirror; in place only with a centred gravity such as Center), "
+            "{\"corner_radius\": 0.1, \"margin\": 0.04}, {\"volume\": 0.8} "
             "(0-1.3), {\"wave_color\": \"#ff8800\"}, {\"display\": \"Timeline\"} (frame-number overlay), "
             "{\"mixing\": \"Average\"}, {\"waveform\": true}."),
         "at_seconds": nullable(number(
@@ -208,7 +209,8 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
     mode" (composite), "fit/fill the frame" (scale Best Fit / Crop), "pin it to the
     top right" (gravity), "make it half size" (scale_x/scale_y 0.5), "move it
     left" (location_x), "tilt it 10 degrees" (rotation), "mirror it"
-    (scale_x -1), "rounded corners" (corner_radius), "turn it down" (volume),
+    (scale_x -1; mirrors in place only with a centred gravity, otherwise the
+    receipt warns), "rounded corners" (corner_radius), "turn it down" (volume),
     "show frame numbers" (display). Several properties and several clips in
     one call, one undo step. A static value replaces any animation of that
     property (the receipt says so); to animate or change only part of a
@@ -267,25 +269,27 @@ def set_clip_properties(properties, timeline_clip_ids=None, clip_query="", track
             changed[key] = {"before": cpm.display_value(info, _num(before)),
                             "after": cpm.display_value(info, _num(new if not isinstance(new, bool) else int(new)))}
         if values:
-            plans.append((clip, values, changed, flattened))
+            plans.append((clip, values, changed, flattened, cpm.mirror_warnings(data, values)))
 
     names = ", ".join(f"{keys[n]}={_short(v)}" for n, v in properties.items())
     if not plans:
         return ok(f"Nothing to change: {names} already set on {len(clips)} clip(s).", changed=False,
                   timeline_clip_ids=[c.id for c in clips], skipped=skipped)
     with _transaction() as tid:
-        for clip, values, _changed, _flat in plans:
+        for clip, values, *_rest in plans:
             save_clip_values(clip.id, values)
-        refresh_waveforms([dict(c.data, id=c.id) for c, v, _, _ in plans if "volume" in v], tid)
+        refresh_waveforms([dict(c.data, id=c.id) for c, v, *_rest in plans if "volume" in v], tid)
     refresh_preview()
-    receipt = [{"timeline_clip_id": c.id, "changed": ch, **({"flattened_animation": fl} if fl else {})}
-               for c, _v, ch, fl in plans]
+    receipt = [{"timeline_clip_id": c.id, "changed": ch, **({"flattened_animation": fl} if fl else {}),
+                **({"warnings": w} if w else {})}
+               for c, _v, ch, fl, w in plans]
     flat_note = ""
-    if any(fl for *_, fl in plans):
+    if any(fl for _c, _v, _ch, fl, _w in plans):
         flat_note = " Replaced an animation with a static value on: " + ", ".join(
-            sorted({k for *_, fl in plans for k in fl})) + "."
+            sorted({k for _c, _v, _ch, fl, _w in plans for k in fl})) + "."
+    warn_note = "".join(f" Warning ({c.id}): {msg}." for c, _v, _ch, _fl, w in plans for msg in w)
     when = f" at {at_seconds:.3f} s (keyframe)" if at_seconds is not None else ""
-    return ok(f"Set {names}{when} on {len(plans)} clip(s).{flat_note}", changed=True, clips=receipt,
+    return ok(f"Set {names}{when} on {len(plans)} clip(s).{flat_note}{warn_note}", changed=True, clips=receipt,
               skipped=skipped)
 
 
@@ -443,9 +447,12 @@ def set_keyframes(property, points, timeline_clip_id="", clip_query="", track=""
             refresh_waveforms([dict(data, id=clip.id)], tid)
     refresh_preview()
     span = f"{receipt_points[0]['clip_seconds']:.2f}-{receipt_points[-1]['clip_seconds']:.2f} s into the clip"
+    warnings = cpm.mirror_warnings(data, values) if key in ("scale_x", "scale_y") else []
+    warn_note = "".join(f" Warning: {msg}." for msg in warnings)
     return ok(f"Set {len(built)} keyframe(s) on {key} for clip {clip.id} ({mode}; curve now has "
-              f"{len(receipt_points)} point(s), {span}).", changed=True, timeline_clip_id=clip.id, property=key,
-              mode=mode, previous_points=before_count, points=receipt_points,
+              f"{len(receipt_points)} point(s), {span}).{warn_note}", changed=True, timeline_clip_id=clip.id,
+              property=key, mode=mode, previous_points=before_count, points=receipt_points,
+              **({"warnings": warnings} if warnings else {}),
               **({"start": values.get("start"), "end": values.get("end")} if key == "time" else {}))
 
 

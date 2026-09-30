@@ -306,6 +306,46 @@ def display_value(info: PropertyInfo, raw: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Mirroring (negative scale) and gravity
+# ---------------------------------------------------------------------------
+
+GRAVITY_NAMES = ("Top Left", "Top Center", "Top Right", "Left", "Center", "Right",
+                 "Bottom Left", "Bottom Center", "Bottom Right")
+# libopenshot 1.0 draws a clip with a negative scale leftward (upward) from its
+# gravity anchor, so it only mirrors in place when that axis is centred;
+# anchored to an edge it lands off-screen (checked by rendering).
+_CENTERED = {"scale_x": (1, 4, 7), "scale_y": (3, 4, 5)}
+
+
+def mirror_blocker(scale_key: str, gravity) -> Optional[str]:
+    """Why mirroring on this axis would push the clip off-screen, or None when it is safe."""
+    try:
+        g = int(gravity)
+    except (TypeError, ValueError):
+        g = 4
+    if g in _CENTERED[scale_key]:
+        return None
+    axis = "left/right" if scale_key == "scale_x" else "top/bottom"
+    fixes = ", ".join(GRAVITY_NAMES[i] for i in _CENTERED[scale_key])
+    return (f"anchored to the {axis} edge (gravity {GRAVITY_NAMES[g] if 0 <= g < 9 else g}): libopenshot 1.0 "
+            f"draws a mirrored clip from its anchor outward, off-screen; set gravity to {fixes} "
+            f"(and place it with location_{'x' if scale_key == 'scale_x' else 'y'}) before mirroring")
+
+
+def mirror_warnings(data: dict, values: dict) -> list:
+    """Warnings for a clip whose scale would be negative with an edge gravity after *values* apply."""
+    gravity = values.get("gravity", data.get("gravity", 4))
+    out = []
+    for key in ("scale_x", "scale_y"):
+        curve = values.get(key, data.get(key))
+        if any(float(p["co"].get("Y", 0)) < 0 for p in curve_points(curve)):
+            reason = mirror_blocker(key, gravity)
+            if reason:
+                out.append(f"{key} < 0 mirrors the clip but it is {reason}")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Values at a frame, curves and points
 # ---------------------------------------------------------------------------
 
