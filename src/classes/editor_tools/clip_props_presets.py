@@ -156,6 +156,8 @@ _add("volume_fade_in_out_slow", "volume", "Audio > Volume > Fade In and Out > Sl
      "Entire Clip", zone="in")
 
 PRESET_NAMES = tuple(PRESETS)
+_GRAVITY_NAMES = {0: "Top Left", 1: "Top Center", 2: "Top Right", 3: "Left", 4: "Center", 5: "Right",
+                  6: "Bottom Left", 7: "Bottom Center", 8: "Bottom Right"}
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +384,9 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
     corner PiP is refused with how to fix it.
     Motion presets are relative to the clip's current look and only replace
     keyframes inside their zone, so they combine (e.g. zoom_in plus fade_in).
+    In/Out/Emphasis motions keep the clip's gravity, so a corner PiP slides or
+    pops in its corner (the menu would recentre it); camera moves and credits
+    fill the frame and centre it, like the menu.
     Re-applying a blur or wipe motion adds another Blur/Mask effect; use
     motion_none first to start over. On clips shorter than 6 s prefer
     fade_in_out over separate fade_in and fade_out. Motion and transform
@@ -434,8 +439,19 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
     before = _snapshot(ids)
     history = _History(app.updates)
     from classes.updates import nested_transaction
+    kept_gravity = {}
     with nested_transaction(app.updates) as tid:
         _call_handler(spec, ids, tid, duration_seconds, at_seconds, level_percent)
+        if spec.call == "animate" and spec.zone in ("in", "out", "emphasis"):
+            # The menu recentres every clip it animates (gravity Center). In/Out/Emphasis
+            # moves are offsets from the clip's own place, so keep a corner PiP in its corner.
+            # The handler's saves may have cleared the id (slot_transaction), so re-join it.
+            app.updates.transaction_id = tid
+            for cid in ids:
+                gravity = before[cid].get("gravity", 4)
+                if gravity not in (None, 4):
+                    save_clip_values(cid, {"gravity": gravity})
+                    kept_gravity[cid] = _GRAVITY_NAMES.get(gravity, gravity)
     after = _snapshot(ids)
     changes = {cid: _diff(before[cid], after.get(cid, {})) for cid in before}
     changed_ids = [cid for cid, d in changes.items() if d["changed"] or len(d) > 1]
@@ -446,9 +462,12 @@ def apply_clip_preset(preset, timeline_clip_ids=None, clip_query="", track="", s
                   preset=preset, timeline_clip_ids=ids, skipped=skipped, **info)
     props = sorted({k for cid in changed_ids for k in changes[cid]["changed"]})
     note = f" Skipped {len(skipped)} clip(s)." if skipped else ""
+    if kept_gravity:
+        note += f" Kept gravity {', '.join(sorted(set(map(str, kept_gravity.values()))))} (the menu would recentre)."
     return ok(f"Applied {spec.menu} to {len(changed_ids)} clip(s); changed {', '.join(props) or 'effects'}.{note}",
               changed=True, preset=preset, menu=spec.menu,
-              clips=[{"timeline_clip_id": cid, **changes[cid]} for cid in changed_ids], skipped=skipped, **info)
+              clips=[{"timeline_clip_id": cid, **changes[cid]} for cid in changed_ids], skipped=skipped,
+              **({"kept_gravity": kept_gravity} if kept_gravity else {}), **info)
 
 
 def _receipt_info(spec: Preset, targets, duration_seconds, at_seconds, level_percent) -> dict:

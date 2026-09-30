@@ -51,7 +51,9 @@ class FakeTimeline:
     def Animate_Triggered(self, action, clip_ids, transaction_id=None, zone_seconds=None, emphasis_seconds=None):
         self.calls.append(("animate", action.name, list(clip_ids), zone_seconds, emphasis_seconds, transaction_id))
         for cid in clip_ids:
-            self._save(cid, {"scale_x": curve(1.2), "effects": [{"id": "FX" + cid, "class_name": "Blur"}]},
+            # Like the real handler: every motion preset recentres the clip (gravity Center).
+            self._save(cid, {"scale_x": curve(1.2), "gravity": 4,
+                             "effects": [{"id": "FX" + cid, "class_name": "Blur"}]},
                        transaction_id or "animate-own")
 
     def Volume_Triggered(self, action, clip_ids, position="Entire Clip", level=1.0, transaction_id=None,
@@ -304,3 +306,15 @@ def test_flip_only_mirrors_clips_centred_on_that_axis(editor, timeline, gravity,
     else:
         assert out.startswith("Error") and "off-screen" in out and "set gravity to" in out
         assert editor.undo_steps_since_mark() == 0
+
+
+@pytest.mark.parametrize("preset,kept", [("slide_in_from_left", True), ("pulse", True), ("pop_out", True),
+                                         ("zoom_in", False), ("credits_scroll_up", False), ("motion_none", False)])
+def test_in_out_emphasis_motions_keep_a_corner_pip_in_its_corner(editor, timeline, preset, kept):
+    c = editor.add_clip(editor.add_file("video"), end=10.0, gravity=2)
+    r = receipt(editor.call("apply_clip_preset_tool", timeline_clip_ids=[c], preset=preset))
+    assert editor.clip(c)["gravity"] == (2 if kept else 4)
+    assert ("kept_gravity" in r) == kept
+    assert editor.undo_steps_since_mark() == 1
+    editor.undo()
+    assert editor.clip(c)["gravity"] == 2
