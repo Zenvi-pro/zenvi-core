@@ -25,8 +25,10 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
+from qt_api import Qt, QEvent
+from qt_api import QWidget, QHBoxLayout, QLabel, QPushButton, QDockWidget
+
+from classes.app import get_app
 
 
 class HiddenTitleBar(QWidget):
@@ -45,7 +47,11 @@ class HiddenTitleBar(QWidget):
         super().__init__()
         self.dock_widget = dock_widget
         self.floating = floating
+        self._tr = None
+        self.close_btn = None
         self.setObjectName("dock-title-bar")
+        # Never take keyboard focus away from the dock contents (upstream #6016)
+        self.setFocusPolicy(Qt.NoFocus)
 
         # Set up a horizontal layout
         layout = QHBoxLayout(self)
@@ -54,6 +60,8 @@ class HiddenTitleBar(QWidget):
 
         # Add a QLabel for the title (optional, based on title_text)
         self.title_label = QLabel(title_text)
+        self.title_label.setFocusPolicy(Qt.NoFocus)
+        self.title_label.installEventFilter(self)
         if title_text:
             self.title_label.setObjectName("dock-title-label")
         else:
@@ -69,19 +77,22 @@ class HiddenTitleBar(QWidget):
             self.float_btn.setObjectName("dock-float-button")
             self.float_btn.setFixedSize(18, 18)
             self.float_btn.setFlat(True)
+            self.float_btn.setFocusPolicy(Qt.NoFocus)
             self.float_btn.setToolTip("Dock" if floating else "Float")
             self.float_btn.clicked.connect(self.toggle_floating)
             layout.addWidget(self.float_btn)
 
             # Close button (only for docks the user is allowed to close)
             if dock_widget.features() & QDockWidget.DockWidgetClosable:
-                close_btn = QPushButton("✕")
-                close_btn.setObjectName("dock-close-button")
-                close_btn.setFixedSize(18, 18)
-                close_btn.setFlat(True)
-                close_btn.setToolTip("Close")
-                close_btn.clicked.connect(dock_widget.hide)
-                layout.addWidget(close_btn)
+                self.close_btn = QPushButton("✕")
+                self.close_btn.setObjectName("dock-close-button")
+                self.close_btn.setFixedSize(18, 18)
+                self.close_btn.setFlat(True)
+                self.close_btn.setFocusPolicy(Qt.NoFocus)
+                self.close_btn.setToolTip("Close")
+                self.close_btn.clicked.connect(dock_widget.hide)
+                layout.addWidget(self.close_btn)
+            self._update_accessible_labels()
 
         if floating:
             self.setToolTip("Drag or double-click this bar to dock the panel")
@@ -99,12 +110,41 @@ class HiddenTitleBar(QWidget):
         """Update label text when dock title changes."""
         self.title_label.setText(text)
 
+    def _update_accessible_labels(self):
+        """Name the buttons for screen readers (upstream tabstops, OpenShot #5912)."""
+        if self._tr is None:
+            self._tr = get_app()._tr
+        _ = self._tr
+        if self.close_btn is not None:
+            self.close_btn.setAccessibleName(_("Close"))
+        if self.float_btn is not None:
+            if self.dock_widget.isFloating():
+                self.float_btn.setAccessibleName(_("Dock"))
+            else:
+                self.float_btn.setAccessibleName(_("Float"))
+
+    def _close_on_middle_click(self, event):
+        if event.button() != Qt.MiddleButton:
+            return False
+        if not (self.dock_widget.features() & QDockWidget.DockWidgetClosable):
+            return False
+        self.dock_widget.close()
+        event.accept()
+        return True
+
+    def eventFilter(self, obj, event):
+        if obj is self.title_label and event.type() == QEvent.MouseButtonRelease:
+            if self._close_on_middle_click(event):
+                return True
+        return super().eventFilter(obj, event)
+
     def toggle_floating(self):
         """Float the panel, or dock it back if it's already floating."""
         if self.dock_widget.isFloating():
             self.redock()
         else:
             self.dock_widget.setFloating(True)
+        self._update_accessible_labels()
 
     def redock(self):
         """Dock the panel back into the main window."""
@@ -133,5 +173,8 @@ class HiddenTitleBar(QWidget):
         event.ignore()
 
     def mouseReleaseEvent(self, event):
-        """Ignore releases, so the QDockWidget can finish the drag."""
+        """Middle-click closes the dock; ignore other releases so the
+        QDockWidget can finish the drag."""
+        if self._close_on_middle_click(event):
+            return
         event.ignore()

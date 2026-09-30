@@ -27,7 +27,7 @@
 
 import pickle
 import json
-from PyQt5.QtCore import QMimeData
+from qt_api import QMimeData
 from classes.query import QueryObject
 
 

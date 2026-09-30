@@ -1,0 +1,168 @@
+{
+  "action_icon": "ai-action-restyle.svg",
+  "menu_category": "enhance",
+  "menu_order": 20,
+  "name": "Change Image Style...",
+  "open_dialog": true,
+  "output_type": "image",
+  "template_id": "img2img-basic",
+  "workflow": {
+    "1": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": "sd_xl_base_1.0.safetensors"
+      }
+    },
+    "2": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "__openshot_prompt__"
+      }
+    },
+    "3": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "same subject, preserve identity, preserve face, preserve hair, preserve pose, preserve camera angle, preserve framing, preserve background layout"
+      }
+    },
+    "4": {
+      "class_type": "ConditioningAverage",
+      "inputs": {
+        "conditioning_to": [
+          "2",
+          0
+        ],
+        "conditioning_from": [
+          "3",
+          0
+        ],
+        "conditioning_to_strength": 0.74
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": [
+          "1",
+          1
+        ],
+        "text": "photorealistic, abstract, cubism, surreal, distorted face, wrong anatomy, extra limbs, duplicate person, blurry, noisy, low quality, text, watermark, logo"
+      }
+    },
+    "6": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "/tmp/input.png",
+        "upload": "image"
+      }
+    },
+    "7": {
+      "class_type": "VAEEncode",
+      "inputs": {
+        "pixels": [
+          "6",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "8": {
+      "class_type": "RescaleCFG",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "multiplier": 0.7
+      }
+    },
+    "9": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 6.0,
+        "denoise": 0.56,
+        "latent_image": [
+          "7",
+          0
+        ],
+        "model": [
+          "8",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "karras",
+        "seed": 1293041938,
+        "steps": 34
+      }
+    },
+    "10": {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": 4.2,
+        "denoise": 0.16,
+        "latent_image": [
+          "9",
+          0
+        ],
+        "model": [
+          "8",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "positive": [
+          "4",
+          0
+        ],
+        "sampler_name": "dpmpp_2m_sde",
+        "scheduler": "karras",
+        "seed": 807813119,
+        "steps": 18
+      }
+    },
+    "11": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "10",
+          0
+        ],
+        "vae": [
+          "1",
+          2
+        ]
+      }
+    },
+    "12": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "openshot_gen",
+        "images": [
+          "11",
+          0
+        ]
+      }
+    }
+  }
+}

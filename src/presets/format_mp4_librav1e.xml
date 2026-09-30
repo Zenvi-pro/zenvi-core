@@ -5,16 +5,16 @@
 	<title translatable="True">MP4 (AV1 rav1e)</title>
 	<videoformat>mp4</videoformat>
 	<videocodec>librav1e</videocodec>
-	<audiocodec>libvorbis</audiocodec>
+	<audiocodec>aac</audiocodec>
 	<audiochannels>2</audiochannels>
 	<audiochannellayout>3</audiochannellayout>
 	<videobitrate
-	 low="200 qp"
-	 med="100 qp"
-	 high="50 qp"></videobitrate>
+	 low="160 qp"
+	 med="110 qp"
+	 high="80 qp"></videobitrate>
 	<audiobitrate
 	 low="96 kb/s"
 	 med="128 kb/s"
-	 high="192 kb/s"></audiobitrate>
+	 high="160 kb/s"></audiobitrate>
 	<samplerate>48000</samplerate>
 </export-option>
