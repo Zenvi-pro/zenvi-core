@@ -161,8 +161,9 @@ def _source_window(data):
     return source_window_for_file(data)
 
 
-_LAYOUT_NAMES = {0: "unknown", 1: "mono", 3: "stereo", 4: "mono", 7: "surround_3", 63: "5.1", 1551: "5.1",
-                 1599: "7.1", 255: "7.1"}
+# libopenshot / FFmpeg channel layout masks.
+_LAYOUT_NAMES = {0: "unknown", 3: "stereo", 4: "mono", 7: "surround_3", 11: "2.1", 51: "quad", 63: "5.1",
+                 1551: "5.1", 1599: "7.1"}
 
 
 def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
@@ -170,16 +171,20 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
     data = f.data if isinstance(f.data, dict) else {}
     clip_ids = (usage or {}).get(str(f.id), [])
     start, end = _source_window(data)
+    kind = kind_of(data)
+    still = kind in ("image", "title")
     out = {
         "file_id": str(f.id),
         "name": _display_name(data),
         "file_name": _base_name(data),
-        "kind": kind_of(data),
-        "duration": round(max(0.0, end - start), 3),
+        "kind": kind,
+        # A still has no length of its own (libopenshot reports 3600 s); on the timeline it
+        # lasts the Image Length preference unless trimmed.
+        "duration": None if still else round(max(0.0, end - start), 3),
         "tags": tags_of(data),
         "clip_count": len(clip_ids),
     }
-    if "start" in data or "end" in data:
+    if ("start" in data or "end" in data) and not still:
         out["source_in"] = round(start, 3)
         out["source_out"] = round(end, 3)
     if clip_ids:
@@ -195,7 +200,7 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
         num, den = _fps_parts(data)
         out.update({
             "path": _abs_path(data.get("path")),
-            "media_duration": round(float(data.get("duration") or 0.0), 3),
+            "media_duration": None if still else round(float(data.get("duration") or 0.0), 3),
             "width": data.get("width"),
             "height": data.get("height"),
             "fps": f"{num}/{den}",
@@ -207,7 +212,8 @@ def describe_file(f, usage=None, full=False, check_missing=True) -> dict:
             "audio_codec": data.get("acodec") or "",
             "sample_rate": data.get("sample_rate"),
             "channels": data.get("channels"),
-            "channel_layout": _LAYOUT_NAMES.get(int(data.get("channel_layout") or 0), str(data.get("channel_layout"))),
+            "channel_layout": (_LAYOUT_NAMES.get(int(data.get("channel_layout") or 0), str(data.get("channel_layout")))
+                               if data.get("has_audio") else "none"),
             "video_bit_rate": data.get("video_bit_rate"),
             "audio_bit_rate": data.get("audio_bit_rate"),
             "interlaced": bool(data.get("interlaced_frame")),
