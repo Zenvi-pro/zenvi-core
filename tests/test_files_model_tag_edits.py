@@ -87,3 +87,35 @@ def test_nested_refresh_restores_the_outer_ignore_flag():
     model._update_model = inner
     FilesModel.update_model(model, clear=False, update_file_id="A")
     assert seen == ["outer", True] and model.ignore_updates is False
+
+
+def test_tree_view_repaint_of_a_row_is_not_a_save():
+    """Regression: every optimize-progress tooltip repaint re-saved the file (one empty undo step each)."""
+    from windows.views import files_treeview as tv
+
+    saved, emitted = [], []
+
+    class _F:
+        def __init__(self):
+            self.data = {"id": "V", "path": "/m/clip.mp4", "tags": "b-roll"}
+
+        def save(self):
+            saved.append(dict(self.data))
+
+    f = _F()
+    cells = {1: "clip.mp4", 2: "b-roll", 5: "V"}
+    view = SimpleNamespace(
+        files_model=SimpleNamespace(ignore_updates=False,
+                                    model=SimpleNamespace(item=lambda row, col: _Item(cells[col]))),
+        win=SimpleNamespace(FileUpdated=SimpleNamespace(emit=emitted.append)))
+    app = patch.object(tv, "get_app", return_value=SimpleNamespace(_tr=lambda t: t))
+    app.start()
+    with patch.object(tv.File, "get", return_value=f):
+        tv.FilesTreeView.value_updated(view, _Item("clip.mp4", 0, 0))
+        assert saved == [] and emitted == []
+        cells[1] = "Intro"
+        tv.FilesTreeView.value_updated(view, _Item("Intro", 0, 1))
+    assert saved[-1]["name"] == "Intro" and emitted == ["V"]
+    with patch.object(tv.File, "get", return_value=None):
+        tv.FilesTreeView.value_updated(view, _Item("x", 0, 1))   # placeholder row: no crash
+    app.stop()

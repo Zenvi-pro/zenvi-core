@@ -549,7 +549,12 @@ class FilesModel(QObject, updates.UpdateInterface):
         file_obj = File.get(id=file_id)
         if file_obj:
             path, filename = os.path.split(file_obj.data["path"])
-            self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            previous_ignore = self.ignore_updates
+            self.ignore_updates = True     # a repaint, not a user edit of the row
+            try:
+                self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            finally:
+                self.ignore_updates = previous_ignore
         left = self.model.index(row, 0)
         right = self.model.index(row, self.model.columnCount() - 1)
         self.model.dataChanged.emit(left, right, [Qt.DisplayRole, Qt.ToolTipRole])
