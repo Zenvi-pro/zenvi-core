@@ -276,6 +276,29 @@ def should_watch_placement(
     return 1e-3 < span <= float(max_window_sec) + 1e-6
 
 
+# A duration_seconds this close to end_seconds - start_seconds names the same
+# out-point (agents round), so the two describe one keep window.
+KEEP_WINDOW_AGREE_SEC = 0.05
+
+
+def end_bounds_keep_window(trim_start, trim_dur, trim_end, *, tolerance=KEEP_WINDOW_AGREE_SEC) -> bool:
+    """True when end_seconds sets the out-point of a placement.
+
+    duration_seconds wins when both are given, so an end_seconds it overrides is
+    a leftover argument, not a boundary. One that agrees with start + duration
+    names the same out-point: the caller named both edges, and treating it as
+    overridden rejected the very keep window the error then asked for.
+    """
+    if trim_end is None:
+        return False
+    if trim_dur is None:
+        return True
+    try:
+        return abs((float(trim_end) - float(trim_start or 0.0)) - float(trim_dur)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
 def blind_trim_rejected(
     *,
     trim_dur,

@@ -325,6 +325,57 @@ def test_ignored_end_seconds_does_not_exempt_a_first_n_seconds_trim():
     assert calls == []
 
 
+_INTERVIEW = {
+    "path": "/clips/interview.mp4",
+    "name": "interview.mp4",
+    "duration": 229.0,
+    "start": 0.0,
+    "end": 229.0,
+    "has_video": True,
+    "ai_metadata": {"transcript_cues": [{"start": 0.0, "end": 3.0}, {"start": 3.0, "end": 8.0}]},
+}
+
+
+def test_keep_window_from_zero_with_an_agreeing_duration_places():
+    """start=0 + end + the same duration names both edges. The man with the
+    tablet (0:00-0:08.5) was refused with "pass start_seconds and end_seconds"."""
+    out, calls, placed = _run_add(
+        dict(_INTERVIEW),
+        start_seconds="0",
+        end_seconds="8.5",
+        duration_seconds="8.5",
+        query="the man holding a tablet",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 0.0) < 1e-6
+    assert abs(placed["end"] - 8.5) < 1e-6
+
+
+def test_overridden_end_seconds_error_names_the_argument_to_drop():
+    out, calls, _placed = _run_add(
+        dict(_INTERVIEW),
+        duration_seconds="5",
+        end_seconds="20",
+        query="a person speaking",
+    )
+    assert out.startswith("Error:"), out
+    assert calls == []
+    assert "Drop duration_seconds" in out
+    # The caller did not pass duration_seconds alone - it passed end_seconds too.
+    assert "alone" not in out
+
+
+def test_times_only_in_the_query_error_says_the_query_is_not_read():
+    out, _calls, _placed = _run_add(
+        dict(_INTERVIEW),
+        duration_seconds="5",
+        query="the iPad shot from 15 seconds to 20 seconds",
+    )
+    assert out.startswith("Error:"), out
+    assert "not read" in out
+
+
 def test_duration_alone_on_a_dialogue_heavy_window_still_errors():
     out, calls, _placed = _run_add(
         {

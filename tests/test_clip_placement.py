@@ -14,6 +14,7 @@ from classes.clip_placement import (
     blind_trim_rejected,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
+    end_bounds_keep_window,
     file_looks_like_image,
     placement_watch_query,
     should_watch_placement,
@@ -140,3 +141,21 @@ def test_watched_or_exempt_media_is_not_a_blind_trim():
 def test_no_trim_at_all_is_not_a_blind_trim():
     assert blind_trim_rejected(trim_dur=None, watched_start=None) is False
     assert blind_trim_rejected(trim_dur=0.0, watched_start=None) is False
+
+
+def test_end_seconds_alone_bounds_the_window():
+    assert end_bounds_keep_window(15.0, None, 20.0) is True
+    assert end_bounds_keep_window(0.0, None, None) is False
+
+
+def test_end_seconds_that_agrees_with_the_duration_bounds_the_window():
+    # start=0 + end=8.5 + duration=8.5 names both edges of 0-8.5; treating the
+    # end as overridden rejected it with "pass start_seconds and end_seconds".
+    assert end_bounds_keep_window(0.0, 8.5, 8.5) is True
+    assert end_bounds_keep_window(2.2, 5.8, 8.0) is True  # 8.0 - 2.2 != 5.8 in floats
+    assert end_bounds_keep_window(12.345, 6.57, 18.912) is True  # rounded duration
+
+
+def test_end_seconds_a_different_duration_overrides_is_not_a_bound():
+    assert end_bounds_keep_window(0.0, 5.0, 20.0) is False
+    assert end_bounds_keep_window(15.0, 4.0, 20.0) is False

@@ -32,6 +32,7 @@ from classes.clip_placement import (
     butt_against_previous_clip,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
+    end_bounds_keep_window,
     file_looks_like_image,
     parse_seconds_arg,
     parse_timecode_token,
@@ -2207,10 +2208,10 @@ def add_clip_to_timeline(
             pos_arg = parse_seconds_arg(position_seconds, default=None, field="position_seconds")
         except ValueError as exc:
             return f"Error: {exc}"
-        # end_seconds is the keep-window form (place_moment); duration wins if both.
-        # Only the winner bounds the out-point - an overridden end_seconds is not
-        # a keep window, it is a leftover arg.
-        end_bounds_window = trim_dur is None and trim_end is not None
+        # end_seconds is the keep-window form (place_moment); duration wins if both
+        # disagree. Only the winner bounds the out-point - an overridden end_seconds
+        # is not a keep window, it is a leftover arg.
+        end_bounds_window = end_bounds_keep_window(trim_start, trim_dur, trim_end)
         if end_bounds_window:
             if trim_end <= trim_start:
                 return (
@@ -2289,11 +2290,21 @@ def add_clip_to_timeline(
             is_image=_is_image,
             is_subclip=bool(file_data.get("zenvi_subclip")),
         ):
+            # Never name a remedy the caller already applied - that turns a
+            # recoverable refusal into a retry loop (#167).
+            if trim_end is not None:
+                return (
+                    f"Error: duration_seconds={trim_dur:g} overrides end_seconds={trim_end:g}, so "
+                    f"this would keep the first {trim_dur:g}s of a file nothing has looked at. "
+                    "Drop duration_seconds and pass start_seconds (where the section begins) "
+                    "with end_seconds."
+                )
             return (
                 "Error: duration_seconds alone cannot trim the first N seconds of a file "
                 "nothing has looked at. Name both edges of the section you want: pass "
                 "start_seconds and end_seconds (the keep window search_clips returned), "
                 "or place_moment with that window."
+                + (" Times written in query are not read as the window." if skip_watch else "")
             )
 
         result_box = [None]
