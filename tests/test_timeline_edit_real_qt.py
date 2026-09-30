@@ -188,3 +188,33 @@ def test_real_separate_audio(ed):
     assert ed.undo_steps_since_mark() == 1
     ed.undo()
     assert len(ed.clips()) == 1
+
+
+def test_real_add_clips_with_crossfades(ed, tmp_path):
+    """The Add to Timeline placement with real libopenshot readers and a real transition image."""
+    import shutil
+    import subprocess
+    from classes.query import File, Transition
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not installed")
+    path = str(tmp_path / "src.mp4")
+    subprocess.run([ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=4",
+                    "-pix_fmt", "yuv420p", path], check=True)
+    reader = json.loads(openshot.FFmpegReader(path).Json())
+    ids = []
+    for _ in range(3):
+        f = File()
+        f.data = dict(reader, path=path, media_type="video")
+        f.save()
+        ids.append(f.id)
+    ed.mark()
+    r = receipt(ed.call("add_clips_to_timeline_tool", file_ids=ids, transition="fade", transition_seconds=0.5,
+                        fit_total_seconds=9, track="2"))
+    assert [c["position"] for c in r["clips"]] == [0.0, 2.833, 5.667]
+    assert r["total_seconds"] == pytest.approx(9.0, abs=0.04)
+    readers = [Transition.get(id=t).data["reader"] for t in r["transition_ids"]]
+    assert len(readers) == 2 and all(rd["path"].endswith("fade.svg") for rd in readers)
+    assert ed.undo_steps_since_mark() == 1
+    ed.undo()
+    assert ed.clips() == [] and Transition.filter() == []
