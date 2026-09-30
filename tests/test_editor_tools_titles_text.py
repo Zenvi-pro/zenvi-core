@@ -293,6 +293,10 @@ def test_vertical_project_anchors_by_template_zone(tt):
     forced = receipt(tt.call("add_title_tool", text="Low", template="Standard_1", position_seconds=12,
                              screen_position="bottom"))
     assert tt.clip(forced["timeline_clip_id"])["gravity"] == 7
+    # found live: a 9:16 lower third sat in the band Reels/TikTok cover with their UI -> lifted
+    assert forced["lifted_for_vertical_ui"] == -0.12
+    assert tt.clip(forced["timeline_clip_id"])["location_y"]["Points"][0]["co"]["Y"] == -0.12
+    assert "lifted_for_vertical_ui" not in centre
 
 
 def test_template_can_be_an_existing_title_path(tt):

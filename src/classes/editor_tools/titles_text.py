@@ -24,7 +24,8 @@ from classes.editor_tools._base import (
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
-    GRAVITY, CommitTimeout, color_hex_alpha, commit_on_main, create_track, fade_alpha, import_media_file,
+    GRAVITY, CommitTimeout, color_hex_alpha, commit_on_main, constant, create_track, fade_alpha,
+    import_media_file, is_vertical,
     installed_font_families, place_clip, plan_overlay_track, precheck_on_main, refresh_file_and_clips,
     resolve_font, title_dir, track_info, OVERLAY_ROLE,
 )
@@ -89,6 +90,9 @@ TEMPLATE_PURPOSE = {
 WEIGHTS = {"": None, "bold": True, "normal": False}
 STYLES = {"": None, "italic": True, "normal": False}
 ZONE_POSITION = {"top": "top_center", "center": "center", "bottom": "bottom_center"}
+# On 9:16 video, platform UI (Reels / TikTok / Shorts) covers the bottom and top bands: lift titles
+# anchored there clear of it (fraction of the frame height; libopenshot location_y).
+VERTICAL_SAFE_OFFSET = {"bottom_center": -0.12, "top_center": 0.06}
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +424,8 @@ _STYLE_PROPS = {
         "screen_position": enum(["auto", "top", "center", "bottom"],
                                 "Where the 16:9 title artboard sits when the project is not 16:9 (vertical "
                                 "reels, square): auto = by where the template's text is (lower thirds at the "
-                                "bottom, headers at the top).", "auto"),
+                                "bottom, headers at the top). On 9:16 video bottom/top titles are lifted clear of "
+                                "the platform UI bands.", "auto"),
     }),
     background_safe=True,
     covers=("title.create",),
@@ -486,6 +491,7 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     fitted = _fit(doc, slots, style)
     zone = title_svg.text_zone(slots, title_svg.artboard_size(doc)[1])
     pos_key = ZONE_POSITION.get(zone if screen_position == "auto" else screen_position, "center")
+    lift = VERTICAL_SAFE_OFFSET.get(pos_key, 0.0) if is_vertical() else 0.0
 
     first_text = next((values[s.index] for s in slots if values.get(s.index, "").strip()), "") or name
     base = str(file_name or "").strip() or first_text
@@ -498,6 +504,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         if created:
             create_track(layer, "Titles")
         props = {"gravity": GRAVITY[pos_key]}
+        if lift:
+            props["location_y"] = constant(lift)
         alpha = fade_alpha(0.0, duration, fade_in_seconds, fade_out_seconds)
         if alpha:
             props["alpha"] = alpha
@@ -523,6 +531,8 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         receipt.update(fade_in=fade_in_seconds, fade_out=fade_out_seconds)
     if fitted:
         receipt["text_shrunk_to_fit"] = fitted
+    if lift:
+        receipt["lifted_for_vertical_ui"] = lift
     return ok(summary, **receipt)
 
 
