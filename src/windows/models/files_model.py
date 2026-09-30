@@ -576,6 +576,18 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.update_model(clear=True, progressive_ui=False)
 
     def update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
+        # Programmatic cell changes must never be read back as user edits. A save made
+        # while a refresh is running re-enters this method; restoring the caller's flag
+        # (rather than clearing it) keeps the outer refresh protected, and an early
+        # return can no longer leave the flag stuck on.
+        previous_ignore = self.ignore_updates
+        try:
+            return self._update_model(clear=clear, delete_file_id=delete_file_id,
+                                      update_file_id=update_file_id, progressive_ui=progressive_ui)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
         log.debug("updating files model.")
         app = get_app()
 
@@ -1200,8 +1212,17 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
+        previous_ignore = self.ignore_updates
+        try:
+            self._update_file_thumbnail(file_id)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_file_thumbnail(self, file_id):
         self._status_cache.pop(str(file_id), None)
         file = File.get(id=file_id)
+        if not file:
+            return
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
 
@@ -1290,12 +1311,16 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def value_updated(self, item):
         """ Table cell change event - when tags are updated on a file"""
-        if item.column() == 2:
-            # Get updated tag value
+        # Only user edits: the model's own refreshes (a tag change saved by a tool,
+        # undo/redo) must not be written back -- into whichever file is selected.
+        if self.ignore_updates or item.column() != 2:
+            return
+        id_item = self.model.item(item.row(), 5)
+        f = File.get(id=id_item.text()) if id_item else None
+        if f:
             tags_value = item.data(0)
-            f = self.current_file()
-            if f:
-                # Save tags to file object
+            if f.data.get("tags", "") != tags_value:
+                # Save tags to the edited row's file
                 f.data["tags"] = tags_value
                 f.save()
 
