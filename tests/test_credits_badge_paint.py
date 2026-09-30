@@ -5,6 +5,7 @@ converge to the live value in the background, and repaint right after a
 paid operation instead of waiting for the 60s refresh.
 """
 
+import ast
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ import pytest
 from classes import credits_client as cc
 
 
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 _USER = {"id": "user-a"}
 
 
@@ -385,3 +387,26 @@ def test_first_ever_run_shows_the_loading_placeholder(chat_ui, store, monkeypatc
     order = []
     chat_ui.AIChatWindow._inject_web_ready(_fake_window(chat_ui, order))
     assert "updateCreditsBalance(-1)" in _credit_calls(order)[0]
+
+
+def _functions_accepting_a_login(path):
+    """(name, source) of every function that checks for LoginWindow.Accepted."""
+    source = open(path, encoding="utf-8").read()
+    lines = source.splitlines()
+    found = []
+    for node in ast.walk(ast.parse(source, path)):
+        if isinstance(node, ast.FunctionDef):
+            body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+            if "LoginWindow.Accepted" in body:
+                found.append((node.name, body))
+    return found
+
+
+@pytest.mark.parametrize("rel_path", ["classes/app.py", "windows/main_window.py"])
+def test_every_sign_in_refetches_the_credits_badge(rel_path):
+    """The chat dock exists before each sign-in; without a refetch the badge
+    stays on the placeholder until the 60s timer."""
+    found = _functions_accepting_a_login(os.path.join(SRC, rel_path))
+    assert found, "no LoginWindow.Accepted check in %s" % rel_path
+    for name, body in found:
+        assert "refresh_credits_for_account" in body, name
