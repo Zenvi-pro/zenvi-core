@@ -6,6 +6,8 @@
     "src/classes/chat_attachments.py",
     "src/classes/chat_navigation.py",
     "src/classes/conversion.py",
+    "src/classes/encoder_trial.py",
+    "src/classes/export_acceleration/hw_encode.py",
     "src/classes/ffmpeg_cli.py",
     "src/classes/index_chunker.py",
     "src/classes/qt_platform.py",
