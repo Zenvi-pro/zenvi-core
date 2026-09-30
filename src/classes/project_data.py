@@ -37,7 +37,7 @@ import json
 
 from qt_api import QFileDialog, QMessageBox
 
-from classes import info
+from classes import headless, info
 from classes.app import get_app
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
@@ -517,9 +517,10 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
             # Check if paths are all valid
             self.check_if_paths_are_valid()
 
-            # Clear old thumbnails
+            # Clear old thumbnails (never headless: the default folder belongs
+            # to a desktop window that may be running alongside)
             openshot_thumbnails = info.get_default_path("THUMBNAIL_PATH")
-            if os.path.exists(openshot_thumbnails) and clear_thumbnails:
+            if os.path.exists(openshot_thumbnails) and clear_thumbnails and not headless.is_active():
                 # Clear thumbnails
                 shutil.rmtree(openshot_thumbnails, True)
                 os.mkdir(openshot_thumbnails)
@@ -1568,6 +1569,13 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         sample_text = ", ".join(sample_names)
         if total_missing > 5:
             sample_text = _("%s and %s more") % (sample_text, total_missing - 5)
+
+        if headless.is_active():
+            # Nobody can pick a folder: open as "Skip all" would.
+            headless.report(
+                "the project references %s missing file(s), left missing: %s"
+                % (total_missing, sample_text))
+            return
 
         msg = QMessageBox(dialog_parent)
         msg.setWindowTitle(_("Missing project files"))

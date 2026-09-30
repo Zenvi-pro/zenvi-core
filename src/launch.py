@@ -42,7 +42,6 @@ Welcome to the OpenShot Video Editor 2.0 Qt documentation. OpenShot was develope
 
 import sys
 import os
-import argparse
 import json
 import logging
 from pathlib import Path
@@ -279,42 +278,8 @@ def main():
     global app
 
     # Configure argument handling for commandline launches
-    parser = argparse.ArgumentParser(description='OpenShot version ' + info.SETUP['version'])
-    parser.add_argument(
-        '-l', '--lang', action='store',
-        help='language code for interface (overrides '
-             'preferences and system environment)')
-    parser.add_argument(
-        '--list-languages', dest='list_languages',
-        action='store_true',
-        help='List all language codes supported by OpenShot')
-    parser.add_argument(
-        '--path', dest='py_path', action='append',
-        help='Additional locations to search for modules '
-             '(PYTHONPATH). Can be used multiple times.')
-    parser.add_argument(
-        '--test-models', dest='modeltest',
-        action='store_true',
-        help="Load Qt's QAbstractItemModelTester into data models "
-        '(requires Qt 5.11+)')
-    parser.add_argument(
-        '-b', '--web-backend', action='store',
-        choices=['auto', 'webkit', 'webengine', 'qwidget'], default='auto',
-        help="Web backend to use for Timeline")
-    parser.add_argument(
-        '-d', '--debug', action='store_true',
-        help='Enable debugging output')
-    parser.add_argument(
-        '--debug-file', action='store_true',
-        help='Debugging output (logfile only)')
-    parser.add_argument(
-        '--debug-console', action='store_true',
-        help='Debugging output (console only)')
-    parser.add_argument('-V', '--version', action='store_true')
-    parser.add_argument(
-        'remain', nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
-
-    args, extra_args = parser.parse_known_args()
+    from classes import launch_args
+    args, extra_args = launch_args.parse(sys.argv[1:], info.SETUP['version'])
 
     # Display version and exit (if requested)
     if args.version:
@@ -361,6 +326,32 @@ def main():
             print(f"Unsupported language '{args.lang}'! (See --list-languages)")
             sys.exit(-1)
 
+    if args.headless:
+        from classes import headless
+        from classes.logger import set_level_console
+        headless.activate()
+        if not (args.debug or args.debug_console):
+            # Keep stderr to the session's own lines, warnings and errors.
+            set_level_console(logging.WARNING)
+    else:
+        # Zenvi already open for this profile? Hand it the files and stop here.
+        from classes import single_instance
+        launch_paths = single_instance.launch_paths(args.remain, args.project)
+        try:
+            outcome, detail = single_instance.hand_off(
+                single_instance.server_name(info.USER_PATH), launch_paths)
+        except Exception:
+            # Not being able to look must never stop Zenvi from starting.
+            logger.warning("Could not check for a running Zenvi", exc_info=True)
+            outcome, detail = single_instance.NOT_RUNNING, ""
+        if outcome == single_instance.DELIVERED:
+            print("Zenvi is already running; handed over %s" % (", ".join(launch_paths) or "focus"))
+            sys.exit(0)
+        if outcome != single_instance.NOT_RUNNING:
+            print("Zenvi is already running but did not take the request (%s): %s"
+                  % (outcome, detail), file=sys.stderr)
+            sys.exit(1)
+
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
 
@@ -387,6 +378,9 @@ def main():
 
     argv = [sys.argv[0]]
     argv.extend(extra_args)
+    if args.project and not args.headless:
+        # Same as passing the project positionally.
+        argv.append(args.project)
     argv.extend(args.remain)
     try:
         app = OpenShotApp(argv)
@@ -411,6 +405,22 @@ def main():
         app.setDesktopFile("org.zenvi.Zenvi")
     except AttributeError:
         pass
+
+    if args.headless:
+        from classes import headless
+        try:
+            exit_code = headless.run(app, args.project)
+        except Exception as exc:
+            _report_startup_failure("failed in headless mode")
+            headless.report("failed: %s: %s" % (type(exc).__name__, exc))
+            exit_code = headless.EXIT_FAILURE
+        sys.exit(exit_code)
+
+    # Later launches hand their files to this window, and external CLIs find
+    # its MCP server through ~/.openshot_qt/gui_mcp.json.
+    from classes import agent_mcp_server, mcp_discovery
+    app.start_instance_server()
+    agent_mcp_server.enable_discovery(mcp_discovery.GUI)
 
     # Launch GUI and start event loop.
     # MainWindow construction and the event loop are the two largest bodies of

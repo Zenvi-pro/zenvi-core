@@ -2771,6 +2771,23 @@ def __getattr__(name: str) -> Any:
                 return QtTest.QAbstractItemModelTester
         except Exception:
             pass
+    if name in ("QLocalServer", "QLocalSocket"):
+        # QtNetwork is loaded on demand: only the single-instance handoff uses it.
+        try:
+            if QT_API == "pyqt6":
+                import PyQt6.QtNetwork as QtNetwork  # type: ignore
+            elif QT_API == "pyside6":
+                import PySide6.QtNetwork as QtNetwork  # type: ignore
+            elif QT_API == "pyqt5":
+                import PyQt5.QtNetwork as QtNetwork  # type: ignore
+            else:
+                QtNetwork = None
+            if QtNetwork is not None:
+                value = getattr(QtNetwork, name)
+                globals()[name] = value
+                return value
+        except Exception:
+            pass
     for module in _MODULES:
         if hasattr(module, name):
             return getattr(module, name)
