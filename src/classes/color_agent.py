@@ -435,6 +435,8 @@ def _merge_wheel(existing: dict, patch: dict) -> dict:
 DELTA_KEYS = {
     "temperature_delta": "temperature",
     "tint_delta": "tint",
+    "exposure_delta": "exposure",
+    "vibrance_delta": "vibrance",
 }
 
 
@@ -1043,15 +1045,14 @@ def apply_soft_color_preset(effect_json: dict, preset_name: str) -> dict:
         set_scalar(payload, "vibrance", 0.10)
         set_scalar(payload, "saturation", 1.08)
     elif name == "sunny":
-        # Bright daylight — never touch saturation below 1.0 (that greys the shot).
-        set_scalar(payload, "temperature", 0.22)
+        # Mild daylight wash. Outdoor clips already have sun — keep this soft.
+        # "A bit sunnier" should use temperature_delta/exposure_delta, not this.
+        set_scalar(payload, "temperature", 0.12)
         set_scalar(payload, "tint", 0.02)
-        set_scalar(payload, "exposure", 0.14)
-        set_scalar(payload, "contrast", 0.10)
-        set_scalar(payload, "highlights", 0.06)
-        set_scalar(payload, "shadows", 0.04)
-        set_scalar(payload, "saturation", 1.16)
-        set_scalar(payload, "vibrance", 0.20)
+        set_scalar(payload, "exposure", 0.05)
+        set_scalar(payload, "contrast", 0.04)
+        set_scalar(payload, "saturation", 1.08)
+        set_scalar(payload, "vibrance", 0.08)
     elif name == "gloomy":
         set_scalar(payload, "temperature", -0.10)
         set_scalar(payload, "exposure", -0.08)

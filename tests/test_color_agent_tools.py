@@ -233,9 +233,9 @@ def test_soft_presets_match_ui_warm_up_numbers():
     assert scalar_y(warm, "tint") == pytest.approx(0.03)
     assert scalar_y(warm, "vibrance") == pytest.approx(0.10)
     sunny = apply_soft_color_preset(blank_color_grade("e"), "sunny")
-    assert scalar_y(sunny, "temperature") == pytest.approx(0.22)
-    assert scalar_y(sunny, "exposure") == pytest.approx(0.14)
-    assert scalar_y(sunny, "saturation") == pytest.approx(1.16)
+    assert scalar_y(sunny, "temperature") == pytest.approx(0.12)
+    assert scalar_y(sunny, "exposure") == pytest.approx(0.05)
+    assert scalar_y(sunny, "saturation") == pytest.approx(1.08)
     assert scalar_y(sunny, "saturation") >= 1.0
     boost = apply_soft_color_preset(blank_color_grade("e"), "boost_color")
     assert scalar_y(boost, "saturation") == pytest.approx(1.18)
@@ -266,6 +266,19 @@ def test_temperature_delta_nudges_from_current():
     assert scalar_y(warmer, "temperature") == pytest.approx(0.18)
     cooler = merge_color_grade(warmer, {"temperature_delta": -0.08})
     assert scalar_y(cooler, "temperature") == pytest.approx(0.10)
+
+
+def test_exposure_and_vibrance_deltas_nudge():
+    from classes.color_agent import merge_color_grade
+
+    base = merge_color_grade(blank_color_grade("e"), {"exposure": 0.0, "vibrance": 0.0})
+    sunnier = merge_color_grade(
+        base,
+        {"temperature_delta": 0.08, "exposure_delta": 0.04, "vibrance_delta": 0.05},
+    )
+    assert scalar_y(sunnier, "temperature") == pytest.approx(0.08)
+    assert scalar_y(sunnier, "exposure") == pytest.approx(0.04)
+    assert scalar_y(sunnier, "vibrance") == pytest.approx(0.05)
 
 
 def test_resolve_color_targets_all_and_playhead(monkeypatch):

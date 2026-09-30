@@ -8637,6 +8637,8 @@ def apply_color(
     tint="",
     temperature_delta="",
     tint_delta="",
+    exposure_delta="",
+    vibrance_delta="",
     highlights="",
     shadows="",
     mix="",
@@ -8659,10 +8661,11 @@ def apply_color(
 
     Pass clipIds (JSON list or comma-separated) and only the fields to change.
     Unset fields are kept (merge). reset=true removes ColorGrade. color= pastes
-    a full grade object. temperature_delta / tint_delta nudge from the current
-    grade (clamped to [-1, 1]). Validate-before-undo: bad args leave history
-    untouched. If no clip ids are passed: selected clips, else clip(s) under the
-    playhead. clipIds=\"all\" / all_clips=true grades every timeline clip.
+    a full grade object. temperature_delta / tint_delta / exposure_delta /
+    vibrance_delta nudge from the current grade (clamped to [-1, 1]). Prefer
+    deltas for \"a bit sunnier/warmer\". Validate-before-undo: bad args leave
+    history untouched. If no clip ids are passed: selected clips, else clip(s)
+    under the playhead. clipIds=\"all\" / all_clips=true grades every timeline clip.
     """
     try:
         from classes import color_agent as ca
@@ -8694,6 +8697,14 @@ def apply_color(
                 else kwargs.get("temperature_delta", "")
             ),
             "tint_delta": tint_delta if tint_delta != "" else kwargs.get("tint_delta", ""),
+            "exposure_delta": (
+                exposure_delta if exposure_delta != ""
+                else kwargs.get("exposure_delta", "")
+            ),
+            "vibrance_delta": (
+                vibrance_delta if vibrance_delta != ""
+                else kwargs.get("vibrance_delta", "")
+            ),
             "highlights": highlights if highlights != "" else kwargs.get("highlights", ""),
             "shadows": shadows if shadows != "" else kwargs.get("shadows", ""),
             "mix": mix if mix != "" else kwargs.get("mix", ""),
