@@ -489,8 +489,12 @@ def createCenterEffect(
         keyframeNode.appendChild(interpNode)
 
 
-def export_xml():
-    """Export final cut pro XML file"""
+def export_xml(file_path=None):
+    """Export final cut pro XML file
+
+    With no *file_path*, asks for one (File > Export Project > XML). Returns
+    the written path; raises when the file cannot be written.
+    """
     app = get_app()
     _ = app._tr
 
@@ -521,11 +525,12 @@ def export_xml():
     else:
         for ext in (info.PROJECT_EXT, info.LEGACY_PROJECT_EXT):
             recommended_path = recommended_path.replace(ext, ".xml")
-    file_path = QFileDialog.getSaveFileName(app.window, _("Export XML..."), recommended_path,
-                                            _("Final Cut Pro (*.xml)"))[0]
+    if file_path is None:
+        file_path = QFileDialog.getSaveFileName(app.window, _("Export XML..."), recommended_path,
+                                                _("Final Cut Pro (*.xml)"))[0]
     if not file_path:
         # User canceled dialog
-        return
+        return None
 
     # Append .xml if needed
     if not file_path.endswith(".xml"):
@@ -907,6 +912,8 @@ def export_xml():
         _validate_export(file_path)
     except IOError as inst:
         log.error("Error writing XML export: {}".format(str(inst)))
+        raise
     finally:
         # Free up DOM memory
         xmldoc.unlink()
+    return file_path

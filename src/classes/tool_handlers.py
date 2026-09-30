@@ -160,6 +160,14 @@ def _resume_player(was_playing):
 
 # How long a marshalled call waits for the GUI thread before giving up.
 MAIN_THREAD_TIMEOUT_SECONDS = 30
+# Once a marshalled call has started on the GUI thread it is waited out for at
+# least this long: reporting a failure for an edit that then lands makes a
+# retrying agent apply it twice.
+MAIN_THREAD_GRACE_SECONDS = 120
+
+
+class _SkippedAfterTimeout(Exception):
+    """A marshalled call reached the GUI thread after its caller gave up."""
 
 
 class MainThreadTimeout(TimeoutError):
@@ -205,7 +213,17 @@ def _run_on_main_thread(func, *args, timeout=None):
     # having to thread a tid through its signature.
     caller_tid = app.updates.transaction_id
 
+    # A queued call that only reaches the GUI thread after its caller gave up
+    # must not run: the caller has already told the agent it failed, and an
+    # edit landing afterwards gets applied twice when the agent retries.
+    state = {"started": False, "cancelled": False}
+    state_lock = threading.Lock()
+
     def _with_caller_transaction(*a):
+        with state_lock:
+            if state["cancelled"]:
+                raise _SkippedAfterTimeout()
+            state["started"] = True
         previous = app.updates.transaction_id
         app.updates.transaction_id = caller_tid
         try:
@@ -223,12 +241,28 @@ def _run_on_main_thread(func, *args, timeout=None):
     )
 
     if not done.wait(timeout=timeout):
-        raise MainThreadTimeout(
-            f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
-            f"{timeout}s. The editor is up but its event loop is not draining "
-            f"(a modal dialog, or startup never finished). Read-only tools "
-            f"still work; call mcp_health_tool to confirm."
-        )
+        with state_lock:
+            started = state["started"]
+            if not started:
+                state["cancelled"] = True
+        if not started:
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not pick this call up "
+                f"within {timeout}s, so it was cancelled: nothing was changed and it "
+                f"is safe to retry. The editor is up but its event loop is busy or "
+                f"blocked (a modal dialog, a long render, or startup). Read-only "
+                f"tools still work; call mcp_health_tool to check."
+            )
+        # It is running on the GUI thread: wait it out instead of reporting a
+        # failure for an edit that is about to land.
+        grace = max(float(timeout), float(MAIN_THREAD_GRACE_SECONDS))
+        if not done.wait(timeout=grace):
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: this call started on the GUI thread but had "
+                f"not finished after {timeout + grace:.0f}s. It may still complete: "
+                f"read the timeline or project state before retrying so the edit "
+                f"is not applied twice."
+            )
 
     if error_box[0] is not None:
         raise error_box[0]
@@ -893,20 +927,6 @@ _last_split_file_id_by_chat_session = {}
 # Project tools
 # ---------------------------------------------------------------------------
 
-def get_project_info(**_kw) -> str:
-    try:
-        app = _get_app()
-        proj = app.project
-        profile = proj.get("profile") or "unknown"
-        fps = proj.get("fps") or {}
-        fps_str = "{}/{}".format(fps.get("num", ""), fps.get("den", 1))
-        duration = proj.get("duration") or 0
-        scale = proj.get("scale") or 0
-        return f"Project: profile={profile}, fps={fps_str}, duration={duration}, scale={scale}"
-    except Exception as e:
-        return f"Error: {e}"
-
-
 def list_files(**_kw) -> str:
     try:
         import os
@@ -1102,52 +1122,6 @@ def list_layers(**_kw) -> str:
         return f"Error: {e}"
 
 
-def list_markers(**_kw) -> str:
-    try:
-        from classes.query import Marker
-        markers = Marker.filter()
-        if not markers:
-            return "No markers in project."
-        lines = [f"  id={m.data.get('id','')} position={m.data.get('position',0)} name={m.data.get('name','')}" for m in markers]
-        return f"Markers ({len(markers)}):\n" + "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def new_project(**_kw) -> str:
-    try:
-        app = _get_app()
-        app.project.new()
-        app.updates.load(app.project._data, reset_history=True)
-        return "New project created."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def save_project(file_path="", **_kw) -> str:
-    from classes import info
-    if not file_path or not isinstance(file_path, str):
-        return "Error: file_path is required."
-    file_path = file_path.strip()
-    if not file_path.endswith(info.ALL_PROJECT_EXTS):
-        file_path += info.PROJECT_EXT
-    try:
-        _get_app().window.save_project(file_path)
-        return f"Project saved to {file_path}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def open_project(file_path="", **_kw) -> str:
-    if not file_path:
-        return "Error: file_path is required."
-    try:
-        _get_app().window.OpenProjectSignal.emit(file_path.strip())
-        return f"Open project requested: {file_path}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
 # ---------------------------------------------------------------------------
 # Playback & history
 # ---------------------------------------------------------------------------
@@ -1209,14 +1183,6 @@ def watch_clip_and_play(file_path: str = "", **_kw) -> str:
         return f"Loaded and playing: {os.path.basename(resolved_path)}"
     except Exception as e:
         log.error("watch_clip_and_play failed: %s", e, exc_info=True)
-        return f"Error: {e}"
-
-
-def play(**_kw) -> str:
-    try:
-        _get_app().window.actionPlay_trigger()
-        return "Playback toggled."
-    except Exception as e:
         return f"Error: {e}"
 
 
@@ -1355,22 +1321,6 @@ def redo(steps=1, **_kw) -> str:
 # ---------------------------------------------------------------------------
 # Timeline / view
 # ---------------------------------------------------------------------------
-
-def add_track(**_kw) -> str:
-    try:
-        _get_app().window.actionAddTrackBelow_trigger()
-        return "Track added."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def add_marker(**_kw) -> str:
-    try:
-        _get_app().window.actionAddMarker_trigger()
-        return "Marker added."
-    except Exception as e:
-        return f"Error: {e}"
-
 
 def _locked_track_error(app, layer_num):
     """Return an error string if *layer_num* is a locked track, else ''."""
@@ -1875,83 +1825,6 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
 _EXPORT_MAIN_THREAD_TIMEOUT = 6 * 60 * 60
 
 
-def export_video(show_dialog="true", output_path="", **_kw) -> str:
-    """Export the project. Opens the dialog by default; pass show_dialog=false with an output_path to render with no dialog.
-
-    The headless form is what an unattended MCP/harness run uses — it writes the
-    file directly instead of waiting for someone to complete an export dialog.
-    """
-    try:
-        open_ui = str(show_dialog).lower().strip() not in ("0", "false", "no")
-        path = (output_path or "").strip()
-        if open_ui and not path:
-            _run_on_main_thread(lambda: _get_app().window.actionExportVideo_trigger())
-            return "Export video dialog opened."
-        from windows.export import export_video_headless, get_default_export_settings
-        _, _, _, default_path = get_default_export_settings()
-        err = _run_on_main_thread(
-            lambda: export_video_headless(path or None, None, None, None),
-            timeout=_EXPORT_MAIN_THREAD_TIMEOUT,
-        )
-        if err:
-            return f"Export failed: {err}"
-        return f"Exported to {path or default_path}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def get_export_settings(**_kw) -> str:
-    try:
-        from windows.export import get_default_export_settings
-        app = _get_app()
-        video_settings, audio_settings, export_type, default_path = get_default_export_settings()
-        lines = [
-            f"Export type: {export_type}",
-            f"Default path: {default_path}",
-            "Video: {}x{}, {}/{} fps, codec {}, format {}, bitrate {}".format(
-                video_settings.get("width"), video_settings.get("height"),
-                video_settings.get("fps", {}).get("num"), video_settings.get("fps", {}).get("den"),
-                video_settings.get("vcodec"), video_settings.get("vformat"),
-                video_settings.get("video_bitrate")),
-            "Audio: codec {}, {} Hz, {} channels, bitrate {}".format(
-                audio_settings.get("acodec"), audio_settings.get("sample_rate"),
-                audio_settings.get("channels"), audio_settings.get("audio_bitrate")),
-            "Frame range: {} - {}".format(video_settings.get("start_frame"), video_settings.get("end_frame")),
-        ]
-        overrides = app.project.get("export_overrides") or {}
-        if overrides:
-            lines.append(f"Overrides: {overrides}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Error: {e}"
-
-
-def set_export_setting(key="", value="", **_kw) -> str:
-    try:
-        app = _get_app()
-        overrides = dict(app.project.get("export_overrides") or {})
-        kl = key.lower().strip()
-        if kl in ("width", "height", "fps_num", "fps_den", "start_frame", "end_frame", "sample_rate", "channels"):
-            overrides[kl] = int(value.strip())
-        elif kl in ("video_codec", "vcodec"):
-            overrides["video_codec"] = value.strip()
-        elif kl in ("audio_codec", "acodec"):
-            overrides["audio_codec"] = value.strip()
-        elif kl in ("output_path", "path"):
-            overrides["output_path"] = value.strip()
-        elif kl in ("vformat", "format"):
-            overrides["vformat"] = value.strip()
-        else:
-            overrides[kl] = value.strip()
-        # try/finally: a leaked ignore_history=True would silently disable
-        # undo for every action that follows.
-        with _ignore_history(app):
-            app.updates.update(["export_overrides"], overrides)
-        return f"Set {kl} = {value}."
-    except Exception as e:
-        return f"Error: {e}"
-
-
 # ---------------------------------------------------------------------------
 # Clipping (split, slice, add to timeline)
 # ---------------------------------------------------------------------------
@@ -2436,6 +2309,13 @@ def add_clip_to_timeline(
 
 
 def slice_clip_at_playhead(**_kw) -> str:
+    """Slice every unlocked clip and transition under the playhead, keeping both sides.
+
+    slice_clips_tool targets one clip, a track or the selection; this keeps the
+    old everything-under-the-playhead behaviour. Items on locked tracks and
+    items whose edge sits exactly at the playhead (a cut there would leave a
+    zero-length clip) are not sliced and not counted.
+    """
     try:
         from windows.views.timeline_backend.enums import MenuSlice
 
@@ -2449,18 +2329,28 @@ def slice_clip_at_playhead(**_kw) -> str:
             fps = app.project.get("fps") or {}
             fps_float = _project_fps_float(fps)
             playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
-            intersecting_clips = Clip.filter(intersect=playhead_position)
-            intersecting_trans = Transition.filter(intersect=playhead_position)
-            if not intersecting_clips and not intersecting_trans:
-                result_box[0] = "No clip or transition at the playhead."
+            half_frame = 0.5 / fps_float
+            locked = {t.get("number") for t in (app.project.get("layers") or []) if t.get("lock")}
+
+            def _sliceable(item):
+                start = float(item.data.get("position", 0.0) or 0.0)
+                end = start + float(item.data.get("end", 0.0) or 0.0) - float(item.data.get("start", 0.0) or 0.0)
+                return (item.data.get("layer") not in locked
+                        and start + half_frame < playhead_position < end - half_frame)
+
+            clip_ids = [c.id for c in Clip.filter(intersect=playhead_position) if _sliceable(c)]
+            tran_ids = [t.id for t in Transition.filter(intersect=playhead_position) if _sliceable(t)]
+            if not clip_ids and not tran_ids:
+                result_box[0] = (f"Error: no unlocked clip or transition under the playhead "
+                                 f"({playhead_position:.2f} s); nothing was sliced.")
                 return
-            win.slice_clips(MenuSlice.KEEP_BOTH)
-            n = len(intersecting_clips) + len(intersecting_trans)
-            result_box[0] = f"Sliced {n} item(s) at the playhead; both sides kept."
+            win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, clip_ids, tran_ids, playhead_position)
+            n = len(clip_ids) + len(tran_ids)
+            result_box[0] = f"Sliced {n} item(s) at the playhead ({playhead_position:.2f} s); both sides kept."
 
         _run_on_main_thread(_do_slice)
 
-        return result_box[0] or "Slice completed."
+        return result_box[0] or "Error: the slice did not run."
     except Exception as e:
         return f"Error: {e}"
 
@@ -8481,25 +8371,21 @@ def duck_under_speech(
 # Tools exposed to the main chat / video / transitions agents.
 AGENT_TOOL_HANDLERS = {
     # Project
-    "get_project_info_tool": get_project_info,
     "list_files_tool": list_files,
     "list_clips_tool": list_clips,
     "list_layers_tool": list_layers,
-    "list_markers_tool": list_markers,
-    "new_project_tool": new_project,
-    "save_project_tool": save_project,
-    "open_project_tool": open_project,
+    # list_markers_tool: classes.editor_tools.tracks_nav
+    # new/save/open_project_tool: classes.editor_tools.project_export
     # Playback
     "watch_clip_tool": watch_clip_and_play,
     "watch_clip_window_tool": watch_clip_window,
-    "play_tool": play,
+    # play_tool: classes.editor_tools.tracks_nav
     "go_to_start_tool": go_to_start,
     "go_to_end_tool": go_to_end,
     "undo_tool": undo,
     "redo_tool": redo,
     # Timeline
-    "add_track_tool": add_track,
-    "add_marker_tool": add_marker,
+    # add_track_tool, add_marker_tool: classes.editor_tools.tracks_nav
     "delete_from_timeline_tool": delete_from_timeline,
     # Deprecated aliases -- kept dispatchable for stored plans and in-flight
     # sessions; the backend catalog exposes delete_from_timeline_tool only.
@@ -8515,9 +8401,6 @@ AGENT_TOOL_HANDLERS = {
     "import_files_tool": import_files,
     "wait_until_project_indexed_tool": wait_until_project_indexed,
     # Export
-    "export_video_tool": export_video,
-    "get_export_settings_tool": get_export_settings,
-    "set_export_setting_tool": set_export_setting,
     # Clips
     "get_file_info_tool": get_file_info,
     "split_file_add_clip_tool": split_file_add_clip,
@@ -8567,23 +8450,15 @@ TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "get_project_info_tool": "Read project info",
     "list_files_tool": "List files",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
-    "list_markers_tool": "List markers",
-    "new_project_tool": "New project",
-    "save_project_tool": "Save project",
-    "open_project_tool": "Open project",
     "watch_clip_tool": "Load and play clip",
     "watch_clip_window_tool": "Watch clip window",
-    "play_tool": "Toggle playback",
     "go_to_start_tool": "Seek to start",
     "go_to_end_tool": "Seek to end",
     "undo_tool": "Undo",
     "redo_tool": "Redo",
-    "add_track_tool": "Add track",
-    "add_marker_tool": "Add marker",
     "delete_from_timeline_tool": "Delete from timeline",
     "remove_clip_tool": "Delete from timeline",
     "delete_clips_on_track_tool": "Delete from timeline",
@@ -8595,9 +8470,6 @@ TOOL_DISPLAY_LABELS = {
     "center_on_playhead_tool": "Center on playhead",
     "import_files_tool": "Import files",
     "wait_until_project_indexed_tool": "Wait for indexing",
-    "export_video_tool": "Export video",
-    "get_export_settings_tool": "Read export settings",
-    "set_export_setting_tool": "Update export setting",
     "get_file_info_tool": "Read file info",
     "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
@@ -8684,11 +8556,8 @@ READ_ONLY_TOOLS = frozenset({
     "list_files_tool",
     "list_clips_tool",
     "list_layers_tool",
-    "list_markers_tool",
     "get_timeline_state_tool",
-    "get_project_info_tool",
     "get_file_info_tool",
-    "get_export_settings_tool",
     "list_transitions_tool",
     "search_transitions_tool",
     "get_clips_with_full_metadata_tool",
@@ -8709,8 +8578,6 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "import_files_tool",
     # Polls indexing state for minutes — must never occupy the GUI thread.
     "wait_until_project_indexed_tool",
-    # A render takes minutes; it marshals itself with its own longer timeout.
-    "export_video_tool",
     # Downloads + re-encodes off the GUI thread; its timeline mutations
     # marshal to the main thread internally.
     "import_video_url_and_add_to_timeline_tool",

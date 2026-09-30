@@ -130,8 +130,13 @@ def _db_to_volume(db_value):
     return max(0.0, min(1.0, linear))
 
 
-def export_edl():
-    """Export EDL File"""
+def export_edl(file_path=None):
+    """Export EDL File
+
+    EDL holds one track per file, so each non-empty track is written to
+    ``<file_path minus .edl>-<track name>.edl``. With no *file_path*, asks for
+    one (File > Export Project > EDL). Returns the written paths.
+    """
     app = get_app()
     _ = app._tr
 
@@ -150,10 +155,12 @@ def export_edl():
     else:
         for ext in (info.PROJECT_EXT, info.LEGACY_PROJECT_EXT):
             recommended_path = recommended_path.replace(ext, ".edl")
-    file_path = QFileDialog.getSaveFileName(app.window, _("Export EDL..."), recommended_path,
-                                            _("Edit Decision List (*.edl)"))[0]
+    if file_path is None:
+        file_path = QFileDialog.getSaveFileName(app.window, _("Export EDL..."), recommended_path,
+                                                _("Edit Decision List (*.edl)"))[0]
     if not file_path:
-        return
+        return []
+    written = []
 
     # Append .edl if needed
     if not file_path.endswith(".edl"):
@@ -166,7 +173,12 @@ def export_edl():
     file_name = os.path.splitext(file_name_with_ext)[0]
 
     all_tracks = get_app().project.get("layers")
-    track_count = len(all_tracks)
+    # UI track number (1 = bottom), the name the Timeline shows for an unlabeled track.
+    # A countdown that skipped empty tracks mis-named every track below an empty one.
+    ui_track_number = {
+        t.get("number"): index
+        for index, t in enumerate(sorted(all_tracks, key=itemgetter('number')), start=1)
+    }
     for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
         existing_track = Track.get(number=track.get("number"))
         if not existing_track:
@@ -175,14 +187,16 @@ def export_edl():
             continue
 
         # Track name
-        track_name = track.get("label") or "TRACK %s" % track_count
+        track_name = track.get("label") or "TRACK %s" % ui_track_number[track.get("number")]
         clips_on_track = sorted(Clip.filter(layer=track.get("number")), key=lambda c: c.data.get('position', 0.0))
         if not clips_on_track:
             continue
 
         # Generate EDL File (1 per track - limitation of EDL format)
         # TODO: Improve and move this into its own class
-        with open("%s-%s.edl" % (file_path.replace(".edl", ""), track_name), 'w', encoding="utf8") as f:
+        track_file_path = "%s-%s.edl" % (file_path[:-len(".edl")], track_name)
+        written.append(track_file_path)
+        with open(track_file_path, 'w', encoding="utf8") as f:
             # Add Header
             f.write("TITLE: %s - %s\n" % (file_name, track_name))
             f.write("FCM: %s\n\n" % ("DROP FRAME" if _is_drop_frame(fps_num, fps_den) else "NON-DROP FRAME"))
@@ -316,5 +330,5 @@ def export_edl():
                 event_index += 1
                 f.write("\n")
 
-            # Update counters
-            track_count -= 1
+
+    return written

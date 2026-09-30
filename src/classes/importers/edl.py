@@ -97,8 +97,12 @@ def _db_to_volume(db_value):
     return max(0.0, min(1.0, linear))
 
 
-def create_clip(context, track):
-    """Create a new clip based on this context dict"""
+def create_clip(context, track, prompt=True, missing=None):
+    """Create a new clip based on this context dict
+
+    prompt=False skips media that cannot be found instead of asking the user;
+    skipped paths are appended to *missing*. Returns the new Clip or None.
+    """
     app = get_app()
     _ = app._tr
 
@@ -111,9 +115,11 @@ def create_clip(context, track):
     clip_path_value = clip_path_value or ""
 
     # Get clip path (and prompt user if path not found)
-    clip_path, is_modified, is_skipped = find_missing_file(clip_path_value)
+    clip_path, is_modified, is_skipped = find_missing_file(clip_path_value, prompt=prompt)
     if is_skipped:
-        return
+        if missing is not None and clip_path_value:
+            missing.append(clip_path_value)
+        return None
 
     # Get component contexts
     video_ctx = context.get("video_ctx", {})
@@ -147,6 +153,9 @@ def create_clip(context, track):
             file.save()
         except Exception:
             log.warning("Error building File object for %s" % clip_path, exc_info=1)
+            if missing is not None:
+                missing.append(clip_path)
+            return None
 
     if file.data["media_type"] == "video" or file.data["media_type"] == "image":
         # Determine thumb path
@@ -282,27 +291,41 @@ def create_clip(context, track):
 
     # Save clip
     clip.save()
+    return clip
 
 
-def import_edl():
-    """Import EDL File"""
+def import_edl(file_path=None, prompt=True):
+    """Import EDL File
+
+    With no *file_path*, asks for one (File > Import Project > EDL). prompt=False
+    never opens a dialog: missing media is skipped. Returns a summary dict
+    ({"track_number", "clip_ids", "missing"}), or None when nothing was chosen.
+    """
     app = get_app()
     _ = app._tr
 
-    # Get EDL path
-    recommended_path = app.project.current_filepath or ""
-    if not recommended_path:
-        recommended_path = info.HOME_PATH
-    else:
-        recommended_path = os.path.dirname(recommended_path)
-    file_path = QFileDialog.getOpenFileName(
-        app.window,
-        _("Import EDL..."),
-        recommended_path,
-        _("Edit Decision List (*.edl)"),
-        _("Edit Decision List (*.edl)"),
-    )[0]
-    if os.path.exists(file_path):
+    if file_path is None:
+        # Get EDL path
+        recommended_path = app.project.current_filepath or ""
+        if not recommended_path:
+            recommended_path = info.HOME_PATH
+        else:
+            recommended_path = os.path.dirname(recommended_path)
+        file_path = QFileDialog.getOpenFileName(
+            app.window,
+            _("Import EDL..."),
+            recommended_path,
+            _("Edit Decision List (*.edl)"),
+            _("Edit Decision List (*.edl)"),
+        )[0]
+    summary = {"track_number": None, "clip_ids": [], "missing": []}
+
+    def _commit(ctx, trk):
+        new_clip = create_clip(ctx, trk, prompt=prompt, missing=summary["missing"])
+        if new_clip is not None:
+            summary["clip_ids"].append(new_clip.id)
+
+    if file_path and os.path.exists(file_path):
         context = {"audio_ctx": []}
         current_clip_index = ""
         edl_folder = os.path.dirname(os.path.abspath(file_path))
@@ -317,6 +340,7 @@ def import_edl():
         track = Track()
         track.data = {"number": track_number, "y": 0, "label": "EDL Import", "lock": False}
         track.save()
+        summary["track_number"] = track_number
 
         # Open EDL file
         with open(file_path, "r") as f:
@@ -340,7 +364,7 @@ def import_edl():
                             current_clip_index = edit_index
                         if current_clip_index != edit_index:
                             # clip changed, time to commit previous context
-                            create_clip(context, track)
+                            _commit(context, track)
 
                             # reset context
                             current_clip_index = edit_index
@@ -412,10 +436,12 @@ def import_edl():
                     context["fcm"] = r   # NON-DROP FRAME
 
             # Final edit needs committing
-            create_clip(context, track)
+            _commit(context, track)
 
             # Update the preview and reselect current frame in properties
             app.window.refreshFrameSignal.emit()
             app.window.propertyTableView.select_frame(
                 app.window.preview_thread.player.Position()
             )
+        return summary
+    return None

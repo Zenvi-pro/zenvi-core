@@ -56,7 +56,10 @@ def tool_stub():
         """List the media files in the current project bin."""
         return "FIXTURE_FILES: a.mp4, b.wav"
 
-    def add_track(label="", **_kw):
+    # A legacy (signature-derived) handler: registry tools such as add_track_tool
+    # carry their own explicit schema, so this stub must use a name the
+    # editor_tools registry does not define.
+    def legacy_label_probe(label="", **_kw):
         """Add a new track to the timeline."""
         return "added track %s" % label
 
@@ -64,7 +67,7 @@ def tool_stub():
         """Vision-check a placed clip."""
         return "WATCH_RESULT query=%s" % query
 
-    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "add_track_tool": add_track,
+    th.AGENT_TOOL_HANDLERS = {"list_files_tool": list_files, "legacy_label_probe_tool": legacy_label_probe,
                               "watch_clip_window_tool": watch_clip_window}
     th.humanize_tool_name = lambda n: n
     th.execute_tool = lambda name, args: th.AGENT_TOOL_HANDLERS[name](**(args or {}))
@@ -85,12 +88,12 @@ def test_iter_tool_defs(tool_stub):
     defs = {d["name"]: d for d in iter_tool_defs()}
 
     # Editor tools are exactly what AGENT_TOOL_HANDLERS holds...
-    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "add_track_tool",
+    assert set(defs) - set(_extra_tools()) == {"list_files_tool", "legacy_label_probe_tool",
                                                "watch_clip_window_tool"}
     # ...and the MCP-only extras are advertised alongside them.
     assert set(_extra_tools()) <= set(defs)
 
-    assert defs["add_track_tool"]["inputSchema"]["properties"]["label"]["type"] == "string"
+    assert defs["legacy_label_probe_tool"]["inputSchema"]["properties"]["label"]["type"] == "string"
     assert "media files" in defs["list_files_tool"]["description"]
 
 

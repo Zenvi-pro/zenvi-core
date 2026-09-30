@@ -473,3 +473,17 @@ def test_background_manager_budget_eviction(tmp_path):
     mgr._enforce_budget()
     remaining = list(root.iterdir())
     assert sum(f.stat().st_size for f in remaining) <= 250
+
+
+def test_agent_exports_default_to_the_software_encoder():
+    """exportPreferHardwareEncoder defaults off.
+
+    With libopenshot 1.0 and ffmpeg 9 on macOS, the pipelined headless export
+    handed software frames to h264_videotoolbox and libavcodec aborted the whole
+    app ("Assertion frame->format == AV_PIX_FMT_VIDEOTOOLBOX failed",
+    SIGABRT) on the first agent export. Hardware encode stays one preference away.
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "src", "settings", "_default.settings")
+    data = json.load(open(path, encoding="utf-8"))
+    pref = next(i for i in data if i.get("setting") == "exportPreferHardwareEncoder")
+    assert pref["value"] is False
