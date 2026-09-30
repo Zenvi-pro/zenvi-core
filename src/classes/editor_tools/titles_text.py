@@ -19,14 +19,14 @@ from typing import Dict, List
 
 from classes import title_svg
 from classes.editor_tools._base import (
-    ToolError, array, boolean, enum, is_locked, number, obj, ok, on_main,
-    project_fps, selected_clip_ids, snap_seconds, string, ui_track_number,
+    ToolError, array, boolean, enum, is_locked, number, obj, ok, project_fps, selected_clip_ids,
+    snap_seconds, string, ui_track_number,
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
-    GRAVITY, color_hex_alpha, fade_alpha, import_media_file,
-    installed_font_families, create_track, place_clip, plan_overlay_track,
-    refresh_file_and_clips, resolve_font, title_dir, track_info, OVERLAY_ROLE,
+    GRAVITY, CommitTimeout, color_hex_alpha, commit_on_main, create_track, fade_alpha, import_media_file,
+    installed_font_families, place_clip, plan_overlay_track, precheck_on_main, refresh_file_and_clips,
+    resolve_font, title_dir, track_info, OVERLAY_ROLE,
 )
 
 # #183's add_title_tool tried these in order when no template was named.
@@ -191,15 +191,21 @@ class _Style:
         return bool(self.font or self.bold is not None or self.italic is not None
                     or abs(self.font_scale - 1.0) > 1e-9 or self.text_color or self.background)
 
-    def resolve_font(self):
-        """Match the requested family against installed fonts (GUI thread for Qt's database)."""
+    def resolve_font(self, families):
+        """Match the requested family against the installed fonts (None = unknown, accept as given)."""
         if self.font:
-            families = on_main(installed_font_families)
             self.font = resolve_font(self.font, families)
 
-    def apply(self, doc) -> dict:
+    def apply(self, doc, families=None) -> dict:
         info = {}
         nodes = title_svg.text_nodes(doc) + title_svg.tspan_nodes(doc)
+        if not self.font:
+            missing, installed = title_svg.installed_font_for_title(doc, families)
+            if installed:
+                # what the Title Editor does when it opens a title whose font is not installed
+                title_svg.apply_font(nodes, family=installed)
+                info["font"] = installed
+                info["font_replaced"] = missing
         if self.font or self.bold is not None or self.italic is not None or abs(self.font_scale - 1.0) > 1e-9:
             title_svg.apply_font(nodes, family=self.font or None, italic=self.italic, bold=self.bold,
                                  font_size_ratio=self.font_scale)
@@ -464,22 +470,26 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
     if duration < 1.0 / fps - 1e-9:
         raise ToolError(f"duration_seconds must be at least one frame ({1.0 / fps:.3f}s)")
     end = position + duration
-    style.resolve_font()
 
-    # Where it goes (read-only check first: nothing is written for a refused call).
-    on_main(plan_overlay_track, position, end, track)
+    def _precheck():
+        # where it goes (a refused call writes nothing), names in use, installed fonts
+        plan_overlay_track(position, end, track)
+        return _project_title_paths(), installed_font_families()
+
+    taken, families = precheck_on_main(_precheck)
+    style.resolve_font(families)
 
     for slot in slots:
         if slot.index in values:
             title_svg.set_field_text(doc, slot, values[slot.index])
-    style_info = style.apply(doc)
+    style_info = style.apply(doc, families)
     fitted = _fit(doc, slots, style)
     zone = title_svg.text_zone(slots, title_svg.artboard_size(doc)[1])
     pos_key = ZONE_POSITION.get(zone if screen_position == "auto" else screen_position, "center")
 
     first_text = next((values[s.index] for s in slots if values.get(s.index, "").strip()), "") or name
     base = str(file_name or "").strip() or first_text
-    out_path = title_svg.unique_title_path(title_dir(), base, taken=on_main(_project_title_paths))
+    out_path = title_svg.unique_title_path(title_dir(), base, taken=taken)
     title_svg.write(doc, out_path)
 
     def _commit():
@@ -495,7 +505,9 @@ def add_title(text="", template="", position_seconds=0.0, track="", duration_sec
         return f.id, clip, layer, created
 
     try:
-        file_id, clip, layer, created = on_main(_commit)
+        file_id, clip, layer, created = commit_on_main(_commit)
+    except CommitTimeout:
+        raise                    # it may still finish: keep its SVG
     except Exception:
         _discard(out_path)
         raise
@@ -646,7 +658,11 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
         raise ToolError("nothing to change: pass text, subtitle, lines, font, colours or font_scale "
                         "(or scope='duplicate' to copy the title)")
 
-    f, clip_id = on_main(_resolve_title, timeline_clip_id, file_id, title_query)
+    def _gather():
+        found, found_clip = _resolve_title(timeline_clip_id, file_id, title_query)
+        return found, found_clip, _clips_of(found.id), _project_title_paths(), installed_font_families()
+
+    f, clip_id, clips, taken, families = precheck_on_main(_gather)
     if scope == "this_clip" and not clip_id:
         raise ToolError("scope='this_clip' needs timeline_clip_id (the clip that gets its own copy)")
     src_path = f.absolute_path()
@@ -658,9 +674,8 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
     if has_text and not slots:
         raise ToolError(f"{name} has no text to change")
     values = _assign_texts(slots, text, subtitle, lines, name, blank_rest=False) if has_text else {}
-    style.resolve_font()
+    style.resolve_font(families)
 
-    clips = on_main(_clips_of, f.id)
     if scope == "this_clip" and len(clips) <= 1:
         scope_used = "all_clips"
     else:
@@ -673,15 +688,14 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
                             + ", ".join(f"{c.id} (track {ui_track_number(int(c.data.get('layer') or 0))})"
                                         for c in locked) + "; unlock first")
 
-    before = _field_rows(slots)
+    before_xml = title_svg.to_xml(doc)
     for slot in slots:
         if slot.index in values:
             title_svg.set_field_text(doc, slot, values[slot.index])
-    style_info = style.apply(doc)
+    style_info = style.apply(doc, families)
     fitted = _fit(doc, slots, style)
     after = _field_rows(slots)
-    if scope_used != "duplicate" and before == after and not style_info and abs(style.font_scale - 1.0) < 1e-9 \
-            and style.bold is None and style.italic is None and not fitted:
+    if scope_used != "duplicate" and title_svg.to_xml(doc) == before_xml:
         raise ToolError("the title already looks like that; nothing changed")
 
     folder = title_dir()
@@ -689,7 +703,7 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
         out_path = _version_path(folder, src_path)
     else:
         pattern, offset = title_svg.duplicate_pattern(os.path.basename(src_path))
-        free = title_svg.free_name(pattern, offset, folder, taken=on_main(_project_title_paths))
+        free = title_svg.free_name(pattern, offset, folder, taken=taken)
         if not free:
             raise ToolError("no free name for the copy")
         out_path = os.path.join(folder, free + ".svg")
@@ -726,7 +740,9 @@ def edit_title(timeline_clip_id="", file_id="", title_query="", text="", subtitl
         return new_file.id, []
 
     try:
-        new_file_id, clip_ids = on_main(_commit)
+        new_file_id, clip_ids = commit_on_main(_commit)
+    except CommitTimeout:
+        raise                    # it may still finish: keep its SVG
     except Exception:
         _discard(out_path)
         raise

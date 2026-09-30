@@ -7,11 +7,11 @@ import os
 
 from classes import emoji_catalog
 from classes.editor_tools._base import (
-    ToolError, boolean, clip_extent, enum, get_app, integer, is_locked, number, obj, ok, on_main,
-    project_fps, snap_seconds, string, ui_track_number,
+    ToolError, boolean, clip_extent, enum, get_app, integer, is_locked, number, obj, ok, project_fps, snap_seconds, string, ui_track_number,
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
+    commit_on_main, precheck_on_main,
     GRAVITY, SCREEN_POSITIONS, color_hex_alpha, color_keyframes, constant, create_track, fresh_effect,
     installed_font_families, new_effect_json, overlay_file, overlay_file_path, place_clip,
     plan_overlay_track, project_size, resolve_font, track_info,
@@ -100,14 +100,41 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
     """
     fps = project_fps()
     font_name = str(font or "").strip()
-    if font_name:
-        font_name = resolve_font(font_name, on_main(installed_font_families))
     fg, fg_alpha = color_hex_alpha(text_color, "text_color")
     stroke_hex = color_hex_alpha(stroke_color, "stroke_color")[0]
     bg_hex, bg_alpha = color_hex_alpha(background_color, "background_color")
     if bg_alpha < 1.0:
         background_opacity = bg_alpha
     attach_id = str(timeline_clip_id or "").strip()
+    position = snap_seconds(position_seconds)
+
+    def _precheck():
+        # one GUI hop: fonts, the libopenshot Timer (refuses here when the build lacks it; made
+        # on the GUI thread, see add_captions_tool), and where an overlay would go
+        template = new_effect_json("Timer")
+        if attach_id:
+            from classes.query import Clip
+            c = Clip.get(id=attach_id)
+            if not c:
+                raise ToolError(f"no timeline clip with id={attach_id!r}")
+            layer_ = int(c.data.get("layer") or 0)
+            if is_locked(layer_):
+                raise ToolError(f"clip {c.id} is on locked track {ui_track_number(layer_)}; unlock it first")
+            return installed_font_families(), template, 0.0
+        if duration_seconds:
+            length = float(duration_seconds)
+        elif mode == "count_down":
+            length = float(countdown_from_seconds or 10.0)
+        else:
+            to_end = _timeline_end() - position
+            length = to_end if to_end > 1.0 else 10.0
+        length = max(1, int(round(length * fps))) / fps
+        plan_overlay_track(position, position + length, track)
+        return installed_font_families(), template, length
+
+    families, timer_template, duration = precheck_on_main(_precheck)
+    if font_name:
+        font_name = resolve_font(font_name, families)
 
     w, h = project_size()
     font_px = float(text_size) * min(w, h)
@@ -136,9 +163,6 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
         "apply_before_clip": False,
     }
 
-    # made on the GUI thread (see add_captions_tool); refuses here when libopenshot has no Timer
-    timer_template = on_main(new_effect_json, "Timer")
-
     if attach_id:
         def _attach():
             from classes.query import Clip
@@ -159,23 +183,13 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
             effects = copy.deepcopy(list(c.data.get("effects") or [])) + [effect]
             get_app().updates.update(["clips", {"id": c.id}], {"effects": effects})
             return c.id, effect["id"], layer, float(c.data.get("position") or 0.0), length
-        clip_id, effect_id, layer, position, length = on_main(_attach)
+        clip_id, effect_id, layer, position, length = commit_on_main(_attach)
         summary = f"Added a {mode.replace('_', ' ')} timer to clip {clip_id} ({screen_position.replace('_', ' ')})."
         return ok(summary, timeline_clip_id=clip_id, effect_id=effect_id, overlay=False, mode=mode, format=format,
                   position=round(position, 3), duration=round(length, 3), screen_position=screen_position,
                   track=ui_track_number(layer))
 
-    position = snap_seconds(position_seconds)
-    if duration_seconds:
-        duration = float(duration_seconds)
-    elif mode == "count_down":
-        duration = float(countdown_from_seconds or 10.0)
-    else:
-        end = on_main(_timeline_end)
-        duration = end - position if end - position > 1.0 else 10.0
-    duration = max(1, int(round(duration * fps))) / fps
     end = position + duration
-    on_main(plan_overlay_track, position, end, track)
     carrier = overlay_file_path(w, h)
 
     def _commit():
@@ -192,7 +206,7 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
                           props={"zenvi_role": TIMER_ROLE, "effects": [effect]})
         return clip, effect["id"], layer, created
 
-    clip, effect_id, layer, created = on_main(_commit)
+    clip, effect_id, layer, created = commit_on_main(_commit)
     t = track_info(layer)
     what = mode.replace("_", " ")
     summary = (f"Added a {what} timer on track {t['track']} at {position:.2f}-{end:.2f}s "
@@ -294,7 +308,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
         get_app().get_settings().get("default-image-length") or 10.0)
     duration = max(1, int(round(duration * fps))) / fps
     end = position + duration
-    on_main(plan_overlay_track, position, end, track)
+    precheck_on_main(plan_overlay_track, position, end, track)
 
     w, h = project_size()
     short = float(min(w, h))
@@ -316,7 +330,7 @@ def add_emoji(emoji, group="", position_seconds=0.0, duration_seconds=0.0, scree
         return f.id, clip, layer, created
 
     try:
-        file_id, clip, layer, created = on_main(_commit)
+        file_id, clip, layer, created = commit_on_main(_commit)
     except ToolError:
         raise
     except Exception as exc:

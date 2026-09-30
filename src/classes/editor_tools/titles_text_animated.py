@@ -7,11 +7,12 @@ import shutil
 
 from classes import blender_titles, title_svg
 from classes.editor_tools._base import (
-    ToolError, get_app, integer, mapping, number, obj, ok, on_main, project, project_fps,
+    ToolError, get_app, integer, mapping, number, obj, ok, project, project_fps,
     snap_seconds, string,
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
+    CommitTimeout, commit_on_main, precheck_on_main,
     color_hex_alpha, create_track, place_clip, plan_overlay_track, track_info,
 )
 from classes.logger import log
@@ -193,8 +194,8 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     fps_dict = project().get("fps") or {"num": 30, "den": 1}
     diff = blender_titles.project_fps_diff(fps_dict)
     values = blender_titles.default_params(details, diff)
-    choices = on_main(_project_file_choices) if any("project_files" in str(p.get("name"))
-                                                     for p in details["params"]) else {}
+    needs_files = any("project_files" in str(p.get("name")) for p in details["params"])
+    choices = precheck_on_main(_project_file_choices) if needs_files else {}
     values = _apply_params(details, values, str(text or ""), dict(params or {}), choices)
     values["length_multiplier"] = float(length_multiplier) * max(1, diff)
     base = title_svg.safe_base_name(file_name or text or summary["name"], fallback="AnimatedTitle", limit=40)
@@ -217,7 +218,7 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
     fps = project_fps()
     position = snap_seconds(position_seconds)
     estimate = max(1.0 / fps, frames / fps)
-    on_main(plan_overlay_track, position, position + estimate, track)
+    precheck_on_main(plan_overlay_track, position, position + estimate, track)
 
     folder = os.path.join(info.BLENDER_PATH, str(project().generate_id()))
     os.makedirs(folder, exist_ok=True)
@@ -253,7 +254,13 @@ def add_animated_title(template="", text="", params=None, length_multiplier=1, p
         clip = place_clip(f.id, position, duration, layer)
         return f.id, clip, layer, created, duration
 
-    file_id, clip, layer, created, duration = on_main(_commit)
+    try:
+        file_id, clip, layer, created, duration = commit_on_main(_commit)
+    except CommitTimeout:
+        raise                    # it may still finish: keep the rendered frames
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     t = track_info(layer)
     shown = {k: v for k, v in values.items() if k not in ("output_path", "horizon_color", "quality",
                                                           "file_format", "color_mode", "alpha_mode", "animation")}

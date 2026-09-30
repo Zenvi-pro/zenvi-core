@@ -393,3 +393,38 @@ def test_project_listing_shows_titles_and_their_clips(tt):
     assert title["file_id"] == rec["file_id"] and {c["timeline_clip_id"] for c in title["clips"]} == {
         rec["timeline_clip_id"], other}
     assert [f["text"] for f in title["fields"]] == ["Day 1", "Tokyo"]
+
+
+# ---------------------------------------------------------------------------
+# Found live: a busy GUI thread, and template fonts that are not installed
+# ---------------------------------------------------------------------------
+
+def test_a_commit_timeout_keeps_the_svg_and_says_the_title_may_still_appear(tt, monkeypatch):
+    from classes import tool_handlers
+    from classes.editor_tools import titles_text_common
+
+    def slow_on_main(func, *args, timeout=None):
+        if timeout == titles_text_common.COMMIT_TIMEOUT:
+            raise tool_handlers.MainThreadTimeout("MAIN_THREAD_TIMEOUT")
+        return func(*args)
+
+    monkeypatch.setattr(titles_text_common, "on_main", slow_on_main)
+    out = tt.call("add_title_tool", text="Busy editor", template="Standard_1")
+    assert out.startswith("Error") and "too busy" in out and "get_timeline_state_tool" in out
+    # the queued work may still land, so the SVG it imports must still be there
+    assert os.path.exists(str(tt.tmp_path / "title" / "Busy editor.svg"))
+
+
+def test_a_missing_template_font_becomes_the_title_editors_fallback(tt, monkeypatch):
+    from classes.editor_tools import titles_text
+    monkeypatch.setattr(titles_text, "installed_font_families", lambda: ["Arial", "Arial Black", "Helvetica"])
+    rec = receipt(tt.call("add_title_tool", text="Fonts", template="Standard_1"))
+    assert rec["font"] == "Arial" and rec["font_replaced"] == "DejaVu Sans"
+    doc = title_svg.load(rec["path"])
+    assert title_svg.node_style(title_svg.tspan_nodes(doc)[0])["font-family"] == "'Arial'"
+    # an installed template font is left alone
+    monkeypatch.setattr(titles_text, "installed_font_families", lambda: ["DejaVu Sans", "Arial"])
+    rec = receipt(tt.call("add_title_tool", text="Kept", template="Standard_1", position_seconds=6))
+    assert "font_replaced" not in rec
+    assert title_svg.editor_font_family("DejaVu Sans", ["Arial"]) == "Arial"
+    assert title_svg.editor_font_family("Nope", []) == ""

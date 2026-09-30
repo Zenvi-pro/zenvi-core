@@ -196,24 +196,9 @@ class TitleEditor(QDialog):
         :param requested_font_name: The name of the font to search for.
         :return: QFont object of either the requested font or the first available fallback font.
         """
-        available_fonts = self.font_db.families()
-        fallback_fonts = ['DejaVu Sans', 'Liberation Sans', 'Noto Sans', 'FreeSans',
-                          'Ubuntu', 'Cantarell', 'Open Sans', 'Sans-serif', 'Arial']
-
-        # Check if the requested font is available
-        available_fonts = self.font_db.families()
-        for font in available_fonts:
-            if requested_font_name in font:
-                return QFont(font)
-
-        # Try fallback fonts
-        for fallback in fallback_fonts:
-            for font in available_fonts:
-                if fallback in font:
-                    return QFont(font)
-
-        # Return the default font
-        return QFont()
+        # Requested font, else the first installed fallback (shared with the title tools)
+        family = title_svg.editor_font_family(requested_font_name, self.font_db.families())
+        return QFont(family) if family else QFont()
 
     def display_pixmap(self, display_pixmap):
         """Display pixmap of SVG on UI thread"""

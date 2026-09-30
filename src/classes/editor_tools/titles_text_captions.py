@@ -18,10 +18,11 @@ from classes import caption_cues
 from classes.caption_cues import Cue
 from classes.editor_tools._base import (
     ToolError, array, boolean, clip_extent, enum, get_app, integer, is_locked, keyframe_value_at,
-    number, obj, ok, on_main, resolve_clip, string, th, ui_track_number,
+    number, obj, ok, resolve_clip, string, th, ui_track_number,
 )
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.titles_text_common import (
+    commit_on_main, precheck_on_main,
     color_hex_alpha, color_keyframes, constant, installed_font_families,
     fresh_effect, is_vertical, new_effect_json, overlay_file, overlay_file_path, create_track, place_clip,
     plan_overlay_track, project_size, resolve_font, track_info,
@@ -96,9 +97,9 @@ class CaptionStyle:
             values["fade"] = float(fade_seconds)
         self.values = values
 
-    def resolve_font(self):
+    def resolve_font(self, families):
+        """Match the style's font against the installed fonts (None = unknown, accept as given)."""
         if self.values.get("font"):
-            families = on_main(installed_font_families)
             try:
                 self.values["font"] = resolve_font(self.values["font"], families)
             except ToolError:
@@ -514,10 +515,22 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
     file_cues = _read_subtitle_file(srtPath) if source == "file" else []
     cap_style = _style_from_args(style, font, text_size, text_color, stroke_color, stroke_width,
                                  background_color, background_opacity, position, fade_seconds)
-    cap_style.resolve_font()
+    query = str(clip_query or "").strip()
+    overlay_mode = not (clip_id or query or trackIndex) and source != "transcript"
+    if overlay_mode and time_base == "source":
+        raise ToolError("time_base='source' needs the clip whose media the times refer to")
 
-    targets = on_main(_resolve_targets, clip_id, str(clip_query or "").strip(), int(trackIndex or 0),
-                      source == "transcript")
+    def _precheck():
+        found = _resolve_targets(clip_id, query, int(trackIndex or 0), source == "transcript")
+        if overlay_mode:
+            raw = file_cues if source == "file" else given
+            plan_overlay_track(min(q.start for q in raw), max(q.end for q in raw), overlay_track)
+        # libopenshot objects are made on the GUI thread (Qt font state is not safe from a
+        # Python thread); refuses here, before any change, when libopenshot has no Caption.
+        return found, installed_font_families(), new_effect_json("Caption")
+
+    targets, families, caption_template = precheck_on_main(_precheck)
+    cap_style.resolve_font(families)
     warnings: List[str] = []
     plans = []   # (clip QueryObject, [Cue in caption time])
 
@@ -545,8 +558,6 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
                   if base == "timeline" else Cue(q.start, q.end, q.text) for q in raw]
         plans.append((c, mapped))
     else:
-        if time_base == "source":
-            raise ToolError("time_base='source' needs the clip whose media the times refer to")
         raw = file_cues if source == "file" else given
         plans.append((None, raw))
 
@@ -589,14 +600,10 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         ready = prepared[0][1]
         span_start = min(q.start for q in ready)
         span_end = max(q.end for q in ready)
-        on_main(plan_overlay_track, span_start, span_end, overlay_track)
         w, h = project_size()
         overlay = (overlay_file_path(w, h), span_start, span_end)
 
     props = cap_style.properties(lines=2)
-    # libopenshot objects are made on the GUI thread (Qt font state is not safe from a Python
-    # thread); refuses here, before any change, when libopenshot has no Caption effect.
-    caption_template = on_main(new_effect_json, "Caption")
 
     def _commit():
         from classes.query import Clip
@@ -642,7 +649,7 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         _refresh()
         return results
 
-    results = on_main(_commit)
+    results = commit_on_main(_commit)
     total = sum(r["cues"] for r in results)
     where = ("a Captions overlay on track %s" % results[0].get("track") if results[0]["overlay"]
              else ", ".join(r["timeline_clip_id"] for r in results))
@@ -845,7 +852,7 @@ def edit_captions(effect_id="", timeline_clip_id="", clip_query="", cue_edits=No
         cap_style = _style_from_args(style, font, text_size, text_color, stroke_color, stroke_width,
                                      background_color, background_opacity, position, fade_seconds,
                                      base=style_from_effect(effect))
-        cap_style.resolve_font()
+        cap_style.resolve_font(installed_font_families())     # edit_captions runs on the GUI thread
         new_effect.update(copy.deepcopy(cap_style.properties(lines=2)))
         look = cap_style.summary()
         changes.append("restyled")

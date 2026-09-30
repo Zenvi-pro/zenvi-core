@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 
 from classes.editor_tools._base import (
     BEZIER, ToolError, clip_extent, ensure_unlocked, get_app, is_locked, keyframe, layers,
-    parse_color, project, project_fps, resolve_layer, track_label, ui_track_number,
+    on_main, parse_color, project, project_fps, resolve_layer, track_label, ui_track_number,
 )
 from classes.logger import log
 
@@ -65,6 +65,39 @@ def color_keyframes(hex_color: str, alpha: float = 1.0) -> dict:
 
 def constant(value: float) -> dict:
     return keyframe([(1, float(value), BEZIER)])
+
+
+# Background-safe tools wait this long for their GUI-thread hops: a busy editor (thumbnails,
+# autosave, font scans) can take far longer than the 30 s default, and the worker can wait.
+PRECHECK_TIMEOUT = 90
+COMMIT_TIMEOUT = 240
+
+
+class CommitTimeout(ToolError):
+    """The GUI thread did not finish the change in time; it may still complete."""
+
+
+def commit_on_main(func, *args):
+    """Run the mutating part on the GUI thread; a timeout becomes a clear, honest error.
+
+    After a timeout the queued work may still run later (in this call's undo step),
+    so callers must not clean up files it uses (catch CommitTimeout before Exception).
+    """
+    from classes.tool_handlers import MainThreadTimeout
+    try:
+        return on_main(func, *args, timeout=COMMIT_TIMEOUT)
+    except MainThreadTimeout:
+        raise CommitTimeout(f"the editor was too busy to finish within {COMMIT_TIMEOUT}s; the change may still "
+                            "appear shortly -- check get_timeline_state_tool before trying again") from None
+
+
+def precheck_on_main(func, *args):
+    """A read-only GUI-thread hop (validation, planning) with a generous timeout."""
+    from classes.tool_handlers import MainThreadTimeout
+    try:
+        return on_main(func, *args, timeout=PRECHECK_TIMEOUT)
+    except MainThreadTimeout:
+        raise ToolError(f"the editor did not respond within {PRECHECK_TIMEOUT}s; nothing was changed") from None
 
 
 def frame_seconds() -> float:

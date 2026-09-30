@@ -409,6 +409,39 @@ def background_color(xmldoc) -> Tuple[str, float]:
     return fill, opacity
 
 
+def editor_font_family(requested: str, families) -> str:
+    """The installed family the Title Editor uses for *requested* ('' = Qt's default font).
+
+    Same rule as TitleEditor.get_font: the first installed family containing the
+    requested name, else the first one containing a FALLBACK_FONTS name.
+    """
+    families = list(families or [])
+    for font in families:
+        if requested and requested in font:
+            return font
+    for fallback in FALLBACK_FONTS:
+        for font in families:
+            if fallback in font:
+                return font
+    return ""
+
+
+def installed_font_for_title(xmldoc, families) -> Tuple[str, str]:
+    """(template font, installed replacement) when the template's font is missing, else ('', '').
+
+    Opening a title in the Title Editor rewrites a missing template font (e.g. DejaVu
+    Sans on macOS) to an installed one; the tools do the same so titles look alike and
+    Qt does not spend seconds searching font aliases on the GUI thread.
+    """
+    if families is None:
+        return "", ""
+    current = font_family(xmldoc)
+    if not current or any(current == f or current in f for f in families):
+        return "", ""
+    replacement = editor_font_family(current, families)
+    return (current, replacement) if replacement else ("", "")
+
+
 def font_family(xmldoc) -> str:
     for node in line_nodes(xmldoc):
         family = node_property(node, "font-family")
