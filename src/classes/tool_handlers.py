@@ -2975,8 +2975,15 @@ def watch_clip_window(
     which plays the clip in the editor.
     """
     try:
-        from classes.clip_resolver import _coerce_optional_float
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
+
+        # A time that does not parse ("0:14" used to) must not silently become
+        # "no window" - that watched a search hit instead of the window asked for.
+        try:
+            t0 = parse_seconds_arg(start, default=None, field="start")
+            t1 = parse_seconds_arg(end, default=None, field="end")
+        except ValueError as exc:
+            return f"Error: {exc}"
 
         resolved = _resolve_timeline_clip_for_tool(
             clip_query=clip_query,
@@ -2998,8 +3005,6 @@ def watch_clip_window(
         if not watch_path:
             watch_path = str(getattr(ctx, "source_path", "") or "")
 
-        t0 = _coerce_optional_float(start)
-        t1 = _coerce_optional_float(end)
         if (t0 is None) != (t1 is None):
             return (
                 "Error: Pass both start and end (source seconds), or neither to watch "
@@ -3010,13 +3015,15 @@ def watch_clip_window(
                 "Error: The query names a time but start/end are empty. Put the window in "
                 "start and end (source seconds) and describe only what to look for in query."
             )
-        if t0 is not None:
+        if t0 is not None and t1 is not None:
             lo, hi = min(t0, t1), max(t0, t1)
             if hi <= ctx.source_start or lo >= ctx.source_end:
                 return (
                     f"Error: Window {lo:.2f}-{hi:.2f}s is outside this clip's source range "
                     f"{ctx.source_start:.2f}-{ctx.source_end:.2f}s (start/end are source seconds)."
                 )
+            # Only what this clip plays can confirm an edit to it.
+            t0, t1 = max(lo, ctx.source_start), min(hi, ctx.source_end)
         else:
             search_query = _semantic_search_query(query)
             hit_start = None
@@ -3070,18 +3077,32 @@ def watch_clip_window(
 
         frame_times = watched.get("frame_times") or []
         scene_times = watched.get("scene_times") or []
+        clip_lo, clip_hi = float(ctx.source_start), float(ctx.source_end)
         lines = [
             f"Watched {len(frame_times)} frames of '{ctx.title or 'clip'}' "
-            f"(source seconds): {_secs(frame_times) or 'none'}.",
+            f"(source seconds; this clip plays {clip_lo:.2f}-{clip_hi:.2f}): "
+            f"{_secs(frame_times) or 'none'}.",
             f"Shot cuts in window (source s): {_secs(scene_times)}."
             if scene_times else "Shot cuts in window: none.",
         ]
-        if watched.get("matched") and not watched.get("used_fallback"):
-            visible = watched.get("visible_at") or []
+        # The watch pads its window for context, so a match can sit in frames this
+        # clip never plays. Only what the clip plays confirms (or refutes) an edit.
+        visible = [float(t) for t in watched.get("visible_at") or []]
+        visible_in_clip = [t for t in visible if clip_lo - 1e-3 <= t <= clip_hi + 1e-3]
+        seen = bool(watched.get("matched")) and not watched.get("used_fallback")
+        outside_only = (bool(visible) and not visible_in_clip) or out_s < clip_lo or in_s > clip_hi
+        if seen and not outside_only:
+            in_c, out_c = max(in_s, clip_lo), min(out_s, clip_hi)
+            cut_c = max(in_c, min(cut, out_c))
             lines.append(
-                f"Visible {in_s:.3f}s–{out_s:.3f}s source; peak {cut:.3f}s source "
-                f"({_fmt_mmss(cut - ctx.source_start)} into the clip)."
-                + (f" Seen in frames: {_secs(visible)}." if visible else "")
+                f"Visible {in_c:.3f}s–{out_c:.3f}s source; peak {cut_c:.3f}s source "
+                f"({_fmt_mmss(cut_c - clip_lo)} into the clip)."
+                + (f" Seen in frames: {_secs(visible_in_clip)}." if visible_in_clip else "")
+            )
+        elif seen:
+            lines.append(
+                "Not visible in this clip's frames"
+                + (f" - only outside it, at {_secs(visible)}s source." if visible else ".")
             )
         else:
             lines.append("Not visible in these frames.")
@@ -3629,6 +3650,10 @@ def _sibling_clips_from_same_file(file_id: str, exclude_clip_id: str = "") -> li
     sorted by source_start. Must run on the main thread (reads project data).
     Any failure yields ``[]`` so callers fall back to the single-clip path.
     """
+    if not str(file_id or "").strip():
+        # No source identity: every other id-less clip would "match", and a cut
+        # outside this clip would land on a clip from a different file.
+        return []
     try:
         from classes.query import Clip
         from classes.ai_metadata_utils import get_source_window
@@ -3696,7 +3721,15 @@ def slice_clip_at_best_match(
 ) -> str:
     try:
         from classes.api_client import get_backend_client
-        from classes.clip_resolver import _coerce_optional_float
+
+        # Explicit source seconds (from a watch or the user) skip search + watch.
+        # One that does not parse must refuse, not fall through to a search and
+        # cut wherever the best match happens to be.
+        try:
+            t_in = parse_seconds_arg(start_seconds, default=None, field="start_seconds")
+            t_out = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
+        except ValueError as exc:
+            return f"Error: {exc}"
 
         clip_info_box = [None]
         error_box_pre = [None]
@@ -3764,9 +3797,6 @@ def slice_clip_at_best_match(
 
         clip_id_str, clip_start, clip_end, clip_pos, index_id, video_id, layer_num, file_id_str, tw_status, tw_error = clip_info_box[0]
 
-        # Explicit source seconds (from a watch or the user) skip search + watch.
-        t_in = _coerce_optional_float(start_seconds)
-        t_out = _coerce_optional_float(end_seconds)
         siblings = siblings_box[0] or []
         if (t_in is None) != (t_out is None):
             cut_at = t_in if t_out is None else t_out

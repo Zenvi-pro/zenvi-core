@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 WATCH_MAX_WINDOW_SEC = 45.0
 DEFAULT_WATCH_QUERY = "the main visible action in this clip"
 _IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"})
@@ -196,7 +198,7 @@ def parse_seconds_arg(value: object, *, default: float | None = None, field: str
         raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
     if isinstance(value, (int, float)):
         parsed = _seconds_float(value)
-        if parsed is None:
+        if parsed is None or not math.isfinite(parsed):
             raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
         return parsed
     text = str(value).strip()
@@ -208,7 +210,7 @@ def parse_seconds_arg(value: object, *, default: float | None = None, field: str
             lowered = lowered[: -len(suffix)].strip()
             break
     parsed = parse_timecode_token(lowered)
-    if parsed is None:
+    if parsed is None or not math.isfinite(parsed):
         raise ValueError(
             f"{field or 'value'}={value!r} is not a time in seconds "
             "(use seconds like 12 or 12.5, or a timecode like 0:12)"

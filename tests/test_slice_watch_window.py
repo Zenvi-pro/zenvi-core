@@ -287,6 +287,64 @@ def test_watch_clip_window_refuses_instead_of_watching_elsewhere(kwargs, needle)
     assert calls == [] and searched == []
 
 
+def test_watch_clip_window_reads_timecodes_in_start_and_end():
+    """"1:09"/"1:12" used to parse as no window, so it watched a search hit."""
+    out, calls, searched = _run_watch_clip_window(
+        {"cut_source": 70.0, "matched": False, "used_fallback": True},
+        query="guy with the iPad", start="1:09", end="1:12",
+    )
+    assert calls == [(69.0, 72.0, "guy with the iPad")], out
+    assert searched == []
+
+
+@pytest.mark.parametrize("start, end", [("soon", "later"), ("nan", "72"), ("69", "inf")])
+def test_watch_clip_window_refuses_times_that_do_not_parse(start, end):
+    out, calls, searched = _run_watch_clip_window(
+        {"cut_source": 0}, query="guy with the iPad", start=start, end=end,
+    )
+    assert out.startswith("Error:"), out
+    assert calls == [] and searched == []
+
+
+def test_watch_clip_window_watches_only_the_part_of_the_window_the_clip_plays():
+    # The clip plays source 60-80s; 50-60 is not on the timeline.
+    out, calls, _ = _run_watch_clip_window(
+        {"cut_source": 65.0, "matched": False, "used_fallback": True},
+        query="guy with the iPad", start="50", end="70",
+    )
+    assert calls == [(60.0, 70.0, "guy with the iPad")], out
+
+
+def test_watch_clip_window_does_not_report_a_match_in_the_padding_as_in_the_clip():
+    """The watch pads its window; a match at 57-58.5s is before this clip starts."""
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 58.0, "in_source": 57.0, "out_source": 58.5,
+            "matched": True, "used_fallback": False,
+            "frame_times": [58.0, 60.0, 62.0], "scene_times": [], "visible_at": [58.0],
+        },
+        query="guy with the iPad", start="60", end="62",
+    )
+    assert "Visible" not in out, out
+    assert "Not visible in this clip's frames" in out
+    assert "58.00" in out
+    assert "into the clip" not in out
+
+
+def test_watch_clip_window_clamps_a_match_that_straddles_the_clip_start():
+    out, _calls, _ = _run_watch_clip_window(
+        {
+            "cut_source": 59.0, "in_source": 58.0, "out_source": 62.0,
+            "matched": True, "used_fallback": False,
+            "frame_times": [58.0, 60.0, 61.0], "scene_times": [], "visible_at": [58.0, 61.0],
+        },
+        query="guy with the iPad", start="60", end="62",
+    )
+    assert "Visible 60.000s–62.000s source; peak 60.000s source (0:00 into the clip)" in out, out
+    assert "Seen in frames: 61.00." in out
+    assert "this clip plays 60.00-80.00" in out
+
+
 def _slice_with_explicit_seconds(siblings=None, **kwargs):
     from contextlib import ExitStack
 
@@ -433,6 +491,40 @@ def test_slice_range_spanning_two_clips_is_an_error_that_names_them():
     assert out.startswith("Error:")
     assert "timeline_clip_id=clip-2" in out
     assert not cuts and not time_slices
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"start_seconds": "soon"},
+    {"start_seconds": "70", "end_seconds": "later"},
+    {"start_seconds": "nan", "end_seconds": "72"},
+])
+def test_slice_refuses_explicit_seconds_that_do_not_parse(kwargs):
+    """An unparsable time used to fall through to a search and cut at its match."""
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(**kwargs)
+    assert out.startswith("Error:"), out
+    assert blocked == [] and not time_slices and not cuts
+
+
+def test_slice_reads_a_timecode_in_start_seconds():
+    out, blocked, time_slices, cuts = _slice_with_explicit_seconds(start_seconds="1:10")
+    assert cuts == [70.0], out
+    assert blocked == [] and not time_slices
+
+
+def test_sibling_scan_without_a_source_file_id_matches_nothing():
+    """Two clips with no file_id are not the same source - never cut the other one."""
+    query_mod = MagicMock()
+    query_mod.Clip.filter.return_value = [
+        MagicMock(id="title-1", data={"position": 0.0, "start": 0.0, "end": 5.0, "layer": 1}),
+    ]
+    with patch.dict(sys.modules, {"classes.query": query_mod}):
+        with patch.object(tool_handlers, "_get_source_file_for_clip", return_value=None):
+            with patch("classes.ai_metadata_utils.get_source_window", return_value=(0.0, 5.0)):
+                assert tool_handlers._sibling_clips_from_same_file("", exclude_clip_id="clip-1") == []
+                # The same clip is still found when it really shares the file.
+                query_mod.Clip.filter.return_value[0].data["file_id"] = "file-1"
+                found = tool_handlers._sibling_clips_from_same_file("file-1", exclude_clip_id="clip-1")
+    assert [sib[0] for sib in found] == ["title-1"]
 
 
 def test_watch_clip_window_in_handlers():
