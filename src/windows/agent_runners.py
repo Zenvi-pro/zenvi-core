@@ -152,36 +152,67 @@ def _cli_install_dirs() -> list:
     return dirs
 
 
-def _cursor_install_dirs() -> list:
-    """Locations the Cursor agent installer uses when ``cursor-agent`` is not on PATH."""
+def _in_cursor_install(path: str) -> bool:
+    """True if *path* is, or links to, a file inside a Cursor agent install."""
+    folders = re.split(r"[\\/]", os.path.dirname(os.path.realpath(path)))
+    return "cursor-agent" in (f.lower() for f in folders)
+
+
+def _cursor_cli_candidates() -> list:
+    """Where the Cursor installers put the CLI, for when it is not on PATH.
+
+    macOS/Linux: ``~/.local/bin/{cursor-agent,agent}``, symlinks into
+    ``~/.local/share/cursor-agent/versions/<version>/``. Windows:
+    ``%LOCALAPPDATA%\\cursor-agent\\{cursor-agent,agent}.cmd``. A GUI app's
+    PATH often has neither folder. (The ``.ps1`` launchers beside the
+    ``.cmd`` ones are left out: Popen cannot start a PowerShell script.)
+    """
     home = _resolved_home()
+    out = []
+    if home:
+        out.append(os.path.join(home, ".local", "bin", "cursor-agent"))
+        out.append(os.path.join(home, ".local", "bin", "agent"))
     local = os.environ.get("LOCALAPPDATA") or (
         os.path.join(home, "AppData", "Local") if home else ""
     )
-    dirs = []
     if local:
-        dirs.append(os.path.join(local, "cursor-agent"))
+        root = os.path.join(local, "cursor-agent")
+        out += [os.path.join(root, name) for name in (
+            "cursor-agent.cmd", "cursor-agent.exe", "agent.cmd", "agent.exe")]
     if home:
-        dirs.append(os.path.join(home, ".local", "share", "cursor-agent"))
-        dirs.append(os.path.join(home, ".local", "bin"))
-    return dirs
+        # The ~/.local/bin links are gone but a version is still installed;
+        # version folders are named by date, so the newest sorts last.
+        versions = os.path.join(home, ".local", "share", "cursor-agent", "versions")
+        try:
+            names = sorted((n for n in os.listdir(versions) if not n.startswith(".")),
+                           reverse=True)
+        except OSError:
+            names = []
+        out += [os.path.join(versions, name, "cursor-agent") for name in names]
+    return out
 
 
 def _which_cursor_cli():
-    """Find Cursor's CLI, never some other program that happens to be named ``agent``."""
-    for name in ("cursor-agent", "cursor-agent.cmd", "cursor-agent.exe", "cursor-agent.ps1"):
-        found = shutil.which(name)
+    """Find Cursor's CLI, never some other program that happens to be named ``agent``.
+
+    ``cursor-agent`` is Cursor's own name. ``agent`` is the alias Cursor's
+    docs now lead with, but it is too generic to trust unless it resolves
+    into a Cursor install.
+    """
+    exts = ("", ".cmd", ".exe") if os.name == "nt" else ("",)
+    for ext in exts:
+        found = shutil.which("cursor-agent" + ext)
         if found:
             return found
-    names = (
-        "cursor-agent", "cursor-agent.cmd", "cursor-agent.exe", "cursor-agent.ps1",
-        "agent.cmd", "agent.exe", "agent",
-    )
-    for directory in _cursor_install_dirs():
-        for name in names:
-            candidate = os.path.join(directory, name)
-            if os.path.isfile(candidate):
-                return candidate
+    for ext in exts:
+        found = shutil.which("agent" + ext)
+        if found and _in_cursor_install(found):
+            return found
+    for path in _cursor_cli_candidates():
+        if not os.path.isfile(path):
+            continue
+        if os.path.basename(path).lower().startswith("cursor-agent") or _in_cursor_install(path):
+            return path
     return None
 
 

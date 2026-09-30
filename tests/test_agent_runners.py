@@ -1111,25 +1111,79 @@ def test_cursor_argv_is_headless_and_hides_model(qapp, monkeypatch):
     assert runner.MODELS == []
 
 
-def test_which_cursor_cli_prefers_cursor_install_over_other_agent(monkeypatch, tmp_path):
+def _cursor_home(monkeypatch, tmp_path, which=None):
     import windows.agent_runners as ar
+    monkeypatch.setattr(ar.shutil, "which", which or (lambda name: None))
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    return ar
 
-    install = tmp_path / "cursor-agent"
-    install.mkdir()
+
+def _cursor_version(tmp_path, version="2026.09.18-9a7762b"):
+    """What the macOS/Linux installer lays down under ~/.local/share."""
+    exe = tmp_path / ".local" / "share" / "cursor-agent" / "versions" / version / "cursor-agent"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_which_cursor_cli_prefers_cursor_install_over_other_agent(monkeypatch, tmp_path):
+    """Windows: the installer's own folder wins over some other `agent` on PATH."""
+    install = tmp_path / "AppData" / "Local" / "cursor-agent"
+    install.mkdir(parents=True)
     exe = install / "cursor-agent.cmd"
     exe.write_text("@echo off\n")
-    grok = tmp_path / "grok-agent.exe"
+    grok = tmp_path / "grok" / "agent.exe"
+    grok.parent.mkdir()
     grok.write_bytes(b"")
 
-    def _which(name):
-        if name == "agent":
-            return str(grok)
-        return None
-
-    monkeypatch.setattr(ar.shutil, "which", _which)
-    monkeypatch.setattr(ar, "_cursor_install_dirs", lambda: [str(install)])
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(grok) if name.startswith("agent") else None)
     assert ar._which_cli("cursor-agent") == str(exe)
-    assert "grok" not in ar._which_cli("cursor-agent")
+
+
+def test_which_cursor_cli_ignores_an_unrelated_agent_in_local_bin(monkeypatch, tmp_path):
+    other = tmp_path / ".local" / "bin" / "agent"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\necho not cursor\n")
+    other.chmod(0o755)
+
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_which_cursor_cli_accepts_an_agent_link_into_a_cursor_install(monkeypatch, tmp_path):
+    """The installer's ~/.local/bin/agent is a symlink into versions/; with the
+    cursor-agent link removed that alias is still Cursor's."""
+    exe = _cursor_version(tmp_path)
+    link = tmp_path / ".local" / "bin" / "agent"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(exe)
+
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") == str(link)
+    # ...and the same alias found on PATH is trusted for the same reason.
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(link) if name == "agent" else None)
+    assert ar._which_cli("cursor-agent") == str(link)
+
+
+def test_which_cursor_cli_ignores_an_unrelated_agent_on_path(monkeypatch, tmp_path):
+    grok = tmp_path / "bin" / "agent"
+    grok.parent.mkdir()
+    grok.write_text("#!/bin/sh\n")
+    ar = _cursor_home(monkeypatch, tmp_path,
+                      lambda name: str(grok) if name.startswith("agent") else None)
+    assert ar._which_cli("cursor-agent") is None
+
+
+def test_which_cursor_cli_falls_back_to_the_newest_installed_version(monkeypatch, tmp_path):
+    _cursor_version(tmp_path, "2026.09.02-c22c1a3")
+    newest = _cursor_version(tmp_path, "2026.09.18-9a7762b")
+    ar = _cursor_home(monkeypatch, tmp_path)
+    assert ar._which_cli("cursor-agent") == str(newest)
 
 
 def test_register_cursor_writes_bearer_and_updates_port(monkeypatch, tmp_path):
