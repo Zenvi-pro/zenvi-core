@@ -1066,7 +1066,7 @@ def manage_optimized_previews(action="optimize", file_ids=None, file_query="", a
         return ok(f"Canceled optimizing {len(active)} video(s).", changed=True, canceled=[f.id for f in active])
 
     if action in ("unlink", "delete"):
-        linked = [f for f in files if isinstance(f.data.get("proxy_reader"), dict)]
+        linked = [f for f in files if service.has_proxy_reader(f)]
         if not linked:
             return ok("Those files have no optimized preview linked.", changed=False)
         paths = on_main(lambda: service.remove_for_files(linked, show_status=False), timeout=HOP_TIMEOUT)

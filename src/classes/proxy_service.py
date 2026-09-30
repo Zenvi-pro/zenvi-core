@@ -303,6 +303,9 @@ class ProxyService(QObject):
                  data = getattr(fresh_file, "data", {}) or {}
                  if "proxy_reader" not in data:
                      continue
+                 if not self.has_proxy_reader(fresh_file):
+                     # {} left by an undone link: nothing is linked
+                     continue
                  proxy_reader = data.pop("proxy_reader", None)
                  fresh_file.data = data
                  fresh_file.save()
@@ -665,6 +668,18 @@ class ProxyService(QObject):
          file_obj = File.get(id=file_id)
          if not file_obj:
              return
+         if "proxy_reader" not in file_obj.data and file_obj.key:
+             # An undo merges the old record back, so a key this save adds would survive
+             # it and the file would stay optimized. Seed the neutral {} (no path = no
+             # proxy) outside history first, so undoing the link really unlinks.
+             updates = get_app().updates
+             previous_ignore = updates.ignore_history
+             updates.ignore_history = True
+             try:
+                 updates.update(list(file_obj.key), {"proxy_reader": {}})
+             finally:
+                 updates.ignore_history = previous_ignore
+             file_obj.data["proxy_reader"] = {}
          file_obj.data["proxy_reader"] = copy.deepcopy(proxy_reader or {})
          file_obj.save()
          if apply_runtime:

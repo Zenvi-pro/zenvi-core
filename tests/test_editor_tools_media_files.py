@@ -432,3 +432,20 @@ def test_stills_report_no_duration_and_audio_layout(editor):
     rows = {f["file_id"]: f for f in _receipt(editor.call("list_project_files_tool", detail="full"))["files"]}
     assert rows[img]["duration"] is None and rows[img]["media_duration"] is None
     assert rows[img]["channel_layout"] == "none" and rows[aud]["channel_layout"] == "stereo"
+
+
+def test_undoing_a_link_really_unlinks(editor, proxies, tmp_path):
+    """Live finding: the link added proxy_reader, and undo's merge left the file optimized."""
+    v = editor.add_file("video", path=_real_file(tmp_path, "clip.mp4"))
+    linked = _real_file(tmp_path, "elsewhere/clip.mp4")
+    _receipt(editor.call("manage_optimized_previews_tool", action="link", file_ids=[v],
+                         folder=str(tmp_path / "elsewhere")))
+    assert editor.file(v)["proxy_reader"]["path"] == linked and editor.undo_steps_since_mark() == 1
+    editor.undo()
+    from classes.query import File
+    assert not proxies.has_proxy_reader(File.get(id=v))
+    r = _receipt(editor.call("manage_optimized_previews_tool", action="status", file_ids=[v]))
+    assert r["files"][0]["state"] == "none"
+    assert _receipt(editor.call("manage_optimized_previews_tool", action="unlink", file_ids=[v]))["changed"] is False
+    editor.redo()
+    assert editor.file(v)["proxy_reader"]["path"] == linked
