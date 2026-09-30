@@ -71,11 +71,8 @@ TEST_VIDEO = os.path.expanduser("~/Downloads/Feral - Concept Trailer.mp4")
 # A local asset on one machine: pytest skips without it, the script still fails.
 @pytest.mark.skipif(not os.path.isfile(TEST_VIDEO), reason=f"local test video not present: {TEST_VIDEO}")
 def test_video_file_exists():
-    """Test video must exist at known path."""
-    path = TEST_VIDEO
-    if not os.path.isfile(path):
-        pytest.skip(f"Local test video not present: {path}")
-    size = os.path.getsize(path)
+    """Optional local fixture used by manual smoke runs — skip in CI."""
+    size = os.path.getsize(TEST_VIDEO)
     if size < 1_000_000:
         raise ValueError(f"Test video too small ({size} bytes) — likely corrupt")
 

@@ -1015,6 +1015,59 @@ class KeyframePanelMixin:
         object_id = drag.get("object_id", "") or ""
         timeline.StartKeyframeDrag(object_type, object_id, tid)
 
+    def _move_colorgrade_frames_in_data(self, data, prop_key, old_frame, new_frame, prop_type):
+        """Move all sub-keyframes at old_frame → new_frame inside a colorgrade property.
+
+        Recursively searches data for any dict containing prop_key and moves every
+        nested Points entry whose co.X == old_frame to new_frame.  Returns True if
+        anything changed.
+        """
+        moved = False
+
+        def _move_in_kf(kf_data):
+            nonlocal moved
+            if not isinstance(kf_data, dict):
+                return
+            for pt in kf_data.get("Points", []):
+                try:
+                    if int(round(float(pt["co"]["X"]))) == old_frame:
+                        pt["co"]["X"] = float(new_frame)
+                        moved = True
+                except (KeyError, TypeError, ValueError):
+                    pass
+
+        def _move_in_colorgrade(cg_data):
+            if not isinstance(cg_data, dict):
+                return
+            if prop_type == "colorgrade_curve":
+                _move_in_kf(cg_data.get("enabled"))
+                for node in cg_data.get("nodes", []):
+                    for k in ("x", "y", "left_handle_x", "left_handle_y", "right_handle_x", "right_handle_y"):
+                        _move_in_kf(node.get(k))
+            elif prop_type == "colorgrade_wheels":
+                _move_in_kf(cg_data.get("enabled_keyframes"))
+                for section in ("global", "shadows", "midtones", "highlights"):
+                    wheel = cg_data.get(section, {})
+                    color_kf = wheel.get("color_keyframes") or {}
+                    for channel in ("red", "green", "blue", "alpha"):
+                        _move_in_kf(color_kf.get(channel))
+                    _move_in_kf(wheel.get("amount_keyframes"))
+                    _move_in_kf(wheel.get("luma_keyframes"))
+
+        def _search(obj):
+            if isinstance(obj, dict):
+                candidate = obj.get(prop_key)
+                if isinstance(candidate, dict):
+                    _move_in_colorgrade(candidate)
+                for value in obj.values():
+                    _search(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _search(item)
+
+        _search(data)
+        return moved
+
     def _apply_panel_keyframe_delta(self, drag, *, ignore_refresh=False, force=False):
         entries = drag.get("entries") or []
         if not entries:
@@ -1091,6 +1144,20 @@ class KeyframePanelMixin:
                     new_frame = entry.get("pending_frame")
                 old_frame = entry.get("original_frame")
                 path = entry.get("path")
+
+                # Colorgrade types store nested keyframe structures with no single
+                # path; move all sub-keyframes at old_frame to new_frame instead.
+                value_type = (entry.get("property") or {}).get("value_type") or ""
+                prop_key_entry = entry.get("prop_key") or ""
+                if value_type in ("colorgrade_curve", "colorgrade_wheels") and prop_key_entry:
+                    if new_frame is None or old_frame is None:
+                        continue
+                    if self._move_colorgrade_frames_in_data(data_copy, prop_key_entry, old_frame, new_frame, value_type):
+                        moved = moved or (new_frame != old_frame or force)
+                        if isinstance(clip_obj.data, (dict, list)):
+                            self._move_colorgrade_frames_in_data(clip_obj.data, prop_key_entry, old_frame, new_frame, value_type)
+                    continue
+
                 if new_frame is None or old_frame is None or not path:
                     continue
                 if self._set_keyframe_frame_at_path(data_copy, path, new_frame):
@@ -2824,9 +2891,63 @@ class KeyframePanelMixin:
         available = []
         sparse_logged = getattr(self, "_panel_sparse_properties", None)
 
+        def _colorgrade_synthetic_points(raw_data, prop_type):
+            """Return sorted list of unique (frame, seconds) pairs from nested colorgrade data."""
+            from windows.color_grade_editor import colorgrade_keyframe_frames
+            frame_set = colorgrade_keyframe_frames(raw_data, prop_type)
+            pts = []
+            for frame_num in sorted(frame_set):
+                seconds_abs = (frame_num - 1.0) / fps
+                local_secs = seconds_abs - clip_start
+                absolute_secs = position + local_secs
+                pts.append({
+                    "frame": frame_num,
+                    "seconds": absolute_secs,
+                    "local_seconds": local_secs,
+                    "value": None,
+                    "interpolation": None,
+                    "selected": False,
+                })
+            return pts
+
         for key, prop in props.items():
             if not isinstance(prop, dict):
                 continue
+
+            # Colorgrade types have nested keyframe structures; handle them separately.
+            prop_type = prop.get("type")
+            if prop_type in ("colorgrade_curve", "colorgrade_wheels"):
+                name = prop.get("name") or str(key)
+                raw_data = None
+                source_meta = {}
+                for source, _path, meta in _iter_sources():
+                    if isinstance(source, dict):
+                        candidate = source.get(key)
+                        if isinstance(candidate, dict):
+                            raw_data = candidate
+                            source_meta = meta
+                            break
+                synth_points = _colorgrade_synthetic_points(raw_data, prop_type)
+                selected_selector = track_selection.get(key, set())
+                for pt in synth_points:
+                    pt["selected"] = pt.get("frame") in selected_selector
+                entry = {
+                    "key": key,
+                    "display_name": _(name),
+                    "points": synth_points,
+                    "min_value": None,
+                    "max_value": None,
+                    "source_meta": source_meta,
+                    "owner_type": source_meta.get("owner") if isinstance(source_meta, dict) else None,
+                    "value": prop.get("value"),
+                    "value_type": prop_type,
+                    "point_paths": [],
+                }
+                available.append(entry)
+                if len(synth_points) > 1:
+                    result.append(entry)
+                continue
+
             point_count_value = prop.get("points")
             declared_points = None
             if point_count_value is not None:

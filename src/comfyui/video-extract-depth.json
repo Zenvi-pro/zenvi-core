@@ -1,0 +1,61 @@
+{
+  "action_icon": "ai-action-extract-depth.svg",
+  "menu_category": "enhance",
+  "menu_order": 55,
+  "menu_parent": "extract",
+  "name": "Depth",
+  "open_dialog": false,
+  "output_type": "video",
+  "template_id": "video-extract-depth",
+  "workflow": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "__openshot_input__"
+      }
+    },
+    "2": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "DepthAnythingV2Preprocessor",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "images": [
+          "3",
+          0
+        ],
+        "fps": [
+          "2",
+          2
+        ]
+      }
+    },
+    "5": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "video": [
+          "4",
+          0
+        ],
+        "filename_prefix": "video/openshot_depth",
+        "format": "auto",
+        "codec": "auto"
+      }
+    }
+  }
+}

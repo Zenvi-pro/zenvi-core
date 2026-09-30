@@ -351,6 +351,27 @@ def urls_from_mime(mime):
     return existing or urls
 
 
+def os_drop_file_ids(mime, json_ids, import_urls) -> list:
+    """File ids to place for the OS-file-drop half of a timeline drag.
+
+    ``json_ids`` are the ids the text/html + text/plain branch already parsed.
+    ``import_urls(urls)`` imports the dropped URLs and returns File objects
+    (``files_model.process_urls``).
+
+    A drag from Project Files carries the file ids as JSON *and* the same
+    files as URLs (``files_model.mimeData`` sets both, so PyQt6 drags stay
+    reliable). Treating that drag as an OS drop too re-imports the files,
+    gets the same ids back, and places every clip twice. So the URL branch
+    only runs when the JSON branch found nothing.
+    """
+    if json_ids:
+        return []
+    if not mime_has_file_drop(mime):
+        return []
+    imported = import_urls(urls_from_mime(mime)) or []
+    return [f.id for f in imported if f and getattr(f, "id", None)]
+
+
 def accept_os_file_drag(event) -> bool:
     """Accept a drag if it looks like files. Returns False when the event is ignored."""
     try:

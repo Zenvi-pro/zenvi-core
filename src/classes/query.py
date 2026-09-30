@@ -218,6 +218,13 @@ class Clip(QueryObject):
     def title(self):
         """ Get the translated display title of this item """
         path = self.data.get("reader", {}).get("path")
+        file_id = self.data.get("file_id") or self.data.get("reader", {}).get("id")
+        if file_id:
+            file = File.get(id=file_id)
+            if file:
+                name = str(file.data.get("name", "")).strip()
+                if name:
+                    return name
         return os.path.basename(path)
 
 class Transition(QueryObject):

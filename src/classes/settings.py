@@ -149,11 +149,11 @@ class SettingStore(JsonDataStore):
         if key in user_values:
             user_values[key].update({"value": value})
         else:
-            log.warn(
+            log.warning(
                 "{} key '{}' not valid. The following are valid: {}".format(
                     self.data_type,
                     key,
-                    list(self._data.keys()),
+                    list(user_values.keys()),
                 ))
 
     def load(self):
@@ -222,6 +222,7 @@ class SettingStore(JsonDataStore):
         preserve_keys = [
             'unique_install_id', 'tutorial_ids', 'tutorial_enabled', 'send_metrics',
             'recent_projects', 'restore_project_path', 'restore_draft_history_key',
+            'custom_views', 'active_custom_view', 'active_builtin_view',
         ]
 
         requires_restart = False  # Track if any setting requires a restart

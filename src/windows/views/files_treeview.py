@@ -44,6 +44,10 @@ from classes.query import File
 from .menu import StyledContextMenu, add_bound_action
 from .indexing_badge import IndexingBadgeDelegate
 from .optimized_preview_menu import add_optimized_preview_menu
+from .ai_tools_menu import add_ai_tools_menu
+from .generation_badge import (
+    file_id_for_index, is_generation_placeholder, job_id_from_placeholder,
+)
 
 
 class FilesTreeView(QTreeView):
@@ -72,7 +76,35 @@ class FilesTreeView(QTreeView):
         add_bound_action(menu, self.win, "actionImportFiles", _("Import Files..."), "actionImportFiles_trigger")
         add_bound_action(menu, self.win, "actionThumbnailView", _("Thumbnail View"), "actionThumbnailView_trigger")
 
+        # ComfyUI (optional): AI tools + job cancel for the clicked row
+        source_file = None
+        active_job = None
         if index.isValid():
+            file_id = file_id_for_index(index)
+            if is_generation_placeholder(file_id):
+                queue = getattr(self.win, "generation_queue", None)
+                active_job = queue.get_job(job_id_from_placeholder(file_id)) if queue else None
+                if active_job and active_job.get("status") not in ("queued", "running", "canceling"):
+                    active_job = None
+            elif hasattr(self.win, "active_generation_job_for_file"):
+                active_job = self.win.active_generation_job_for_file(file_id)
+                source_file = File.get(id=file_id)
+        if hasattr(self.win, "is_comfy_available"):
+            add_ai_tools_menu(self.win, menu, source_file=source_file)
+            if not active_job and hasattr(self.win, "actionGenerate"):
+                self.win.actionGenerate.setEnabled(self.win.can_open_generate_dialog())
+        if active_job:
+            cancel_action = menu.addAction(_("Cancel Job"))
+            delete_icon_path = os.path.join(info.PATH, "themes", "cosmic", "images", "track-delete-enabled.svg")
+            if os.path.exists(delete_icon_path):
+                cancel_action.setIcon(QIcon(delete_icon_path))
+            else:
+                cancel_action.setIcon(self.win.actionRemove_from_Project.icon())
+            cancel_action.triggered.connect(
+                lambda checked=False, job_id=active_job.get("id"): self.win.cancel_generation_job(job_id)
+            )
+
+        if index.isValid() and not active_job:
             # Look up the model item and our unique ID
             model = index.model()
 
@@ -80,11 +112,14 @@ class FilesTreeView(QTreeView):
             id_index = index.sibling(index.row(), 5)
             file_id = model.data(id_index, Qt.DisplayRole)
 
-            # If a valid file selected, show file related options
-            menu.addSeparator()
-
             # Add edit title option (if svg file)
             file = File.get(id=file_id)
+            if not file:
+                menu.show_at(event)
+                return
+
+            # If a valid file selected, show file related options
+            menu.addSeparator()
             if file and file.data.get("path").endswith(".svg"):
                 add_bound_action(menu, self.win, "actionEditTitle", _("Edit Title"), "actionEditTitle_trigger")
                 add_bound_action(menu, self.win, "actionDuplicate", _("Duplicate"), "actionDuplicate_trigger")
@@ -151,6 +186,8 @@ class FilesTreeView(QTreeView):
 
         # Get first column indexes for all selected rows
         selected = self.selectionModel().selectedRows(0)
+        # Generation placeholder rows are not draggable media
+        selected = [idx for idx in selected if not is_generation_placeholder(file_id_for_index(idx))]
 
         # Check if there are any selected items
         if not selected:
@@ -310,6 +347,10 @@ class FilesTreeView(QTreeView):
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setSelectionModel(self.files_model.selection_model)
         self.setSortingEnabled(True)
+        # Keep "sortable" behavior available from the header, but do not apply
+        # an initial forced sort so new imports keep insertion order by default.
+        self.header().setSortIndicator(-1, Qt.AscendingOrder)
+        self.files_model.proxy_model.sort(-1)
 
         self.setAcceptDrops(True)
         self.setDragEnabled(True)
