@@ -45,6 +45,14 @@ def test_voiceover_on_a_track_at_a_time(editor, rec):
     assert editor.undo_steps_since_mark() == 0
 
 
+def test_a_later_call_keeps_the_earlier_start_and_track(editor, rec):
+    _receipt(editor.call(TOOL, sources=["mic"], track="3", start_seconds=5))
+    r = _receipt(editor.call(TOOL, channels="stereo"))
+    assert rec.shown == [(5.0, L3), (5.0, L3)]
+    assert r["start_seconds"] == 5.0 and r["track"]["layer"] == L3 and r["mic"]["channels"] == "stereo"
+    rec.window.SeekSignal.emit.assert_called_once_with(151)       # only the explicit start moves the playhead
+
+
 def test_no_arguments_just_opens_the_panel(editor, rec):
     r = _receipt(editor.call(TOOL))
     assert rec.shown == [(None, None)]

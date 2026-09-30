@@ -197,3 +197,22 @@ def test_estimated_cues_cover_the_whole_duration():
     assert cues[0]["start"] == 0.0 and cues[-1]["end"] == 6.0
     assert cues[0]["end"] < 3.0 < cues[1]["end"]
     assert estimated_cues("no punctuation at all", 2.0) == [{"start": 0.0, "end": 2.0, "text": "no punctuation at all"}]
+
+
+# --- the backend call carries the signed-in user's token ------------------------------------------
+
+def test_backend_requests_carry_the_users_bearer_token():
+    """Regression: /generation/tts answers 401 'missing Authorization: Bearer header' without it."""
+    requests = pytest.importorskip("requests")
+    from classes.api_client import ZenviBackendClient
+
+    client = ZenviBackendClient(base_url="https://api.example.invalid")
+    client._auth_token = lambda: "user-jwt"
+    prepared = client.session.prepare_request(
+        requests.Request("POST", client.api_url + "/generation/tts", json={"text": "hi"}))
+    assert prepared.headers["Authorization"] == "Bearer user-jwt"
+    other_host = client.session.prepare_request(requests.Request("GET", "https://cdn.example.com/v.mp4"))
+    assert "Authorization" not in other_host.headers, "the token never leaves the backend host"
+    client._auth_token = lambda: None
+    signed_out = client.session.prepare_request(requests.Request("GET", client.api_url + "/models"))
+    assert "Authorization" not in signed_out.headers

@@ -39,6 +39,34 @@ load_zenvi_dotenv()
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 
 
+class _BackendBearerAuth:
+    """requests auth hook: the signed-in user's token on every call to the backend host.
+
+    Routes such as /generation/tts refuse requests without ``Authorization: Bearer``
+    ("auth required: missing Authorization: Bearer header"); the REST session never
+    sent it, so text-to-speech always failed with 401. The token is read per request
+    (sign-in, refresh and sign-out take effect at once) and only sent to the
+    backend's own host.
+    """
+
+    def __init__(self, token_source: Callable[[], Optional[str]], base_url: str):
+        from urllib.parse import urlparse
+        self._token_source = token_source
+        self._host = urlparse(base_url).netloc.lower()
+
+    def __call__(self, request):
+        from urllib.parse import urlparse
+        if "Authorization" in request.headers or urlparse(request.url).netloc.lower() != self._host:
+            return request
+        try:
+            token = self._token_source()
+        except Exception:
+            token = None
+        if token:
+            request.headers["Authorization"] = f"Bearer {token}"
+        return request
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -104,6 +132,7 @@ class ZenviBackendClient:
                 import requests
                 self._session = requests.Session()
                 self._session.headers.update({"Content-Type": "application/json"})
+                self._session.auth = _BackendBearerAuth(lambda: self._auth_token(), self.base_url)
                 if not self._ssl_verify:
                     self._session.verify = False
                     import urllib3

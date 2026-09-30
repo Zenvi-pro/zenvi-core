@@ -252,12 +252,19 @@ def _prepare(sources, track, start_seconds, timeline_clip_id, mic_device, channe
     elif clip_track is not None:
         track_number = clip_track
 
+    # Nothing asked for: keep what the dock already had (an earlier call's start / track).
+    seek_to = start
+    if start is None:
+        start = dock._context_start
+    if track_number is None:
+        track_number = dock._context_track
+
     # ---- apply ---------------------------------------------------------------------------------------
     if recording_view:
         win.actionAudio_Recording_View_trigger()
     win.show_audio_recording_dock(start_time=start, track_number=track_number)
-    if start is not None:
-        win.SeekSignal.emit(seconds_to_frame(start))      # with Preview on, the dock records at the playhead
+    if seek_to is not None:
+        win.SeekSignal.emit(seconds_to_frame(seek_to))    # with Preview on, the dock records at the playhead
 
     if sources:
         for source in SOURCES:

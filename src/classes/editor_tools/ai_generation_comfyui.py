@@ -188,6 +188,13 @@ def _menu_path(template: dict) -> str:
     return "AI Tools > Unknown AI > " + inner
 
 
+def _output_kind(template: dict, base: str) -> str:
+    kind = str(template.get("primary_output") or "unknown")
+    if kind == "unknown" and _KIND_OF_TEMPLATE.get(base) in ("music", "sound"):
+        return "audio"      # the music template declares output_type "music", which the registry drops
+    return kind
+
+
 def template_row(template: dict) -> dict:
     tid = str(template.get("id") or "")
     base = str(template.get("template_id") or tid)
@@ -200,7 +207,7 @@ def template_row(template: dict) -> dict:
         "kind": _KIND_OF_TEMPLATE.get(base, ""),
         "action": _ACTION_OF_TEMPLATE.get(base, ""),
         "input": inputs[0] if inputs else "",
-        "output": str(template.get("primary_output") or "unknown"),
+        "output": _output_kind(template, base),
         "needs_prompt": _needs_prompt(template),
         "needs_reference_image": bool(template.get("needs_reference_image")),
         "needs_object_selection": base in TRACKING_TEMPLATES,
@@ -297,7 +304,7 @@ def _check_points(points: list, what: str, width: int, height: int) -> list:
     for p in points or []:
         x, y = float(p["x"]), float(p["y"])
         if width and height and not (0 <= x < width and 0 <= y < height):
-            raise ToolError(f"{what} point ({x:g}, {y:g}) is outside the {width}x{height} source frame")
+            raise ToolError(f"point ({x:g}, {y:g}) in {what} is outside the {width}x{height} source frame")
         out.append({"x": int(round(x)), "y": int(round(y))})
     return out
 
@@ -309,9 +316,10 @@ def _check_boxes(boxes: list, what: str, width: int, height: int) -> list:
         x1, x2 = min(x1, x2), max(x1, x2)
         y1, y2 = min(y1, y2), max(y1, y2)
         if width and height and not (0 <= x1 < width and 0 <= y1 < height and x2 <= width and y2 <= height):
-            raise ToolError(f"{what} box ({x1:g},{y1:g})-({x2:g},{y2:g}) is outside the {width}x{height} source frame")
+            raise ToolError(f"box ({x1:g},{y1:g})-({x2:g},{y2:g}) in {what} is outside the {width}x{height} "
+                            "source frame")
         if x2 - x1 < 1 or y2 - y1 < 1:
-            raise ToolError(f"{what} box ({x1:g},{y1:g})-({x2:g},{y2:g}) has no area")
+            raise ToolError(f"box ({x1:g},{y1:g})-({x2:g},{y2:g}) in {what} has no area")
         out.append({"x1": int(round(x1)), "y1": int(round(y1)), "x2": int(round(x2)), "y2": int(round(y2))})
     return out
 
@@ -581,7 +589,7 @@ def enhance_file_with_comfyui(file_id, action="", template="", prompt="", name="
         table = ENHANCE_ACTIONS.get(mt, {})
         if action not in table:
             valid = ", ".join(table) or "none (this media type has no Enhance templates)"
-            raise ToolError(f"action '{action}' does not apply to a {mt or 'file of unknown type'}; "
+            raise ToolError(f"action '{action}' does not apply to {mt or 'unknown-type'} files; "
                             f"for {mt or 'this file'} use: {valid}")
         tmpl = find_template(table[action], offered, f"Enhance ({mt})")
     base = str(tmpl.get("template_id") or tmpl.get("id"))

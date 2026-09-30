@@ -67,6 +67,7 @@ def test_catalogue_lists_create_and_enhance_templates_and_says_comfyui_is_off(ed
     creates = {row["kind"]: row for row in r["templates"] if row["category"] == "create"}
     assert set(creates) == {"image", "video", "sound", "music"}
     assert creates["image"]["menu"] == "AI Tools > Create with AI > Image..."
+    assert creates["music"]["output"] == "audio" and creates["sound"]["output"] == "audio"
     assert all(row["needs_prompt"] for row in creates.values())
     actions = {(row["input"], row["action"]) for row in r["templates"] if row["category"] == "enhance"}
     assert ("video", "split_scenes") in actions and ("audio", "reduce_noise") in actions
@@ -222,7 +223,7 @@ def test_enhance_restyle_video_binds_the_reference_image(editor, comfy, server, 
 
 
 @pytest.mark.parametrize("args, message", [
-    ({"action": "upscale", "file": "audio"}, "does not apply to a audio"),
+    ({"action": "upscale", "file": "audio"}, "does not apply to audio files"),
     ({}, "say what to do"),
     ({"action": "blur_object"}, "object tracking needs a seed"),
     ({"action": "blur_object", "points": [{"x": 5000, "y": 10}]}, "outside the 1280x720 source frame"),
