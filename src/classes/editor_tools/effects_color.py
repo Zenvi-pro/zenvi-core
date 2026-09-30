@@ -18,6 +18,7 @@ import copy
 import difflib
 import json
 import os
+import threading
 from typing import Any, Optional
 
 from classes import effect_ops
@@ -323,6 +324,42 @@ def find_effect(effect_id: str):
     raise ToolError(f"no effect with id={effect_id!r} on the timeline (get_clip_effects_tool lists them)")
 
 
+# How long an edit waits for a busy GUI thread. The hop itself is a few project updates.
+EDIT_HOP_TIMEOUT = 120
+
+
+def apply_on_main(func, timeout: float = EDIT_HOP_TIMEOUT):
+    """Run the edit *func* on the GUI thread; if the caller gives up waiting, the edit never runs.
+
+    ``on_main`` leaves a timed-out call queued, so a slow GUI thread would apply the
+    edit after the tool already answered "Error" -- the model then retries or reports a
+    failure for a change that happened. The guard makes the timeout mean "nothing
+    changed": a queued edit that starts after the deadline is dropped.
+    """
+    lock = threading.Lock()
+    state = {"cancelled": False, "started": False}
+
+    def _guarded():
+        with lock:
+            if state["cancelled"]:
+                return None
+            state["started"] = True
+        return func()
+
+    try:
+        return on_main(_guarded, timeout=timeout)
+    except Exception as exc:
+        if type(exc).__name__ != "MainThreadTimeout":
+            raise
+        with lock:
+            state["cancelled"] = True
+            started = state["started"]
+        if started:  # it began right at the deadline and will finish on the GUI thread
+            return None
+        raise ToolError(f"the editor's GUI thread stayed busy for {timeout:g}s, so nothing was changed; "
+                        "it is safe to try again") from None
+
+
 def save_clip_effects(changes: list) -> None:
     """Write [(clip_id, new_effects_list)] on the GUI thread: one update per clip, one undo step per call."""
     from classes.query import Clip
@@ -336,7 +373,7 @@ def save_clip_effects(changes: list) -> None:
             updates.update(["clips", {"id": cid}], {"effects": effects})
         refresh_preview()
 
-    on_main(_apply)
+    apply_on_main(_apply)
 
 
 def save_effect_properties(changes: list) -> None:
@@ -347,7 +384,7 @@ def save_effect_properties(changes: list) -> None:
             updates.update(["clips", {"id": cid}, "effects", {"id": eid}], values)
         refresh_preview()
 
-    on_main(_apply)
+    apply_on_main(_apply)
 
 
 # ---------------------------------------------------------------------------

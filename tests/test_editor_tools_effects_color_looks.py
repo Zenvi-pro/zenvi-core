@@ -94,7 +94,7 @@ def test_cinematic_look_uses_lut_and_one_color_grade(fx):
     g = grades[0]
     assert g["lut_path"].endswith(os.path.join("cinematic_&_blockbuster", "teal_&_orange_cinema.cube"))
     assert os.path.isfile(g["lut_path"])
-    assert kf_value(g, "lut_intensity") == 0.6 and kf_value(g, "saturation") == 0.95
+    assert kf_value(g, "lut_intensity") == 0.5 and kf_value(g, "saturation") == 0.95
     assert kf_value(g, "contrast") == pytest.approx(0.18)
     assert r["clips"][0]["grade"]["lut"] == "cinematic_&_blockbuster/teal_&_orange_cinema"
 
@@ -185,7 +185,7 @@ def test_chroma_key_moves_keyed_clip_above_background_in_one_step(fx):
     fx.mark()
     r = receipt(fx.call("chroma_key_clip_tool", timeline_clip_id=fg, key_color="green", background_clip_id=bg))
     ck = effect_of(fx, fg, "ChromaKey")[0]
-    assert y(ck["color"]["green"]) == [177.0] and ck["keymethod"] == 11
+    assert y(ck["color"]["green"]) == [177.0] and ck["keymethod"] == 11 and r["fuzz"] == 20.0
     assert fx.clip(fg)["position"] == 0.0 and fx.clip(fg)["layer"] == 3000000
     assert r["track"] == 3 and not r["new_track"] and blocker
     assert fx.undo_steps_since_mark() == 1
@@ -198,12 +198,15 @@ def test_chroma_key_creates_a_top_track_when_needed_and_auto_color(fx, monkeypat
         fx.lock_track(n)
     fg = fx.add_clip(fx.add_file("video"), layer=1000000)
     bg = fx.add_clip(fx.add_file("video"), layer=1000000, position=30.0)
-    monkeypatch.setattr(analysis, "sample_screen_color", lambda clip, t=None: ("#10c040", "green screen at 1s"))
+    monkeypatch.setattr(analysis, "sample_screen_color", lambda clip, t=None: ("#10c040", "green screen at 1s", 48.0))
     r = receipt(fx.call("chroma_key_clip_tool", timeline_clip_id=fg, background_clip_id=bg, method="hsv_hue",
                         fuzz=35))
     assert r["new_track"] and fx.clip(fg)["layer"] == 6000000 and r["key_color"] == "#10c040"
     assert 6000000 in [t["number"] for t in fx.get("layers")] and fx.clip(fg)["position"] == 30.0
-    assert effect_of(fx, fg, "ChromaKey")[0]["keymethod"] == 1
+    assert effect_of(fx, fg, "ChromaKey")[0]["keymethod"] == 1 and r["fuzz"] == 35
+    r2 = receipt(fx.call("chroma_key_clip_tool", timeline_clip_id=fg))
+    assert r2["fuzz"] == 48.0 and y(effect_of(fx, fg, "ChromaKey")[0]["fuzz"]) == [48.0]
+    fx.undo()
     fx.undo()
     assert 6000000 not in [t["number"] for t in fx.get("layers")]
     fx.mark()
@@ -220,3 +223,7 @@ def test_screen_color_detection_from_edge_histograms():
     assert analysis.screen_color_from_histograms([green, green]) == ("#14b43c", "green")
     grey = {"red": hist(120), "green": hist(125), "blue": hist(118)}
     assert analysis.screen_color_from_histograms([grey])[1] is None
+    even, patchy = {"red": hist(20), "green": hist(180), "blue": hist(60)}, {
+        "red": hist(20), "green": [0] * 120 + [50] * 100 + [0] * 36, "blue": hist(60)}
+    assert analysis.screen_fuzz_from_histograms([even]) == 20.0
+    assert 70 <= analysis.screen_fuzz_from_histograms([patchy]) <= 80

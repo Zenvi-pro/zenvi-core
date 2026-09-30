@@ -553,8 +553,20 @@ def screen_color_from_histograms(hists: list) -> tuple:
     return "#%02x%02x%02x" % (r, g, b), kind
 
 
+def screen_fuzz_from_histograms(hists: list) -> float:
+    """ChromaKey fuzz for the edge colors' spread: an evenly lit screen keys at ~20, a patchy one needs more."""
+    spread = 0.0
+    for channel in ("red", "green", "blue"):
+        total = [0] * 256
+        for h in hists:
+            for i, n in enumerate(h[channel]):
+                total[i] += n
+        spread = max(spread, (_percentile(total, 0.9) - _percentile(total, 0.1)) * 255)
+    return float(max(20, min(80, round(15 + 0.8 * spread))))
+
+
 def sample_screen_color(clip, sample_time=None) -> tuple:
-    """(#rrggbb, detail) of the green/blue screen at the clip's frame edges; ToolError if none."""
+    """(#rrggbb, detail, suggested fuzz) of the green/blue screen at the clip's frame edges; ToolError if none."""
     data = copy.deepcopy(clip.data)
     t = _analysis_time(data, sample_time)
     def _edges():
@@ -569,4 +581,5 @@ def sample_screen_color(clip, sample_time=None) -> tuple:
     if kind is None:
         raise ToolError(f"the edges of clip {clip.id} at {t:.2f}s are {color}, not a green or blue screen; "
                         "pass key_color ('green', 'blue' or #RRGGBB)")
-    return color, f"{kind} screen at {t:.2f}s"
+    fuzz = screen_fuzz_from_histograms(hists)
+    return color, f"{kind} screen at {t:.2f}s, fuzz {fuzz:g} for its unevenness", fuzz

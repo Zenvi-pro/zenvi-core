@@ -25,7 +25,6 @@ from classes.editor_tools._base import (
     number,
     obj,
     ok,
-    on_main,
     parse_color,
     refresh_preview,
     resolve_clip,
@@ -35,6 +34,7 @@ from classes.editor_tools._base import (
 from classes.editor_tools._registry import editor_tool
 from classes.editor_tools.effects_color import (
     TARGETS,
+    apply_on_main,
     catalog,
     clip_effects,
     compatibility_problem,
@@ -160,8 +160,8 @@ NAMED_LOOKS = {
     "warm_up": {"base": "warm_up", "about": "Look > Color > Warm Up"},
     "boost_color": {"base": "boost_color", "about": "Look > Color > Boost Color"},
     "cinematic": {"base": "auto_contrast", "lut": "cinematic_&_blockbuster/teal_&_orange_cinema",
-                  "lut_intensity": 0.6, "params": {"saturation": 0.95, "highlights": -0.1, "shadows": -0.05},
-                  "about": "blockbuster teal/orange LUT at 60%, contrast curve, slightly muted"},
+                  "lut_intensity": 0.5, "params": {"saturation": 0.95, "highlights": -0.1, "shadows": 0.0},
+                  "about": "blockbuster teal/orange LUT at 50%, contrast curve, slightly muted"},
     "teal_orange": {"base": "auto_contrast", "lut": "teal_&_orange_vibes/signature_teal_&_orange",
                     "lut_intensity": 0.8, "params": {"vibrance": 0.1},
                     "about": "strong teal shadows / orange skin tones"},
@@ -496,8 +496,9 @@ def _placement(keyed, background, align):
                             "auto"),
         "method": enum(sorted(KEY_METHODS), "Keying method; basic_soft (default) suits most green/blue screens, "
                        "hsv_hue helps uneven lighting, cbcr_vector for spill-heavy footage.", "basic_soft"),
-        "fuzz": number("Tolerance around the key color (0-125): raise it if screen remains, lower it if the "
-                       "subject gets holes.", 20.0, minimum=0, maximum=125),
+        "fuzz": nullable(number("Tolerance around the key color (0-125): raise it if screen remains, lower it if "
+                                "the subject gets holes. Default: estimated from how uneven the screen is with "
+                                "key_color='auto', else 20.", minimum=0, maximum=125)),
         "halo": number("Edge softening/spill cleanup (0-125).", 10.0, minimum=0, maximum=125),
         "background_clip_id": string("Background clip to show through (timeline clip id). The keyed clip is put "
                                      "on a track above it.", ""),
@@ -512,7 +513,7 @@ def _placement(keyed, background, align):
     covers=("color.chroma_key",),
 )
 def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="auto", method="basic_soft",
-                    fuzz=20.0, halo=10.0, background_clip_id="", background_query="", align="auto",
+                    fuzz=None, halo=10.0, background_clip_id="", background_query="", align="auto",
                     sample_time=None):
     """Remove a green or blue screen from a clip with the Chroma Key effect, and optionally composite it
     over a background clip ("remove the green screen and put me on the beach"). key_color='auto'
@@ -541,13 +542,17 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
     key = str(key_color or "auto").strip().lower()
     if key == "auto":
         from classes.editor_tools.effects_color_analysis import sample_screen_color
-        hex_color, detail = sample_screen_color(clip, sample_time)
+        hex_color, detail, suggested_fuzz = sample_screen_color(clip, sample_time)
         color_source = f"sampled ({detail})"
+        if fuzz is None:
+            fuzz = suggested_fuzz
     else:
         hex_color = _KEY_COLORS.get(key, key_color)
         r, g, b, _a = parse_color(hex_color)
         hex_color = "#%02x%02x%02x" % (r, g, b)
 
+    if fuzz is None:
+        fuzz = 20.0
     effects = copy.deepcopy(clip_effects(clip))
     idxs = [i for i, e in enumerate(effects) if e.get("class_name") == "ChromaKey"]
     target = effects[idxs[0]] if idxs else new_effect_json("ChromaKey")
@@ -580,7 +585,7 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
         updates.update(["clips", {"id": clip.id}], values)
         refresh_preview()
 
-    on_main(_apply)
+    apply_on_main(_apply)
     summary = f"Keyed out {hex_color} ({color_source}, {method}, fuzz {fuzz:g}, halo {halo:g}) on clip {clip.id}."
     receipt = {"timeline_clip_id": clip.id, "effect_id": target.get("id"), "key_color": hex_color,
                "key_color_source": color_source, "method": method, "fuzz": fuzz, "halo": halo}
