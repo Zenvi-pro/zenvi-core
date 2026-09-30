@@ -136,7 +136,8 @@ def add_timer(mode="count_down", position_seconds=0.0, duration_seconds=0.0, cou
         "apply_before_clip": False,
     }
 
-    timer_template = new_effect_json("Timer")   # refuses here when libopenshot has no Timer
+    # made on the GUI thread (see add_captions_tool); refuses here when libopenshot has no Timer
+    timer_template = on_main(new_effect_json, "Timer")
 
     if attach_id:
         def _attach():

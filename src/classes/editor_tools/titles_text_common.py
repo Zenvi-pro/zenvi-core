@@ -308,7 +308,11 @@ def refresh_file_and_clips(file_id: str, clip_ids=()) -> None:
 # ---------------------------------------------------------------------------
 
 def new_effect_json(class_name: str) -> dict:
-    """A new effect as the Effects dock creates it (EffectInfo().CreateEffect + a project id)."""
+    """A new effect as the Effects dock creates it (EffectInfo().CreateEffect + a project id).
+
+    GUI thread: never build or render libopenshot objects from a plain Python thread
+    (Qt's font cache can deadlock against the GIL there).
+    """
     import openshot
     effect = openshot.EffectInfo().CreateEffect(class_name)
     if effect is None:

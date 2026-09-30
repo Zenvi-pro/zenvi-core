@@ -594,7 +594,9 @@ def add_captions(cues=None, srtPath="", clipId="", timeline_clip_id="", clip_que
         overlay = (overlay_file_path(w, h), span_start, span_end)
 
     props = cap_style.properties(lines=2)
-    caption_template = new_effect_json("Caption")   # refuses here when libopenshot has no Caption
+    # libopenshot objects are made on the GUI thread (Qt font state is not safe from a Python
+    # thread); refuses here, before any change, when libopenshot has no Caption effect.
+    caption_template = on_main(new_effect_json, "Caption")
 
     def _commit():
         from classes.query import Clip
