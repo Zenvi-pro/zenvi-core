@@ -1220,16 +1220,18 @@ class AIChatWindow(QDockWidget):
                     old_thread.wait(500)
                 except Exception:
                     pass
-        restore = None
-        if backend in (BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR):
-            try:
-                from classes import chat_history
-                for row in chat_history.load_sessions(self._history_key, include_closed=True):
-                    if row.get("session_id") == session_id:
-                        restore = row
-                        break
-            except Exception:
-                restore = None
+        # A CLI conversation can only be resumed by the CLI that made it:
+        # `claude --resume <a Cursor chat id>` fails on every later turn. Park
+        # the old backend's conversation on the tab so switching back resumes
+        # it, and give the new backend only the one it left here itself.
+        parked = sess.setdefault("cli_parked", {})
+        if getattr(old_worker, "_cli_started", False) and getattr(old_worker, "_cli_session_id", ""):
+            parked[sess.get("backend")] = {
+                "cli_session_id": old_worker._cli_session_id,
+                "cli_started": True,
+                "cli_cwd": getattr(old_worker, "_cli_cwd", "") or "",
+            }
+        restore = parked.pop(backend, None)
         worker, thread = self._make_worker(session_id, backend, restore=restore)
         sess["worker"] = worker
         sess["thread"] = thread
@@ -1247,7 +1249,10 @@ class AIChatWindow(QDockWidget):
         if self._use_web_ui:
             self._push_tabs_to_js()
         self._notify_agent_selector()
-        self._persist_session(session_id, backend=backend)
+        # The row keeps one conversation. It has to be this backend's (or none),
+        # or the next launch would hand the old CLI's id to this one.
+        continuity = restore or {"cli_session_id": "", "cli_started": False, "cli_cwd": ""}
+        self._persist_session(session_id, backend=backend, **continuity)
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
