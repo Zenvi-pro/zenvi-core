@@ -14,6 +14,8 @@ COLOR_PRESET_RESET = "reset"
 COLOR_PRESET_AUTO_CONTRAST = "auto_contrast"
 COLOR_PRESET_LIFT_SHADOWS = "lift_shadows"
 COLOR_PRESET_WARM_UP = "warm_up"
+COLOR_PRESET_SUNNY = "sunny"
+COLOR_PRESET_GLOOMY = "gloomy"
 COLOR_PRESET_BOOST_COLOR = "boost_color"
 
 
@@ -152,9 +154,26 @@ def apply_color_grade_preset(effect_json, preset_name):
             {"x": 1.0, "y": 1.0},
         ])
     elif preset_name == COLOR_PRESET_WARM_UP:
-        _set_scalar(payload, "temperature", 0.10)
+        _set_scalar(payload, "temperature", 0.18)
+        _set_scalar(payload, "tint", 0.03)
+        _set_scalar(payload, "vibrance", 0.10)
+        _set_scalar(payload, "saturation", 1.08)
+    elif preset_name == COLOR_PRESET_SUNNY:
+        _set_scalar(payload, "temperature", 0.22)
         _set_scalar(payload, "tint", 0.02)
-        _set_scalar(payload, "vibrance", 0.04)
+        _set_scalar(payload, "exposure", 0.14)
+        _set_scalar(payload, "contrast", 0.10)
+        _set_scalar(payload, "highlights", 0.06)
+        _set_scalar(payload, "shadows", 0.04)
+        _set_scalar(payload, "saturation", 1.16)
+        _set_scalar(payload, "vibrance", 0.20)
+    elif preset_name == COLOR_PRESET_GLOOMY:
+        _set_scalar(payload, "temperature", -0.10)
+        _set_scalar(payload, "exposure", -0.08)
+        _set_scalar(payload, "contrast", 0.06)
+        _set_scalar(payload, "highlights", -0.08)
+        _set_scalar(payload, "saturation", 0.88)
+        _set_scalar(payload, "vibrance", -0.04)
     elif preset_name == COLOR_PRESET_BOOST_COLOR:
         _set_scalar(payload, "contrast", 0.08)
         _set_scalar(payload, "saturation", 1.18)

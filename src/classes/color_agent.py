@@ -59,6 +59,8 @@ LOOK_PRESET_IDS = (
     "auto_contrast",
     "lift_shadows",
     "warm_up",
+    "sunny",
+    "gloomy",
     "boost_color",
 )
 
@@ -466,7 +468,15 @@ def validate_color_patch(patch: dict) -> None:
             continue
         canon = SCALAR_ALIASES.get(key, key)
         if canon in SCALAR_KEYS and raw is not None and not isinstance(raw, bool):
-            _coerce_float(raw, canon)
+            value = _coerce_float(raw, canon)
+            # Neutral saturation is 1.0. Models often pass 0.2 meaning "a bit
+            # more color" and grey out the shot — refuse that class of mistake.
+            if canon == "saturation" and value < 0.5:
+                raise ValueError(
+                    "saturation neutral is 1.0 (not 0). Values below 0.5 look grey. "
+                    "For more color use ~1.1–1.3, or apply_look_tool lookId='sunny' / "
+                    "'boost_color'. For less color use ~0.7–0.9, never 0.2."
+                )
     lut = patch.get("lut")
     if lut is not None:
         if not isinstance(lut, dict):
@@ -777,13 +787,36 @@ _LOOK_PRESET_META = {
     "warm_up": {
         "label": "Warm Up",
         "description": "Warmer temperature and slight vibrance",
-        "vibe_tags": ["warm", "tungsten", "cozy", "golden"],
+        "vibe_tags": ["warm", "tungsten", "cozy", "golden", "sunny"],
+    },
+    "sunny": {
+        "label": "Sunny",
+        "description": "Bright daylight: warm, lifted exposure, healthy color",
+        "vibe_tags": [
+            "sunny", "sun", "bright", "daylight", "golden", "summer", "outdoors",
+        ],
+    },
+    "gloomy": {
+        "label": "Gloomy",
+        "description": "Overcast / muted: cooler, slightly darker, less punch",
+        "vibe_tags": ["gloomy", "overcast", "grey", "gray", "muted", "cloudy", "dreary"],
     },
     "boost_color": {
         "label": "Boost Color",
         "description": "Higher saturation and vibrance with mild S-curve",
-        "vibe_tags": ["vibrant", "saturated", "pop", "instagram"],
+        "vibe_tags": ["vibrant", "saturated", "pop", "instagram", "candy"],
     },
+}
+
+# Query synonyms so "sunny" hits sunlit LUTs / sunny preset, etc.
+_LOOK_QUERY_SYNONYMS = {
+    "sunny": ("sunny", "sunlit", "sun", "warm", "golden", "daylight", "bright"),
+    "sun": ("sunny", "sunlit", "warm", "golden"),
+    "bright": ("sunny", "bright", "sunlit", "boost"),
+    "gloomy": ("gloomy", "overcast", "muted", "grey", "gray", "cloudy", "dark"),
+    "grey": ("gloomy", "muted", "grey", "gray"),
+    "gray": ("gloomy", "muted", "grey", "gray"),
+    "candy": ("candy", "boost", "vibrant", "pop", "saturated"),
 }
 
 _CATEGORY_VIBE_TAGS = {
@@ -866,7 +899,16 @@ def _look_matches(entry: dict, query: str) -> bool:
         ]
     ).lower()
     tokens = [t for t in query.replace(",", " ").split() if t]
-    return all(token in hay for token in tokens)
+
+    def _token_hit(token: str) -> bool:
+        if token in hay:
+            return True
+        for syn in _LOOK_QUERY_SYNONYMS.get(token, ()):
+            if syn in hay:
+                return True
+        return False
+
+    return all(_token_hit(token) for token in tokens)
 
 
 def resolve_look_id(look_id: str) -> dict:
@@ -996,10 +1038,27 @@ def apply_soft_color_preset(effect_json: dict, preset_name: str) -> dict:
             [[0.0, 0.06], [0.35, 0.40], [1.0, 1.0]]
         )
     elif name == "warm_up":
-        # Subtle — "a bit warmer", not a sunburn LUT.
-        set_scalar(payload, "temperature", 0.10)
+        set_scalar(payload, "temperature", 0.18)
+        set_scalar(payload, "tint", 0.03)
+        set_scalar(payload, "vibrance", 0.10)
+        set_scalar(payload, "saturation", 1.08)
+    elif name == "sunny":
+        # Bright daylight — never touch saturation below 1.0 (that greys the shot).
+        set_scalar(payload, "temperature", 0.22)
         set_scalar(payload, "tint", 0.02)
-        set_scalar(payload, "vibrance", 0.04)
+        set_scalar(payload, "exposure", 0.14)
+        set_scalar(payload, "contrast", 0.10)
+        set_scalar(payload, "highlights", 0.06)
+        set_scalar(payload, "shadows", 0.04)
+        set_scalar(payload, "saturation", 1.16)
+        set_scalar(payload, "vibrance", 0.20)
+    elif name == "gloomy":
+        set_scalar(payload, "temperature", -0.10)
+        set_scalar(payload, "exposure", -0.08)
+        set_scalar(payload, "contrast", 0.06)
+        set_scalar(payload, "highlights", -0.08)
+        set_scalar(payload, "saturation", 0.88)
+        set_scalar(payload, "vibrance", -0.04)
     elif name == "boost_color":
         set_scalar(payload, "contrast", 0.08)
         set_scalar(payload, "saturation", 1.18)

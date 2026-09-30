@@ -229,12 +229,33 @@ def test_soft_presets_match_ui_warm_up_numbers():
     from classes.color_agent import apply_soft_color_preset
 
     warm = apply_soft_color_preset(blank_color_grade("e"), "warm_up")
-    assert scalar_y(warm, "temperature") == pytest.approx(0.10)
-    assert scalar_y(warm, "tint") == pytest.approx(0.02)
-    assert scalar_y(warm, "vibrance") == pytest.approx(0.04)
+    assert scalar_y(warm, "temperature") == pytest.approx(0.18)
+    assert scalar_y(warm, "tint") == pytest.approx(0.03)
+    assert scalar_y(warm, "vibrance") == pytest.approx(0.10)
+    sunny = apply_soft_color_preset(blank_color_grade("e"), "sunny")
+    assert scalar_y(sunny, "temperature") == pytest.approx(0.22)
+    assert scalar_y(sunny, "exposure") == pytest.approx(0.14)
+    assert scalar_y(sunny, "saturation") == pytest.approx(1.16)
+    assert scalar_y(sunny, "saturation") >= 1.0
     boost = apply_soft_color_preset(blank_color_grade("e"), "boost_color")
     assert scalar_y(boost, "saturation") == pytest.approx(1.18)
     assert len(boost["curve_all"]["nodes"]) == 4
+
+
+def test_saturation_below_half_is_rejected():
+    from classes.color_agent import validate_color_patch
+
+    with pytest.raises(ValueError, match="saturation neutral is 1.0"):
+        validate_color_patch({"saturation": 0.2})
+
+
+def test_list_looks_finds_sunny_query():
+    from classes.color_agent import list_looks_catalog
+
+    out = list_looks_catalog("sunny")
+    ids = {e["id"] for e in out["looks"]}
+    assert "sunny" in ids
+    assert any("sunlit" in i or i == "sunny" for i in ids)
 
 
 def test_temperature_delta_nudges_from_current():
@@ -328,7 +349,7 @@ def test_apply_look_writes_preset_under_one_transaction(monkeypatch):
         assert len(clip.saved) == 1
         grade = ca.find_color_grade(clip.data["effects"])
         assert grade is not None
-        assert scalar_y(grade, "temperature") == pytest.approx(0.10)
+        assert scalar_y(grade, "temperature") == pytest.approx(0.18)
         assert any(e.get("class_name") == "Blur" for e in clip.data["effects"])
     assert app.updates.transaction_id is None
 
