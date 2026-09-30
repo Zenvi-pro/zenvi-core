@@ -225,7 +225,7 @@ def version_newer_or_equal(version: str, minimum: str) -> bool:
     return parts(version) >= parts(minimum)
 
 
-def blender_version(command: str, timeout: float = 10.0) -> str:
+def blender_version(command: str, timeout: float = 90.0) -> str:
     """'4.5.1' from ``blender --factory-startup -v``; raises OSError/RuntimeError when it cannot run."""
     if not command:
         raise FileNotFoundError("no Blender command is configured")
