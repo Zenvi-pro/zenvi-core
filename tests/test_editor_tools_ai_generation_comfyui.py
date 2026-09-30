@@ -345,3 +345,19 @@ def test_the_payload_has_exactly_the_generate_dialog_keys(editor, comfy):
     dialog_keys = set(re.findall(r'^\s+"(\w+)":', block, re.M))
     from classes.editor_tools.ai_generation_comfyui import _empty_payload
     assert set(_empty_payload("n", "t", "p")) == dialog_keys
+
+
+def test_a_generation_placeholder_row_is_not_renamed_as_a_file(editor):
+    """Regression (found live): every progress update of a Create-with-AI placeholder row raised
+    AttributeError in FilesTreeView.value_updated (File.get(placeholder id) is None)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import windows.views.files_treeview as ft
+
+    cells = {5: "generation-job-123", 1: "generation (42%)", 2: ""}
+    model = MagicMock()
+    model.item.side_effect = lambda row, col: SimpleNamespace(text=lambda: cells[col])
+    view = SimpleNamespace(files_model=SimpleNamespace(ignore_updates=False, model=model), win=MagicMock())
+    ft.FilesTreeView.value_updated(view, SimpleNamespace(row=lambda: 0))
+    view.win.FileUpdated.emit.assert_not_called()
