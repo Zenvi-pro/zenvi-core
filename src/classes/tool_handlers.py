@@ -484,10 +484,30 @@ def _timeline_signature(app):
                 round(float(data.get("position", 0) or 0), 3),
                 round(float(data.get("start", 0) or 0), 3),
                 round(float(data.get("end", 0) or 0), 3),
+                _clip_content_digest(data),
             )
         return out
     except Exception as e:
         log.debug("_timeline_signature: %s", e)
+        return None
+
+
+# Clip keys that are caches or bookkeeping, not what the clip looks or sounds
+# like: a waveform refresh or an AI summary must not read as an edit.
+_SIGNATURE_SKIP_KEYS = frozenset({"id", "layer", "position", "start", "end", "reader", "ui", "ai_metadata"})
+
+
+def _clip_content_digest(data):
+    """Fingerprint of a clip's effects, keyframes and properties.
+
+    Without it an undone effect or property edit (a blur, a fade, a volume
+    curve) left the (layer, position, start, end) signature unchanged, and undo
+    reported "the timeline did not change" for a step it really reverted.
+    """
+    try:
+        rest = {k: v for k, v in data.items() if k not in _SIGNATURE_SKIP_KEYS}
+        return hash(json.dumps(rest, sort_keys=True, default=str))
+    except Exception:
         return None
 
 
@@ -500,8 +520,11 @@ def _describe_timeline_delta(before, after):
         return None
     removed = sorted(set(before) - set(after))
     added = sorted(set(after) - set(before))
-    moved = sorted(
-        cid for cid in set(before) & set(after) if before[cid] != after[cid]
+    common = set(before) & set(after)
+    moved = sorted(cid for cid in common if before[cid][:4] != after[cid][:4])
+    restyled = sorted(
+        cid for cid in common
+        if before[cid][:4] == after[cid][:4] and before[cid][4:] != after[cid][4:]
     )
     parts = []
     if removed:
@@ -510,6 +533,10 @@ def _describe_timeline_delta(before, after):
         parts.append(f"restored {len(added)} clip(s) ({', '.join(added[:4])})")
     if moved:
         parts.append(f"moved/retrimmed {len(moved)} clip(s) ({', '.join(moved[:4])})")
+    if restyled:
+        parts.append(
+            f"changed effects/properties of {len(restyled)} clip(s) ({', '.join(restyled[:4])})"
+        )
     return "; ".join(parts)
 
 
