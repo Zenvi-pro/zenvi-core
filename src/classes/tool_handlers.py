@@ -9062,7 +9062,7 @@ def inspect_color(
         def _read_subject():
             clip_obj = Clip.get(id=cid)
             if not clip_obj:
-                return None, None, None, f"Error: clip {cid} not found."
+                return None, None, None, None, f"Error: clip {cid} not found."
             data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
             effects = data.get("effects")
             grade = ca.summarize_color_grade(ca.find_color_grade(effects))
