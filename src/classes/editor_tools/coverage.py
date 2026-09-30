@@ -1,0 +1,164 @@
+"""Every user-facing editor capability, and the workstream that owns exposing it as an agent tool.
+
+Source: a full inventory of develop (menus, context menus, dialogs, docks, shortcuts,
+preferences). Each tool's registry entry lists the ids it ``covers``;
+tests/test_editor_tools_coverage.py fails while a workstream that has registered
+tools leaves one of its ids neither covered nor listed in OUT_OF_SCOPE with a
+reason.
+
+Tuple: (id, workstream, where a human finds it, what the capability is)
+"""
+
+CAPABILITIES = [
+    # ------------------------------------------------------------------ project-export
+    ("project.new", "project-export", "File > New Project", "Start a new empty project (without a blocking save prompt)"),
+    ("project.open", "project-export", "File > Open Project", "Open a .zvn/.osp project file, reporting failures instead of blocking on dialogs"),
+    ("project.save", "project-export", "File > Save Project", "Save to the current path; report failure as an error"),
+    ("project.save_as", "project-export", "File > Save Project As", "Save to a new path"),
+    ("project.recent", "project-export", "File > Recent Projects", "List and open recent projects; clear the list"),
+    ("project.recovery", "project-export", "File > Recovery", "List autosave recovery versions and restore one"),
+    ("project.info", "project-export", "Title bar / Choose Profile", "Read project path, profile (size, fps, aspect), audio settings, duration, dirty flag, counts"),
+    ("project.profile_set", "project-export", "File > Choose Profile", "Set the project video profile by name, size/fps, social preset (Instagram Reel, TikTok, Shorts, square, 4:5...) or from a file's profile; optionally reframe existing clips"),
+    ("project.profile_list", "project-export", "Choose Profile dialog", "Search the 425 built-in + user profiles by size, fps, aspect, orientation"),
+    ("project.profile_custom", "project-export", "Profile dialog > Duplicate/Edit/Delete", "Create, edit, duplicate and delete custom profiles; set the default profile"),
+    ("project.audio_settings", "project-export", "Preferences > Preview / project keys", "Set project sample rate and channels/layout"),
+    ("project.import_edl", "project-export", "File > Import Project > EDL", "Import an EDL file into tracks and clips"),
+    ("project.import_fcpxml", "project-export", "File > Import Project > XML", "Import a Final Cut Pro XML file"),
+    ("project.export_edl", "project-export", "File > Export Project > EDL", "Export the timeline as EDL"),
+    ("project.export_fcpxml", "project-export", "File > Export Project > XML", "Export the timeline as Final Cut Pro XML"),
+    ("project.collect_media", "project-export", "File > Collect Media into Project", "Copy external media into the project assets folder"),
+    ("project.reclaim_media", "project-export", "File > Reclaim Duplicate Media", "Delete asset copies whose original still exists"),
+    ("project.reset_history", "project-export", "Edit > Clear > History", "Clear undo history (explicit confirmation argument)"),
+    ("project.clear_waveforms", "project-export", "Edit > Clear > Waveform", "Drop cached waveform data"),
+    ("project.clear_cache", "project-export", "Ctrl+Shift+ESC / Playhead menu > Cache > Clear All", "Clear the playback frame cache"),
+    ("prefs.get", "project-export", "Edit > Preferences (all tabs)", "Read preferences by tab/key with their allowed values"),
+    ("prefs.set", "project-export", "Edit > Preferences", "Change a preference (validated against its type/choices); restore a tab's defaults"),
+    ("view.layout", "project-export", "View > Simple/Color/Recording/My Views, Docks, Toolbar, Fullscreen, Scopes", "Switch editor views, show/hide docks and scopes, save/apply custom views"),
+    ("export.video", "project-export", "File > Export Video (Simple + Advanced)", "Render with a target preset (YouTube, Instagram Reels, TikTok, Shorts, formats...), quality, profile/size/fps, range, file name/folder, without blocking dialogs"),
+    ("export.presets", "project-export", "Export dialog > Profile/Target/Quality", "List export targets by category with their formats, codecs, bitrates and allowed profiles"),
+    ("export.audio_only", "project-export", "Export To: Audio Only / MP3 target", "Export only the audio (mp3, wav/flac via format)"),
+    ("export.image_sequence", "project-export", "Export To: Image Sequence", "Export frames as a PNG/JPG image sequence"),
+    ("export.gif", "project-export", "Target: GIF (animated)", "Export an animated GIF"),
+    ("export.advanced", "project-export", "Export dialog > Advanced", "Video/audio codec, bitrate/crf, sample rate, channel layout, interlacing, pixel/aspect ratio"),
+    ("export.settings", "project-export", "get/set_export_setting_tool", "Read and change persisted export settings; reject unknown keys"),
+    ("export.frame", "project-export", "File > Save Current Frame", "Save the frame at a time as a full-resolution image"),
+    ("export.selected_files", "project-export", "Project Files > Export Selected Clips", "Export chosen project files (respecting their in/out) to a folder"),
+
+    # ------------------------------------------------------------------ timeline-edit
+    ("clip.add", "timeline-edit", "Drag file to timeline", "Place a project file on a track at a time (existing add_clip_to_timeline_tool)"),
+    ("clip.add_many", "timeline-edit", "Project Files > Add to Timeline dialog", "Place several files back to back with order/shuffle, start, track, image length, fade, zoom, transition and lengths; optional fit to a total duration"),
+    ("clip.delete", "timeline-edit", "Delete key / Remove Clip", "Delete clips or clear a track (existing delete_from_timeline_tool)"),
+    ("clip.ripple_delete", "timeline-edit", "Shift+Delete", "Delete clips and close the gap on their track"),
+    ("clip.move", "timeline-edit", "Drag clip (Shift keeps time)", "Move clips to a new time and/or track, with collision handling"),
+    ("clip.nudge", "timeline-edit", "Ctrl(+Shift)+Left/Right", "Nudge clips by frames"),
+    ("clip.trim", "timeline-edit", "Drag clip edges", "Change a clip's in/out (start/end) keeping or rippling neighbours; clamp to media"),
+    ("clip.slice", "timeline-edit", "Slice menu / Razor / Ctrl+K,J,L", "Cut clips at a time: keep both, left or right, optionally rippled; target one clip, the selection, or everything under the time"),
+    ("clip.copy_paste", "timeline-edit", "Copy/Cut/Paste, Ctrl+Shift+/ Duplicate", "Duplicate or copy/cut clips and transitions and paste at a time/track"),
+    ("clip.align", "timeline-edit", "Clip menu > Align Left/Right", "Align selected clips' starts or ends"),
+    ("clip.gaps", "timeline-edit", "Remove Gap / Track > Remove All Gaps", "Close one gap or all gaps on a track"),
+    ("clip.speed", "timeline-edit", "Clip menu > Speed (Reset, Reverse, Speed Up/Slow Down x2..x16, fwd/back) / Timing mode", "Change playback speed or direction, or retime to a target duration"),
+    ("clip.repeat", "timeline-edit", "Clip menu > Speed > Repeat (Loop, Ping-Pong, Custom)", "Loop or ping-pong a clip N times with delay and speed ramp"),
+    ("clip.freeze", "timeline-edit", "Clip menu > Speed > Freeze / Freeze & Zoom", "Freeze the frame at a time for N seconds (optionally with zoom)"),
+    ("clip.separate_audio", "timeline-edit", "Clip menu > Audio > Separate (single / per channel)", "Split a clip's audio onto its own clip(s) and mute the original"),
+    ("clip.waveform", "timeline-edit", "Clip menu > Audio > Show/Hide Waveform", "Show or hide a clip's waveform"),
+    ("clip.enable_av", "timeline-edit", "Properties > Enable Audio / Enable Video", "Turn a clip's audio or video on/off (mute, audio-only)"),
+
+    # ------------------------------------------------------------------ clip-props
+    ("clip.properties_get", "clip-props", "Properties dock", "Read every property of a clip at a time: value, range, choices, keyframes"),
+    ("clip.properties_set", "clip-props", "Properties dock (static values)", "Set any clip property: opacity, scale mode, gravity, size, position, rotation, shear, origin, blend mode, frame-number display, audio mixing, volume, wave color, corner radius, margin"),
+    ("clip.keyframes", "clip-props", "Properties dock keyframing / keyframe panel", "Animate any keyframable clip property with timed points and interpolation (bezier presets, linear, constant); insert/remove keyframes"),
+    ("clip.fade", "clip-props", "Clip menu > Fade", "Fade in/out/in+out (fast/slow) or remove fades, on picture and sound"),
+    ("clip.motion", "clip-props", "Clip menu > Motion (In/Out/Emphasis/Camera/Credits, No Motion)", "Apply any motion preset: slide, pop, spiral, bounce, back, wipe, blur wipe, emphasis moves, zoom/pan/Ken Burns, credits scroll"),
+    ("clip.transform", "clip-props", "Clip menu > Transform (Rotate, Crop, Layout, No Transform)", "Rotate/flip, crop with or without resize, picture-in-picture layouts, tile all, reset"),
+    ("clip.volume_presets", "clip-props", "Clip menu > Audio > Volume", "Reset volume, set levels 0-130%, volume fades"),
+    ("clip.copy_attributes", "clip-props", "Copy > Keyframes (All/Alpha/Scale/Shear/Rotation/Location/Time/Volume) + Paste", "Copy keyframes of one clip onto others"),
+    ("audio.levels", "clip-props", "set_clip_volume_tool / duck_under_speech_tool", "Mix levels and ducking (existing tools; keep one undo step)"),
+
+    # ------------------------------------------------------------------ effects-color
+    ("effect.catalog", "effects-color", "Effects dock", "List all effects (video/audio) with descriptions and their property schemas"),
+    ("effect.add", "effects-color", "Drag effect onto clip", "Add any effect to clips with initial properties"),
+    ("effect.update", "effects-color", "Properties dock (effect)", "Change an effect's properties, static or keyframed"),
+    ("effect.remove", "effects-color", "Effect badge > Remove Effect", "Remove an effect from a clip"),
+    ("effect.copy_paste", "effects-color", "Copy > Effects + Paste", "Copy all effects of one clip onto others (merge by class)"),
+    ("effect.process", "effects-color", "Process Effect dialog", "Run analysis effects: Stabilizer (smoothing), Tracker (region, tracker type), Object Detector (model, device, classes), Object Mask (points/boxes, models)"),
+    ("look.presets", "effects-color", "Clip menu > Look (Color, Film Grain, Analog Tape, Sharpen, Blur, Shadow, Glow, Reset Look)", "Apply or remove any look preset"),
+    ("color.grade", "effects-color", "Color Grade effect + Color Wheels + Curves", "Grade a clip: exposure, contrast, highlights, shadows, saturation, vibrance, temperature, tint, mix, wheels, curves"),
+    ("color.lut", "effects-color", "lut_path choices (49 built-in LUTs + user folder)", "List and apply LUTs with intensity"),
+    ("color.analyze", "effects-color", "Scopes (Histogram, Waveform, Vectorscope, Audio Levels)", "Measure a frame/region: luma distribution, clipping, color cast, saturation; audio levels"),
+    ("color.chroma_key", "effects-color", "Chroma Key effect", "Key out a green/blue screen with color, fuzz, halo and method, keyed clip above its background"),
+    ("audio.effects", "effects-color", "Audio effects (Compressor, Expander, EQ, Delay, Echo, Distortion, Noise, Robotization, Whisperization)", "Apply and tune audio effects"),
+
+    # ------------------------------------------------------------------ titles-text
+    ("title.templates", "titles-text", "Title > Title (template list)", "List the 50 title templates + user titles with their editable text fields"),
+    ("title.create", "titles-text", "Title Editor > Save", "Create a title from a template with texts, font, colors, alpha, and place it on the timeline"),
+    ("title.edit", "titles-text", "Project Files > Edit Title / Duplicate", "Change an existing title's text/font/colors (updating its clips) or duplicate it"),
+    ("title.animated", "titles-text", "Title > Animated Title (Blender, 19 templates)", "List Blender templates with parameters and render one into an image sequence clip"),
+    ("caption.add", "titles-text", "Caption effect / Captions dock", "Add captions from the transcript, an SRT/VTT file or given cues, with style (font, size, colors, stroke, background, position, fades)"),
+    ("caption.edit", "titles-text", "Captions dock (edit text, Insert Caption)", "Edit caption cues of a Caption effect"),
+    ("text.timer", "titles-text", "Timer effect", "Add a styled count-up/down/clock/timecode overlay"),
+    ("emoji.add", "titles-text", "Emojis dock", "Search the 1,239 emoji by name/group and place one on the timeline"),
+
+    # ------------------------------------------------------------------ tracks-nav
+    ("track.add", "tracks-nav", "Add Track / Track menu > Add Track Above/Below", "Add a named track at the top, above or below a track (works with no selection)"),
+    ("track.rename", "tracks-nav", "Track menu > Rename Track", "Rename a track"),
+    ("track.lock", "tracks-nav", "Track menu > Lock/Unlock Track", "Lock or unlock a track"),
+    ("track.remove", "tracks-nav", "Track menu > Remove Track", "Remove a track lane with its clips and transitions"),
+    ("marker.add", "tracks-nav", "Add Marker (M)", "Add a marker at a time with a name/color"),
+    ("marker.remove", "tracks-nav", "Marker menu > Remove Marker", "Remove a marker"),
+    ("marker.navigate", "tracks-nav", "Previous/Next Marker", "Jump to the previous/next marker or clip boundary"),
+    ("playback.transport", "tracks-nav", "Play/Pause, J/K/L, Home/End, frame step", "Play, pause, stop, rewind/fast-forward speed, step frames"),
+    ("playback.seek", "tracks-nav", "Click ruler / timecode entry", "Move the playhead to a time or frame"),
+    ("timeline.zoom", "tracks-nav", "Zoom slider, = / -, Zoom to Timeline, Center on Playhead", "Zoom in/out/to fit/to a visible range; center on playhead"),
+    ("timeline.modes", "tracks-nav", "Snapping / Razor / Timing toggles", "Toggle snapping, razor and timing modes"),
+    ("selection.select", "tracks-nav", "Click/Shift/Ctrl/Alt select, Ctrl+A, Ctrl+Shift+A", "Select clips, transitions and effects by id/query/track/time range; select all/none/ripple select; read the selection"),
+
+    # ------------------------------------------------------------------ media-files
+    ("files.import", "media-files", "File > Import Files / drop", "Import files and folders (existing import_files_tool)"),
+    ("files.import_sequence", "media-files", "Import prompt: image sequence", "Import a numbered image folder as one image-sequence clip with a frame rate"),
+    ("files.list_filter", "media-files", "Project Files search/filter", "List/filter project files by type, name, tags"),
+    ("files.properties", "media-files", "File Properties dialog", "Rename, tag, relink the path, set in/out frames, set image-sequence fps; read full media info"),
+    ("files.remove", "media-files", "Project Files > Remove from Project", "Remove files from the project (and their clips) without deleting from disk"),
+    ("files.subclip", "media-files", "Project Files > Split Clip", "Create named sub-clips of a file (existing split_file_add_clip_tool; several in one call)"),
+    ("files.proxy", "media-files", "Preview > Optimize (Optimize, Link, Unlink, Delete & Unlink, Cancel) / Edit > Clear > Optimized Videos", "Create and manage optimized preview proxies"),
+    ("transition.list", "media-files", "Transitions dock", "List/search transitions (existing tools)"),
+    ("transition.apply", "media-files", "Drag transition onto clips", "Apply a transition between/at clips (existing apply_transition_tool)"),
+    ("transition.update", "media-files", "Transition Properties", "Change a transition's duration, position, mask, brightness/contrast curves, replace-image"),
+    ("transition.reverse", "media-files", "Transition menu > Reverse Transition", "Reverse a transition's direction"),
+    ("transition.remove", "media-files", "Transition menu > Remove Transition", "Remove a transition"),
+    ("transition.copy_paste", "media-files", "Transition Copy/Paste", "Copy a transition or its keyframes onto other transitions"),
+    ("transition.auto", "media-files", "Preferences > Auto-Transition / Add to Timeline transition", "Add transitions between every adjacent pair of clips on a track"),
+
+    # ------------------------------------------------------------------ ai-generation
+    ("ai.comfyui_create", "ai-generation", "AI Tools > Create with AI (Image, Video, Sound, Music)", "Generate new media with local ComfyUI templates"),
+    ("ai.comfyui_enhance", "ai-generation", "AI Tools > Enhance with AI", "Upscale, restyle, image-to-video, track object blur/highlight/mask, depth/lines, split scenes, captions from speech, speech clarity, noise reduction"),
+    ("ai.jobs", "ai-generation", "Cancel Job / generation queue", "List and cancel generation jobs"),
+    ("ai.tts", "ai-generation", "generate_tts_and_add_to_timeline_tool", "Narration from text placed on a real track with its real duration (off the GUI thread)"),
+    ("ai.video_generation", "ai-generation", "generate_video/modify_clip/generate_transition_clip tools", "AI video generation/edit/morph that replaces (not stacks on) the originals and reports failures as errors"),
+    ("ai.search", "ai-generation", "search_clips/search_clip_scenes/slice_clip_at_best_match", "Semantic search tools without crashes; failures reported as errors"),
+    ("ai.stock_media", "ai-generation", "Stock search in Project Files", "Pexels/Freesound import (existing tools) with errors reported as errors"),
+    ("recording.prepare", "ai-generation", "View > Recording View / Clip > Audio > Record", "Open and configure the Recording dock (sources mic/screen/webcam, devices, track, start time); starting capture stays a human action"),
+]
+
+OUT_OF_SCOPE = {
+    "account.session": "Sign in/out, login windows and the update pill manage the user's account and app updates, not the project; an assistant must not sign the user out.",
+    "help.menu": "Help menu items (docs, tutorial, bug report, donate, about) open external links; nothing to edit.",
+    "chat.self": "The Agents/Plan docks are the assistant's own interface; the assistant does not drive itself.",
+    "preview.viewer_zoom": "Video preview zoom/pan and the preview FPS overlay change only the viewer, not the project; render frames with inspect tools instead.",
+    "preview.transform_handles": "On-canvas transform/crop handles are a mouse gesture over clip.properties_set/keyframes, which the tools expose directly.",
+    "files.preview_window": "Preview File opens an interactive player window; inspect_media_tool renders frames of a file for the assistant.",
+    "track.keyframe_panel": "The native timeline's per-track keyframe lane is a visual editor over clip.keyframes.",
+    "recording.capture_start": "Starting a microphone/screen/webcam capture records the user's surroundings; the assistant prepares the dock, the human presses Record.",
+}
+
+# Capabilities already served by tools that predate this effort (tool names as registered).
+LEGACY_COVERAGE = {
+    "clip.add": ["add_clip_to_timeline_tool"],
+    "clip.delete": ["delete_from_timeline_tool"],
+    "files.import": ["import_files_tool"],
+    "files.subclip": ["split_file_add_clip_tool"],
+    "transition.list": ["list_transitions_tool", "search_transitions_tool"],
+    "transition.apply": ["apply_transition_tool"],
+    "audio.levels": ["set_clip_volume_tool", "duck_under_speech_tool", "analyze_timeline_audio_tool"],
+    "ai.search": ["search_clips_tool", "search_clip_scenes_tool", "slice_clip_at_best_match_tool"],
+    "ai.stock_media": ["import_stock_media_tool"],
+}

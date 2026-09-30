@@ -22,6 +22,8 @@ import sys
 import types
 from unittest.mock import MagicMock
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -227,3 +229,18 @@ if _STUBBED:
                 collect_ignore.append(_path.name)
         except OSError:
             continue
+
+
+@pytest.fixture
+def editor():
+    """A headless editor (real project store + undo machinery) for editor-tool tests.
+
+    See tests/editor_tools_harness.py.
+    """
+    from editor_tools_harness import make_editor
+
+    harness = make_editor()
+    try:
+        yield harness
+    finally:
+        harness.stop()

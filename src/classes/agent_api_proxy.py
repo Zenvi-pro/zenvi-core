@@ -348,6 +348,74 @@ def send_assistant_prompt_tool(message: str = "", session_id: str = "",
         final["session_id"], final["text"] or "(the assistant returned no text)")
 
 
+_SCREENSHOT_TARGETS = {
+    "window": None,
+    "timeline": "dockTimeline",
+    "preview": "dockVideo",
+    "properties": "dockProperties",
+    "files": "dockFiles",
+    "effects": "dockEffects",
+    "transitions": "dockTransitions",
+    "captions": "dockCaptionEditor",
+    "chat": "dockAIChat",
+    "recording": "dockAudioRecording",
+    "histogram": "dockHistogram",
+    "waveform": "dockLumaWaveform",
+    "vectorscope": "dockVectorscope",
+}
+
+
+def capture_editor_screenshot_tool(path: str = "", target: str = "window",
+                                   max_width: int = 1600) -> str:
+    """Save a PNG of the editor as it looks right now: the whole window or one panel.
+
+    target: window (default), timeline, preview, properties, files, effects,
+    transitions, captions, chat, recording, histogram, waveform, vectorscope.
+    Use it to review an edit the way a person would -- does the timeline show
+    the new clip, did the preview change, what do the properties say. Works
+    offscreen too (Qt renders the widgets itself; no screen-recording
+    permission involved). Returns the saved path and pixel size.
+    """
+    import time
+
+    from classes import info
+    from classes.tool_handlers import _get_app, _run_on_main_thread
+
+    key = (target or "window").strip().lower()
+    if key not in _SCREENSHOT_TARGETS:
+        return "Error: target must be one of %s." % ", ".join(sorted(_SCREENSHOT_TARGETS))
+    out = (path or "").strip() or os.path.join(
+        info.USER_PATH, "screenshots", "editor-%s-%d.png" % (key, int(time.time() * 1000)))
+    out = os.path.abspath(os.path.expanduser(out))
+    try:
+        width_cap = max(0, int(max_width))
+    except (TypeError, ValueError):
+        width_cap = 1600
+
+    def _grab():
+        win = _get_app().window
+        attr = _SCREENSHOT_TARGETS[key]
+        widget = win if attr is None else getattr(win, attr, None)
+        if widget is None:
+            return "Error: the %s panel does not exist in this editor." % key
+        if not widget.isVisible():
+            return ("Error: the %s panel is hidden. Show it first (View > Docks), or "
+                    "grab the window." % key)
+        pixmap = widget.grab()
+        if width_cap and pixmap.width() > width_cap:
+            from qt_api import Qt
+            pixmap = pixmap.scaledToWidth(width_cap, Qt.SmoothTransformation)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if not pixmap.save(out, "PNG"):
+            return "Error: could not write %s." % out
+        return "Saved %s screenshot: %s (%dx%d)" % (key, out, pixmap.width(), pixmap.height())
+
+    try:
+        return _run_on_main_thread(_grab, timeout=20)
+    except Exception as exc:
+        return "Error: screenshot failed: %s" % exc
+
+
 # Tools the in-app MCP server exposes on top of the editor tools. These are for
 # external agent CLIs only — the built-in assistant runs inside the backend
 # this proxies to, so it has no use for them (and must not be able to prompt
@@ -358,4 +426,5 @@ MCP_EXTRA_TOOLS = {
     "send_assistant_prompt_tool": send_assistant_prompt_tool,
     "mcp_health_tool": mcp_health_tool,
     "get_log_paths_tool": get_log_paths_tool,
+    "capture_editor_screenshot_tool": capture_editor_screenshot_tool,
 }

@@ -8527,6 +8527,15 @@ AGENT_TOOL_HANDLERS = {
     "get_timeline_state_tool": get_timeline_state,
 }
 
+# Editor tools declared with @editor_tool in classes/editor_tools/ (one module
+# per workstream). Merged here so dispatch, chat labels, the undo grouping and
+# the MCP listing treat them exactly like the handlers above.
+from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
+
+_editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
+assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
+AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS.items()})
+
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
@@ -8590,6 +8599,7 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
+TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
     "TOOL_DISPLAY_LABELS keys must match AGENT_TOOL_HANDLERS"
@@ -8658,7 +8668,7 @@ READ_ONLY_TOOLS = frozenset({
     "get_timeline_placements_metadata_tool",
     "propose_overlay_windows_tool",
     "analyze_timeline_audio_tool",
-})
+}) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.read_only)
 
 # Tools that perform long-running network/IO work and only briefly touch Qt
 # state.  They marshal those brief reads onto the main thread internally, so
@@ -8695,7 +8705,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # HyperFrames download + alpha re-encode can take a while.
     "fetch_motion_graphics_video_tool",
     "fetch_remotion_video_from_supabase_tool",
-})
+}) | frozenset(name for name, spec in _EDITOR_TOOL_SPECS.items() if spec.background_safe)
 
 # Tools whose main-thread work can legitimately run far longer than
 # _run_on_main_thread's default 30s wait -- e.g. export_video_tool's encode
