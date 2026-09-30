@@ -45,12 +45,20 @@ CAPTION_STYLES = {
                 "font": "", "padding": 0.3, "corner": 0.15, "fade": 0.1},
     "yellow": {"text_size": 0.055, "text_color": "#ffe14d", "stroke_color": "#000000", "stroke_width": 0.07,
                "background_color": "#000000", "background_opacity": 0.0, "position": "bottom",
-               "font": "", "padding": 0.3, "corner": 0.15, "fade": 0.0},
+               "font": "Arial Black", "padding": 0.3, "corner": 0.15, "fade": 0.0},
     "boxed": {"text_size": 0.05, "text_color": "#ffffff", "stroke_color": "#000000", "stroke_width": 0.0,
               "background_color": "#000000", "background_opacity": 0.85, "position": "bottom",
               "font": "", "padding": 0.45, "corner": 0.05, "fade": 0.0},
 }
 POSITIONS = ("bottom", "center", "top")
+# libopenshot fills then strokes each glyph, so an outline eats half its width into the letters:
+# thick outlines only read on heavy fonts. Without one, preset outlines are thinned to this.
+HEAVY_FONT_HINTS = ("black", "heavy", "impact", "extrabold", "ultra")
+THIN_OUTLINE = 0.035
+
+
+def is_heavy_font(font: str) -> bool:
+    return any(h in str(font or "").lower() for h in HEAVY_FONT_HINTS)
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +86,8 @@ class CaptionStyle:
             values["text_color"], values["text_alpha"] = color_hex_alpha(text_color, "text_color")
         if str(stroke_color or "").strip():
             values["stroke_color"] = color_hex_alpha(stroke_color, "stroke_color")[0]
-        if float(stroke_width) >= 0:
+        self.explicit_stroke = float(stroke_width) >= 0
+        if self.explicit_stroke:
             values["stroke_width"] = float(stroke_width)
         if str(background_color or "").strip():
             values["background_color"], bg_alpha = color_hex_alpha(background_color, "background_color")
@@ -103,10 +112,13 @@ class CaptionStyle:
             try:
                 self.values["font"] = resolve_font(self.values["font"], families)
             except ToolError:
-                if self.values["font"] == CAPTION_STYLES["reels"]["font"]:
-                    self.values["font"] = ""   # the reels font is a nicety, not a requirement
+                if self.values["font"] in {v["font"] for v in CAPTION_STYLES.values()}:
+                    self.values["font"] = ""   # a preset's font is a nicety, not a requirement
                 else:
                     raise
+        if (not self.explicit_stroke and not is_heavy_font(self.values.get("font"))
+                and float(self.values.get("stroke_width") or 0.0) > THIN_OUTLINE):
+            self.values["stroke_width"] = THIN_OUTLINE   # keep the letters' fill visible
 
     def properties(self, lines: int = 2) -> dict:
         v = self.values
@@ -369,8 +381,9 @@ _STYLE_ARGS = {
                         "subtitles, 0.075 big reel captions. 0 = the style's size.", 0.0, minimum=0, maximum=0.3),
     "text_color": string("Text colour '#RRGGBB' / '#RRGGBBAA' / 'rgba(...)' / name. Empty = the style's.", ""),
     "stroke_color": string("Outline colour. Empty = the style's.", ""),
-    "stroke_width": number("Outline thickness relative to the text height: 0 = none, 0.05 thin, 0.1 heavy. "
-                           "-1 = the style's.", -1.0, minimum=-1, maximum=0.5),
+    "stroke_width": number("Outline thickness relative to the text height: 0 = none, 0.03 thin, 0.09 heavy "
+                           "(heavy outlines only read with heavy fonts such as Arial Black). -1 = the style's.",
+                           -1.0, minimum=-1, maximum=0.5),
     "background_color": string("Colour of the box behind the text (alpha in '#RRGGBBAA' sets its opacity). "
                                "Empty = the style's.", ""),
     "background_opacity": number("Opacity of the box behind the text, 0 (no box) to 1. -1 = the style's.",

@@ -346,3 +346,20 @@ def test_remove_overlay_captions_reports_the_leftover_clip(tt):
     out = tt.call("remove_captions_tool", effect_id=rec["captioned"][0]["effect_id"])
     assert "delete_from_timeline_tool" in out and tt.clip(overlay) is not None
     assert receipt(out)["empty_overlay_clip_ids"] == [overlay]
+
+
+def test_outlines_only_stay_heavy_on_heavy_fonts(tt, monkeypatch):
+    # found live: the yellow preset's 0.07-em black outline on a regular font hid the yellow fill
+    from classes.editor_tools import titles_text_captions as caps
+    clip = _speaker(tt)
+    monkeypatch.setattr(caps, "installed_font_families", lambda: ["Arial", "Arial Black"])
+    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow",
+                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
+    assert rec["look"]["font"] == "Arial Black" and rec["look"]["stroke_width"] == 0.07
+    monkeypatch.setattr(caps, "installed_font_families", lambda: ["Arial"])      # no heavy font here
+    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow",
+                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
+    assert rec["look"]["font"] == "sans" and rec["look"]["stroke_width"] == caps.THIN_OUTLINE
+    rec = receipt(tt.call("add_captions_tool", timeline_clip_id=clip, style="yellow", stroke_width=0.1,
+                          cues=[{"start": 1, "end": 2, "text": "yellow words"}]))
+    assert rec["look"]["stroke_width"] == 0.1                                     # an explicit request wins
