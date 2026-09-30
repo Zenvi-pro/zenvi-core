@@ -6396,7 +6396,7 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
     try:
         if not link:
             return "Error: link is required (use the MP4 URL from search_pexels_videos_tool)."
-        from classes.credits_client import check_operation
+        from classes.credits_client import charge_operation_on_success, check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
         if blocked:
@@ -6409,6 +6409,9 @@ def download_pexels_video_tool(video_id: str = "", link: str = "", filename: str
         path = result.get("local_path", "")
         if err or not path:
             return f"Pexels download error: {err or 'no file path'}"
+        charge_operation_on_success(
+            True, "stock_add", "stock_add", provider="pexels", note=f"video {vid}"
+        )
         return f"Downloaded to: {path}"
     except Exception as exc:
         return f"Error downloading Pexels video: {exc}"
@@ -6424,7 +6427,7 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         except (ValueError, TypeError):
             return f"Error: sound_id must be numeric Freesound ID, not '{sound_id}'."
 
-        from classes.credits_client import check_operation
+        from classes.credits_client import charge_operation_on_success, check_operation
 
         _, _, blocked = check_operation("stock_add", "stock media download")
         if blocked:
@@ -6436,6 +6439,9 @@ def download_freesound_music_tool(sound_id: str = "", preview_url: str = "", fil
         path = result.get("local_path", "")
         if err or not path:
             return f"Freesound download error: {err or 'no file path'}"
+        charge_operation_on_success(
+            True, "stock_add", "stock_add", provider="freesound", note=f"sound {sid}"
+        )
         return f"Downloaded to: {path}"
     except Exception as exc:
         return f"Error downloading Freesound audio: {exc}"
@@ -6734,7 +6740,7 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             )
 
         from classes.api_client import get_backend_client
-        from classes.credits_client import check_operation
+        from classes.credits_client import charge_operation_on_success, check_operation
 
         client = get_backend_client()
         if not client.is_indexing_configured():
@@ -6761,6 +6767,14 @@ def reindex_project_file(file_id: str = "", force: str = "false", **kwargs) -> s
             force=force_reindex,
         )
         if isinstance(result, dict) and result.get("success"):
+            charge_operation_on_success(
+                True,
+                "indexing_per_minute",
+                provider="gemini",
+                note=f"reindex {file_id}",
+                duration_seconds=duration,
+            )
+
             def _persist_index_metadata():
                 from classes.query import File
                 f = File.get(id=file_id)

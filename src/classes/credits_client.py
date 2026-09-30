@@ -4,8 +4,14 @@ Zenvi billing client — thin Supabase RPC wrapper.
 Pricing and point amounts live in Supabase (operation_pricing, llm_model_tiers).
 Clients pass operation keys only, never raw point values.
 
-Backend already meters video/morph/indexing/stock (and related AI routes).
-Desktop must not double-charge those keys; check_operation remains for preflight UX.
+The backend bills AI video and morph generation itself (/generation/video and
+/generation/morph deduct after success), so the desktop must not charge those
+keys a second time; check_operation remains for preflight UX.
+
+Indexing and stock downloads never pass through a billed backend route: the
+/indexing routes are unauthenticated and their Gemini calls are not metered,
+and Pexels / Freesound files download straight from the CDN. The desktop's
+charge is the only one for those, so they are not in BACKEND_METERED_OPS.
 """
 
 import logging
@@ -15,11 +21,10 @@ from typing import Any, Dict, Optional, Tuple
 log = logging.getLogger(__name__)
 
 # Ops the backend already bills. Desktop charge_operation is a no-op for these.
+# Add a key here only in the same release that makes a backend route charge it.
 BACKEND_METERED_OPS = frozenset({
     "video_generation",
     "morph_generation",
-    "indexing_per_minute",
-    "stock_add",
 })
 
 
@@ -81,6 +86,17 @@ class CreditsClient:
                 operation,
             )
             return
+        if isinstance(result, str):
+            # The live RPC returns a bare status: 'ok', or 'tier_limit' /
+            # 'insufficient' / 'standard_mode' when nothing was deducted.
+            status = result.strip().lower()
+            if status != "ok":
+                log.warning(
+                    "credits_client: charge_operation %s returned %s",
+                    operation,
+                    status or "an empty status",
+                )
+            return
         row = self._row(result)
         status = str(
             row.get("status")
@@ -95,7 +111,10 @@ class CreditsClient:
             or row.get("charged") is False
             or row.get("allowed") is False
         )
-        if any(token in status for token in ("tier_limit", "insufficient", "denied", "failed")):
+        if any(
+            token in status
+            for token in ("tier_limit", "insufficient", "standard_mode", "denied", "failed")
+        ):
             log.warning(
                 "credits_client: charge_operation %s returned %s: %s",
                 operation,
@@ -185,36 +204,6 @@ class CreditsClient:
         if duration_seconds is not None:
             payload["p_duration_seconds"] = float(duration_seconds)
         self._fire("charge_operation", payload)
-
-    def charge_operation_sync(
-        self,
-        operation: str,
-        units: int = 1,
-        duration_seconds: Optional[float] = None,
-        provider: Optional[str] = None,
-        session_id: Optional[str] = None,
-        note: Optional[str] = None,
-        idempotency_key: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Synchronous charge; returns RPC row (or None). Skips backend-metered ops."""
-        if operation in BACKEND_METERED_OPS:
-            log.debug("skipped desktop charge — backend meters %s", operation)
-            return None
-        payload: Dict[str, Any] = {
-            "p_operation": operation,
-            "p_units": units,
-            "p_provider": provider,
-            "p_session_id": session_id,
-            "p_note": note,
-            "p_idempotency_key": idempotency_key,
-        }
-        if duration_seconds is not None:
-            payload["p_duration_seconds"] = float(duration_seconds)
-        result = self._rpc("charge_operation", payload)
-        self._log_charge_result(operation, result)
-        if result is None:
-            return None
-        return self._row(result)
 
     def refund(
         self,
