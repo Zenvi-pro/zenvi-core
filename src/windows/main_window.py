@@ -3058,34 +3058,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionRemove_from_Project_trigger(self):
         log.debug("actionRemove_from_Project_trigger")
 
+        from classes.project_files import remove_files_from_project
+
         # Transaction id to group all deletes together
         get_app().updates.transaction_id = str(uuid.uuid4())
-
-        # Loop through selected files
-        for f in self.selected_files():
-            if not f:
-                continue
-
-            # Cancel queued/running generation jobs tied to this file
-            if getattr(self, "generation_queue", None):
-                self.generation_queue.cancel_jobs_for_file(f.data.get("id"))
-
-            # Find matching clips (if any)
-            clips = Clip.filter(file_id=f.data.get("id"))
-            for c in clips:
-                # Clear selected clips (and update properties and transform handles - to prevent crashes)
-                self.removeSelection(c.id, "clip")
-                self.emit_selection_signal()
-                self.show_property_timeout()
-
-                # Remove clip
-                c.delete()
-
-            # Remove file (after clips are deleted)
-            f.delete()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        try:
+            # Cancel the files' jobs, delete their clips, then the files
+            remove_files_from_project(self.selected_files())
+        finally:
+            # Clear transaction id
+            get_app().updates.transaction_id = None
 
         # Refresh preview
         get_app().window.refreshFrameSignal.emit()

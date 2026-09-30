@@ -43,7 +43,7 @@ from qt_api import modifiers_has
 from qt_api import QCursor, QKeySequence
 from qt_api import QDialog
 
-from classes import info, updates
+from classes import info, transition_ops, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
 from classes.color_presets import (
@@ -175,7 +175,7 @@ from .timeline_backend.enums import (
 from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
-from classes.clip_utils import clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip
+from classes.clip_utils import clamp_timing_to_media, apply_file_caption_to_clip
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
@@ -1001,30 +1001,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             log.warning("Unable to load default transition image: %s", transition_path)
             return
 
-        # Generate transition object
-        transition_object = openshot.Mask()
-
-        # Set brightness and contrast, to correctly transition for overlapping clips
-        brightness = transition_object.brightness
-        brightness.AddPoint(1, 1.0, openshot.BEZIER)
-        brightness.AddPoint(round(transition_details["end"] * fps_float) + 1, -1.0, openshot.BEZIER)
-        contrast = openshot.Keyframe(3.0)
-
-        # Create transition dictionary
-        transitions_data = {
-            "id": get_app().project.generate_id(),
-            "layer": transition_details["layer"],
-            "title": "Transition",
-            "type": "Mask",
-            "position": transition_details["position"],
-            "start": transition_details["start"],
-            "end": transition_details["end"],
-            "brightness": json.loads(brightness.Json()),
-            "contrast": json.loads(contrast.Json()),
-            "reader": reader_data,
-            "fade_audio_hint": True,
-            "replace_image": False
-        }
+        # Crossfade (and equal-power audio crossfade) over the overlap
+        transitions_data = transition_ops.new_mask_transition(
+            get_app().project.generate_id(), reader_data,
+            position=transition_details["position"], layer=transition_details["layer"],
+            duration=transition_details["end"] - transition_details["start"], fps_float=fps_float,
+            fade_audio=True)
+        transitions_data["start"] = transition_details["start"]
+        transitions_data["end"] = transition_details["end"]
 
         # Send to update manager
         self.update_transition_data(transitions_data, only_basic_props=False)
@@ -1102,249 +1086,58 @@ class TimelineView(updates.UpdateInterface, ViewClass):
 
         return transition_size
 
+    def _project_fps_float(self):
+        fps = get_app().project.get("fps")
+        return float(fps["num"]) / float(fps["den"])
+
+    # Transition rules live in classes.transition_ops (shared with the agent tools).
     def _scale_keyframes(self, keyframe, factor):
         """Scale the X values of keyframe points"""
-        for point in keyframe.get("Points", []):
-            if "co" in point and "X" in point["co"] and point["co"]["X"] != 1:
-                point["co"]["X"] = round((point["co"]["X"] - 1) * factor) + 1
+        transition_ops.scale_keyframes(keyframe, factor)
 
     def _anchor_transition_endpoint_keyframes(self, transition_data, total_frames):
         """Keep static transition endpoint keyframes anchored to the clip edges."""
-        if total_frames <= 0 or not isinstance(transition_data, dict):
-            return
-        last_frame = int(total_frames) + 1
-        for prop in ("brightness", "contrast"):
-            keyframe = transition_data.get(prop)
-            points = keyframe.get("Points") if isinstance(keyframe, dict) else None
-            if not isinstance(points, list) or len(points) < 2:
-                continue
-            first = points[0].get("co") if isinstance(points[0], dict) else None
-            last = points[-1].get("co") if isinstance(points[-1], dict) else None
-            if isinstance(first, dict):
-                first["X"] = 1
-            if isinstance(last, dict):
-                last["X"] = last_frame
+        transition_ops.anchor_endpoint_keyframes(transition_data, total_frames)
 
     def _transition_mask_reader(self, transition_data, fallback_data=None):
         """Return reader metadata for a transition payload."""
-        if isinstance(transition_data, dict):
-            for key in ("mask_reader", "reader"):
-                reader = transition_data.get(key)
-                if isinstance(reader, dict):
-                    return reader
-        if isinstance(fallback_data, dict):
-            for key in ("mask_reader", "reader"):
-                reader = fallback_data.get(key)
-                if isinstance(reader, dict):
-                    return reader
-        return {}
+        return transition_ops.mask_reader(transition_data, fallback_data)
 
     def _transition_uses_static_mask(self, transition_data, fallback_data=None):
         """Return True when a transition uses a static single-image mask."""
-        reader = self._transition_mask_reader(transition_data, fallback_data)
-        if "has_single_image" in reader:
-            return bool(reader.get("has_single_image"))
-        return bool(is_single_image_media(reader))
+        return transition_ops.uses_static_mask(transition_data, fallback_data)
 
     def _transition_reader_changed(self, transition_data, fallback_data=None):
         """Return True when the transition reader source changed."""
-        new_reader = self._transition_mask_reader(transition_data, fallback_data)
-        old_reader = self._transition_mask_reader(fallback_data, None)
-
-        if not isinstance(fallback_data, dict):
-            return False
-        if not new_reader and not old_reader:
-            return False
-
-        for key in ("id", "path", "type", "has_single_image", "video_length", "duration"):
-            if new_reader.get(key) != old_reader.get(key):
-                return True
-        return new_reader != old_reader
+        return transition_ops.reader_changed(transition_data, fallback_data)
 
     def _build_transition_default_keyframes(self, duration, start_value, end_value, contrast_value):
         """Build default brightness/contrast keyframes for a transition."""
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        duration = max(0.0, float(duration or 0.0))
-
-        brightness = openshot.Keyframe()
-        brightness.AddPoint(1, float(start_value), openshot.BEZIER)
-        if float(start_value) != float(end_value):
-            brightness.AddPoint(round(duration * fps_float) + 1, float(end_value), openshot.BEZIER)
-        contrast = openshot.Keyframe(float(contrast_value))
-        return json.loads(brightness.Json()), json.loads(contrast.Json())
+        return transition_ops.default_keyframes(
+            duration, start_value, end_value, contrast_value, self._project_fps_float())
 
     def _set_transition_mask_defaults(self, transition_data, fallback_data=None):
         """Normalize timing/keyframes for static vs animated transition masks."""
-        if not isinstance(transition_data, dict):
-            return transition_data
+        return transition_ops.set_mask_defaults(transition_data, self._project_fps_float(), fallback_data)
 
-        start = float(transition_data.get("start", 0.0) or 0.0)
-        end = float(transition_data.get("end", start) or start)
-        if end < start:
-            end = start
-        duration = max(0.0, end - start)
-
-        if self._transition_uses_static_mask(transition_data, fallback_data):
-            transition_data["start"] = 0.0
-            transition_data["end"] = duration
-            brightness, contrast = self._build_transition_default_keyframes(duration, 1.0, -1.0, 3.0)
-            mode = "static"
-        else:
-            transition_data["start"] = start
-            transition_data["end"] = end
-            brightness, contrast = self._build_transition_default_keyframes(duration, 0.0, 0.0, 0.0)
-            mode = "animated"
-
-        transition_data["duration"] = max(
-            0.0,
-            float(transition_data.get("end", 0.0) or 0.0) - float(transition_data.get("start", 0.0) or 0.0),
-        )
-        transition_data["brightness"] = brightness
-        transition_data["contrast"] = contrast
-        return transition_data
-
-    def _reverse_keyframes(self, keyframe, total_frames):
+    def _reverse_keyframes(self, keyframe, total_frames=None):
         """Reverse keyframe positions, swapping handles"""
-        points = keyframe.get("Points", [])
-        x_values = [
-            point["co"]["X"]
-            for point in points
-            if isinstance(point.get("co"), dict) and "X" in point["co"]
-        ]
+        transition_ops.reverse_keyframes(keyframe)
 
-        if not x_values:
-            return
-
-        min_x = min(x_values)
-        max_x = max(x_values)
-
-        # Keyframe X positions are 1-indexed.  Use the actual min/max X values to
-        # determine the reflection pivot so we don't lose leading keyframes when
-        # total_frames is smaller than the keyframe range (for example, when the
-        # last point is stored at duration + 1).
-        pivot = min_x + max_x
-
-        new_points = []
-        for point in points:
-            new_point = json.loads(json.dumps(point))
-            if isinstance(new_point.get("co"), dict) and "X" in new_point["co"]:
-                new_point["co"]["X"] = pivot - point["co"]["X"]
-                hl = new_point.pop("handle_left", None)
-                hr = new_point.pop("handle_right", None)
-                if hr is not None:
-                    new_point["handle_left"] = hr
-                if hl is not None:
-                    new_point["handle_right"] = hl
-            new_points.append(new_point)
-
-        keyframe["Points"] = sorted(
-            new_points,
-            key=lambda p: p.get("co", {}).get("X", 0)
-        )
+    def _layer_clip_data(self, transition_data):
+        try:
+            layer = int(transition_data.get("layer", 0))
+        except (TypeError, ValueError, AttributeError):
+            return []
+        return [c.data for c in Clip.filter(layer=layer) if isinstance(c.data, dict)]
 
     def _infer_transition_drop_side(self, transition_data):
         """Return 'left' or 'right' based on which side of a clip the transition overlaps."""
-        if not isinstance(transition_data, dict):
-            return None
-
-        try:
-            layer = int(transition_data.get("layer", 0))
-            position = float(transition_data.get("position", 0.0))
-            start = float(transition_data.get("start", 0.0))
-            end = float(transition_data.get("end", 0.0))
-        except (TypeError, ValueError):
-            return None
-
-        duration = max(0.0, end - start)
-        if duration <= 0.0:
-            return None
-
-        tran_left = position
-        tran_right = position + duration
-        tran_mid = (tran_left + tran_right) / 2.0
-
-        best_match = None
-        for clip in Clip.filter(layer=layer):
-            clip_data = clip.data if isinstance(clip.data, dict) else {}
-            try:
-                clip_left = float(clip_data.get("position", 0.0))
-                clip_start = float(clip_data.get("start", 0.0))
-                clip_end = float(clip_data.get("end", 0.0))
-            except (TypeError, ValueError):
-                continue
-
-            clip_duration = max(0.0, clip_end - clip_start)
-            if clip_duration <= 0.0:
-                continue
-
-            clip_right = clip_left + clip_duration
-            overlap = min(tran_right, clip_right) - max(tran_left, clip_left)
-            if overlap <= 0.0:
-                continue
-
-            clip_mid = (clip_left + clip_right) / 2.0
-            side = "left" if tran_mid <= clip_mid else "right"
-            edge_dist = abs(tran_mid - (clip_left if side == "left" else clip_right))
-            score = (-overlap, edge_dist)
-            if best_match is None or score < best_match[0]:
-                best_match = (score, side)
-
-        return best_match[1] if best_match else None
+        return transition_ops.infer_drop_side(transition_data, self._layer_clip_data(transition_data))
 
     def _auto_orient_transition_keyframes(self, transition_data):
-        """Apply fade-in orientation on left-edge drops (right edge keeps default orientation)."""
-        target_side = self._infer_transition_drop_side(transition_data)
-        if target_side not in ("left", "right"):
-            return
-
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        try:
-            duration = float(transition_data.get("end", 0.0)) - float(transition_data.get("start", 0.0))
-        except (TypeError, ValueError):
-            duration = 0.0
-        total_frames = max(1, round(max(0.0, duration) * fps_float))
-
-        # Infer current direction from brightness keyframe values when possible.
-        current_side = None
-        brightness = transition_data.get("brightness")
-        if isinstance(brightness, dict):
-            points = brightness.get("Points", [])
-            keyed = []
-            for point in points:
-                co = point.get("co") if isinstance(point, dict) else None
-                if not isinstance(co, dict):
-                    continue
-                x = co.get("X")
-                y = co.get("Y")
-                if x is None or y is None:
-                    continue
-                try:
-                    keyed.append((float(x), float(y)))
-                except (TypeError, ValueError):
-                    continue
-            if len(keyed) >= 2:
-                keyed.sort(key=lambda k: k[0])
-                first_y = keyed[0][1]
-                last_y = keyed[-1][1]
-                if first_y < last_y:
-                    current_side = "right"
-                elif first_y > last_y:
-                    current_side = "left"
-
-        # Only auto-flip when the current direction is clearly inferable.
-        # This avoids rewriting customized/non-monotonic transition curves.
-        if current_side is None:
-            return
-
-        if current_side == target_side:
-            return
-
-        for prop in ("brightness", "contrast"):
-            keyframe = transition_data.get(prop)
-            if isinstance(keyframe, dict):
-                self._reverse_keyframes(keyframe, total_frames)
+        """Fade in on a clip's left edge, fade out on its right edge."""
+        transition_ops.auto_orient_keyframes(transition_data, self._layer_clip_data(transition_data))
 
     # Javascript callable function to update the project data when a transition changes
     @guarded_slot(str, bool, bool, str)
@@ -1365,48 +1158,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not existing_item:
             # Create a new transition (if not exists)
             existing_item = Transition()
-        existing_item.data = transition_data
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
 
-        # Preserve and scale existing keyframes when only basic props are updated
-        old_duration = old_data.get("end", 0.0) - old_data.get("start", 0.0)
-        new_duration = existing_item.data.get("end", 0.0) - existing_item.data.get("start", 0.0)
-        old_frames = round(old_duration * fps_float) if old_duration > 0 else 0
-        new_frames = round(new_duration * fps_float) if new_duration > 0 else 0
-        uses_static_mask = self._transition_uses_static_mask(existing_item.data, old_data)
-
-        if old_data and only_basic_props:
-            if "brightness" in old_data:
-                existing_item.data["brightness"] = old_data["brightness"]
-            if "contrast" in old_data:
-                existing_item.data["contrast"] = old_data["contrast"]
-
-            if uses_static_mask and old_frames and new_frames and old_frames != new_frames:
-                scale = new_frames / old_frames
-                for prop in ("brightness", "contrast"):
-                    if prop in existing_item.data:
-                        self._scale_keyframes(existing_item.data[prop], scale)
-            if uses_static_mask and new_frames:
-                self._anchor_transition_endpoint_keyframes(existing_item.data, new_frames)
-        elif old_data and self._transition_reader_changed(existing_item.data, old_data):
-            self._set_transition_mask_defaults(existing_item.data, old_data)
-
-        if auto_direction and uses_static_mask:
-            self._auto_orient_transition_keyframes(existing_item.data)
-
-        # Only include the basic properties (performance boost)
-        if only_basic_props and not old_data:
-            existing_item.data = {}
-            existing_item.data["id"] = transition_data["id"]
-            existing_item.data["layer"] = transition_data["layer"]
-            existing_item.data["position"] = transition_data["position"]
-            existing_item.data["start"] = transition_data["start"]
-            existing_item.data["end"] = transition_data["end"]
-            existing_item.data["brightness"] = transition_data.get("brightness", {})
-            existing_item.data["contrast"] = transition_data.get("contrast", {})
+        # Keep, rescale or reset the brightness/contrast curves (classes.transition_ops)
+        existing_item.data = transition_ops.prepare_update(
+            transition_data, old_data, fps_float,
+            only_basic_props=only_basic_props, auto_direction=auto_direction,
+            layer_clips=self._layer_clip_data(transition_data) if auto_direction else None)
 
         # Delete invalid items (i.e. negative duration)
         if self.delete_invalid_timeline_item(existing_item):
@@ -4829,15 +4590,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 continue
 
             # Reverse transition keyframes
-            tran_data_copy = json.loads(json.dumps(tran.data))
-            fps = get_app().project.get("fps")
-            fps_float = float(fps["num"]) / float(fps["den"])
-            duration = tran.data.get("end", 0.0) - tran.data.get("start", 0.0)
-            total_frames = round(duration * fps_float)
-
-            for prop in ("brightness", "contrast"):
-                if prop in tran_data_copy:
-                    self._reverse_keyframes(tran_data_copy[prop], total_frames)
+            tran_data_copy = transition_ops.reverse_transition_data(json.loads(json.dumps(tran.data)))
 
             # Update in-memory data and persist changes
             tran.data = tran_data_copy
@@ -5796,28 +5549,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         if not isinstance(reader_json, dict):
             reader_json = {"path": file_path}
 
-        # Create Keyframes for brightness and contrast
-        brightness = openshot.Keyframe()
-        brightness.AddPoint(1, 1.0, openshot.BEZIER)
-        brightness.AddPoint(round(duration * fps_float) + 1, -1.0, openshot.BEZIER)
-
-        contrast = openshot.Keyframe(3.0)
-
-        # Create transition dictionary
-        transition_data = {
-            "id": get_app().project.generate_id(),
-            "layer": track,
-            "title": "Transition",
-            "type": "Mask",
-            "position": snap_to_grid(position.x()),
-            "start": 0,
-            "end": duration,
-            "resource": file_path,
-            "brightness": json.loads(brightness.Json()),
-            "contrast": json.loads(contrast.Json()),
-            "reader": deepcopy(reader_json),
-            "replace_image": False
-        }
+        # Create transition dictionary (brightness 1 -> -1, contrast 3)
+        transition_data = transition_ops.new_mask_transition(
+            get_app().project.generate_id(), reader_json, position=snap_to_grid(position.x()),
+            layer=track, duration=duration, fps_float=fps_float, resource=file_path)
 
         # Default transition to fade-in on clip left edge, fade-out on right edge.
         self._auto_orient_transition_keyframes(transition_data)

@@ -28,7 +28,6 @@
 
 import os
 import json
-import re
 import glob
 import functools
 import uuid
@@ -1110,6 +1109,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def get_image_sequence_details(self, file_path):
         """Inspect a file path and determine if this is an image sequence"""
+        from classes.project_files import detect_image_sequence
 
         # Get just the file name
         (dirName, fileName) = os.path.split(file_path)
@@ -1118,35 +1118,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         if dirName in self.ignore_image_sequence_paths:
             return None
 
-        extensions = ["png", "jpg", "jpeg", "tif", "svg"]
-        match = re.findall(r"(.*[^\d])?(0*)(\d+)\.(%s)" % "|".join(extensions), fileName, re.I)
-
-        if not match:
-            # File name does not match an image sequence
-            return None
-
-        # Get the parts of image name
-        base_name = match[0][0]
-        fixlen = match[0][1] > ""
-        number = int(match[0][2])
-        digits = len(match[0][1] + match[0][2])
-        extension = match[0][3]
-
-        full_base_name = os.path.join(dirName, base_name)
-
-        # Check for images which the file names have the different length
-        fixlen = fixlen or not (
-            glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * (digits + 1), extension))
-            or glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * ((digits - 1) if digits > 1 else 3), extension))
-        )
-
-        # Check for previous or next image
-        for x in range(max(0, number - 100), min(number + 101, 50000)):
-            if x != number and os.path.exists(
-               "%s%s.%s" % (full_base_name, str(x).rjust(digits, "0") if fixlen else str(x), extension)):
-                break  # found one!
-        else:
-            # We didn't discover an image sequence
+        parameters = detect_image_sequence(file_path)
+        if not parameters:
+            # File name does not match an image sequence (or has no neighbouring frames)
             return None
 
         # Found a sequence, ignore this path (no matter what the user answers)
@@ -1160,24 +1134,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # User said no, don't import as a sequence
             return None
 
-        # generate file glob pattern (for this image sequence)
-        if not fixlen:
-            zero_pattern = "%d"
-        else:
-            zero_pattern = "%%0%sd" % digits
-        pattern = "%s%s.%s" % (base_name, zero_pattern, extension)
-        new_file_path = os.path.join(dirName, pattern)
-
         # Yes, import image sequence
-        parameters = {
-            "folder_path": dirName,
-            "base_name": base_name,
-            "fixlen": fixlen,
-            "digits": digits,
-            "extension": extension,
-            "pattern": pattern,
-            "path": new_file_path
-        }
         return parameters
 
     def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False,
