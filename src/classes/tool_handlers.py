@@ -2409,6 +2409,13 @@ def add_clip_to_timeline(
 
 
 def slice_clip_at_playhead(**_kw) -> str:
+    """Slice every unlocked clip and transition under the playhead, keeping both sides.
+
+    slice_clips_tool targets one clip, a track or the selection; this keeps the
+    old everything-under-the-playhead behaviour. Items on locked tracks and
+    items whose edge sits exactly at the playhead (a cut there would leave a
+    zero-length clip) are not sliced and not counted.
+    """
     try:
         from windows.views.timeline_backend.enums import MenuSlice
 
@@ -2422,18 +2429,28 @@ def slice_clip_at_playhead(**_kw) -> str:
             fps = app.project.get("fps") or {}
             fps_float = _project_fps_float(fps)
             playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
-            intersecting_clips = Clip.filter(intersect=playhead_position)
-            intersecting_trans = Transition.filter(intersect=playhead_position)
-            if not intersecting_clips and not intersecting_trans:
-                result_box[0] = "No clip or transition at the playhead."
+            half_frame = 0.5 / fps_float
+            locked = {t.get("number") for t in (app.project.get("layers") or []) if t.get("lock")}
+
+            def _sliceable(item):
+                start = float(item.data.get("position", 0.0) or 0.0)
+                end = start + float(item.data.get("end", 0.0) or 0.0) - float(item.data.get("start", 0.0) or 0.0)
+                return (item.data.get("layer") not in locked
+                        and start + half_frame < playhead_position < end - half_frame)
+
+            clip_ids = [c.id for c in Clip.filter(intersect=playhead_position) if _sliceable(c)]
+            tran_ids = [t.id for t in Transition.filter(intersect=playhead_position) if _sliceable(t)]
+            if not clip_ids and not tran_ids:
+                result_box[0] = (f"Error: no unlocked clip or transition under the playhead "
+                                 f"({playhead_position:.2f} s); nothing was sliced.")
                 return
-            win.slice_clips(MenuSlice.KEEP_BOTH)
-            n = len(intersecting_clips) + len(intersecting_trans)
-            result_box[0] = f"Sliced {n} item(s) at the playhead; both sides kept."
+            win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, clip_ids, tran_ids, playhead_position)
+            n = len(clip_ids) + len(tran_ids)
+            result_box[0] = f"Sliced {n} item(s) at the playhead ({playhead_position:.2f} s); both sides kept."
 
         _run_on_main_thread(_do_slice)
 
-        return result_box[0] or "Slice completed."
+        return result_box[0] or "Error: the slice did not run."
     except Exception as e:
         return f"Error: {e}"
 
