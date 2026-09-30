@@ -130,6 +130,7 @@ def get_editor_layout():
         "update_active_view": boolean("After the changes, overwrite the active custom view with the layout.", False),
         "delete_view": string("Delete this saved custom view (by name). Never touches the project.", ""),
     }),
+    background_safe=True,
     covers=("view.layout",),
 )
 def set_editor_layout(view="", show_panels=None, hide_panels=None, scopes="", toolbar="", fullscreen="",
@@ -141,6 +142,17 @@ def set_editor_layout(view="", show_panels=None, hide_panels=None, scopes="", to
     View menu's own actions. Not an undo step (layout is an editor preference).
     Example: {"view": "color"}; {"show_panels": ["Histogram"], "save_view_as": "Grade"}
     """
+    # One GUI hop with its own budget: the Color view starts scope analysis and can
+    # outlast the 30 s default on a busy machine (it then applied after an error).
+    return on_main(lambda: _apply_layout(view, show_panels, hide_panels, scopes, toolbar, fullscreen, dock_all,
+                                         save_view_as, update_active_view, delete_view), timeout=LAYOUT_TIMEOUT)
+
+
+LAYOUT_TIMEOUT = 120
+
+
+def _apply_layout(view, show_panels, hide_panels, scopes, toolbar, fullscreen, dock_all, save_view_as,
+                  update_active_view, delete_view):
     win = window()
     show_panels, hide_panels = list(show_panels or []), list(hide_panels or [])
     if not any([view, show_panels, hide_panels, scopes, toolbar, fullscreen, dock_all, save_view_as,
