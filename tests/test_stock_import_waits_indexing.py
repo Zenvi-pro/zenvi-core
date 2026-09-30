@@ -5,8 +5,21 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_query_module():
+    """The fake classes.query must not leak into later test modules."""
+    saved = sys.modules.get("classes.query")
+    yield
+    if saved is not None:
+        sys.modules["classes.query"] = saved
+    else:
+        sys.modules.pop("classes.query", None)
 
 
 def _install_fake_query_module(fake_file):
