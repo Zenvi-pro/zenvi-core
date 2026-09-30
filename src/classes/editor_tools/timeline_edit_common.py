@@ -160,9 +160,9 @@ def require_unlocked(layer_numbers, what="") -> None:
     locked = sorted({int(n) for n in layer_numbers if is_locked(int(n))})
     if locked:
         names = ", ".join(track_name(n) for n in locked)
-        verb = "is" if len(locked) == 1 else "are"
+        verb, pronoun = ("is", "it") if len(locked) == 1 else ("are", "them")
         raise ToolError(f"{names} {verb} locked{(' (' + what + ')') if what else ''}; "
-                        "unlock it first (Track menu > Unlock Track)")
+                        f"unlock {pronoun} first (Track menu > Unlock Track)")
 
 
 def default_layer() -> int:

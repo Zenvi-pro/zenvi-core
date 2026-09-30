@@ -421,6 +421,7 @@ def separate_clip_audio(timeline_clip_ids=[], clip_query="", track="", scope="",
     if per_channel and (to_track or "").strip():
         raise ToolError("to_track works with per_channel=false; per-channel clips go on the tracks below")
     clips = targets(timeline_clip_ids, clip_query, track, scope)
+    require_unlocked({_layer(c) for c in clips})
     for c in clips:
         if not media_has_audio(c):
             raise ToolError(f"{title(c)!r} has no audio to separate")
@@ -429,7 +430,6 @@ def separate_clip_audio(timeline_clip_ids=[], clip_query="", track="", scope="",
                             "set_clip_audio_video_tool(audio='auto') first")
         if not media_has_video(c) and not per_channel:
             raise ToolError(f"{title(c)!r} is already audio-only; use per_channel=true to split its channels")
-    require_unlocked({_layer(c) for c in clips})
 
     order = track_numbers_bottom_up()
     dest = resolve_layer(to_track) if (to_track or "").strip() else None
