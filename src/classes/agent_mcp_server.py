@@ -209,6 +209,24 @@ def _load_or_create_token() -> str:
     return token
 
 
+def _port_path() -> str:
+    from classes import info
+    return os.path.join(info.USER_PATH, "mcp_port")
+
+
+def _write_port_file(port: int) -> None:
+    """Record the live port next to the token, so a CLI or harness can find
+    this instance without probing other local services (which can have
+    their own servers on ephemeral ports)."""
+    try:
+        path = _port_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(str(int(port)))
+    except Exception:
+        log.debug("Failed to write MCP port file", exc_info=True)
+
+
 class _BearerAuthMiddleware:
     """Reject any HTTP request lacking ``Authorization: Bearer <token>``."""
 
@@ -283,6 +301,7 @@ class ZenviMcpServer:
                     "MCP server failed to bind %s:%s" % (self.host, self.port))
 
             self._started = True
+            _write_port_file(self.port)
             self._connect_shutdown_hook()
             log.info("Zenvi MCP server listening on %s (%d tools)",
                      self.url(), len(iter_tool_defs()))
