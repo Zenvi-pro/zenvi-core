@@ -172,6 +172,8 @@ def _reindex(monkeypatch, *, result, ai_metadata=None):
     query.File = types.SimpleNamespace(get=lambda **kw: fake_file)
     monkeypatch.setitem(sys.modules, "classes.query", query)
     monkeypatch.setattr(th, "_get_app", lambda: types.SimpleNamespace(project={"id": "p1"}))
+    # No Qt event loop runs here, stubbed or real: run the main-thread hops inline.
+    monkeypatch.setattr(th, "_run_on_main_thread", lambda fn, *a, timeout=None: fn(*a))
     client = MagicMock()
     client.is_indexing_configured.return_value = True
     client.reindex_video.return_value = result
