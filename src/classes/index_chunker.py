@@ -128,18 +128,20 @@ def index_min_height() -> int:
 
 
 def video_scale_filter(max_height: int = 720, min_height: int = 0) -> str:
-    """Cap height at max_height; lift shorter video to min_height (even width).
+    """Cap height at max_height; lift shorter video to min_height (even size).
 
     Low-resolution sources index badly, so they are upscaled with lanczos before
-    upload. The cap always wins over the minimum.
+    upload. The cap always wins over the minimum. The height is rounded down to
+    even: libx264 refuses an odd yuv420p height, so an odd source or setting
+    would otherwise fail the chunk.
     """
     h = int(max_height or 720)
     if h <= 0:
         h = 720
     lo = min(int(min_height or 0), h)
     if lo <= 0:
-        return f"scale=-2:'min({h},ih)'"
-    return f"scale=-2:'min(max(ih,{lo}),{h})':flags=lanczos"
+        return f"scale=-2:'trunc(min({h},ih)/2)*2'"
+    return f"scale=-2:'trunc(min(max(ih,{lo}),{h})/2)*2':flags=lanczos"
 
 
 def extract_chunk(

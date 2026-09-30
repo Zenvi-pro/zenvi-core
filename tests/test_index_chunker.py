@@ -51,15 +51,15 @@ def test_extract_chunks_calls_ffmpeg(mock_size, mock_isfile, mock_ff, tmp_path, 
 
 def test_video_scale_filter_only_caps_when_min_height_is_off():
     from classes.index_chunker import video_scale_filter
-    assert video_scale_filter(720) == "scale=-2:'min(720,ih)'"
-    assert video_scale_filter(480, 0) == "scale=-2:'min(480,ih)'"
+    assert video_scale_filter(720) == "scale=-2:'trunc(min(720,ih)/2)*2'"
+    assert video_scale_filter(480, 0) == "scale=-2:'trunc(min(480,ih)/2)*2'"
 
 
 def test_video_scale_filter_upscales_low_res_up_to_the_cap():
     from classes.index_chunker import video_scale_filter
-    assert video_scale_filter(720, 540) == "scale=-2:'min(max(ih,540),720)':flags=lanczos"
+    assert video_scale_filter(720, 540) == "scale=-2:'trunc(min(max(ih,540),720)/2)*2':flags=lanczos"
     # A minimum above the backend's cap never pushes past the cap.
-    assert video_scale_filter(480, 720) == "scale=-2:'min(max(ih,480),480)':flags=lanczos"
+    assert video_scale_filter(480, 720) == "scale=-2:'trunc(min(max(ih,480),480)/2)*2':flags=lanczos"
 
 
 @pytest.mark.parametrize("env, expected", [
@@ -92,6 +92,33 @@ def test_low_res_chunk_is_upscaled_for_indexing(tmp_path, monkeypatch):
         "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path,
     ], capture_output=True, text=True, check=True)
     assert probe.stdout.strip() == "1440x720"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+@pytest.mark.parametrize("min_height, max_height, expected", [
+    ("0", 720, "62x32"),     # minimum off: an odd 33px source is cut to 32, not rejected
+    ("45", 720, "86x44"),    # an odd minimum rounds down to even
+    ("720", 41, "78x40"),    # an odd backend cap rounds down to even
+])
+def test_odd_heights_come_out_even_so_libx264_accepts_them(tmp_path, monkeypatch, min_height, max_height, expected):
+    """libx264 refuses an odd yuv420p height - that chunk used to fail to extract."""
+    from classes.index_chunker import extract_chunk
+
+    src = tmp_path / "odd.y4m"
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+        "-i", "testsrc=size=64x33:rate=25:duration=0.4", "-pix_fmt", "yuv420p", str(src),
+    ], check=True)
+    monkeypatch.setenv("ZENVI_INDEX_MIN_HEIGHT", min_height)
+    path, err = extract_chunk(
+        str(src), start=0.0, end=0.4, out_dir=str(tmp_path / "out"), max_height=max_height,
+    )
+    assert not err, err
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", path,
+    ], capture_output=True, text=True, check=True)
+    assert probe.stdout.strip() == expected
 
 
 @patch("classes.gemini_direct_upload.requests.post")
