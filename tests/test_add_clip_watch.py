@@ -82,7 +82,7 @@ def _run_add(file_data, timeline_clips=(), clip_id="C1", **kwargs):
     return out, watch_calls, placed
 
 
-def test_add_clip_watches_short_ai_clip_without_query():
+def test_add_clip_watches_a_named_window_of_a_short_ai_clip():
     out, calls, placed = _run_add(
         {
             "path": "/clips/gen.mp4",
@@ -92,7 +92,9 @@ def test_add_clip_watches_short_ai_clip_without_query():
             "end": 5.0,
             "has_video": True,
             "ai_metadata": {"prompt": "a cat waving"},
-        }
+        },
+        start_seconds="0",
+        end_seconds="5",
     )
     assert not out.startswith("Error:"), out
     assert calls, out
@@ -100,6 +102,66 @@ def test_add_clip_watches_short_ai_clip_without_query():
     assert "watched" in out
     assert abs(placed["start"] - 0.4) < 1e-9
     assert abs(placed["end"] - 4.6) < 1e-9
+
+
+@pytest.mark.parametrize("extra", [{}, {"full_file": "true"}, {"query": "a cat waving"}])
+def test_placing_a_file_with_no_window_places_all_of_it(extra):
+    """full_file="true" on a 24.6 s video placed the 1 s the watch matched.
+
+    No trim asked for means the whole file: a watch refines a window the caller
+    named and never invents one."""
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/gen.mp4",
+            "name": "gen.mp4",
+            "duration": 24.6,
+            "start": 0.0,
+            "end": 24.6,
+            "has_video": True,
+            "ai_metadata": {"prompt": "a cat waving"},
+        },
+        **extra,
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert "watched" not in out
+    assert placed["start"] == 0.0 and abs(placed["end"] - 24.6) < 1e-9
+
+
+def test_start_seconds_alone_keeps_the_rest_of_the_file():
+    # 600s is past the watch limit, so nothing used to trim and it placed from 0.
+    out, calls, placed = _run_add(
+        {
+            "path": "/clips/long.mp4",
+            "name": "long.mp4",
+            "duration": 600.0,
+            "start": 0.0,
+            "end": 600.0,
+            "has_video": True,
+        },
+        start_seconds="100",
+    )
+    assert not out.startswith("Error:"), out
+    assert calls == []
+    assert abs(placed["start"] - 100.0) < 1e-9
+    assert abs(placed["end"] - 600.0) < 1e-9
+
+
+def test_start_seconds_past_the_end_of_the_file_is_refused():
+    out, calls, _placed = _run_add(
+        {
+            "path": "/clips/short.mp4",
+            "name": "short.mp4",
+            "duration": 20.0,
+            "start": 0.0,
+            "end": 20.0,
+            "has_video": True,
+        },
+        start_seconds="25",
+    )
+    assert out.startswith("Error:"), out
+    assert "past the end" in out
+    assert calls == []
 
 
 def test_add_clip_watches_bounded_stock_window_without_query():
@@ -132,7 +194,9 @@ def test_add_clip_snaps_watched_window_off_mid_sentence():
                 "prompt": "a person talking",
                 "transcript_cues": [{"start": 0.0, "end": 0.8}, {"start": 3.0, "end": 5.0}],
             },
-        }
+        },
+        start_seconds="0",
+        end_seconds="5",
     )
     assert calls, out
     assert "watched" in out

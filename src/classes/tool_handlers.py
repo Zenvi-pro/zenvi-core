@@ -2262,6 +2262,15 @@ def add_clip_to_timeline(
                 "duration_seconds (how much to use), plus start_seconds for the source in-point. "
                 "Pass full_file=\"true\" only when the user asked for one continuous bed."
             )
+        # start_seconds alone keeps the rest of the file from there. Without a
+        # length nothing below trims, so a long file placed from 0 instead.
+        if trim_dur is None and trim_start > 0 and not _whole_file:
+            if trim_start >= source_len:
+                return (
+                    f"Error: start_seconds {trim_start:g} is past the end of this file "
+                    f"({source_len:.2f}s long)."
+                )
+            trim_dur = source_len - trim_start
 
         watched_start = watched_end = None
         watched_info = {}
@@ -2273,7 +2282,11 @@ def add_clip_to_timeline(
             win_e = min(src_end, win_s + max(float(trim_dur), 4.0))
         else:
             win_e = src_end
-        if should_watch_placement(
+        # No window asked for - no trim at all, or full_file - means the whole
+        # file. A watch refines a window the caller named; it must never invent
+        # one (full_file="true" on a 24.6 s video placed the 1 s it matched).
+        wants_window = bool(trim_dur) and not _whole_file
+        if wants_window and should_watch_placement(
             is_audio=_is_audio_only,
             is_image=_is_image,
             skip_explicit_times=skip_watch,
