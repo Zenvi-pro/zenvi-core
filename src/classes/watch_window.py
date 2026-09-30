@@ -381,12 +381,19 @@ def extract_watch_window(
     # Keep a frame on each side of every shot cut: a talking head otherwise
     # dedupes to one frame and the cut cannot be located.
     pre_cut = [max(win_start, t - PRE_CUT_SEC) for t in scene_ts]
+    # Keep the edges of the window that was asked about, too: on a static shot
+    # the dedupe keeps the first frames, which are the context padding before
+    # it, and the caller is told what it saw at times it never asked about.
+    asked = [
+        float(t) for t in (start, end)
+        if win_start - 1e-3 <= float(t) <= win_end + 1e-3
+    ]
     times, warning, sparse = plan_sample_times(
         win_start, win_end, transcript_cues,
         max_frames=max(max_frames * 3, 24),
-        extra_times=list(scene_ts) + pre_cut,
+        extra_times=list(scene_ts) + pre_cut + asked,
     )
-    cue_set = {round(t, 2) for t in list(cue_times) + list(scene_ts) + pre_cut}
+    cue_set = {round(t, 2) for t in list(cue_times) + list(scene_ts) + pre_cut + asked}
     tmp = work_dir or tempfile.mkdtemp(prefix="zenvi_watch_")
     os.makedirs(tmp, exist_ok=True)
     records: List[Dict[str, Any]] = []

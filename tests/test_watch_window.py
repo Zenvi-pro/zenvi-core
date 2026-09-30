@@ -128,6 +128,23 @@ def test_short_extract_keeps_both_sides_of_a_shot_cut(tmp_path):
     assert out["scene_times"] == [70.0]
 
 
+def test_static_shot_still_watches_the_window_that_was_asked_about(tmp_path):
+    """Seen live: a 14-18s request on a talking head watched only 12.00 and 13.00,
+    both in the context padding - every later frame deduped away."""
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"not-a-real-mp4")
+    with patch("classes.watch_window._probe_duration", return_value=229.0):
+        with patch("classes.watch_window._scene_times", return_value=[]):
+            with patch("classes.watch_window._extract_one_jpeg", return_value=True):
+                with patch("classes.watch_window._fingerprint_jpeg", return_value=b"\x10" * 256):
+                    out = extract_watch_window(
+                        str(src), 14.0, 18.0, query="man with a tablet",
+                        transcript_cues=[{"start": 13.0, "end": 19.0}],
+                    )
+    stamps = [f["timestamp"] for f in out["frames"]]
+    assert 14.0 in stamps and 18.0 in stamps, stamps
+
+
 def test_confirm_reports_frames_cuts_and_visible_frames():
     extracted = {
         "ok": True,
