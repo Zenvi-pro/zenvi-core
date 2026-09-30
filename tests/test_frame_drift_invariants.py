@@ -119,6 +119,39 @@ def test_retime_clip_round_trip(monkeypatch):
     assert len(clip.data["scale_x"]["Points"]) == 2
 
 
+def test_retime_keeps_mid_clip_last_keyframe_proportional(monkeypatch):
+    """A 1 s scale ramp at the head of a clip stays a head ramp after 2x.
+
+    Regression: the last keyframe of every property was snapped to the new
+    clip end, so the ramp stretched across the whole retimed clip.
+    """
+    fps = Fraction(30, 1)
+    monkeypatch.setattr("windows.views.retime._project_fps", lambda: fps)
+
+    end = ft.to_seconds(182, fps)
+    clip = SimpleNamespace(data={
+        "start": 0.0,
+        "end": end,
+        "duration": end,
+        "position": 0.0,
+        "scale_x": {"Points": [
+            {"co": {"X": 1, "Y": 1.0}, "interpolation": 0},
+            {"co": {"X": 31, "Y": 2.0}, "interpolation": 0},
+        ]},
+        "time": {"Points": [
+            {"co": {"X": 1, "Y": 1}, "interpolation": 0},
+            {"co": {"X": 182, "Y": 182}, "interpolation": 0},
+        ]},
+    })
+    assert retime_clip(clip, ft.to_seconds(91, fps), new_position=0.0)
+
+    # 30 frames of ramp at 2x is 15 frames: X 31 -> 16, not the clip end.
+    assert [p["co"]["X"] for p in clip.data["scale_x"]["Points"]] == [1, 16]
+    # A point that sat at the old end still lands exactly on the new end.
+    assert clip.data["time"]["Points"][-1]["co"]["X"] == 92
+    assert ft.to_frame(clip.data["end"], fps) == 91
+
+
 def test_legacy_off_grid_values_are_detectable():
     """Loading off-grid values must not auto-mutate; is_aligned reports them."""
     fps = Fraction(30, 1)

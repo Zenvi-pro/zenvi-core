@@ -28,7 +28,7 @@
 import os
 from classes import info
 from classes.app import get_app
-from PyQt5.QtWidgets import QMessageBox, QFileDialog
+from qt_api import QMessageBox, QFileDialog
 
 # Keep track of all previously checked paths, and keep checking them
 known_paths = [info.HOME_PATH]
@@ -40,14 +40,42 @@ def _get_dialog_parent():
     return getattr(app, "window", None)
 
 
-def find_missing_file(file_path, parent=None):
+def _deepest_existing_parent(path_value):
+    """Return the deepest existing directory in a missing file path (OpenShot #5959)."""
+    candidate = os.path.abspath(path_value or "")
+    if not candidate:
+        return ""
+
+    if os.path.isdir(candidate):
+        return candidate
+
+    candidate = os.path.dirname(candidate)
+    while candidate and not os.path.exists(candidate):
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            break
+        candidate = parent
+
+    if candidate and os.path.isdir(candidate):
+        return candidate
+    return ""
+
+
+def find_missing_file(file_path, prompt_state=None, parent=None):
     """Find a missing file name or file path, and return valid path.
+
+    prompt_state is a shared dict; once the user presses Cancel it is marked
+    {"cancelled": True} and later calls skip without prompting.
     If parent is None, uses main window when available so dialogs stay on top."""
     _ = get_app()._tr
     modified = False
     skipped = False
     if parent is None:
         parent = _get_dialog_parent()
+
+    # If user cancelled prompts, skip searching
+    if prompt_state and prompt_state.get("cancelled"):
+        return ("", modified, True)
 
     # Bail if path is already valid
     if os.path.exists(file_path):
@@ -65,14 +93,31 @@ def find_missing_file(file_path, parent=None):
 
     # Check if path exists
     while not os.path.exists(file_path):
-        recommended_path = get_app().project.current_filepath or ""
+        # Start browsing from the deepest folder of the old path that still exists
+        recommended_path = _deepest_existing_parent(file_path)
         if not recommended_path:
-            recommended_path = info.HOME_PATH
-        else:
-            recommended_path = os.path.dirname(recommended_path)
-        QMessageBox.warning(parent, _("Missing File (%s)") % file_name,
-                            _("%s cannot be found.") % file_name)
+            recommended_path = get_app().project.current_filepath or ""
+            if not recommended_path:
+                recommended_path = info.HOME_PATH
+            else:
+                recommended_path = os.path.dirname(recommended_path)
+        message_box = QMessageBox(parent)
+        message_box.setIcon(QMessageBox.Warning)
+        message_box.setWindowTitle(_("Missing File (%s)") % file_name)
+        message_box.setText(_("%s cannot be found.") % file_name)
+        browse_button = message_box.addButton(_("Browse..."), QMessageBox.AcceptRole)
+        cancel_button = message_box.addButton(QMessageBox.Cancel)
+        message_box.setDefaultButton(browse_button)
+        message_box.exec_()
         modified = True
+
+        if message_box.clickedButton() == cancel_button:
+            # User cancelled all missing file prompts
+            skipped = True
+            if prompt_state is not None:
+                prompt_state["cancelled"] = True
+            return ("", modified, skipped)
+
         folder_to_check = QFileDialog.getExistingDirectory(
             parent, _("Find directory that contains: %s" % file_name),
             recommended_path)

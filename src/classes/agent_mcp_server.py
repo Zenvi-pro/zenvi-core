@@ -113,7 +113,7 @@ def iter_tool_defs() -> list:
     tool is listed in ``UNSCHEMATIZED`` (should be empty in production).
     """
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
-    from classes.agent_tools.schema import TOOL_SCHEMAS, UNSCHEMATIZED, get_schema
+    from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
@@ -285,7 +285,7 @@ class ZenviMcpServer:
 
     def _connect_shutdown_hook(self):
         try:
-            from PyQt5.QtWidgets import QApplication
+            from qt_api import QApplication
             qapp = QApplication.instance()
             if qapp is not None:
                 qapp.aboutToQuit.connect(self.stop)

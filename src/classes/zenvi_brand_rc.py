@@ -2,11 +2,11 @@
 
 # Resource object code
 #
-# Created by: The Resource Compiler for PyQt5 (Qt v5.15.18)
+# Created by: The Qt Resource Compiler, pyrcc5 (Qt v5.15.18); imports go through qt_api
 #
 # WARNING! All changes made in this file will be lost!
 
-from PyQt5 import QtCore
+from qt_api import QtCore
 
 qt_resource_data = b"\
 \x00\x00\x01\x6c\

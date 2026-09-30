@@ -33,7 +33,7 @@ import openshot
 
 from classes import info
 from classes.app import get_app
-from classes.path_utils import absolute_media_path
+from classes.path_utils import absolute_media_path, media_paths_equal
 
 
 class QueryObject:
@@ -218,6 +218,13 @@ class Clip(QueryObject):
     def title(self):
         """ Get the translated display title of this item """
         path = self.data.get("reader", {}).get("path")
+        file_id = self.data.get("file_id") or self.data.get("reader", {}).get("id")
+        if file_id:
+            file = File.get(id=file_id)
+            if file:
+                name = str(file.data.get("name", "")).strip()
+                if name:
+                    return name
         return os.path.basename(path)
 
 class Transition(QueryObject):
@@ -284,7 +291,15 @@ class File(QueryObject):
 
     def get(**kwargs):
         """ Take any arguments given as filters, and find the first matching object """
-        return QueryObject.get(File, **kwargs)
+        file_path = kwargs.pop("path", None)
+        if file_path is None:
+            return QueryObject.get(File, **kwargs)
+
+        matching_objects = QueryObject.filter(File, **kwargs)
+        for obj in matching_objects:
+            if media_paths_equal(obj.data.get("path"), file_path):
+                return obj
+        return None
 
     def absolute_path(self):
         """ Get absolute file path of file """
