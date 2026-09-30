@@ -8,6 +8,7 @@ Clients pass operation keys only, never raw point values.
 import json
 import logging
 import os
+import tempfile
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -30,11 +31,35 @@ def _current_user_id() -> Optional[str]:
         return None
 
 
+def _write_stored(user_id: str, balance: int) -> None:
+    """Replace CREDITS_FILE in one step with a file only this user can read.
+
+    The new content is staged in a temp file beside it, so a crash mid-write
+    leaves the previous balance rather than a truncated file.
+    """
+    folder = os.path.dirname(CREDITS_FILE)
+    os.makedirs(folder, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".zenvi_credits.", suffix=".tmp", dir=folder)  # mode 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"user_id": user_id, "balance": balance}, fh)
+        os.replace(tmp, CREDITS_FILE)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class CreditsClient:
     """Singleton billing client using AuthManager JWT."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()  # listeners run under it and may read back
+        # Orders the file writes. Disk I/O happens under this lock, never under
+        # _lock, so the GUI thread reading the cache cannot wait on a slow disk.
+        self._persist_lock = threading.Lock()
         self._cached_balance: Optional[int] = None
         self._cached_user: Optional[str] = None
         self._cache_loaded = False
@@ -64,33 +89,49 @@ class CreditsClient:
             pass
         return None
 
+    def _notify(self, total: int) -> None:
+        """Tell the listeners; call with _lock held so they hear changes in order."""
+        for callback in list(self._listeners):
+            try:
+                callback(total)
+            except Exception as exc:
+                log.debug("credits_client: listener failed: %s", exc)
+
     def _store_balance(self, total: int, user_id: Optional[str]) -> None:
-        """Record a fresh balance for *user_id*: cache, persist, notify on change.
+        """Record a fresh balance for *user_id*: cache, notify on change, persist.
 
         Dropped when that account is no longer the signed-in one, so a fetch
         that outlives a sign-out never paints or saves the wrong account.
         """
         if not user_id or user_id != _current_user_id():
             return
-        self.cached_balance()  # seed from disk so an unchanged value is not "new"
-        # Check, cache, persist and notify as one step so a sign-in landing
-        # mid-commit can never interleave with the old account's result.
+        self.load_stored_balance()  # seed from disk so an unchanged value is not "new"
+        # Check, cache and notify as one step so a sign-in landing mid-commit
+        # can never interleave with the old account's result.
         with self._lock:
             if user_id != _current_user_id():
                 return
             if self._cached_user == user_id and self._cached_balance == total:
                 return
             self._cached_user, self._cached_balance = user_id, total
+            self._notify(total)
+        self._persist()
+
+    def _persist(self) -> None:
+        """Save the cached balance for the next launch (outside _lock).
+
+        Writes what is cached when it runs, not what the caller saw, so when
+        two commits race the file still ends on the newer one.
+        """
+        with self._persist_lock:
+            with self._lock:
+                user_id, total = self._cached_user, self._cached_balance
+            if not user_id or total is None:
+                return
             try:
-                with open(CREDITS_FILE, "w", encoding="utf-8") as fh:
-                    json.dump({"user_id": user_id, "balance": total}, fh)
+                _write_stored(user_id, total)
             except Exception as exc:
                 log.debug("credits_client: could not persist balance: %s", exc)
-            for callback in list(self._listeners):
-                try:
-                    callback(total)
-                except Exception as exc:
-                    log.debug("credits_client: listener failed: %s", exc)
 
     def _get_auth(self):
         try:
@@ -149,20 +190,45 @@ class CreditsClient:
         return {}
 
     def cached_balance(self) -> Optional[int]:
-        """Signed-in account's last known balance, this launch or the previous one."""
+        """Signed-in account's last known balance, this launch or the previous one.
+
+        Memory only, so the GUI thread can paint from it: None until
+        load_stored_balance() or a fetch has filled it for this account.
+        """
+        user_id = _current_user_id()
+        with self._lock:
+            if self._cache_loaded and self._cached_user == user_id:
+                return self._cached_balance
+        return None
+
+    def load_stored_balance(self) -> Optional[int]:
+        """Fill the cache from the previous launch (reads disk: not on the GUI thread).
+
+        Reads CREDITS_FILE once per account and tells the listeners what it
+        found, so a load that lands after the chat page is ready still paints.
+        """
         user_id = _current_user_id()
         with self._lock:
             if self._cache_loaded and self._cached_user == user_id:
                 return self._cached_balance
         stored = self._read_stored(user_id)
         with self._lock:
+            if user_id != _current_user_id():
+                return None  # signed in as someone else while reading
             if not self._cache_loaded or self._cached_user != user_id:
                 self._cache_loaded = True
                 self._cached_user, self._cached_balance = user_id, stored
+                if stored is not None:
+                    self._notify(stored)
             return self._cached_balance
 
     def balance(self) -> Tuple[bool, int]:
-        """Return (authenticated, total_points). Fail closed balance 0 when authed but RPC fails."""
+        """Return (authenticated, total_points). Fail closed balance 0 when authed but RPC fails.
+
+        Listeners hear the stored balance first, so the badge keeps the last
+        known number while a token refresh and the RPC are in flight.
+        """
+        self.load_stored_balance()
         auth, _, _ = self._get_auth()
         if auth is None:
             return False, 0
