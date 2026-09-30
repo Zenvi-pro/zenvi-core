@@ -182,3 +182,52 @@ def test_frame_step_keys(ui):
     ui.handleSeekPreviousFrame()
     editor.window.previewFrameSignal.emit.assert_called_with(9)
     assert ui.step_frames(-50) == 1   # never before the first frame
+
+
+# --- native timeline: Select All (Ctrl+A) and Ripple Select (Alt+A) -----------------
+
+NATIVE_SRC = os.path.join(os.path.dirname(__file__), "..", "src", "windows", "views", "timeline_backend",
+                          "qwidget", "base.py")
+
+
+def _native_selection_handlers():
+    from classes.query import Clip, Transition
+    with open(NATIVE_SRC, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), NATIVE_SRC)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TimelineWidgetBase")
+    wanted = ("_timeline_items", "select_all_items", "selectRipple")
+    funcs = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+    namespace = {"Clip": Clip, "Transition": Transition}
+    exec(compile(ast.Module(body=funcs, type_ignores=[]), NATIVE_SRC, "exec"), namespace)
+
+    class Widget:
+        pass
+
+    for name in wanted:
+        setattr(Widget, name, namespace[name])
+    return Widget
+
+
+def test_select_all_and_ripple_cover_items_outside_the_visible_timeline(editor):
+    """Ctrl+A / Alt+A used the painted geometry, which only holds items in view."""
+    Widget = _native_selection_handlers()
+    widget = Widget()
+    widget.win = MagicMock()
+    picked = []
+    widget._select_timeline_item = lambda item_id, kind, clear: picked.append((item_id, kind))
+    f = editor.add_file("video", duration=5.0)
+    a = editor.add_clip(f, layer=1000000, position=0.0)
+    b = editor.add_clip(f, layer=1000000, position=600.0)     # far right of any view
+    c = editor.add_clip(f, layer=5000000, position=3.0)       # a track scrolled out of view
+    t = add_transition(editor, layer=1000000, position=4.0)
+
+    widget.select_all_items()
+    widget.win.clearSelections.assert_called_once()
+    assert sorted(picked) == sorted([(a, "clip"), (b, "clip"), (c, "clip"), (t, "transition")])
+
+    picked.clear()
+    widget.selectRipple(a, "clip")
+    assert sorted(picked) == sorted([(a, "clip"), (b, "clip"), (t, "transition")])
+    picked.clear()
+    widget.selectRipple("missing", "clip")
+    assert picked == []
