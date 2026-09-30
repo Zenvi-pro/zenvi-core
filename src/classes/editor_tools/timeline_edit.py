@@ -27,6 +27,7 @@ from classes.editor_tools._base import (
     number,
     obj,
     ok,
+    on_main,
     resolve_layer,
     string,
     timeline_ui,
@@ -66,6 +67,11 @@ _RIPPLE_NOTE = "Shift the later clips on the track to follow (close/open the roo
 
 def _clips_or_query_given(timeline_clip_ids, clip_query, scope) -> bool:
     return bool(timeline_clip_ids) or bool((clip_query or "").strip()) or bool((scope or "").strip())
+
+
+def _finish_edit():
+    extend_timeline()
+    refresh()
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +191,7 @@ def _fit_lengths(durations, fixed, keep, budget):
                      "out = 125% to 100%, random = random zoom and pan.", "none"),
         "allow_overlap": _OVERLAP_ARG,
     }),
+    background_safe=True,
     covers=("clip.add_many",),
 )
 def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds=-1.0, track="",
@@ -316,14 +323,26 @@ def add_clips_to_timeline(file_ids=[], items=[], order="as_given", start_seconds
             core_entries.append({"file": en["file"], "start": None, "end": en["length"]})
         else:
             core_entries.append({"file": en["file"], "start": en["start"], "end": en["start"] + en["length"]})
-    clip_ids, transition_ids = timeline_ops.place_files(
+    # Reading the media is slow (libopenshot opens every file): do it here, off the
+    # GUI thread, then insert one clip per short main-thread hop.
+    steps = timeline_ops.plan_placement(
         core_entries, start, layer, fade=_FADES[fade], fade_length=float(fade_seconds),
         transition_path=trans_path, random_transitions=trans_random, transition_length=trans_len,
         image_length=image_len, zoom=_ZOOMS[zoom], transition_first_clip=False)
-    if not clip_ids:
+    if not steps:
         raise ToolError("the editor placed no clips (the files have no readable media)")
-    extend_timeline()
-    refresh()
+
+    def _insert(step):
+        require_unlocked([layer])
+        return timeline_ops.insert_placement_step(step)
+
+    clip_ids, transition_ids = [], []
+    for step in steps:
+        clip_id, transition_id = on_main(_insert, step)
+        clip_ids.append(clip_id)
+        if transition_id:
+            transition_ids.append(transition_id)
+    on_main(_finish_edit)
 
     placed = [clip_summary(fresh(cid)) for cid in clip_ids if fresh(cid)]
     end = max(p["end"] for p in placed)
@@ -846,6 +865,7 @@ def remove_gaps(track="", from_seconds=0.0, only_first=False):
         "ripple": boolean("Insert the copies: push the clips at the destination later to make room.", False),
         "allow_overlap": _OVERLAP_ARG,
     }),
+    background_safe=True,
     covers=("clip.copy_paste",),
 )
 def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position_seconds=-1.0, to_track="",
@@ -898,17 +918,24 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
                 if s < base - tol and e > base + tol and not allow_overlap:
                     raise ToolError(f"{base:.2f} s falls inside {title(item)!r} ({s:.2f}-{e:.2f} s); insert at its "
                                     "start or end, slice it first, or pass allow_overlap=true")
-        for layer in dest_layers:
-            shifted += timeline_ops.shift_after(layer, base, int(copies) * length)
+
+        def _open_room():
+            require_unlocked(dest_layers, "the copies' destination")
+            moved = []
+            for layer in dest_layers:
+                moved += timeline_ops.shift_after(layer, base, int(copies) * length)
+            return moved
+
+        shifted = on_main(_open_room)
     else:
         hits = check_overlaps(new_overlaps({}, planned), allow_overlap, "The copies")
 
-    project = get_app().project
-    created = []
-    new_trans = []
-    for k in range(int(copies)):
+    def _insert_copy(k):
+        # One copy per main-thread hop: each new clip makes the preview open its media.
+        require_unlocked(dest_layers, "the copies' destination")
+        project = get_app().project
         offset = base + k * length - g_start
-        batch = []
+        batch, batch_trans = [], []
         for c in clips:
             data = copy.deepcopy(c.data)
             data.pop("id", None)
@@ -930,10 +957,15 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
             new = Transition()
             new.data = data
             new.save()
-            new_trans.append(new.id)
+            batch_trans.append(new.id)
+        return batch, batch_trans
+
+    created, new_trans = [], []
+    for k in range(int(copies)):
+        batch, batch_trans = on_main(_insert_copy, k)
         created.append(batch)
-    extend_timeline()
-    refresh()
+        new_trans += batch_trans
+    on_main(_finish_edit)
     first = created[0][0]
     return ok(f"Made {int(copies)} cop{'y' if copies == 1 else 'ies'} of {len(clips)} clip(s); the first starts at "
               f"{first['position']:.2f} s on track {first['track']}"

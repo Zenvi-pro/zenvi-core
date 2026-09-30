@@ -8,9 +8,11 @@ through the update manager, and never touches the transaction id itself:
 callers group the edits with ``classes.updates.nested_transaction``.
 """
 
+import copy
 import json
 import os
 import random
+import threading
 
 import openshot
 
@@ -278,10 +280,58 @@ def _point_json(x, y, interpolation):
     return json.loads(openshot.Point(x, y, interpolation).Json())
 
 
-def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
-                transition_path=None, random_transitions=None, transition_length=2.0,
-                image_length=10.0, zoom=None, transition_first_clip=True):
+_TRANSITION_READERS = {}
+_TRANSITION_READERS_LOCK = threading.Lock()
+
+
+def transition_reader_json(path):
+    """Reader JSON of a transition image, cached per path (rendering an SVG takes ~1 s)."""
+    with _TRANSITION_READERS_LOCK:
+        cached = _TRANSITION_READERS.get(path)
+    if cached is None:
+        cached = json.loads(openshot.QtImageReader(path).Json())
+        with _TRANSITION_READERS_LOCK:
+            _TRANSITION_READERS[path] = cached
+    return copy.deepcopy(cached)
+
+
+def place_files(entries, start_position, track_num, **options):
     """Place files back to back on one track: the Add to Timeline dialog's accept().
+
+    Takes the same options as :func:`plan_placement`. Returns ``(clip_ids,
+    transition_ids)``. The caller owns the undo group.
+    """
+    clip_ids, transition_ids = [], []
+    for step in plan_placement(entries, start_position, track_num, **options):
+        clip_id, transition_id = insert_placement_step(step)
+        clip_ids.append(clip_id)
+        if transition_id:
+            transition_ids.append(transition_id)
+    return clip_ids, transition_ids
+
+
+def insert_placement_step(step):
+    """Save one planned clip (and the transition leading into it). Returns their ids."""
+    transition_id = None
+    if step.get("transition"):
+        tran = Transition()
+        tran.data = step["transition"]
+        tran.save()
+        transition_id = tran.data.get("id")
+    clip = Clip()
+    clip.data = step["clip"]
+    clip.save()
+    return clip.data.get("id"), transition_id
+
+
+def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.0,
+                   transition_path=None, random_transitions=None, transition_length=2.0,
+                   image_length=10.0, zoom=None, transition_first_clip=True):
+    """Build the clips (and transitions) the Add to Timeline dialog would place, without saving.
+
+    Reads the media through libopenshot (slow: call it off the GUI thread when
+    you can) and returns ``[{"clip": data, "transition": data or None}]`` for
+    :func:`insert_placement_step`.
 
     entries             -- ``{"file": File, "start": s or None, "end": s or None}`` in order;
                            start/end override the file's own in/out (source seconds).
@@ -292,7 +342,6 @@ def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
     zoom                -- None, ZOOM_RANDOM, ZOOM_IN or ZOOM_OUT.
     transition_first_clip -- the dialog also wipes the first clip in over what is below it.
 
-    Returns ``(clip_ids, transition_ids)``. The caller owns the undo group.
     """
     from classes import app
     from classes.clip_placement import apply_audio_only_clip_overrides
@@ -301,8 +350,7 @@ def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
     fps = app.get_app().project.get("fps")
     fps_float = float(fps["num"]) / float(fps["den"])
     position = start_position
-    added_clip_ids = []
-    added_transition_ids = []
+    steps = []
 
     for index, entry in enumerate(entries):
         file = entry["file"]
@@ -399,7 +447,6 @@ def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
         if (transition_path or random_transitions) and (index > 0 or transition_first_clip):
             # Add transition for this clip
             path = random.choice(random_transitions) if random_transitions else transition_path
-            transition_reader = openshot.QtImageReader(path)
 
             brightness = openshot.Keyframe()
             brightness.AddPoint(1, 1.0, openshot.BEZIER)
@@ -416,7 +463,7 @@ def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
                 "end": min(transition_length, end_time - start_time),
                 "brightness": json.loads(brightness.Json()),
                 "contrast": json.loads(contrast.Json()),
-                "reader": json.loads(transition_reader.Json()),
+                "reader": transition_reader_json(path),
                 "replace_image": False,
             }
 
@@ -424,19 +471,12 @@ def place_files(entries, start_position, track_num, fade=None, fade_length=2.0,
             position = max(start_position, position - transition_length)
             transitions_data["position"] = position
             new_clip["position"] = position
+        else:
+            transitions_data = None
 
-            tran = Transition()
-            tran.data = transitions_data
-            tran.save()
-            added_transition_ids.append(tran.data.get("id"))
-
-        # Save Clip
-        clip = Clip()
-        clip.data = new_clip
-        clip.save()
-        added_clip_ids.append(clip.data.get("id"))
+        steps.append({"clip": new_clip, "transition": transitions_data})
 
         # Increment position by length of clip
         position += (end_time - start_time)
 
-    return added_clip_ids, added_transition_ids
+    return steps
