@@ -441,13 +441,14 @@ def test_duplicate_three_copies_with_ripple_insert(ed):
 def test_duplicate_refuses_to_cover_and_copies_inner_transitions(ed):
     a, b = _seq(ed, 2)
     refused(ed, ed.call("duplicate_clips_tool", timeline_clip_ids=[a]), "would overlap")
+    ed.call("trim_clips_tool", timeline_clip_ids=[a], trim_end_seconds=-0.5, allow_overlap=True)  # a 0-4.5
     t = Transition()
-    t.data = {"layer": T1, "position": 3.5, "start": 0.0, "end": 0.5, "title": "Transition", "type": "Mask"}
+    t.data = {"layer": T1, "position": 4.0, "start": 0.0, "end": 0.5, "title": "Transition", "type": "Mask"}
     t.save()
     ed.mark()
     r = receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a, b], to_track="2"))
     assert len(r["transition_ids"]) == 1
-    assert Transition.get(id=r["transition_ids"][0]).data["position"] == 11.5
+    assert Transition.get(id=r["transition_ids"][0]).data["position"] == 12.0
     assert {c["track"] for c in r["copies"][0]} == {2}
     ed.mark()
     ed.lock_track(T3)
@@ -572,3 +573,14 @@ def test_background_tools_wait_long_enough_for_each_hop(ed, monkeypatch):
     f = ed.add_file("video", duration=3.0)
     receipt(ed.call("add_clips_to_timeline_tool", file_ids=[f], track="2"))
     assert timeouts and all(t == timeline_edit.HOP_TIMEOUT for t in timeouts)
+
+
+def test_duplicate_leaves_a_clips_incoming_crossfade_behind(ed):
+    """Copying one clip of a crossfaded sequence must not copy its neighbour's transition
+    (seen live: every copy faded in from black)."""
+    a, b, c, (t_ab, t_bc) = _crossfaded(ed)
+    r = receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[c]))
+    assert r["transition_ids"] == []
+    r = receipt(ed.call("duplicate_clips_tool", timeline_clip_ids=[a, b], position_seconds=20))
+    assert len(r["transition_ids"]) == 1
+    assert Transition.get(id=r["transition_ids"][0]).data["position"] == 23.5

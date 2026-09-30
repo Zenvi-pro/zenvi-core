@@ -202,6 +202,28 @@ def remap_layers(source_layers, dest_track) -> dict:
     return out
 
 
+def transitions_between(clips) -> list:
+    """Transitions lying where two of *clips* overlap on one track (crossfades inside a selection).
+
+    A clip's incoming or outgoing crossfade overlaps only that clip among the
+    selected ones: it belongs to the neighbour and is not included.
+    """
+    from classes.query import Transition
+    tol = tolerance()
+    spans = {c.id: (int(c.data.get("layer") or 0),) + span(c.data) for c in clips}
+    layer_set = {v[0] for v in spans.values()}
+    out = []
+    for tr in Transition.filter():
+        layer = int(tr.data.get("layer") or 0)
+        if layer not in layer_set:
+            continue
+        t0, t1 = span(tr.data)
+        under = [cid for cid, (lay, s, e) in spans.items() if lay == layer and s < t1 - tol and e > t0 + tol]
+        if len(under) >= 2:
+            out.append(tr)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Overlaps
 # ---------------------------------------------------------------------------

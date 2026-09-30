@@ -57,6 +57,7 @@ from classes.editor_tools.timeline_edit_common import (
     title,
     tolerance,
     track_name,
+    transitions_between,
 )
 
 _OVERLAP_ARG = boolean(
@@ -412,7 +413,7 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
     point falls inside the previous clip's tail and is refused: reorder first, then add the
     transitions. One undo step. Locked tracks are refused.
     """
-    from classes.query import Clip, Transition
+    from classes.query import Clip
 
     if not _clips_or_query_given(timeline_clip_ids, clip_query, scope):
         raise ToolError("say which clips to move: timeline_clip_ids, clip_query, or scope")
@@ -490,8 +491,7 @@ def move_clips(timeline_clip_ids=[], clip_query="", track="", scope="", position
                    if c.id not in ids and g_start + tol < span(c.data)[0] < g_end - tol]
         if between:
             raise ToolError(f"ripple needs one contiguous run of clips; {title(between[0])!r} sits between them")
-        inner_trans = [t for t in Transition.filter(layer=src)
-                       if g_start - tol <= span(t.data)[0] and span(t.data)[1] <= g_end + tol]
+        inner_trans = transitions_between(clips)
         moving_ids = ids | {t.id for t in inner_trans}
 
         # 1. close the hole at the source (positions after the close, by id)
@@ -881,7 +881,8 @@ def remove_gaps(track="", from_seconds=0.0, only_first=False):
         "to_track": string("Track for the copies: UI track number (1 = bottom), name, or layer number. Empty = the "
                            "same track(s).", ""),
         "copies": integer("How many copies, placed back to back.", 1, minimum=1, maximum=50),
-        "include_transitions": boolean("Also copy transitions lying within the copied clips' time span.", True),
+        "include_transitions": boolean("Also copy the transitions between the copied clips (crossfades inside "
+                                       "the selection).", True),
         "ripple": boolean("Insert the copies: push the clips at the destination later to make room.", False),
         "allow_overlap": _OVERLAP_ARG,
     }),
@@ -916,10 +917,8 @@ def duplicate_clips(timeline_clip_ids=[], clip_query="", track="", scope="", pos
     g_end = max(e for _s, e in spans.values())
     length = g_end - g_start
     base = snap(position_seconds) if position_seconds >= 0 else g_end
-    trans = []
-    if include_transitions:
-        trans = [tr for tr in Transition.filter() if int(tr.data.get("layer") or 0) in src_layers
-                 and g_start - tol <= span(tr.data)[0] and span(tr.data)[1] <= g_end + tol]
+    # Only crossfades between two copied clips; a clip's incoming/outgoing one stays behind.
+    trans = transitions_between(clips) if include_transitions else []
 
     planned = []
     for k in range(int(copies)):
