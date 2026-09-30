@@ -13,11 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 @pytest.fixture(autouse=True)
 def _restore_query_module():
-    """_install_fake_query_module replaces classes.query; put the real one back.
-
-    Left in sys.modules, the fake File (no .save) broke every later test that
-    imports classes.query (e.g. the editor harness in test_undo_property_edits).
-    """
+    """The fake classes.query must not outlive the test: later tests that use
+    the real query layer (the editor-tools harness) would get the fake."""
     saved = sys.modules.get("classes.query")
     yield
     if saved is None:
