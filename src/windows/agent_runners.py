@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -579,7 +580,9 @@ def register_codex(port: int, token: str):
     ) % token
 
 
-_CURSOR_MCP_NAMES = ("zenvi-editor", "zenvi")
+# The one entry in ~/.cursor/mcp.json that is Zenvi's. A server the user
+# named "zenvi" is theirs, not ours.
+_CURSOR_MCP_NAME = "zenvi-editor"
 
 
 def _cursor_mcp_path() -> str:
@@ -591,8 +594,7 @@ def _cursor_is_registered() -> bool:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        servers = data.get("mcpServers") or {}
-        return any(name in servers for name in _CURSOR_MCP_NAMES)
+        return _CURSOR_MCP_NAME in (data.get("mcpServers") or {})
     except Exception:
         return False
 
@@ -604,23 +606,41 @@ def _cursor_server_entry(port: int, token: str) -> dict:
     }
 
 
-def register_cursor(port: int, token: str):
-    """Write or replace the Zenvi HTTP server in ``~/.cursor/mcp.json``.
+def _write_with_mode(path: str, text: str, mode: int) -> None:
+    """Write *path* with *mode* from the start, not the umask's 0644 first."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(path, mode)   # O_CREAT's mode only applies to a file it creates
 
-    Cursor's CLI has no ``mcp add`` for an HTTP server; it reads this file.
-    Idempotent: an existing ``zenvi-editor`` or ``zenvi`` entry is updated in
-    place (so a restart that moved the port does not leave a stale URL), and
-    every other server is left alone. Invalid JSON is not touched.
+
+def register_cursor(port: int, token: str):
+    """Write or replace Zenvi's HTTP server in ``~/.cursor/mcp.json``.
+
+    Cursor's CLI has no ``mcp add`` for an HTTP server; it reads this file,
+    which the Cursor editor reads too. Only the ``zenvi-editor`` entry is
+    touched: it is added, or updated in place when a restart moved the port,
+    and every other server is left as it was. An entry that is already
+    current is not rewritten, so the check CursorCliRunner makes before each
+    turn costs one read. Invalid JSON is refused, never repaired.
+
+    The file holds other servers' secrets, so the ``.zenvi-backup`` copy and
+    the new file keep its permissions (0600 when it is new), and the new
+    content is staged next to it and moved into place rather than written
+    over it. A symlinked mcp.json (dotfiles) is updated through the link.
 
     Returns ``(ok, message)``.
     """
-    path = _cursor_mcp_path()
+    path = os.path.realpath(_cursor_mcp_path())
+    connected = "Connected. Run `cursor-agent` in your terminal to use it."
     original = ""
     data = {}
+    mode = 0o600
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 original = fh.read()
+            mode = stat.S_IMODE(os.stat(path).st_mode)
         except Exception as e:
             return False, "Failed to read ~/.cursor/mcp.json: %s" % e
         if original.strip():
@@ -639,25 +659,25 @@ def register_cursor(port: int, token: str):
         return False, "~/.cursor/mcp.json mcpServers is not an object, not touching it."
 
     entry = _cursor_server_entry(port, token)
-    present = [name for name in _CURSOR_MCP_NAMES if name in servers]
-    if not present:
-        present = ["zenvi-editor"]
-    for name in present:
-        servers[name] = entry
+    if servers.get(_CURSOR_MCP_NAME) == entry:
+        return True, connected
+    servers[_CURSOR_MCP_NAME] = entry
 
-    updated = json.dumps(data, indent=2) + "\n"
+    staged = path + ".zenvi-tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if original:
-            with open(path + ".zenvi-backup", "w", encoding="utf-8") as fh:
-                fh.write(original)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(updated)
+            _write_with_mode(path + ".zenvi-backup", original, mode)
+        _write_with_mode(staged, json.dumps(data, indent=2) + "\n", mode)
+        os.replace(staged, path)
     except Exception as e:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
         return False, "Failed to write ~/.cursor/mcp.json: %s" % e
 
-    return True, "Connected. Run `cursor-agent` in your terminal to use it."
+    return True, connected
 
 
 class BaseAgentRunner(QObject):

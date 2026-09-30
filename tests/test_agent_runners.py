@@ -1225,3 +1225,93 @@ def test_register_cursor_refuses_invalid_json(monkeypatch, tmp_path):
     ok, message = ar.register_cursor(7434, "tok123")
     assert ok is False
     assert cfg.read_text() == original
+
+
+def test_register_cursor_leaves_a_users_own_zenvi_server_alone(monkeypatch, tmp_path):
+    """Only zenvi-editor is Zenvi's; a server the user called "zenvi" is theirs."""
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    theirs = {"command": "node", "args": ["my-zenvi-scripts.js"]}
+    cfg.write_text(json.dumps({"mcpServers": {"zenvi": theirs}}))
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    assert ar._cursor_is_registered() is False, "their server is not our registration"
+    ok, _ = ar.register_cursor(7434, "tok123")
+    servers = json.loads(cfg.read_text())["mcpServers"]
+    assert ok is True
+    assert servers["zenvi"] == theirs
+    assert servers["zenvi-editor"]["url"] == "http://127.0.0.1:7434/mcp"
+
+
+def test_register_cursor_does_not_rewrite_a_current_entry(monkeypatch, tmp_path):
+    """The runner re-checks before every turn; that must not churn the file
+    the Cursor editor watches, or overwrite the backup of the user's own."""
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    users = json.dumps({"mcpServers": {"other": {"url": "https://example.com/mcp"}}})
+    cfg.write_text(users)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    written = cfg.read_text()
+    os.utime(cfg, (1, 1))
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert cfg.read_text() == written and cfg.stat().st_mtime == 1
+    assert (tmp_path / "mcp.json.zenvi-backup").read_text() == users
+    assert not (tmp_path / "mcp.json.zenvi-tmp").exists()
+    # A moved port is still picked up.
+    assert ar.register_cursor(7435, "tok123")[0] is True
+    assert json.loads(cfg.read_text())["mcpServers"]["zenvi-editor"]["url"].endswith(":7435/mcp")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_register_cursor_never_leaves_other_servers_secrets_world_readable(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"discord": {"env": {"DISCORD_TOKEN": "s3cret"}}}}))
+    cfg.chmod(0o600)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+    old = os.umask(0o022)
+    try:
+        assert ar.register_cursor(7434, "tok123")[0] is True
+    finally:
+        os.umask(old)
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "mcp.json.zenvi-backup").stat().st_mode & 0o777 == 0o600
+
+    fresh = tmp_path / "new" / ".cursor" / "mcp.json"
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(fresh))
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert fresh.stat().st_mode & 0o777 == 0o600, "the bearer token is in there too"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+def test_register_cursor_updates_a_symlinked_config_through_the_link(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    target = tmp_path / "dotfiles" / "cursor-mcp.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps({"mcpServers": {}}))
+    link = tmp_path / ".cursor" / "mcp.json"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(link))
+
+    assert ar.register_cursor(7434, "tok123")[0] is True
+    assert link.is_symlink()
+    assert "zenvi-editor" in json.loads(target.read_text())["mcpServers"]
+
+
+def test_register_cursor_refuses_a_non_object_server_table(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "mcp.json"
+    original = json.dumps({"mcpServers": ["not", "a", "table"]})
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_cursor_mcp_path", lambda: str(cfg))
+    ok, message = ar.register_cursor(7434, "tok123")
+    assert ok is False and "not touching" in message
+    assert cfg.read_text() == original
