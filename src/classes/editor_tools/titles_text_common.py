@@ -86,7 +86,11 @@ def commit_on_main(func, *args):
     from classes.tool_handlers import MainThreadTimeout
     try:
         return on_main(func, *args, timeout=COMMIT_TIMEOUT)
-    except MainThreadTimeout:
+    except MainThreadTimeout as exc:
+        if "nothing was changed" in str(exc):
+            # never picked up, so cancelled: nothing happened and the caller may clean up
+            raise ToolError(f"the editor was too busy to start the change within {COMMIT_TIMEOUT}s; nothing "
+                            "was changed, try again") from None
         raise CommitTimeout(f"the editor was too busy to finish within {COMMIT_TIMEOUT}s; the change may still "
                             "appear shortly -- check get_timeline_state_tool before trying again") from None
 

@@ -409,14 +409,34 @@ def test_a_commit_timeout_keeps_the_svg_and_says_the_title_may_still_appear(tt, 
 
     def slow_on_main(func, *args, timeout=None):
         if timeout == titles_text_common.COMMIT_TIMEOUT:
-            raise tool_handlers.MainThreadTimeout("MAIN_THREAD_TIMEOUT")
+            raise tool_handlers.MainThreadTimeout(
+                "MAIN_THREAD_TIMEOUT: this call started on the GUI thread but had not finished. It may still complete")
         return func(*args)
 
     monkeypatch.setattr(titles_text_common, "on_main", slow_on_main)
     out = tt.call("add_title_tool", text="Busy editor", template="Standard_1")
     assert out.startswith("Error") and "too busy" in out and "get_timeline_state_tool" in out
-    # the queued work may still land, so the SVG it imports must still be there
+    # the running work may still land, so the SVG it imports must still be there
     assert os.path.exists(str(tt.tmp_path / "title" / "Busy editor.svg"))
+
+
+def test_a_commit_that_never_started_cleans_up_and_says_nothing_changed(tt, monkeypatch):
+    from classes import tool_handlers
+    from classes.editor_tools import titles_text_common
+
+    def cancelled_on_main(func, *args, timeout=None):
+        if timeout == titles_text_common.COMMIT_TIMEOUT:
+            raise tool_handlers.MainThreadTimeout(
+                "MAIN_THREAD_TIMEOUT: the Qt GUI thread did not pick this call up within 240s, so it was "
+                "cancelled: nothing was changed and it is safe to retry.")
+        return func(*args)
+
+    monkeypatch.setattr(titles_text_common, "on_main", cancelled_on_main)
+    tt.mark()
+    out = tt.call("add_title_tool", text="Never started", template="Standard_1")
+    assert out.startswith("Error") and "nothing was changed" in out
+    assert not os.path.exists(str(tt.tmp_path / "title" / "Never started.svg"))
+    assert tt.undo_steps_since_mark() == 0
 
 
 def test_a_missing_template_font_becomes_the_title_editors_fallback(tt, monkeypatch):
