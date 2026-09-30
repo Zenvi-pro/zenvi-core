@@ -156,8 +156,13 @@ def add_bound_action(menu, owner, action_name, fallback_text, callback=None, ena
     return action
 
 
-def keyframe_bezier_presets():
-    _ = get_app()._tr
+def keyframe_bezier_presets(tr=None):
+    """The 28 bezier interpolation presets: (x1, y1, x2, y2, label).
+
+    ``tr`` translates the labels (default: the app's translator); agent tools
+    pass ``lambda s: s`` for stable English names.
+    """
+    _ = tr or get_app()._tr
     return [
         (0.250, 0.100, 0.250, 1.000, _("Ease (Default)")),
         (0.420, 0.000, 1.000, 1.000, _("Ease In")),
