@@ -160,6 +160,14 @@ def _resume_player(was_playing):
 
 # How long a marshalled call waits for the GUI thread before giving up.
 MAIN_THREAD_TIMEOUT_SECONDS = 30
+# Once a marshalled call has started on the GUI thread it is waited out for at
+# least this long: reporting a failure for an edit that then lands makes a
+# retrying agent apply it twice.
+MAIN_THREAD_GRACE_SECONDS = 120
+
+
+class _SkippedAfterTimeout(Exception):
+    """A marshalled call reached the GUI thread after its caller gave up."""
 
 
 class MainThreadTimeout(TimeoutError):
@@ -205,7 +213,17 @@ def _run_on_main_thread(func, *args, timeout=None):
     # having to thread a tid through its signature.
     caller_tid = app.updates.transaction_id
 
+    # A queued call that only reaches the GUI thread after its caller gave up
+    # must not run: the caller has already told the agent it failed, and an
+    # edit landing afterwards gets applied twice when the agent retries.
+    state = {"started": False, "cancelled": False}
+    state_lock = threading.Lock()
+
     def _with_caller_transaction(*a):
+        with state_lock:
+            if state["cancelled"]:
+                raise _SkippedAfterTimeout()
+            state["started"] = True
         previous = app.updates.transaction_id
         app.updates.transaction_id = caller_tid
         try:
@@ -223,12 +241,28 @@ def _run_on_main_thread(func, *args, timeout=None):
     )
 
     if not done.wait(timeout=timeout):
-        raise MainThreadTimeout(
-            f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
-            f"{timeout}s. The editor is up but its event loop is not draining "
-            f"(a modal dialog, or startup never finished). Read-only tools "
-            f"still work; call mcp_health_tool to confirm."
-        )
+        with state_lock:
+            started = state["started"]
+            if not started:
+                state["cancelled"] = True
+        if not started:
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not pick this call up "
+                f"within {timeout}s, so it was cancelled: nothing was changed and it "
+                f"is safe to retry. The editor is up but its event loop is busy or "
+                f"blocked (a modal dialog, a long render, or startup). Read-only "
+                f"tools still work; call mcp_health_tool to check."
+            )
+        # It is running on the GUI thread: wait it out instead of reporting a
+        # failure for an edit that is about to land.
+        grace = max(float(timeout), float(MAIN_THREAD_GRACE_SECONDS))
+        if not done.wait(timeout=grace):
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: this call started on the GUI thread but had "
+                f"not finished after {timeout + grace:.0f}s. It may still complete: "
+                f"read the timeline or project state before retrying so the edit "
+                f"is not applied twice."
+            )
 
     if error_box[0] is not None:
         raise error_box[0]
