@@ -256,3 +256,30 @@ def test_yolo_download_verifies_installs_and_cleans_up(tmp_path, monkeypatch):
     with pytest.raises(ValueError):
         effect_models.download_yolo_model(manifest, bad)
     assert os.listdir(tmp_path / "yolo-bad") == [] and not effect_models.yolo_installed_files_match(bad)
+
+
+def test_renders_run_on_a_qthread_with_results_errors_and_timeout(monkeypatch):
+    import threading
+    import time
+    from classes import tool_handlers
+
+    started = []
+
+    class FakeQThread:
+        def start(self):
+            started.append(self)
+            self._t = threading.Thread(target=self.run, daemon=True)
+            self._t.start()
+
+        def wait(self, ms):
+            self._t.join(ms / 1000.0)
+            return not self._t.is_alive()
+
+    monkeypatch.setattr(tool_handlers, "QThread", FakeQThread)
+    assert analysis.run_in_render_thread(lambda: threading.current_thread().name) != threading.current_thread().name
+    with pytest.raises(ValueError):
+        analysis.run_in_render_thread(lambda: (_ for _ in ()).throw(ValueError("boom")))
+    with pytest.raises(analysis.ToolError):
+        analysis.run_in_render_thread(lambda: time.sleep(0.5), timeout=0.05)
+    assert len(started) == 3 and started[-1] in analysis._ORPHAN_THREADS
+    analysis._ORPHAN_THREADS.clear()

@@ -14,6 +14,7 @@ import copy
 import json
 import math
 import os
+import threading
 from typing import Optional
 
 from classes.editor_tools._base import (
@@ -78,6 +79,48 @@ class RenderedFrame:
             except Exception:
                 pass
         self._timeline = self._cache = self._clip = None
+
+
+# Render threads that outlived their timeout; referenced until they finish (a QThread
+# destroyed while running aborts the process).
+_ORPHAN_THREADS: list = []
+
+
+def run_in_render_thread(func, timeout: float = 300.0):
+    """Run *func()* on a fresh QThread and return its result (re-raising its exception).
+
+    libopenshot draws text (Caption, Timer, SVG titles) with Qt fonts. On a plain Python
+    thread Qt has no event dispatcher, so the font cache warns ("Timers can only be used
+    with threads started with QThread"), PyQt's message handler then waits for the GIL
+    while Qt's font mutex is held, and a GUI thread that holds the GIL and wants that
+    mutex (any widget measuring text) deadlocks the whole app. A QThread has a
+    dispatcher, so every libopenshot render in these tools runs on one.
+    """
+    from classes import tool_handlers
+    qthread = getattr(tool_handlers, "QThread", None)
+    if qthread is None:  # headless tests: no Qt
+        return func()
+    box: dict = {}
+    done = threading.Event()
+
+    class _RenderThread(qthread):
+        def run(self):
+            try:
+                box["result"] = func()
+            except BaseException as exc:  # handed back to the caller below
+                box["error"] = exc
+            finally:
+                done.set()
+
+    worker = _RenderThread()
+    worker.start()
+    if not done.wait(timeout):
+        _ORPHAN_THREADS.append(worker)
+        raise ToolError(f"rendering did not finish within {timeout:g}s; nothing changed")
+    worker.wait(5000)
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def render_frame(clip_data: Optional[dict], time_s: float, strip=None) -> RenderedFrame:
@@ -455,14 +498,18 @@ def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None
         parent = os.path.dirname(save_frame_path)
         if not os.path.isdir(parent):
             raise ToolError(f"folder {parent} does not exist")
-    rendered = render_frame(clip_data, t)
-    try:
-        stats = compute_stats(scope_data(rendered.frame, region_r), pixel_stats(frame_pixels(rendered.frame, region_r)))
-        if save_frame_path:
-            rendered.frame.Save(save_frame_path, 1.0, "PNG", 100)
-        size = [int(rendered.frame.GetWidth()), int(rendered.frame.GetHeight())]
-    finally:
-        rendered.close()
+    def _measure(strip=None, save=""):
+        rendered = render_frame(clip_data, t, strip=strip)
+        try:
+            out = compute_stats(scope_data(rendered.frame, region_r),
+                                pixel_stats(frame_pixels(rendered.frame, region_r)))
+            if save:
+                rendered.frame.Save(save, 1.0, "PNG", 100)
+            return out, [int(rendered.frame.GetWidth()), int(rendered.frame.GetHeight())]
+        finally:
+            rendered.close()
+
+    stats, size = run_in_render_thread(lambda: _measure(save=save_frame_path))
     receipt = {"time": round(t, 3), "target": f"clip {clip.id}" if clip is not None else "timeline",
                "frame_size": size, "stats": stats}
     if clip is not None:
@@ -471,12 +518,7 @@ def analyze_frame_colors(timeline_clip_id="", clip_query="", track="", time=None
     if region_r:
         receipt["region"] = region_r
     if compare_without_effects:
-        before = render_frame(clip_data, t, strip="all")
-        try:
-            receipt["without_effects"] = compute_stats(scope_data(before.frame, region_r),
-                                                       pixel_stats(frame_pixels(before.frame, region_r)))
-        finally:
-            before.close()
+        receipt["without_effects"] = run_in_render_thread(lambda: _measure(strip="all"))[0]
     if save_frame_path:
         receipt["saved_frame"] = save_frame_path
     where = f"clip {clip.id}" if clip is not None else "the timeline"
@@ -515,11 +557,14 @@ def sample_screen_color(clip, sample_time=None) -> tuple:
     """(#rrggbb, detail) of the green/blue screen at the clip's frame edges; ToolError if none."""
     data = copy.deepcopy(clip.data)
     t = _analysis_time(data, sample_time)
-    rendered = render_frame(data, t, strip={"ChromaKey"})
-    try:
-        hists = [scope_data(rendered.frame, strip) for strip in _EDGE_STRIPS]
-    finally:
-        rendered.close()
+    def _edges():
+        rendered = render_frame(data, t, strip={"ChromaKey"})
+        try:
+            return [scope_data(rendered.frame, strip) for strip in _EDGE_STRIPS]
+        finally:
+            rendered.close()
+
+    hists = run_in_render_thread(_edges)
     color, kind = screen_color_from_histograms(hists)
     if kind is None:
         raise ToolError(f"the edges of clip {clip.id} at {t:.2f}s are {color}, not a green or blue screen; "

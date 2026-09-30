@@ -255,8 +255,19 @@ def object_mask_prompt_context(prompts: dict, width: int, height: int) -> dict:
 # Running the job (worker thread)
 # ---------------------------------------------------------------------------
 
+# Text overlays are irrelevant to motion analysis, and drawing them on libopenshot's own
+# processing thread (no Qt event dispatcher) can deadlock the app on Qt's font mutex.
+_SKIP_WHILE_PROCESSING = frozenset({"Caption", "Timer"})
+
+
 def run_job(class_name: str, clip_data: dict, context: dict, prompts: Optional[dict], timeout: float) -> dict:
-    """Process the clip on a private timeline and return the new effect's JSON (with its data loaded)."""
+    """Process the clip on a private timeline (inside a QThread) and return the new effect's JSON."""
+    from classes.editor_tools.effects_color_analysis import run_in_render_thread
+    return run_in_render_thread(lambda: _run_job(class_name, clip_data, context, prompts, timeout),
+                                timeout=timeout + 60)
+
+
+def _run_job(class_name, clip_data, context, prompts, timeout):
     import openshot
     from classes import info
     from classes.editor_tools.effects_color_analysis import project_snapshot
@@ -268,7 +279,10 @@ def run_job(class_name: str, clip_data: dict, context: dict, prompts: Optional[d
     if os.name == "nt":
         protobuf_path = protobuf_path.replace("\\", "/")
     proj = project_snapshot()
-    proj["clips"] = [copy.deepcopy(clip_data)]
+    clip_copy = copy.deepcopy(clip_data)
+    clip_copy["effects"] = [e for e in (clip_copy.get("effects") or [])
+                            if isinstance(e, dict) and e.get("class_name") not in _SKIP_WHILE_PROCESSING]
+    proj["clips"] = [clip_copy]
     proj["effects"] = []
     video = {"fps": proj.get("fps") or {"num": 30, "den": 1}, "width": int(proj.get("width") or 1920),
              "height": int(proj.get("height") or 1080)}
