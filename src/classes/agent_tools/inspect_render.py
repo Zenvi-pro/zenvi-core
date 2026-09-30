@@ -12,7 +12,7 @@ import logging
 import os
 import tempfile
 import threading
-from typing import Any, Callable, Optional
+from typing import Any
 
 log = logging.getLogger("agent_tools.inspect_render")
 
