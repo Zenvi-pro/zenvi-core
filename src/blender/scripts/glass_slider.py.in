@@ -121,16 +121,7 @@ title_mat = keyframe_principled(
     specular_color=params["specular_color"])
 if title_mat:
     title_mat.specular_intensity = params["specular_intensity"]
-    title_mat.diffuse_color = ensure_rgba(params["diffuse_color"])
-    if title_mat.node_tree:
-        bsdf = title_mat.node_tree.nodes.get("Principled BSDF")
-        if bsdf:
-            bsdf.inputs[0].default_value = ensure_rgba(params["diffuse_color"])
-            if len(bsdf.inputs) > 26:
-                bsdf.inputs[26].default_value = ensure_rgba(params["diffuse_color"])
-        emission = title_mat.node_tree.nodes.get("Emission")
-        if emission and hasattr(emission, "inputs") and len(emission.inputs) > 0:
-            emission.inputs[0].default_value = ensure_rgba(params["diffuse_color"])
+    set_material_color("Title.Material", params["diffuse_color"])
 
 # GLASS - Change the material settings (color, alpha, etc...)
 bg_mat = keyframe_principled(
@@ -143,16 +134,7 @@ bg_mat = keyframe_principled(
     specular_color=params["specular_color_bg"])
 if bg_mat:
     bg_mat.specular_intensity = params["specular_intensity_bg"]
-    bg_mat.diffuse_color = ensure_rgba(params["diffuse_color_bg"])
-    if bg_mat.node_tree:
-        bsdf_bg = bg_mat.node_tree.nodes.get("Principled BSDF")
-        if bsdf_bg:
-            bsdf_bg.inputs[0].default_value = ensure_rgba(params["diffuse_color_bg"])
-            if len(bsdf_bg.inputs) > 26:
-                bsdf_bg.inputs[26].default_value = ensure_rgba(params["diffuse_color_bg"])
-        emission_bg = bg_mat.node_tree.nodes.get("Emission")
-        if emission_bg and hasattr(emission_bg, "inputs") and len(emission_bg.inputs) > 0:
-            emission_bg.inputs[0].default_value = ensure_rgba(params["diffuse_color_bg"])
+    set_material_color("Background.Material", params["diffuse_color_bg"])
 if bpy.data.materials.get("Background.Material") and bpy.data.materials["Background.Material"].node_tree:
     bg_nodes = bpy.data.materials["Background.Material"].node_tree.nodes
     if len(bg_nodes) > 1 and hasattr(bg_nodes[1].inputs[18], "default_value"):

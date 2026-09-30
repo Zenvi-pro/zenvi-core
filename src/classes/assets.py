@@ -37,6 +37,19 @@ def get_assets_path(file_path=None, create_paths=True):
     if not file_path:
         return info.USER_PATH
 
+    # Android content:// handles are not local filesystem paths.
+    # Keep all project assets in the app's user storage directory instead.
+    if str(file_path).startswith("content://"):
+        return info.USER_PATH
+
+    # Crash-recovery and autosave backups are not real project files, so
+    # their assets (thumbnails, optimized videos, ...) stay in the user folder.
+    file_abs = os.path.abspath(str(file_path))
+    backup_abs = os.path.abspath(info.BACKUP_FILE)
+    recovery_abs = os.path.abspath(info.RECOVERY_PATH) + os.sep
+    if file_abs == backup_abs or file_abs.startswith(recovery_abs):
+        return info.USER_PATH
+
     try:
         # Generate asset folder name filename + "_assets"
         file_path = file_path
@@ -94,6 +107,23 @@ def get_assets_path(file_path=None, create_paths=True):
             if not os.path.exists(asset_media_folder):
                 os.mkdir(asset_media_folder)
                 log.info("New media folder: {}".format(asset_media_folder))
+            # Create asset ComfyUI output folder
+            asset_comfy_output_folder = os.path.join(asset_path, "comfyui-output")
+            if not os.path.exists(asset_comfy_output_folder):
+                os.mkdir(asset_comfy_output_folder)
+                log.info("New ComfyUI output folder: {}".format(asset_comfy_output_folder))
+
+            # Create asset protobuf data folder
+            asset_protobuf_folder = os.path.join(asset_path, "protobuf_data")
+            if not os.path.exists(asset_protobuf_folder):
+                os.mkdir(asset_protobuf_folder)
+                log.info("New protobuf data folder: {}".format(asset_protobuf_folder))
+
+            # Create asset optimized-preview folder
+            asset_proxy_folder = os.path.join(asset_path, "optimized")
+            if not os.path.exists(asset_proxy_folder):
+                os.mkdir(asset_proxy_folder)
+                log.info("New optimized folder: {}".format(asset_proxy_folder))
 
         return asset_path
 
@@ -168,6 +198,8 @@ def _generated_roots():
     return [
         os.path.join(info.USER_PATH, "generated"),
         os.path.join(info.USER_PATH, "Generated"),  # legacy sibling name
+        # Recording dock output for projects that have not been saved yet
+        os.path.join(info.USER_PATH, "recordings"),
     ]
 
 

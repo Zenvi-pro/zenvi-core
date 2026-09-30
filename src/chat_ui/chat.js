@@ -225,6 +225,8 @@
     var thinkingBlockBody = null;
     var thinkingBlockHeader = null;
     var thinkingBlockCollapsed = false;
+    var thinkingBlockStartedAt = null; // when the current Thinking block opened
+    var proseCommittedBelowThinking = false; // a text bubble was frozen under the block
     var firstAnswerTokenReceived = false;
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
@@ -513,6 +515,8 @@
         if (thinkingBlockEl) return;
         thinkingBlockCollapsed = false;
         firstAnswerTokenReceived = false;
+        thinkingBlockStartedAt = Date.now();
+        proseCommittedBelowThinking = false;
         thinkingBlockEl = document.createElement('div');
         thinkingBlockEl.className = 'chat-thinking-block expanded';
         thinkingBlockHeader = document.createElement('button');
@@ -561,6 +565,36 @@
     }
 
     window.collapseThinkingBlock = collapseThinkingBlock;
+
+    function thinkingElapsedMs() {
+        var since = thinkingBlockStartedAt || processingStartTime;
+        return since ? (Date.now() - since) : 0;
+    }
+
+    // Close out the current Thinking block so the next one can open further
+    // down the transcript. A still-open block with nothing in it is removed
+    // (same rule as end of turn); anything else collapses to its "Thought for
+    // Ns" summary. Finished tool blocks stay registered so a late
+    // completeToolBlock can still find them.
+    function retireThinkingBlock() {
+        if (!thinkingBlockEl) return;
+        var hasTools = thinkingBlockBody && thinkingBlockBody.querySelector('.chat-tool-block');
+        var hasSteps = activitySteps.length > 0;
+        if (!hasTools && !hasSteps && !thinkingBlockCollapsed) {
+            if (thinkingBlockEl.parentNode) thinkingBlockEl.remove();
+        } else {
+            collapseThinkingBlock(thinkingElapsedMs());
+        }
+        thinkingBlockEl = null;
+        thinkingBlockBody = null;
+        thinkingBlockHeader = null;
+        thinkingBlockCollapsed = false;
+        thinkingBlockStartedAt = null;
+        proseCommittedBelowThinking = false;
+        activityContainer = null;
+        activitySteps = [];
+        currentReasoningStep = null;
+    }
 
     function setInputIdle(idle) {
         const container = document.querySelector('.chat-container');
@@ -700,8 +734,7 @@
         if (!firstAnswerTokenReceived) {
             firstAnswerTokenReceived = true;
             clearReasoningStep();
-            var elapsed = processingStartTime ? (Date.now() - processingStartTime) : 0;
-            collapseThinkingBlock(elapsed);
+            collapseThinkingBlock(thinkingElapsedMs());
         }
         if (!streamingMessageEl) {
             streamingMessageEl = document.createElement('div');
@@ -718,10 +751,40 @@
         }
     };
 
+    // Freeze the prose streamed so far as a finished bubble. The next token
+    // starts a new bubble below whatever tool activity comes in between, so
+    // one turn reads: text, tools, text, tools, text.
+    window.commitStreamingSegment = function (bodyHtml) {
+        if (streamFlushScheduled) flushStreamingBuffer();
+        if (!streamingMessageEl) {
+            if (!bodyHtml) return;
+            // Tokens were withheld while tools ran; paint the segment now.
+            removePlaceholder();
+            streamingMessageEl = document.createElement('div');
+            streamingMessageEl.className = 'chat-message chat-message-enter';
+            streamingMessageEl.innerHTML = '<div class="chat-message-body"></div>';
+            messagesEl.appendChild(streamingMessageEl);
+        }
+        var body = streamingMessageEl.querySelector('.chat-message-body');
+        if (body && bodyHtml) body.innerHTML = bodyHtml;
+        streamingMessageEl.classList.remove('chat-message-streaming');
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+        if (thinkingBlockEl) proseCommittedBelowThinking = true;
+        scrollToBottomIfPinned();
+    };
+
     window.reopenThinkingForTools = function () {
-        // Pre-tool tokens collapsed thinking early — reopen while tools run.
+        // Tools are starting (again). If prose was already frozen under the
+        // current Thinking block, that block is finished: retire it and open
+        // a new one after the prose so the order on screen matches the turn.
         firstAnswerTokenReceived = false;
         streamingSuppressed = false;
+        if (thinkingBlockEl && proseCommittedBelowThinking) {
+            retireThinkingBlock();
+        }
         if (thinkingBlockEl) {
             thinkingBlockCollapsed = false;
             thinkingBlockEl.classList.add('expanded');
@@ -1039,7 +1102,7 @@
                 }
             });
             if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {
-                collapseThinkingBlock(Date.now() - processingStartTime);
+                collapseThinkingBlock(thinkingElapsedMs());
             }
             window.resetStreamingMessage();
             if (thinkingBlockEl && thinkingBlockBody) {
@@ -1056,6 +1119,8 @@
             activitySteps = [];
             toolBlocks = {};
             currentReasoningStep = null;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             if (processingStartTime) {
                 lastRunTimestamp = Date.now();
                 processingStartTime = null;
@@ -2128,6 +2193,8 @@
             thinkingBlockBody = null;
             thinkingBlockHeader = null;
             thinkingBlockCollapsed = false;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             firstAnswerTokenReceived = false;
             window.resetStreamingMessage();
             overlayVisible = true;

@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "release": "v0.2.0",
+  "base_url": "https://github.com/OpenShot/openshot-onnx/releases/download/v0.2.0",
+  "models": [
+    {
+      "id": "cutie-low",
+      "name": "Small",
+      "description": "fast",
+      "asset": "cutie-opencv-low-480x272.zip",
+      "sha256": "5ef34a24f84ee076de7d4b7439bd423cb5d50b69a3810b57bdd50010ac6db28d",
+      "bytes": 129998832
+    },
+    {
+      "id": "cutie-medium",
+      "name": "Medium",
+      "description": "recommended, balanced",
+      "asset": "cutie-opencv-medium-640x368.zip",
+      "sha256": "64f79a30d4e53f2aad597772968f18dcc3806ef8dfbe1fefcbf4b58fac069709",
+      "bytes": 130823166,
+      "recommended": true
+    },
+    {
+      "id": "cutie-high",
+      "name": "Large",
+      "description": "quality",
+      "asset": "cutie-opencv-high-960x544.zip",
+      "sha256": "56c5b4823610c8f87b551b82893ef0450f900c254b4ff729f24aec30dea2124f",
+      "bytes": 131949289
+    }
+  ]
+}

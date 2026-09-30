@@ -36,11 +36,11 @@ try:
 except ImportError:
     from xml.etree import ElementTree
 
-from PyQt5.QtCore import Qt, QDir, QLocale
-from PyQt5.QtGui import QIcon, QPalette, QColor
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QDir, QLocale
+from qt_api import QIcon, QPalette, QColor
+from qt_api import (
     QApplication, QWidget, QTabWidget, QAction)
-from PyQt5 import uic
+from qt_api import uic, load_ui as qt_load_ui
 
 from classes.app import get_app
 from classes.logger import log
@@ -77,7 +77,10 @@ def load_ui(window, path):
     for attempt in range(1, 6):
         try:
             # Load ui from configured path
-            uic.loadUi(path, window)
+            if uic is not None and hasattr(uic, "loadUi"):
+                uic.loadUi(path, window)
+            else:
+                qt_load_ui(path, window)
 
             # Successfully loaded UI file, so clear any previously encountered errors
             error = None
@@ -258,11 +261,16 @@ def connect_auto_events(window, elem, name):
         func_name = name + "_trigger"
         if hasattr(window, func_name) and callable(getattr(window, func_name)):
             # Disconnect existing connections safely
-            try:
-                while True:
-                    elem.triggered.disconnect()
-            except TypeError:
-                pass  # No more connections to disconnect
+            while True:
+                try:
+                    disconnected = elem.triggered.disconnect()
+                except TypeError:
+                    break  # No more connections to disconnect (PyQt)
+                except Exception:
+                    break
+                else:
+                    if disconnected is False:
+                        break  # No more connections to disconnect (PySide)
             # Connect the signal to the slot
             elem.triggered.connect(getattr(window, func_name))
 
@@ -271,11 +279,16 @@ def connect_auto_events(window, elem, name):
         func_name = name + "_click"
         if hasattr(window, func_name) and callable(getattr(window, func_name)):
             # Disconnect existing connections safely
-            try:
-                while True:
-                    elem.clicked.disconnect()
-            except TypeError:
-                pass  # No more connections to disconnect
+            while True:
+                try:
+                    disconnected = elem.clicked.disconnect()
+                except TypeError:
+                    break  # No more connections to disconnect (PyQt)
+                except Exception:
+                    break
+                else:
+                    if disconnected is False:
+                        break  # No more connections to disconnect (PySide)
             # Connect the signal to the slot
             elem.clicked.connect(getattr(window, func_name))
 
@@ -318,4 +331,3 @@ def transfer_children(from_widget, to_widget):
     log.info(
         "Transferring children from '%s' to '%s'",
         from_widget.objectName(), to_widget.objectName())
-

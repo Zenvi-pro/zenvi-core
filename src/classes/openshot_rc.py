@@ -2,11 +2,11 @@
 
 # Resource object code
 #
-# Created by: The Resource Compiler for PyQt5 (Qt v5.15.3)
+# Created by: The Qt Resource Compiler, pyrcc5 (Qt v5.15.3); imports go through qt_api
 #
 # WARNING! All changes made in this file will be lost!
 
-from PyQt5 import QtCore
+from qt_api import QtCore
 
 # Register Zenvi :/openshot.svg before this module's qInitResources() (Qt: first registration wins).
 from classes import zenvi_brand_rc  # noqa: F401

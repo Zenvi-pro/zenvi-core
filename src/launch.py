@@ -8,7 +8,7 @@
 
  @mainpage OpenShot Video Editor 2.0
 
- Welcome to the OpenShot Video Editor 2.0 PyQt5 documentation. OpenShot was developed to
+Welcome to the OpenShot Video Editor 2.0 Qt documentation. OpenShot was developed to
  make high-quality video editing and animation solutions freely available to the world. With a focus
  on stability, performance, and ease-of-use, we believe OpenShot is the best cross-platform,
  open-source video editing application in the world!
@@ -163,8 +163,15 @@ else:
     except Exception:
         pass
 
+# Ensure Qt plugin DLL dependencies are found on Windows packaged builds.
+if os.name == "nt":
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    _pyqt_dll_dir = os.path.join(_exe_dir, "lib", "PyQt5")
+    if os.path.isdir(_pyqt_dll_dir):
+        os.environ["PATH"] = _pyqt_dll_dir + os.pathsep + os.environ.get("PATH", "")
+
 try:
-    # This needs to be imported before PyQt5
+    # This needs to be imported before the Qt binding
     # To prevent some issues on AppImage build: wrapping/forcing older glibc versions
     import openshot
 except ImportError as _openshot_import_err:
@@ -178,7 +185,7 @@ except ImportError as _openshot_import_err:
     except ImportError:
         pass
 
-# Load user-configured UI scale before importing PyQt
+# Load user-configured UI scale before importing the Qt binding
 scale = 1.0
 logger = logging.getLogger(__name__)
 
@@ -212,8 +219,10 @@ try:
 except Exception as exc:
     logger.warning("Failed to select Qt platform plugin: %s", exc, exc_info=True)
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
+from qt_api import QtCore, QtWidgets, QtWebEngineWidgets
+
+Qt = QtCore.Qt
+QApplication = QtWidgets.QApplication
 
 try:
     # This apparently has to be done before loading QtQuick
@@ -224,19 +233,9 @@ except Exception:
     pass
 
 try:
-    # QtWebEngineWidgets must be loaded prior to creating a QApplication
-    # But on systems with only WebKit, this will fail (and we ignore the failure)
-    from PyQt5 import QtWebEngineWidgets
-    WebEngineView = QtWebEngineWidgets.QWebEngineView
-except ImportError:
-    pass
-
-try:
-    # Manually set display scale factor rounding
-    # Use "PassThrough" for fractional sizes on Windows (i.e. 150%), although PassThrough
-    # introduces artifacts and issues on the Web-based timeline widget (i.e. no borders, not high DPI, etc...)
-    # TODO: Switch back to PassThrough when timeline widget is replaced with QWidget
-    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "Round"
+    # PassThrough lets Qt use the exact QT_SCALE_FACTOR value (e.g. 1.5) without rounding
+    # to the nearest integer (e.g. 2.0).
+    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "PassThrough"
 
     # Enable High-DPI resolutions
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -365,8 +364,11 @@ def main():
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
 
+    # Configure packaged CA certificates before optional network integrations start.
+    from classes import http_client, sentry
+    http_client.configure_ssl_environment()
+
     # Initialize sentry exception tracing
-    from classes import sentry
     sentry.init_tracing()
 
     # sentry_sdk's excepthook integration replaces sys.excepthook, so re-install
@@ -421,8 +423,12 @@ def main():
         sys.exit(1)
 
     if gui_ready:
+        # Qt6 bindings expose exec(); Qt5 bindings have both exec() and exec_().
+        exec_fn = getattr(app, "exec", None) or getattr(app, "exec_", None)
+        if exec_fn is None or not callable(exec_fn):
+            raise AttributeError("OpenShotApp has no exec_/exec method")
         try:
-            exit_code = app.exec_()
+            exit_code = exec_fn()
         except Exception:
             _report_startup_failure("failed inside the main event loop")
             exit_code = 1

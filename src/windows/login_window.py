@@ -18,8 +18,8 @@ Usage:
 import logging
 import sys
 
-from PyQt5.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import (
+from qt_api import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
+from qt_api import (
     QApplication,
     QDialog,
     QFrame,
