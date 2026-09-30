@@ -117,7 +117,7 @@ def test_reels_preset_on_a_landscape_project_warns_about_bars(studio):
     plan = build_export_plan(preset="Instagram Reels", quality="med")
     assert (plan["width"], plan["height"], plan["fps"]) == (1080, 1920, 30.0)
     assert plan["video_bitrate"] == "4.5 Mb/s" and plan["audio_bitrate"] == "128 kb/s"
-    assert any("adds bars" in n for n in plan["notes"])
+    assert any("re-frames every clip" in n for n in plan["notes"])
     studio.store._data.update(profile="FHD Vertical 1080p 30 fps", width=1080, height=1920,
                               display_ratio={"num": 9, "den": 16})
     plan = build_export_plan(preset="Instagram Reels")
@@ -275,3 +275,29 @@ def test_export_files_to_folder(studio, tmp_path, monkeypatch):
     data = _receipt(studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(dest)))
     assert data["files"][0]["status"] == "skipped (exists)"
     assert "no project file" in studio.call("export_files_to_folder_tool", file_ids=["nope"])
+
+
+def test_subclip_renders_run_on_a_qthread_not_the_worker(studio, tmp_path, monkeypatch):
+    """Rendering on a plain threading.Thread can deadlock Qt's font cache against the GIL."""
+    from classes.editor_tools import project_export_render as render
+
+    src = tmp_path / "long.mp4"
+    src.write_bytes(b"data")
+    fid = studio.add_file("video", path=str(src), start=1.0, end=2.0)
+    fake = types.ModuleType("windows.export_clips")
+    fake.isClip = lambda f: True
+    fake.isImageSequence = lambda f: False
+    fake.nameOfExport = lambda f: "long [1.00 - 2.00].mp4"
+    fake.startAndEndFrames = lambda c: (31, 60)
+    fake.setupWriter = lambda c, w: None
+    monkeypatch.setitem(sys.modules, "windows.export_clips", fake)
+    writes = []
+    fake_os = types.ModuleType("openshot")
+    fake_os.FFmpegWriter = lambda path: MagicMock(WriteFrame=lambda fr: writes.append(fr),
+                                                   Close=lambda: open(path, "wb").write(b"x"))
+    fake_os.Clip = lambda path: MagicMock(GetFrame=lambda n: n)
+    monkeypatch.setitem(sys.modules, "openshot", fake_os)
+    seen = []
+    monkeypatch.setattr(render, "run_on_qthread", lambda func, *a: (seen.append(func), func())[1])
+    data = _receipt(studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(tmp_path / "out")))
+    assert data["files"][0]["status"] == "rendered" and len(seen) == 1 and writes == list(range(31, 61))

@@ -94,6 +94,37 @@ def resolve_preset(name: str) -> dict:
                     "'TikTok', 'YouTube Shorts', 'GIF', 'MP3', 'WEBM', 'ProRes' (list_export_presets_tool lists all)")
 
 
+def run_on_qthread(func, timeout_seconds: float = 6 * 60 * 60):
+    """Run *func()* on a fresh QThread and wait for it; returns its result.
+
+    Frame rendering (libopenshot readers, SVG/text through Qt) must not run on a
+    plain ``threading.Thread`` such as the MCP worker: Qt's font cache mutex and
+    the GIL can deadlock the app there. A QThread is safe; so is the GUI thread for
+    short work. Falls back to a direct call without Qt (headless tests).
+    """
+    QThread = th().QThread
+    if QThread is None:
+        return func()
+
+    class _Job(QThread):
+        result = None
+        error = None
+
+        def run(self):
+            try:
+                self.result = func()
+            except BaseException as exc:  # re-raised in the caller
+                self.error = exc
+
+    job = _Job()
+    job.start()
+    if not job.wait(int(timeout_seconds * 1000)):
+        raise ToolError(f"the render did not finish within {int(timeout_seconds)} s")
+    if job.error is not None:
+        raise job.error
+    return job.result
+
+
 def _codec_ok(codec: str) -> Optional[bool]:
     """True/False from libopenshot, None when it cannot be asked (headless tests)."""
     if not codec:
@@ -160,8 +191,9 @@ def _pick_profile(preset: dict, project_record: dict) -> tuple:
             if abs(best["width"] / float(best["height"]) - paspect) > 0.01:
                 sizes = ", ".join(sorted({"%dx%d" % (o["width"], o["height"]) for o in options}))
                 note = (f"'{preset['title']}' only renders {sizes}; exporting {best['width']}x{best['height']} "
-                        f"from a {pw}x{ph} project adds bars. Change the project with set_project_profile_tool "
-                        "(reframe='fill') first, or pass profile=")
+                        f"from a {pw}x{ph} project re-frames every clip (bars on 'fit' clips, crops on 'fill' "
+                        "clips). For a proper vertical/square edit switch the project with set_project_profile_tool "
+                        "(reframe='fill') first, or pass profile= to keep the project size")
             return best, note
     return project_record, None
 
@@ -343,9 +375,10 @@ def build_export_plan(preset="", quality="", export_type="auto", range_mode="", 
             else:
                 vformat = ext = current_ext
     aspect_mismatch = abs(w / float(h) - project_rec["width"] / float(project_rec["height"])) > 0.01
-    if aspect_mismatch and not any("adds bars" in n for n in notes):
+    if aspect_mismatch and not any("re-frames every clip" in n for n in notes):
         notes.append(f"export is {aspect_text(w, h)} but the project is "
-                     f"{aspect_text(project_rec['width'], project_rec['height'])}: clips are fitted with bars")
+                     f"{aspect_text(project_rec['width'], project_rec['height'])}: each clip is re-framed by its "
+                     "scale mode (bars on 'fit' clips, crops on 'fill' clips)")
     if abs(fps_value - project_rec["fps_num"] / float(project_rec["fps_den"])) > 0.01:
         notes.append(f"export frame rate {fps_value:.3f} differs from the project's; keyframes are rescaled for the render")
     export_profile_path = prof.get("path") or None
@@ -359,6 +392,16 @@ def build_export_plan(preset="", quality="", export_type="auto", range_mode="", 
         "interlaced": bool(interlaced), "start_seconds": round(t0, 3), "end_seconds": round(t1, 3),
         "start_frame": start_frame, "end_frame": end_frame, "range": rmode,
         "profile": prof.get("description") or "", "profile_path": export_profile_path, "notes": notes,
+    } if etype != "audio_only" else {
+        "preset": p["title"], "preset_category": p["category"], "quality": q, "export_type": etype,
+        "path": out, "vformat": vformat, "vcodec": "", "acodec": acodec,
+        "width": w, "height": h, "fps_num": fps_num, "fps_den": fps_den, "fps": round(fps_value, 3),
+        "pixel_ratio": dict(prof.get("pixel_ratio") or {"num": 1, "den": 1}),
+        "video_bitrate": "", "audio_bitrate": arate, "sample_rate": sr, "channels": ch, "channel_layout": layout,
+        "interlaced": False, "start_seconds": round(t0, 3), "end_seconds": round(t1, 3),
+        "start_frame": start_frame, "end_frame": end_frame, "range": rmode,
+        "profile": prof.get("description") or "", "profile_path": None,
+        "notes": [n for n in notes if "re-frame" not in n and "differs from the project" not in n],
     }
 
 
@@ -831,7 +874,8 @@ def export_files_to_folder(file_ids, folder=""):
 
     Plain files are copied; sub-clips (files with in/out points, e.g. from
     split_file_add_clip_tool) and image sequences are rendered as H.264/AAC MP4
-    of just that part, at the file's own size and frame rate. Existing
+    of just that part, at the file's own size and frame rate (on a QThread,
+    never the GUI or a plain worker thread). Existing
     destination files are skipped, like the dialog. Changes nothing in the project.
     """
     from classes import info
@@ -870,23 +914,26 @@ def export_files_to_folder(file_ids, folder=""):
                 if os.path.exists(out):
                     entry["status"] = "skipped (exists)"
                 else:
-                    start_frame, end_frame = ec.startAndEndFrames(clip)
-                    writer = openshot.FFmpegWriter(out)
-                    reader = None
-                    try:
-                        ec.setupWriter(clip, writer)
-                        reader = openshot.Clip(clip.data.get("path"))
-                        reader.Open()
-                        for frame in range(start_frame, end_frame + 1):
-                            writer.WriteFrame(reader.GetFrame(frame))
-                    except Exception:
-                        if os.path.exists(out):
-                            os.remove(out)
-                        raise
-                    finally:
-                        if reader:
-                            reader.Close()
-                        writer.Close()
+                    def _render(clip=clip, out=out):
+                        start_frame, end_frame = ec.startAndEndFrames(clip)
+                        writer = openshot.FFmpegWriter(out)
+                        reader = None
+                        try:
+                            ec.setupWriter(clip, writer)
+                            reader = openshot.Clip(clip.data.get("path"))
+                            reader.Open()
+                            for frame in range(start_frame, end_frame + 1):
+                                writer.WriteFrame(reader.GetFrame(frame))
+                        except Exception:
+                            if os.path.exists(out):
+                                os.remove(out)
+                            raise
+                        finally:
+                            if reader:
+                                reader.Close()
+                            writer.Close()
+
+                    run_on_qthread(_render)
                     entry["status"] = "rendered"
             else:
                 out = os.path.join(dest, ec.nameOfExport(f))
