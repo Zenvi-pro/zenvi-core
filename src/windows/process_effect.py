@@ -30,9 +30,6 @@ import time
 import json
 import functools
 import webbrowser
-import hashlib
-import zipfile
-from urllib.parse import urljoin
 
 from qt_api import Qt, pyqtSignal, QCoreApplication, QTimer, QSize
 from qt_api import QPainter
@@ -44,101 +41,33 @@ from qt_api import (
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
-from classes import http_client
 from classes import ui_util
 from classes.app import get_app
 from classes.logger import log
 from classes.metrics import *
 
-YOLO_MODELS_PATH = os.path.join(info.RESOURCES_PATH, "yolo-models.json")
-EFFICIENT_SAM_MODELS_PATH = os.path.join(info.RESOURCES_PATH, "efficient-sam-models.json")
-CUTIE_MODELS_PATH = os.path.join(info.RESOURCES_PATH, "cutie-models.json")
-YOLO_MODEL_FILENAME = "model.onnx"
-YOLO_CLASSES_FILENAME = "classes.names"
-YOLO_INSTALL_METADATA = "install.json"
-YOLO_FALLBACK_MODEL_NAME = "YOLO"
-EFFICIENT_SAM_INSTALL_METADATA = "install-efficient-sam.json"
-CUTIE_INSTALL_METADATA = "install-cutie.json"
-
-EFFICIENT_SAM_MODEL_FILES = {
-    "efficient-sam-tiny-1024": "image_segmentation_efficientsam_ti_2025april.onnx",
-    "efficient-sam-small-static-1024": "image_segmentation_efficientsam_s_static_1024.onnx",
-}
-
-CUTIE_MODEL_FILES = {
-    "cutie-low": {
-        "encode-key": "cutie-encode-key-480x272.onnx",
-        "encode-value": "cutie-encode-value-480x272.onnx",
-        "memory-readout": "cutie-memory-readout-floatmask-valid-480x272-m6-topk30-opencv.onnx",
-        "decode": "cutie-decode-480x272.onnx",
-    },
-    "cutie-medium": {
-        "encode-key": "cutie-encode-key-640x368.onnx",
-        "encode-value": "cutie-encode-value-640x368.onnx",
-        "memory-readout": "cutie-memory-readout-floatmask-valid-640x368-m6-topk30-opencv.onnx",
-        "decode": "cutie-decode-640x368.onnx",
-    },
-    "cutie-high": {
-        "encode-key": "cutie-encode-key-960x544.onnx",
-        "encode-value": "cutie-encode-value-960x544.onnx",
-        "memory-readout": "cutie-memory-readout-floatmask-valid-960x544-m6-topk30-opencv.onnx",
-        "decode": "cutie-decode-960x544.onnx",
-    },
-    "cutie-very-high": {
-        "encode-key": "cutie-encode-key-1280x720.onnx",
-        "encode-value": "cutie-encode-value-1280x720.onnx",
-        "memory-readout": "cutie-memory-readout-floatmask-valid-1280x720-m6-topk30-opencv.onnx",
-        "decode": "cutie-decode-1280x720.onnx",
-    },
-}
-
-
-class DownloadCancelled(Exception):
-    """Raised when a user cancels an in-progress download."""
-
-
-def load_yolo_models_manifest():
-    """Load the packaged allow-list of YOLO model downloads."""
-    return load_model_manifest(YOLO_MODELS_PATH)
-
-
-def load_model_manifest(path):
-    """Load a packaged allow-list of model downloads."""
-    with open(path, "r", encoding="utf-8") as manifest_file:
-        manifest = json.load(manifest_file)
-    manifest.setdefault("models", [])
-    return manifest
-
-
-def recommended_model(models):
-    """Return the recommended model entry, or the first available entry."""
-    for model in models:
-        if model.get("recommended"):
-            return model
-    return models[0] if models else None
-
-
-def yolo_model_dir(model):
-    """Return the install directory for a packaged YOLO model entry."""
-    model_id = model.get("id", "")
-    if not model_id or os.path.basename(model_id) != model_id:
-        raise ValueError("Invalid YOLO model id: %s" % model_id)
-    return os.path.join(info.YOLO_PATH, model_id)
-
-
-def model_install_dir(model):
-    """Return the shared AI model install directory for a manifest entry."""
-    return yolo_model_dir(model)
-
-
-def yolo_model_path(model):
-    """Return the installed ONNX path for a packaged YOLO model entry."""
-    return os.path.join(yolo_model_dir(model), YOLO_MODEL_FILENAME)
-
-
-def yolo_classes_path(model):
-    """Return the installed class names path for a packaged YOLO model entry."""
-    return os.path.join(yolo_model_dir(model), YOLO_CLASSES_FILENAME)
+from classes.effect_models import (  # noqa: E402,F401  (shared with the agent processing tool)
+    CUTIE_INSTALL_METADATA,
+    CUTIE_MODEL_FILES,
+    CUTIE_MODELS_PATH,
+    EFFICIENT_SAM_INSTALL_METADATA,
+    EFFICIENT_SAM_MODEL_FILES,
+    EFFICIENT_SAM_MODELS_PATH,
+    YOLO_CLASSES_FILENAME,
+    YOLO_FALLBACK_MODEL_NAME,
+    YOLO_INSTALL_METADATA,
+    YOLO_MODEL_FILENAME,
+    YOLO_MODELS_PATH,
+    DownloadCancelled,
+    load_model_manifest,
+    load_yolo_models_manifest,
+    model_install_dir,
+    recommended_model,
+    yolo_classes_path,
+    yolo_model_dir,
+    yolo_model_path,
+)
+from classes import effect_models  # noqa: E402
 
 
 def yolo_model_label(model):
@@ -702,17 +631,11 @@ class ProcessEffect(QDialog):
 
     def object_mask_cutie_paths(self, cutie_model):
         """Return Object Mask Cutie paths for the selected quality tier."""
-        model_files = CUTIE_MODEL_FILES.get(cutie_model.get("id"), CUTIE_MODEL_FILES["cutie-medium"])
-        install_dir = model_install_dir(cutie_model)
-        return {key: os.path.join(install_dir, filename) for key, filename in model_files.items()}
+        return effect_models.object_mask_cutie_paths(cutie_model)
 
     def object_mask_efficient_sam_path(self, efficient_sam_model):
         """Return the Object Mask EfficientSAM path for the selected SAM model."""
-        filename = EFFICIENT_SAM_MODEL_FILES.get(
-            efficient_sam_model.get("id"),
-            EFFICIENT_SAM_MODEL_FILES["efficient-sam-tiny-1024"],
-        )
-        return os.path.join(model_install_dir(efficient_sam_model), filename)
+        return effect_models.object_mask_efficient_sam_path(efficient_sam_model)
 
     def set_object_mask_file_fields(self, param, cutie_model):
         """Point the Object Mask file inputs at the selected quality files."""
@@ -1158,30 +1081,11 @@ class ProcessEffect(QDialog):
 
     def file_sha256(self, path):
         """Return the SHA256 checksum of a file."""
-        digest = hashlib.sha256()
-        with open(path, "rb") as input_file:
-            for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+        return effect_models.file_sha256(path)
 
     def yolo_installed_files_match(self, model):
         """Return whether an installed YOLO model matches recorded metadata."""
-        model_path = yolo_model_path(model)
-        classes_path = yolo_classes_path(model)
-        metadata_path = os.path.join(yolo_model_dir(model), YOLO_INSTALL_METADATA)
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as metadata_file:
-                metadata = json.load(metadata_file)
-            return (
-                metadata.get("id") == model.get("id")
-                and metadata.get("asset_sha256") == model.get("sha256")
-                and os.path.isfile(model_path)
-                and os.path.isfile(classes_path)
-                and metadata.get("model_sha256") == self.file_sha256(model_path)
-                and metadata.get("classes_sha256") == self.file_sha256(classes_path)
-            )
-        except (OSError, ValueError):
-            return False
+        return effect_models.yolo_installed_files_match(model)
 
     def set_yolo_file_fields(self, param, model):
         """Point the YOLO file inputs at the selected model files."""
@@ -1193,95 +1097,31 @@ class ProcessEffect(QDialog):
 
     def yolo_model_download_url(self, model):
         """Return the download URL for a YOLO model manifest entry."""
-        base_url = self.yolo_models_manifest.get("base_url", "")
-        return urljoin("%s/" % base_url.rstrip("/"), model.get("asset", ""))
+        return effect_models.model_download_url(self.yolo_models_manifest, model)
 
     def model_download_url(self, manifest, model):
         """Return the download URL for a generic model manifest entry."""
-        base_url = manifest.get("base_url", "")
-        return urljoin("%s/" % base_url.rstrip("/"), model.get("asset", ""))
+        return effect_models.model_download_url(manifest, model)
 
     def extract_yolo_zip_member(self, yolo_zip, suffixes, destination_path):
         """Extract the first matching file from a verified YOLO model archive."""
-        if isinstance(suffixes, str):
-            suffixes = (suffixes,)
-        for member in yolo_zip.infolist():
-            if member.is_dir():
-                continue
-            if os.path.basename(member.filename).lower().endswith(tuple(suffixes)):
-                with yolo_zip.open(member) as source_file, open(destination_path, "wb") as output_file:
-                    output_file.write(source_file.read())
-                return
-        raise ValueError("Downloaded YOLO files are invalid.")
+        effect_models.extract_yolo_zip_member(yolo_zip, suffixes, destination_path)
 
     def extract_zip_members_to_dir(self, zip_path, destination_dir):
         """Extract all regular files from a verified model archive."""
-        os.makedirs(destination_dir, exist_ok=True)
-        with zipfile.ZipFile(zip_path) as model_zip:
-            for member in model_zip.infolist():
-                if member.is_dir():
-                    continue
-                filename = os.path.basename(member.filename)
-                if not filename:
-                    continue
-                destination_path = os.path.join(destination_dir, filename)
-                download_path = "{}.download".format(destination_path)
-                with model_zip.open(member) as source_file, open(download_path, "wb") as output_file:
-                    output_file.write(source_file.read())
-                if os.path.getsize(download_path) <= 0:
-                    os.remove(download_path)
-                    raise ValueError("Downloaded model files are invalid.")
-                os.replace(download_path, destination_path)
+        effect_models.extract_zip_members_to_dir(zip_path, destination_dir)
 
     def write_model_install_metadata(self, install_dir, metadata_name, model, installed_paths):
         """Record extracted-file hashes for future already-downloaded checks."""
-        metadata_path = os.path.join(install_dir, metadata_name)
-        metadata_download_path = "{}.download".format(metadata_path)
-        with open(metadata_download_path, "w", encoding="utf-8") as metadata_file:
-            json.dump(
-                {
-                    "id": model.get("id"),
-                    "asset": model.get("asset"),
-                    "asset_sha256": model.get("sha256"),
-                    "files": {
-                        os.path.basename(path): self.file_sha256(path)
-                        for path in installed_paths
-                    },
-                },
-                metadata_file,
-                indent=2,
-                sort_keys=True,
-            )
-            metadata_file.write("\n")
-        os.replace(metadata_download_path, metadata_path)
+        effect_models.write_model_install_metadata(install_dir, metadata_name, model, installed_paths)
 
     def installed_model_files_match(self, install_dir, metadata_name, model, installed_paths):
         """Return whether installed model files match recorded metadata."""
-        metadata_path = os.path.join(install_dir, metadata_name)
-        try:
-            with open(metadata_path, "r", encoding="utf-8") as metadata_file:
-                metadata = json.load(metadata_file)
-            file_hashes = metadata.get("files", {})
-            return (
-                metadata.get("id") == model.get("id")
-                and metadata.get("asset_sha256") == model.get("sha256")
-                and all(
-                    os.path.isfile(path)
-                    and file_hashes.get(os.path.basename(path)) == self.file_sha256(path)
-                    for path in installed_paths
-                )
-            )
-        except (OSError, ValueError):
-            return False
+        return effect_models.installed_model_files_match(install_dir, metadata_name, model, installed_paths)
 
     def download_manifest_archive(self, manifest, model, install_dir, metadata_name, installed_paths, progress, start, end):
         """Download, verify, and extract a generic model archive."""
         _ = get_app()._tr
-        os.makedirs(install_dir, exist_ok=True)
-        if self.installed_model_files_match(install_dir, metadata_name, model, installed_paths):
-            return
-
-        zip_download_path = os.path.join(install_dir, "%s.download" % model.get("asset", "model.zip"))
 
         def report_progress(downloaded_size, total_size):
             if total_size > 0:
@@ -1293,45 +1133,13 @@ class ProcessEffect(QDialog):
             if progress.wasCanceled():
                 raise DownloadCancelled()
 
-        try:
-            http_client.download_file(
-                self.model_download_url(manifest, model),
-                zip_download_path,
-                model_label(model),
-                report_progress,
-                cancel_exceptions=(DownloadCancelled,),
-            )
-            if self.file_sha256(zip_download_path) != model.get("sha256"):
-                raise ValueError(_("Downloaded model files are invalid."))
-            self.extract_zip_members_to_dir(zip_download_path, install_dir)
-            if not all(os.path.isfile(path) and os.path.getsize(path) > 0 for path in installed_paths):
-                raise ValueError(_("Downloaded model files are invalid."))
-            self.write_model_install_metadata(install_dir, metadata_name, model, installed_paths)
-        finally:
-            if os.path.exists(zip_download_path):
-                os.remove(zip_download_path)
+        effect_models.download_manifest_archive(
+            manifest, model, install_dir, metadata_name, installed_paths, report_progress,
+            label=model_label(model), invalid_message=_("Downloaded model files are invalid."))
 
     def write_yolo_install_metadata(self, model, model_path, classes_path):
         """Record extracted-file hashes for future already-downloaded checks."""
-        metadata_path = os.path.join(yolo_model_dir(model), YOLO_INSTALL_METADATA)
-        metadata_download_path = "{}.download".format(metadata_path)
-        with open(metadata_download_path, "w", encoding="utf-8") as metadata_file:
-            json.dump(
-                {
-                    "id": model.get("id"),
-                    "asset": model.get("asset"),
-                    "asset_sha256": model.get("sha256"),
-                    "model": YOLO_MODEL_FILENAME,
-                    "model_sha256": self.file_sha256(model_path),
-                    "classes": YOLO_CLASSES_FILENAME,
-                    "classes_sha256": self.file_sha256(classes_path),
-                },
-                metadata_file,
-                indent=2,
-                sort_keys=True,
-            )
-            metadata_file.write("\n")
-        os.replace(metadata_download_path, metadata_path)
+        effect_models.write_yolo_install_metadata(model, model_path, classes_path)
 
     def download_yolo_clicked(self, widget, combo_widget, param):
         """Download the selected YOLO model files."""
@@ -1341,10 +1149,7 @@ class ProcessEffect(QDialog):
             QMessageBox.warning(self, _("Download Failed"), _("No YOLO models are available."))
             return
 
-        model_dir = yolo_model_dir(model)
-        model_path = yolo_model_path(model)
-        classes_path = yolo_classes_path(model)
-        os.makedirs(model_dir, exist_ok=True)
+        os.makedirs(yolo_model_dir(model), exist_ok=True)
 
         if self.yolo_installed_files_match(model):
             self.set_yolo_file_fields(param, model)
@@ -1366,16 +1171,6 @@ class ProcessEffect(QDialog):
         progress.setWindowTitle(self.model_message(_("Download %(model)s Files"), model))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
-        zip_download_path = os.path.join(model_dir, "%s.download" % model.get("asset", "model.zip"))
-        model_download_path = "{}.download".format(model_path)
-        classes_download_path = "{}.download".format(classes_path)
-        metadata_download_path = os.path.join(model_dir, "%s.download" % YOLO_INSTALL_METADATA)
-
-        def remove_partial_downloads():
-            for path in (zip_download_path, model_download_path, classes_download_path, metadata_download_path):
-                if os.path.exists(path):
-                    os.remove(path)
-
         def report_progress(downloaded_size, total_size):
             if total_size > 0:
                 progress.setValue(min(100, int(downloaded_size * 100 / total_size)))
@@ -1386,41 +1181,24 @@ class ProcessEffect(QDialog):
                 raise DownloadCancelled()
 
         try:
-            http_client.download_file(
-                self.yolo_model_download_url(model),
-                zip_download_path,
-                self.model_message(_("%(model)s files"), model),
+            effect_models.download_yolo_model(
+                self.yolo_models_manifest,
+                model,
                 report_progress,
-                cancel_exceptions=(DownloadCancelled,),
+                label=self.model_message(_("%(model)s files"), model),
+                invalid_message=self.model_message(_("Downloaded %(model)s files are invalid."), model),
             )
-            if self.file_sha256(zip_download_path) != model.get("sha256"):
-                raise ValueError(self.model_message(_("Downloaded %(model)s files are invalid."), model))
-
-            with zipfile.ZipFile(zip_download_path) as yolo_zip:
-                self.extract_yolo_zip_member(yolo_zip, ".onnx", model_download_path)
-                self.extract_yolo_zip_member(yolo_zip, (".names", ".txt"), classes_download_path)
-
-            if os.path.getsize(model_download_path) <= 0 or os.path.getsize(classes_download_path) <= 0:
-                raise ValueError(self.model_message(_("Downloaded %(model)s files are invalid."), model))
-
-            os.replace(model_download_path, model_path)
-            os.replace(classes_download_path, classes_path)
-            self.write_yolo_install_metadata(model, model_path, classes_path)
         except DownloadCancelled:
-            remove_partial_downloads()
             log.info("YOLO file download cancelled")
             self.update_file_validation()
             return
         except Exception as ex:
-            remove_partial_downloads()
             progress.close()
             QMessageBox.warning(self, _("Download Failed"), str(ex))
             log.error("Failed to download YOLO files: %s", ex)
             self.update_file_validation()
             return
         finally:
-            if os.path.exists(zip_download_path):
-                os.remove(zip_download_path)
             progress.close()
 
         self.set_yolo_file_fields(param, model)

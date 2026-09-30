@@ -54,9 +54,7 @@ from classes.color_presets import (
     COLOR_PRESET_AUTO_CONTRAST,
     COLOR_PRESET_BOOST_COLOR,
     COLOR_PRESET_LIFT_SHADOWS,
-    COLOR_PRESET_RESET,
     COLOR_PRESET_WARM_UP,
-    apply_color_grade_preset,
     is_color_grade_effect,
 )
 from classes.film_grain_presets import (
@@ -68,72 +66,19 @@ from classes.film_grain_presets import (
     FILM_GRAIN_PRESET_HIGH_ISO,
     FILM_GRAIN_PRESET_NONE,
     FILM_GRAIN_PRESET_SUPER_8,
-    apply_film_grain_preset,
-    is_film_grain_effect,
 )
 
-LOOK_EFFECT_UI_MENU = "look"
-
-LOOK_RESET_EFFECT_CLASSES = {
-    COLOR_GRADE_CLASS_NAME,
-    FILM_GRAIN_CLASS_NAME,
-}
-
-LOOK_EFFECT_PRESETS = {
-    "AnalogTape": {
-        "none": {},
-        "subtle": {
-            "bleed": 0.25,
-            "noise": 0.18,
-            "softness": 0.15,
-            "static_bands": 0.05,
-            "stripe": 0.06,
-            "tracking": 0.20,
-        },
-        "vhs": {
-            "bleed": 0.55,
-            "noise": 0.35,
-            "softness": 0.35,
-            "static_bands": 0.18,
-            "stripe": 0.20,
-            "tracking": 0.45,
-        },
-        "heavy": {
-            "bleed": 0.85,
-            "noise": 0.60,
-            "softness": 0.55,
-            "static_bands": 0.35,
-            "stripe": 0.40,
-            "tracking": 0.75,
-        },
-    },
-    "Blur": {
-        "none": {},
-        "soft_focus": {"horizontal_radius": 3.0, "vertical_radius": 3.0, "sigma": 1.5, "iterations": 2.0},
-        "medium": {"horizontal_radius": 8.0, "vertical_radius": 8.0, "sigma": 4.0, "iterations": 3.0},
-        "heavy": {"horizontal_radius": 20.0, "vertical_radius": 20.0, "sigma": 8.0, "iterations": 4.0},
-    },
-    "Glow": {
-        "none": {},
-        "soft_white": {"mode": 0, "opacity": 0.35, "blur_radius": 18.0, "spread": 0.15, "color": "#ffffffff"},
-        "warm": {"mode": 0, "opacity": 0.45, "blur_radius": 24.0, "spread": 0.20, "color": "#ffd28cff"},
-        "neon": {"mode": 0, "opacity": 0.65, "blur_radius": 16.0, "spread": 0.35, "color": "#35d7ffff"},
-        "inner": {"mode": 1, "opacity": 0.45, "blur_radius": 12.0, "spread": 0.25, "color": "#ffffffff"},
-    },
-    "Shadow": {
-        "none": {},
-        "subtle": {"opacity": 0.30, "blur_radius": 12.0, "spread": 0.05, "distance": 8.0, "angle": 135.0, "color": "#000000ff"},
-        "soft": {"opacity": 0.45, "blur_radius": 28.0, "spread": 0.10, "distance": 14.0, "angle": 135.0, "color": "#000000ff"},
-        "strong": {"opacity": 0.70, "blur_radius": 18.0, "spread": 0.25, "distance": 16.0, "angle": 135.0, "color": "#000000ff"},
-        "long": {"opacity": 0.45, "blur_radius": 24.0, "spread": 0.12, "distance": 44.0, "angle": 135.0, "color": "#000000ff"},
-    },
-    "Sharpen": {
-        "none": {},
-        "subtle": {"amount": 4.0, "radius": 1.5, "threshold": 0.0},
-        "medium": {"amount": 9.0, "radius": 2.5, "threshold": 0.0},
-        "strong": {"amount": 16.0, "radius": 3.5, "threshold": 0.0},
-    },
-}
+from classes.look_presets import (  # noqa: E402  (shared with the agent look tools)
+    LOOK_EFFECT_PRESETS,
+    LOOK_EFFECT_UI_MENU,
+    apply_color_look_preset,
+    apply_film_grain_look_preset,
+    apply_look_effect_preset,
+    is_look_managed_effect,
+    parse_effect_color,
+    reset_look,
+    set_effect_property_value,
+)
 
 from classes.camera_motion import (
     KEN_BURNS_AUTO,
@@ -156,6 +101,7 @@ from classes.camera_motion import (
     source_dimensions_from_reader,
 )
 from classes.effect_init import effect_options
+from classes.effect_ops import merge_effects_by_class
 from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
@@ -309,6 +255,14 @@ def _event_posf(event):
     if hasattr(event, "posF"):
         return event.posF()
     return event.position()
+
+
+def _save_look_effects(view, clip, effects):
+    """Save a clip's new Look effect list (classes.look_presets) as one history entry."""
+    original_clip_data = json.loads(json.dumps(clip.data))
+    clip.data["effects"] = effects
+    view.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+    get_app().updates.apply_last_action_to_history(original_clip_data)
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -641,24 +595,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if key in excluded_keys:
                         continue
                     if key == "effects" and isinstance(value, list):
-                        existing_effects = target_obj.data.setdefault("effects", [])
-                        effect_map = {
-                            effect.get("class_name"): effect
-                            for effect in existing_effects
-                            if isinstance(effect, dict) and effect.get("class_name")
-                        }
-
-                        for effect in value:
-                            if not isinstance(effect, dict):
-                                continue
-                            effect_copy = deepcopy(effect)
-                            self._assign_new_effect_ids({"effects": [effect_copy]})
-                            effect_type = effect_copy.get("class_name")
-                            if effect_type in effect_map:
-                                effect_map[effect_type].update(effect_copy)
-                            else:
-                                existing_effects.append(effect_copy)
-                        target_obj.data["effects"] = existing_effects
+                        target_obj.data["effects"] = merge_effects_by_class(
+                            target_obj.data.get("effects") or [], value)
                     else:
                         target_obj.data[key] = value
                 target_obj.save()
@@ -2798,107 +2736,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         return json.loads(effect.Json())
 
     def _is_look_managed_effect(self, effect_json, class_name=None):
-        if not isinstance(effect_json, dict):
-            return False
-        if effect_json.get("ui-menu") != LOOK_EFFECT_UI_MENU:
-            return False
-        return class_name is None or effect_json.get("class_name") == class_name
+        return is_look_managed_effect(effect_json, class_name)
 
     def _parse_effect_color(self, value):
-        if not isinstance(value, str):
-            return None
-        color = value.strip()
-        if color.startswith("#"):
-            color = color[1:]
-        if len(color) not in (6, 8):
-            return None
-        try:
-            red = int(color[0:2], 16)
-            green = int(color[2:4], 16)
-            blue = int(color[4:6], 16)
-            alpha = int(color[6:8], 16) if len(color) == 8 else 255
-        except ValueError:
-            return None
-        return {
-            "red": red,
-            "green": green,
-            "blue": blue,
-            "alpha": alpha,
-        }
+        return parse_effect_color(value)
 
     def _set_effect_property_value(self, effect_json, property_name, value):
-        property_data = effect_json.get(property_name)
-        color_channels = self._parse_effect_color(value)
-        if color_channels and isinstance(property_data, dict):
-            for channel, channel_value in color_channels.items():
-                channel_data = property_data.get(channel)
-                if isinstance(channel_data, dict) and isinstance(channel_data.get("Points"), list):
-                    channel_data["Points"] = [
-                        json.loads(openshot.Point(1, float(channel_value), openshot.BEZIER).Json())
-                    ]
-        elif isinstance(property_data, dict) and isinstance(property_data.get("Points"), list):
-            property_data["Points"] = [json.loads(openshot.Point(1, float(value), openshot.BEZIER).Json())]
-        elif property_name in effect_json:
-            effect_json[property_name] = value
+        set_effect_property_value(effect_json, property_name, value)
 
     def _apply_effect_preset(self, class_name, preset_name, clip_ids):
         """Apply a simple Look effect preset, or remove the effect for the none preset."""
-        presets = LOOK_EFFECT_PRESETS.get(class_name, {})
-        if preset_name not in presets:
+        if preset_name not in LOOK_EFFECT_PRESETS.get(class_name, {}):
             return
 
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if self._is_look_managed_effect(effect_json, class_name)
-            ]
-
-            if preset_name == "none":
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not self._is_look_managed_effect(effect_json, class_name)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
             try:
-                preset_effect = self._create_effect_json(class_name)
+                effects = apply_look_effect_preset(
+                    clip.data.get("effects"), class_name, preset_name, self._create_effect_json)
             except RuntimeError:
                 continue
-            preset_effect["ui-menu"] = LOOK_EFFECT_UI_MENU
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-
-            for property_name, value in presets[preset_name].items():
-                self._set_effect_property_value(preset_effect, property_name, value)
-
-            if matching_indexes:
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Reset_Look_Triggered(self, clip_ids):
         """Remove all effects managed by the clip Look menu."""
@@ -2906,26 +2767,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                continue
-
-            filtered_effects = [
-                effect_json for effect_json in effects
-                if not isinstance(effect_json, dict)
-                or (
-                    effect_json.get("class_name") not in LOOK_RESET_EFFECT_CLASSES
-                    and not self._is_look_managed_effect(effect_json)
-                )
-            ]
-            if len(filtered_effects) == len(effects):
-                continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            clip.data["effects"] = filtered_effects
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = reset_look(clip.data.get("effects"))
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def _ensure_color_grade_effect(self, clip):
         if not clip or not self._clip_has_visual(clip):
@@ -2959,48 +2803,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_color_grade_effect(effect_json)
-            ]
-
-            if preset_name == COLOR_PRESET_RESET:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_color_grade_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            preset_effect = apply_color_grade_preset(
-                self._create_color_grade_effect_json(),
-                preset_name,
-            )
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_color_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_color_grade_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Film_Grain_Triggered(self, preset_name, clip_ids):
         """Apply Film Grain presets for selected clips."""
@@ -3008,50 +2815,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_film_grain_effect(effect_json)
-            ]
-
-            if preset_name == FILM_GRAIN_PRESET_NONE:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_film_grain_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            source_effect = (
-                effects[matching_indexes[0]]
-                if matching_indexes
-                else self._create_film_grain_effect_json()
-            )
-            preset_effect = apply_film_grain_preset(source_effect, preset_name)
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-                effects[matching_indexes[0]] = preset_effect
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_film_grain_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_film_grain_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Adjust_Colors_Triggered(self, clip_ids):
         """Ensure a Color Grade effect exists and open the video scopes."""
