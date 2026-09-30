@@ -757,11 +757,11 @@ def edit_captions(effect_id="", timeline_clip_id="", clip_query="", cue_edits=No
                    stroke_width is not None and float(stroke_width) >= 0, str(background_color).strip(),
                    background_opacity is not None and float(background_opacity) >= 0, position,
                    fade_seconds is not None and float(fade_seconds) >= 0])
+    if replace and not find:
+        raise ToolError("replace needs find (the text to replace)")
     if not (edits or extra or find or shift_seconds or restyle or uppercase):
         raise ToolError("nothing to change: pass cue_edits, add_cues, find/replace, shift_seconds, uppercase "
                         "or style fields")
-    if replace and not find:
-        raise ToolError("replace needs find (the text to replace)")
 
     c, effect = _find_effect(str(effect_id or "").strip(), str(timeline_clip_id or "").strip(),
                              str(clip_query or "").strip())
