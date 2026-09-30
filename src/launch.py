@@ -233,19 +233,9 @@ except Exception:
     pass
 
 try:
-    # QtWebEngineWidgets must be loaded prior to creating a QApplication
-    # But on systems with only WebKit, this will fail (and we ignore the failure)
-    if QtWebEngineWidgets:
-        WebEngineView = QtWebEngineWidgets.QWebEngineView
-except ImportError:
-    pass
-
-try:
-    # Manually set display scale factor rounding
-    # Use "PassThrough" for fractional sizes on Windows (i.e. 150%), although PassThrough
-    # introduces artifacts and issues on the Web-based timeline widget (i.e. no borders, not high DPI, etc...)
-    # TODO: Switch back to PassThrough when timeline widget is replaced with QWidget
-    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "Round"
+    # PassThrough lets Qt use the exact QT_SCALE_FACTOR value (e.g. 1.5) without rounding
+    # to the nearest integer (e.g. 2.0).
+    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "PassThrough"
 
     # Enable High-DPI resolutions
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -374,8 +364,11 @@ def main():
     # Normal startup, print module path and lauch application
     print(f"Loaded modules from: {info.PATH}")
 
+    # Configure packaged CA certificates before optional network integrations start.
+    from classes import http_client, sentry
+    http_client.configure_ssl_environment()
+
     # Initialize sentry exception tracing
-    from classes import sentry
     sentry.init_tracing()
 
     # sentry_sdk's excepthook integration replaces sys.excepthook, so re-install

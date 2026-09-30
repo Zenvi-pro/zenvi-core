@@ -26,5 +26,11 @@
 	<string>10.15.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Zenvi uses the camera when you choose to record webcam video.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Zenvi uses the microphone when you choose to record audio.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Zenvi uses screen recording when you choose to capture your display.</string>
 </dict>
 </plist>

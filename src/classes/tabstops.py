@@ -31,6 +31,12 @@ def _parent_dock_widget(widget):
     return None
 
 
+def _dock_uses_auto_tab_order(dock):
+    if dock is None:
+        return True
+    return not bool(dock.property("_skip_auto_tab_order"))
+
+
 def _find_dock_tab_bars(root):
     """Find tab bars that contain dock widget titles and return mapping of dock titles to active status."""
     if not isinstance(root, QMainWindow):
@@ -94,6 +100,8 @@ def _is_focusable(widget, root, include_hidden, include_disabled):
     if widget.focusPolicy() == Qt.NoFocus:
         return False
     dock = _parent_dock_widget(widget)
+    if dock is not None and not _dock_uses_auto_tab_order(dock):
+        return False
     if dock is not None and not _dock_is_active(root, dock):
         return False
     if not include_hidden and not widget.isVisibleTo(root):
@@ -383,6 +391,8 @@ def _collect_dock_groups(root, include_hidden, include_disabled):
     active_tabs = _find_dock_tab_bars(root)
 
     for index, dock in enumerate(root.findChildren(QDockWidget)):
+        if not _dock_uses_auto_tab_order(dock):
+            continue
         if not _dock_is_active(root, dock, active_tabs):
             # Exclude all widgets from inactive docks and disable their focus
             for widget in dock.findChildren(QWidget):

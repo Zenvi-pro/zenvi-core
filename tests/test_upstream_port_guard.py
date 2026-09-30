@@ -61,8 +61,16 @@ def repo(tmp_path):
     "cat /tmp/port-root/.state/qt-api.json",
     "cat <<'EOF' > note.md\nnever run: git push origin develop\nEOF",
 ])
-def test_allowed(cmd):
-    assert run_guard(cmd) is None
+def test_allowed(repo, cmd):
+    # Run from the fixture repo (on a feature branch), not the real checkout: CI checks out develop, and a
+    # rebase from a worktree sitting on develop is exactly what the guard must deny (see below).
+    assert run_guard(cmd, cwd=repo) is None
+
+
+def test_rebase_denied_when_worktree_is_on_develop(repo):
+    _git(repo, "checkout", "-q", "-b", "develop")
+    reason = run_guard("git rebase origin/develop", cwd=repo)
+    assert reason is not None and "HEAD is develop" in reason
 
 
 @pytest.mark.parametrize("cmd,fragment", [

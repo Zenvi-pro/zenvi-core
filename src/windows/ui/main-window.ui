@@ -168,23 +168,17 @@
     <property name="title">
      <string>View</string>
     </property>
-    <widget class="QMenu" name="menuViews">
+    <widget class="QMenu" name="menuWindow">
      <property name="title">
-      <string>Views</string>
+      <string>Window</string>
      </property>
-     <addaction name="actionSimple_View"/>
-     <addaction name="actionAdvanced_View"/>
-     <addaction name="separator"/>
-     <addaction name="actionFreeze_View"/>
-     <addaction name="actionUn_Freeze_View"/>
-     <addaction name="separator"/>
-     <addaction name="actionShow_All"/>
-     <addaction name="actionDock_All"/>
+     <addaction name="actionView_Toolbar"/>
+     <addaction name="actionFullscreen"/>
     </widget>
-    <addaction name="actionView_Toolbar"/>
-    <addaction name="actionFullscreen"/>
+    <addaction name="actionSimple_View"/>
+    <addaction name="actionColor_Grade_View"/>
     <addaction name="separator"/>
-    <addaction name="menuViews"/>
+    <addaction name="menuWindow"/>
    </widget>
    <widget class="QMenu" name="menuHelp">
     <property name="title">
@@ -1245,43 +1239,12 @@
     <string>Simple View</string>
    </property>
   </action>
-  <action name="actionAdvanced_View">
-   <property name="icon">
-    <iconset theme="get-hot-new-stuff" resource="../../../images/openshot.qrc">
-     <normaloff>:/icons/Humanity/actions/16/get-hot-new-stuff.png</normaloff>:/icons/Humanity/actions/16/get-hot-new-stuff.png</iconset>
-   </property>
+  <action name="actionColor_Grade_View">
    <property name="text">
-    <string>Advanced View</string>
+    <string>Color View</string>
    </property>
-  </action>
-  <action name="actionFreeze_View">
-   <property name="icon">
-    <iconset theme="locked" resource="../../../images/openshot.qrc">
-     <normaloff>:/icons/Humanity/actions/16/locked.svg</normaloff>:/icons/Humanity/actions/16/locked.svg</iconset>
-   </property>
-   <property name="text">
-    <string>Freeze View</string>
-   </property>
-  </action>
-  <action name="actionUn_Freeze_View">
-   <property name="icon">
-    <iconset theme="locked" resource="../../../images/openshot.qrc">
-     <normaloff>:/icons/Humanity/actions/16/locked.svg</normaloff>:/icons/Humanity/actions/16/locked.svg</iconset>
-   </property>
-   <property name="text">
-    <string>Un-Freeze View</string>
-   </property>
-   <property name="visible">
-    <bool>false</bool>
-   </property>
-  </action>
-  <action name="actionShow_All">
-   <property name="icon">
-    <iconset theme="zoom-in" resource="../../../images/openshot.qrc">
-     <normaloff>:/icons/Humanity/actions/16/zoom-in.png</normaloff>:/icons/Humanity/actions/16/zoom-in.png</iconset>
-   </property>
-   <property name="text">
-    <string>Show All</string>
+   <property name="shortcut">
+    <string>Alt+Shift+2</string>
    </property>
   </action>
   <action name="actionDock_All">
@@ -1687,10 +1650,10 @@
      <normaloff>:/icons/Humanity/actions/16/list-add.svg</normaloff>:/icons/Humanity/actions/16/list-add.svg</iconset>
    </property>
    <property name="text">
-    <string>Insert Timestamp</string>
+    <string>Insert Caption</string>
    </property>
    <property name="toolTip">
-    <string>Insert Timestamp</string>
+    <string>Insert Caption</string>
    </property>
   </action>
   <action name="actionClearWaveformData">

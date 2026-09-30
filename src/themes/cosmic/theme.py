@@ -187,8 +187,17 @@ QMenu {
 }
 
 QMenu::item {
-    padding: 5px 16px 5px 10px;
+    padding: 5px 18px 5px 22px;
     border-radius: 4px;
+}
+
+QMenu::item:checked {
+    padding: 5px 18px 5px 22px;
+}
+
+QMenu::indicator {
+    width: 12px;
+    height: 12px;
 }
 
 QMenu::item:selected {
@@ -436,7 +445,8 @@ QTabWidget#exportTabs QTabBar::tab,
 QTabWidget#tabCategories QTabBar::tab,
 QTabWidget#tabCredits QTabBar::tab,
 QTabWidget#tabChangelog QTabBar::tab,
-QTabWidget#tabWidget QTabBar::tab {
+QTabWidget#tabWidget QTabBar::tab,
+QTabWidget#generateTabs QTabBar::tab {
     color: #d4d4d4;
     font-size: 12px;
     min-width: 0;
@@ -453,7 +463,8 @@ QTabWidget#exportTabs QTabBar::tab:selected,
 QTabWidget#tabCategories QTabBar::tab:selected,
 QTabWidget#tabCredits QTabBar::tab:selected,
 QTabWidget#tabChangelog QTabBar::tab:selected,
-QTabWidget#tabWidget QTabBar::tab:selected {
+QTabWidget#tabWidget QTabBar::tab:selected,
+QTabWidget#generateTabs QTabBar::tab:selected {
     border-right: none;
     border-bottom: 2px solid #4d9cf6;
     background: transparent;
@@ -860,6 +871,87 @@ QWidget#cutting QPushButton#btnAddClip:disabled {
 /* ── Video preview ────────────────────────────────────────── */
 QWidget#videoPreview { background-color: #0d0d0d; }
 
+/* ── Recording dock (source cards, sections, segment buttons) ── */
+QFrame#recordingCard {
+    background-color: #1a1a1a;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px;
+}
+QFrame#recordingCard[checked="true"] {
+    border: 2px solid #4d9cf6;
+    background-color: rgba(77, 156, 246, 0.14);
+}
+QFrame#recordingCard[available="false"] {
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    background-color: #141414;
+}
+QLabel#recordingCardIcon {
+    color: #4d9cf6;
+    font-size: 22px;
+}
+QLabel#recordingCardTitle {
+    color: #f0f0f0;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#recordingCardSubtitle {
+    color: #8a8a8a;
+    font-size: 11px;
+}
+QFrame#recordingSection {
+    background-color: #141414;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+}
+QFrame#recordingSection[active="true"] {
+    border: 1px solid rgba(77, 156, 246, 0.45);
+}
+QFrame#recordingSection[active="false"] {
+    color: #6b6b6b;
+    background-color: #101010;
+}
+QLabel#recordingSectionIcon {
+    color: #4d9cf6;
+    font-size: 16px;
+}
+QLabel#recordingSectionTitle {
+    color: #f0f0f0;
+    font-weight: 700;
+}
+QPushButton#recordingAdvancedLink {
+    color: #4d9cf6;
+    background: transparent;
+    border: none;
+    padding: 0;
+    min-height: 0;
+    text-align: right;
+}
+QPushButton#recordingAdvancedLink:hover {
+    color: #9dccff;
+    text-decoration: underline;
+}
+QPushButton#recordingSegment {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 7px 10px;
+    color: #c8c8c8;
+    background-color: #1a1a1a;
+}
+QPushButton#recordingSegment[position="left"] {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QPushButton#recordingSegment[position="right"] {
+    border-left: none;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+QPushButton#recordingSegment:checked {
+    color: #9dccff;
+    border: 1px solid #4d9cf6;
+    background-color: rgba(77, 156, 246, 0.22);
+}
+
 /* ── Scene Descriptions dock ──────────────────────────────── */
 QDockWidget#AIMediaPanel QWidget {
     background-color: #0d0d0d;
@@ -1013,8 +1105,12 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         font.setPointSizeF(8)
         self.app.setFont(font)
 
-        # Tabs on the left side (vertical menu style)
+        # Tabs on the left side (vertical menu style) for the top area; the other
+        # areas get top tabs explicitly, since restoreState() does not persist
+        # tab positions (upstream #6016)
         self.app.window.setTabPosition(Qt.TopDockWidgetArea, QTabWidget.West)
+        for area in (Qt.BottomDockWidgetArea, Qt.LeftDockWidgetArea, Qt.RightDockWidgetArea):
+            self.app.window.setTabPosition(area, QTabWidget.North)
 
         # Dock content margins
         self.set_dock_margins([14, 0, 14, 0])
@@ -1231,6 +1327,10 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
             },
         ]
         self.set_toolbar_buttons(self.app.window.toolBar, icon_size=20, settings=toolbar_buttons)
+
+        self.app.window.actionColor_Grade_View.setIcon(
+            QIcon(os.path.join(PATH, "themes/cosmic/images/view-color.svg"))
+        )
 
         # ── Timeline toolbar (all icon-only) ─────────────────────────
         timeline_buttons = [
@@ -1493,4 +1593,6 @@ QMessageBox QPushButton[text="&{_('Cancel')}"] {{
         button = self.app.window.videoToolbar.widgetForAction(self.app.window.actionPlay)
         if button:
             icon_name = "tool-media-pause.svg" if isPlay else "tool-media-play.svg"
-            button.setIcon(QIcon(os.path.join(PATH, "themes/cosmic/images", icon_name)))
+            icon_path = os.path.join(PATH, "themes/cosmic/images", icon_name)
+            icon = self.create_svg_icon(icon_path, self.app.window.videoToolbar.iconSize())
+            button.setIcon(icon)

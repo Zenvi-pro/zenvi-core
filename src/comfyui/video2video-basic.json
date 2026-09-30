@@ -1,0 +1,259 @@
+{
+  "action_icon": "ai-action-restyle.svg",
+  "menu_category": "enhance",
+  "menu_order": 50,
+  "name": "Change Video Style...",
+  "open_dialog": true,
+  "input_type": "video",
+  "output_type": "video",
+  "template_id": "video2video-basic",
+  "needs_reference_image": true,
+  "workflow": {
+    "1": {
+      "class_type": "LoadVideo",
+      "inputs": {
+        "file": "__openshot_input__"
+      }
+    },
+    "2": {
+      "class_type": "GetVideoComponents",
+      "inputs": {
+        "video": [
+          "1",
+          0
+        ]
+      }
+    },
+    "3": {
+      "class_type": "GetImageSize",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ]
+      }
+    },
+    "4": {
+      "class_type": "VHS_GetImageCount",
+      "inputs": {
+        "images": [
+          "2",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "__openshot_reference_image__"
+      }
+    },
+    "6": {
+      "class_type": "DepthAnythingV2Preprocessor",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ]
+      }
+    },
+    "7": {
+      "class_type": "Canny",
+      "inputs": {
+        "image": [
+          "2",
+          0
+        ],
+        "low_threshold": 0.35,
+        "high_threshold": 0.75
+      }
+    },
+    "8": {
+      "class_type": "ImageBlend",
+      "inputs": {
+        "image1": [
+          "6",
+          0
+        ],
+        "image2": [
+          "7",
+          0
+        ],
+        "blend_factor": 0.3,
+        "blend_mode": "overlay"
+      }
+    },
+    "9": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "wan2.1_vace_1.3B_fp16.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "10": {
+      "class_type": "ModelSamplingSD3",
+      "inputs": {
+        "model": [
+          "9",
+          0
+        ],
+        "shift": 8.0
+      }
+    },
+    "11": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "type": "wan",
+        "device": "default"
+      }
+    },
+    "12": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "__openshot_prompt__",
+        "clip": [
+          "11",
+          0
+        ]
+      }
+    },
+    "13": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "overexposed, static shot, blurry details, subtitles, watermark, logo, text overlay, worst quality, low quality, jpeg artifacts, ugly, deformed, bad hands, bad face, extra fingers, fused fingers, chaotic background, frozen frame",
+        "clip": [
+          "11",
+          0
+        ]
+      }
+    },
+    "14": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "wan_2.1_vae.safetensors"
+      }
+    },
+    "15": {
+      "class_type": "WanVaceToVideo",
+      "inputs": {
+        "positive": [
+          "12",
+          0
+        ],
+        "negative": [
+          "13",
+          0
+        ],
+        "vae": [
+          "14",
+          0
+        ],
+        "control_video": [
+          "8",
+          0
+        ],
+        "reference_image": [
+          "5",
+          0
+        ],
+        "width": [
+          "3",
+          0
+        ],
+        "height": [
+          "3",
+          1
+        ],
+        "length": [
+          "4",
+          0
+        ],
+        "batch_size": 1,
+        "strength": 0.85
+      }
+    },
+    "16": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "10",
+          0
+        ],
+        "seed": 654654950714624,
+        "steps": 8,
+        "cfg": 1.0,
+        "sampler_name": "uni_pc",
+        "scheduler": "simple",
+        "positive": [
+          "15",
+          0
+        ],
+        "negative": [
+          "15",
+          1
+        ],
+        "latent_image": [
+          "15",
+          2
+        ],
+        "denoise": 1.0
+      }
+    },
+    "17": {
+      "class_type": "TrimVideoLatent",
+      "inputs": {
+        "samples": [
+          "16",
+          0
+        ],
+        "trim_amount": [
+          "15",
+          3
+        ]
+      }
+    },
+    "18": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "17",
+          0
+        ],
+        "vae": [
+          "14",
+          0
+        ]
+      }
+    },
+    "19": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "images": [
+          "18",
+          0
+        ],
+        "audio": [
+          "2",
+          1
+        ],
+        "fps": [
+          "2",
+          2
+        ]
+      }
+    },
+    "20": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "video": [
+          "19",
+          0
+        ],
+        "filename_prefix": "video/openshot_gen",
+        "format": "auto",
+        "codec": "auto"
+      }
+    }
+  }
+}
