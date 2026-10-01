@@ -15,6 +15,7 @@ whole clip that plays its whole file is copied, and the copy is counted.
 from __future__ import annotations
 
 import copy
+import types
 import json
 import shutil
 import subprocess
@@ -263,3 +264,47 @@ def test_hardware_encoders_do_not_get_partial_segments(tmp_path, untouched, monk
         encode_span=lambda *a: calls.append(a) or False, audio_settings=_AUDIO)
     assert result is None
     assert calls == []
+
+
+def test_a_smart_rendered_export_reports_progress_the_dialog_can_format(monkeypatch):
+    """The success path emitted "100.0%% " (nothing to format into), so the
+    dialog's updateProgressBar raised TypeError, popped "Something went wrong"
+    and never reached its finished state."""
+    import sys
+    from unittest.mock import MagicMock
+    for name in ("openshot", "classes.openshot_rc", "classes.ui_util",
+                 "classes.metrics", "classes.app", "classes.query", "PyQt5.QtGui", "PyQt5"):
+        if name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, MagicMock())
+    import windows.export as export_mod
+
+    monkeypatch.setattr(export_mod, "get_app", lambda: MagicMock(
+        _tr=lambda s: s, project=MagicMock(get=lambda *a, **k: {"num": 30, "den": 1})))
+    monkeypatch.setattr(export_mod, "pause_window_auto_save", lambda: False)
+    monkeypatch.setattr(export_mod, "resume_window_auto_save", lambda was_active: None)
+    monkeypatch.setattr(export_mod, "try_smart_render_export",
+                        lambda *a, **k: {"mode": "full_copy", "path": "/tmp/out.mp4"})
+    monkeypatch.setattr(export_mod, "decide_smart_render", lambda *a, **k: None)
+    monkeypatch.setattr(export_mod, "openshot", MagicMock())
+    # run_export imports QApplication from PyQt5.QtWidgets; under the headless
+    # stub that is a bare mock class without processEvents.
+    monkeypatch.setattr(sys.modules["PyQt5.QtWidgets"], "QApplication", MagicMock(), raising=False)
+    monkeypatch.setattr(export_mod, "QCoreApplication", MagicMock())
+
+    frames, finished = [], []
+    job = types.SimpleNamespace(
+        _headless=False, exporting=True, s=None, timeline=MagicMock(), project=MagicMock(),
+        cache_thread=MagicMock(), ExportStarted=MagicMock(), ExportEnded=MagicMock(),
+        ExportFrame=types.SimpleNamespace(emit=lambda *args: frames.append(args)),
+        _cleanup_export_resources=lambda: None,
+        _show_export_finished=lambda: finished.append(True))
+    job._complete_export_success = types.MethodType(export_mod.Export._complete_export_success, job)
+    video = {"vformat": "mp4", "vcodec": "libx264", "fps": {"num": 30, "den": 1},
+             "width": 640, "height": 360, "pixel_ratio": {"num": 1, "den": 1},
+             "video_bitrate": 2_000_000, "start_frame": 1, "end_frame": 240,
+             "interlace": False, "topfirst": False, "spherical": False}
+    export_mod.Export.run_export(job, "/tmp/out.mp4", video, dict(_AUDIO), "Video & Audio")
+
+    title, start, end, current, fmt = frames[-1]
+    assert (fmt % ((current - start) / (end - start) * 100)).strip() == "100.0%"
+    assert finished == [True]
