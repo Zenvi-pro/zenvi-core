@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid as uuid_module
 from collections import Counter
 from typing import Optional
@@ -5365,6 +5366,7 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
 
     Used for server-rendered clips (e.g. Manim) delivered as a public URL. One shot:
     download → re-encode/import (via _import_generated_video) → add_clip_to_timeline.
+    YouTube page URLs are not direct files — use ingest_web_video_tool instead.
     """
     import tempfile
     import urllib.request
@@ -5381,6 +5383,17 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
             "Error: import_video_url_and_add_to_timeline_tool is for video URLs only. "
             "For Freesound / music / SFX use stock_music(query=..., track=...)."
         )
+    try:
+        from classes.web_video_ingest import is_youtube_url
+        if is_youtube_url(video_url) and not any(
+            lower_path.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")
+        ):
+            return (
+                "Error: that is a YouTube page URL, not a direct video file. "
+                "Use ingest_web_video_tool(url=..., intent=\"timeline\") instead."
+            )
+    except Exception:
+        pass
 
     try:
         # Derive a clean .mp4 filename from the URL path.
@@ -5426,6 +5439,466 @@ def import_video_url_and_add_to_timeline(video_url="", track="", position_second
     except Exception as e:
         log.error("import_video_url_and_add_to_timeline failed: %s", e, exc_info=True)
         return f"Error importing video from URL: {e}"
+
+
+def _ingest_web_video_fail(reason: str, *, url: str = "", intent: str = "") -> str:
+    """Stable JSON failure — agents should report this briefly and stop, not cascade."""
+    msg = str(reason or "Ingest failed.").strip()
+    # Never return multi-line stack noise to the model.
+    msg = " ".join(msg.split())
+    if len(msg) > 280:
+        msg = msg[:277] + "..."
+    return json.dumps({
+        "ok": False,
+        "status": "failed",
+        "error": msg,
+        "url": url or "",
+        "intent": intent or "",
+        "file_id": "",
+        "placed": False,
+        "message": msg,
+        "next": "Tell the user what failed in one short sentence. Do not retry the same URL in a loop.",
+    })
+
+
+# Claude Code / Desktop MCP clients abort tool calls around ~60s. Long YouTube
+# pulls often need 2–3+ minutes. Run the download on a daemon thread, wait a
+# short budget on the first call, then long-poll on job_id until done.
+_INGEST_SYNC_BUDGET_S = 25.0
+_INGEST_POLL_BUDGET_S = 45.0
+_INGEST_JOB_TTL_S = 30 * 60
+_ingest_jobs_lock = threading.Lock()
+_ingest_jobs = {}  # job_id -> dict
+_ingest_inflight = {}  # (url_key, intent, place_flag) -> job_id
+
+
+def _wait_ingest_job(job: dict, timeout_s: float) -> str:
+    """Block until the job finishes or *timeout_s* elapses, then snapshot."""
+    if (job.get("status") or "running") == "running":
+        ev = job.get("event")
+        if ev is not None:
+            ev.wait(timeout=max(0.0, float(timeout_s)))
+    return _ingest_job_public(job)
+
+
+def _ingest_job_public(job: dict) -> str:
+    """JSON snapshot for agents (running / completed / failed)."""
+    status = job.get("status") or "running"
+    if status == "running":
+        jid = job.get("job_id") or ""
+        return json.dumps({
+            "ok": True,
+            "status": "running",
+            "job_id": jid,
+            "url": job.get("url") or "",
+            "intent": job.get("intent") or "",
+            "file_id": "",
+            "placed": False,
+            "message": (
+                "YouTube/web download still in progress — long videos can take "
+                "a few minutes. This is not a failure."
+            ),
+            "next": (
+                f'Call ingest_web_video_tool(job_id="{jid}") again — the tool '
+                "waits until the download finishes or ~45s, then returns. "
+                "Do not start another download of the same URL. A client "
+                "'operation timed out' is not failure — keep calling this job_id."
+            ),
+        })
+    raw = job.get("result")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {
+                "ok": status == "completed",
+                "status": status,
+                "message": raw,
+            }
+    else:
+        data = {
+            "ok": False,
+            "status": "failed",
+            "error": job.get("error") or "Ingest failed.",
+            "message": job.get("error") or "Ingest failed.",
+        }
+    if not isinstance(data, dict):
+        data = {"ok": False, "status": status, "message": str(data)}
+    data["status"] = (
+        status if status in ("completed", "failed") else data.get("status") or status
+    )
+    data["job_id"] = job.get("job_id") or data.get("job_id") or ""
+    if data.get("ok") and data.get("status") == "completed":
+        data.setdefault(
+            "next",
+            data.get("next") or "Done. Reply briefly; do not re-ingest the same URL.",
+        )
+    return json.dumps(data)
+
+
+def _purge_stale_ingest_jobs(now: Optional[float] = None) -> None:
+    cutoff = float(now if now is not None else time.time()) - _INGEST_JOB_TTL_S
+    dead = [
+        jid for jid, job in _ingest_jobs.items()
+        if float(job.get("updated_at") or 0) < cutoff
+        and job.get("status") in ("completed", "failed")
+    ]
+    for jid in dead:
+        job = _ingest_jobs.pop(jid, None)
+        if not job:
+            continue
+        key = job.get("dedupe_key")
+        if key is not None and _ingest_inflight.get(key) == jid:
+            _ingest_inflight.pop(key, None)
+
+
+def _run_ingest_job(job: dict, kwargs: dict) -> None:
+    from classes import web_video_ingest as wvi
+
+    try:
+        # execute_tool's outer _atomic ends when we return "running"; group
+        # import+place here so one undo still reverses the whole ingest.
+        # Headless unit tests stub Qt — skip _atomic when the app is unavailable.
+        try:
+            app = _get_app()
+            use_atomic = getattr(app, "updates", None) is not None
+        except Exception:
+            app = None
+            use_atomic = False
+        if use_atomic:
+            result = _atomic(app, _ingest_web_video_impl)(**kwargs)
+        else:
+            result = _ingest_web_video_impl(**kwargs)
+        try:
+            parsed = json.loads(result) if isinstance(result, str) else {}
+            ok = bool(parsed.get("ok")) if isinstance(parsed, dict) else False
+        except Exception:
+            ok = False
+            parsed = {}
+        with _ingest_jobs_lock:
+            job["result"] = result if isinstance(result, str) else json.dumps(parsed)
+            job["status"] = "completed" if ok else "failed"
+            if not ok and isinstance(parsed, dict):
+                job["error"] = parsed.get("error") or parsed.get("message") or ""
+            job["updated_at"] = time.time()
+            key = job.get("dedupe_key")
+            if key is not None and _ingest_inflight.get(key) == job.get("job_id"):
+                _ingest_inflight.pop(key, None)
+    except Exception as e:
+        log.error("ingest_web_video job failed: %s", e, exc_info=True)
+        fail = _ingest_web_video_fail(
+            wvi.humanize_ingest_failure(e),
+            url=str(kwargs.get("url") or kwargs.get("video_url") or ""),
+            intent=str(kwargs.get("intent") or ""),
+        )
+        with _ingest_jobs_lock:
+            job["result"] = fail
+            job["status"] = "failed"
+            job["error"] = str(e)
+            job["updated_at"] = time.time()
+            key = job.get("dedupe_key")
+            if key is not None and _ingest_inflight.get(key) == job.get("job_id"):
+                _ingest_inflight.pop(key, None)
+    finally:
+        ev = job.get("event")
+        if ev is not None:
+            ev.set()
+
+
+def ingest_web_video(
+    url="",
+    video_url="",
+    intent="reference",
+    place="false",
+    track="",
+    position_seconds="",
+    write_subs="",
+    job_id="",
+    **_kw,
+) -> str:
+    """Fetch a YouTube/web video URL via yt-dlp into Imports/media bin (one undo).
+
+    FIRST tool for youtube/youtu.be (or similar) links — do not ToolSearch or use
+    import_video_url_and_add_to_timeline_tool / import_files_tool for a page URL.
+
+    Long downloads return status=running with a job_id before MCP clients time
+    out (~60s). Call ingest_web_video_tool(job_id=...) again — each call waits
+    until completed/failed or ~45s. A client "operation timed out" is NOT
+    failure — keep calling the same job_id; do not start a second download.
+
+    Intents (pick from what the user asked — do NOT place unless they asked):
+      reference — DEFAULT. Media bin only. Colour/look: then match_color_to_reference_tool
+                  (referenceFileId). Never put the YouTube clip on the timeline for colour.
+      timeline  — ONLY if user asked to add/edit/clip that YouTube video on the timeline.
+      recreate  — Media bin watch-only reference; rebuild with user clips/stock/video_gen.
+                  Do not leave the YouTube original on the cut unless asked.
+
+    place=true is ignored for recreate; only timeline intent places.
+    Failure → JSON ok=false with a short reason (restricted / pull failed / upload MP4).
+    """
+    from classes import web_video_ingest as wvi
+
+    jid = str(job_id or _kw.get("job_id") or "").strip()
+    if jid:
+        with _ingest_jobs_lock:
+            _purge_stale_ingest_jobs()
+            job = _ingest_jobs.get(jid)
+        if not job:
+            return _ingest_web_video_fail(
+                f"Unknown ingest job_id {jid!r}. Pass the job_id from the "
+                "status=running reply, or call again with url= to start fresh.",
+                url=str(url or video_url or ""),
+                intent=str(intent or ""),
+            )
+        return _wait_ingest_job(job, _INGEST_POLL_BUDGET_S)
+
+    raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
+    if not raw_url:
+        return _ingest_web_video_fail(
+            "Paste a YouTube (or other site) video link — url is required."
+        )
+    try:
+        intent_norm = wvi.normalize_intent(intent or "reference")
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url)
+
+    place_flag = str(place or "").strip().lower() in ("1", "true", "yes", "on")
+    if intent_norm == "timeline":
+        place_flag = True
+    if intent_norm == "recreate":
+        place_flag = False
+
+    dedupe_key = (wvi.url_cache_key(raw_url), intent_norm, bool(place_flag))
+    kwargs = {
+        "url": raw_url,
+        "video_url": "",
+        "intent": intent_norm,
+        "place": "true" if place_flag else "false",
+        "track": track,
+        "position_seconds": position_seconds,
+        "write_subs": write_subs,
+    }
+
+    reused = False
+    with _ingest_jobs_lock:
+        _purge_stale_ingest_jobs()
+        existing_id = _ingest_inflight.get(dedupe_key)
+        job = _ingest_jobs.get(existing_id) if existing_id else None
+        if job and job.get("status") == "running":
+            reused = True
+        else:
+            new_id = str(uuid_module.uuid4())
+            event = threading.Event()
+            job = {
+                "job_id": new_id,
+                "status": "running",
+                "url": raw_url,
+                "intent": intent_norm,
+                "dedupe_key": dedupe_key,
+                "event": event,
+                "result": None,
+                "error": "",
+                "updated_at": time.time(),
+            }
+            _ingest_jobs[new_id] = job
+            _ingest_inflight[dedupe_key] = new_id
+            threading.Thread(
+                target=_run_ingest_job,
+                args=(job, kwargs),
+                name=f"ingest-web-video-{new_id[:8]}",
+                daemon=True,
+            ).start()
+
+    budget = _INGEST_POLL_BUDGET_S if reused else _INGEST_SYNC_BUDGET_S
+    return _wait_ingest_job(job, budget)
+
+
+def _ingest_web_video_impl(
+    url="",
+    video_url="",
+    intent="reference",
+    place="false",
+    track="",
+    position_seconds="",
+    write_subs="",
+    **_kw,
+) -> str:
+
+    from classes import web_video_ingest as wvi
+    from classes import info
+
+    raw_url = str(url or video_url or _kw.get("webpage_url") or "").strip()
+    if not raw_url:
+        return _ingest_web_video_fail(
+            "Paste a YouTube (or other site) video link — url is required."
+        )
+
+    try:
+        intent_norm = wvi.normalize_intent(intent or "reference")
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url)
+
+    place_flag = str(place or "").strip().lower() in ("1", "true", "yes", "on")
+    if intent_norm == "timeline":
+        place_flag = True
+    if intent_norm == "recreate":
+        place_flag = False
+
+    if str(write_subs or "").strip() == "":
+        # Default: grab English subs when available for reference/recreate.
+        write_subs_flag = intent_norm in ("reference", "recreate")
+    else:
+        write_subs_flag = str(write_subs).strip().lower() in ("1", "true", "yes", "on")
+
+    # Direct file URL (mp4/mov/…) — keep existing Manim path; do not force yt-dlp.
+    lower = raw_url.split("?")[0].lower()
+    if any(lower.endswith(ext) for ext in (".mp4", ".mov", ".webm", ".mkv", ".avi")):
+        if place_flag or intent_norm == "timeline":
+            return import_video_url_and_add_to_timeline(
+                video_url=raw_url, track=track, position_seconds=position_seconds, **_kw
+            )
+        # Import only: download then import without place.
+        # Fall through to yt-dlp for page URLs; for direct files use urllib path.
+        try:
+            import tempfile
+            import urllib.request
+            tmp_dir = tempfile.mkdtemp(prefix="zenvi_web_direct_")
+            raw_name = lower.rsplit("/", 1)[-1] or "video.mp4"
+            dest = os.path.join(tmp_dir, raw_name)
+            req = urllib.request.Request(raw_url, headers={"User-Agent": "ZenviApp/1.0"})
+            with urllib.request.urlopen(req, timeout=300) as response, open(dest, "wb") as out:
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            f, err = _import_generated_video(dest)
+            _cleanup_scratch_parent(dest, "zenvi_web_direct_")
+            if err:
+                return _ingest_web_video_fail(f"Could not import the file into the media bin: {err}", url=raw_url, intent=intent_norm)
+            file_id = f.id if f else ""
+            return json.dumps({
+                "ok": True,
+                "intent": intent_norm,
+                "file_id": file_id,
+                "placed": False,
+                "url": raw_url,
+                "message": "Direct media URL imported to media bin.",
+                "next": (
+                    "Colour: match_color_to_reference_tool(referenceFileId=file_id). "
+                    "Timeline: add_clip_to_timeline_tool(file_id=...)."
+                ),
+                "product_note": (
+                    "User-initiated local import. Do not re-upload the original as your own."
+                ),
+            })
+        except Exception as e:
+            return _ingest_web_video_fail(wvi.humanize_ingest_failure(e) if hasattr(wvi, "humanize_ingest_failure") else str(e), url=raw_url, intent=intent_norm)
+
+    root = wvi.cache_root(getattr(info, "USER_PATH", "") or "")
+    try:
+        purged = wvi.purge_expired_cache(root)
+    except Exception:
+        purged = 0
+
+    cache_dir = os.path.join(root, wvi.url_cache_key(raw_url))
+    try:
+        meta = wvi.download_web_video(
+            raw_url,
+            cache_dir=cache_dir,
+            intent=intent_norm,
+            write_subs=write_subs_flag,
+        )
+    except wvi.WebVideoIngestError as exc:
+        return _ingest_web_video_fail(str(exc), url=raw_url, intent=intent_norm)
+    except Exception as e:
+        log.error("ingest_web_video download failed: %s", e, exc_info=True)
+        return _ingest_web_video_fail(wvi.humanize_ingest_failure(e), url=raw_url, intent=intent_norm)
+
+    video_path = meta.get("video_path") or ""
+    f, err = _import_generated_video(video_path)
+    if err:
+        return _ingest_web_video_fail(f"Downloaded OK but import into the project failed: {err}", url=raw_url, intent=intent_norm)
+    file_id = f.id if f else ""
+    if not file_id:
+        return _ingest_web_video_fail("Downloaded OK but could not find the new media-bin file id.", url=raw_url, intent=intent_norm)
+
+    # Tag as web reference for recreate / colour.
+    try:
+        tags = f.data.get("tags") if isinstance(f.data, dict) else None
+        if isinstance(tags, str):
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        elif isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        else:
+            tag_list = []
+        for tag in ("web_video", intent_norm, "youtube" if meta.get("is_youtube") else "web"):
+            if tag and tag not in tag_list:
+                tag_list.append(tag)
+        if intent_norm == "recreate" and "reference_only" not in tag_list:
+            tag_list.append("reference_only")
+        f.data["tags"] = ", ".join(tag_list)
+        title = meta.get("title") or ""
+        if title and isinstance(f.data, dict):
+            f.data["name"] = title[:120]
+        f.save()
+    except Exception as tag_err:
+        log.debug("ingest_web_video tag failed: %s", tag_err)
+
+    placement = ""
+    placed = False
+    if place_flag:
+        try:
+            placement = add_clip_to_timeline(
+                file_id=file_id, position_seconds=position_seconds, track=track, **_kw
+            )
+            placed = not str(placement).startswith("Error:")
+            if not placed:
+                placement = str(placement)
+        except Exception as place_err:
+            log.error("ingest_web_video place failed: %s", place_err, exc_info=True)
+            placement = f"In media bin as {file_id}, but could not place on timeline: {place_err}"
+            placed = False
+
+    next_steps = []
+    if intent_norm in ("reference", "recreate"):
+        next_steps.append(
+            f"Colour match: match_color_to_reference_tool(referenceFileId=\"{file_id}\")."
+        )
+    if intent_norm == "recreate":
+        next_steps.append(
+            "Recreate with the user's clips / stock_video / video_gen — "
+            "do not leave the YouTube original on the story cut unless asked."
+        )
+    if intent_norm == "timeline" and not placed:
+        next_steps.append(f"Place with add_clip_to_timeline_tool(file_id=\"{file_id}\").")
+    if meta.get("subtitle_paths"):
+        next_steps.append(
+            "Subtitles cached (paths in subtitle_paths); caption tool can consume later."
+        )
+
+    result = {
+        "ok": True,
+        "intent": intent_norm,
+        "file_id": file_id,
+        "placed": placed,
+        "url": meta.get("webpage_url") or raw_url,
+        "title": meta.get("title"),
+        "duration_seconds": meta.get("duration_seconds"),
+        "extractor": meta.get("extractor"),
+        "is_youtube": bool(meta.get("is_youtube")),
+        "subtitle_paths": meta.get("subtitle_paths") or [],
+        "cache_purged": purged,
+        "placement": placement if place_flag else "",
+        "message": (
+            f"Ingested “{meta.get('title') or 'video'}” as media_bin file_id={file_id}."
+        ),
+        "next": " ".join(next_steps),
+        "product_note": meta.get("product_note"),
+        "undo": "one step",
+    }
+    return json.dumps(result)
+
 
 
 def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_seconds="", track="", **_kw) -> str:
@@ -9125,12 +9598,44 @@ def apply_color(
             return error_box[0]
         if not receipts:
             return "Error: no clips were updated."
-        return json.dumps({
+        result = {
             "ok": True,
             "clips": receipts,
             "warnings": warnings,
             "undo": "one step",
-        })
+        }
+        # Evidence for vision closed-loop: solo AFTER of first graded clip.
+        try:
+            from classes.query import Clip as _Clip
+            first_id = receipts[0].get("timeline_clip_id") or receipts[0].get("id")
+            clip_obj = None
+            if QThread is not None and QThread.currentThread() is not app.thread():
+                clip_obj = _run_on_main_thread(lambda: _Clip.get(id=first_id))
+            else:
+                clip_obj = _Clip.get(id=first_id)
+            data = clip_obj.data if clip_obj and isinstance(clip_obj.data, dict) else {}
+            fps = app.project.get("fps") or {"num": 30, "den": 1}
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+            after = _render_clip_isolated(data, 1, fps_float, with_jpeg=True)
+            after_scopes = after.get("scopes") or {}
+            result["after_preview_jpeg"] = after.get("preview_jpeg") or ""
+            result["after_scopes"] = after_scopes
+            outdoor = ca.is_outdoor_bright_profile(
+                ca.build_look_profile(after_scopes) if after_scopes.get("present") else {}
+            )
+            # Nuke risk vs a neutral goal is weak; flag clipped highlights alone.
+            hi = after_scopes.get("clipped_highlights")
+            try:
+                hi_f = float(hi) if hi is not None else 0.0
+            except (TypeError, ValueError):
+                hi_f = 0.0
+            result["nuke_risk"] = bool(hi_f >= 0.12 or (outdoor and hi_f >= 0.08))
+            result["outdoor_bright"] = outdoor
+        except Exception as exc:
+            result["after_preview_jpeg"] = ""
+            result["nuke_risk"] = False
+            result["warnings"] = list(warnings) + [f"after preview failed: {exc}"]
+        return json.dumps(result)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -9168,7 +9673,7 @@ def _framescope_from_frame(frame) -> dict:
             "clipped_highlights": scope.GetVideoClippedHighlights(),
         },
     }
-    return ca.summarize_scope_video(video)
+    return ca.scope_from_raw_video(video)
 
 
 def _measure_frame_scopes(frame_number: int) -> dict:
@@ -9336,6 +9841,202 @@ def _measure_clip_isolated_scopes(clip_data: dict, timeline_frame: int, fps_floa
     return _render_clip_isolated(
         clip_data, timeline_frame, fps_float, with_jpeg=False
     ).get("scopes") or {"present": False}
+
+
+def _clip_duration_seconds(clip_data: dict) -> float:
+    try:
+        start = float(clip_data.get("start") or 0)
+        end = float(clip_data.get("end") or 0)
+        if end > start:
+            return end - start
+    except (TypeError, ValueError):
+        pass
+    try:
+        reader = clip_data.get("reader") if isinstance(clip_data.get("reader"), dict) else {}
+        dur = float(reader.get("duration") or 0)
+        if dur > 0:
+            return dur
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
+def _sample_local_frames(duration_s: float, fps_float: float, sample_count: int) -> list:
+    """1-based local frame numbers evenly spaced across [0, duration)."""
+    from classes import color_agent as ca
+
+    n = max(1, int(sample_count or ca.sample_count_for_duration(duration_s)))
+    fps = max(float(fps_float or 30.0), 1e-6)
+    total_frames = max(1, int(round(max(duration_s, 1.0 / fps) * fps)))
+    if n == 1:
+        return [max(1, total_frames // 2)]
+    frames = []
+    for i in range(n):
+        # Even spacing including near start and end.
+        t = i / max(n - 1, 1)
+        fr = 1 + int(round(t * (total_frames - 1)))
+        frames.append(max(1, min(total_frames, fr)))
+    # de-dupe preserving order
+    out = []
+    seen = set()
+    for fr in frames:
+        if fr not in seen:
+            seen.add(fr)
+            out.append(fr)
+    return out
+
+
+def _profile_clip_dense(
+    clip_data: dict,
+    fps_float: float,
+    *,
+    with_jpegs: bool = True,
+    max_samples: int | None = None,
+) -> dict:
+    """Dense full-frame LookProfile across a timeline clip's duration."""
+    from classes import color_agent as ca
+
+    duration = _clip_duration_seconds(clip_data)
+    n = ca.sample_count_for_duration(duration)
+    if max_samples is not None:
+        n = max(1, min(int(max_samples), n))
+    local_frames = _sample_local_frames(duration, fps_float, n)
+    scopes = []
+    jpegs = []
+    # Map local frame → fake timeline_frame for _render_clip_isolated:
+    # with position=0 solo timeline, timeline_frame == local_frame.
+    for i, local_frame in enumerate(local_frames):
+        want_jpeg = with_jpegs and (
+            i == 0 or i == len(local_frames) // 2 or i == len(local_frames) - 1
+        )
+        rendered = _render_clip_isolated(
+            clip_data, int(local_frame), fps_float, with_jpeg=want_jpeg
+        )
+        sc = rendered.get("scopes") or {"present": False}
+        if sc.get("present"):
+            scopes.append(sc)
+        if want_jpeg and rendered.get("preview_jpeg"):
+            jpegs.append(rendered["preview_jpeg"])
+    profile = ca.build_look_profile(scopes)
+    return {
+        "profile": profile,
+        "scopes_samples": len(scopes),
+        "sample_frames": local_frames,
+        "preview_jpegs": jpegs,
+        "preview_jpeg": jpegs[len(jpegs) // 2] if jpegs else (jpegs[0] if jpegs else ""),
+        "duration_s": duration,
+    }
+
+
+def _profile_media_path(
+    path: str,
+    *,
+    with_jpegs: bool = True,
+    max_samples: int | None = None,
+) -> dict:
+    """Dense LookProfile for a media-bin file or still image path (off-main)."""
+    import openshot
+    from classes import color_agent as ca
+
+    path = str(path or "").strip()
+    if not path or not os.path.exists(path):
+        return {
+            "profile": {"present": False, "error": f"file not found: {path}"},
+            "scopes_samples": 0,
+            "preview_jpegs": [],
+            "preview_jpeg": "",
+            "duration_s": 0.0,
+        }
+
+    app = _get_app()
+    project = app.project
+    try:
+        width = min(int(project.get("width") or 1280), 640)
+        height = min(int(project.get("height") or 720), 360)
+        sample_rate = int(project.get("sample_rate") or 48000)
+        channels = int(project.get("channels") or 2)
+        channel_layout = int(project.get("channel_layout") or 3)
+        fps = project.get("fps") or {"num": 30, "den": 1}
+        fps_num = int(fps.get("num", 30) or 30)
+        fps_den = int(fps.get("den", 1) or 1)
+        fps_float = float(fps_num) / float(fps_den or 1)
+    except (TypeError, ValueError, ZeroDivisionError):
+        width, height, sample_rate, channels, channel_layout = 640, 360, 48000, 2, 3
+        fps_num, fps_den, fps_float = 30, 1, 30.0
+
+    # Duration via ffprobe when available; stills → 0.
+    duration = 0.0
+    try:
+        duration = float(_ffprobe_video_duration(path) or 0.0)
+    except Exception:
+        duration = 0.0
+    still_ext = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"}
+    if os.path.splitext(path)[1].lower() in still_ext:
+        duration = 0.0
+
+    n = 1 if duration <= 0.05 else ca.sample_count_for_duration(duration)
+    if max_samples is not None:
+        n = max(1, min(int(max_samples), n))
+    local_frames = _sample_local_frames(max(duration, 1.0 / fps_float), fps_float, n)
+
+    temp = None
+    scopes = []
+    jpegs = []
+    try:
+        temp = openshot.Timeline(
+            width, height,
+            openshot.Fraction(fps_num, fps_den),
+            sample_rate, channels, channel_layout,
+        )
+        try:
+            temp.SetMaxSize(int(width), int(height))
+        except Exception:
+            pass
+        clip_os = openshot.Clip(path)
+        # Place at 0 for simple local-frame indexing.
+        try:
+            clip_os.Position(0.0)
+        except Exception:
+            pass
+        temp.AddClip(clip_os)
+        temp.Open()
+        for i, local_frame in enumerate(local_frames):
+            frame = temp.GetFrame(int(local_frame))
+            sc = _framescope_from_frame(frame)
+            if sc.get("present"):
+                scopes.append(sc)
+            want_jpeg = with_jpegs and (
+                i == 0 or i == len(local_frames) // 2 or i == len(local_frames) - 1
+            )
+            if want_jpeg:
+                jpeg = _frame_to_jpeg_b64(frame)
+                if jpeg:
+                    jpegs.append(jpeg)
+    except Exception as exc:
+        return {
+            "profile": {"present": False, "error": str(exc)},
+            "scopes_samples": 0,
+            "preview_jpegs": [],
+            "preview_jpeg": "",
+            "duration_s": duration,
+        }
+    finally:
+        if temp is not None:
+            try:
+                temp.Close()
+            except Exception:
+                pass
+
+    profile = ca.build_look_profile(scopes)
+    return {
+        "profile": profile,
+        "scopes_samples": len(scopes),
+        "sample_frames": local_frames,
+        "preview_jpegs": jpegs,
+        "preview_jpeg": jpegs[len(jpegs) // 2] if jpegs else "",
+        "duration_s": duration,
+        "path": path,
+    }
 
 
 def inspect_color(
@@ -9760,12 +10461,44 @@ def apply_look(
             return error_box[0]
         if not receipts:
             return "Error: no clips were updated."
-        return json.dumps({
+        result = {
             "ok": True,
             "clips": receipts,
             "warnings": warnings,
             "undo": "one step",
-        })
+        }
+        try:
+            from classes.query import Clip as _Clip
+            first_id = receipts[0].get("timeline_clip_id") or receipts[0].get("id")
+            if QThread is not None and QThread.currentThread() is not app.thread():
+                clip_obj = _run_on_main_thread(lambda: _Clip.get(id=first_id))
+            else:
+                clip_obj = _Clip.get(id=first_id)
+            data = clip_obj.data if clip_obj and isinstance(clip_obj.data, dict) else {}
+            fps = app.project.get("fps") or {"num": 30, "den": 1}
+            fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
+            after = _render_clip_isolated(data, 1, fps_float, with_jpeg=True)
+            after_scopes = after.get("scopes") or {}
+            result["after_preview_jpeg"] = after.get("preview_jpeg") or ""
+            result["after_scopes"] = after_scopes
+            hi = after_scopes.get("clipped_highlights")
+            try:
+                hi_f = float(hi) if hi is not None else 0.0
+            except (TypeError, ValueError):
+                hi_f = 0.0
+            result["nuke_risk"] = bool(hi_f >= 0.12)
+            # Attach synthetic vibe goal distance when lookId known.
+            look_used = receipts[0].get("look_id") or receipts[0].get("lookId")
+            goal = ca.target_profile_for_look(str(look_used or ""))
+            if goal and after_scopes.get("present"):
+                after_prof = ca.build_look_profile(after_scopes)
+                result["look_distance_to_vibe"] = ca.look_profile_distance(after_prof, goal)
+                result["vibe_goal"] = str(look_used or "")
+        except Exception as exc:
+            result["after_preview_jpeg"] = ""
+            result["nuke_risk"] = False
+            result["warnings"] = list(warnings) + [f"after preview failed: {exc}"]
+        return json.dumps(result)
     except ValueError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -9776,302 +10509,414 @@ def match_color_to_reference(
     clipId="",
     timeline_clip_id="",
     clip_id="",
+    clipIds="",
+    clip_ids="",
     reference="",
     referenceClipId="",
+    referenceFileId="",
+    referenceImagePath="",
+    all_clips="false",
     dry_run="false",
     dryRun="",
+    max_iterations="",
     **_kw,
 ) -> str:
-    """Make SUBJECT clip look like REFERENCE (track-agnostic).
+    """Match SUBJECT look to REFERENCE via LookProfile + closed verify loop.
 
-    1) Solo-render both clips (images + scopes) — overlapping tracks cannot
-       false-match.
-    2) Sync ColorGrade (paste/reset/scope-nudge) AND FilmGrain (incl. 35mm).
-    3) Returns before/after preview_jpeg for vision.
+    Reference kinds (first non-empty wins):
+      referenceClipId / reference — timeline clip
+      referenceFileId — media-bin file
+      referenceImagePath — absolute still/video path
+
+    Subjects: clipId(s), or all_clips / clipIds='all' for the whole timeline.
+    Dense-samples the reference across its full duration, solves ColorGrade,
+    applies (one undo), re-profiles AFTER, recovers from nuke — up to 5 cycles.
     """
     try:
         from classes import color_agent as ca
         from classes.query import Clip
 
-        ids = ca.parse_clip_ids(
-            clipIds=clipId or clip_id,
+        try:
+            from classes.query import File  # media-bin referenceFileId path
+        except ImportError:  # headless stubs may omit File
+            File = None
+
+        all_flag = str(all_clips or _kw.get("allClips", "") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        ids = _resolve_color_target_ids(
+            clip_ids=clip_ids or clip_id or clipId,
+            clipIds=clipIds or clipId or clip_id,
             timeline_clip_id=timeline_clip_id,
+            clipId=clipId or clip_id,
+            all_clips=all_flag,
         )
         if not ids:
-            return "Error: match_color_to_reference requires clipId (subject to change)."
-        ref_id = str(reference or referenceClipId or "").strip()
-        if not ref_id:
-            return "Error: match_color_to_reference requires reference or referenceClipId."
-        if ids[0] == ref_id:
+            return _color_target_error("match_color_to_reference")
+
+        ref_clip_id = str(reference or referenceClipId or "").strip()
+        ref_file_id = str(referenceFileId or _kw.get("reference_file_id", "") or "").strip()
+        ref_image_path = str(
+            referenceImagePath or _kw.get("reference_image_path", "") or ""
+        ).strip()
+        if not ref_clip_id and not ref_file_id and not ref_image_path:
+            return (
+                "Error: match_color_to_reference requires referenceClipId, "
+                "referenceFileId, or referenceImagePath."
+            )
+        if ref_clip_id and ref_clip_id in ids and len(ids) == 1:
             return "Error: subject and reference are the same clip."
+        if ref_file_id and File is None:
+            return "Error: media-bin File lookup unavailable in this environment."
 
         dry = str(dry_run or dryRun or "").strip().lower() in ("1", "true", "yes", "on")
-
-        inspect_json = inspect_color(
-            clipId=ids[0],
-            reference=ref_id,
-            include_preview="true",
-        )
-        if str(inspect_json).startswith("Error:"):
-            return inspect_json
-        payload = json.loads(inspect_json)
+        try:
+            max_iters = int(max_iterations or _kw.get("maxIterations") or 5)
+        except (TypeError, ValueError):
+            max_iters = 5
+        max_iters = max(1, min(5, max_iters))
 
         app = _get_app()
-
-        def _effects(cid):
-            clip_obj = Clip.get(id=cid)
-            if not clip_obj:
-                return None, None, {}
-            data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-            effects = data.get("effects")
-            return (
-                ca.find_color_grade(effects),
-                ca.find_film_grain(effects),
-                data,
-            )
-
-        if QThread is not None and QThread.currentThread() is not app.thread():
-            sub_effect, sub_grain, sub_data = _run_on_main_thread(lambda: _effects(ids[0]))
-            ref_effect, ref_grain, ref_data = _run_on_main_thread(lambda: _effects(ref_id))
-        else:
-            sub_effect, sub_grain, sub_data = _effects(ids[0])
-            ref_effect, ref_grain, ref_data = _effects(ref_id)
-        # inspect_color only warns about a missing reference. Matching against
-        # it would read as "reference has no grade and no grain" and strip
-        # both from the subject, so a mistyped id must stop here.
-        if not ref_data or not isinstance(payload.get("reference"), dict):
-            return f"Error: reference clip {ref_id} not found."
-        if not sub_data:
-            return f"Error: clip {ids[0]} not found."
-
-        action = ca.match_grade_action(sub_effect, ref_effect)
-        grain_action = ca.match_grain_action(sub_grain, ref_grain)
-        hints = payload.get("hints") or []
-        # Scope hints are nudges from where the subject is now: apply them as
-        # *_delta. As absolute knobs they overwrote a shared grade (a +0.03
-        # warmth hint set temperature 0.18 to 0.03, i.e. much cooler).
-        scope_patch = {
-            f"{key}_delta": value
-            for key, value in ca.hints_to_color_patch(hints).items()
-            if f"{key}_delta" in ca.DELTA_KEYS
-        }
-        before_jpeg = payload.get("preview_jpeg") or ""
-        ref_jpeg = (
-            (payload.get("reference") or {}).get("preview_jpeg")
-            or payload.get("reference_preview_jpeg")
-            or ""
-        )
-        look_distance = None
-        try:
-            look_distance = (payload.get("gap") or {}).get("look_distance")
-            if look_distance is None:
-                look_distance = ca.scope_look_distance(
-                    payload.get("scopes") or {},
-                    (payload.get("reference") or {}).get("scopes") or {},
-                )
-        except Exception:
-            look_distance = None
-        looks_differ = (
-            bool(payload.get("grades_differ"))
-            or bool(payload.get("grain_differ"))
-            or (look_distance is not None and float(look_distance) >= 0.03)
-            or grain_action.get("mode") != "noop"
-        )
-
-        result = {
-            "ok": True,
-            "timeline_clip_id": ids[0],
-            "reference": ref_id,
-            "gap": payload.get("gap") or {},
-            "hints": hints,
-            "grades_differ": bool(payload.get("grades_differ")),
-            "grain_differ": bool(payload.get("grain_differ")) or grain_action.get("mode") != "noop",
-            "film_grain": payload.get("film_grain"),
-            "reference_film_grain": (payload.get("reference") or {}).get("film_grain"),
-            "looks_differ": looks_differ,
-            "look_distance": look_distance,
-            "match_mode": action.get("mode"),
-            "grain_mode": grain_action.get("mode"),
-            "scopes": payload.get("scopes"),
-            "reference_scopes": (payload.get("reference") or {}).get("scopes"),
-            "before_preview_jpeg": before_jpeg,
-            "reference_preview_jpeg": ref_jpeg,
-            "subject_preview_jpeg": before_jpeg,
-            "vision": (
-                "Compare BEFORE vs REFERENCE images (and AFTER after apply). "
-                "Film grain / 35mm is part of the look — match removes or copies it."
-            ),
-        }
-
-        color_mode = action.get("mode")
-        apply_color_kwargs = {}
-        messages = []
-        if color_mode == "reset":
-            apply_color_kwargs = {"reset": True}
-            result["proposed_patch"] = {"reset": True}
-            messages.append("Will reset subject ColorGrade (reference has none).")
-        elif color_mode == "paste":
-            apply_color_kwargs = {"color": json.dumps(action.get("color") or {})}
-            result["proposed_patch"] = {"color": "paste_from_reference"}
-            messages.append("Will copy reference ColorGrade knobs/LUT onto subject.")
-        elif scope_patch:
-            apply_color_kwargs = dict(scope_patch)
-            result["proposed_patch"] = scope_patch
-            result["match_mode"] = "scopes"
-            messages.append("Grades similar; will nudge via isolated scope gap.")
-        else:
-            result["proposed_patch"] = {}
-
-        if grain_action.get("mode") == "reset":
-            result["proposed_grain"] = "remove"
-            messages.append("Will remove FilmGrain / 35mm (reference has none).")
-        elif grain_action.get("mode") == "paste":
-            result["proposed_grain"] = "paste_from_reference"
-            messages.append("Will copy reference FilmGrain onto subject.")
-        else:
-            result["proposed_grain"] = "noop"
-
-        if not apply_color_kwargs and grain_action.get("mode") == "noop":
-            result["applied"] = False
-            result["match_mode"] = "vision"
-            result["message"] = (
-                "Knobs/scopes/grain are close — decide from the BEFORE vs "
-                "REFERENCE images. If they still look different, call "
-                "apply_color_tool or apply_look_tool (grain:none) then inspect."
-            )
-            return json.dumps(result)
-
-        result["message"] = " ".join(messages) if messages else "Will sync look."
-
-        if dry:
-            result["applied"] = False
-            return json.dumps(result)
-
-        # One undo: ColorGrade + FilmGrain together.
-        error_box = [None]
-        apply_receipt = {"timeline_clip_id": ids[0], "color": None, "grain": None}
-
-        def _do_match():
-            from classes.query import Clip as _Clip
-            from classes.film_grain_presets import is_film_grain_effect as _is_grain
-
-            clip_obj = _Clip.get(id=ids[0])
-            if not clip_obj:
-                error_box[0] = f"Error: clip {ids[0]} not found."
-                return
-            data = clip_obj.data if isinstance(clip_obj.data, dict) else {}
-            effects = list(data.get("effects") or [])
-            tid = _new_transaction_id()
-            app.updates.transaction_id = tid
-            try:
-                if apply_color_kwargs.get("reset"):
-                    effects = [e for e in effects if not ca.is_color_grade_effect(e)]
-                    apply_receipt["color"] = "reset"
-                elif apply_color_kwargs:
-                    if "color" in apply_color_kwargs:
-                        paste = action.get("color") or {}
-                        if isinstance(paste, str):
-                            paste = json.loads(paste)
-                        patch = {"color": paste}
-                        apply_receipt["color"] = "paste"
-                    else:
-                        patch = dict(apply_color_kwargs)
-                        apply_receipt["color"] = "scopes"
-                    existing = ca.find_color_grade(effects)
-                    if existing is None:
-                        effect = ca.create_color_grade_effect_json(
-                            app.project.generate_id
-                        )
-                        effects.append(effect)
-                        existing = effect
-                    merged = ca.merge_color_grade(existing, patch)
-                    new_effects = []
-                    replaced = False
-                    for effect in effects:
-                        if ca.is_color_grade_effect(effect):
-                            if not replaced:
-                                new_effects.append(merged)
-                                replaced = True
-                        else:
-                            new_effects.append(effect)
-                    if not replaced:
-                        new_effects.append(merged)
-                    effects = new_effects
-
-                if grain_action.get("mode") == "reset":
-                    effects = [e for e in effects if not _is_grain(e)]
-                    apply_receipt["grain"] = "removed"
-                elif grain_action.get("mode") == "paste":
-                    paste_g = grain_action.get("grain") or {}
-                    grain_indexes = [
-                        i for i, e in enumerate(effects) if _is_grain(e)
-                    ]
-                    new_g = copy.deepcopy(paste_g)
-                    if not isinstance(new_g, dict):
-                        new_g = {}
-                    new_g["class_name"] = "FilmGrain"
-                    if grain_indexes:
-                        if effects[grain_indexes[0]].get("id"):
-                            new_g["id"] = effects[grain_indexes[0]]["id"]
-                        elif not new_g.get("id"):
-                            new_g["id"] = app.project.generate_id()
-                        for index in reversed(grain_indexes[1:]):
-                            del effects[index]
-                        effects[grain_indexes[0]] = new_g
-                    else:
-                        if not new_g.get("id"):
-                            new_g["id"] = app.project.generate_id()
-                        effects.append(new_g)
-                    apply_receipt["grain"] = "paste"
-
-                _write_clip_effects(clip_obj, effects)
-            finally:
-                app.updates.transaction_id = None
-            try:
-                app.window.refreshFrameSignal.emit()
-            except Exception:
-                pass
-
-        if QThread is not None and QThread.currentThread() is not app.thread():
-            _run_on_main_thread(_do_match)
-        else:
-            _do_match()
-
-        if error_box[0]:
-            return error_box[0]
-
-        result["applied"] = True
-        result["apply_receipt"] = apply_receipt
-        result["undo"] = "one step"
-
         try:
             fps = app.project.get("fps") or {"num": 30, "den": 1}
             fps_float = float(fps.get("num", 30)) / float(fps.get("den", 1) or 1)
         except (TypeError, ValueError, ZeroDivisionError):
             fps_float = 30.0
-        after_frame = int(payload.get("atFrame") or 1)
 
-        def _reload_subject():
-            clip_obj = Clip.get(id=ids[0])
+        def _load_clip(cid):
+            clip_obj = Clip.get(id=cid)
             if not clip_obj:
-                return {}
+                return None
             return clip_obj.data if isinstance(clip_obj.data, dict) else {}
 
-        if QThread is not None and QThread.currentThread() is not app.thread():
-            after_data = _run_on_main_thread(_reload_subject)
+        def _on_main(fn):
+            if QThread is not None and QThread.currentThread() is not app.thread():
+                return _run_on_main_thread(fn)
+            return fn()
+
+        # --- Reference LookProfile (dense) ---------------------------------
+        ref_kind = "clip" if ref_clip_id else ("file" if ref_file_id else "path")
+        ref_effect = None
+        ref_grain = None
+        if ref_clip_id:
+            ref_data = _on_main(lambda: _load_clip(ref_clip_id))
+            if not ref_data:
+                return f"Error: reference clip {ref_clip_id} not found."
+            ref_pack = _profile_clip_dense(ref_data, fps_float, with_jpegs=True)
+            ref_effect, ref_grain = _on_main(
+                lambda: (
+                    ca.find_color_grade(ref_data.get("effects")),
+                    ca.find_film_grain(ref_data.get("effects")),
+                )
+            )
         else:
-            after_data = _reload_subject()
-        after = _render_clip_isolated(
-            after_data or sub_data or {}, after_frame, fps_float, with_jpeg=True
+            media_path = ref_image_path
+            if ref_file_id:
+                def _file_path():
+                    fobj = File.get(id=ref_file_id)
+                    if not fobj:
+                        return ""
+                    if hasattr(fobj, "absolute_path"):
+                        return str(fobj.absolute_path() or "")
+                    data = fobj.data if isinstance(getattr(fobj, "data", None), dict) else {}
+                    return str((data.get("path") or data.get("reader", {}).get("path") or ""))
+                media_path = _on_main(_file_path)
+                if not media_path:
+                    return f"Error: media-bin file {ref_file_id} not found."
+            ref_pack = _profile_media_path(media_path, with_jpegs=True)
+
+        ref_profile = ref_pack.get("profile") or {"present": False}
+        if not ref_profile.get("present"):
+            return json.dumps({
+                "ok": False,
+                "error": "Could not measure reference look",
+                "reference_kind": ref_kind,
+                "detail": ref_profile.get("error") or "no scopes",
+            })
+
+        # --- Subject profiles (first clip dense; others mid-frame for speed) -
+        subject_data = {}
+        for cid in ids:
+            data = _on_main(lambda c=cid: _load_clip(c))
+            if data:
+                subject_data[cid] = data
+        if not subject_data:
+            return "Error: no matching timeline clips."
+
+        primary_id = ids[0] if ids[0] in subject_data else next(iter(subject_data))
+        before_pack = _profile_clip_dense(
+            subject_data[primary_id], fps_float, with_jpegs=True
         )
-        result["after_preview_jpeg"] = after.get("preview_jpeg") or ""
-        result["after_scopes"] = after.get("scopes")
-        result["after_film_grain"] = ca.summarize_film_grain(
-            ca.find_film_grain((after_data or {}).get("effects"))
+        before_profile = before_pack.get("profile") or {"present": False}
+        outdoor = ca.is_outdoor_bright_profile(before_profile)
+        look_distance_before = ca.look_profile_distance(before_profile, ref_profile)
+
+        sub_effect = ca.find_color_grade(subject_data[primary_id].get("effects"))
+        sub_grain = ca.find_film_grain(subject_data[primary_id].get("effects"))
+        grade_action = (
+            ca.match_grade_action(sub_effect, ref_effect)
+            if ref_clip_id else {"mode": "scopes"}
         )
+        grain_action = (
+            ca.match_grain_action(sub_grain, ref_grain)
+            if ref_clip_id else {"mode": "noop"}
+        )
+
+        solved = ca.solve_grade_from_profiles(
+            before_profile, ref_profile, scale=1.0
+        )
+        # Prefer paste when reference is a graded timeline clip.
+        if grade_action.get("mode") in ("paste", "reset"):
+            initial_color = grade_action
+            match_mode = grade_action.get("mode")
+        elif solved:
+            initial_color = {"mode": "scopes", "patch": solved}
+            match_mode = "look_profile"
+        else:
+            initial_color = {"mode": "noop"}
+            match_mode = "vision"
+
+        result = {
+            "ok": True,
+            "timeline_clip_ids": list(subject_data.keys()),
+            "clips_graded": list(subject_data.keys()),
+            "reference_kind": ref_kind,
+            "reference": ref_clip_id or ref_file_id or ref_image_path,
+            "look_distance_before": look_distance_before,
+            "match_mode": match_mode,
+            "grain_mode": grain_action.get("mode"),
+            "samples_used": {
+                "subject": before_pack.get("scopes_samples"),
+                "reference": ref_pack.get("scopes_samples"),
+            },
+            "before_profile": before_profile,
+            "reference_profile": ref_profile,
+            "before_preview_jpeg": before_pack.get("preview_jpeg") or "",
+            "reference_preview_jpeg": ref_pack.get("preview_jpeg") or "",
+            "subject_preview_jpeg": before_pack.get("preview_jpeg") or "",
+            "outdoor_bright": outdoor,
+            "vision": (
+                "Compare BEFORE vs REFERENCE vs AFTER. Match iterates until "
+                "look_distance is close or max steps; nuke_risk means recovery ran."
+            ),
+        }
+
+        if (
+            initial_color.get("mode") == "noop"
+            and grain_action.get("mode") == "noop"
+            and (look_distance_before is None or look_distance_before < ca.LOOK_DISTANCE_MATCHED)
+        ):
+            result["applied"] = False
+            result["status"] = "matched"
+            result["message"] = "Already close to reference look."
+            return json.dumps(result)
+
+        if dry:
+            result["applied"] = False
+            result["proposed_patch"] = (
+                initial_color.get("patch")
+                or ({"color": "paste_from_reference"} if initial_color.get("mode") == "paste" else {})
+            )
+            result["proposed_grain"] = grain_action.get("mode")
+            return json.dumps(result)
+
+        # --- Apply + verify loop (one undo for whole batch) -----------------
+        error_box = [None]
+        iterations = []
+        recovered = False
+        final_status = "still_far"
+        after_profile = before_profile
+        after_jpeg = ""
+        current_patch = dict(initial_color.get("patch") or {})
+        paste_color = initial_color.get("color") if initial_color.get("mode") == "paste" else None
+        do_reset = initial_color.get("mode") == "reset"
+        grain_done = False
+
+        def _apply_effects_batch(color_mode, patch, grain_act, *, first_pass):
+            from classes.query import Clip as _Clip
+            from classes.film_grain_presets import is_film_grain_effect as _is_grain
+
+            for cid, data in list(subject_data.items()):
+                    clip_obj = _Clip.get(id=cid)
+                    if not clip_obj:
+                        continue
+                    effects = list(
+                        (clip_obj.data if isinstance(clip_obj.data, dict) else {}).get("effects") or []
+                    )
+                    if color_mode == "reset":
+                        effects = [e for e in effects if not ca.is_color_grade_effect(e)]
+                    elif color_mode == "paste" and paste_color:
+                        existing = ca.find_color_grade(effects)
+                        if existing is None:
+                            effect = ca.create_color_grade_effect_json(app.project.generate_id)
+                            effects.append(effect)
+                            existing = effect
+                        merged = ca.merge_color_grade(existing, {"color": paste_color})
+                        new_effects = []
+                        replaced = False
+                        for effect in effects:
+                            if ca.is_color_grade_effect(effect):
+                                if not replaced:
+                                    new_effects.append(merged)
+                                    replaced = True
+                            else:
+                                new_effects.append(effect)
+                        if not replaced:
+                            new_effects.append(merged)
+                        effects = new_effects
+                    elif patch:
+                        existing = ca.find_color_grade(effects)
+                        if existing is None:
+                            effect = ca.create_color_grade_effect_json(app.project.generate_id)
+                            effects.append(effect)
+                            existing = effect
+                        merge_kwargs = {}
+                        for k, v in patch.items():
+                            if k not in ca.SCALAR_KEYS:
+                                continue
+                            dkey = f"{k}_delta"
+                            if dkey in ca.DELTA_KEYS:
+                                merge_kwargs[dkey] = v
+                            else:
+                                cur = ca.scalar_y(existing, k)
+                                if cur is None:
+                                    cur = ca.SCALAR_DEFAULTS.get(k, 0.0)
+                                merge_kwargs[k] = float(cur) + float(v)
+                        merged = ca.merge_color_grade(existing, merge_kwargs)
+                        new_effects = []
+                        replaced = False
+                        for effect in effects:
+                            if ca.is_color_grade_effect(effect):
+                                if not replaced:
+                                    new_effects.append(merged)
+                                    replaced = True
+                            else:
+                                new_effects.append(effect)
+                        if not replaced:
+                            new_effects.append(merged)
+                        effects = new_effects
+
+                    if first_pass and grain_act.get("mode") == "reset":
+                        effects = [e for e in effects if not _is_grain(e)]
+                    elif first_pass and grain_act.get("mode") == "paste":
+                        paste_g = grain_act.get("grain") or {}
+                        grain_indexes = [i for i, e in enumerate(effects) if _is_grain(e)]
+                        new_g = copy.deepcopy(paste_g) if isinstance(paste_g, dict) else {}
+                        new_g["class_name"] = "FilmGrain"
+                        if grain_indexes:
+                            if effects[grain_indexes[0]].get("id"):
+                                new_g["id"] = effects[grain_indexes[0]]["id"]
+                            elif not new_g.get("id"):
+                                new_g["id"] = app.project.generate_id()
+                            for index in reversed(grain_indexes[1:]):
+                                del effects[index]
+                            effects[grain_indexes[0]] = new_g
+                        else:
+                            if not new_g.get("id"):
+                                new_g["id"] = app.project.generate_id()
+                            effects.append(new_g)
+
+                    _write_clip_effects(clip_obj, effects)
+                    subject_data[cid] = (
+                        clip_obj.data if isinstance(clip_obj.data, dict) else data
+                    )
+            try:
+                app.window.refreshFrameSignal.emit()
+            except Exception:
+                pass
+
+        # Open one transaction for the whole closed loop.
+        tid = _new_transaction_id()
+        app.updates.transaction_id = tid
+        try:
+            for it in range(max_iters):
+                color_mode = (
+                    "reset" if do_reset and it == 0
+                    else ("paste" if paste_color and it == 0 else "patch")
+                )
+                patch = {} if color_mode in ("reset", "paste") else current_patch
+                if it == 0 and color_mode == "patch" and not patch and not paste_color and not do_reset:
+                    if grain_action.get("mode") == "noop":
+                        final_status = "still_far"
+                        break
+                _on_main(
+                    lambda cm=color_mode, p=patch, g=grain_action, fp=(it == 0):
+                    _apply_effects_batch(cm, p, g, first_pass=fp)
+                )
+                # Re-profile primary subject
+                after_pack = _profile_clip_dense(
+                    subject_data[primary_id], fps_float, with_jpegs=True,
+                    max_samples=min(24, before_pack.get("scopes_samples") or 16),
+                )
+                after_profile = after_pack.get("profile") or {"present": False}
+                after_jpeg = after_pack.get("preview_jpeg") or ""
+                outcome = ca.assess_grade_outcome(
+                    before_profile, after_profile, ref_profile, outdoor_bright=outdoor
+                )
+                iterations.append({
+                    "iteration": it + 1,
+                    "status": outcome.get("status"),
+                    "look_distance": outcome.get("look_distance_after"),
+                    "nuke_risk": outcome.get("nuke_risk"),
+                    "reasons": outcome.get("reasons") or [],
+                })
+                if outcome.get("ok"):
+                    final_status = "matched"
+                    break
+                if outcome.get("nuke_risk"):
+                    recovered = True
+                    current_patch = outcome.get("suggested_recovery_patch") or {}
+                    paste_color = None
+                    do_reset = False
+                    final_status = "recovered_from_nuke"
+                    if not current_patch:
+                        break
+                    continue
+                # Still far / closer — smaller solve step
+                current_patch = ca.solve_grade_from_profiles(
+                    after_profile, ref_profile, scale=max(0.25, 0.7 ** (it + 1))
+                )
+                paste_color = None
+                do_reset = False
+                final_status = outcome.get("status") or "closer_not_exact"
+                if not current_patch:
+                    break
+                before_profile = after_profile  # next assess uses latest as before
+        finally:
+            app.updates.transaction_id = None
+
+        if error_box[0]:
+            return error_box[0]
+
+        result["applied"] = True
+        result["undo"] = "one step"
+        result["iterations"] = iterations
+        result["iteration_count"] = len(iterations)
+        result["status"] = final_status
+        result["recovered_from_nuke"] = recovered
+        result["after_profile"] = after_profile
+        result["after_preview_jpeg"] = after_jpeg
+        result["look_distance_after"] = ca.look_profile_distance(after_profile, ref_profile)
+        result["nuke_risk"] = any(i.get("nuke_risk") for i in iterations) and final_status != "matched"
+        if final_status == "matched":
+            result["message"] = (
+                f"Matched look on {len(subject_data)} clip(s) "
+                f"in {len(iterations)} iteration(s)."
+            )
+        elif recovered:
+            result["message"] = (
+                "Look was nuking highlights/shadows; recovered with a softer grade. "
+                "Inspect AFTER vs REFERENCE — nudge if still off."
+            )
+        else:
+            result["message"] = (
+                f"Closer but not exact (status={final_status}). "
+                "Look at AFTER vs REFERENCE and nudge, or re-run match."
+            )
         return json.dumps(result)
     except Exception as e:
         return f"Error: {e}"
+
 
 
 # Tools exposed to the main chat / video / transitions agents.
@@ -10119,6 +10964,7 @@ AGENT_TOOL_HANDLERS = {
     "split_file_add_clip_tool": split_file_add_clip,
     "add_clip_to_timeline_tool": add_clip_to_timeline,
     "import_video_url_and_add_to_timeline_tool": import_video_url_and_add_to_timeline,
+    "ingest_web_video_tool": ingest_web_video,
     "slice_clip_at_playhead_tool": slice_clip_at_playhead,
     # Search / slice / modify (tag-query resolved)
     "search_clips_tool": search_clips,
@@ -10195,6 +11041,7 @@ TOOL_DISPLAY_LABELS = {
     "split_file_add_clip_tool": "Split clip and add to timeline",
     "add_clip_to_timeline_tool": "Add clip to timeline",
     "import_video_url_and_add_to_timeline_tool": "Import video to timeline",
+    "ingest_web_video_tool": "Ingest web / YouTube video",
     "slice_clip_at_playhead_tool": "Slice clip at playhead",
     "search_clips_tool": "Search project index",
     "search_clip_scenes_tool": "Search clip scenes",
@@ -10334,6 +11181,7 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     # HyperFrames download + alpha re-encode can take a while.
     "fetch_motion_graphics_video_tool",
     "fetch_remotion_video_from_supabase_tool",
+    "ingest_web_video_tool",
 })
 
 # Tools whose main-thread work can legitimately run far longer than
