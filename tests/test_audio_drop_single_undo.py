@@ -110,7 +110,9 @@ class _Timeline:
         TimelineView._waveform_new_audio_clip(self, new_clip, transaction_id)
 
     def Show_Waveform_Triggered(self, clip_ids, transaction_id=None):
-        self.waveform_jobs.append((list(clip_ids), transaction_id))
+        # The real request; the fixture records where it would start the worker.
+        from windows.views.timeline import TimelineView
+        TimelineView.Show_Waveform_Triggered(self, clip_ids, transaction_id)
 
     def get_uuid(self):
         return "waveform-token"
@@ -143,11 +145,18 @@ def editor(timeline_module, tmp_path):
         window=window,
         get_settings=lambda: settings,
     )
+    timeline = _Timeline(store)
+
+    def start_worker(files, transaction_id=None):
+        timeline.waveform_jobs.append(
+            ([clip_id for ids in files.values() for clip_id in ids], transaction_id))
+
     with patch.object(timeline_module, "get_app", return_value=app), \
+            patch.object(timeline_module, "get_audio_data", side_effect=start_worker), \
             patch.object(timeline_module.File, "get", return_value=audio_file), \
             patch.object(timeline_module.Clip, "get", side_effect=lambda id=None: store.clip(id)):
         yield types.SimpleNamespace(
-            view=timeline_module.TimelineView, timeline=_Timeline(store), updates=updates, store=store)
+            view=timeline_module.TimelineView, timeline=timeline, updates=updates, store=store)
 
 
 def _drop(editor):
@@ -197,6 +206,30 @@ def test_a_waveform_that_lands_after_a_newer_edit_stays_out_of_undo(editor):
     assert [a.transaction for a in history] == [tid, "newer-edit"]
     assert [a.transaction for a in editor.updates._tail_transaction(history)] == ["newer-edit"]
     assert editor.updates.ignore_history is False
+
+
+def test_redo_of_the_drop_brings_back_a_waveform_that_landed_late(editor):
+    clip_id, tid = _drop(editor)
+    editor.updates.transaction_id = "newer-edit"
+    editor.updates.insert(["markers"], {"id": "M1", "position": 1.0})
+    editor.updates.transaction_id = None
+
+    _land_waveform(editor, clip_id, tid)
+
+    # Redo replays the recorded insert, so that is where the waveform has to be.
+    insert = editor.updates.actionHistory[0]
+    assert insert.type == "insert" and insert.transaction == tid
+    assert insert.values["ui"]["audio_data"] == [0.1, 0.4]
+
+
+def test_a_waveform_that_lands_after_clear_history_adds_no_undo_step(editor):
+    clip_id, tid = _drop(editor)
+    editor.updates.reset()  # Edit > Clear History
+
+    _land_waveform(editor, clip_id, tid)
+
+    assert editor.store.clips[clip_id]["ui"]["audio_data"] == [0.1, 0.4]
+    assert editor.updates.actionHistory == []
 
 
 def test_a_drop_transaction_is_joined_not_split(editor, timeline_module):

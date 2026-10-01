@@ -267,20 +267,23 @@ def _save_look_effects(view, clip, effects):
     get_app().updates.apply_last_action_to_history(original_clip_data)
 
 
+# Transactions a waveform request joined (an audio drop, Separate Audio), as
+# opposed to a request that is an undo step of its own (Display Waveform).
+_joined_waveform_tids = set()
+
+
 def _save_waveform(item, tid):
     """Save waveform data that arrived from the worker on a clip or file.
 
-    It shares the undo step of the edit that asked for it (*tid*). If newer
-    edits were made while it was being computed, joining that step now would
-    make it the newest one, and Undo would revert the older edit first. Then
-    the waveform is saved outside undo history instead.
+    It shares the undo step of the edit that asked for it (*tid*), while that
+    edit is still the newest one. After a newer edit, joining that step would
+    make it the newest and Undo would revert the older edit first; after Clear
+    History there is no step left to join, and the save would become one of
+    its own. In both cases the waveform is saved outside undo history instead.
     """
     manager = get_app().updates
     history = manager.actionHistory
-    late = bool(
-        tid and history and history[-1].transaction != tid
-        and any(action.transaction == tid for action in history)
-    )
+    late = tid in _joined_waveform_tids and not (history and history[-1].transaction == tid)
     if not late:
         item.save()
         return
@@ -292,6 +295,13 @@ def _save_waveform(item, tid):
     finally:
         manager.ignore_history = False
         manager.pending_action = pending
+    # Redo replays the recorded insert: give it the waveform, or the clip
+    # would come back without one.
+    ui = (getattr(item, "data", None) or {}).get("ui")
+    for action in history:
+        if (ui and action.transaction == tid and action.type == "insert"
+                and isinstance(action.values, dict) and action.values.get("id") == item.id):
+            action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -2044,6 +2054,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             files[file_id].append(clip.data.get("id"))
 
         # Get audio data for all "selected" files/clips
+        if transaction_id:
+            _joined_waveform_tids.add(transaction_id)
         get_audio_data(files, transaction_id=transaction_id)
 
     def Hide_Waveform_Triggered(self, clip_ids):
