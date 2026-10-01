@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,32 @@ def _normalize_vformat(vformat: Optional[str]) -> str:
 def uses_mp4_faststart_preset(vformat: Optional[str]) -> bool:
     """True when the mp4_faststart muxing preset is valid for this container."""
     return _normalize_vformat(vformat) in _MP4_FASTSTART_FORMATS
+
+
+def media_paths_under_proxy_root(project_data: Any, proxy_root: Optional[str]) -> list[str]:
+    """Return clip/file media paths that live under Optimize Preview's proxy root.
+
+    Export must use originals (project._data), never preview proxy rewrites.
+    """
+    if not proxy_root or not isinstance(project_data, dict):
+        return []
+    root = os.path.abspath(str(proxy_root))
+    if not root:
+        return []
+    prefix = root.rstrip(os.sep) + os.sep
+    bad: list[str] = []
+    for bucket in ("clips", "files"):
+        for item in project_data.get(bucket) or []:
+            if not isinstance(item, dict):
+                continue
+            reader = item.get("reader") if isinstance(item.get("reader"), dict) else item
+            path = reader.get("path") if isinstance(reader, dict) else None
+            if not path:
+                continue
+            abs_path = os.path.abspath(str(path))
+            if abs_path == root or abs_path.startswith(prefix):
+                bad.append(str(path))
+    return bad
 
 
 def _clamp(value: int, lo: int, hi: int) -> int:

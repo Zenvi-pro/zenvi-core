@@ -938,6 +938,7 @@ class AIChatWindow(QDockWidget):
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
         self._token_buffer = []
+        self._token_buffer_sid = None  # tab the buffered chunks were streamed for
         self._token_flush_scheduled = False
         self._mention_armed = False
         # Composer attachment undo: snapshots before each drop/paste batch.
@@ -1125,11 +1126,14 @@ class AIChatWindow(QDockWidget):
         self._persist_session(sid)
         self._first_prompt_summary = None
         self.is_processing = False
+        self._clear_attachment_undo()
         self._notify_agent_selector()
         if self._use_web_ui:
             self._push_models_for_backend(backend)
             self._run_js("clearMessages();")
             self._push_tabs_to_js()
+            # The composer still shows the previous tab's attachment chips.
+            self._push_attachments_to_js()
             self._update_preamble()
             self._add_chrome_msg("New session started. Ask anything about your project.")
         else:
@@ -1292,10 +1296,20 @@ class AIChatWindow(QDockWidget):
 
     def _close_session(self, session_id: str):
         """Close a session and delete its Pinecone namespace (called from the × on a tab)."""
-        if len(self._sessions) <= 1:
-            return  # never close the last session
         if session_id not in self._sessions:
             return
+        # Closing the last tab closes the dock. The dock is never left without
+        # a tab: an empty chat simply stays, a used one is replaced by a fresh
+        # chat (which becomes active) and then closed below like any other.
+        last = len(self._sessions) <= 1
+        if last:
+            sess = self._sessions[session_id]
+            # "messages" also holds the "New session started" banner (role
+            # "system"), so a chat nobody has typed in is never empty.
+            if all(m[0] == "system" for m in sess.get("messages", ())):
+                self.hide()
+                return
+            self._create_session("", sess.get("backend", BACKEND_ZENVI))
         # Soft-delete first: the worker's clear_session below wipes the
         # backend's own copy, so this row can end up the only record left.
         from classes import chat_history
@@ -1319,6 +1333,8 @@ class AIChatWindow(QDockWidget):
             else:
                 self._rebuild_widget_tabs()
         self._save_chat_sessions_store()
+        if last:
+            self.hide()
 
     def _closed_session_list(self) -> list:
         """Closed chats for this project that can be restored as tabs."""
@@ -3855,7 +3871,9 @@ class AIChatWindow(QDockWidget):
             return
         chunk = "".join(self._token_buffer)
         self._token_buffer.clear()
-        if not chunk or self._user_cancelled:
+        # Chunks buffered for a tab that has since been switched away from,
+        # closed or replaced must not land in the transcript now on screen.
+        if not chunk or self._user_cancelled or self._token_buffer_sid != self._active_sid:
             return
         self._run_js(
             "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
@@ -3875,6 +3893,9 @@ class AIChatWindow(QDockWidget):
             return
         if self._use_web_ui:
             sess["turn_tail"] = (sess.get("turn_tail") or "") + text
+            if sid != self._token_buffer_sid:
+                self._token_buffer.clear()
+                self._token_buffer_sid = sid
             self._token_buffer.append(text)
             self._schedule_token_flush()
 

@@ -656,6 +656,143 @@ def test_reopen_closed_session_restores_the_tab(window_cls, keyed_store):
 
 
 # ---------------------------------------------------------------------------
+# Closing the last tab closes the dock
+# ---------------------------------------------------------------------------
+
+class _ClosableWindow:
+    """Just enough of AIChatWindow for _close_session."""
+
+    _history_key = "P1"
+    _use_web_ui = False
+
+    def __init__(self, sessions, active):
+        self._sessions = sessions
+        self._active_sid = active
+        self.hidden = 0
+        self.created = []
+
+    def _shutdown_worker(self, worker, thread, wait_ms=0):
+        pass
+
+    def _create_session(self, model_id="", backend="zenvi"):
+        self.created.append(backend)
+        self._sessions["fresh"] = {"messages": [], "backend": backend}
+        self._active_sid = "fresh"
+
+    def _switch_session(self, session_id):
+        self._active_sid = session_id
+
+    def _rebuild_widget_tabs(self):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def hide(self):
+        self.hidden += 1
+
+
+def test_closing_the_last_tab_hides_the_dock_and_leaves_a_fresh_chat(window_cls, keyed_store):
+    keyed_store.upsert_session("s1", "P1", title="Only chat", backend="zenvi")
+    keyed_store.record_message("s1", "user", "hello")
+    win = _ClosableWindow(
+        {"s1": {"messages": [("user", "<p>hello</p>", False)], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    # The dock is never left without a tab, and the closed chat is in history.
+    assert list(win._sessions) == ["fresh"]
+    assert win._active_sid == "fresh"
+    assert [r["session_id"] for r in keyed_store.load_closed_sessions("P1")] == ["s1"]
+
+
+@pytest.mark.parametrize("messages", [
+    [],
+    # What a fresh tab really holds: the welcome banner _create_session adds.
+    [("system", "<p>New session started. Ask anything about your project.</p>", False)],
+])
+def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store, messages):
+    keyed_store.upsert_session("s1", "P1", title="New Chat", backend="zenvi")
+    win = _ClosableWindow({"s1": {"messages": messages, "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    assert list(win._sessions) == ["s1"]
+    assert win.created == []
+    assert keyed_store.load_sessions("P1", include_closed=False)
+
+
+class _NewTabWindow:
+    """Just enough of AIChatWindow for the real _create_session."""
+
+    _use_web_ui = True
+
+    def __init__(self, window_cls):
+        self._active_session = types.MethodType(window_cls._active_session, self)
+        self._session_attachments = types.MethodType(window_cls._session_attachments, self)
+        self._clear_attachment_undo = types.MethodType(window_cls._clear_attachment_undo, self)
+        self._push_attachments_to_js = types.MethodType(window_cls._push_attachments_to_js, self)
+        self._sessions = {"s1": {"messages": [], "attachments": [{"id": "a1", "name": "clip.mp4"}]}}
+        self._active_sid = "s1"
+        self._attachment_undo_stack = [[]]
+        self.js = []
+
+    def _make_worker(self, session_id, backend="zenvi", restore=None):
+        return None, None
+
+    def _persist_session(self, session_id, **fields):
+        pass
+
+    def _notify_agent_selector(self):
+        pass
+
+    def _push_models_for_backend(self, backend=None):
+        pass
+
+    def _push_tabs_to_js(self):
+        pass
+
+    def _update_preamble(self):
+        pass
+
+    def _add_chrome_msg(self, text):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def _run_js(self, code):
+        self.js.append(code)
+
+
+def test_a_new_tab_does_not_show_the_previous_tabs_attachments(window_cls):
+    """Also the fresh chat that replaces a closed last tab: chips left in the
+    composer would look attached but not be sent with the next prompt."""
+    win = _NewTabWindow(window_cls)
+
+    window_cls._create_session(win)
+
+    assert win._active_sid != "s1"
+    pushes = [c for c in win.js if "setChatAttachments" in c]
+    assert pushes and pushes[-1].endswith("setChatAttachments([]);")
+    assert win._attachment_undo_stack == []
+    assert win._sessions["s1"]["attachments"]  # the old tab keeps its own
+
+
+def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store):
+    win = _ClosableWindow(
+        {"s1": {"messages": [], "backend": "zenvi"}, "s2": {"messages": [], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 0
+    assert list(win._sessions) == ["s2"]
+    assert win._active_sid == "s2"
+
+
+# ---------------------------------------------------------------------------
 # Switching a tab's backend: each CLI only ever resumes its own conversation
 # ---------------------------------------------------------------------------
 

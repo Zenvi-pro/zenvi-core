@@ -62,6 +62,7 @@ def _window(window_cls, sid="s1"):
             self._active_sid = sid
             self._sessions = {sid: {"messages": []}}
             self._token_buffer = []
+            self._token_buffer_sid = None
             self._token_flush_scheduled = False
             self.js = []
 
@@ -80,6 +81,23 @@ def _window(window_cls, sid="s1"):
 def _stream(win, *chunks):
     for c in chunks:
         win._on_token(c)
+
+
+def test_chunks_buffered_for_a_tab_that_is_gone_are_not_shown(window_cls):
+    """The tab is closed (or replaced, or switched away from) inside the
+    flush window: its pending chunk must not land in the next transcript."""
+    win = _window(window_cls)
+    _stream(win, "shown ")
+    win._flush_token_buffer()
+    assert sum("appendOrUpdateStreamingMessage" in c for c in win.js) == 1
+
+    _stream(win, "half a sen")
+    win._sessions["fresh"] = {"messages": []}
+    win._active_sid = "fresh"
+    win._flush_token_buffer()
+
+    assert sum("appendOrUpdateStreamingMessage" in c for c in win.js) == 1
+    assert win._token_buffer == []
 
 
 def test_pre_tool_prose_is_kept_as_its_own_bubble(window_cls, keyed_store):
