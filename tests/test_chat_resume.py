@@ -676,6 +676,63 @@ def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store, 
     assert keyed_store.load_sessions("P1", include_closed=False)
 
 
+class _NewTabWindow:
+    """Just enough of AIChatWindow for the real _create_session."""
+
+    _use_web_ui = True
+
+    def __init__(self, window_cls):
+        self._active_session = types.MethodType(window_cls._active_session, self)
+        self._session_attachments = types.MethodType(window_cls._session_attachments, self)
+        self._clear_attachment_undo = types.MethodType(window_cls._clear_attachment_undo, self)
+        self._push_attachments_to_js = types.MethodType(window_cls._push_attachments_to_js, self)
+        self._sessions = {"s1": {"messages": [], "attachments": [{"id": "a1", "name": "clip.mp4"}]}}
+        self._active_sid = "s1"
+        self._attachment_undo_stack = [[]]
+        self.js = []
+
+    def _make_worker(self, session_id, backend="zenvi", restore=None):
+        return None, None
+
+    def _persist_session(self, session_id, **fields):
+        pass
+
+    def _notify_agent_selector(self):
+        pass
+
+    def _push_models_for_backend(self, backend=None):
+        pass
+
+    def _push_tabs_to_js(self):
+        pass
+
+    def _update_preamble(self):
+        pass
+
+    def _add_chrome_msg(self, text):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def _run_js(self, code):
+        self.js.append(code)
+
+
+def test_a_new_tab_does_not_show_the_previous_tabs_attachments(window_cls):
+    """Also the fresh chat that replaces a closed last tab: chips left in the
+    composer would look attached but not be sent with the next prompt."""
+    win = _NewTabWindow(window_cls)
+
+    window_cls._create_session(win)
+
+    assert win._active_sid != "s1"
+    pushes = [c for c in win.js if "setChatAttachments" in c]
+    assert pushes and pushes[-1].endswith("setChatAttachments([]);")
+    assert win._attachment_undo_stack == []
+    assert win._sessions["s1"]["attachments"]  # the old tab keeps its own
+
+
 def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store):
     win = _ClosableWindow(
         {"s1": {"messages": [], "backend": "zenvi"}, "s2": {"messages": [], "backend": "zenvi"}}, "s1")

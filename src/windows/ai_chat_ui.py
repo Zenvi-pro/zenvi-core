@@ -934,6 +934,7 @@ class AIChatWindow(QDockWidget):
         self._chat_web_initial_sync_done = False
         self._user_cancelled = False
         self._token_buffer = []
+        self._token_buffer_sid = None  # tab the buffered chunks were streamed for
         self._token_flush_scheduled = False
         self._mention_armed = False
         # Composer attachment undo: snapshots before each drop/paste batch.
@@ -1127,11 +1128,14 @@ class AIChatWindow(QDockWidget):
         self._persist_session(sid)
         self._first_prompt_summary = None
         self.is_processing = False
+        self._clear_attachment_undo()
         self._notify_agent_selector()
         if self._use_web_ui:
             self._push_models_for_backend(backend)
             self._run_js("clearMessages();")
             self._push_tabs_to_js()
+            # The composer still shows the previous tab's attachment chips.
+            self._push_attachments_to_js()
             self._update_preamble()
             self._add_chrome_msg("New session started. Ask anything about your project.")
         else:
@@ -3841,7 +3845,9 @@ class AIChatWindow(QDockWidget):
             return
         chunk = "".join(self._token_buffer)
         self._token_buffer.clear()
-        if not chunk or self._user_cancelled:
+        # Chunks buffered for a tab that has since been switched away from,
+        # closed or replaced must not land in the transcript now on screen.
+        if not chunk or self._user_cancelled or self._token_buffer_sid != self._active_sid:
             return
         self._run_js(
             "if(window.appendOrUpdateStreamingMessage) window.appendOrUpdateStreamingMessage(%s);"
@@ -3861,6 +3867,9 @@ class AIChatWindow(QDockWidget):
             return
         if self._use_web_ui:
             sess["turn_tail"] = (sess.get("turn_tail") or "") + text
+            if sid != self._token_buffer_sid:
+                self._token_buffer.clear()
+                self._token_buffer_sid = sid
             self._token_buffer.append(text)
             self._schedule_token_flush()
 
