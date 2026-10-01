@@ -1722,16 +1722,13 @@ class AIChatWindow(QDockWidget):
         path = project_path or ""
         if not path:
             # Untitled: one bucket per window, rekeyed on first save so an hour
-            # of chatting before hitting Save isn't thrown away.
+            # of chatting before hitting Save isn't thrown away.  Crash restore
+            # learns this key when a backup.zvn is written (auto_save_project,
+            # flush_project_to_disk), never here: the dock is built at launch,
+            # before recover_backup reads the crashed session's key, so saving
+            # a fresh key now overwrote it and restored an empty chat.
             if not self._draft_history_key:
                 self._draft_history_key = chat_history.new_draft_key()
-                try:
-                    from classes.app import get_app
-                    window = getattr(get_app(), "window", None)
-                    if window is not None and hasattr(window, "_set_restore_draft_history_key"):
-                        window._set_restore_draft_history_key(self._draft_history_key)
-                except Exception:
-                    pass
             return self._draft_history_key
 
         key = (
