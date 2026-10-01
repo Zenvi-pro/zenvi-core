@@ -505,11 +505,23 @@
         return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
     }
 
+    // Pinned state is sampled when the list scrolls, i.e. before new content
+    // lands. Measuring only after an append treats any reply taller than the
+    // threshold as "the user scrolled away" and leaves it below the fold.
+    var pinnedToBottom = true;
+    if (messagesEl) {
+        messagesEl.addEventListener('scroll', function () {
+            pinnedToBottom = isPinnedToBottom(messagesEl);
+        });
+    }
+
     function scrollToBottomIfPinned() {
-        if (messagesEl && isPinnedToBottom(messagesEl)) {
+        if (messagesEl && (pinnedToBottom || isPinnedToBottom(messagesEl))) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     }
+    // Resizing / floating the dock must not strand the newest message.
+    window.addEventListener('resize', scrollToBottomIfPinned);
 
     function openThinkingBlock() {
         if (thinkingBlockEl) return;
@@ -1600,7 +1612,9 @@
             const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
             const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
             const acc = vars['chat-accent'] || '#4d9cf6';
-            const codeBg = vars['chat-code-bg'] || '#252525';
+            // ponytail: "light" = bg hex starts c-f; read real luminance if a mid-tone theme appears.
+            const light = /^#[c-f]/i.test(bg);
+            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#252525');
 
             document.body.style.background = bg;
             document.body.style.color = tx;
@@ -1615,12 +1629,12 @@
                 tabBar.style.background = bg;
                 tabBar.style.borderBottom = '1px solid ' + br;
             }
-            const preamble = document.getElementById('chat-preamble-label');
-            const preambleRow = preamble ? preamble.parentElement : null;
-            if (preambleRow) {
-                preambleRow.style.background = surf;
-                preambleRow.style.color = tx;
-            }
+            // Dark themes keep the dock's own #0d0d0d; a light theme (Retro) must
+            // not end up with dark panels under its dark text.
+            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#0d0d0d');
+            // Themes without their own surface colour (Retro, Humanity) otherwise
+            // keep the #0d0d0d boot default.
+            document.documentElement.style.setProperty('--chat-surface', surf);
             const glowInner = document.querySelector('.chat-input-glow-inner');
             if (glowInner) {
                 glowInner.style.background = inp;
@@ -1650,6 +1664,9 @@
     window.clearMessages = function () {
         typingEl = null;
         messagesEl.innerHTML = '';
+        // A new transcript (tab switch, restore) opens at its newest message,
+        // whatever the previous one was scrolled to.
+        pinnedToBottom = true;
     };
 
     function sendMessage() {

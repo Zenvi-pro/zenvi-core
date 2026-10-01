@@ -38,6 +38,7 @@ class FakeChat:
         self.active = active
         self.detects = 0
         self.connects = []
+        self.shown = 0
 
     def active_backend(self):
         return self.active
@@ -53,6 +54,12 @@ class FakeChat:
 
     def _connect_cli(self, backend_id):
         self.connects.append(backend_id)
+
+    def show(self):
+        self.shown += 1
+
+    def raise_(self):
+        pass
 
 
 def _window(chat):
@@ -190,6 +197,18 @@ def test_label_follows_the_active_tab(qapp):
     chat.active = CLAUDE
     button.sync_from_chat()
     assert button.text() == "Claude Code"
+
+
+def test_choosing_an_agent_brings_a_closed_chat_back(qapp):
+    """Closing the chat's last tab hides its dock; the toolbar is the way back."""
+    from windows.agent_selector_button import AgentSelectorButton
+
+    chat = FakeChat(CONNECTED, active=CLAUDE)
+    button = AgentSelectorButton(_window(chat))
+    button._choose(CODEX)
+    assert chat.active == CODEX
+    assert chat.shown == 1
+    assert button.text() == "Codex"
 
 
 # ΓöÇΓöÇ Panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
