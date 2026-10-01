@@ -200,6 +200,15 @@ class AuthManager:
             return None
         return (self._session or {}).get("access_token")
 
+    def refresh_access_token(self) -> str | None:
+        """Refresh now, even if the token looks valid locally (a server answered 401,
+        e.g. because of clock skew). Returns the new access token, or None."""
+        if self._session is None:
+            self.load_session()
+        if self._refresh_session():
+            return (self._session or {}).get("access_token")
+        return None
+
     def get_user_email(self) -> str | None:
         if self._session is None:
             self.load_session()

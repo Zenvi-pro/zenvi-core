@@ -1609,6 +1609,14 @@
   },
   {
     "category": "AI",
+    "title": "Zenvi Cloud URL (blank = default)",
+    "setting": "zenvi-cloud-url",
+    "value": "",
+    "type": "text",
+    "restart": false
+  },
+  {
+    "category": "AI",
     "title": "ComfyUI URL (optional, e.g. http://127.0.0.1:8188)",
     "setting": "comfy-ui-url",
     "value": "",
