@@ -566,21 +566,78 @@ def screen_fuzz_from_histograms(hists: list) -> float:
     return float(max(20, min(80, round(15 + 1.6 * spread))))
 
 
-def sample_screen_color(clip, sample_time=None) -> tuple:
-    """(#rrggbb, detail, suggested fuzz) of the green/blue screen at the clip's frame edges; ToolError if none."""
+# The whole frame as a 6x4 grid: a screen that does not reach the frame edges (studio walls,
+# a light stand at the sides) is found by its cells instead.
+_GRID = tuple({"x": c / 6.0, "y": r / 4.0, "width": 1 / 6.0, "height": 1 / 4.0}
+              for r in range(4) for c in range(6))
+_MIN_SCREEN_CELLS = 3
+
+
+def screen_from_scopes(edges: list, grid: list, kind: Optional[str] = None) -> Optional[tuple]:
+    """(#rrggbb, where, fuzz) of the green/blue screen in a frame's edge and grid histograms, or None.
+
+    The edges decide when they are that screen. Otherwise the grid cells whose median colour is
+    the screen colour (*kind*, or the commoner of green and blue) do, the most even half of them
+    for the colour and fuzz: cells the subject reaches into would widen the fuzz into the subject.
+    """
+    color, edge_kind = screen_color_from_histograms(edges)
+    if edge_kind and kind in (None, edge_kind):
+        return color, f"{edge_kind} screen at the frame edges", screen_fuzz_from_histograms(edges)
+    cells: dict = {"green": [], "blue": []}
+    for h in grid:
+        cell_kind = screen_color_from_histograms([h])[1]
+        if cell_kind:
+            cells[cell_kind].append(h)
+    found = kind or max(cells, key=lambda k: len(cells[k]))
+    screen = cells.get(found) or []
+    if len(screen) < _MIN_SCREEN_CELLS:
+        return None
+    even = sorted(screen, key=lambda h: screen_fuzz_from_histograms([h]))[:max(1, len(screen) // 2)]
+    color = screen_color_from_histograms(even)[0]
+    return color, f"{found} screen in {len(screen)} of {len(grid)} frame areas", screen_fuzz_from_histograms(even)
+
+
+def sample_screen_color(clip, sample_time=None, kind=None) -> tuple:
+    """(#rrggbb, detail, suggested fuzz) of the clip's green/blue screen; ToolError if none.
+
+    *kind* ('green' / 'blue') asks for that screen even when the edges are something else. A real
+    backdrop is rarely the stock #00b140: keying the stock green left a lighter one untouched (found live).
+    """
     data = copy.deepcopy(clip.data)
     t = _analysis_time(data, sample_time)
-    def _edges():
+
+    def _scopes():
         rendered = render_frame(data, t, strip={"ChromaKey"})
         try:
-            return [scope_data(rendered.frame, strip) for strip in _EDGE_STRIPS]
+            return ([scope_data(rendered.frame, strip) for strip in _EDGE_STRIPS],
+                    [scope_data(rendered.frame, cell) for cell in _GRID])
         finally:
             rendered.close()
 
-    hists = run_in_render_thread(_edges)
-    color, kind = screen_color_from_histograms(hists)
-    if kind is None:
-        raise ToolError(f"the edges of clip {clip.id} at {t:.2f}s are {color}, not a green or blue screen; "
+    edges, grid = run_in_render_thread(_scopes)
+    found = screen_from_scopes(edges, grid, kind)
+    if found is None:
+        edge_color = screen_color_from_histograms(edges)[0]
+        if kind:
+            raise ToolError(f"found no {kind} screen in clip {clip.id} at {t:.2f}s (its edges are {edge_color})")
+        raise ToolError(f"the edges of clip {clip.id} at {t:.2f}s are {edge_color}, not a green or blue screen; "
                         "pass key_color ('green', 'blue' or #RRGGBB)")
-    fuzz = screen_fuzz_from_histograms(hists)
-    return color, f"{kind} screen at {t:.2f}s, fuzz {fuzz:g} for its unevenness", fuzz
+    color, where, fuzz = found
+    return color, f"{where} at {t:.2f}s, fuzz {fuzz:g} for its unevenness", fuzz
+
+
+def keyed_share(clip_data: dict, sample_time=None) -> float:
+    """Percent of the clip's frame its effects make transparent (the chroma key's result)."""
+    t = _analysis_time(clip_data, sample_time)
+
+    def _measure():
+        rendered = render_frame(clip_data, t)
+        try:
+            d = scope_data(rendered.frame)
+        finally:
+            rendered.close()
+        counted = sum(d["luma"])
+        total = max(int(d.get("total_pixels") or counted), counted, 1)
+        return round(100.0 * (1.0 - counted / float(total)), 1)
+
+    return run_in_render_thread(_measure)

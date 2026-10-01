@@ -46,6 +46,7 @@ from classes.editor_tools.effects_color import (
     target_clips,
     wheels_value,
 )
+from classes.logger import log
 
 # ---------------------------------------------------------------------------
 # Look presets (Clip > Look)
@@ -451,6 +452,8 @@ KEY_METHODS = {"basic_soft": 11, "basic": 0, "hsv_hue": 1, "hsv_saturation": 2, 
                "hsv_value": 4, "hsl_luminance": 5, "lch_luminosity": 6, "lch_chroma": 7, "lch_hue": 8,
                "cie_distance": 9, "cbcr_vector": 10}
 _KEY_COLORS = {"green": "#00b140", "blue": "#0047bb"}
+# Below this share of transparent pixels a "removed screen" almost certainly was not removed.
+_MIN_KEYED_PCT = 10.0
 
 
 def _free_on_layer(layer, start, end, exclude_id) -> bool:
@@ -492,8 +495,8 @@ def _placement(keyed, background, align):
     label="Chroma key",
     schema=obj({
         **CLIP_TARGET,
-        "key_color": string("Screen color to remove: 'auto' (sample the frame edges), 'green', 'blue', or #RRGGBB.",
-                            "auto"),
+        "key_color": string("Screen color to remove: 'auto' (sampled from the frame), 'green' / 'blue' (that "
+                            "screen's actual shade, sampled from the footage), or #RRGGBB.", "auto"),
         "method": enum(sorted(KEY_METHODS), "Keying method; basic_soft (default) suits most green/blue screens, "
                        "hsv_hue helps uneven lighting, cbcr_vector for spill-heavy footage.", "basic_soft"),
         "fuzz": nullable(number("Tolerance around the key color (0-125): raise it if screen remains, lower it if "
@@ -517,13 +520,16 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
                     sample_time=None):
     """Remove a green or blue screen from a clip with the Chroma Key effect, and optionally composite it
     over a background clip ("remove the green screen and put me on the beach"). key_color='auto'
-    samples the screen color from the frame edges; one ChromaKey per clip (updated if present).
+    samples the screen color from the frame edges, or from the frame's screen areas when the screen
+    does not reach the edges; 'green' / 'blue' sample that screen's real shade (the stock shade if
+    none is found). One ChromaKey per clip (updated if present).
     With background_clip_id/background_query the keyed clip moves to a free track above the
     background (a new top track if needed) so the background shows through, and to the background's
     start if they did not overlap. One undo step for key + placement.
 
-    Check the result with analyze_frame_colors_tool on the keyed clip (transparent_pct should be the
-    screen's share of the frame) or on the composite. Refused: audio-only clips, locked tracks, a
+    The receipt's keyed_pct is the share of the frame the key made transparent: roughly the screen's
+    share means it worked, a few percent means it missed the screen (try key_color='auto', a sampled
+    #RRGGBB or a higher fuzz). analyze_frame_colors_tool on the composite checks the rest. Refused: audio-only clips, locked tracks, a
     background that is the same clip, 'auto' when the frame edges are not a green/blue screen.
     """
     clip = resolve_clip(timeline_clip_id, clip_query, track)
@@ -538,17 +544,27 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
     if method not in KEY_METHODS:
         raise ToolError(f"method must be one of {', '.join(sorted(KEY_METHODS))}")
 
+    from classes.editor_tools import effects_color_analysis as analysis
+
     color_source = "given"
     key = str(key_color or "auto").strip().lower()
     if key == "auto":
-        from classes.editor_tools.effects_color_analysis import sample_screen_color
-        hex_color, detail, suggested_fuzz = sample_screen_color(clip, sample_time)
+        hex_color, detail, suggested_fuzz = analysis.sample_screen_color(clip, sample_time)
         color_source = f"sampled ({detail})"
         if fuzz is None:
             fuzz = suggested_fuzz
+    elif key in _KEY_COLORS:
+        # "green" means this footage's green: the stock shade misses a lighter or darker backdrop.
+        try:
+            hex_color, detail, suggested_fuzz = analysis.sample_screen_color(clip, sample_time, kind=key)
+            color_source = f"sampled ({detail})"
+            if fuzz is None:
+                fuzz = suggested_fuzz
+        except Exception as exc:  # noqa: BLE001 -- the stock shade still keys a standard screen
+            hex_color = _KEY_COLORS[key]
+            color_source = f"stock {key}; the screen could not be sampled ({exc})"
     else:
-        hex_color = _KEY_COLORS.get(key, key_color)
-        r, g, b, _a = parse_color(hex_color)
+        r, g, b, _a = parse_color(key_color)
         hex_color = "#%02x%02x%02x" % (r, g, b)
 
     if fuzz is None:
@@ -561,6 +577,14 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
     target.update(props)
     if not idxs:
         effects.append(target)
+
+    # How much the key removes, measured on the clip alone so the assistant can tell a key that
+    # missed the screen (a few percent) from one that worked.
+    keyed_pct = None
+    try:
+        keyed_pct = analysis.keyed_share(dict(copy.deepcopy(clip.data), effects=effects), sample_time)
+    except Exception as exc:  # noqa: BLE001 -- the key is applied either way; the receipt says unmeasured
+        log.debug("chroma key: could not measure the keyed share: %s", exc)
 
     placement = None
     if background is not None:
@@ -588,7 +612,14 @@ def chroma_key_clip(timeline_clip_id="", clip_query="", track="", key_color="aut
     on_main(_apply)
     summary = f"Keyed out {hex_color} ({color_source}, {method}, fuzz {fuzz:g}, halo {halo:g}) on clip {clip.id}."
     receipt = {"timeline_clip_id": clip.id, "effect_id": target.get("id"), "key_color": hex_color,
-               "key_color_source": color_source, "method": method, "fuzz": fuzz, "halo": halo}
+               "key_color_source": color_source, "method": method, "fuzz": fuzz, "halo": halo,
+               "keyed_pct": keyed_pct}
+    if keyed_pct is not None:
+        summary += f" {keyed_pct:g}% of the frame is now transparent."
+        if keyed_pct < _MIN_KEYED_PCT:
+            summary += (" That is too little for a green/blue screen: the key colour probably misses this "
+                        "screen. Call again with key_color='auto' or a #RRGGBB sampled from the screen, or "
+                        "raise fuzz.")
     if placement:
         track_no = ui_track_number(placement["layer"])
         summary += (f" It now sits on track {track_no} above background {background.id}"

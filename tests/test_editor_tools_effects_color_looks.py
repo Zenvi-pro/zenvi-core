@@ -227,3 +227,60 @@ def test_screen_color_detection_from_edge_histograms():
         "red": hist(20), "green": [0] * 120 + [50] * 100 + [0] * 36, "blue": hist(60)}
     assert analysis.screen_fuzz_from_histograms([even]) == 20.0
     assert 70 <= analysis.screen_fuzz_from_histograms([patchy]) <= 80
+
+
+# --- a named key colour is this footage's shade, and the receipt says what the key removed ----------
+# Found live: "remove the green screen" keyed the stock #00b140 on a lighter backdrop (studio walls at
+# the frame edges), removed almost nothing, and the assistant reported success.
+
+def _hist(value):
+    h = [0] * 256
+    h[value] = 100
+    return h
+
+
+def _cell(r, g, b):
+    return {"red": _hist(r), "green": _hist(g), "blue": _hist(b)}
+
+
+def test_a_screen_that_misses_the_frame_edges_is_found_in_the_frame_grid():
+    walls = [_cell(200, 200, 205)] * 4
+    grid = [_cell(46, 182, 58)] * 14 + [_cell(30, 60, 200)] * 4 + [_cell(200, 200, 205)] * 6
+    color, where, fuzz = analysis.screen_from_scopes(walls, grid)
+    assert color == "#2eb63a" and "green screen in 14 of 24 frame areas" in where and fuzz == 20.0
+    assert analysis.screen_from_scopes(walls, grid, kind="blue")[0] == "#1e3cc8"
+    assert analysis.screen_from_scopes(walls, [_cell(200, 200, 205)] * 24) is None
+    edges = [_cell(20, 180, 60)] * 4
+    assert analysis.screen_from_scopes(edges, grid)[1] == "green screen at the frame edges"
+
+
+def test_named_green_keys_the_sampled_shade_and_reports_what_it_removed(fx, monkeypatch):
+    fg = fx.add_clip(fx.add_file("video"))
+    asked = {}
+
+    def sample(clip, t=None, kind=None):
+        asked["kind"] = kind
+        return "#2eb63a", "green screen in 14 of 24 frame areas at 2.00s", 24.0
+
+    monkeypatch.setattr(analysis, "sample_screen_color", sample)
+    monkeypatch.setattr(analysis, "keyed_share", lambda data, t=None: 58.4)
+    out = fx.call("chroma_key_clip_tool", timeline_clip_id=fg, key_color="green")
+    r = receipt(out)
+    assert asked["kind"] == "green" and r["key_color"] == "#2eb63a" and r["fuzz"] == 24.0
+    assert r["key_color_source"].startswith("sampled") and r["keyed_pct"] == 58.4
+    assert "58.4% of the frame is now transparent" in out and "too little" not in out
+
+
+def test_a_key_that_removes_almost_nothing_says_so(fx, monkeypatch):
+    fg = fx.add_clip(fx.add_file("video"))
+
+    def no_screen(clip, t=None, kind=None):
+        raise analysis.ToolError("found no green screen in clip X at 2.00s (its edges are #c8c8cd)")
+
+    monkeypatch.setattr(analysis, "sample_screen_color", no_screen)
+    monkeypatch.setattr(analysis, "keyed_share", lambda data, t=None: 1.5)
+    out = fx.call("chroma_key_clip_tool", timeline_clip_id=fg, key_color="green")
+    r = receipt(out)
+    assert r["key_color"] == "#00b140" and r["key_color_source"].startswith("stock green")
+    assert "too little for a green/blue screen" in out and "key_color='auto'" in out
+    assert not out.startswith("Error")  # applied: the user asked for it; the receipt warns
