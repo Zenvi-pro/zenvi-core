@@ -37,6 +37,16 @@ def _dock_uses_auto_tab_order(dock):
     return not bool(dock.property("_skip_auto_tab_order"))
 
 
+def tab_title(tab_bar, index):
+    """Title of one tab. Themes that draw icon-only dock tabs (Cosmic) clear the
+    tab text and keep the dock title in the tab tooltip."""
+    return tab_bar.tabText(index) or tab_bar.tabToolTip(index)
+
+
+def tab_titles(tab_bar):
+    return [tab_title(tab_bar, i) for i in range(tab_bar.count())]
+
+
 def _find_dock_tab_bars(root):
     """Find tab bars that contain dock widget titles and return mapping of dock titles to active status."""
     if not isinstance(root, QMainWindow):
@@ -48,13 +58,13 @@ def _find_dock_tab_bars(root):
     for tab_bar in root.findChildren(QTabBar):
         if tab_bar.count() < 2:
             continue
-        tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+        tabs = tab_titles(tab_bar)
         # Check if this tab bar contains dock titles
         matching_titles = [t for t in tabs if t in dock_titles]
         if len(matching_titles) < 2:
             continue
         # This is a dock tab bar - mark which dock is active
-        active_title = tab_bar.tabText(tab_bar.currentIndex())
+        active_title = tab_title(tab_bar, tab_bar.currentIndex())
         for title in matching_titles:
             active_tabs[title] = (title == active_title)
 
@@ -83,10 +93,10 @@ def _dock_is_active(root, dock, active_tabs=None):
     for tab_bar in root.findChildren(QTabBar):
         if tab_bar.count() < 2:
             continue
-        tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+        tabs = tab_titles(tab_bar)
         if dock_title not in tabs:
             continue
-        active_title = tab_bar.tabText(tab_bar.currentIndex())
+        active_title = tab_title(tab_bar, tab_bar.currentIndex())
         return active_title == dock_title
 
     return dock.isVisibleTo(root)
@@ -290,7 +300,7 @@ def _dock_tab_bar(root, dock, tabified):
     for tab_bar in root.findChildren(QTabBar):
         if tab_bar.count() == 0:
             continue
-        tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+        tabs = tab_titles(tab_bar)
         if dock_title not in tabs:
             continue
         if not any(title in tabs for title in group_titles):

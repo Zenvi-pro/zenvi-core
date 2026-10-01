@@ -114,6 +114,16 @@ _launch_dir = os.path.dirname(os.path.abspath(__file__))
 if _launch_dir not in sys.path:
     sys.path.insert(0, _launch_dir)
 
+# Export trial-encodes with a hardware encoder in a child copy of the app first,
+# because a broken one can abort() the process (classes/encoder_trial.py).
+# Answer before the update installer, crash handlers or Qt get involved.
+from classes.encoder_trial import TRIAL_FLAG as _TRIAL_FLAG
+
+if len(sys.argv) > 1 and sys.argv[1] == _TRIAL_FLAG:
+    from classes.encoder_trial import main as _encoder_trial_main
+
+    sys.exit(_encoder_trial_main(sys.argv[2:]))
+
 try:
     from classes.ffmpeg_cli import ensure_ffmpeg_on_path
     ensure_ffmpeg_on_path()
