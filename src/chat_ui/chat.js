@@ -225,6 +225,8 @@
     var thinkingBlockBody = null;
     var thinkingBlockHeader = null;
     var thinkingBlockCollapsed = false;
+    var thinkingBlockStartedAt = null; // when the current Thinking block opened
+    var proseCommittedBelowThinking = false; // a text bubble was frozen under the block
     var firstAnswerTokenReceived = false;
 
     var ACTIVITY_SPINNER_SVG = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none">' +
@@ -503,16 +505,30 @@
         return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
     }
 
+    // Pinned state is sampled when the list scrolls, i.e. before new content
+    // lands. Measuring only after an append treats any reply taller than the
+    // threshold as "the user scrolled away" and leaves it below the fold.
+    var pinnedToBottom = true;
+    if (messagesEl) {
+        messagesEl.addEventListener('scroll', function () {
+            pinnedToBottom = isPinnedToBottom(messagesEl);
+        });
+    }
+
     function scrollToBottomIfPinned() {
-        if (messagesEl && isPinnedToBottom(messagesEl)) {
+        if (messagesEl && (pinnedToBottom || isPinnedToBottom(messagesEl))) {
             messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     }
+    // Resizing / floating the dock must not strand the newest message.
+    window.addEventListener('resize', scrollToBottomIfPinned);
 
     function openThinkingBlock() {
         if (thinkingBlockEl) return;
         thinkingBlockCollapsed = false;
         firstAnswerTokenReceived = false;
+        thinkingBlockStartedAt = Date.now();
+        proseCommittedBelowThinking = false;
         thinkingBlockEl = document.createElement('div');
         thinkingBlockEl.className = 'chat-thinking-block expanded';
         thinkingBlockHeader = document.createElement('button');
@@ -561,6 +577,36 @@
     }
 
     window.collapseThinkingBlock = collapseThinkingBlock;
+
+    function thinkingElapsedMs() {
+        var since = thinkingBlockStartedAt || processingStartTime;
+        return since ? (Date.now() - since) : 0;
+    }
+
+    // Close out the current Thinking block so the next one can open further
+    // down the transcript. A still-open block with nothing in it is removed
+    // (same rule as end of turn); anything else collapses to its "Thought for
+    // Ns" summary. Finished tool blocks stay registered so a late
+    // completeToolBlock can still find them.
+    function retireThinkingBlock() {
+        if (!thinkingBlockEl) return;
+        var hasTools = thinkingBlockBody && thinkingBlockBody.querySelector('.chat-tool-block');
+        var hasSteps = activitySteps.length > 0;
+        if (!hasTools && !hasSteps && !thinkingBlockCollapsed) {
+            if (thinkingBlockEl.parentNode) thinkingBlockEl.remove();
+        } else {
+            collapseThinkingBlock(thinkingElapsedMs());
+        }
+        thinkingBlockEl = null;
+        thinkingBlockBody = null;
+        thinkingBlockHeader = null;
+        thinkingBlockCollapsed = false;
+        thinkingBlockStartedAt = null;
+        proseCommittedBelowThinking = false;
+        activityContainer = null;
+        activitySteps = [];
+        currentReasoningStep = null;
+    }
 
     function setInputIdle(idle) {
         const container = document.querySelector('.chat-container');
@@ -700,8 +746,7 @@
         if (!firstAnswerTokenReceived) {
             firstAnswerTokenReceived = true;
             clearReasoningStep();
-            var elapsed = processingStartTime ? (Date.now() - processingStartTime) : 0;
-            collapseThinkingBlock(elapsed);
+            collapseThinkingBlock(thinkingElapsedMs());
         }
         if (!streamingMessageEl) {
             streamingMessageEl = document.createElement('div');
@@ -718,10 +763,40 @@
         }
     };
 
+    // Freeze the prose streamed so far as a finished bubble. The next token
+    // starts a new bubble below whatever tool activity comes in between, so
+    // one turn reads: text, tools, text, tools, text.
+    window.commitStreamingSegment = function (bodyHtml) {
+        if (streamFlushScheduled) flushStreamingBuffer();
+        if (!streamingMessageEl) {
+            if (!bodyHtml) return;
+            // Tokens were withheld while tools ran; paint the segment now.
+            removePlaceholder();
+            streamingMessageEl = document.createElement('div');
+            streamingMessageEl.className = 'chat-message chat-message-enter';
+            streamingMessageEl.innerHTML = '<div class="chat-message-body"></div>';
+            messagesEl.appendChild(streamingMessageEl);
+        }
+        var body = streamingMessageEl.querySelector('.chat-message-body');
+        if (body && bodyHtml) body.innerHTML = bodyHtml;
+        streamingMessageEl.classList.remove('chat-message-streaming');
+        streamingMessageEl = null;
+        streamingBuffer = '';
+        streamMdEl = null;
+        streamFlushScheduled = false;
+        if (thinkingBlockEl) proseCommittedBelowThinking = true;
+        scrollToBottomIfPinned();
+    };
+
     window.reopenThinkingForTools = function () {
-        // Pre-tool tokens collapsed thinking early — reopen while tools run.
+        // Tools are starting (again). If prose was already frozen under the
+        // current Thinking block, that block is finished: retire it and open
+        // a new one after the prose so the order on screen matches the turn.
         firstAnswerTokenReceived = false;
         streamingSuppressed = false;
+        if (thinkingBlockEl && proseCommittedBelowThinking) {
+            retireThinkingBlock();
+        }
         if (thinkingBlockEl) {
             thinkingBlockCollapsed = false;
             thinkingBlockEl.classList.add('expanded');
@@ -1039,7 +1114,7 @@
                 }
             });
             if (!firstAnswerTokenReceived && thinkingBlockEl && processingStartTime) {
-                collapseThinkingBlock(Date.now() - processingStartTime);
+                collapseThinkingBlock(thinkingElapsedMs());
             }
             window.resetStreamingMessage();
             if (thinkingBlockEl && thinkingBlockBody) {
@@ -1056,6 +1131,8 @@
             activitySteps = [];
             toolBlocks = {};
             currentReasoningStep = null;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             if (processingStartTime) {
                 lastRunTimestamp = Date.now();
                 processingStartTime = null;
@@ -1535,7 +1612,9 @@
             const surf = vars['chat-surface'] || vars['chat-preamble-bg'] || bg;
             const muted = vars['chat-muted'] || vars['chat-placeholder'] || '#6b7280';
             const acc = vars['chat-accent'] || '#4d9cf6';
-            const codeBg = vars['chat-code-bg'] || '#252525';
+            // ponytail: "light" = bg hex starts c-f; read real luminance if a mid-tone theme appears.
+            const light = /^#[c-f]/i.test(bg);
+            const codeBg = vars['chat-code-bg'] || (light ? 'rgba(0,0,0,0.07)' : '#252525');
 
             document.body.style.background = bg;
             document.body.style.color = tx;
@@ -1550,12 +1629,12 @@
                 tabBar.style.background = bg;
                 tabBar.style.borderBottom = '1px solid ' + br;
             }
-            const preamble = document.getElementById('chat-preamble-label');
-            const preambleRow = preamble ? preamble.parentElement : null;
-            if (preambleRow) {
-                preambleRow.style.background = surf;
-                preambleRow.style.color = tx;
-            }
+            // Dark themes keep the dock's own #0d0d0d; a light theme (Retro) must
+            // not end up with dark panels under its dark text.
+            document.documentElement.style.setProperty('--chat-wk-bg', light ? bg : '#0d0d0d');
+            // Themes without their own surface colour (Retro, Humanity) otherwise
+            // keep the #0d0d0d boot default.
+            document.documentElement.style.setProperty('--chat-surface', surf);
             const glowInner = document.querySelector('.chat-input-glow-inner');
             if (glowInner) {
                 glowInner.style.background = inp;
@@ -1585,6 +1664,9 @@
     window.clearMessages = function () {
         typingEl = null;
         messagesEl.innerHTML = '';
+        // A new transcript (tab switch, restore) opens at its newest message,
+        // whatever the previous one was scrolled to.
+        pinnedToBottom = true;
     };
 
     function sendMessage() {
@@ -2128,6 +2210,8 @@
             thinkingBlockBody = null;
             thinkingBlockHeader = null;
             thinkingBlockCollapsed = false;
+            thinkingBlockStartedAt = null;
+            proseCommittedBelowThinking = false;
             firstAnswerTokenReceived = false;
             window.resetStreamingMessage();
             overlayVisible = true;
@@ -2306,15 +2390,24 @@
     // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
     // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
     var cliStatus = {};
-    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex', hermes: 'hermes' };
+
+    function findBackend(id) {
+        return backendItems.find(function (b) { return b.id === id; });
+    }
 
     function findBackendName(id) {
-        var item = backendItems.find(function (b) { return b.id === id; });
+        var item = findBackend(id);
         return item ? item.name : (id || 'Zenvi Assistant');
     }
 
+    // Python's backend list names each CLI agent's executable (agent_runners.CLI_RUNNERS).
+    function cliBinaryName(id) {
+        var item = findBackend(id);
+        return item && item.cli ? item.cli : '';
+    }
+
     function isCliBackend(id) {
-        return id === 'claude_code' || id === 'codex' || id === 'hermes';
+        return !!cliBinaryName(id);
     }
 
     // Empty state (calm, not an error) shown instead of messages when the active
@@ -2333,7 +2426,7 @@
             cliEmptyStateEl.removeAttribute('data-connect-for');
             cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
                 findBackendName(id) + " CLI not found. Install it and make sure '" +
-                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+                (cliBinaryName(id) || id) + "' is on your PATH, then try again."
             ) + '</div>';
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
@@ -2400,7 +2493,7 @@
         var list = [];
         try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
         backendItems = list.map(function (b) {
-            return { id: b.id || '', name: b.name || b.id || '' };
+            return { id: b.id || '', name: b.name || b.id || '', cli: b.cli || '' };
         });
         var current = backendSelect.value;
         backendSelect.innerHTML = '';
@@ -2411,6 +2504,9 @@
             backendSelect.appendChild(opt);
         });
         if (current) backendSelect.value = current;
+        // Which backends are CLIs comes from this list, and CLI status can
+        // land before it does.
+        updateCliEmptyState();
     };
 
     if (backendSelect) {

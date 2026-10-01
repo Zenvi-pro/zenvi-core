@@ -1,4 +1,4 @@
-"""Shared pytest setup: import path + a headless PyQt5/openshot stub.
+"""Shared pytest setup: import path + a headless Qt (PyQt5 / qt_api) and openshot stub.
 
 Every test module used to install its own copy of the Qt stub with
 ``sys.modules.setdefault(...)``, which made the stub *order-dependent*: the
@@ -18,9 +18,12 @@ import importlib.util
 import os
 import pathlib
 import re
+import shutil
 import sys
 import types
 from unittest.mock import MagicMock
+
+import pytest
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
@@ -57,6 +60,80 @@ class _StubQtModule(types.ModuleType):
             raise AttributeError(name)
         if name.startswith("Q") and name[1:2].isupper():
             value = type(name, (object,), {})
+        else:
+            value = MagicMock()
+        setattr(self, name, value)
+        return value
+
+
+class _QClassMeta(type):
+    """Metaclass for stub Qt classes: unknown *class* attributes (enum members
+    such as ``QMessageBox.Yes`` or ``QSizePolicy.Expanding``) are MagicMocks."""
+
+    def __getattr__(cls, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return MagicMock()
+
+
+def _make_q_class(name):
+    """A real class (so src/ can subclass it) whose instances are MagicMocks.
+
+    ``qt_api`` flattens QtCore/QtGui/QtWidgets into one namespace, so the stub
+    cannot tell a value type (``QSize(100, 65)``, added and compared) from a
+    widget base class (``class DockWindow(QMainWindow)``).  A MagicMock
+    *subclass* serves both: it is a class, and its instances accept any
+    constructor arguments and answer every method and operator.
+    """
+
+    def __init__(self, *args, **kwargs):
+        MagicMock.__init__(self)
+
+    return _QClassMeta(name, (MagicMock,), {"__init__": __init__})
+
+
+class _StubQtApiModule(_StubQtModule):
+    """Headless stand-in for ``src/qt_api.py`` (the Qt binding shim).
+
+    src/ imports Qt through ``from qt_api import ...``.  Under the stub the
+    real loader must not run: it would bind to the MagicMock PyQt5 installed
+    below and then try to patch enums on mocks.  So the module itself is
+    replaced.  Names the QtCore/QtWidgets stubs define explicitly (``QObject``,
+    ``QThread`` is ``None``, ``pyqtSignal``, ...) resolve to the very same
+    objects, so ``tool_handlers.QThread`` keeps the "no Qt event loop" meaning
+    described in the module docstring.  Other ``Q``-prefixed class names come
+    from ``_make_q_class``; anything else is a MagicMock.
+    """
+
+    _SHARED_CORE_NAMES = (
+        "QObject", "QThread", "pyqtSignal", "pyqtSlot", "QEventLoop", "QPointF", "QTimer",
+    )
+
+    def __init__(self, name, qtcore, qtwidgets, qtgui):
+        super().__init__(name)
+        self.__path__ = []
+        self.QtCore = qtcore
+        self.QtWidgets = qtwidgets
+        self.QtGui = qtgui
+        self.QtSvg = None
+        self.QT_API = "pyqt5"
+        self.QT_VERSION_STR = "5.15.0"
+        self.PYQT_VERSION_STR = "5.15.0"
+        self.BINDING_VERSION_STR = "5.15.0"
+        for attr in self._SHARED_CORE_NAMES:
+            setattr(self, attr, getattr(qtcore, attr))
+        self.Signal = qtcore.pyqtSignal
+        self.Slot = qtcore.pyqtSlot
+        self.QApplication = qtwidgets.QApplication
+        self.ensure_binding = lambda: "pyqt5"
+        # Real semantics: an object that exists has not been deleted.
+        self.isdeleted = lambda obj: False
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        if name.startswith("Q") and name[1:2].isupper():
+            value = _make_q_class(name)
         else:
             value = MagicMock()
         setattr(self, name, value)
@@ -122,12 +199,36 @@ def _install_stubs():
 
     sys.meta_path.insert(0, _StubPyQt5Finder())
 
+    # The Qt binding shim: replaced wholesale so its loader never runs on mocks.
+    qtgui = _StubQtModule("PyQt5.QtGui")
+    qtgui.__path__ = []
+    sys.modules["PyQt5.QtGui"] = qtgui
+    pyqt5.QtGui = qtgui
+    sys.modules["qt_api"] = _StubQtApiModule("qt_api", qtcore, qtwidgets, qtgui)
+
     # libopenshot is a compiled extension; absent in headless CI.
     sys.modules.setdefault("openshot", types.ModuleType("openshot"))
     return True
 
 
 _STUBBED = _install_stubs()
+
+
+@pytest.fixture(scope="session")
+def inspect_h264_fixture():
+    """Materialize tests/fixtures/media/h264_720p30_2s.mp4 via ffmpeg if missing."""
+    import pytest
+
+    script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "generate_inspect_fixtures.py"
+    spec = importlib.util.spec_from_file_location("generate_inspect_fixtures", script)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not on PATH")
+    path = mod.ensure_fixture("h264_720p30_2s.mp4")
+    assert path.exists() and path.stat().st_size > 1024
+    return path
 
 
 # Modules that ask for the *real* Qt with ``pytest.importorskip("PyQt5...")``

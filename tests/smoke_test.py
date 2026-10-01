@@ -6,6 +6,8 @@ import os
 import sys
 import importlib
 
+import pytest
+
 # Allow importing from src/
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
@@ -31,6 +33,19 @@ def test_imports():
     import PyQt5.QtGui
 
 
+def test_qt_api_binding():
+    """The Qt binding shim must import and pick PyQt5 unless told otherwise."""
+    import qt_api
+
+    requested = os.environ.get("OPENSHOT_QT_API", "auto").strip().lower()
+    expected = requested if requested in ("pyqt5", "pyqt6", "pyside6") else "pyqt5"
+    if qt_api.QT_API != expected:
+        raise AssertionError(f"qt_api selected {qt_api.QT_API!r}, expected {expected!r}")
+    for name in ("QtCore", "QtGui", "QtWidgets"):
+        if getattr(qt_api, name) is None:
+            raise AssertionError(f"qt_api.{name} is None")
+
+
 def test_project_structure():
     """Key source files must exist."""
     required = [
@@ -41,6 +56,7 @@ def test_project_structure():
         "src/windows/preview_thread.py",
         "src/windows/video_widget.py",
         "src/classes/info.py",
+        "src/qt_api.py",
         "src/classes/tool_handlers.py",
     ]
     for rel_path in required:
@@ -49,14 +65,14 @@ def test_project_structure():
             raise FileNotFoundError(f"Missing: {rel_path}")
 
 
+TEST_VIDEO = os.path.expanduser("~/Downloads/Feral - Concept Trailer.mp4")
+
+
+# A local asset on one machine: pytest skips without it, the script still fails.
+@pytest.mark.skipif(not os.path.isfile(TEST_VIDEO), reason=f"local test video not present: {TEST_VIDEO}")
 def test_video_file_exists():
     """Optional local fixture used by manual smoke runs — skip in CI."""
-    import pytest
-
-    path = os.path.expanduser("~/Downloads/Feral - Concept Trailer.mp4")
-    if not os.path.isfile(path):
-        pytest.skip(f"Local test video not present: {path}")
-    size = os.path.getsize(path)
+    size = os.path.getsize(TEST_VIDEO)
     if size < 1_000_000:
         raise ValueError(f"Test video too small ({size} bytes) — likely corrupt")
 
@@ -110,6 +126,7 @@ def test_api_client_init():
 if __name__ == "__main__":
     print("Running smoke tests...\n")
     check("imports: PyQt5", test_imports)
+    check("imports: qt_api (binding shim)", test_qt_api_binding)
     check("project structure: key files exist", test_project_structure)
     check("test video exists", test_video_file_exists)
     check("no merge conflict markers in src/", test_no_conflict_markers)

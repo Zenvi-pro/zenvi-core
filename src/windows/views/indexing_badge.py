@@ -9,12 +9,19 @@
  This file is part of OpenShot Video Editor (http://www.openshot.org)
 """
 
-from PyQt5.QtCore import Qt, QRect, QTimer
-from PyQt5.QtGui import QColor, QPen, QPainterPath
-from PyQt5.QtWidgets import QStyledItemDelegate, QToolTip
+from qt_api import Qt, QRect, QTimer
+from qt_api import QColor, QPen, QPainterPath
+from qt_api import QStyle, QStyledItemDelegate, QStyleOptionViewItem, QToolTip
 
 from classes.app import get_app
+from .generation_badge import paint_generation_progress
 from classes.indexing_status import FAILED, PENDING, RUNNING, SKIPPED, SUCCESS
+from classes.query import File
+from .files_thumbnail_overlay import paint_proxy_badge
+
+# Optimize Preview progress bar (thin line along the bottom of the thumbnail)
+PROXY_BAR_COLOR = QColor("#3AA1FF")
+PROXY_BAR_TRACK_COLOR = QColor("#283241")
 
 BADGE_SIZE = 12
 BADGE_MARGIN = 3
@@ -109,11 +116,32 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
 
     # ── status lookup ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _row_column(index, column):
+        """Index of `column` on this row, unwrapping single-column view proxies.
+
+        The thumbnail list view sits behind a proxy that exposes one column
+        (upstream tabstops/accessibility work), so sibling() there cannot reach
+        the hidden id/name columns; map back to a source that still has them.
+        """
+        model = index.model()
+        while (
+            index.isValid()
+            and model is not None
+            and model.columnCount(index.parent()) <= column
+            and hasattr(model, "mapToSource")
+        ):
+            index = model.mapToSource(index)
+            model = index.model()
+        return index.sibling(index.row(), column)
+
     def _file_id(self, index):
         if not index.isValid():
             return ""
-        model = index.model()
-        return str(model.data(index.sibling(index.row(), 5), Qt.DisplayRole) or "")
+        id_index = self._row_column(index, 5)
+        if not id_index.isValid():
+            return ""
+        return str(id_index.model().data(id_index, Qt.DisplayRole) or "")
 
     def _files_model(self):
         try:
@@ -160,6 +188,8 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
         self.paint_badge(painter, option, index)
+        self.paint_proxy_state(painter, option, index)
+        paint_generation_progress(self, painter, option, index)
 
     def paint_badge(self, painter, option, index):
         status = self._status(index)
@@ -168,6 +198,74 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
         self._sync_pulse(self._any_indexing())
         paint_status_badge(painter, badge_rect(option.rect), status.state, self._angle)
 
+    # ── Optimize Preview (proxy) badge + progress ─────────────────────────
+
+    def _decoration_rect(self, option, index):
+        """Rect of the thumbnail (decoration) inside the row; row rect as fallback."""
+        try:
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = getattr(opt, "widget", None)
+            style = widget.style() if widget else self.parent().style()
+            deco_rect = style.subElementRect(QStyle.SE_ItemViewItemDecoration, opt, widget)
+            if deco_rect.isValid():
+                return deco_rect
+        except Exception:
+            pass
+        return option.rect
+
+    def paint_proxy_state(self, painter, option, index):
+        try:
+            proxy_service = getattr(get_app().window, "proxy_service", None)
+        except Exception:
+            proxy_service = None
+        if proxy_service is None:
+            return
+        file_id = self._file_id(index)
+        if not file_id:
+            return
+
+        job_badge = proxy_service.get_file_badge(file_id)
+        file_obj = File.get(id=file_id)
+        if not job_badge and (not file_obj or not proxy_service.has_proxy_reader(file_obj)):
+            return
+
+        deco_rect = self._decoration_rect(option, index)
+        if file_obj:
+            paint_proxy_badge(painter, deco_rect, proxy_service.get_proxy_state(file_obj))
+        self._paint_proxy_progress(painter, deco_rect, job_badge)
+
+    @staticmethod
+    def _paint_proxy_progress(painter, deco_rect, badge):
+        if not badge:
+            return
+        progress = int(badge.get("progress", 0))
+        status = str(badge.get("status", "")).strip().lower()
+        if status in ("queued", "running", "canceling"):
+            # Keep active jobs visible even before numeric progress starts.
+            progress = max(progress, 2)
+        if progress <= 0:
+            return
+
+        bar_height = 3
+        bar_margin = 2
+        full_rect = deco_rect.adjusted(1, 0, -1, 0)
+        full_rect.setTop(deco_rect.bottom() - bar_height - bar_margin + 1)
+        full_rect.setHeight(bar_height)
+        if full_rect.width() <= 2:
+            return
+
+        fill_width = max(1, int((full_rect.width() * min(progress, 100)) / 100.0))
+        fill_rect = full_rect.adjusted(0, 0, -(full_rect.width() - fill_width), 0)
+
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(PROXY_BAR_TRACK_COLOR)
+        painter.drawRect(full_rect)
+        painter.setBrush(PROXY_BAR_COLOR)
+        painter.drawRect(fill_rect)
+        painter.restore()
+
     def helpEvent(self, event, view, option, index):
         status = self._status(index)
         if (
@@ -175,7 +273,10 @@ class IndexingBadgeDelegate(QStyledItemDelegate):
             and status.tooltip
             and badge_rect(option.rect).contains(event.pos())
         ):
-            name = str(index.model().data(index.sibling(index.row(), 1), Qt.DisplayRole) or "")
+            name_index = self._row_column(index, 1)
+            name = ""
+            if name_index.isValid():
+                name = str(name_index.model().data(name_index, Qt.DisplayRole) or "")
             text = f"{name}\n{status.tooltip}" if name else status.tooltip
             QToolTip.showText(event.globalPos(), text, view)
             return True

@@ -31,7 +31,7 @@ import re
 from operator import itemgetter
 
 import openshot
-from PyQt5.QtWidgets import QFileDialog
+from qt_api import QFileDialog
 
 from classes import info
 from classes.app import get_app
@@ -39,6 +39,8 @@ from classes.logger import log
 from classes.image_types import get_media_type
 from classes.path_utils import absolute_path_from_export
 from classes.query import Clip, Track, File
+from classes import frame_time as ft
+from fractions import Fraction
 from classes.time_parts import timecodeToSeconds
 from windows.views.find_file import find_missing_file
 
@@ -61,6 +63,17 @@ param_regexes = [
 ]
 fcm_regex = re.compile(r"FCM:[ ]+(.*)")
 
+
+
+def _snap_clip_timing(clip, fps_num, fps_den):
+    fps = Fraction(int(fps_num), int(fps_den))
+    pos = float(clip.data.get("position", 0.0) or 0.0)
+    start = float(clip.data.get("start", 0.0) or 0.0)
+    end = float(clip.data.get("end", 0.0) or 0.0)
+    pos, start, end = ft.quantize_span(pos, start, end, fps)
+    clip.data["position"] = pos
+    clip.data["start"] = start
+    clip.data["end"] = end
 
 def _interp_from_name(name):
     n = (str(name) if name is not None else "").strip().lower()
@@ -153,7 +166,7 @@ def create_clip(context, track):
         thumb_path = os.path.join(info.THUMBNAIL_PATH, "%s.png" % file.data["id"])
     else:
         # Audio file
-        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.png")
+        thumb_path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
 
     # Create Clip object
     clip = Clip()
@@ -162,6 +175,7 @@ def create_clip(context, track):
     clip_title = context.get("clip_title") or os.path.basename(clip_path_value) or clip_path_value
     clip.data["title"] = clip_title
     clip.data["layer"] = track.data.get("number", 1000000)
+    clip.data["image"] = thumb_path
     reel_name = (video_ctx or audio_ctx).get("reel") if (video_ctx or audio_ctx) else None
     if not reel_name and audio_ctx_list:
         reel_name = audio_ctx_list[0].get("reel")
@@ -280,6 +294,8 @@ def create_clip(context, track):
                 )
 
     # Save clip
+    _snap_clip_timing(clip, fps_num, fps_den)
+
     clip.save()
 
 

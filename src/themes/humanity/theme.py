@@ -32,6 +32,83 @@ class HumanityDarkTheme(BaseTheme):
     def __init__(self, app):
         super().__init__(app)
         self.style_sheet = """
+QFrame#recordingCard {
+    background-color: #303030;
+    border: 1px solid #555b63;
+    border-radius: 8px;
+}
+QFrame#recordingCard[checked="true"] {
+    background-color: #3a4655;
+    border: 2px solid #2f8cff;
+}
+QFrame#recordingCard[available="false"] {
+    background-color: #292929;
+    border: 1px solid #454545;
+}
+QLabel#recordingCardIcon {
+    color: #70adf5;
+    font-size: 22px;
+}
+QLabel#recordingCardTitle {
+    color: #f1f1f1;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#recordingCardSubtitle {
+    color: #b8bec8;
+    font-size: 11px;
+}
+QFrame#recordingSection {
+    background-color: #292929;
+    border: 1px solid #50555c;
+    border-radius: 8px;
+}
+QFrame#recordingSection[active="true"] {
+    border-color: #4779b8;
+}
+QFrame#recordingSection[active="false"] {
+    background-color: #252525;
+    color: #858b94;
+}
+QLabel#recordingSectionIcon {
+    color: #78aef0;
+    font-size: 16px;
+}
+QLabel#recordingSectionTitle {
+    color: #f1f1f1;
+    font-weight: 700;
+}
+QPushButton#recordingAdvancedLink {
+    color: #4f9aff;
+    border: none;
+    padding: 0;
+    text-align: right;
+}
+QPushButton#recordingAdvancedLink:hover {
+    color: #b8d7ff;
+    text-decoration: underline;
+}
+QPushButton#recordingSegment {
+    color: #d0d3d8;
+    background-color: #303030;
+    border: 1px solid #555b63;
+    border-radius: 6px;
+    padding: 7px 10px;
+}
+QPushButton#recordingSegment[position="left"] {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QPushButton#recordingSegment[position="right"] {
+    border-left: none;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+QPushButton#recordingSegment:checked {
+    color: #a9d0ff;
+    background-color: #3a526f;
+    border: 1px solid #2f8cff;
+}
 QToolTip {
     color: #ffffff;
     background-color: #2a82da;
@@ -154,6 +231,10 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn {
     font-size: 11px;
 }
 QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #b8b8b8;
+}
         """
 
     def apply_theme(self):
@@ -161,16 +242,29 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
 
         from classes import ui_util
         from classes.logger import log
-        from PyQt5.QtWidgets import QStyleFactory
+        from qt_api import QStyleFactory
 
         log.info("Setting Fusion dark palette")
         self.app.setStyle(QStyleFactory.create("Fusion"))
         dark_palette = ui_util.make_dark_palette(self.app.palette())
         self.app.setPalette(dark_palette)
-        self.app.setStyleSheet(self.style_sheet)
+        self.app.setStyleSheet(self.compose_stylesheet())
 
         # Apply timeline theme
-        self.app.window.timeline.apply_theme("")
+        self.app.window.timeline.apply_theme("""
+            .keyframe-panel-row {
+              background: #2f2f2f;
+              border: 0px solid transparent;
+            }
+            .keyframe-panel-curve {
+              color: #4b92ad;
+            }
+            .keyframe-panel-point {
+              background: #4b92ad;
+              border: 1px solid #7dc3dd;
+              opacity: 0.70;
+            }
+        """)
 
         # Emit signal
         self.app.window.ThemeChangedSignal.emit(self)
@@ -179,6 +273,83 @@ class Retro(BaseTheme):
     def __init__(self, app):
         super().__init__(app)
         self.style_sheet = """
+QFrame#recordingCard {
+    background-color: #e5e7ea;
+    border: 1px solid #a5abb3;
+    border-radius: 8px;
+}
+QFrame#recordingCard[checked="true"] {
+    background-color: #d7e8fb;
+    border: 2px solid #287dcc;
+}
+QFrame#recordingCard[available="false"] {
+    background-color: #ededed;
+    border: 1px solid #c4c4c4;
+}
+QLabel#recordingCardIcon {
+    color: #287dcc;
+    font-size: 22px;
+}
+QLabel#recordingCardTitle {
+    color: #25282d;
+    font-size: 14px;
+    font-weight: 700;
+}
+QLabel#recordingCardSubtitle {
+    color: #586473;
+    font-size: 11px;
+}
+QFrame#recordingSection {
+    background-color: #eeeeee;
+    border: 1px solid #a9adb3;
+    border-radius: 8px;
+}
+QFrame#recordingSection[active="true"] {
+    border-color: #4a8fca;
+}
+QFrame#recordingSection[active="false"] {
+    background-color: #e4e4e4;
+    color: #777d84;
+}
+QLabel#recordingSectionIcon {
+    color: #287dcc;
+    font-size: 16px;
+}
+QLabel#recordingSectionTitle {
+    color: #25282d;
+    font-weight: 700;
+}
+QPushButton#recordingAdvancedLink {
+    color: #176fba;
+    border: none;
+    padding: 0;
+    text-align: right;
+}
+QPushButton#recordingAdvancedLink:hover {
+    color: #0c4f89;
+    text-decoration: underline;
+}
+QPushButton#recordingSegment {
+    color: #30343a;
+    background-color: #f7f7f7;
+    border: 1px solid #a9adb3;
+    border-radius: 6px;
+    padding: 7px 10px;
+}
+QPushButton#recordingSegment[position="left"] {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QPushButton#recordingSegment[position="right"] {
+    border-left: none;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+QPushButton#recordingSegment:checked {
+    color: #155f9e;
+    background-color: #d7e8fb;
+    border: 1px solid #287dcc;
+}
 QComboBox::item {
     height: 24px;
 }
@@ -198,6 +369,11 @@ QMainWindow::separator:hover {
 
 QWidget#videoPreview {
     background-color: #dedede;
+}
+
+QLabel#lblMissingFileHint,
+QLabel#lblMissingFilePath {
+    color: #5a5a5a;
 }
 
 QComboBox {
@@ -350,10 +526,10 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
               background-image: url(../themes/humanity/images/keyframe-constant.svg);
             }
             .track-keyframe-panel-disabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-show-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-keyframe-panel-show-disabled.svg);
             }
             .track-keyframe-panel-enabled {
-              background-image: url(../themes/humanity/images/track-keyframe-panel-show-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-keyframe-panel-show-enabled.svg);
             }
             .track-add-above-disabled {
               background-image: url(../themes/humanity/images/track-add-above-disabled.svg);
@@ -374,19 +550,31 @@ QDockWidget#AIMediaPanel QPushButton#refreshBtn:hover { border-color: #2a82da; }
               background-image: url(../themes/humanity/images/track-delete-enabled.svg);
             }
             .track-locked-disabled {
-              background-image: url(../themes/humanity/images/track-locked-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-locked-disabled.svg);
             }
             .track-locked-enabled {
-              background-image: url(../themes/humanity/images/track-locked-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-locked-enabled.svg);
             }
             .track-unlocked-disabled {
-              background-image: url(../themes/humanity/images/track-unlocked-disabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-unlocked-disabled.svg);
             }
             .track-unlocked-enabled {
-              background-image: url(../themes/humanity/images/track-unlocked-enabled.svg);
+              background-image: url(../themes/humanity/images/retro-track-unlocked-enabled.svg);
             }
             .keyframe-panel-add {
               background-image: url(../themes/humanity/images/keyframe-panel-add.svg);
+            }
+            .keyframe-panel-row {
+              background: #e5e7ea;
+              border: 0px solid transparent;
+            }
+            .keyframe-panel-curve {
+              color: #4b92ad;
+            }
+            .keyframe-panel-point {
+              background: #4b92ad;
+              border: 1px solid #3a748a;
+              opacity: 0.72;
             }
         """)
 
