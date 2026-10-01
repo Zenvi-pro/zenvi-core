@@ -926,3 +926,94 @@ def test_match_scope_nudge_moves_from_a_shared_grade(monkeypatch):
     assert len(writes) == 1
     grade = ca.find_color_grade(clips["sub"].data["effects"])
     assert scalar_y(grade, "temperature") == pytest.approx(0.21)
+
+
+def _grade_env(monkeypatch, clips):
+    """Fake app / Clip store for apply_color / apply_look; returns the writes."""
+    import sys
+    import types
+
+    from classes import tool_handlers as th
+
+    writes = []
+
+    def _fake_write(clip_obj, effects):
+        writes.append((clip_obj.id, list(effects)))
+        clip_obj.data["effects"] = list(effects)
+
+    monkeypatch.setattr(th, "_write_clip_effects", _fake_write)
+
+    class FakeApp:
+        class updates:
+            transaction_id = None
+
+        class window:
+            class refreshFrameSignal:
+                @staticmethod
+                def emit():
+                    return None
+
+        class project:
+            @staticmethod
+            def generate_id():
+                return "effx"
+
+    monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
+    monkeypatch.setattr(th, "QThread", None)
+
+    class ClipProxy:
+        @staticmethod
+        def get(id=None, **_kw):
+            return clips.get(id)
+
+    fake_query = types.ModuleType("classes.query")
+    fake_query.Clip = ClipProxy
+    monkeypatch.setitem(sys.modules, "classes.query", fake_query)
+    return writes
+
+
+def test_apply_color_resolves_lut_ids_to_the_bundled_file(monkeypatch):
+    """list_looks_tool hands out ids and relative paths; libopenshot needs the
+    absolute .cube (a relative path was stored raw and never loaded)."""
+    from classes import color_agent as ca
+    from classes import info
+    from classes import tool_handlers as th
+
+    clips = {"c1": _MatchClip("c1", [])}
+    _grade_env(monkeypatch, clips)
+    bundled = os.path.join(info.COLORS_PATH, "cinematic_&_blockbuster", "teal_cinema.cube")
+    assert os.path.isfile(bundled)
+
+    for lut_arg in ("teal_cinema", "cinematic_&_blockbuster/teal_cinema.cube",
+                    "@colors/cinematic_&_blockbuster/teal_cinema.cube"):
+        out = json.loads(th.apply_color(clipIds="c1", lut_path=lut_arg))
+        assert out["ok"] is True, lut_arg
+        grade = ca.find_color_grade(clips["c1"].data["effects"])
+        assert os.path.normpath(grade["lut_path"]) == os.path.normpath(bundled), lut_arg
+
+
+def test_missing_lut_is_refused_before_any_write(monkeypatch):
+    from classes import tool_handlers as th
+
+    clips = {"c1": _MatchClip("c1", [{"class_name": "Blur", "id": "b1"}])}
+    writes = _grade_env(monkeypatch, clips)
+    before = copy.deepcopy(clips["c1"].data)
+
+    err = th.apply_color(clipIds="c1", lut_path="nope/missing.cube")
+    assert err.startswith("Error:") and "LUT file not found" in err
+    err = th.apply_color(clipIds="c1", lut='{"path": "/no/such/file.cube"}')
+    assert err.startswith("Error:") and "LUT file not found" in err
+    err = th.apply_look(clipIds="c1", lutPath="nope/missing.cube")
+    assert err.startswith("Error:") and "LUT file not found" in err
+    err = th.apply_look(clipIds="c1", lookId="teal_cinema", mix="nan")
+    assert err.startswith("Error:")
+    assert writes == []
+    assert clips["c1"].data == before
+
+
+def test_grade_writers_run_their_file_checks_off_the_gui_thread():
+    from classes import tool_handlers as th
+
+    for name in ("apply_color_tool", "apply_look_tool"):
+        assert name in th.BACKGROUND_SAFE_TOOLS
+        assert name not in th.READ_ONLY_TOOLS

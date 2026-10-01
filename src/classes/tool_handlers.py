@@ -8928,6 +8928,30 @@ def _color_target_error(action: str) -> str:
     )
 
 
+def _resolve_lut_file(raw) -> str:
+    """Absolute path of an existing .cube for a LUT id, bundled path or file.
+
+    Raises ValueError before any undo group opens: libopenshot only logs a LUT
+    it cannot open, so a relative or mistyped path "applied" a grade that did
+    nothing. Touches the filesystem, so callers run off the GUI thread.
+    """
+    from classes import color_agent as ca
+    from classes import info
+
+    text = str(raw or "").strip()
+    look = ca.resolve_look_id(text)
+    if look.get("kind") != "lut":
+        raise ValueError(f"'{text}' is a {look.get('kind')} look, not a LUT; use apply_look_tool")
+    path = ca.resolve_lut_filesystem_path(
+        look["lut_path"],
+        colors_path=getattr(info, "COLORS_PATH", ""),
+        user_colors_path=getattr(info, "USER_COLORS_PATH", ""),
+    )
+    if not os.path.isfile(path):
+        raise ValueError(f"LUT file not found: {look['lut_path']}. Call list_looks_tool for LUT ids.")
+    return path
+
+
 def apply_color(
     clipIds="",
     clip_ids="",
@@ -9041,6 +9065,11 @@ def apply_color(
                     "field (exposure, wheels, lut, color, …)."
                 )
             ca.validate_color_patch(patch)
+            if patch.get("lut_path"):
+                patch["lut_path"] = _resolve_lut_file(patch["lut_path"])
+            lut = patch.get("lut")
+            if isinstance(lut, dict) and lut.get("path"):
+                patch["lut"] = dict(lut, path=_resolve_lut_file(lut["path"]))
 
         app = _get_app()
         receipts = []
@@ -9576,10 +9605,10 @@ def apply_look(
 
         lut_intensity_val = None
         if intensity_arg not in (None, ""):
-            lut_intensity_val = float(intensity_arg)
+            lut_intensity_val = ca._coerce_float(intensity_arg, "lutIntensity")
         mix_val = None
         if mix_arg not in (None, ""):
-            mix_val = float(mix_arg)
+            mix_val = ca._coerce_float(mix_arg, "mix")
 
         grain_id = None
         if grain_arg not in (None, ""):
@@ -9600,16 +9629,11 @@ def apply_look(
             apply_film_grain_preset,
             is_film_grain_effect,
         )
-        from classes import info
 
         # Validate LUT path up front (no undo on bad id).
         abs_lut = ""
         if resolved.get("kind") == "lut":
-            abs_lut = ca.resolve_lut_filesystem_path(
-                resolved["lut_path"],
-                colors_path=getattr(info, "COLORS_PATH", ""),
-                user_colors_path=getattr(info, "USER_COLORS_PATH", ""),
-            )
+            abs_lut = _resolve_lut_file(resolved["lut_path"])
 
         app = _get_app()
         receipts = []
@@ -9677,7 +9701,7 @@ def apply_look(
                                 app.project.generate_id
                             )
                             effects.append(existing)
-                        patch = {"lut": {"path": abs_lut or resolved["lut_path"]}}
+                        patch = {"lut": {"path": abs_lut}}
                         if lut_intensity_val is not None:
                             patch["lut"]["strength"] = lut_intensity_val
                         if mix_val is not None:
@@ -9698,8 +9722,6 @@ def apply_look(
                         receipt["status"] = "lut"
                         receipt["lut_path"] = merged.get("lut_path")
                         receipt["color"] = ca.summarize_color_grade(merged)
-                        if abs_lut and not os.path.isfile(abs_lut):
-                            warnings.append(f"LUT file not found on disk: {abs_lut}")
 
                     # Optional / primary film grain
                     apply_grain = grain_id or (
@@ -10305,6 +10327,9 @@ BACKGROUND_SAFE_TOOLS = frozenset({
     "inspect_color_tool",
     "match_color_to_reference_tool",
     "list_looks_tool",
+    # LUT existence checks run in the handler; the ColorGrade write marshals.
+    "apply_color_tool",
+    "apply_look_tool",
     "reindex_project_file_tool",
     # Probing a folder of media can outlast the 30s dispatcher budget; the
     # add_files call marshals itself with its own, longer timeout.
