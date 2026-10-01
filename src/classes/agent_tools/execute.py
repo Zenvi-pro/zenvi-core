@@ -17,6 +17,7 @@ _RUN_ON_MAIN: Optional[Callable] = None
 _ATOMIC: Optional[Callable] = None
 _COERCE_STEPS: Optional[Callable] = None
 _QTHREAD = None
+_MAIN_THREAD_TIMEOUT_FN: Optional[Callable] = None
 
 _MAIN_THREAD_TIMEOUT_DEFAULT = 30
 _MAIN_THREAD_TIMEOUT_PER_STEP = 8
@@ -35,9 +36,11 @@ def bind_runtime(
     atomic: Callable,
     coerce_steps: Callable,
     qthread,
+    main_thread_timeout: Optional[Callable] = None,
 ) -> None:
     global _HANDLERS, _READ_ONLY, _BACKGROUND_SAFE, _UNGROUPED
     global _MAIN_THREAD_TIMEOUTS, _GET_APP, _RUN_ON_MAIN, _ATOMIC, _COERCE_STEPS, _QTHREAD
+    global _MAIN_THREAD_TIMEOUT_FN
     _HANDLERS = handlers
     _READ_ONLY = read_only
     _BACKGROUND_SAFE = background_safe
@@ -48,9 +51,14 @@ def bind_runtime(
     _ATOMIC = atomic
     _COERCE_STEPS = coerce_steps
     _QTHREAD = qthread
+    _MAIN_THREAD_TIMEOUT_FN = main_thread_timeout
 
 
 def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
+    # tool_handlers owns the wait budgets; the fallback below only serves a
+    # dispatcher bound without it.
+    if _MAIN_THREAD_TIMEOUT_FN is not None:
+        return _MAIN_THREAD_TIMEOUT_FN(tool_name, tool_args)
     if tool_name in _MAIN_THREAD_TIMEOUTS:
         return _MAIN_THREAD_TIMEOUTS[tool_name]
     if tool_name not in ("undo_tool", "redo_tool"):
