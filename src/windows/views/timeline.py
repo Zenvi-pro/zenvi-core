@@ -298,10 +298,15 @@ def _save_waveform(item, tid):
     # Redo replays the recorded insert: give it the waveform, or the clip
     # would come back without one.
     ui = (getattr(item, "data", None) or {}).get("ui")
-    for action in history:
-        if (ui and action.transaction == tid and action.type == "insert"
+    if not ui:
+        return
+    # ponytail: newest 200 actions only, so a long history never stalls the GUI
+    # thread. A drop buried deeper than that redoes without its waveform.
+    for action in history[:-201:-1]:
+        if (action.transaction == tid and action.type == "insert"
                 and isinstance(action.values, dict) and action.values.get("id") == item.id):
             action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
+            break
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
