@@ -347,6 +347,17 @@ def test_opencode_row_follows_install_and_connect_status(qapp):
     assert panel._rows["opencode"].word.text() == "not connected"
 
 
+def test_connecting_an_agent_does_not_select_it(qapp):
+    """Seen in the app: after Connect on OpenCode, its radio and the active
+    agent's were both filled until the next status refresh."""
+    panel = _panel(FakeChat(CONNECTED, active=CLAUDE))
+    panel._on_connect_requested(CODEX)
+    panel.on_connect_result(CODEX, True, "Updated config.toml. Before running codex, run:\nexport X=1")
+    assert panel._rows[CODEX].word.text() == "connected"
+    assert panel._rows[CODEX].property("selected") is False
+    assert panel._rows[CLAUDE].property("selected") is True
+
+
 def test_selected_row_tracks_the_active_backend(qapp):
     panel = _panel(FakeChat(CONNECTED, active=CODEX))
     assert panel._rows[CODEX].property("selected") is True

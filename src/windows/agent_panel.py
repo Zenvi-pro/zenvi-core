@@ -486,8 +486,9 @@ class AgentPanel(QFrame):
                 # user to export a token; that cannot fit one line, so point at
                 # the chat panel, which shows it in full.
                 extra = "\n" in (message or "")
+                # Connecting is not choosing: the radio stays where it was.
                 row.set_state(
-                    True, COLOR_READY, self._tr("connected"),
+                    bool(row.property("selected")), COLOR_READY, self._tr("connected"),
                     self._tr("Connected — one more step, see the chat panel") if extra
                     else self._tr("Connected — verifying…"),
                     None, False, message or "",
