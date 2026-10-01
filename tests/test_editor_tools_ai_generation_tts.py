@@ -46,7 +46,11 @@ def test_narration_lands_on_the_lowest_free_track_above_the_picture(editor, tts)
     assert tts.backend.tts_calls == [{"text": "Welcome to Lisbon. The city of seven hills!", "voice": "alloy",
                                       "model": "tts-1", "speed": 1.0}]
     assert os.path.isfile(r["path"])
+    assert os.path.basename(r["path"]).startswith("narration_welcome_to_lisbon_the_")
     assert tts.timeline.calls[-1]["call_manual_move"] is False
+    # the clip carries the narration's name, and Project Files is told to refresh the renamed row
+    assert editor.clip(r["timeline_clip_id"])["title"] == f["name"]
+    editor.window.FileUpdated.emit.assert_any_call(r["file_id"])
 
 
 def test_one_undo_step_removes_clip_and_file_and_redo_restores(editor, tts):
@@ -157,10 +161,10 @@ def test_empty_audio_is_an_error(editor, monkeypatch, tmp_path):
 
 
 def test_unreadable_audio_is_an_error_and_the_mp3_is_removed(editor, tts, tmp_path):
-    tts.files_model.fail_paths.add(str(tmp_path / "generated_001.mp3"))
+    tts.files_model.fail_paths.add(str(tmp_path / "narration_hi_001.mp3"))
     out = editor.call(TOOL, text="Hi.")
     assert out.startswith("Error: the narration audio could not be imported")
-    assert not (tmp_path / "generated_001.mp3").exists()
+    assert not (tmp_path / "narration_hi_001.mp3").exists()
     assert editor.undo_steps_since_mark() == 0
 
 

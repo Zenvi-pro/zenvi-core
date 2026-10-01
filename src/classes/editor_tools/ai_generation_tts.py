@@ -220,7 +220,12 @@ def _synthesize(text: str, voice: str, model: str, speed: float) -> str:
         raise ToolError(f"text-to-speech returned unreadable audio ({exc})") from None
     if not raw:
         raise ToolError("text-to-speech returned empty audio")
-    path = durable_media_path(ext=".mp3")
+    generated = durable_media_path(ext=".mp3")
+    # A readable file name too (narration_welcome_to_lisbon_1a2b3c.mp3): it is what
+    # Project Files falls back to and what the person sees in the media folder.
+    slug = re.sub(r"[^a-z0-9]+", "_", " ".join(text.lower().split()[:5])).strip("_")[:40] or "voiceover"
+    tag = os.path.splitext(os.path.basename(generated))[0].rsplit("_", 1)[-1][:6]
+    path = os.path.join(os.path.dirname(generated), f"narration_{slug}_{tag}.mp3")
     try:
         with open(path, "wb") as fh:
             fh.write(raw)
@@ -261,6 +266,12 @@ def _import_and_place(path: str, text: str, start: float, explicit_layer: Option
             tags.append(tag)
     file_obj.data["tags"] = ", ".join(tags)
     file_obj.save()
+    # Project Files keeps the row's own name text; without this refresh its next
+    # item change writes the old (file) name back over the new one (seen live).
+    try:
+        win.FileUpdated.emit(str(file_obj.id))
+    except Exception:
+        log.debug("FileUpdated refresh skipped", exc_info=True)
 
     end = start + duration
     created = False
