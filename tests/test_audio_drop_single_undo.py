@@ -210,8 +210,10 @@ def test_a_waveform_that_lands_after_a_newer_edit_stays_out_of_undo(editor):
 
 def test_redo_of_the_drop_brings_back_a_waveform_that_landed_late(editor):
     clip_id, tid = _drop(editor)
-    editor.updates.transaction_id = "newer-edit"
-    editor.updates.insert(["markers"], {"id": "M1", "position": 1.0})
+    # However many edits came in between: a long session must not lose it.
+    for n in range(250):
+        editor.updates.transaction_id = "newer-edit-%d" % n
+        editor.updates.insert(["markers"], {"id": "M%d" % n, "position": 1.0})
     editor.updates.transaction_id = None
 
     _land_waveform(editor, clip_id, tid)

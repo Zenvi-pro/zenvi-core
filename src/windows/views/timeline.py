@@ -272,7 +272,7 @@ def _save_look_effects(view, clip, effects):
 _joined_waveform_tids = set()
 
 
-def _save_waveform(item, tid):
+def _save_waveform(item, tid, inserted_by_tid=False):
     """Save waveform data that arrived from the worker on a clip or file.
 
     It shares the undo step of the edit that asked for it (*tid*), while that
@@ -298,11 +298,12 @@ def _save_waveform(item, tid):
     # Redo replays the recorded insert: give it the waveform, or the clip
     # would come back without one.
     ui = (getattr(item, "data", None) or {}).get("ui")
-    if not ui:
+    if not ui or not inserted_by_tid:
         return
-    # ponytail: newest 200 actions only, so a long history never stalls the GUI
-    # thread. A drop buried deeper than that redoes without its waveform.
-    for action in history[:-201:-1]:
+    # Newest first, stopping at the insert: the walk covers only the edits made
+    # since the drop, however long the history is. Only asked for clips, which
+    # the joined transaction inserted; a file has no insert to find.
+    for action in reversed(history):
         if (action.transaction == tid and action.type == "insert"
                 and isinstance(action.values, dict) and action.values.get("id") == item.id):
             action.values["ui"] = dict(action.values.get("ui") or {}, **ui)
@@ -2148,7 +2149,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 if not preserve_existing_waveform and isinstance(clip_ui.get("audio_data"), list):
                     clip_ui["waveform_token"] = str(tid or self.get_uuid())
             clip.data = ui_data
-            _save_waveform(clip, tid)
+            _save_waveform(clip, tid, inserted_by_tid=True)
             if hasattr(self, "clip_painter"):
                 self.clip_painter.clear_cache()
             QTimer.singleShot(0, self.update)
