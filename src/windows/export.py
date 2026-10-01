@@ -1016,12 +1016,14 @@ class Export(QDialog):
         self.btnBrowse.setEnabled(True)
 
     def _cleanup_export_resources(self):
-        """Stop the export cache thread and restore the preview cache. Idempotent.
+        """Close the export timeline, drop the cache thread and restore the preview cache. Idempotent.
 
-        Called from both run_export()'s finally block and reject() (e.g. when
-        the user closes the finished-export dialog); the guard below stops the
-        second call from re-invoking native Close()/ClearAllCache() on an
-        already-closed Timeline, which corrupts the heap on some platforms.
+        Called once the dialog is done exporting: after a successful (or
+        headless) run_export(), and from reject() (e.g. when the user closes the
+        finished-export dialog); the guard below stops the second call from
+        re-invoking native Close()/ClearAllCache() on an already-closed Timeline,
+        which corrupts the heap on some platforms. A failed export only calls
+        _end_export_attempt(), so the dialog can try again.
         """
         if getattr(self, "_export_cleaned_up", False):
             return
@@ -1058,6 +1060,30 @@ class Export(QDialog):
                 window.cache_object = old_cache
         except Exception:
             log.warning("Failed to restore preview cache after export", exc_info=True)
+
+    def _end_export_attempt(self):
+        """Stop this attempt's cache thread, keeping what the dialog needs to try again.
+
+        A failed export leaves the dialog open so the user can change the
+        settings and export again, which needs the export timeline it opened
+        (still open) and its cache thread (stopped, not dropped).
+        """
+        try:
+            if getattr(self, "cache_thread", None):
+                self.cache_thread.StopThread(10000)
+                self.cache_thread.Reader(None)
+        except Exception:
+            log.warning("Export cache thread stop failed", exc_info=True)
+
+    def _reset_for_retry(self):
+        """Undo what a failed attempt did to the export timeline before the next one."""
+        unscaled = getattr(self, "_unscaled_project", None)
+        if unscaled is not None:
+            # That attempt rescaled self.project's keyframes to its export fps.
+            self.project = copy.deepcopy(unscaled)
+            self.timeline.SetJson(json.dumps(self.project._data))
+        # Frames cached at the last attempt's size or fps must not be reused.
+        self.timeline.ClearAllCache()
 
     def _present_export_error(self, friendly_error):
         """Show a retryable export error on the GUI thread. Never closes the dialog."""
@@ -1169,13 +1195,16 @@ class Export(QDialog):
             # Reset per-export-attempt guards. Only the top-level call (not
             # the audio-codec-failure retry recursion below) should do this,
             # which is exactly what owns_pause already distinguishes.
-            self._export_cleaned_up = False
             self._fps_rescaled = False
             self._export_success_ui_done = False
 
         retried_as_video_only = False
         export_ok = False
         try:
+            if owns_pause and getattr(self, "_export_attempted", False):
+                self._reset_for_retry()
+            self._export_attempted = True
+
             # Size export cache from resolution (was a flat 250 MB — too small for 4K).
             width_for_cache = int(video_settings.get("width") or 1920)
             height_for_cache = int(video_settings.get("height") or 1080)
@@ -1202,6 +1231,8 @@ class Export(QDialog):
             # scale an already-rescaled project a second time.
             if export_fps_factor != 1.0:
                 if not getattr(self, "_fps_rescaled", False):
+                    if getattr(self, "_unscaled_project", None) is None:
+                        self._unscaled_project = copy.deepcopy(self.project)
                     self.project.rescale_keyframes(export_fps_factor)
                     self._fps_rescaled = True
                 path_to_use = profile_path_for_rescale
@@ -1629,6 +1660,7 @@ class Export(QDialog):
                     if not getattr(self, "_headless", False):
                         if getattr(self, "_export_cancel_confirmed", False):
                             self._export_cancel_confirmed = False
+                            self._cleanup_export_resources()
                             super(Export, self).reject()
                         else:
                             self.enableControls()
@@ -1737,7 +1769,11 @@ class Export(QDialog):
         finally:
             try:
                 if not retried_as_video_only:
-                    self._cleanup_export_resources()
+                    if export_ok or getattr(self, "_headless", False):
+                        self._cleanup_export_resources()
+                    else:
+                        # The dialog stays open for another try.
+                        self._end_export_attempt()
             except Exception:
                 log.warning("Export cleanup failed", exc_info=True)
             if owns_pause:
