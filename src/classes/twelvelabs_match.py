@@ -230,11 +230,16 @@ def index_is_complete(ai_metadata: Any) -> bool:
     """True when a file's last index finished cleanly, so indexing it again can be skipped.
 
     twelvelabs_is_indexed() only looks at the index handles. A run that saved
-    them and then failed records an ``error`` but keeps the handles, so it must
-    still count as unfinished and be retried.
+    them and then failed records an ``error`` but keeps the handles, and a job
+    can hand back ready handles with no analysis at all; both must still count
+    as unfinished and be retried.
     """
+    from classes.ai_metadata_utils import is_ai_metadata_usable
+
     if not isinstance(ai_metadata, dict):
         return False
     if str(ai_metadata.get("error") or "").strip():
+        return False
+    if not is_ai_metadata_usable(ai_metadata):
         return False
     return twelvelabs_is_indexed(get_index_block(ai_metadata))

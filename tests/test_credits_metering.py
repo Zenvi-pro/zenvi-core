@@ -198,7 +198,8 @@ def test_a_failed_reindex_is_not_charged(monkeypatch, charges):
 
 
 def test_an_indexed_clip_is_not_reindexed_or_charged(monkeypatch, charges):
-    ready = {"twelvelabs": {"status": "ready", "index_id": "zenvi-p1", "video_id": "v1"}}
+    ready = {"analyzed": True, "description": "A dog on a beach.",
+             "twelvelabs": {"status": "ready", "index_id": "zenvi-p1", "video_id": "v1"}}
     out, client = _reindex(monkeypatch, result={"success": True}, ai_metadata=ready)
 
     assert "already indexed" in out

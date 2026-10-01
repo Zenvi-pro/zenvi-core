@@ -3135,12 +3135,6 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         else:
             log.info('File Properties Cancelled')
 
-    def actionReindexFile_trigger(self):
-        """Project Files > Re-index: index the selected files again and refresh their descriptions."""
-        for f in self.selected_files():
-            if f:
-                self.files_model.reindex_file(f.id)
-
     def actionExportFiles_trigger(self):
         from windows.export_clips import clipExportWindow
         f = self.selected_files()

@@ -80,6 +80,7 @@ class _Signal:
 class _FakeFile:
     def __init__(self, data):
         self.id = data.get("id")
+        self.key = ["files", {"id": self.id}]
         self.data = data
         self.saved = 0
 
@@ -98,9 +99,15 @@ def test_ready_handles_left_by_a_failed_run_are_not_a_complete_index():
 
 
 def test_a_clean_ready_index_is_complete_under_either_key():
-    assert index_is_complete({"index": dict(READY)}) is True
-    assert index_is_complete({"twelvelabs": dict(READY)}) is True
+    analysis = {k: v for k, v in FRESH.items() if k not in ("index", "twelvelabs")}
+    assert index_is_complete(dict(analysis, index=dict(READY))) is True
+    assert index_is_complete(dict(analysis, twelvelabs=dict(READY))) is True
     assert index_is_complete(FRESH) is True
+
+
+def test_ready_handles_without_any_analysis_are_not_a_complete_index():
+    assert index_is_complete({"index": dict(READY)}) is False
+    assert index_is_complete({"analyzed": True, "index": dict(READY), "twelvelabs": dict(READY)}) is False
 
 
 def test_interrupted_and_failed_blocks_are_not_complete():
@@ -151,7 +158,7 @@ def test_a_file_whose_index_failed_after_saving_handles_is_indexed_again(monkeyp
 
 
 def test_a_cleanly_indexed_file_is_still_not_indexed_again_on_import(monkeypatch):
-    client, _ = _run_worker(monkeypatch, {"index": dict(READY)})
+    client, _ = _run_worker(monkeypatch, dict(FRESH))
 
     client.start_direct_indexing_job.assert_not_called()
 
@@ -220,7 +227,8 @@ def test_the_in_progress_stub_does_not_carry_the_old_error_forward():
 def _files_model(monkeypatch, files):
     """Real FilesModel methods over fake project files; returns (model, window, cache_writes)."""
     window = types.SimpleNamespace(FileUpdated=_Signal(), schedule_flush_project_to_disk=lambda: None)
-    app = types.SimpleNamespace(window=window)
+    app = types.SimpleNamespace(window=window, updates=MagicMock())
+    window.updates = app.updates
     file_lookup = types.SimpleNamespace(get=lambda **kw: files.get(kw.get("id")))
     names = [
         "_apply_ai_metadata", "apply_indexing_result", "can_reindex_file", "reindex_file",
@@ -277,8 +285,19 @@ def test_a_failed_retry_after_good_analysis_keeps_it_and_records_the_new_error(m
     meta = f.data["ai_metadata"]
     assert meta["description"] == FRESH["description"]
     assert derive_indexing_status(meta).tooltip == "second failure"
-    # The merge path keeps the fingerprint cache in step with project JSON too.
-    assert len(cache_writes) == 1
+    # Nothing new to cache: a failure must not write files from the GUI thread.
+    assert cache_writes == []
+
+
+def test_a_failed_result_is_stored_without_an_undo_step(monkeypatch):
+    f = _video(dict(FRESH))
+    model, window, _ = _files_model(monkeypatch, {"f1": f})
+
+    model.apply_indexing_result("f1", {"analyzed": False, "error": "boom", "index": {"status": "failed"}})
+
+    assert f.saved == 0  # File.save() would add an undo-history action
+    window.updates.update_untracked.assert_called_once_with(f.key, f.data)
+    assert window.FileUpdated.emitted == [("f1",)]
 
 
 def test_a_failure_with_nothing_good_to_keep_is_not_cached(monkeypatch):
@@ -600,6 +619,18 @@ def test_a_timeline_clip_shows_its_reindexed_source_not_its_saved_snapshot(monke
 
     assert "new run" in _body(panel)
     assert "old run" not in _body(panel)
+
+
+@needs_qt_stub
+def test_a_timeline_clip_keeps_its_snapshot_when_its_source_has_no_analysis(monkeypatch):
+    snapshot = materialize_clip_ai_metadata(_dated(FRESH, "2026-09-01T10:00:00+00:00", "old run"), 0.0, 6.0)
+    panel, _, _ = _panel(
+        monkeypatch,
+        {"id": "f1", "name": "clip.mp4", "media_type": "video", "duration": 6.0, "ai_metadata": {}},
+        {"id": "c1", "file_id": "f1", "title": "clip", "start": 0.0, "end": 6.0, "ai_metadata": snapshot},
+    )
+
+    assert "old run" in _body(panel)
 
 
 @needs_qt_stub

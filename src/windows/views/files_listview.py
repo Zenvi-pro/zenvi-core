@@ -245,7 +245,9 @@ class FilesListView(QListView):
             add_bound_action(menu, self.win, "actionSplitFile", _("Split Clip"), "actionSplitFile_trigger")
             menu.addSeparator()
             if file.data.get("media_type") in ("video", "image", "audio"):
-                add_bound_action(menu, self.win, "actionReindexFile", _("Re-index"), "actionReindexFile_trigger",
+                # Re-index the right-clicked file (what the enabled state is about), not the selection.
+                add_bound_action(menu, self.win, "actionReindexFile", _("Re-index"),
+                                 lambda fid=file_id: self.files_model.reindex_file(fid),
                                  enabled=self.files_model.can_reindex_file(file_id))
             add_bound_action(menu, self.win, "actionFile_Properties", _("File Properties"), "actionFile_Properties_trigger")
             add_bound_action(menu, self.win, "actionRemove_from_Project", _("Remove from Project"), "actionRemove_from_Project_trigger")

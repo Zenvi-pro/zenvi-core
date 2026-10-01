@@ -812,10 +812,11 @@ class FilesModel(QObject, updates.UpdateInterface):
         merged = merge_indexing_result(file_obj.data.get("ai_metadata"), ai_metadata)
         file_obj.data["ai_metadata"] = merged
         # Cache bulky transcript/scene payload by fingerprint; keep index handles in project JSON.
-        # Only real analysis goes there: a failure has no content worth caching.
+        # Only fresh analysis goes there: a failure has nothing new to cache, even
+        # when earlier analysis was kept.
         try:
             fp = file_obj.data.get("fingerprint")
-            if fp and is_ai_metadata_usable(merged):
+            if fp and is_ai_metadata_usable(ai_metadata):
                 from classes.media_cache import save_ai_metadata
                 save_ai_metadata(fp, merged)
         except Exception:
@@ -833,7 +834,12 @@ class FilesModel(QObject, updates.UpdateInterface):
         if not f:
             return
         self._apply_ai_metadata(f, metadata)
-        f.save()
+        from classes.ai_metadata_utils import is_ai_metadata_usable
+        if is_ai_metadata_usable(metadata):
+            f.save()
+        else:
+            # A failure, skip or in-progress stub must not add an undo step.
+            get_app().updates.update_untracked(f.key, f.data)
         get_app().window.FileUpdated.emit(str(file_id))
         try:
             get_app().window.schedule_flush_project_to_disk()

@@ -228,8 +228,9 @@ class AIMediaPanel(QDockWidget):
                     source_meta = candidate if isinstance(candidate, dict) else {}
                     # Window the source's live analysis rather than trusting the
                     # clip's saved snapshot, which re-indexing the source leaves stale.
+                    # The snapshot only stands in when the source has no analysis.
                     start, end = get_source_window(clip_data, source_file.data)
-                    ai_meta = materialize_clip_ai_metadata(source_meta, start, end)
+                    ai_meta = materialize_clip_ai_metadata(source_meta, start, end) or ai_meta
             except Exception:
                 log.debug("Scene Descriptions: could not read the clip's source file", exc_info=1)
 
