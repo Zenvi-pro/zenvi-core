@@ -49,8 +49,9 @@ SERVER_INSTRUCTIONS = (
     "After delete_from_timeline_tool, check the receipt removedClipIds — a "
     "removed clip cannot be watched. Prefer get_timeline_state_tool only when "
     "the receipt notes say track indexes shifted. watch_clip_window_tool returns "
-    "Error in summary if the clip cannot be resolved; if vision is unavailable "
-    "it falls back to the text-index time and says so."
+    "Error in summary if the clip cannot be resolved. Its start/end are source seconds; it lists "
+    "the frames watched and the shot cuts, so read a cut from there instead of "
+    "re-watching, and slice at a known time with start_seconds/end_seconds."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.
