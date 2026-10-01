@@ -449,6 +449,65 @@ def speech_windows_from_cues(
     return clamp_windows(merge_windows(windows), tl_start, tl_end)
 
 
+def speech_windows_from_vad(
+    media_path: str,
+    clip_data: dict,
+    *,
+    min_pause_sec: float = 0.35,
+) -> List[Tuple[float, float]]:
+    """Local VAD windows mapped into timeline seconds for *clip_data*."""
+    if not media_path:
+        return []
+    try:
+        from classes.speech.vad import detect_speech_windows
+    except Exception:
+        return []
+    data = clip_data if isinstance(clip_data, dict) else {}
+    tl_start, tl_end = clip_timeline_extent(data)
+    src_start = _f(data.get("start"), 0.0)
+    src_end = _f(data.get("end"), src_start)
+    try:
+        raw = detect_speech_windows(
+            media_path,
+            min_speech_sec=0.12,
+            min_silence_sec=min_pause_sec,
+        )
+    except Exception:
+        return []
+    windows = []
+    for s, e in raw:
+        s2, e2 = max(s, src_start), min(e, src_end)
+        if e2 <= s2:
+            continue
+        windows.append(
+            (
+                source_to_timeline_seconds(s2, data),
+                source_to_timeline_seconds(e2, data),
+            )
+        )
+    return clamp_windows(merge_windows(windows), tl_start, tl_end)
+
+
+def speech_windows_best(
+    clip_data: dict,
+    effective_metadata: Optional[dict],
+    media_path: str = "",
+) -> Tuple[List[Tuple[float, float]], str]:
+    """Prefer transcript cues, then local VAD, then energy. Returns (windows, source)."""
+    cues = speech_windows_from_cues(clip_data, effective_metadata)
+    if cues:
+        return cues, "transcript_cues"
+    if media_path:
+        vad = speech_windows_from_vad(media_path, clip_data)
+        if vad:
+            return vad, "local_vad"
+    energetic = speech_windows_from_energy(clip_data)
+    if energetic:
+        return energetic, "energy"
+    return [], "none"
+
+
+
 def speech_windows_from_energy(
     clip_data: dict,
     *,

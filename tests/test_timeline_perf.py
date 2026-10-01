@@ -115,3 +115,19 @@ def test_waveform_copy_is_material():
     # Soft assertion stored as attribute for the suite summary; always pass.
     # The Phase 1.6 step reads this ratio from CI logs / local -s runs.
     assert ratio > 0.0
+
+
+def test_frame_time_conversion_benchmark(capsys):
+    """Phase 2: frame_time conversions stay cheap on the drag path."""
+    from fractions import Fraction
+    from classes import frame_time as ft
+
+    fps = Fraction(30, 1)
+    # CPU time, not wall time: this measures the conversion cost, and a busy
+    # machine or CI runner must not turn scheduler waits into a failure.
+    t0 = time.process_time()
+    for i in range(50_000):
+        ft.quantize_span(i * 0.01, 0.5, 3.5 + (i % 7) * 0.1, fps)
+    elapsed = time.process_time() - t0
+    print(f"\n[perf] frame_time quantize_span 50000 → {elapsed:.4f}s")
+    assert elapsed < 2.0

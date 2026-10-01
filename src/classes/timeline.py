@@ -29,6 +29,7 @@ import threading
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 from qt_api import QTimer
 
+from classes import crash_handler
 from classes.updates import UpdateInterface
 from classes.logger import log
 from classes.app import get_app
@@ -57,6 +58,10 @@ class TimelineSync(UpdateInterface):
         # Create an instance of a libopenshot Timeline object
         self.timeline = openshot.Timeline(width, height, openshot.Fraction(fps["num"], fps["den"]),
                                           sample_rate, channels, channel_layout)
+        # The first Timeline installs libopenshot's CrashHandler, which also
+        # traps SIGPIPE; hand SIGPIPE back to Python so a client that resets
+        # a local socket cannot end the app (see crash_handler.ignore_sigpipe).
+        crash_handler.ignore_sigpipe()
         self.timeline.info.channel_layout = channel_layout
         self.timeline.info.has_audio = True
         self.timeline.info.has_video = True
