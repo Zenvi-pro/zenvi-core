@@ -39,34 +39,6 @@ load_zenvi_dotenv()
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 
 
-class _BackendBearerAuth:
-    """requests auth hook: the signed-in user's token on every call to the backend host.
-
-    Routes such as /generation/tts refuse requests without ``Authorization: Bearer``
-    ("auth required: missing Authorization: Bearer header"); the REST session never
-    sent it, so text-to-speech always failed with 401. The token is read per request
-    (sign-in, refresh and sign-out take effect at once) and only sent to the
-    backend's own host.
-    """
-
-    def __init__(self, token_source: Callable[[], Optional[str]], base_url: str):
-        from urllib.parse import urlparse
-        self._token_source = token_source
-        self._host = urlparse(base_url).netloc.lower()
-
-    def __call__(self, request):
-        from urllib.parse import urlparse
-        if "Authorization" in request.headers or urlparse(request.url).netloc.lower() != self._host:
-            return request
-        try:
-            token = self._token_source()
-        except Exception:
-            token = None
-        if token:
-            request.headers["Authorization"] = f"Bearer {token}"
-        return request
-
-
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -126,13 +98,18 @@ class ZenviBackendClient:
 
     @property
     def session(self):
-        """Lazy-create a requests.Session."""
+        """Lazy-create a requests.Session and keep its bearer token current.
+
+        Paid backend routes (/search, /generation/*, /research/*) reject any
+        request without ``Authorization: Bearer <jwt>``. The token is re-read
+        on every access so a refreshed or cleared login is picked up without
+        rebuilding the session.
+        """
         if self._session is None:
             try:
                 import requests
                 self._session = requests.Session()
                 self._session.headers.update({"Content-Type": "application/json"})
-                self._session.auth = _BackendBearerAuth(lambda: self._auth_token(), self.base_url)
                 if not self._ssl_verify:
                     self._session.verify = False
                     import urllib3
@@ -140,7 +117,16 @@ class ZenviBackendClient:
             except ImportError:
                 log.error("requests library is required for ZenviBackendClient")
                 raise
+        self._apply_bearer(self._session)
         return self._session
+
+    def _apply_bearer(self, session) -> None:
+        """Set or clear the Authorization header from the current login."""
+        token = self._auth_token()
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+        else:
+            session.headers.pop("Authorization", None)
 
     def auth_token(self) -> Optional[str]:
         """Current user JWT for backend usage/credits tracking."""
@@ -701,8 +687,9 @@ class ZenviBackendClient:
         video_id: Optional[str] = None,
         page_limit: Optional[int] = None,
         media_type: Optional[str] = None,
+        look_for: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Search for clips matching a query."""
+        """Search for clips matching a query. look_for: on_screen | spoken | None (both)."""
         try:
             effective_top_k = top_k
             if page_limit and page_limit > effective_top_k:
@@ -721,6 +708,8 @@ class ZenviBackendClient:
                 payload["page_limit"] = page_limit
             if media_type:
                 payload["media_type"] = media_type
+            if look_for:
+                payload["look_for"] = look_for
             r = self.session.post(f"{self.api_url}/search", json=payload, timeout=30)
             r.raise_for_status()
             return r.json()
@@ -783,6 +772,7 @@ class ZenviBackendClient:
             s.verify = False
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self._apply_bearer(s)
         return s
 
     def start_direct_indexing_job(

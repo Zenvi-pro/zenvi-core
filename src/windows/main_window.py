@@ -4431,6 +4431,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if result == LoginWindow.Accepted:
             self.show()
             info.schedule_application_icon(self)
+            if getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
         else:
             self.close()
 
