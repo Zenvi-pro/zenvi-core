@@ -231,3 +231,40 @@ def test_an_opencode_turn_shows_each_message_once(window_cls, keyed_store):
     assert sess["turn_segments"] == ["I'll list the files first."]
     tail = win._final_segment_text(sess, replies[0])
     assert tail.startswith("Added `city.mp4`") and "list the files first" not in tail
+
+
+def test_a_hermes_turn_shows_each_message_once(window_cls, keyed_store):
+    import json
+    import os
+    from windows.agent_runners import HermesRunner
+
+    class _Pipe:
+        def write(self, data):
+            pass
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    win = _window(window_cls)
+    runner = HermesRunner()
+    runner._server = types.SimpleNamespace(token="t", url=lambda: "http://127.0.0.1:1/mcp")
+    runner._proc = types.SimpleNamespace(stdin=_Pipe())
+    runner._cli_cwd = "/proj"
+    runner._after_launch("count the files")
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    runner.response_ready.connect(replies.append)
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "hermes_acp_stream.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+
+    sess = win._sessions["s1"]
+    assert sess["turn_segments"] == ["I'll list the files and run the command."]
+    assert win._final_segment_text(sess, replies[0]) == \
+        "There are **3 files** and the shell printed `zenvi-ok`."
