@@ -768,3 +768,43 @@ def test_soft_presets_and_curves_are_the_look_menu_payloads(monkeypatch):
     assert ca.default_wheels_data() == cp.default_wheels_data()
     nodes = ca.points_to_curve([[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]])["nodes"]
     assert {node["interpolation"] for node in nodes} == {1}
+
+
+def test_implicit_colour_targets_skip_audio_only_clips(monkeypatch):
+    """clipIds='all' and the playhead fallback never grade music / SFX clips."""
+    import sys
+    import types
+
+    from classes import tool_handlers as th
+
+    class FakeClip:
+        def __init__(self, cid, reader):
+            self.id = cid
+            self.data = {"id": cid, "reader": reader}
+
+    clips = [
+        FakeClip("video", {"path": "/m/b_roll.mp4", "has_video": True, "has_audio": True}),
+        FakeClip("music", {"path": "/m/music.mp3", "has_video": True, "has_audio": True}),
+        FakeClip("vo", {"path": "/m/voice.m4a", "has_video": False, "has_audio": True}),
+    ]
+
+    class ClipProxy:
+        @staticmethod
+        def filter(**_kw):
+            return list(clips)
+
+    fake_query = types.ModuleType("classes.query")
+    fake_query.Clip = ClipProxy
+    monkeypatch.setitem(sys.modules, "classes.query", fake_query)
+
+    class FakeApp:
+        project = {"fps": {"num": 30, "den": 1}}
+
+        class window:
+            class preview_thread:
+                current_frame = 1
+
+    monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
+
+    assert th._all_timeline_clip_ids() == ["video"]
+    assert th._playhead_timeline_clip_ids() == ["video"]

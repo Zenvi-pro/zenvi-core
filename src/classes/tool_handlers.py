@@ -8822,15 +8822,22 @@ def _selected_timeline_clip_ids():
         return []
 
 
+def _clip_is_audio_only(clip) -> bool:
+    """Music / SFX / voice-over clips: a colour grade has nothing to change."""
+    data = clip.data if isinstance(getattr(clip, "data", None), dict) else {}
+    reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+    return is_audio_only_media(reader)
+
+
 def _all_timeline_clip_ids():
-    """Every timeline clip id (stable order from project)."""
+    """Every timeline clip id that has a picture (stable order from project)."""
     try:
         from classes.query import Clip
 
         out = []
         for clip in Clip.filter() or []:
             cid = str(getattr(clip, "id", "") or "").strip()
-            if cid and cid not in out:
+            if cid and cid not in out and not _clip_is_audio_only(clip):
                 out.append(cid)
         return out
     except Exception:
@@ -8838,7 +8845,7 @@ def _all_timeline_clip_ids():
 
 
 def _playhead_timeline_clip_ids():
-    """Clip ids intersecting the playhead (may be multiple on stacked tracks)."""
+    """Picture clip ids intersecting the playhead (may be several on stacked tracks)."""
     try:
         from classes.query import Clip
 
@@ -8853,7 +8860,7 @@ def _playhead_timeline_clip_ids():
         out = []
         for clip in Clip.filter(intersect=playhead_sec) or []:
             cid = str(getattr(clip, "id", "") or "").strip()
-            if cid and cid not in out:
+            if cid and cid not in out and not _clip_is_audio_only(clip):
                 out.append(cid)
         return out
     except Exception:
