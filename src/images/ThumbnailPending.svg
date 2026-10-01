@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Shown in Project Files while a thumbnail is being made (same tile as NotFound.svg) -->
+<svg
+   xmlns="http://www.w3.org/2000/svg"
+   version="1.1"
+   width="100"
+   height="65"
+   viewBox="0 0 100 65"
+   id="thumbnail-pending">
+  <rect
+    x="0"
+    y="0"
+    width="100"
+    height="65"
+    rx="13.8"
+    ry="13.8"
+    fill="#1d2331"
+    fill-opacity="0.804" />
+
+  <circle cx="38" cy="32.5" r="3.5" fill="#a2c1f8" fill-opacity="0.6" />
+  <circle cx="50" cy="32.5" r="3.5" fill="#a2c1f8" fill-opacity="0.6" />
+  <circle cx="62" cy="32.5" r="3.5" fill="#a2c1f8" fill-opacity="0.6" />
+</svg>

@@ -28,6 +28,11 @@ jobs:
     - name: Ruff
       run: ruff check src/classes/
 
+    # Undefined names anywhere in src/ are runtime NameErrors (the lint above
+    # only covers src/classes/, which let a dropped import ship in paint/clip.py).
+    - name: Ruff (undefined names, all of src)
+      run: ruff check --isolated --select F821 src/
+
     - name: Pyright
       run: pyright
 

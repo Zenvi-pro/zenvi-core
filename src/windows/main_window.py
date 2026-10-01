@@ -301,6 +301,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self.files_model._stop_active_indexers()
             except Exception:
                 pass
+            try:
+                self.files_model._stop_thumbnail_worker()
+            except Exception:
+                log.debug("Failed to stop the Project Files thumbnail worker", exc_info=True)
 
         # Stop minimap geometry worker (closeEvent may not run on app exit)
         if getattr(self, "sliderZoomWidget", None):
@@ -4751,6 +4755,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if result == LoginWindow.Accepted:
             self.show()
             info.schedule_application_icon(self)
+            if getattr(self, "dockAIChat", None):
+                self.dockAIChat.refresh_credits_for_account()
         else:
             self.close()
 
