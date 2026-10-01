@@ -1558,13 +1558,21 @@ class ProjectDataStore(JsonDataStore, UpdateInterface):
         missing_files.sort(key=lambda item: os.path.basename(item[1]).lower())
         missing_clips.sort(key=lambda item: os.path.basename(item[1]).lower())
 
-        total_missing = len(missing_files) + len(missing_clips)
+        # A moved file is missing once for its Project Files entry and again for
+        # every clip cut from it; the prompt counts and names each path once.
+        missing_paths = []
+        seen_paths = set()
+        for _item, p in missing_files + missing_clips:
+            key = os.path.normcase(os.path.normpath(p))
+            if key not in seen_paths:
+                seen_paths.add(key)
+                missing_paths.append(p)
+
+        total_missing = len(missing_paths)
         if total_missing == 0:
             return
 
-        sample_names = []
-        for _f, p in (missing_files + missing_clips)[:5]:
-            sample_names.append(os.path.basename(p))
+        sample_names = [os.path.basename(p) for p in missing_paths[:5]]
         sample_text = ", ".join(sample_names)
         if total_missing > 5:
             sample_text = _("%s and %s more") % (sample_text, total_missing - 5)
