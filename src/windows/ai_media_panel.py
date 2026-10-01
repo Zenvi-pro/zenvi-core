@@ -12,7 +12,7 @@
 import os
 from qt_api import QTimer
 from qt_api import (
-    QDockWidget, QWidget, QVBoxLayout,
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QProgressBar, QTextEdit,
 )
 
@@ -105,10 +105,27 @@ class AIMediaPanel(QDockWidget):
         self.description_view.setPlaceholderText("Select a clip to view its description")
         layout.addWidget(self.description_view, stretch=1)
 
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setObjectName("refreshBtn")
         refresh_btn.clicked.connect(self.refresh)
-        layout.addWidget(refresh_btn)
+        buttons.addWidget(refresh_btn)
+
+        # Same action as Project Files > Re-index, for the file shown here.
+        self.reindex_btn = QPushButton("Re-index")
+        self.reindex_btn.setObjectName("reindexBtn")
+        self.reindex_btn.setToolTip("Index this media again and refresh its descriptions")
+        self.reindex_btn.setEnabled(False)
+        self.reindex_btn.clicked.connect(self.reindex)
+        buttons.addWidget(self.reindex_btn)
+        layout.addLayout(buttons)
+
+    def reindex(self):
+        """Re-index the file whose descriptions are shown (the clip's source on the timeline)."""
+        files_model = getattr(get_app().window, "files_model", None)
+        if files_model and self._display_file_id:
+            files_model.reindex_file(self._display_file_id)
 
     def refresh(self):
         """Refresh the description view (based on current selection)."""
@@ -189,7 +206,7 @@ class AIMediaPanel(QDockWidget):
 
     def _load_ai_metadata(self, timeline_clip, file_obj):
         from classes.query import File
-        from classes.ai_metadata_utils import adjust_scene_descriptions_for_subclip
+        from classes.ai_metadata_utils import get_source_window, materialize_clip_ai_metadata
 
         ai_meta = {}
         source_meta = None
@@ -200,25 +217,21 @@ class AIMediaPanel(QDockWidget):
             name = clip_data.get("title") or clip_data.get("name") or "Timeline Clip"
             ai_meta = clip_data.get("ai_metadata") if isinstance(clip_data.get("ai_metadata"), dict) else {}
 
-            if not ai_meta.get("analyzed"):
-                try:
-                    file_id = clip_data.get("file_id")
-                    source_file = File.get(id=str(file_id)) if file_id else None
-                    if source_file:
-                        name = name or source_file.data.get("name") or os.path.basename(
-                            source_file.data.get("path", "Clip")
-                        )
-                        candidate = source_file.data.get("ai_metadata")
-                        if isinstance(candidate, dict):
-                            source_meta = candidate
-                        if isinstance(candidate, dict) and candidate.get("analyzed"):
-                            clip_start = float(clip_data.get("start", 0.0) or 0.0)
-                            clip_end = float(clip_data.get("end", 0.0) or 0.0)
-                            ai_meta = adjust_scene_descriptions_for_subclip(
-                                candidate, clip_start, clip_end
-                            )
-                except Exception:
-                    pass
+            try:
+                file_id = clip_data.get("file_id")
+                source_file = File.get(id=str(file_id)) if file_id else None
+                if source_file:
+                    name = name or source_file.data.get("name") or os.path.basename(
+                        source_file.data.get("path", "Clip")
+                    )
+                    candidate = source_file.data.get("ai_metadata")
+                    source_meta = candidate if isinstance(candidate, dict) else {}
+                    # Window the source's live analysis rather than trusting the
+                    # clip's saved snapshot, which re-indexing the source leaves stale.
+                    start, end = get_source_window(clip_data, source_file.data)
+                    ai_meta = materialize_clip_ai_metadata(source_meta, start, end)
+            except Exception:
+                log.debug("Scene Descriptions: could not read the clip's source file", exc_info=1)
 
         elif file_obj:
             name = file_obj.data.get("name") or os.path.basename(file_obj.data.get("path", "Clip"))
@@ -272,6 +285,7 @@ class AIMediaPanel(QDockWidget):
                 self.description_view.setPlainText("")
                 self._show_status(derive_indexing_status(None))
                 self._stop_progress_timer()
+                self.reindex_btn.setEnabled(False)
                 return
 
             ai_meta, name, badge_meta = self._load_ai_metadata(timeline_clip, file_obj)
@@ -283,6 +297,7 @@ class AIMediaPanel(QDockWidget):
             status = derive_indexing_status(
                 badge_meta, progress=progress, is_active=is_active, is_queued=is_queued
             )
+            self.reindex_btn.setEnabled(bool(has_model and files_model.can_reindex_file(file_id)))
 
             if status.state == RUNNING:
                 self._start_progress_timer()

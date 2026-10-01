@@ -224,3 +224,17 @@ def get_index_block(ai_metadata: Any) -> Dict[str, Any]:
     if isinstance(ai_metadata.get("twelvelabs"), dict):
         return dict(ai_metadata["twelvelabs"])
     return {}
+
+
+def index_is_complete(ai_metadata: Any) -> bool:
+    """True when a file's last index finished cleanly, so indexing it again can be skipped.
+
+    twelvelabs_is_indexed() only looks at the index handles. A run that saved
+    them and then failed records an ``error`` but keeps the handles, so it must
+    still count as unfinished and be retried.
+    """
+    if not isinstance(ai_metadata, dict):
+        return False
+    if str(ai_metadata.get("error") or "").strip():
+        return False
+    return twelvelabs_is_indexed(get_index_block(ai_metadata))

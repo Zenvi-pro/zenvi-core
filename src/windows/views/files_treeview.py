@@ -149,6 +149,9 @@ class FilesTreeView(QTreeView):
                 action.triggered.connect(lambda: get_app().window.actionProfileEdit_trigger(file_profile))
             menu.addMenu(profile_menu)
 
+            if file.data.get("media_type") in ("video", "image", "audio"):
+                add_bound_action(menu, self.win, "actionReindexFile", _("Re-index"), "actionReindexFile_trigger",
+                                 enabled=self.files_model.can_reindex_file(file_id))
             add_bound_action(menu, self.win, "actionFile_Properties", _("File Properties"), "actionFile_Properties_trigger")
             menu.addSeparator()
             add_bound_action(menu, self.win, "actionRemove_from_Project", _("Remove from Project"), "actionRemove_from_Project_trigger")
