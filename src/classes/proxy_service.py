@@ -73,12 +73,29 @@ def dialog_preview_reader_data(file_obj, prefer_proxy=True):
                  return resolved
 
      resolved = copy.deepcopy(data)
+     # Never return nested proxy_reader as the live path for source resolution.
+     resolved.pop("proxy_reader", None)
      source_path = absolute_media_path(resolved.get("path"))
      if source_path:
          resolved["path"] = source_path
      if file_id:
          resolved["id"] = file_id
      return resolved
+
+
+def resolve_reader(file_obj, *, for_export: bool = False, prefer_proxy: bool | None = None):
+    """Single authority for proxy vs source reader selection.
+
+    Playback/cutting may use a proxy. Export always uses the source path —
+    ``for_export=True`` never returns a proxy path (Phase 7 export lock).
+    """
+    if for_export:
+        prefer = False
+    elif prefer_proxy is None:
+        prefer = True
+    else:
+        prefer = bool(prefer_proxy)
+    return dialog_preview_reader_data(file_obj, prefer_proxy=prefer)
 
 
 class ProxyService(QObject):

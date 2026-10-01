@@ -2585,8 +2585,16 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Adjust the clip title
                 channel_label = _("(all channels)")
                 clip.data["title"] = clip_title + " " + channel_label
+                # Auto-link A/V so roll/slip/ripple keep picture and sound together.
+                from classes.edit_ops import new_link_group_id
+                link_gid = new_link_group_id()
+                clip.data["link_group_id"] = link_gid
                 # Save changes
                 clip.save()
+                video_half = Clip.get(id=clip_id)
+                if video_half and isinstance(video_half.data, dict):
+                    video_half.data["link_group_id"] = link_gid
+                    video_half.save()
 
                 # Generate waveform for new clip
                 log.info("Generate waveform for split audio track clip id: %s" % clip.id)
