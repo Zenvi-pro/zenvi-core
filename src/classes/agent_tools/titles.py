@@ -29,23 +29,30 @@ def _default_template() -> str:
     return ""
 
 
+def _node_text(node) -> str:
+    return "".join(c.data for c in node.childNodes if c.nodeType == c.TEXT_NODE)
+
+
 def _set_svg_text(xmldoc, text: str) -> None:
-    """Replace the first text/tspan node contents with *text* (TitleEditor style)."""
+    """Put *text* in the template's title line (TitleEditor style).
+
+    Reflection templates (Bar_1, the default, plus Oval_4, Smoke_3 and
+    Standard_2) carry the title twice: a mirrored copy under scale(1,-1) first,
+    then the visible line, both with the same placeholder. Every node holding the
+    first node's placeholder gets the text; any other placeholder is blanked.
+    """
     text_nodes = list(xmldoc.getElementsByTagName("text"))
     tspan_nodes = list(xmldoc.getElementsByTagName("tspan"))
     targets = tspan_nodes or text_nodes
     if not targets:
         return
-    node = targets[0]
-    # Clear existing children and set one text node.
-    while node.firstChild:
-        node.removeChild(node.firstChild)
-    node.appendChild(xmldoc.createTextNode(text))
-    # Blank remaining text nodes so template placeholders disappear.
-    for extra in targets[1:]:
-        while extra.firstChild:
-            extra.removeChild(extra.firstChild)
-        extra.appendChild(xmldoc.createTextNode(""))
+    placeholder = _node_text(targets[0]).strip()
+    for node in targets:
+        same_line = node is targets[0] or (
+            placeholder and _node_text(node).strip() == placeholder)
+        while node.firstChild:
+            node.removeChild(node.firstChild)
+        node.appendChild(xmldoc.createTextNode(text if same_line else ""))
 
 
 def add_title(
