@@ -225,7 +225,7 @@ class AgentSelectorButton(QToolButton):
             chat.show()
             chat.raise_()
         except Exception:
-            log.debug("could not raise the chat dock", exc_info=True)
+            log.error("Failed to show the chat dock", exc_info=True)
         # set_active_backend early-returns without notifying when the tab is
         # already on this backend, so re-sync to keep the label honest.
         self.sync_from_chat()
