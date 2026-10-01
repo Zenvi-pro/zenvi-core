@@ -155,6 +155,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "occurrence": _str(),
         "position_near": _opt_str_or_num(),
         "include_transitions": _bool(),
+        "ripple": _str_or_bool(),
     }),
     "remove_clip_tool": _obj({
         "timeline_clip_id": _str(),
@@ -208,7 +209,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "zoom_out_tool": _obj({}),
     "center_on_playhead_tool": _obj({}),
     "import_files_tool": _obj({
-        "paths": _str(description="Comma-separated paths or JSON list."),
+        "paths": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
+                  "description": "List of paths, or one comma-separated string."},
         "path": _str(),
         "folder": _str(),
         "skip_indexing": _str_or_bool(),

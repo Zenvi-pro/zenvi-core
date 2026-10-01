@@ -80,8 +80,9 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     Accepts (in order):
       1) exact layer_number
       2) exact track_id (e.g. L4 from TRACK_STACK_JSON)
-      3) exact label / name (case-insensitive; unique) — labels may be numeric
-      4) ui_track index 1..N counted from the BOTTOM of the stack
+      3) exact label / name (case-insensitive; unique) — labels may be numeric —
+         then a unique part of a name (never for numbers)
+      4) ui_track index 1..N counted from the BOTTOM of the stack ("2", "track 2")
 
     Labels are never used for z-order — only to find which layer the user meant.
     """
@@ -119,6 +120,14 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
     m = re.match(r"^(?:ui\s*)?track\s*[#:]?\s*(.+)$", low, re.I)
     label_query = (m.group(1).strip() if m else low).strip()
 
+    # "2", "track 2" and "Track #2" all name UI track 2 unless a label says otherwise.
+    ui_number = n
+    if ui_number is None and m:
+        try:
+            ui_number = int(float(label_query))
+        except ValueError:
+            ui_number = None
+
     label_hits = [
         e for e in stack
         if (e.get("label") or "").strip().lower() == label_query
@@ -132,16 +141,18 @@ def normalize_track_or_layer_arg(raw: str, layers) -> tuple[int | None, str | No
             "Pass layer_number from list_layers_tool / TRACK_STACK_JSON."
         )
 
+    # A number never matches part of a name: "1" is UI track 1, not "Music 1".
     contains = [
         e for e in stack
-        if label_query and label_query in (e.get("label") or "").strip().lower()
+        if label_query and ui_number is None
+        and label_query in (e.get("label") or "").strip().lower()
     ]
     if len(contains) == 1:
         return int(contains[0]["layer_number"]), None
 
     # 4) ui_track from bottom
-    if n is not None and layers and 1 <= n <= len(stack):
-        return int(stack[n - 1]["layer_number"]), None
+    if ui_number is not None and layers and 1 <= ui_number <= len(stack):
+        return int(stack[ui_number - 1]["layer_number"]), None
 
     return (
         None,

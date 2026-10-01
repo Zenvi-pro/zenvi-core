@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 from typing import cast
@@ -51,6 +52,7 @@ EXIT_ALREADY_RUNNING = 5
 OFFSCREEN_PLATFORM = "offscreen"
 SHUTDOWN_TOOL_NAME = "shutdown_headless_tool"
 LOCK_FILE_NAME = "headless.lock"
+TITLE_DIR_NAME = "title-headless"
 
 # How long the shutdown tool's reply gets to reach the client before the
 # server stops.
@@ -76,6 +78,11 @@ def activate(environ=None) -> None:
     if previous and previous != OFFSCREEN_PLATFORM:
         log.info("Headless mode: QT_QPA_PLATFORM %s replaced with %s", previous, OFFSCREEN_PLATFORM)
     _active = True
+    # An untitled project keeps its title SVGs in the default title folder, and
+    # a desktop window empties ~/.openshot_qt/title whenever it opens a project.
+    # This session's default is a folder of its own, which no window clears.
+    from classes import info
+    info.TITLE_PATH = info._path_defaults["TITLE_PATH"] = os.path.join(info.USER_PATH, TITLE_DIR_NAME)
 
 
 def is_active() -> bool:
@@ -236,6 +243,11 @@ class HeadlessRuntime(QObject):
         lock = self._acquire_instance_lock()
         if lock is None:
             return EXIT_ALREADY_RUNNING
+        # Only the session holding the lock uses this folder, and a saved project
+        # keeps its titles in its own assets: what is here is a past session's.
+        title_dir = os.path.join(info.USER_PATH, TITLE_DIR_NAME)
+        shutil.rmtree(title_dir, ignore_errors=True)
+        os.makedirs(title_dir, exist_ok=True)
         try:
             return self._run()
         finally:
