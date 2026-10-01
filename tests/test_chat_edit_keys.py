@@ -81,7 +81,9 @@ class _Editor:
         self.win.addDockWidget(Qt.RightDockWidgetArea, self.chat)
         self.timeline_undos = 0
         undo = QAction("Undo", self.win)
+        undo.setObjectName("actionUndo")
         undo.setShortcut(QKeySequence(QKeySequence.Undo))
+        self.undo_action = undo
         undo.triggered.connect(self._timeline_undo)
         self.win.addAction(undo)
         self.win.resize(800, 500)
@@ -142,6 +144,19 @@ def test_ctrl_z_in_the_focused_chat_without_chips_still_stays_in_the_chat(editor
     QTest.keyClick(editor.proxy, Qt.Key_Z, Qt.ControlModifier)
     assert editor.chat.undo_calls == 1
     assert editor.timeline_undos == 0
+
+
+def test_a_rebound_undo_shortcut_in_the_focused_chat_stays_in_the_chat(editor):
+    # Preferences > Keyboard lets the user give Undo another key sequence.
+    editor.undo_action.setShortcut(QKeySequence("Ctrl+Alt+U"))
+    editor.focus(editor.chat._chat_view)
+    QTest.keyClick(editor.proxy, Qt.Key_U, Qt.ControlModifier | Qt.AltModifier)
+    assert editor.chat.attachment_batches == [["a.png"]]
+    assert editor.timeline_undos == 0
+
+    editor.focus(editor.timeline)
+    QTest.keyClick(editor.timeline, Qt.Key_U, Qt.ControlModifier | Qt.AltModifier)
+    assert editor.timeline_undos == 1
 
 
 def test_ctrl_z_with_the_timeline_focused_undoes_the_timeline(editor):

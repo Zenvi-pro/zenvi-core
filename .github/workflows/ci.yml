@@ -129,6 +129,9 @@ jobs:
       run: |
         # Hard-gate on the export-acceleration suite (new in this plan).
         xvfb-run -a python3 -m pytest tests/test_export_acceleration.py -q --tb=short
+        # Real-Qt test that imports the main window, so it needs the libopenshot
+        # this job installs (the real-qt-tests job has none and skips it).
+        ZENVI_REAL_QT=1 xvfb-run -a python3 -m pytest tests/test_undo_action_routing.py -q --tb=short
         # Broader suite: continue reporting while stale tests are triaged.
         # Remove continue-on-error once Phase 0 triage makes this green.
         xvfb-run -a python3 -m pytest tests/ -q --tb=line \

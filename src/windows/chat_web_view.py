@@ -6,7 +6,7 @@ import json
 import os
 
 from qt_api import QEvent, QUrl, pyqtSignal
-from qt_api import QColor, QKeySequence
+from qt_api import QAction, QColor, QKeySequence
 
 from classes.chat_navigation import is_allowed_chat_navigation
 from classes.file_drop import accept_os_file_drag, local_path_from_url, urls_from_mime
@@ -258,7 +258,7 @@ class ChatEditShortcutMixin:
                 self._watch_child_edit_filters(child)
 
     def event(self, event):
-        if event.type() == QEvent.ShortcutOverride and is_edit_shortcut(event):
+        if event.type() == QEvent.ShortcutOverride and self._edit_key_name(event):
             event.accept()
             return True
         if event.type() == QEvent.ChildAdded:
@@ -268,7 +268,7 @@ class ChatEditShortcutMixin:
         return super().event(event)
 
     def eventFilter(self, obj, event):
-        if event.type() == QEvent.ShortcutOverride and is_edit_shortcut(event):
+        if event.type() == QEvent.ShortcutOverride and self._edit_key_name(event):
             event.accept()
             return True
         if event.type() == QEvent.KeyPress and obj is not self and self._handle_edit_key(event):
@@ -280,9 +280,31 @@ class ChatEditShortcutMixin:
             return
         super().keyPressEvent(event)
 
+    def _edit_key_name(self, event):
+        """edit_shortcut_name, plus the user's own Undo / Redo keys.
+
+        Preferences > Keyboard can give those actions any key sequence. The
+        actions always change the project, so a focused chat has to claim the
+        configured keys too, not only the standard ones.
+        """
+        name = edit_shortcut_name(event)
+        if name or not callable(getattr(event, "key", None)):
+            return name
+        try:
+            combo = (event.keyCombination() if hasattr(event, "keyCombination")
+                     else int(event.modifiers()) | event.key())
+            pressed = QKeySequence(combo)
+            for name in ("undo", "redo"):
+                action = self.window().findChild(QAction, "action" + name.title())
+                if action is not None and pressed in action.shortcuts():
+                    return name
+        except Exception:
+            log.debug("Could not read the configured Undo/Redo shortcuts", exc_info=True)
+        return None
+
     def _handle_edit_key(self, event) -> bool:
         """Run an edit shortcut on the chat. True when the key press was consumed."""
-        name = edit_shortcut_name(event)
+        name = self._edit_key_name(event)
         if not name:
             return False
         chat = _chat_window_for_view(self)
