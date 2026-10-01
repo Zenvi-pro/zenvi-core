@@ -203,3 +203,70 @@ def test_long_caption_text_shrinks_to_fit_the_bar():
     titles._set_svg_text(short, "Hi")
     titles._fit_text_to_width(short, "Hi")
     assert "font-size:131.25064087px" in short.toxml()
+
+
+def test_failed_captions_leave_no_track_or_undo_step():
+    """If no cue lands, the track and imports made for them are reverted."""
+    from classes.agent_tools.receipt import ToolReceipt
+
+    words = [{"index": 0, "text": "Hi", "startSec": 0.0, "endSec": 0.3,
+              "startFrame": 0, "endFrame": 9, "timelineStartSec": 0.0, "timelineEndSec": 0.3}]
+    transcript = ToolReceipt.applied(
+        "get_transcript_tool", "ok", undo_steps=0,
+        data={"transcriptionSource": "local", "transcriptGeneration": 1,
+              "clips": [{"clipId": "c1", "words": words}]},
+    ).to_json()
+    failed = ToolReceipt.error("add_title_tool", "Error: could not import title").to_json()
+    app = MagicMock()
+    app.updates.transaction_id = "tid-1"
+    app.project.get.side_effect = lambda k, d=None: {"fps": {"num": 30, "den": 1}}.get(k, d)
+    with patch("classes.app.get_app", return_value=app), \
+         patch("classes.tool_handlers.QThread", None), \
+         patch("classes.agent_tools.transcript.get_transcript", return_value=transcript), \
+         patch("classes.agent_tools.speech_extra._caption_track", return_value="6000000"), \
+         patch("classes.agent_tools.speech_extra._discard_group") as discard, \
+         patch("classes.agent_tools.titles.add_title", return_value=failed):
+        from classes.agent_tools.speech_extra import add_captions
+        receipt = parse_receipt(add_captions(clipId="c1"))
+    assert receipt["status"] == "error"
+    discard.assert_called_once_with(app, "tid-1")
+
+
+class _Updates:
+    def __init__(self, history):
+        self.actionHistory = list(history)
+        self.redoHistory = ["older redo"]
+        self.undone = []
+
+    def undo(self):
+        tid = self.actionHistory[-1].transaction
+        group = [a for a in self.actionHistory if a.transaction == tid]
+        self.actionHistory = [a for a in self.actionHistory if a.transaction != tid]
+        self.redoHistory.extend(group)
+        self.undone.extend(group)
+
+
+def test_discard_group_reverts_and_forgets_the_failed_request():
+    from types import SimpleNamespace
+    from classes.agent_tools.speech_extra import _discard_group
+
+    user_edit = SimpleNamespace(transaction="user")
+    track = SimpleNamespace(transaction="cap")
+    image = SimpleNamespace(transaction="cap")
+    app = SimpleNamespace(updates=_Updates([user_edit, track, image]))
+    assert _discard_group(app, "cap") is True
+    assert app.updates.undone == [track, image]
+    assert app.updates.actionHistory == [user_edit]
+    assert app.updates.redoHistory == ["older redo"]
+
+
+def test_discard_group_leaves_history_alone_when_another_edit_followed():
+    from types import SimpleNamespace
+    from classes.agent_tools.speech_extra import _discard_group
+
+    track = SimpleNamespace(transaction="cap")
+    later = SimpleNamespace(transaction="user")
+    app = SimpleNamespace(updates=_Updates([track, later]))
+    assert _discard_group(app, "cap") is False
+    assert app.updates.undone == []
+    assert _discard_group(SimpleNamespace(updates=_Updates([track])), None) is False

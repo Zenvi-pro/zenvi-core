@@ -216,6 +216,24 @@ def _caption_track(app, clip_id: str, cues: list[dict]) -> str:
     return str(new_layer)
 
 
+def _discard_group(app, tid) -> bool:
+    """Revert what a caption request recorded when it placed nothing.
+
+    The track it made and any caption images it imported go away with no
+    undo or redo entry left behind. Only the tail transaction can be
+    reverted this way; if anything else landed after it, keep history as
+    is. Runs on the GUI thread.
+    """
+    updates = app.updates
+    history = updates.actionHistory
+    if not tid or not history or history[-1].transaction != tid:
+        return False
+    redo_len = len(updates.redoHistory)
+    updates.undo()
+    del updates.redoHistory[redo_len:]
+    return True
+
+
 def add_captions(
     clipId: str = "",
     trackIndex=None,
@@ -311,9 +329,12 @@ def add_captions(
 
     placed = []
     warnings = []
+    # The dispatcher's undo group for this call; every caption joins it.
+    tid = getattr(app.updates, "transaction_id", None)
     # One track for the whole group, above the clip and anything over it.
     from classes.tool_handlers import QThread, _run_on_main_thread
-    if QThread is not None and QThread.currentThread() is not app.thread():
+    off_gui = QThread is not None and QThread.currentThread() is not app.thread()
+    if off_gui:
         track = _run_on_main_thread(_caption_track, app, str(clipId or ""), cues)
     else:
         track = _caption_track(app, str(clipId or ""), cues)
@@ -345,6 +366,11 @@ def add_captions(
         })
 
     if not placed:
+        # A failed request must not leave a track or an undo step behind.
+        if off_gui:
+            _run_on_main_thread(_discard_group, app, tid)
+        else:
+            _discard_group(app, tid)
         return ToolReceipt.error(
             "add_captions_tool",
             "Error: Failed to place any captions. " + "; ".join(warnings[:2]),
