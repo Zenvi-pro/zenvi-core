@@ -22,6 +22,7 @@ from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
+from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
@@ -461,14 +462,16 @@ class _SharedToolHandler(logging.Handler):
 
 
 # Agent backends selectable from the top of the chat panel. "zenvi" is the
-# built-in WebSocket assistant (unchanged); the others drive external agent CLIs.
+# built-in WebSocket assistant (unchanged); the others drive external agent CLIs,
+# one per agent_runners.CLI_RUNNERS entry. "cli" is the executable the chat's
+# empty state names when it is missing.
 BACKEND_ZENVI = "zenvi"
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
-BACKENDS = [
-    {"id": BACKEND_ZENVI, "name": "Zenvi Assistant"},
-    {"id": BACKEND_CLAUDE, "name": "Claude Code"},
-    {"id": BACKEND_CODEX, "name": "Codex"},
+BACKEND_CURSOR = "cursor_cli"
+BACKENDS = [{"id": BACKEND_ZENVI, "name": "Zenvi Assistant"}] + [
+    {"id": backend, "name": runner.DISPLAY_NAME, "cli": runner.CLI_NAME}
+    for backend, runner in CLI_RUNNERS.items()
 ]
 _VALID_BACKENDS = {b["id"] for b in BACKENDS}
 
@@ -544,7 +547,8 @@ class AIChatWorker(QObject):
                     capture.uninstall()
 
                 text = str(result) if result is not None else ""
-                ok = bool(text) and not text.startswith("Error")
+                from classes.agent_tools.receipt import is_error_result
+                ok = bool(text) and not is_error_result(text)
                 try:
                     self.tool_completed.emit(call_id or "", ok, text)
                 except Exception:
@@ -1043,14 +1047,8 @@ class AIChatWindow(QDockWidget):
         conversation rather than starting a fresh one.
         """
         thread = QThread()
-        if backend == BACKEND_CLAUDE:
-            from windows.agent_runners import ClaudeCodeRunner
-            worker = ClaudeCodeRunner()
-        elif backend == BACKEND_CODEX:
-            from windows.agent_runners import CodexRunner
-            worker = CodexRunner()
-        else:
-            worker = AIChatWorker()
+        runner = CLI_RUNNERS.get(backend)
+        worker = runner() if runner is not None else AIChatWorker()
         worker._session_id = session_id   # used by signal handlers to route responses
         # Keep backend memory namespaced by the same session id as the UI tab.
         worker._backend_session_id = session_id
@@ -1219,16 +1217,18 @@ class AIChatWindow(QDockWidget):
                     old_thread.wait(500)
                 except Exception:
                     pass
-        restore = None
-        if backend in (BACKEND_CLAUDE, BACKEND_CODEX):
-            try:
-                from classes import chat_history
-                for row in chat_history.load_sessions(self._history_key, include_closed=True):
-                    if row.get("session_id") == session_id:
-                        restore = row
-                        break
-            except Exception:
-                restore = None
+        # A CLI conversation can only be resumed by the CLI that made it:
+        # `claude --resume <a Cursor chat id>` fails on every later turn. Park
+        # the old backend's conversation on the tab so switching back resumes
+        # it, and give the new backend only the one it left here itself.
+        parked = sess.setdefault("cli_parked", {})
+        if getattr(old_worker, "_cli_started", False) and getattr(old_worker, "_cli_session_id", ""):
+            parked[sess.get("backend")] = {
+                "cli_session_id": old_worker._cli_session_id,
+                "cli_started": True,
+                "cli_cwd": getattr(old_worker, "_cli_cwd", "") or "",
+            }
+        restore = parked.pop(backend, None)
         worker, thread = self._make_worker(session_id, backend, restore=restore)
         sess["worker"] = worker
         sess["thread"] = thread
@@ -1246,7 +1246,10 @@ class AIChatWindow(QDockWidget):
         if self._use_web_ui:
             self._push_tabs_to_js()
         self._notify_agent_selector()
-        self._persist_session(session_id, backend=backend)
+        # The row keeps one conversation. It has to be this backend's (or none),
+        # or the next launch would hand the old CLI's id to this one.
+        continuity = restore or {"cli_session_id": "", "cli_started": False, "cli_cwd": ""}
+        self._persist_session(session_id, backend=backend, **continuity)
         self._save_chat_sessions_store()
 
     def _switch_session(self, session_id: str):
@@ -2442,7 +2445,12 @@ class AIChatWindow(QDockWidget):
         dlg.activateWindow()
 
     def _prepend_editor_snapshot(self, text: str) -> str:
-        """Ground the model with a bounded timeline snapshot (main thread)."""
+        """Ground the model with a bounded timeline snapshot (main thread).
+
+        Attach once per user turn — skip if this payload already includes one.
+        """
+        if text and "[Editor snapshot]" in text:
+            return text
         try:
             from classes.tool_handlers import build_editor_snapshot_for_chat
 
@@ -3156,13 +3164,13 @@ class AIChatWindow(QDockWidget):
             self._cli_detect_timer.start(60_000)   # refresh every 60 seconds
 
     def _detect_clis(self):
-        """Check claude/codex CLI availability in a background thread; push to JS."""
+        """Check every agent CLI's availability in a background thread; push to JS."""
         def run():
             try:
                 from windows.agent_runners import detect_cli
                 status = {
-                    BACKEND_CLAUDE: detect_cli("claude"),
-                    BACKEND_CODEX: detect_cli("codex"),
+                    backend: detect_cli(runner.CLI_NAME)
+                    for backend, runner in CLI_RUNNERS.items()
                 }
                 QMetaObject.invokeMethod(
                     self,
@@ -3172,8 +3180,26 @@ class AIChatWindow(QDockWidget):
                 )
             except Exception as exc:
                 log.debug("CLI detection failed: %s", exc)
+                return
+            # Cursor's models depend on the account, so the CLI is asked. That
+            # is a network call, made after the status is already on screen.
+            cursor = status.get(BACKEND_CURSOR) or {}
+            if not cursor.get("installed"):
+                return
+            try:
+                from windows.agent_runners import refresh_cursor_models
+                if refresh_cursor_models(cursor.get("version")):
+                    QMetaObject.invokeMethod(self, "_on_cli_models", Qt.QueuedConnection)
+            except Exception as exc:
+                log.debug("Cursor model list failed: %s", exc)
 
         threading.Thread(target=run, daemon=True, name="cli-detect").start()
+
+    @pyqtSlot()
+    def _on_cli_models(self):
+        """A CLI listed a new model lineup: refresh the picker (GUI thread)."""
+        self._push_models_for_backend()
+        self._notify_agent_selector()
 
     @pyqtSlot(str)
     def _on_cli_status(self, status_json: str):
@@ -3213,19 +3239,16 @@ class AIChatWindow(QDockWidget):
         self._push_gap_list()
 
     def _connect_cli(self, backend_id: str):
-        """Register Zenvi's MCP server with claude/codex (Connect button in
+        """Register Zenvi's MCP server with an agent CLI (Connect button in
         the empty state) so an external terminal session can reach it."""
         def run():
             ok, message = False, "Unknown backend."
             try:
                 from classes.agent_mcp_server import get_mcp_server
-                srv = get_mcp_server().start()
-                if backend_id == BACKEND_CLAUDE:
-                    from windows.agent_runners import register_claude
-                    ok, message = register_claude(srv.port, srv.token)
-                elif backend_id == BACKEND_CODEX:
-                    from windows.agent_runners import register_codex
-                    ok, message = register_codex(srv.port, srv.token)
+                runner = CLI_RUNNERS.get(backend_id)
+                if runner is not None:
+                    srv = get_mcp_server().start()
+                    ok, message = runner.register(srv.port, srv.token)
             except Exception as e:
                 log.debug("connect_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)
@@ -4102,6 +4125,7 @@ class AIChatWindow(QDockWidget):
                             "if nothing appears in the Plan dock."
                         )
                     self._add_assistant_msg(body)
+            self._fetch_credits_balance()
             self._set_processing_ui(False)
         else:
             # Background session — store message and notify JS for unread badge
@@ -4119,6 +4143,7 @@ class AIChatWindow(QDockWidget):
                         "if(window.onBackgroundResponse) window.onBackgroundResponse(%s, %s);"
                         % (json.dumps(sid), json.dumps(html_body))
                     )
+            self._fetch_credits_balance()
             if self._use_web_ui:
                 self._push_tabs_to_js()
             else:

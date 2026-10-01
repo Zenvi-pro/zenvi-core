@@ -105,6 +105,54 @@ def test_codex_ignores_an_empty_thread_id(codex):
 
 
 # ---------------------------------------------------------------------------
+# Cursor CLI: mints its chat id and reports it in the init event
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cursor(qapp):
+    from windows.agent_runners import CursorCliRunner
+    runner = CursorCliRunner()
+    runner._session_id = "tab-1"
+    runner._cli_cwd = "/proj"
+    return runner
+
+
+def test_cursor_first_turn_starts_a_new_chat(cursor):
+    cursor._cli_session_id = "seeded-uuid"
+    assert "--resume" not in cursor._build_argv("hello")
+
+
+def test_cursor_does_not_resume_a_seeded_placeholder(cursor):
+    """Stop before init leaves only our placeholder; that is not a Cursor chat."""
+    cursor._cli_session_id = "seeded-uuid"
+    cursor._cli_started = True
+    assert "--resume" not in cursor._build_argv("next message")
+
+
+def test_cursor_learns_its_chat_id_reports_it_and_resumes_it(cursor):
+    seen = []
+    cursor.cli_session_changed.connect(
+        lambda sid, cli, started, cwd: seen.append((sid, cli, started, cwd))
+    )
+    cursor._cli_started = True
+    cursor._handle_event({"type": "system", "subtype": "init", "session_id": "chat-9"})
+
+    assert cursor._cli_session_id == "chat-9"
+    assert seen and seen[-1][:2] == ("tab-1", "chat-9")
+    argv = cursor._build_argv("and then?")
+    assert argv[argv.index("--resume") + 1] == "chat-9"
+
+
+def test_a_restored_cursor_tab_resumes(cursor):
+    """What _make_worker seeds from the stored row must be enough to resume."""
+    cursor._cli_session_id = "chat-from-disk"
+    cursor._cli_started = True
+    cursor._cli_id_from_cli = True
+    argv = cursor._build_argv("continue")
+    assert argv[argv.index("--resume") + 1] == "chat-from-disk"
+
+
+# ---------------------------------------------------------------------------
 # Resume state across Stop and a moved project folder
 # ---------------------------------------------------------------------------
 
@@ -742,3 +790,87 @@ def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store
     assert win.hidden == 0
     assert list(win._sessions) == ["s2"]
     assert win._active_sid == "s2"
+
+
+# ---------------------------------------------------------------------------
+# Switching a tab's backend: each CLI only ever resumes its own conversation
+# ---------------------------------------------------------------------------
+
+class _SwitchWindow:
+    """Just enough of AIChatWindow for _set_session_backend."""
+
+    _use_web_ui = False
+    is_processing = False
+    _history_key = "P1"
+
+    def __init__(self, backend, worker):
+        self._active_sid = "tab-1"
+        self._sessions = {"tab-1": {"backend": backend, "worker": worker, "thread": None}}
+        self.restores = []
+        self.persisted = []
+
+    def _make_worker(self, session_id, backend, restore=None):
+        self.restores.append((backend, restore))
+        return types.SimpleNamespace(_cli_started=False, _cli_session_id="", _cli_cwd=""), None
+
+    def _persist_session(self, session_id, **fields):
+        self.persisted.append(fields)
+
+    def _set_processing_ui(self, busy):
+        pass
+
+    def _push_models_for_backend(self, backend=None):
+        pass
+
+    def _sync_widget_backend_combo(self):
+        pass
+
+    def _notify_agent_selector(self):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+
+def _cli_worker(sid, cwd="/proj"):
+    return types.SimpleNamespace(_cli_started=True, _cli_session_id=sid, _cli_cwd=cwd,
+                                 _stopping=False, cancel=lambda: None)
+
+
+def test_switching_backends_never_hands_one_cli_anothers_conversation(window_cls, keyed_store):
+    """claude --resume <a Cursor chat id> fails every turn after the switch."""
+    # What the tab's row holds after a Cursor turn.
+    keyed_store.upsert_session("tab-1", "P1", backend="cursor_cli",
+                               cli_session_id="cursor-chat-9", cli_started=True, cli_cwd="/proj")
+    win = _SwitchWindow("cursor_cli", _cli_worker("cursor-chat-9"))
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+
+    assert win.restores == [("claude_code", None)]
+    # ...and the stored row forgets it too, or a restart would do the same.
+    assert win.persisted[-1] == {"backend": "claude_code", "cli_session_id": "",
+                                 "cli_started": False, "cli_cwd": ""}
+
+
+def test_switching_back_resumes_the_conversation_that_backend_left(window_cls):
+    win = _SwitchWindow("claude_code", _cli_worker("claude-conv-1", "/p"))
+    window_cls._set_session_backend(win, "tab-1", "cursor_cli")
+    sess = win._sessions["tab-1"]
+    sess["worker"] = _cli_worker("cursor-chat-9", "/p")   # a Cursor turn ran
+
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+    claude = {"cli_session_id": "claude-conv-1", "cli_started": True, "cli_cwd": "/p"}
+    assert win.restores[-1] == ("claude_code", claude)
+    assert win.persisted[-1] == dict(backend="claude_code", **claude)
+
+    sess["worker"] = _cli_worker("claude-conv-1", "/p")
+    window_cls._set_session_backend(win, "tab-1", "cursor_cli")
+    assert win.restores[-1][1]["cli_session_id"] == "cursor-chat-9"
+
+
+def test_a_backend_that_never_started_a_conversation_parks_nothing(window_cls):
+    idle = types.SimpleNamespace(_cli_started=False, _cli_session_id="seeded",
+                                 _stopping=False, cancel=lambda: None)
+    win = _SwitchWindow("codex", idle)
+    window_cls._set_session_backend(win, "tab-1", "claude_code")
+    window_cls._set_session_backend(win, "tab-1", "codex")
+    assert win.restores[-1] == ("codex", None)

@@ -2390,15 +2390,24 @@
     // CLI availability, keyed by backend id: {installed, version} | undefined (unknown yet).
     // Pushed from Python (windows.agent_runners.detect_cli) via window.setCliStatus.
     var cliStatus = {};
-    var CLI_BINARY_NAMES = { claude_code: 'claude', codex: 'codex' };
+
+    function findBackend(id) {
+        return backendItems.find(function (b) { return b.id === id; });
+    }
 
     function findBackendName(id) {
-        var item = backendItems.find(function (b) { return b.id === id; });
+        var item = findBackend(id);
         return item ? item.name : (id || 'Zenvi Assistant');
     }
 
+    // Python's backend list names each CLI agent's executable (agent_runners.CLI_RUNNERS).
+    function cliBinaryName(id) {
+        var item = findBackend(id);
+        return item && item.cli ? item.cli : '';
+    }
+
     function isCliBackend(id) {
-        return id === 'claude_code' || id === 'codex';
+        return !!cliBinaryName(id);
     }
 
     // Empty state (calm, not an error) shown instead of messages when the active
@@ -2417,7 +2426,7 @@
             cliEmptyStateEl.removeAttribute('data-connect-for');
             cliEmptyStateEl.innerHTML = '<div>' + escapeHtml(
                 findBackendName(id) + " CLI not found. Install it and make sure '" +
-                (CLI_BINARY_NAMES[id] || id) + "' is on your PATH, then try again."
+                (cliBinaryName(id) || id) + "' is on your PATH, then try again."
             ) + '</div>';
             cliEmptyStateEl.style.display = 'flex';
             messagesEl.style.display = 'none';
@@ -2484,7 +2493,7 @@
         var list = [];
         try { list = JSON.parse(backendsJson); } catch (e) { list = []; }
         backendItems = list.map(function (b) {
-            return { id: b.id || '', name: b.name || b.id || '' };
+            return { id: b.id || '', name: b.name || b.id || '', cli: b.cli || '' };
         });
         var current = backendSelect.value;
         backendSelect.innerHTML = '';
@@ -2495,6 +2504,9 @@
             backendSelect.appendChild(opt);
         });
         if (current) backendSelect.value = current;
+        // Which backends are CLIs comes from this list, and CLI status can
+        // land before it does.
+        updateCliEmptyState();
     };
 
     if (backendSelect) {

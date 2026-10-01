@@ -56,7 +56,7 @@ from qt_api import (
     QPlainTextEdit, QSpinBox, QDoubleSpinBox
 )
 
-from classes import exceptions, info, qt_types, sentry, ui_util, updates, tabstops
+from classes import exceptions, headless, info, qt_types, sentry, ui_util, updates, tabstops
 from classes.auto_updater import AutoUpdater, get_update_manifest
 from classes.update_installer import is_version_newer
 from classes.app import get_app
@@ -174,8 +174,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def closeEvent(self, event):
         app = get_app()
 
-        # Prompt user to save (if needed)
-        if app.project.needs_save():
+        # Prompt user to save (if needed). A headless session never asks:
+        # shutdown_headless_tool decides whether to save.
+        if app.project.needs_save() and not headless.is_active():
             log.info('Prompt user to save project')
             # Translate object
             _ = app._tr
@@ -257,6 +258,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Log the exit routine
         log.info('---------------- Shutting down -----------------')
 
+        # Stop answering external agents first: the MCP discovery file goes
+        # away before the editor they would drive starts tearing down.
+        try:
+            from classes.agent_mcp_server import get_mcp_server
+            get_mcp_server().stop()
+        except Exception:
+            log.debug("Failed to stop the in-app MCP server", exc_info=True)
+
         # Stop the background updater so a download in flight aborts cleanly
         # instead of writing into a .part file we are about to orphan
         if getattr(self, "_auto_updater", None):
@@ -301,6 +310,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self.files_model._stop_active_indexers()
             except Exception:
                 pass
+            try:
+                self.files_model._stop_thumbnail_worker()
+            except Exception:
+                log.debug("Failed to stop the Project Files thumbnail worker", exc_info=True)
 
         # Stop minimap geometry worker (closeEvent may not run on app exit)
         if getattr(self, "sliderZoomWidget", None):
@@ -433,6 +446,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         a new File → Recovery zip per clip.
         """
         from classes import session_restore
+        if headless.is_active():
+            # A headless session writes the project only when a tool asks.
+            return
         app = get_app()
         if not session_restore.should_flush_after_indexing(
             app.project.needs_save(),
@@ -557,6 +573,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def create_lock_file(self):
         """Create a lock file"""
+        if headless.is_active():
+            # The lock (and the scratch clean-up below) is crash detection for
+            # the desktop window, which may be running alongside.
+            return
         lock_path = os.path.join(info.USER_PATH, ".lock")
         # Check if it already exists
         if os.path.exists(lock_path):
@@ -597,6 +617,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def destroy_lock_file(self):
         """Destroy the lock file"""
+        if headless.is_active():
+            return
         lock_path = os.path.join(info.USER_PATH, ".lock")
 
         # Remove file (try a few times if failure)
@@ -912,6 +934,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         daily_limit = int(max_files * 0.7)
         historical_limit = max_files - daily_limit  # Remaining for previous days
 
+        # The zip snapshots the version this save is about to overwrite. A first
+        # save or a Save As to a new path has none yet; opening the archive first
+        # left an empty zip that File > Recovery offered as a previous version.
+        if not os.path.exists(file_path):
+            return
+
         folder_path, file_name = os.path.split(file_path)
         file_name, file_ext = os.path.splitext(file_name)
 
@@ -995,6 +1023,13 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         QCoreApplication.processEvents()
 
         # Do we have unsaved changes?
+        if app.project.needs_save() and headless.is_active():
+            # Nobody can answer the prompt, and neither saving nor discarding
+            # is safe to guess: keep the current project, as Cancel would.
+            headless.report(
+                "did not open %s: the current project has unsaved changes "
+                "(save it with save_project_tool first)" % file_path)
+            return
         if app.project.needs_save():
             ret = QMessageBox.question(
                 self,
@@ -1089,6 +1124,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def clear_temporary_files(self):
         """Clear all user thumbnails"""
+        if headless.is_active():
+            # Shared with a desktop window that may be running alongside --
+            # including its untitled work's backup.zvn.
+            return
         for temp_dir in [
                 info.get_default_path("THUMBNAIL_PATH"),
                 info.get_default_path("BLENDER_PATH"),
@@ -1146,6 +1185,34 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if file_path:
             # Load project file
             self.OpenProjectSignal.emit(file_path)
+
+    def open_external_paths(self, paths):
+        """Come to the front and open what another launch handed over.
+
+        A project goes through OpenProjectSignal -- File > Open's path, with its
+        unsaved-changes prompt. Media files are imported into the current
+        project, like files given on the command line. No paths: just raise.
+        """
+        if self._project_loading or QApplication.activeModalWidget() is not None:
+            # Reached from a processEvents() inside an open in progress, or
+            # from a dialog's own event loop (Export, Preferences, a previous
+            # handoff's save prompt): swapping the project out from under it
+            # is not safe, so wait until it has closed.
+            QTimer.singleShot(250, lambda: self.open_external_paths(paths))
+            return
+        self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if not paths:
+            return
+        from classes.single_instance import split_launch_paths
+        log.info("Opening files from another launch: %s", paths)
+        project, media = split_launch_paths(paths, info.ALL_PROJECT_EXTS)
+        if project:
+            self.OpenProjectSignal.emit(project)
+        for path in media:
+            self.filesView.add_file(path)
 
     def actionSave_trigger(self):
         app = get_app()
@@ -6178,7 +6245,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # install directory to update into, and staging a real release build
         # in the background just gets swapped in on the next source launch.
         self._auto_updater = None
-        if getattr(sys, "frozen", False):
+        if getattr(sys, "frozen", False) and not headless.is_active():
             self._auto_updater = AutoUpdater()
             self._auto_updater.start()
 
@@ -6439,7 +6506,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.auto_save_timer.setInterval(
             int(s.get("autosave-interval") * minutes))
         self.auto_save_timer.timeout.connect(self.auto_save_project)
-        if s.get("enable-auto-save"):
+        # Never headless: an autosave would overwrite the project file without
+        # a tool asking for it.
+        if s.get("enable-auto-save") and not headless.is_active():
             self.auto_save_timer.start()
 
         lib_settings = openshot.Settings.Instance()
