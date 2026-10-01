@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import stat
 from unittest.mock import MagicMock, patch
@@ -172,9 +173,18 @@ def test_generate_video_sends_the_key_as_a_header_not_in_the_payload():
     c = _client(_fake_session({"video_url": "u"}))
     c.generate_video("ocean", duration_seconds=5, provider="higgsfield", provider_key=KEY)
     kwargs = c._session.post.call_args.kwargs
-    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
+    # The backend gates /generation on the signed-in user, so BYOK carries the JWT.
+    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY, "Authorization": "Bearer jwt-1"}
     assert kwargs["json"]["provider"] == "higgsfield"
     assert "secret-456" not in json.dumps(kwargs["json"])
+
+
+def test_managed_generate_video_sends_no_provider_key():
+    c = _client(_fake_session({"video_url": "u"}))
+    c.generate_video("ocean", duration_seconds=5, mode="t2v")
+    kwargs = c._session.post.call_args.kwargs
+    assert "provider" not in kwargs["json"]
+    assert "X-Zenvi-Provider-Key" not in (kwargs["headers"] or {})
 
 
 def test_validate_provider_key_posts_to_the_validate_route():
@@ -182,7 +192,7 @@ def test_validate_provider_key_posts_to_the_validate_route():
     assert c.validate_provider_key("higgsfield", KEY) == {"ok": True, "error": None}
     args, kwargs = c._session.post.call_args
     assert args[0] == "http://x/api/v1/generation/providers/higgsfield/validate"
-    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY}
+    assert kwargs["headers"] == {"X-Zenvi-Provider-Key": KEY, "Authorization": "Bearer jwt-1"}
 
 
 def _run_t2v(stored_key):
@@ -242,6 +252,16 @@ def test_test_and_save_only_activates_a_key_the_provider_accepts(keychain):
     assert provider_keys.get_key("higgsfield") == KEY  # blank input never wipes a working key
 
 
+def test_backend_or_network_failure_is_not_called_a_rejection(keychain):
+    ok, msg = provider_keys.test_and_save(
+        "higgsfield", KEY,
+        lambda p, k: {"ok": False, "unverified": True, "error": "Zenvi backend returned 404: Not Found"},
+    )
+    assert ok is False
+    assert msg == "Could not test the Higgsfield key: Zenvi backend returned 404: Not Found"
+    assert provider_keys.get_key("higgsfield") == ""
+
+
 def test_a_failed_store_after_an_accepted_key_is_reported(keychain):
     keychain.set_password = MagicMock(side_effect=RuntimeError("keychain locked"))
     ok, msg = provider_keys.test_and_save("higgsfield", KEY, lambda p, k: {"ok": True})
@@ -274,11 +294,18 @@ def _http_error(status, body):
 
 def test_validate_sends_a_json_body_and_reads_4xx_errors():
     c = _client(MagicMock())
-    c._session.post.return_value = _http_error(401, {"detail": "Not authenticated"})
+    c._session.post.return_value = _http_error(404, {"detail": "Not Found"})
     out = c.validate_provider_key("higgsfield", KEY)
     assert c._session.post.call_args.kwargs["json"] == {}
-    assert out["ok"] is False
-    assert "Not authenticated" in out["error"]
+    assert out == {"ok": False, "unverified": True, "error": "Zenvi backend returned 404: Not Found"}
+
+
+def test_validate_needs_zenvi_sign_in_and_says_so():
+    c = _client(MagicMock(), token=None)
+    c._session.post.return_value = _http_error(401, {"detail": "auth required"})
+    out = c.validate_provider_key("higgsfield", KEY)
+    assert "Authorization" not in c._session.post.call_args.kwargs["headers"]
+    assert out == {"ok": False, "unverified": True, "error": "sign in to Zenvi first"}
 
 
 def test_error_on_a_200_body_is_redacted_and_non_dict_json_is_handled():
@@ -324,3 +351,86 @@ def test_an_unusable_keyring_backend_counts_as_no_keychain(monkeypatch):
     monkeypatch.setitem(sys.modules, "keyring.backends", types.ModuleType("keyring.backends"))
     monkeypatch.setitem(sys.modules, "keyring.backends.fail", fail_mod)
     assert provider_keys._keyring() is None
+
+
+class _Records(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.lines = []
+
+    def emit(self, record):
+        text = record.getMessage()
+        if record.exc_info:
+            text += logging.Formatter().formatException(record.exc_info)
+        self.lines.append(text)
+
+
+def test_the_key_never_reaches_logs_tool_results_or_chat(keychain):
+    """#60 security list, end to end through execute_tool (the path chat and MCP use).
+
+    The tool transcript (_ToolLogCapture) is fed from the OpenShot logger and the
+    tool result is what chat shows and sends back as context, so neither may carry
+    the key, its id, or its secret, whatever the backend or keychain echoes.
+    """
+    from classes import tool_handlers as th
+    from classes.logger import log as zenvi_log
+
+    provider_keys.set_key("higgsfield", KEY)
+    records = _Records()
+    old_level = zenvi_log.level
+    zenvi_log.addHandler(records)
+    logging.getLogger().addHandler(records)
+    zenvi_log.setLevel(logging.DEBUG)
+
+    gui = object()
+
+    class _Thread:
+        @staticmethod
+        def currentThread():
+            return gui
+
+    app = MagicMock()
+    app.thread.return_value = gui
+    outputs = []
+    try:
+        with patch.object(th, "QThread", _Thread), patch.object(th, "QEventLoop", object), \
+             patch.object(th, "_get_app", return_value=app), \
+             patch.object(th, "_atomic", lambda _app, fn: fn), \
+             patch.object(th, "_project_kling_o1_t2v_dims", return_value=(1920, 1080)), \
+             patch.object(th, "_output_path_for_generated_video", return_value="out.mp4"), \
+             patch.object(th, "_pause_auto_save", return_value=False), \
+             patch.object(th, "_resume_auto_save"), \
+             patch("classes.credits_client.check_operation", MagicMock()), \
+             patch("classes.credits_client.credits", MagicMock()):
+            for session in (
+                _fake_session({"error": f"Higgsfield API error 401: bad key {KEY}"}),
+                MagicMock(post=MagicMock(side_effect=RuntimeError(f"connection reset {KEY}"))),
+            ):
+                client = _client(session)
+                with patch("classes.api_client.get_backend_client", return_value=client):
+                    outputs.append(th.execute_tool(
+                        "generate_video_and_add_to_timeline_tool", {"prompt": "ocean waves"},
+                    ))
+                # The request did carry the key, as a header only.
+                assert session.post.call_args.kwargs["headers"]["X-Zenvi-Provider-Key"] == KEY
+
+        # Integrations dialog path: rejected and unreachable validations.
+        for session in (
+            _fake_session({"ok": False, "error": f"Invalid credentials for {KEY}"}),
+            MagicMock(post=MagicMock(side_effect=RuntimeError(f"tls {KEY}"))),
+        ):
+            outputs.append(provider_keys.test_and_save("higgsfield", KEY, _client(session).validate_provider_key)[1])
+        # A keychain error that quotes the secret.
+        keychain.fail_get = RuntimeError(f"keychain says {KEY}")
+        assert provider_keys.get_key("higgsfield") == ""
+    finally:
+        zenvi_log.removeHandler(records)
+        logging.getLogger().removeHandler(records)
+        zenvi_log.setLevel(old_level)
+
+    assert outputs[0].startswith("Error: Higgsfield API error 401")
+    assert outputs[1].startswith("Error: connection reset")
+    assert records.lines, "the calls above must have logged something to check"
+    for text in outputs + records.lines:
+        for part in KEY_PARTS:
+            assert part not in text, f"key material in: {text!r}"

@@ -221,6 +221,8 @@ def test_and_save(provider: str, key: str, validate) -> tuple:
     result = validate(provider, key) or {}
     if not result.get("ok"):
         err = redact(str(result.get("error") or "unknown error"), key)
+        if result.get("unverified"):  # never reached the provider (backend or network)
+            return False, f"Could not test the {name} key: {err}"
         return False, f"{name} rejected the key: {err}"
     try:
         set_key(provider, key)

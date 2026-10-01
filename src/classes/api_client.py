@@ -126,6 +126,11 @@ class ZenviBackendClient:
         except Exception:
             return None
 
+    def _bearer(self) -> Dict[str, str]:
+        """``Authorization`` for backend routes that act on the signed-in user."""
+        token = self._auth_token()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
     def _multipart_headers(self, session) -> Dict[str, Optional[str]]:
         headers = {
             k: v for k, v in session.headers.items()
@@ -1063,7 +1068,11 @@ class ZenviBackendClient:
         """
         try:
             provider_key = kwargs.pop("provider_key", None)
-            headers = {PROVIDER_KEY_HEADER: provider_key} if provider_key else None
+            # BYOK calls carry the Zenvi JWT: the backend gates /generation on the
+            # signed-in user. The managed path is left as it is: it still charges
+            # credits on the desktop after success, and the backend now bills it
+            # too, so authenticating it belongs with dropping that desktop charge.
+            headers = {PROVIDER_KEY_HEADER: provider_key, **self._bearer()} if provider_key else None
             payload = {"prompt": prompt, "duration_seconds": duration_seconds}
             payload.update(kwargs)
             r = self.session.post(
@@ -1084,32 +1093,41 @@ class ZenviBackendClient:
             return {"error": err}
 
     def validate_provider_key(self, provider: str, key: str) -> Dict[str, Any]:
-        """Test a user's own provider key against the provider (write-only; never echoed)."""
+        """Test a user's own provider key against the provider (write-only; never echoed).
+
+        ``{"ok", "error"}`` is the provider's verdict. When the request never got
+        that far (backend or network failure) the result also has ``unverified``.
+        """
         import requests
         from classes.provider_keys import redact
 
         try:
             r = self.session.post(
                 f"{self.api_url}/generation/providers/{provider}/validate",
-                json={}, headers={PROVIDER_KEY_HEADER: key}, timeout=30,
+                json={}, headers={PROVIDER_KEY_HEADER: key, **self._bearer()}, timeout=30,
             )
             r.raise_for_status()
             data = r.json()
             if not isinstance(data, dict):
-                return {"ok": False, "error": "Unexpected response from the Zenvi backend"}
+                return {"ok": False, "unverified": True, "error": "Unexpected response from the Zenvi backend"}
             return data
         except requests.HTTPError as e:
+            status = getattr(e.response, "status_code", "?")
+            if status == 401:
+                return {"ok": False, "unverified": True, "error": "sign in to Zenvi first"}
             try:
                 body = e.response.json()
                 detail = body.get("error") or body.get("detail")
             except Exception:
                 detail = None
-            status = getattr(e.response, "status_code", "?")
             msg = f"Zenvi backend returned {status}" + (f": {detail}" if detail else "")
-            return {"ok": False, "error": redact(msg, key)}
+            return {"ok": False, "unverified": True, "error": redact(msg, key)}
         except Exception as e:
             log.error("Provider key validation failed for %s: %s", provider, type(e).__name__)
-            return {"ok": False, "error": f"Could not reach the Zenvi backend ({type(e).__name__})"}
+            return {
+                "ok": False, "unverified": True,
+                "error": f"Could not reach the Zenvi backend ({type(e).__name__})",
+            }
 
     def generate_tts(
         self,
