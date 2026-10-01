@@ -157,6 +157,10 @@ def normalize_agent_fs_path(path: str, home: str | None = None) -> str:
         # file:///C:/Users/... → /C:/Users/... on some parsers
         if on_windows and re.match(r"^/[A-Za-z]:", path_part):
             path_part = path_part.lstrip("/")
+        elif on_windows and re.match(r"^[A-Za-z]:", parsed.netloc or ""):
+            # file://C:\clips\a.mp4 — backslashes are not URL separators, so
+            # the whole Windows path parses as the host.
+            path_part = unquote(parsed.netloc) + path_part
         elif on_windows:
             converted = _msys_windows_path_if_usable(path_part)
             if converted:

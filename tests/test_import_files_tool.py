@@ -7,6 +7,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -285,3 +287,21 @@ def test_agent_runners_prompt_source_steers_windows_import():
     assert "_agent_import_prompt" in text
     # Codex must receive the same steering (no --append-system-prompt).
     assert "steered = _agent_import_prompt()" in text
+
+
+@pytest.mark.parametrize("url, expected", [
+    # Backslashes are not URL separators: the whole path parses as the host.
+    ("file://C:\\clips\\a.mp4", "C:\\clips\\a.mp4"),
+    ("file://C:/clips/a.mp4", "C:/clips/a.mp4"),
+    ("file:///C:/clips/a.mp4", "C:/clips/a.mp4"),
+    ("file://C:%5Cclips%5Cmy%20clip.mp4", "C:\\clips\\my clip.mp4"),
+])
+def test_normalize_agent_fs_path_windows_file_urls(monkeypatch, url, expected):
+    from classes import file_drop as fd
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(fd.os.path, "expanduser", lambda p: p)
+    monkeypatch.setattr(fd.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(fd.os.path, "isabs", lambda p: True)
+    monkeypatch.setattr(fd.os.path, "abspath", lambda p: p)
+    assert fd.normalize_agent_fs_path(url) == expected
