@@ -323,7 +323,15 @@ class FilesTreeView(QTreeView):
 
         # Get file object and update friendly name and tags attribute
         f = File.get(id=file_id)
-        f.data.update({"name": name or os.path.basename(f.data.get("path"))})
+        if not f:
+            # A generation placeholder row (queued AI Tools job; its label changes
+            # with the job's progress), or a file removed meanwhile
+            return
+        base_name = os.path.basename(f.data.get("path"))
+        if (name or base_name) == (f.data.get("name") or base_name) and (tags or "") == (f.data.get("tags") or ""):
+            # A repaint (tooltip, icon, progress), not an edit: saving would add an empty undo step
+            return
+        f.data.update({"name": name or base_name})
         if "tags" in f.data or tags:
             f.data.update({"tags": tags})
 

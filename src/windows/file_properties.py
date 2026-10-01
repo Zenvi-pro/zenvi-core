@@ -36,12 +36,11 @@ from qt_api import (
 import openshot
 
 from uuid import uuid4
-from classes import info, time_parts, ui_util
+from classes import info, media_fingerprint, project_files, time_parts, ui_util
 from classes.app import get_app
 from classes.image_types import get_media_type
 from classes.logger import log
 from classes.metrics import track_metric_screen
-from classes.query import Clip
 
 MAX_FPS_SPINBOX_VALUE = 2147483647
 
@@ -244,9 +243,12 @@ class FileProperties(QDialog):
             # Make sure a clip can be created, then change the video length and path
             self.txtFilePath.setText(new_path)
             self.txtFileName.setText(os.path.basename(new_path))
-            self.file.data = json.loads(clip.Reader().Json())
-            if not seq_info:
-                self.file.data["media_type"] = get_media_type(self.file.data)
+            reader_data = json.loads(clip.Reader().Json())
+            media_type = "video" if seq_info else get_media_type(reader_data)
+            # Keep tags, AI metadata and sub-clip in/out of the file (and its
+            # optimized preview, when the new media is the same content)
+            self.file.data = project_files.relinked_file_data(
+                self.file.data, reader_data, media_type, media_fingerprint.fingerprint(new_path))
 
             # Initialize start/end textboxes
             self.init_start_end_textboxes(self.file.data)
@@ -280,55 +282,26 @@ class FileProperties(QDialog):
         self.file.data["tags"] = self.txtTags.text()
         
         # Determine if FPS changed
-        fps_float = self.txtFrameRateNum.value() / self.txtFrameRateDen.value()
         if self.file.data["fps"]["num"] != self.txtFrameRateNum.value() or \
                 self.file.data["fps"]["den"] != self.txtFrameRateDen.value():
-            original_fps_float = float(self.file.data["fps"]["num"]) / float(self.file.data["fps"]["den"])
-            # Update file 'fps' and 'video_timebase'
-            self.file.data["fps"]["num"] = self.txtFrameRateNum.value()
-            self.file.data["fps"]["den"] = self.txtFrameRateDen.value()
-            self.file.data["video_timebase"]["num"] = self.txtFrameRateDen.value()
-            self.file.data["video_timebase"]["den"] = self.txtFrameRateNum.value()
-
-            # Scale 'start' and 'end' properties by FPS difference
-            fps_diff = original_fps_float / fps_float
-            self.file.data["duration"] *= fps_diff
-            if "start" in self.file.data:
-                self.file.data["start"] *= fps_diff
-            if "end" in self.file.data:
-                self.file.data["end"] *= fps_diff
+            # Update 'fps' and 'video_timebase'; scale duration, 'start' and 'end'
+            project_files.apply_sequence_fps(
+                self.file.data, self.txtFrameRateNum.value(), self.txtFrameRateDen.value())
 
         # Scale 'start' and 'end' file attributes (if changed)
         elif self.txtStartFrame.value() != 1 or self.txtEndFrame.value() != int(self.file.data["video_length"]):
-            # Scale 'start' and 'end' properties by FPS difference
-            self.file.data["start"] = (self.txtStartFrame.value() - 1) / fps_float
-            # End frames are inclusive, so convert to the time *after* the last frame
-            self.file.data["end"] = self.txtEndFrame.value() / fps_float
+            project_files.set_in_out_frames(self.file.data, self.txtStartFrame.value(), self.txtEndFrame.value())
 
         # Transaction id to group all updates together
         tid = str(uuid4())
         get_app().updates.transaction_id = tid
 
-        # Save file object
-        self.file.save()
-
-        # Update file info & thumbnail
-        get_app().window.FileUpdated.emit(self.file.id)
-
-        # Update related clips
-        for clip in Clip.filter(file_id=self.file.id):
-            clip.data["reader"] = self.file.data
-            clip.data["duration"] = self.file.data["duration"]
-            if clip.data["end"] > clip.data["duration"]:
-                clip.data["end"] = clip.data["duration"]
-            clip.save()
-
-            # Emit thumbnail update signal (to update timeline thumb image)
-            thumbnail_frame = (clip.data["start"] * fps_float) + 1
-            get_app().window.ThumbnailUpdated.emit(clip.id, thumbnail_frame)
-
-        # Done grouping transactions
-        get_app().updates.transaction_id = None
+        # Save file object, then update the clips that use it (and their thumbnails)
+        try:
+            project_files.save_file_and_sync_clips(self.file)
+        finally:
+            # Done grouping transactions
+            get_app().updates.transaction_id = None
 
         # Accept dialog
         super(FileProperties, self).accept()
