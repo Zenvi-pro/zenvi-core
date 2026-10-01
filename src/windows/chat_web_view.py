@@ -178,16 +178,16 @@ def chat_owns_clipboard_keys(chat, focus_widget=None, under_mouse=False) -> bool
         except Exception:
             pass
         try:
+            # WebEngine's focus proxy is always a child of the view, so only a
+            # proxy that actually has focus means the chat owns the keys.
             focus_proxy = view.focusProxy() if callable(getattr(view, "focusProxy", None)) else None
-            if focus_proxy is not None and (
-                (hasattr(focus_proxy, "hasFocus") and focus_proxy.hasFocus())
-                or _widget_in_chat(focus_proxy)
-            ):
+            if focus_proxy is not None and hasattr(focus_proxy, "hasFocus") and focus_proxy.hasFocus():
                 return True
         except Exception:
             pass
 
-    return bool(view and under_mouse)
+    # The pointer decides only when no other widget holds keyboard focus.
+    return bool(view and under_mouse and focus_widget is None)
 
 
 def dispatch_chat_edit_action(chat, name: str, focus_widget=None, under_mouse=False) -> bool:
