@@ -26,12 +26,16 @@ def _receipt(words):
 
 
 def _panel(added):
-    return SimpleNamespace(
-        _app=MagicMock(),
+    panel = SimpleNamespace(
+        _app=SimpleNamespace(project=SimpleNamespace(_data={})),
         _list=SimpleNamespace(clear=lambda: added.clear(), addItem=added.append),
         _status=MagicMock(),
         _generation=None,
     )
+    panel._project_token = lambda: index_panel.IndexPanel._project_token(panel)
+    panel._load_transcript = lambda token=None: index_panel.IndexPanel._load_transcript(panel, token)
+    panel._populate = lambda raw, token=None: index_panel.IndexPanel._populate(panel, raw, token)
+    return panel
 
 
 class _InlineThread:
@@ -39,13 +43,14 @@ class _InlineThread:
 
     started = []
 
-    def __init__(self, target=None, name=None, daemon=None):
+    def __init__(self, target=None, args=(), name=None, daemon=None):
         self._target = target
+        self._args = args
         self.name = name
 
     def start(self):
         _InlineThread.started.append(self.name)
-        self._target()
+        self._target(*self._args)
 
 
 def test_refresh_requests_words_and_lists_them():
@@ -55,8 +60,6 @@ def test_refresh_requests_words_and_lists_them():
     ]
     added = []
     panel = _panel(added)
-    panel._load_transcript = lambda: index_panel.IndexPanel._load_transcript(panel)
-    panel._populate = lambda raw: index_panel.IndexPanel._populate(panel, raw)
     _InlineThread.started.clear()
     with patch("classes.agent_tools.transcript.get_transcript", return_value=_receipt(words)) as get, \
             patch.object(index_panel.threading, "Thread", _InlineThread), \
@@ -90,3 +93,16 @@ def test_failed_load_reports_and_unlocks():
     assert added == []
     assert panel._loading is False
     panel._status.setText.assert_called_with("Refresh failed: asr helper missing")
+
+
+def test_result_for_a_closed_project_is_dropped():
+    """Opening another project mid-transcription must not list the old words."""
+    added = []
+    panel = _panel(added)
+    token = index_panel.IndexPanel._project_token(panel)
+    panel._app.project._data = {}  # File > Open replaced the project data
+    words = [{"text": "Welcome", "startFrame": 3, "timelineStartSec": 0.1}]
+    index_panel.IndexPanel._populate(panel, _receipt(words), token)
+    assert added == []
+    assert panel._loading is False
+    panel._status.setText.assert_called_with("Project changed. Press Refresh.")

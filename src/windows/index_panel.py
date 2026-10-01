@@ -73,9 +73,16 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
             return
         self._loading = True
         self._status.setText("Loading transcript…")
-        threading.Thread(target=self._load_transcript, name="index_panel_transcript", daemon=True).start()
+        token = self._project_token()
+        threading.Thread(
+            target=self._load_transcript, args=(token,), name="index_panel_transcript", daemon=True,
+        ).start()
 
-    def _load_transcript(self):
+    def _project_token(self):
+        """The open project's data dict: New and Open replace it."""
+        return getattr(getattr(self._app, "project", None), "_data", None)
+
+    def _load_transcript(self, token=None):
         from classes.qt_main_thread import invoke_on_gui
         try:
             from classes.agent_tools.transcript import get_transcript
@@ -84,11 +91,16 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         except Exception as exc:
             log.warning("Index refresh failed: %s", exc)
             raw = exc
-        invoke_on_gui(self._populate, raw)
+        invoke_on_gui(self._populate, raw, token)
 
-    def _populate(self, raw):
+    def _populate(self, raw, token=None):
         self._loading = False
         self._list.clear()
+        if token is not None and token is not self._project_token():
+            # A project was opened while this one transcribed: its words
+            # would seek in the wrong timeline.
+            self._status.setText("Project changed. Press Refresh.")
+            return
         if isinstance(raw, Exception):
             self._status.setText(f"Refresh failed: {raw}")
             return
