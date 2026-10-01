@@ -8001,9 +8001,12 @@ def set_clip_volume(
     """Set a timeline clip's audio level, over the whole clip or one time window.
 
     Give exactly one of level_db (decibels, negative = quieter) or level
-    (0.0-1.3 linear). mode='replace' sets the level outright; mode='scale'
-    multiplies the clip's existing volume automation. start_seconds/end_seconds
-    are TIMELINE seconds; omit both to set a flat level for the whole clip.
+    (0.0-1.3 linear). mode='replace' sets the level outright and replaces the
+    clip's whole volume curve, fades included; mode='scale' multiplies the
+    existing volume automation and keeps fades -- set levels first and add
+    fades last. start_seconds/end_seconds are TIMELINE seconds; omit both to set
+    a flat level for the whole clip. With no speech in the edit, music stays
+    near full level.
     """
     try:
         from classes import audio_mix as am
