@@ -1193,6 +1193,8 @@ class Export(QDialog):
                 and export_type in [_("Video & Audio"), _("Video Only")]
             )
             if smart_enabled:
+                # A Video Only export drops the source audio from the copy.
+                smart_audio = audio_settings if export_type == _("Video & Audio") else None
                 spans = analyze_smart_render_spans(
                     self.project._data,
                     export_width=int(video_settings.get("width", 1920)),
@@ -1202,7 +1204,11 @@ class Export(QDialog):
                     export_vcodec=str(video_settings.get("vcodec") or "libx264"),
                     start_frame=int(video_settings.get("start_frame")),
                     end_frame=int(video_settings.get("end_frame")),
+                    export_audio=smart_audio,
                 )
+                if spans and not all(s.kind == "copy" for s in spans):
+                    log.info("Smart render not used: %s", ", ".join(sorted(
+                        {r for s in spans if s.kind == "encode" for r in s.reasons})))
                 if spans and all(s.kind == "copy" for s in spans):
                     self.ExportStarted.emit(
                         export_file_path,
@@ -1217,6 +1223,7 @@ class Export(QDialog):
                         end_frame=int(video_settings.get("end_frame")),
                         encode_span=lambda *_args: False,  # pure-copy path only
                         enabled=True,
+                        audio_settings=smart_audio,
                     )
                     if result:
                         max_frame = int(video_settings.get("end_frame"))

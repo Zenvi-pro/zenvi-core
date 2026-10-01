@@ -353,6 +353,7 @@ def _clip(path, *, position=0.0, start=0.0, end=2.0, width=1920, height=1080, vc
             "height": height,
             "fps": {"num": 30, "den": 1},
             "vcodec": vcodec,
+            "duration": end,
         },
         "scale_x": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
         "scale_y": {"Points": [{"co": {"X": 1, "Y": 1.0}}]},
