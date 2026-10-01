@@ -51,18 +51,25 @@ NO_REPLY = "no-reply"
 REFUSED = "refused"
 
 
-def server_name(user_dir: str) -> str:
+def server_name(user_dir: str, environ=None, platform=None) -> str:
     """Local socket name of the desktop window for this user and profile.
 
-    Short on purpose: on macOS/Linux it becomes a socket file under the temp
-    directory, and those paths are limited to ~104 bytes.
+    Short on purpose: on macOS/Linux it becomes a socket file, and those paths
+    are limited to ~104 bytes. Qt puts a bare name in the temp directory, which
+    is private to the user on macOS but shared by everyone in Linux's /tmp, so
+    on Linux it goes in the user's private runtime directory when there is one.
     """
+    env = os.environ if environ is None else environ
     try:
         user = getpass.getuser()
     except Exception:
-        user = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+        user = env.get("USER") or env.get("USERNAME") or ""
     key = "%s\0%s" % (user, os.path.normcase(os.path.abspath(user_dir)))
-    return "zenvi-gui-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    name = "zenvi-gui-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    runtime_dir = env.get("XDG_RUNTIME_DIR") or ""
+    if (platform or sys.platform).startswith("linux") and os.path.isdir(runtime_dir):
+        return os.path.join(runtime_dir, name)
+    return name
 
 
 def launch_paths(positional, project=None, cwd=None) -> list:

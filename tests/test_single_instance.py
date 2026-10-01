@@ -50,9 +50,11 @@ class FakeSocket:
 # --- naming ------------------------------------------------------------------
 
 def test_server_name_is_per_profile_short_and_stable(tmp_path):
-    a = si.server_name(str(tmp_path / "home-a" / ".openshot_qt"))
-    b = si.server_name(str(tmp_path / "home-b" / ".openshot_qt"))
-    assert a == si.server_name(str(tmp_path / "home-a" / ".openshot_qt"))
+    def name(home):
+        return si.server_name(str(tmp_path / home / ".openshot_qt"), environ={}, platform="darwin")
+
+    a, b = name("home-a"), name("home-b")
+    assert a == name("home-a")
     assert a != b
     assert a.startswith("zenvi-gui-")
     # It becomes a socket file under $TMPDIR on macOS/Linux (~104-byte limit).
@@ -62,9 +64,24 @@ def test_server_name_is_per_profile_short_and_stable(tmp_path):
 
 def test_server_name_differs_per_user(tmp_path, monkeypatch):
     monkeypatch.setattr(si.getpass, "getuser", lambda: "alice")
-    alice = si.server_name(str(tmp_path))
+    alice = si.server_name(str(tmp_path), environ={})
     monkeypatch.setattr(si.getpass, "getuser", lambda: "bob")
-    assert si.server_name(str(tmp_path)) != alice
+    assert si.server_name(str(tmp_path), environ={}) != alice
+
+
+def test_linux_keeps_the_socket_out_of_shared_tmp(tmp_path):
+    runtime_dir = tmp_path / "run-user-1000"
+    runtime_dir.mkdir()
+    env = {"XDG_RUNTIME_DIR": str(runtime_dir)}
+    profile = str(tmp_path / ".openshot_qt")
+    bare = si.server_name(profile, environ={}, platform="darwin")
+
+    assert si.server_name(profile, environ=env, platform="linux") == str(runtime_dir / bare)
+    # No runtime dir (or not Linux): Qt's default, a bare name in the temp dir.
+    assert si.server_name(profile, environ={}, platform="linux") == bare
+    assert si.server_name(profile, environ={"XDG_RUNTIME_DIR": str(tmp_path / "gone")},
+                          platform="linux") == bare
+    assert si.server_name(profile, environ=env, platform="win32") == bare
 
 
 def test_launch_paths_are_absolute_for_the_other_process(tmp_path):
