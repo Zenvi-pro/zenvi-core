@@ -205,6 +205,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "path": _str(),
         "folder": _str(),
         "skip_indexing": _str(),
+        "dry_run": _str_or_bool(description="true previews what would be imported; nothing changes."),
+        "media_types": _str(description="all (default), video, audio, image, or a comma list."),
     }),
     "wait_until_project_indexed_tool": _obj({
         "timeout_seconds": _str_or_num(),
