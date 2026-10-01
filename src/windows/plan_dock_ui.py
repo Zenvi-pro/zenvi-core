@@ -5,9 +5,10 @@ Plan dock — Cursor-style markdown plan with todo checkboxes.
 import json
 import os
 
-from PyQt5.QtCore import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import QDockWidget, QLabel
+from qt_api import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
+from qt_api import QDockWidget, QLabel
 
+from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from windows.embedded_web import attach_webkit_window_object, run_js, web_embed_backend
 
@@ -18,11 +19,11 @@ class PlanDockBridge(QObject):
     execute_requested = pyqtSignal(str)
     edit_plan_requested = pyqtSignal()
 
-    @pyqtSlot(str)
+    @guarded_slot(str)
     def executePlan(self, plan_id: str = ""):
         self.execute_requested.emit(plan_id or "")
 
-    @pyqtSlot()
+    @guarded_slot()
     def editPlanInPlanningMode(self):
         self.edit_plan_requested.emit()
 
@@ -67,15 +68,15 @@ class PlanDock(QDockWidget):
         html_path = self._html_path()
 
         if self._embed_backend == "webengine":
-            from PyQt5.QtWebEngineWidgets import QWebEngineView
-            from PyQt5.QtWebChannel import QWebChannel
+            from qt_api import QWebEngineView
+            from qt_api import QWebChannel
 
             self.web_view = QWebEngineView()
             self.channel = QWebChannel()
             self.channel.registerObject("planDockBridge", self.bridge)
             self.web_view.page().setWebChannel(self.channel)
         else:
-            from PyQt5.QtWebKitWidgets import QWebView
+            from qt_api import QWebView
 
             self.web_view = QWebView()
             attach_webkit_window_object(self.web_view, "planDockBridge", self.bridge)

@@ -27,6 +27,36 @@ env:
 
 jobs:
 
+  # ── 0. Headless unit suite (advisory for one release cycle) ───────────
+  # continue-on-error: true until the job has been green on at least one
+  # tagged release; then drop it and require a clean unit-tests result.
+  unit-tests:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements-noqt.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest tests/ -q
+
+      - name: Ruff
+        run: ruff check src/classes/
+
+      - name: Pyright
+        run: pyright
+
   # ── 1. Read the version from source so every job can reference it ──────
   version:
     runs-on: ubuntu-latest
@@ -275,6 +305,13 @@ jobs:
           brew install swig zeromq cppzmq libsamplerate qt@5 || true
           brew install libomp
           brew install ffmpeg 2>/dev/null || true
+          # libopenshot 1.0 OpenCV effects (Tracker, Object Detector, Stabilizer).
+          # opencv@4's vtk dependency pulls in Qt 6 (qtbase), which Homebrew refuses
+          # to install next to a *linked* qt@5. libopenshot only needs qt@5's keg
+          # path (brew --prefix qt@5), so unlink it first. Plain `opencv` is
+          # OpenCV 5, which libopenshot's find_package(OpenCV 4) rejects.
+          brew unlink qt@5 || true
+          brew install opencv@4 protobuf
 
       # Build libopenshot from source only for arm64 (native build, no cross-compilation).
       # x86_64 skips this: cross-compiling C++ for x86_64 via Rosetta is complex and
@@ -285,7 +322,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/libopenshot-install
-          key: libopenshot-v0.7.0-audio-v0.6.0-arm64-macos14-py311-v4
+          key: libopenshot-v1.0.0-audio-v1.0.0-opencv4-arm64-macos14-py311-v1-${{ hashFiles('installer/mac-patches/**', 'installer/patch-libopenshot-ffmpeg.py') }}
 
       - name: Build libopenshot from source (arm64 only)
         if: matrix.arch == 'arm64' && steps.cache-libopenshot.outputs.cache-hit != 'true'
@@ -297,19 +334,36 @@ jobs:
           QT5_PREFIX="$(brew --prefix qt@5)"
           LIBOMP_PREFIX="$(brew --prefix libomp)"
 
-          # Build libopenshot-audio v0.6.0 (required by libopenshot 0.7.x: OpenShotAudio >= 0.6.0)
-          git clone --depth=1 --branch v0.6.0 \
+          LIBOPENSHOT_TAG=v1.0.0
+          LIBOPENSHOT_AUDIO_TAG=v1.0.0
+          PATCH_DIR="$GITHUB_WORKSPACE/installer/mac-patches"
+
+          # Apply every installer/mac-patches/<prefix>-*.patch that still applies
+          # (tag-locked names, `git apply --check` guarded — same scheme as
+          # scripts/build-mac-libopenshot.sh). A patch upstream already merged
+          # simply fails the check and is skipped.
+          apply_patches() {
+            local src_dir="$1" prefix="$2" patch
+            shopt -s nullglob
+            local patches=("$PATCH_DIR/${prefix}"-*.patch)
+            shopt -u nullglob
+            for patch in "${patches[@]}"; do
+              if git -C "$src_dir" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
+                echo "Applying $(basename "$patch")"
+                git -C "$src_dir" apply --whitespace=nowarn "$patch"
+              else
+                echo "Skipping $(basename "$patch") (does not apply at this tag; likely already upstream)"
+              fi
+            done
+          }
+
+          # Build libopenshot-audio (libopenshot 1.0.0 requires OpenShotAudio >= 1.0.0)
+          git clone --depth=1 --branch "$LIBOPENSHOT_AUDIO_TAG" \
             https://github.com/OpenShot/libopenshot-audio.git /tmp/libopenshot-audio
 
-          # Apply zenvi-core Mac patches (removes -framework AGL — Apple removed
-          # AGL in macOS 10.14; modern SDKs may not provide it at all).
-          # Patch is tag-locked to v0.5.0; v0.6.0+ may already incorporate the fix.
-          # Tolerant: skip if the patch no longer applies cleanly.
-          git -C /tmp/libopenshot-audio apply --check --whitespace=nowarn \
-            "$GITHUB_WORKSPACE/installer/mac-patches/libopenshot-audio-v0.5.0-mac.patch" 2>/dev/null \
-            && git -C /tmp/libopenshot-audio apply --whitespace=nowarn \
-                 "$GITHUB_WORKSPACE/installer/mac-patches/libopenshot-audio-v0.5.0-mac.patch" \
-            || echo "libopenshot-audio v0.5.0 patch did not apply (likely already fixed in v0.6.0+)"
+          # Mac patches: removes -framework AGL (Apple removed AGL in macOS 10.14;
+          # modern SDKs do not provide it) — still needed at v1.0.0.
+          apply_patches /tmp/libopenshot-audio "libopenshot-audio-${LIBOPENSHOT_AUDIO_TAG}"
 
           cmake -S /tmp/libopenshot-audio -B /tmp/libopenshot-audio/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
@@ -317,11 +371,15 @@ jobs:
           cmake --build /tmp/libopenshot-audio/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot-audio/build
 
-          # Build libopenshot v0.7.0 with Python bindings (OpenMP required — use Homebrew libomp)
-          git clone --depth=1 --branch v0.7.0 \
+          # Build libopenshot with Python bindings (OpenMP required — use Homebrew libomp)
+          git clone --depth=1 --branch "$LIBOPENSHOT_TAG" \
             https://github.com/OpenShot/libopenshot.git /tmp/libopenshot
 
-          # Tolerant patching: each step is a no-op if upstream v0.7.0 already
+          # Tag-locked source patches, e.g. libopenshot-v1.0.0-noncrop-location.patch
+          # (the post-1.0.0 upstream fix keeping non-Crop location_x/y canvas-relative).
+          apply_patches /tmp/libopenshot "libopenshot-${LIBOPENSHOT_TAG}"
+
+          # Tolerant patching: each step is a no-op if upstream already
           # incorporated the fix (which it does for several of these).
           # 1. Remove avresample (dropped in FFmpeg 5+).
           find /tmp/libopenshot -name "CMakeLists.txt" -o -name "*.cmake" | \
@@ -331,8 +389,12 @@ jobs:
           # 2. FFmpeg 7/8 compat (FF_PROFILE_*, side-data, AVCodec config lists).
           python3 "$GITHUB_WORKSPACE/installer/patch-libopenshot-ffmpeg.py" /tmp/libopenshot
           # Note: SWR channel layout (the FFmpeg 8 av_opt_set_chlayout fix) is
-          # included in libopenshot v0.7.0 upstream — no local patch needed.
+          # included in libopenshot >= v0.7.0 upstream — no local patch needed.
 
+          # USE_QT6=OFF: libopenshot 1.0 auto-detects Qt 6 when present (opencv@4
+          # drags in qtbase via vtk); PyQt5 needs the Qt 5 build.
+          OPENCV_PREFIX="$(brew --prefix opencv@4)"
+          PROTOBUF_PREFIX="$(brew --prefix protobuf)"
           cmake -S /tmp/libopenshot -B /tmp/libopenshot/build \
             -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -340,12 +402,13 @@ jobs:
             -DENABLE_RUBY=OFF \
             -DENABLE_JAVA=OFF \
             -DENABLE_PYTHON=ON \
-            -DENABLE_OPENCV=OFF \
+            -DENABLE_OPENCV=ON \
             -DENABLE_MAGICK=OFF \
+            -DUSE_QT6=OFF \
             -DPython3_EXECUTABLE="$(which python3)" \
             -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations" \
             -DOpenMP_ROOT="$LIBOMP_PREFIX" \
-            -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$QT5_PREFIX;$LIBOMP_PREFIX"
+            -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX;$QT5_PREFIX;$LIBOMP_PREFIX;$OPENCV_PREFIX;$PROTOBUF_PREFIX"
           cmake --build /tmp/libopenshot/build --parallel $(sysctl -n hw.logicalcpu)
           cmake --install /tmp/libopenshot/build
 
@@ -370,8 +433,25 @@ jobs:
           # Verify the binding is importable (soft check — freeze.py uses filesystem
           # discovery via ZENVI_OPENSHOT_PYROOT, so a dlopen failure here is non-fatal)
           DYLD_LIBRARY_PATH="$INSTALL_PREFIX/lib" PYTHONPATH="$PYROOT" \
-            python3 -c "import openshot; print(f'libopenshot version: {openshot.OPENSHOT_VERSION_FULL}')" \
+            python3 -c "import json, openshot; print(f'libopenshot version: {openshot.OPENSHOT_VERSION_FULL}'); names = sorted(e.get('class_name', '') for e in json.loads(openshot.EffectInfo.Json())); print('effects:', ', '.join(names)); print('OpenCV effects present:', all(n in names for n in ('Tracker', 'ObjectDetection', 'Stabilizer')))" \
             || echo "::warning::openshot import failed (dlopen issue) — freeze.py will use filesystem discovery"
+
+          # Stage the OpenCV runtime next to libopenshot so freeze.py bundles it
+          # (installer/fix_opencv_rpath.py comes from upstream OpenShot #6047; it
+          # copies the opencv dylibs and rewrites any @rpath OpenCV references in
+          # _openshot.so / libopenshot to the staged copies before cx_Freeze scans them).
+          OPENCV_ROOT="$(brew --prefix opencv@4)"
+          OPENCV_FREEZE_LIB_PATH="$INSTALL_PREFIX/opencv-freeze-lib"
+          OPENSHOT_SO="$(find "$PYROOT" -maxdepth 1 -name '_openshot*.so' | head -1)"
+          if [ -n "$OPENSHOT_SO" ] && [ -d "$OPENCV_ROOT/lib" ]; then
+            python3 "$GITHUB_WORKSPACE/installer/fix_opencv_rpath.py" \
+              "$OPENSHOT_SO" "$OPENCV_ROOT" "$OPENCV_FREEZE_LIB_PATH" \
+              $(find "$INSTALL_PREFIX/lib" -maxdepth 1 -type f -name 'libopenshot*.dylib')
+            echo "OPENCV_ROOT=$OPENCV_ROOT" >> $GITHUB_ENV
+            echo "OPENCV_FREEZE_LIB_PATH=$OPENCV_FREEZE_LIB_PATH" >> $GITHUB_ENV
+          else
+            echo "::warning::OpenCV staging skipped (binding: '$OPENSHOT_SO', opencv: '$OPENCV_ROOT')"
+          fi
 
       - name: Install Python dependencies
         run: |
@@ -524,7 +604,7 @@ jobs:
           [ -n "$FROZEN_DIR" ] || { echo "No frozen dir, skipping"; exit 0; }
 
           python3 - "$FROZEN_DIR" <<'PYEOF'
-          import os, subprocess, sys, shutil
+          import glob, os, re, subprocess, sys, shutil
 
           FROZEN_DIR = sys.argv[1]
 
@@ -615,19 +695,29 @@ jobs:
                   if openshot_so:
                       break
 
-          # Map of versioned soname -> possible source files in bundle
-          soname_fixups = [
-              ('libopenshot-audio.10.dylib',
-               ['libopenshot-audio.0.6.0.dylib', 'libopenshot-audio.dylib']),
-              ('libopenshot.30.dylib',
-               ['libopenshot.0.7.0.dylib', 'libopenshot.dylib']),
-          ]
-          for soname, candidates in soname_fixups:
+          # Versioned sonames referenced by _openshot.so (libopenshot.31.dylib and
+          # libopenshot-audio.10.dylib for the 1.0.0 pair). Read them from the
+          # binary so a tag bump does not silently break the bundle; fall back to
+          # the 1.0.0 values if otool gives nothing.
+          soname_re = re.compile(r'^(libopenshot(?:-audio)?)\.(\d+)\.dylib$')
+          soname_fixups = []
+          for dep in (get_deps(openshot_so) if openshot_so else []):
+              m = soname_re.match(os.path.basename(dep))
+              if dep.startswith('@rpath/') and m:
+                  soname_fixups.append((m.group(0), m.group(1)))
+          if not soname_fixups:
+              soname_fixups = [('libopenshot-audio.10.dylib', 'libopenshot-audio'),
+                               ('libopenshot.31.dylib', 'libopenshot')]
+          for soname, prefix in soname_fixups:
+              # Prefer the full-version dylib (libopenshot.1.0.0.dylib), then the
+              # unversioned name.
               src = None
-              for c in candidates:
-                  src = find_in_bundle(c, FROZEN_DIR)
-                  if src:
-                      break
+              versioned = sorted(glob.glob(os.path.join(FROZEN_DIR, '**', prefix + '.*.*.*.dylib'),
+                                           recursive=True))
+              if versioned:
+                  src = versioned[0]
+              else:
+                  src = find_in_bundle(prefix + '.dylib', FROZEN_DIR)
               if not src:
                   print(f"WARNING: source for {soname} not found in bundle")
                   continue
@@ -907,23 +997,15 @@ jobs:
           codesign -dvvv "$APP" 2>&1 | head -6
           spctl -a -vv "$APP" 2>&1 || true
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Create DMG
         run: |
           DMG_NAME="Zenvi-v${VER}-${ARCH}.dmg"
-          rm -rf dmgroot && mkdir -p dmgroot
-          ditto "Zenvi.app" "dmgroot/Zenvi.app"
-          ln -s /Applications dmgroot/Applications
-          xattr -cr dmgroot/ 2>/dev/null || true
-
-          for attempt in 1 2 3; do
-            echo "hdiutil attempt $attempt ..."
-            hdiutil create -volname "Zenvi" -srcfolder dmgroot \
-              -ov -format UDZO "$DMG_NAME" && break
-            [ "$attempt" -lt 3 ] && sleep 5
-          done
-
-          [ -f "$DMG_NAME" ] || { echo "::error::DMG not created after 3 attempts"; exit 1; }
-          echo "Created $DMG_NAME ($(du -sh "$DMG_NAME" | cut -f1))"
+          xattr -cr Zenvi.app 2>/dev/null || true
+          bash installer/create-zenvi-dmg.sh Zenvi.app "$DMG_NAME"
+          [ -f "$DMG_NAME" ] || { echo "::error::DMG not created"; exit 1; }
 
       - name: Sign and notarize DMG
         env:
@@ -1081,6 +1163,10 @@ jobs:
             mingw-w64-ucrt-x86_64-babl
             mingw-w64-ucrt-x86_64-jsoncpp
             mingw-w64-ucrt-x86_64-libsamplerate
+            # libopenshot 1.0 OpenCV effects (Tracker / Object Detector / Stabilizer);
+            # ENABLE_OPENCV also needs protobuf for the tracker data files.
+            mingw-w64-ucrt-x86_64-opencv
+            mingw-w64-ucrt-x86_64-protobuf
           )
           attempt=1
           max=6
@@ -1103,7 +1189,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v0.7.0-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/patch-libopenshot-ffmpeg.py') }}
+          key: windows-msys2-libopenshot-v1.0.0-opencv-v1-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/mac-patches/**') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'
@@ -1277,7 +1363,7 @@ jobs:
   # Run even if some platform builds fail so that successful artifacts
   # are still published.
   release:
-    needs: [version, build-linux, build-macos, build-windows]
+    needs: [version, build-linux, build-macos, build-windows, unit-tests]
     if: always() && needs.version.result == 'success'
     runs-on: ubuntu-latest
     env:

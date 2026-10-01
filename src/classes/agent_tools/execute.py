@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid as uuid_module
 from typing import Callable, Optional
 
 log = logging.getLogger("agent_tools.execute")

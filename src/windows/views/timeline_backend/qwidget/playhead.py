@@ -25,7 +25,7 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-from PyQt5.QtCore import QRectF
+from qt_api import QRectF, QPointF
 from classes.app import get_app
 
 
@@ -153,14 +153,17 @@ class PlayheadMixin:
     def _startPlayhead(self):
         self.dragging_playhead = True
         self._fix_cursor(self.cursors["hand"])
-        self._move_playhead(self._last_event.pos().x())
+        self._move_playhead(
+            self._last_event.position().x() if hasattr(self._last_event, "position") else self._last_event.pos().x())
 
     def _playheadMove(self):
         if self.dragging_playhead:
-            self._move_playhead(self._last_event.pos().x())
+            self._move_playhead(
+                self._last_event.position().x() if hasattr(self._last_event, "position") else self._last_event.pos().x())
 
     def _finishPlayhead(self):
         self.dragging_playhead = False
         self._release_cursor()
         if self._last_event:
-            self._updateCursor(self._last_event.pos())
+            posf = self._last_event.position() if hasattr(self._last_event, "position") else QPointF(self._last_event.pos())
+            self._updateCursor(posf)

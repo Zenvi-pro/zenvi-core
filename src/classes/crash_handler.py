@@ -257,8 +257,8 @@ def _should_show_dialog(tb_text):
 def _queue_dialog(summary, tb_text, blocking=False):
     """Show the error dialog on the GUI thread, if there is a GUI to show it on."""
     try:
-        from PyQt5.QtCore import QCoreApplication, QThread
-        from PyQt5.QtWidgets import QApplication
+        from qt_api import QCoreApplication, QThread
+        from qt_api import QApplication
     except Exception:
         return
 
@@ -320,7 +320,7 @@ def _is_headless_platform(app):
 def _show_dialog(summary, tb_text):
     """Non-fatal error dialog. Never raises, never exits the app."""
     try:
-        from PyQt5.QtWidgets import QApplication, QMessageBox
+        from qt_api import QApplication, QMessageBox
 
         if QApplication.instance() is None:
             return

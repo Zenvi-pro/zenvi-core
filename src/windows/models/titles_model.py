@@ -28,9 +28,9 @@
 import os
 import fnmatch
 
-from PyQt5.QtCore import Qt, QObject, QMimeData, QSortFilterProxyModel, QItemSelectionModel
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon
-from PyQt5.QtWidgets import QMessageBox
+from qt_api import Qt, QObject, QMimeData, QSortFilterProxyModel, QItemSelectionModel
+from qt_api import QStandardItemModel, QStandardItem, QIcon
+from qt_api import QMessageBox
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 
 from classes import info
@@ -201,7 +201,7 @@ class TitlesModel(QObject):
         if info.MODEL_TEST:
             try:
                 # Create model tester objects
-                from PyQt5.QtTest import QAbstractItemModelTester
+                from qt_api import QAbstractItemModelTester
                 QAbstractItemModelTester(
                     self.model, QAbstractItemModelTester.FailureReportingMode.Warning)
                 log.info("Enabled model tests for title editor data")

@@ -28,10 +28,10 @@
 # Syntax to build redistributable package:  python3 freeze.py build
 #
 # Troubleshooting: If you encounter an error while attempting to freeze
-# the PyQt5/uic/port_v2, remove the __init__.py in that folder. And if
-# you are manually compiling PyQt5 on Windows, remove the -strip line
+# the Qt binding's uic/port_v2 folder, remove the __init__.py in that folder. And if
+# you are manually compiling the Qt binding on Windows, remove the -strip line
 # from the Makefile. On Mac, just delete the port_v2 folder. Also, you
-# might need to remove the QtTest.so from /usr/local/lib/python3.3/site-packages/PyQt5,
+# might need to remove the QtTest module from the active Qt binding's site-packages,
 # if you get errors while freezing.
 #
 # Mac Syntax to Build App Bundle:
@@ -57,13 +57,16 @@ import os
 import sys
 import fnmatch
 import json
+import subprocess
 from shutil import copytree, rmtree, copy
 from cx_Freeze import setup, Executable
 import cx_Freeze
-from PyQt5.QtCore import QLibraryInfo
 import shutil
 from installer.version_parser import parse_version_info, parse_build_name
 
+PATH = os.path.dirname(os.path.realpath(__file__))  # Primary openshot folder
+sys.path.insert(0, os.path.join(PATH, "src"))
+from qt_api import QLibraryInfo, QT_API
 
 print (str(cx_Freeze))
 
@@ -79,6 +82,12 @@ _zenvi_openshot_pyroot = os.getenv("ZENVI_OPENSHOT_PYROOT")
 # The openshot files are discovered via direct filesystem scan below and copied
 # into the frozen build post-build — no import is needed at build time.
 
+QT_BINDING_PACKAGE = {
+    "pyqt5": "PyQt{}".format(5),
+    "pyqt6": "PyQt{}".format(6),
+    "pyside6": "PySide{}".format(6),
+}.get(QT_API, "PyQt{}".format(5))
+
 # Set '${ARCHLIB}' envvar to override system library path
 ARCHLIB = os.getenv('ARCHLIB', "/usr/lib/x86_64-linux-gnu/")
 if not ARCHLIB.endswith('/'):
@@ -87,10 +96,11 @@ if not ARCHLIB.endswith('/'):
 # Packages to include
 python_packages = ["os",
                    "sys",
-                   "PyQt5",
+                   QT_BINDING_PACKAGE,
                    "time",
                    "uuid",
                    "idna",
+                   "certifi",
                    "sentry_sdk",
                    "shutil",
                    "threading",
@@ -234,9 +244,6 @@ python_modules = ["idna.idnadata",
                   "OpenGL.arrays.formathandler",
                   ]
 
-# Determine absolute PATH of OpenShot folder
-PATH = os.path.dirname(os.path.realpath(__file__))  # Primary openshot folder
-
 # Look for optional --git-branch arg, and remove it
 git_branch_name = "develop"
 for arg in sys.argv:
@@ -272,8 +279,16 @@ if artifact_path:
     sys.path.insert(0, os.path.join(artifact_path, "lib"))
     sys.path.insert(0, os.path.join(artifact_path, "bin"))
 
-from classes import info
-from classes.logger import log
+print("Importing OpenShot freeze metadata modules", flush=True)
+try:
+    from classes import info
+    print("Imported classes.info", flush=True)
+    from classes.logger import log
+    print("Imported classes.logger", flush=True)
+except BaseException:
+    import traceback
+    traceback.print_exc()
+    raise
 log.info("Execution path: %s" % os.path.abspath(__file__))
 log.info("Artifact path detected and added to sys.path: %s" % artifact_path)
 
@@ -288,6 +303,136 @@ def find_files(directory, patterns):
                         filename = os.path.join(root, basename)
                         yield filename
 
+
+def find_windows_imports(binary_path):
+    """Return DLL imports reported by objdump for a Windows binary."""
+    binary_path = os.path.abspath(binary_path)
+    if not os.path.isfile(binary_path):
+        log.warning("Unable to inspect Windows DLL imports for missing file: %s", binary_path)
+        return None
+    if "\x00" in binary_path:
+        log.warning("Unable to inspect Windows DLL imports for invalid path")
+        return None
+
+    log.info("Inspecting Windows DLL imports: %s", binary_path)
+    try:
+        output = subprocess.check_output(  # nosec B603,B607 - fixed tool, validated file path, no shell.
+            ["objdump", "-p", "--", binary_path],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as ex:
+        log.warning("Unable to inspect Windows DLL imports for %s: %s", binary_path, ex)
+        return None
+
+    imports = []
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("DLL Name:"):
+            imports.append(line.split(":", 1)[1].strip())
+
+    log.info("Found %s imported DLLs in %s", len(imports), binary_path)
+    for dll_name in imports:
+        log.info("  imports: %s", dll_name)
+    return imports
+
+
+def find_windows_opencv_dlls(opencv_root=None, opencv_dll_dir=None):
+    """Return OpenCV DLLs available in the configured Windows OpenCV install."""
+    opencv_bin_paths = []
+    if opencv_dll_dir:
+        opencv_bin_paths.append(opencv_dll_dir)
+    if opencv_root:
+        opencv_bin_paths.extend([
+            os.path.join(opencv_root, "bin"),
+            os.path.join(opencv_root, "x64", "mingw", "bin"),
+        ])
+
+    opencv_dlls = []
+    for opencv_bin_path in opencv_bin_paths:
+        found_dlls = list(find_files(opencv_bin_path, ["*opencv*.dll"]))
+        log.info(
+            "Found %s Windows OpenCV DLLs in candidate path: %s",
+            len(found_dlls), opencv_bin_path
+        )
+        opencv_dlls.extend(found_dlls)
+
+    if not opencv_dlls and opencv_root:
+        log.warning("No Windows OpenCV runtime DLLs found in known bin paths: %s", opencv_bin_paths)
+        log.info("Searching Windows OpenCV prefix for runtime DLLs: %s", opencv_root)
+        opencv_dlls = list(find_files(opencv_root, ["*opencv*.dll"]))
+
+    dll_by_name = {}
+    for dll_path in opencv_dlls:
+        dll_name = os.path.basename(dll_path).lower()
+        if dll_name in dll_by_name:
+            log.info("Ignoring duplicate Windows OpenCV DLL candidate: %s", dll_path)
+            continue
+        dll_by_name[dll_name] = dll_path
+        log.info("Available Windows OpenCV DLL: %s", dll_path)
+    return dll_by_name
+
+
+def find_required_windows_opencv_dlls(seed_binaries, opencv_dlls_by_name):
+    """Walk the OpenCV DLL import closure needed by seed Windows binaries."""
+    required_dlls = {}
+    inspected_binaries = set()
+    pending_binaries = list(seed_binaries)
+
+    log.info("Resolving Windows OpenCV DLL dependency closure")
+    for seed_binary in seed_binaries:
+        log.info("  seed binary: %s", seed_binary)
+
+    while pending_binaries:
+        binary_path = pending_binaries.pop(0)
+        normalized_binary_path = os.path.normcase(os.path.abspath(binary_path))
+        if normalized_binary_path in inspected_binaries:
+            continue
+        inspected_binaries.add(normalized_binary_path)
+
+        imported_dlls = find_windows_imports(binary_path)
+        if imported_dlls is None:
+            return None
+
+        for imported_dll in imported_dlls:
+            imported_name = imported_dll.lower()
+            if "opencv" not in imported_name:
+                continue
+
+            resolved_path = opencv_dlls_by_name.get(imported_name)
+            if not resolved_path:
+                log.warning("Imported OpenCV DLL was not found in configured OpenCV paths: %s", imported_dll)
+                continue
+
+            if imported_name not in required_dlls:
+                required_dlls[imported_name] = resolved_path
+                pending_binaries.append(resolved_path)
+                log.info("Required Windows OpenCV DLL: %s -> %s", imported_dll, resolved_path)
+
+    return [required_dlls[name] for name in sorted(required_dlls)]
+
+
+def should_package_source_file(filename):
+    """Return True when a copied openshot_qt source file is needed at runtime."""
+    rel_path = os.path.relpath(filename, start=openshot_copy_path)
+    rel_parts = rel_path.split(os.sep)
+
+    if rel_parts[0] != "language":
+        return True
+
+    basename = rel_parts[-1]
+
+    # The compiled Qt resource module is the runtime source of OpenShot translations.
+    if basename in {"__init__.py", "openshot_lang.py"}:
+        return True
+
+    # Keep packaged Qt translations for native Qt dialogs/widgets.
+    if basename.endswith(".qm") and (basename.startswith("qt_") or basename.startswith("qtbase_")):
+        return True
+
+    # Everything else in src/language is build-time/test-time content or loose duplicate
+    # translations that are already embedded into openshot_lang.py.
+    return False
 
 # GUI applications require a different base on Windows
 iconFile = "zenvi"
@@ -383,6 +528,66 @@ if sys.platform == "win32":
     for filename in find_files(babl_ext_path, ["*.dll"]):
         src_files.append((filename, os.path.join("lib", "babl-ext", os.path.relpath(filename, start=babl_ext_path))))
 
+    # libopenshot's Python extension links directly to the OpenCV runtime DLLs.
+    # Resolve the OpenCV dependency closure from the explicit CI/toolchain
+    # OpenCV path so we don't package stale pacman DLLs or every contrib DLL.
+    opencv_root = os.getenv("OPENCV_ROOT")
+    opencv_dll_dir = os.getenv("OPENCV_DLL_DIR")
+    if opencv_root or opencv_dll_dir:
+        opencv_dlls_by_name = find_windows_opencv_dlls(opencv_root, opencv_dll_dir)
+        seed_binaries = []
+        seed_binaries.extend(glob.glob(os.path.join(PATH, "_openshot*.pyd")))
+        if artifact_path:
+            seed_binaries.extend(glob.glob(os.path.join(artifact_path, "python", "_openshot*.pyd")))
+            seed_binaries.extend(glob.glob(os.path.join(artifact_path, "bin", "*openshot*.dll")))
+        seed_binaries = sorted(set(path for path in seed_binaries if os.path.exists(path)))
+
+        if opencv_dlls_by_name and seed_binaries:
+            opencv_runtime_dlls = find_required_windows_opencv_dlls(seed_binaries, opencv_dlls_by_name)
+            if opencv_runtime_dlls is None:
+                log.warning("Falling back to packaging all discovered Windows OpenCV DLLs")
+                opencv_runtime_dlls = list(opencv_dlls_by_name.values())
+            elif not opencv_runtime_dlls:
+                log.warning("No OpenCV imports were discovered from seed binaries; packaging all discovered Windows OpenCV DLLs")
+                opencv_runtime_dlls = list(opencv_dlls_by_name.values())
+        else:
+            if not opencv_dlls_by_name:
+                log.warning("No Windows OpenCV runtime DLLs found for OpenCV root: %s", opencv_root)
+            if not seed_binaries:
+                log.warning("No Windows OpenCV dependency seed binaries found")
+            opencv_runtime_dlls = list(opencv_dlls_by_name.values())
+
+        if opencv_runtime_dlls:
+            for dll_path in sorted(set(opencv_runtime_dlls)):
+                log.info("Adding Windows OpenCV runtime DLL: %s", dll_path)
+                src_files.append((dll_path, os.path.basename(dll_path)))
+        else:
+            log.warning("No Windows OpenCV runtime DLLs found for OpenCV root: %s", opencv_root)
+    else:
+        log.warning("OPENCV_ROOT is not set; Windows OpenCV runtime DLLs will rely on cx_Freeze detection.")
+
+    # Add the Qt image codec runtime DLLs to the app root, since Windows does not search
+    # lib/PyQt5 when loading dependencies for imageformat plugins from imageformats/.
+    mingw_bin_path = "c:/msys64/%s/bin" % MSYSTEM
+    imageformat_runtime_dlls = [
+        "libjpeg-8.dll",
+        "libjasper-4.dll",
+        "libtiff-5.dll",
+        "libwebp-7.dll",
+        "libwebpdemux-2.dll",
+        "libwebpmux-3.dll",
+        "liblzma-5.dll",
+        "libdeflate.dll",
+        "zlib1.dll",
+    ]
+    for dll_name in imageformat_runtime_dlls:
+        dll_path = os.path.join(mingw_bin_path, dll_name)
+        if os.path.exists(dll_path):
+            src_files.append((dll_path, dll_name))
+        else:
+            log.warning("Missing optional Windows imageformat runtime DLL: %s", dll_path)
+
+    # Append all source files
     # Append all source files under lib/ (cx_Freeze 7.2+ puts modules there;
     # info.PATH resolves to lib/ so data files must be co-located)
     src_files.append((os.path.join(PATH, "installer", "qt.conf"), "qt.conf"))
@@ -456,26 +661,26 @@ elif sys.platform == "linux":
     src_files.append((os.path.join(PATH, "installer", "launch-linux.sh"), "launch-linux.sh"))
 
     # Get a list of all openshot.so dependencies (scan these libraries for their dependencies)
-    pyqt5_mod_files = []
+    qt_mod_files = []
     from importlib import import_module
     for submod in ['Qt', 'QtSvg', 'QtWidgets', 'QtCore', 'QtGui', 'QtDBus']:
-        mod_name = "PyQt5.{}".format(submod)
+        mod_name = "{}.{}".format(QT_BINDING_PACKAGE, submod)
         mod = import_module(mod_name)
-        pyqt5_mod_files.append(inspect.getfile(mod))
+        qt_mod_files.append(inspect.getfile(mod))
     # Optional additions
     for mod_name in [
-            'PyQt5.QtWebEngine',
-            'PyQt5.QtWebEngineWidgets',
-            'PyQt5.QtWebKit',
-            'PyQt5.QtWebKitWidgets',
+            '{}.QtWebEngine'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebEngineWidgets'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebKit'.format(QT_BINDING_PACKAGE),
+            '{}.QtWebKitWidgets'.format(QT_BINDING_PACKAGE),
             ]:
         try:
             mod = import_module(mod_name)
-            pyqt5_mod_files.append(inspect.getfile(mod))
+            qt_mod_files.append(inspect.getfile(mod))
         except ImportError as ex:
             log.warning("Skipping {}: {}".format(mod_name, ex))
 
-    lib_list = pyqt5_mod_files
+    lib_list = qt_mod_files
     try:
         import _ssl
         lib_list.append(inspect.getfile(_ssl))
@@ -511,7 +716,9 @@ elif sys.platform == "linux":
         "libharfbuzz.so.0",
     }
 
-    # Driver/system libs detected inside the AppImage; keep them shared with the host OS
+    # Driver/system libs detected inside the AppImage; keep them shared with the host OS.
+    # PipeWire must also stay host-provided: it loads host modules/plugins, and bundling
+    # libpipewire can mix incompatible AppImage and host PipeWire components at runtime.
     appimage_driver_libs = {
         "libGLdispatch.so.0",
         "libGLX.so.0",
@@ -527,6 +734,8 @@ elif sys.platform == "linux":
         "libresolv.so.2",
         "libXau.so.6",
         "libXdmcp.so.6",
+        "libpipewire-0.3.so.0",
+        "libspa-0.2.so",
     }
     system_libs_to_skip.update(appimage_driver_libs)
 
@@ -599,6 +808,20 @@ elif sys.platform == "darwin":
     if os.path.exists(resvg_path):
         external_so_files.append((resvg_path, resvg_path.replace("/usr/local/lib/", "")))
 
+    opencv_root = os.getenv("OPENCV_ROOT")
+    if opencv_root:
+        opencv_lib_path = os.getenv("OPENCV_FREEZE_LIB_PATH") or os.path.join(opencv_root, "lib")
+        build_exe_options.setdefault("bin_path_includes", []).append(opencv_lib_path)
+        opencv_runtime_libs = list(find_files(opencv_lib_path, ["*.dylib"]))
+        if opencv_runtime_libs:
+            for dylib_path in opencv_runtime_libs:
+                log.info("Adding macOS OpenCV runtime library: %s", dylib_path)
+                external_so_files.append((dylib_path, os.path.basename(dylib_path)))
+        else:
+            log.warning("No macOS OpenCV runtime libraries found in: %s", opencv_lib_path)
+    else:
+        log.warning("OPENCV_ROOT is not set; macOS OpenCV runtime libraries will rely on cx_Freeze detection.")
+
     # Copy openshot.py Python bindings
     src_files.append((os.path.join(PATH, "installer", "launch-mac"), "launch-mac"))
 
@@ -653,6 +876,26 @@ elif sys.platform == "darwin":
                 break
         else:
             log.warning(f"WARNING: {_dylib_name} not found in any search directory — openshot may not work in frozen build")
+
+    # OpenCV runtime for libopenshot >= 1.0 built with ENABLE_OPENCV (Tracker,
+    # Object Detector, Stabilizer). Release CI stages the dylibs with
+    # installer/fix_opencv_rpath.py and exports OPENCV_FREEZE_LIB_PATH; without
+    # it, fall back to <OPENCV_ROOT>/lib. Unset means "rely on cx_Freeze's own
+    # dependency scan", which is what pre-1.0 builds without OpenCV did.
+    _opencv_root = os.getenv("OPENCV_ROOT", "")
+    _opencv_lib_path = os.getenv("OPENCV_FREEZE_LIB_PATH", "") or (
+        os.path.join(_opencv_root, "lib") if _opencv_root else "")
+    if _opencv_lib_path:
+        if os.path.isdir(_opencv_lib_path):
+            build_exe_options.setdefault("bin_path_includes", []).append(_opencv_lib_path)
+            _opencv_dylibs = list(find_files(_opencv_lib_path, ["*.dylib"]))
+            for _dylib_path in _opencv_dylibs:
+                log.info(f"Bundling OpenCV runtime library {_dylib_path}")
+                external_so_files.append((_dylib_path, os.path.basename(_dylib_path)))
+            if not _opencv_dylibs:
+                log.warning(f"WARNING: no OpenCV dylibs found in {_opencv_lib_path}")
+        else:
+            log.warning(f"WARNING: OpenCV library path does not exist: {_opencv_lib_path}")
 
     # Manually add BABL extensions (used in ChromaKey effect) - these are loaded at runtime,
     # and thus cx_freeze is not able to detect them
@@ -713,9 +956,9 @@ build_exe_options["excludes"] = ["distutils",
                                  "pydoc_data",
                                  "pycparser",
                                  "pkg_resources",
-                                 "PyQt5.QtQml",
-                                 "PyQt5.QtQuick",
-                                 "PyQt5.QtQuickWidgets"]
+                                 "{}.QtQml".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuick".format(QT_BINDING_PACKAGE),
+                                 "{}.QtQuickWidgets".format(QT_BINDING_PACKAGE)]
 if sys.platform == "darwin":
     # sentry_sdk.integrations.django must NOT be excluded — sentry's DEFAULT_INTEGRATIONS
     # auto-imports it via importlib at runtime and crashes with ModuleNotFoundError when

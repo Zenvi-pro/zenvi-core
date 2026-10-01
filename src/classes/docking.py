@@ -28,8 +28,8 @@
 import functools
 import sys
 
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtWidgets import QApplication, QDockWidget, QWidget
+from qt_api import Qt, QTimer
+from qt_api import QApplication, QDockWidget, QWidget
 
 from classes.logger import log
 from classes.title_bar import HiddenTitleBar
@@ -231,6 +231,10 @@ class DockingMixin:
 
     def _on_dock_top_level_changed(self, dock_widget, floating):
         """Restyle title bars when a dock is floated or docked."""
+        mark_active = getattr(self, "_mark_dock_interaction_active", None)
+        if callable(mark_active):
+            # Hold off preview max-size churn while the dock is being moved
+            mark_active()
         self._restyle_docks_when_idle()
 
     def _restyle_docks_when_idle(self, attempts=0):
