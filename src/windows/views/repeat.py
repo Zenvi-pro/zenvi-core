@@ -281,7 +281,13 @@ def apply_repeat(clip, pattern, start_dir, passes, delay_frames, ramp, fps_float
             total_frames = max(total_frames, used)
 
     # Update trims to cover the repeated span starting at 0
-    new_duration = total_frames / fps_float
+    from classes import frame_time as ft
+    from fractions import Fraction
+    try:
+        fps = fps_float if hasattr(fps_float, "numerator") else Fraction(fps_float).limit_denominator(1_000_000)
+        new_duration = ft.to_seconds(int(total_frames), fps)
+    except Exception:
+        new_duration = float(total_frames) / float(fps_float)
     clip.data["start"] = 0.0
     clip.data["end"] = new_duration
     clip.data["duration"] = new_duration
