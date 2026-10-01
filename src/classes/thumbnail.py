@@ -33,6 +33,7 @@ import time
 import shutil
 import subprocess
 from requests import get
+from requests.exceptions import Timeout
 from threading import Thread
 from classes import info
 from classes.ffmpeg_cli import run_ffmpeg
@@ -53,6 +54,13 @@ from socketserver import ThreadingMixIn
 THUMBNAIL_DECODE_SCALE = 3.0
 
 REGEX_THUMBNAIL_URL = re.compile(r"/thumbnails/(?P<file_id>.+?)/(?P<file_frame>\d+)/*(?P<only_path>path)?/*(?P<no_cache>no-cache)?")
+
+# (connect, read) seconds GetThumbPath waits on the local thumbnail server. The
+# server decodes the frame before it answers, and libopenshot 1.0 can spend a
+# minute or more on one frame of long-GOP, stream-copy-trimmed media, so the
+# read timeout is generous: it only stops a wedged server from holding a
+# thumbnail worker forever. Nothing on the GUI thread may wait on this.
+THUMBNAIL_REQUEST_TIMEOUT = (5.0, 180.0)
 
 # Optimize Preview pre-warms timeline thumbnails while it transcodes a proxy.
 # Frames are snapped onto a coarse grid (this many thumbnails per second of
@@ -121,8 +129,13 @@ def GenerateThumbnailFromFrame(frame, thumb_path, width, height, mask, overlay, 
     )
 
 
-def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
-    """Get thumbnail path by invoking HTTP thumbnail request"""
+def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1, timeout=THUMBNAIL_REQUEST_TIMEOUT):
+    """Get thumbnail path by invoking HTTP thumbnail request.
+
+    This waits for the server to decode the frame, so call it from a worker
+    thread (see windows.views.timeline_backend.qwidget.thumbnails), never the
+    GUI thread.
+    """
 
     # Clear thumb cache (if requested)
     thumb_cache = ""
@@ -140,7 +153,17 @@ def GetThumbPath(file_id, thumbnail_frame, clear_cache=False, attempts=1):
     attempts = max(1, int(attempts or 1))
     for attempt in range(1, attempts + 1):
         try:
-            r = get(thumb_address)
+            r = get(thumb_address, timeout=timeout)
+        except Timeout:
+            # The server is still decoding this frame; asking again would only
+            # start a second decode of it.
+            log.warning(
+                "Thumbnail path request timed out file_id=%s frame=%s timeout=%s",
+                file_id,
+                thumbnail_frame,
+                timeout,
+            )
+            return ''
         except Exception:
             log.warning(
                 "Thumbnail path request failed file_id=%s frame=%s attempt=%s/%s",
@@ -480,6 +503,17 @@ class httpThumbnailHandler(BaseHTTPRequestHandler):
     def log_error(self, msg_format, *args):
         """ Log error from HTTPServer """
         log.warning(msg_format % args)
+
+    def handle(self):
+        """ Serve the request; a client that hangs up before the reply is not an error.
+
+        GetThumbPath gives up after its timeout and the web timeline cancels
+        image loads it no longer needs, so the reply can meet a closed socket.
+        """
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as ex:
+            log.debug("Thumbnail client %s went away before the reply: %s", self.client_address, ex)
 
     def do_GET(self):
         """ Process each GET request and return a value (image or file path)"""
