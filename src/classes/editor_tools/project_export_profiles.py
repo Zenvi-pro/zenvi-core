@@ -284,8 +284,13 @@ def apply_profile_and_reframe(record: dict, reframe: str) -> dict:
     app = get_app()
     changes, skipped, letterboxed = plan_reframe(reframe, record["width"], record["height"])
     changed = profile_differs(app.project, record)
+    # Reframing only touches clips already placed; the receipt warns when there are none.
+    video_clips = sum(1 for c in app.project.get("clips") or []
+                      if (c.get("reader") or {}).get("has_video", True)
+                      and (c.get("reader") or {}).get("media_type") != "audio")
     if not changed and not changes:
-        return {"changed": False, "reframed": [], "skipped": skipped, "letterboxed": letterboxed}
+        return {"changed": False, "reframed": [], "skipped": skipped, "letterboxed": letterboxed,
+                "video_clips": video_clips}
 
     def _reframe():
         for cid, values in changes:
@@ -297,7 +302,7 @@ def apply_profile_and_reframe(record: dict, reframe: str) -> dict:
         _reframe()
         window().refreshFrameSignal.emit()
     return {"changed": changed, "reframed": [c for c, _v in changes], "skipped": skipped,
-            "letterboxed": letterboxed}
+            "letterboxed": letterboxed, "video_clips": video_clips}
 
 
 def _profile_receipt(result: dict, before: dict, record: dict, reframe: str, social_key=None) -> str:
@@ -321,6 +326,10 @@ def _profile_receipt(result: dict, before: dict, record: dict, reframe: str, soc
     if result["letterboxed"]:
         parts.append(f"{len(result['letterboxed'])} clip(s) of another shape will show bars; "
                      "call again with reframe='fill' to crop them to fill the frame")
+    if reframe == "fill" and not result.get("video_clips"):
+        parts.append("the timeline has no video clips yet, so nothing was reframed: clips placed later are "
+                     "fitted with bars when their shape differs, so call set_project_profile_tool(reframe='fill') "
+                     "again once they are on the timeline")
     return ok("; ".join(parts) + ".", changed=result["changed"], profile=after,
               previous_profile={k: before[k] for k in ("profile", "width", "height", "fps", "aspect")},
               reframe=reframe, reframed_clip_ids=result["reframed"], skipped=result["skipped"],

@@ -130,6 +130,21 @@ def test_keep_reports_letterboxed_clips_and_changes_no_clip(editor, profiles):
     assert "reframe='fill'" in editor.call("set_project_profile_tool", profile="tiktok")
 
 
+def test_fill_on_an_empty_timeline_says_to_reframe_after_placing(editor, profiles):
+    """Found live: the Reel was set to 9:16 before any clip was placed, so the
+    talking clip added afterwards stayed letterboxed."""
+    out = editor.call("set_project_profile_tool", profile="instagram_reel", reframe="fill")
+    assert _receipt(out)["reframed_clip_ids"] == []
+    assert "no video clips yet" in out and "again once they are on the timeline" in out
+
+    video = _landscape_clip(editor)
+    editor.mark()
+    out = editor.call("set_project_profile_tool", reframe="fill")
+    assert _receipt(out)["reframed_clip_ids"] == [video] and "no video clips yet" not in out
+    assert editor.clip(video)["scale"] == 0
+    assert editor.undo_steps_since_mark() == 1
+
+
 def test_same_profile_is_a_no_op(editor, profiles):
     editor.store._data.update(profile="FHD 1080p 30 fps", width=1920, height=1080,
                               display_ratio={"num": 16, "den": 9}, pixel_ratio={"num": 1, "den": 1})
