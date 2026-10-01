@@ -159,6 +159,13 @@ def test_add_title_on_empty_timeline(tt):
     assert tt.undo_steps_since_mark() == 1
 
 
+@pytest.mark.parametrize("template", ["Bar_1", "Oval_4", "Smoke_3", "Standard_2"])
+def test_reflection_templates_show_the_title_on_the_visible_line_too(tt, template):
+    """#249's case: the first tspan is the mirrored copy; the visible line must carry the text too."""
+    rec = receipt(tt.call("add_title_tool", text="HELLO", template=template))
+    assert title_svg.line_texts(title_svg.load(rec["path"]))[:2] == ["HELLO", "HELLO"]
+
+
 def test_title_goes_above_the_video_it_overlaps(tt):
     video = tt.add_file("video", duration=20.0)
     tt.add_clip(video, position=0.0, layer=1000000)
