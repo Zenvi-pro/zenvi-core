@@ -90,7 +90,8 @@ def test_execute_tool_does_not_wrap_export_in_the_30s_dispatcher(monkeypatch):
 
     result = th.execute_tool("export_video_tool", {})
 
-    assert result == "exported"
+    # execute_tool wraps the handler's reply in a contract-3 receipt (#183).
+    assert "exported" in result
     assert seen_timeouts == [], (
         "execute_tool must not wrap export_video_tool; the handler marshals itself"
     )
