@@ -5,8 +5,22 @@ import sys
 import types
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+
+
+@pytest.fixture(autouse=True)
+def _restore_query_module():
+    """The fake classes.query must not outlive the test: later tests that use
+    the real query layer (the editor-tools harness) would get the fake."""
+    saved = sys.modules.get("classes.query")
+    yield
+    if saved is None:
+        sys.modules.pop("classes.query", None)
+    else:
+        sys.modules["classes.query"] = saved
 
 
 def _install_fake_query_module(fake_file):

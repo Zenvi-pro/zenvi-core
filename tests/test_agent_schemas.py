@@ -142,6 +142,7 @@ import json
 from pathlib import Path
 
 from classes.agent_tools.schema import HIDDEN_PARAMS
+from classes.editor_tools import coerce_args
 
 # Properties a handler takes through **kwargs instead of by name: read with
 # kwargs.get() or passed on to a callee that consumes them.
@@ -162,7 +163,6 @@ KWARG_PROPS = {
     "get_transcript_tool": {"file_id", "timeline_clip_id"},
     "remove_words_tool": {"timeline_clip_id"},
     "remove_silence_tool": {"timeline_clip_id"},
-    "add_captions_tool": {"timeline_clip_id"},
     "export_captions_tool": {"timeline_clip_id"},
     "detect_beats_tool": {"file_id", "timeline_clip_id"},
     "diarize_media_tool": {"file_id", "timeline_clip_id"},
@@ -251,12 +251,13 @@ def test_backend_stub_calls_validate():
             continue
         props = TOOL_SCHEMAS[name].get("properties") or {}
         payload = {p: _backend_value(a, props.get(p)) for p, a in params.items()}
-        err = validate_args(name, payload)
+        # execute_tool coerces an editor tool's arguments ("1" -> True, 2 -> "2") before validating.
+        err = validate_args(name, coerce_args(name, payload))
         if err:
             failures.append(err)
         for p, a in params.items():
             if a.replace(" ", "").startswith("Optional["):
-                err = validate_args(name, {**payload, p: None})
+                err = validate_args(name, coerce_args(name, {**payload, p: None}))
                 if err:
                     failures.append(err)
     assert failures == [], "\n".join(failures)
@@ -279,3 +280,11 @@ def test_apply_transition_accepts_the_backend_call():
         "duration": "1.0", "placement": "between",
     }) is None
     assert validate_args("apply_transition_tool", {"transition": "fade"}) is not None
+
+
+def test_import_files_accepts_a_list_of_paths():
+    """The handler takes a list; the schema refused it before the handler ran."""
+    from classes.agent_tools.schema import normalize_args
+    args = {"paths": ["/media/a.mp4", "/media/b.mp4"]}
+    assert validate_args("import_files_tool", normalize_args("import_files_tool", args)) is None
+    assert validate_args("import_files_tool", {"paths": "/media/a.mp4,/media/b.mp4"}) is None

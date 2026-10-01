@@ -100,13 +100,36 @@ class ToolReceipt:
         return cls(status="applied", tool=tool, summary=summary, undoSteps=undo_steps, **kwargs)
 
 
+def _split_line_and_data(raw: str):
+    """(summary, data) of an editor-tools result: one summary line, then a JSON object."""
+    head, sep, rest = raw.partition("\n")
+    if not sep or not rest.lstrip().startswith("{"):
+        return raw, None
+    try:
+        data = json.loads(rest)
+    except (TypeError, ValueError):
+        return raw, None
+    return (head, data) if isinstance(data, dict) else (raw, None)
+
+
 def from_handler_str(tool: str, text: str, *, mutated: bool = False) -> ToolReceipt:
-    """Shim: wrap a legacy prose / Error: handler string as a receipt."""
+    """Shim: wrap a legacy prose / Error: handler string as a receipt.
+
+    Editor tools (classes.editor_tools) answer one summary line plus a JSON
+    object; the line becomes ``summary`` and the object ``data``, and a call
+    whose data says ``changed: false`` is ``unchanged``.
+    """
     raw = "" if text is None else str(text)
     if raw.startswith("Error"):
         return ToolReceipt.error(tool, raw)
     if not raw.strip():
         return ToolReceipt.unchanged(tool, "No changes.")
+    summary, data = _split_line_and_data(raw)
+    if data is not None:
+        if not mutated and data.get("changed") is False:
+            return ToolReceipt.unchanged(tool, summary, data=data)
+        return ToolReceipt(status="applied", tool=tool, summary=summary,
+                           undoSteps=1 if mutated else 0, data=data)
     # Heuristic: many handlers return informational no-mutation text.
     lower = raw.lower()
     if not mutated and any(

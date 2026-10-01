@@ -27,26 +27,19 @@
  """
 
 import os
-import uuid
 from operator import itemgetter
-from random import shuffle, randint, uniform
+from random import shuffle
 
 from qt_api import QDialog
 from qt_api import QIcon
 
 from classes import info, ui_util, time_parts
-from classes import frame_time as ft
-from classes.clip_utils import project_fps_fraction
-from classes.clip_placement import apply_audio_only_clip_overrides
 from classes.logger import log
-from classes.query import Clip, Transition
 from classes.app import get_app
 from classes.metrics import track_metric_screen
-from classes.clip_utils import apply_file_caption_to_clip
+from classes.timeline_ops import place_files
+from classes.updates import nested_transaction
 from windows.views.add_to_timeline_treeview import TimelineTreeView
-
-import openshot
-import json
 
 
 class AddToTimeline(QDialog):
@@ -197,244 +190,23 @@ class AddToTimeline(QDialog):
         """ Ok button clicked """
         log.info('accept')
 
-        # Transaction id to group all updates together
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
         # Get settings from form
-        start_position = self.txtStartTime.value()
-        track_num = self.cmbTrack.currentData()
-        fade_value = self.cmbFade.currentData()
-        fade_length = self.txtFadeLength.value()
         transition_path = self.cmbTransition.currentData()
-        transition_length = self.txtTransitionLength.value()
-        image_length = self.txtImageLength.value()
-        zoom_value = self.cmbZoom.currentData()
 
-        # Init position
-        position = start_position
-        added_clip_ids = []
-
-        random_transition = False
-        if transition_path == "random":
-            random_transition = True
-
-        # Get frames per second
-        fps = project_fps_fraction()
-        fps_float = float(fps)
-
-        # Track added clip IDs for auto-selection
-        added_clip_ids = []
-
-        # Loop through each file (in the current order)
-        for file in self.treeFiles.timeline_model.files:
-            # Create a clip
-            clip = Clip()
-            clip.data = {}
-
-            # Get file name
-            filename = os.path.basename(file.data["path"])
-
-            # Convert path to the correct relative path (based on this folder)
-            file_path = file.absolute_path()
-
-            # Create clip object for this file
-            c = openshot.Clip(file_path)
-
-            # Append missing attributes to Clip JSON
-            new_clip = json.loads(c.Json())
-            new_clip["position"] = ft.snap(float(position), fps)
-            new_clip["layer"] = track_num
-            new_clip["file_id"] = file.id
-            new_clip["title"] = file.data.get("name", filename)
-            new_clip["reader"] = file.data
-
-            # Audio-only media must not composite video (cover-art MP3s
-            # otherwise paint an opaque frame over every lower layer)
-            apply_audio_only_clip_overrides(
-                new_clip, file.data,
-                constant_interpolation=openshot.CONSTANT,
-                scale_none=openshot.SCALE_NONE,
+        # Place every file (in the current order) in one undo step
+        with nested_transaction(get_app().updates):
+            added_clip_ids, _transition_ids = place_files(
+                [{"file": file} for file in self.treeFiles.timeline_model.files],
+                self.txtStartTime.value(),
+                self.cmbTrack.currentData(),
+                fade=self.cmbFade.currentData(),
+                fade_length=self.txtFadeLength.value(),
+                transition_path=None if transition_path == "random" else transition_path,
+                random_transitions=self.transitions if transition_path == "random" else None,
+                transition_length=self.txtTransitionLength.value(),
+                image_length=self.txtImageLength.value(),
+                zoom=self.cmbZoom.currentData(),
             )
-
-            # Skip any clips that are missing a 'reader' attribute
-            # TODO: Determine why this even happens, as it shouldn't be possible
-            if not new_clip.get("reader"):
-                continue  # Skip to next file
-
-            # If the source file has stored caption text, attach a Caption effect to this new clip.
-            apply_file_caption_to_clip(new_clip, file)
-
-            # Check for optional start and end attributes
-            start_time = 0
-            end_time = new_clip["reader"]["duration"]
-
-            if 'start' in file.data:
-                start_time = file.data['start']
-                new_clip["start"] = start_time
-            if 'end' in file.data:
-                end_time = file.data['end']
-                new_clip["end"] = end_time
-
-            # Adjust clip duration, start, and end
-            new_clip["duration"] = new_clip["reader"]["duration"]
-            if file.data["media_type"] == "image":
-                end_time = image_length
-                new_clip["end"] = end_time
-            else:
-                new_clip["end"] = end_time
-
-            # Adjust Fade of Clips (if no transition is chosen)
-            if not transition_path:
-                if fade_value is not None:
-                    # Overlap this clip with the previous one (if any)
-                    position = max(start_position, new_clip["position"] - fade_length)
-                    new_clip["position"] = position
-
-                if fade_value in ['Fade In', 'Fade In & Out']:
-                    start = openshot.Point(ft.keyframe_x(start_time, fps), 0.0, openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(
-                        min(
-                            ft.keyframe_x(start_time + fade_length, fps),
-                            ft.keyframe_x(end_time, fps)
-                            ),
-                        1.0,
-                        openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    new_clip['alpha']["Points"].append(start_object)
-                    new_clip['alpha']["Points"].append(end_object)
-
-                if fade_value in ['Fade Out', 'Fade In & Out']:
-                    start = openshot.Point(
-                        max(
-                            ft.keyframe_x(end_time - fade_length, fps),
-                            ft.keyframe_x(start_time, fps)
-                            ),
-                        1.0,
-                        openshot.BEZIER)
-                    start_object = json.loads(start.Json())
-                    end = openshot.Point(
-                        ft.keyframe_x(end_time, fps),
-                        0.0,
-                        openshot.BEZIER)
-                    end_object = json.loads(end.Json())
-                    new_clip['alpha']["Points"].append(start_object)
-                    new_clip['alpha']["Points"].append(end_object)
-
-            # Adjust zoom amount
-            if zoom_value is not None:
-                # Location animation
-                if zoom_value == "Random":
-                    animate_start_x = uniform(-0.5, 0.5)
-                    animate_end_x = uniform(-0.15, 0.15)
-                    animate_start_y = uniform(-0.5, 0.5)
-                    animate_end_y = uniform(-0.15, 0.15)
-
-                    # Scale animation
-                    start_scale = uniform(0.5, 1.5)
-                    end_scale = uniform(0.85, 1.15)
-
-                elif zoom_value == "Zoom In":
-                    animate_start_x = 0.0
-                    animate_end_x = 0.0
-                    animate_start_y = 0.0
-                    animate_end_y = 0.0
-
-                    # Scale animation
-                    start_scale = 1.0
-                    end_scale = 1.25
-
-                elif zoom_value == "Zoom Out":
-                    animate_start_x = 0.0
-                    animate_end_x = 0.0
-                    animate_start_y = 0.0
-                    animate_end_y = 0.0
-
-                    # Scale animation
-                    start_scale = 1.25
-                    end_scale = 1.0
-
-                # Add keyframes
-                start = openshot.Point(ft.keyframe_x(start_time, fps), start_scale, openshot.BEZIER)
-                start_object = json.loads(start.Json())
-                end = openshot.Point(ft.keyframe_x(end_time, fps), end_scale, openshot.BEZIER)
-                end_object = json.loads(end.Json())
-                new_clip["gravity"] = openshot.GRAVITY_CENTER
-                new_clip["scale_x"]["Points"].append(start_object)
-                new_clip["scale_x"]["Points"].append(end_object)
-                new_clip["scale_y"]["Points"].append(start_object)
-                new_clip["scale_y"]["Points"].append(end_object)
-
-                # Add keyframes
-                start_x = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_x, openshot.BEZIER)
-                start_x_object = json.loads(start_x.Json())
-                end_x = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_x, openshot.BEZIER)
-                end_x_object = json.loads(end_x.Json())
-                start_y = openshot.Point(ft.keyframe_x(start_time, fps), animate_start_y, openshot.BEZIER)
-                start_y_object = json.loads(start_y.Json())
-                end_y = openshot.Point(ft.keyframe_x(end_time, fps), animate_end_y, openshot.BEZIER)
-                end_y_object = json.loads(end_y.Json())
-                new_clip["gravity"] = openshot.GRAVITY_CENTER
-                new_clip["location_x"]["Points"].append(start_x_object)
-                new_clip["location_x"]["Points"].append(end_x_object)
-                new_clip["location_y"]["Points"].append(start_y_object)
-                new_clip["location_y"]["Points"].append(end_y_object)
-
-            if transition_path:
-                # Add transition for this clip (if any)
-                # Open up QtImageReader for transition Image
-                if random_transition:
-                    random_index = randint(0, len(self.transitions) - 1)
-                    transition_path = self.transitions[random_index]
-
-                # Get reader for transition
-                transition_reader = openshot.QtImageReader(transition_path)
-
-                brightness = openshot.Keyframe()
-                brightness.AddPoint(1, 1.0, openshot.BEZIER)
-                brightness.AddPoint(
-                    round(
-                        min(transition_length, end_time - start_time)
-                        * fps_float
-                        ) + 1,
-                    -1.0,
-                    openshot.BEZIER)
-                contrast = openshot.Keyframe(3.0)
-
-                # Create transition dictionary
-                transitions_data = {
-                    "layer": track_num,
-                    "title": "Transition",
-                    "type": "Mask",
-                    "start": 0,
-                    "end": min(transition_length, end_time - start_time),
-                    "brightness": json.loads(brightness.Json()),
-                    "contrast": json.loads(contrast.Json()),
-                    "reader": json.loads(transition_reader.Json()),
-                    "replace_image": False
-                }
-
-                # Overlap this clip with the previous one (if any)
-                position = max(start_position, position - transition_length)
-                transitions_data["position"] = position
-                new_clip["position"] = position
-
-                # Create transition
-                tran = Transition()
-                tran.data = transitions_data
-                tran.save()
-
-            # Save Clip
-            clip.data = new_clip
-            clip.save()
-            added_clip_ids.append(clip.data.get("id"))
-
-            # Increment position by length of clip
-            position += (end_time - start_time)
-
-        # Clear transaction
-        get_app().updates.transaction_id = None
 
         # Ensure timeline extension behavior matches all other timeline add/move paths.
         timeline_view = getattr(get_app().window, "timeline", None)
