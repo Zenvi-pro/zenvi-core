@@ -267,7 +267,8 @@ def test_every_cli_backend_comes_from_the_runner_registry(qapp):
     from windows.agent_runners import CLI_RUNNERS
     from windows.ai_chat_ui import BACKENDS
 
-    assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli"]
+    assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli",
+                                           "opencode"]
     for row in BACKENDS[1:]:
         runner = CLI_RUNNERS[row["id"]]
         assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
@@ -322,6 +323,39 @@ def test_footer_points_at_the_model_pill_only_when_it_has_models(qapp, monkeypat
     connected = {"cursor_cli": {"installed": True, "version": "2026.09.18", "registered": True}}
     assert "chat panel" in _panel(FakeChat(connected, active="cursor_cli")).footer.text()
     assert "chat panel" in _panel(FakeChat(CONNECTED, active=CLAUDE)).footer.text()
+
+
+def test_opencode_row_follows_install_and_connect_status(qapp):
+    """OpenCode is a selectable backend with the same status dots as Codex."""
+    from windows.ai_chat_ui import BACKENDS
+
+    assert any(b["id"] == "opencode" and b["name"] == "OpenCode" for b in BACKENDS)
+
+    connected = {"opencode": {"installed": True, "version": "1.18.32", "registered": True}}
+    panel = _panel(FakeChat(connected, active="opencode"))
+    assert panel._rows["opencode"].word.text() == "connected"
+    assert "1.18.32" in panel._rows["opencode"].desc.text()
+    assert "chat panel" in panel.footer.text(), "OpenCode always offers CLI default"
+
+    missing = {"opencode": {"installed": False, "version": None, "registered": False}}
+    panel = _panel(FakeChat(missing))
+    assert panel._rows["opencode"].word.text() == "not installed"
+    assert "opencode" in panel._rows["opencode"].desc.text()
+
+    unregistered = {"opencode": {"installed": True, "version": "1.18.32", "registered": False}}
+    panel = _panel(FakeChat(unregistered))
+    assert panel._rows["opencode"].word.text() == "not connected"
+
+
+def test_connecting_an_agent_does_not_select_it(qapp):
+    """Seen in the app: after Connect on OpenCode, its radio and the active
+    agent's were both filled until the next status refresh."""
+    panel = _panel(FakeChat(CONNECTED, active=CLAUDE))
+    panel._on_connect_requested(CODEX)
+    panel.on_connect_result(CODEX, True, "Updated config.toml. Before running codex, run:\nexport X=1")
+    assert panel._rows[CODEX].word.text() == "connected"
+    assert panel._rows[CODEX].property("selected") is False
+    assert panel._rows[CLAUDE].property("selected") is True
 
 
 def test_selected_row_tracks_the_active_backend(qapp):

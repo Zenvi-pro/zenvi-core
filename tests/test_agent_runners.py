@@ -1340,7 +1340,7 @@ def test_register_cursor_refuses_a_non_object_server_table(monkeypatch, tmp_path
 def fresh_cursor_lineup(monkeypatch):
     import windows.agent_runners as ar
     monkeypatch.setattr(ar, "_cli_lineups", {})
-    monkeypatch.setattr(ar, "_cursor_models_read", {"key": None, "at": 0.0, "ok": False})
+    monkeypatch.setattr(ar, "_cli_models_read", {})
     ar.set_live_lineups({})
     yield ar
     ar.set_live_lineups({})
@@ -1388,16 +1388,16 @@ def test_cursor_lineup_is_read_once_per_cli_version_and_kept_on_failure(
     calls = []
     answers = [[{"id": "auto", "name": "Auto", "default": True}], []]
     monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
-    monkeypatch.setattr(ar, "probe_cursor_models",
-                        lambda cli: calls.append(cli) or answers.pop(0))
+    monkeypatch.setattr(ar.CursorCliRunner, "list_models",
+                        staticmethod(lambda cli: calls.append(cli) or answers.pop(0)))
 
-    assert ar.refresh_cursor_models("2026.09.18") is True
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.18") is True
     assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
     # Detection runs every minute; the CLI is not asked again until it is due.
-    assert ar.refresh_cursor_models("2026.09.18") is False
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.18") is False
     assert calls == ["/bin/cursor-agent"]
     # An update is due at once. This read fails, and the list stays.
-    assert ar.refresh_cursor_models("2026.09.28") is False
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "2026.09.28") is False
     assert len(calls) == 2
     assert [m["id"] for m in ar.models_for_backend(ar.BACKEND_CURSOR)] == ["auto"]
 
@@ -1567,13 +1567,355 @@ def test_a_failed_cursor_model_read_is_retried_soon(fresh_cursor_lineup, monkeyp
     calls = []
     monkeypatch.setattr(ar.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(ar, "_which_cursor_cli", lambda: "/bin/cursor-agent")
-    monkeypatch.setattr(ar, "probe_cursor_models",
-                        lambda cli: calls.append(cli) or answers.pop(0))
+    monkeypatch.setattr(ar.CursorCliRunner, "list_models",
+                        staticmethod(lambda cli: calls.append(cli) or answers.pop(0)))
 
-    assert ar.refresh_cursor_models("v1") is False          # logged out
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False          # logged out
     clock[0] += 30
-    assert ar.refresh_cursor_models("v1") is False and len(calls) == 1
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False and len(calls) == 1
     clock[0] += 30                                           # next detection
-    assert ar.refresh_cursor_models("v1") is True and len(calls) == 2
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is True and len(calls) == 2
     clock[0] += 120                                          # a success holds
-    assert ar.refresh_cursor_models("v1") is False and len(calls) == 2
+    assert ar.refresh_cli_models(ar.BACKEND_CURSOR, "v1") is False and len(calls) == 2
+
+
+# ── OpenCode ────────────────────────────────────────────────────────────────
+
+class _OpenCodeServer:
+    token = "tok"
+
+    def start(self):
+        return self
+
+    def url(self):
+        return "http://127.0.0.1:7434/mcp"
+
+
+def test_opencode_parser_emits_expected_signals(qapp):
+    """opencode_stream.jsonl is a real ``opencode run --format json`` capture
+    (a resumed two-turn session with a failed read), with the first tool call
+    renamed to an editor MCP tool."""
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    runner._session_id = "s1"
+    sessions = []
+    runner.cli_session_changed.connect(lambda ui, cli, started, cwd: sessions.append(cli))
+    events = _collect(runner)
+    _feed(runner, "opencode_stream.jsonl")
+
+    # OpenCode mints its own id; it is captured once for --session resume.
+    assert runner._cli_session_id == "ses_f2b3f9489ffelMwif35FMOUI5P"
+    assert runner._cli_id_from_cli
+    assert sessions == ["ses_f2b3f9489ffelMwif35FMOUI5P"]
+
+    started = [e for e in events if e[0] == "tool_started"]
+    assert started[0][1] == "list_files_tool", "server prefix stripped"
+    done = {e[1]: e for e in events if e[0] == "tool_completed"}
+    assert done[started[0][2]][2:] == (True, "FIXTURE: 3 files")
+    # OpenCode's own "read" is renamed so it is not labelled a motion-graphics step.
+    read_call = next(e for e in started if e[1] == "read_file")
+    assert done[read_call[2]][2] is False
+    assert "File not found" in done[read_call[2]][3]
+    # Reasoning is surfaced as a collapsible "thinking" block.
+    assert any(e[1] == "thinking" for e in started)
+    # Every text part streams, and all of them make up the final answer.
+    assert [e[1] for e in events if e[0] == "token"][0] == "There are 3 files."
+    assert runner._final_text.startswith("There are 3 files.\n\n")
+    assert "zenvi-ok" in runner._final_text
+
+
+def test_opencode_error_event_becomes_the_reported_error(qapp):
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    runner._handle_event({"type": "error", "sessionID": "ses_x", "error": {
+        "name": "UnknownError", "data": {"message": "Unexpected server error."}}})
+    assert runner._last_error == "Unexpected server error."
+
+
+def test_opencode_argv_runs_headless_and_resumes_only_a_real_session(qapp, monkeypatch):
+    from windows.agent_runners import OpenCodeRunner
+
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [])
+    runner = OpenCodeRunner()
+    runner._server = _OpenCodeServer()
+    runner._cli_session_id = "placeholder-from-the-ui"
+    argv = runner._build_argv("hi")
+    assert argv[1] == "run" and argv[-1] == "hi"
+    assert argv[argv.index("--format") + 1] == "json"
+    assert "--auto" in argv, "no terminal to answer a permission prompt"
+    assert "--session" not in argv, "OpenCode rejects ids it did not mint"
+
+    runner._cli_started = True
+    runner._cli_session_id = "ses_real"
+    runner._cli_id_from_cli = True
+    argv = runner._build_argv("again")
+    assert argv[argv.index("--session") + 1] == "ses_real"
+
+
+def test_opencode_env_points_at_a_scoped_config_with_the_editor_server(
+        qapp, monkeypatch, tmp_path):
+    """A scoped OPENCODE_CONFIG is merged over the user's own config, so their
+    other MCP servers keep working; the token never lands in the file."""
+    from classes import info
+    from windows.agent_runners import OpenCodeRunner
+
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+    runner = OpenCodeRunner()
+    runner._server = _OpenCodeServer()
+    env = runner._build_env()
+
+    assert env["ZENVI_MCP_TOKEN"] == "tok"
+    with open(env["OPENCODE_CONFIG"], encoding="utf-8") as fh:
+        text = fh.read()
+    entry = json.loads(text)["mcp"]["zenvi_editor"]
+    assert entry["type"] == "remote"
+    assert entry["url"] == "http://127.0.0.1:7434/mcp"
+    assert entry["headers"]["Authorization"] == "Bearer {env:ZENVI_MCP_TOKEN}"
+    assert entry["enabled"] is True
+    assert "tok" not in text.replace("{env:ZENVI_MCP_TOKEN}", "")
+
+
+def test_opencode_run_request_closes_stdin(qapp, monkeypatch, tmp_path):
+    """``opencode run`` waits on an inherited stdin forever; it must get EOF."""
+    import windows.agent_runners as ar
+    from windows.agent_runners import OpenCodeRunner
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _OpenCodeServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+    monkeypatch.setattr(OpenCodeRunner, "_build_env", lambda self: dict(os.environ))
+    monkeypatch.setattr(OpenCodeRunner, "_build_argv", lambda self, text: [
+        sys.executable, "-c",
+        "import sys, json; sys.stdin.read(); print(json.dumps({'type': 'text', "
+        "'sessionID': 'ses_1', 'part': {'type': 'text', 'text': 'done'}}))"])
+
+    runner = OpenCodeRunner()
+    runner._session_id = "s7"
+    events = _collect(runner)
+    runner.run_request("hello", "")
+    assert ("response_ready", "done") in events
+
+
+def test_opencode_is_registered_reads_json_and_jsonc(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+    assert ar._is_registered("opencode") is False
+    (tmp_path / "opencode.jsonc").write_text(
+        '{\n  // mine\n  "mcp": {"zenvi_editor": {"type": "remote"}}\n}\n')
+    assert ar._is_registered("opencode") is True
+
+
+def test_register_opencode_creates_new_file(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path / "opencode"))
+    ok, message = ar.register_opencode(7434, "tok123")
+    assert ok is True
+    assert "ZENVI_MCP_TOKEN=tok123" in message
+
+    data = json.loads((tmp_path / "opencode" / "opencode.json").read_text())
+    entry = data["mcp"]["zenvi_editor"]
+    assert entry["url"] == "http://127.0.0.1:7434/mcp"
+    assert entry["headers"]["Authorization"] == "Bearer {env:ZENVI_MCP_TOKEN}"
+    assert ar._is_registered("opencode") is True
+
+
+def test_register_opencode_keeps_other_servers_and_updates_stale_port(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({
+        "$schema": "https://opencode.ai/config.json",
+        "model": "anthropic/claude-sonnet-5",
+        "mcp": {
+            "playwright": {"type": "local", "command": ["npx", "@playwright/mcp"]},
+            "zenvi_editor": {"type": "remote", "url": "http://127.0.0.1:9999/mcp"},
+        },
+    }))
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    ok, _ = ar.register_opencode(7434, "tok123")
+    assert ok is True
+    data = json.loads(cfg.read_text())
+    assert data["mcp"]["zenvi_editor"]["url"] == "http://127.0.0.1:7434/mcp"
+    assert data["mcp"]["playwright"]["command"] == ["npx", "@playwright/mcp"]
+    assert data["model"] == "anthropic/claude-sonnet-5"
+    assert (tmp_path / "opencode.json.zenvi-backup").exists()
+
+
+def test_register_opencode_refuses_to_touch_invalid_json(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    original = '{"mcp": {  // a comment is not JSON'
+    cfg.write_text(original)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    ok, _ = ar.register_opencode(7434, "tok123")
+    assert ok is False
+    assert cfg.read_text() == original
+
+
+def test_which_cli_finds_opencode_outside_path(monkeypatch, tmp_path):
+    """A GUI-launched editor often has a trimmed PATH: find OpenCode in its
+    official installer dir and in an nvm-windows node folder."""
+    import windows.agent_runners as ar
+
+    name = "opencode.exe" if os.name == "nt" else "opencode"
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_resolved_home", lambda: str(tmp_path / "home"))
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+
+    nvm = tmp_path / "nvm4w" / "nodejs"
+    nvm.mkdir(parents=True)
+    (nvm / name).write_bytes(b"")
+    monkeypatch.setenv("NVM_SYMLINK", str(nvm))
+    assert ar._which_cli("opencode") == str(nvm / name)
+
+    official = tmp_path / "home" / ".opencode" / "bin"
+    official.mkdir(parents=True)
+    (official / name).write_bytes(b"")
+    assert ar._which_cli("opencode") == str(official / name)
+
+
+def test_opencode_argv_skips_the_npm_cmd_shim(qapp, monkeypatch, tmp_path):
+    """npm's ``opencode.cmd`` would pass the prompt through cmd.exe, which
+    mangles quotes, ``&`` and ``%``; run the native binary it wraps instead."""
+    from windows.agent_runners import OpenCodeRunner
+
+    import classes.file_drop as file_drop
+    monkeypatch.setattr(file_drop, "media_add_dirs", lambda home=None: [])
+    shim = tmp_path / "opencode.cmd"
+    shim.write_text("@echo off\n")
+    native = tmp_path / "node_modules" / "opencode-ai" / "bin" / "opencode.exe"
+    native.parent.mkdir(parents=True)
+    native.write_bytes(b"")
+
+    runner = OpenCodeRunner()
+    runner._cli_path = str(shim)
+    assert runner._build_argv('say "a & b" 100%')[0] == str(native)
+
+    native.unlink()
+    assert runner._build_argv("hi")[0] == str(shim)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="npm's sh shim only shadows on Windows")
+def test_which_cli_prefers_a_windows_launcher_over_npms_sh_shim(monkeypatch, tmp_path):
+    """npm drops an extension-less sh script next to ``opencode.cmd``; Windows
+    cannot launch it (WinError 193)."""
+    import windows.agent_runners as ar
+
+    (tmp_path / "opencode").write_text("#!/bin/sh\n")
+    (tmp_path / "opencode.cmd").write_text("@echo off\n")
+    monkeypatch.setattr(ar.shutil, "which", lambda n: None)
+    monkeypatch.setattr(ar, "_cli_install_dirs", lambda: [str(tmp_path)])
+    assert ar._which_cli("opencode") == str(tmp_path / "opencode.cmd")
+
+
+# opencode_mcp_turn.jsonl: opencode 1.18.32 `run --format json` against an
+# MCP server named zenvi_editor, one call that worked and one that raised.
+def test_opencode_mcp_turn_maps_tools_and_failures(qapp):
+    from windows.agent_runners import OpenCodeRunner
+    runner = OpenCodeRunner()
+    events = _collect(runner)
+    _feed(runner, "opencode_mcp_turn.jsonl")
+
+    names = {e[2]: e[1] for e in events if e[0] == "tool_started"}
+    done = {names[e[1]]: (e[2], e[3]) for e in events if e[0] == "tool_completed"}
+    assert done["list_files_tool"][0] is True and "city.mp4" in done["list_files_tool"][1]
+    assert done["add_clip_to_timeline_tool"] == (
+        False, "Error executing tool add_clip_to_timeline_tool: Track 1 is locked")
+    # Two text parts with a tool between them: the separator streams too.
+    tokens = [e[1] for e in events if e[0] == "token"]
+    assert tokens[0] == "I'll list the files first." and tokens[1] == "\n\n"
+    assert runner._final_text == "".join(tokens)
+
+
+def test_opencode_native_tools_are_not_labelled_as_motion_graphics(qapp):
+    """The Zenvi Assistant harness is OpenCode, so its bare tool names carry
+    motion-graphics labels in humanize_tool_name."""
+    from classes.tool_handlers import humanize_tool_name
+    from windows.agent_runners import OpenCodeRunner
+
+    runner = OpenCodeRunner()
+    seen = []
+    runner.tool_started.connect(lambda c, n, a: seen.append(n))
+    for i, tool in enumerate(("bash", "read", "edit", "write", "glob", "grep", "list", "webfetch")):
+        runner._handle_event({"type": "tool_use", "sessionID": "ses_1", "part": {
+            "tool": tool, "callID": "c%d" % i, "state": {"status": "completed", "input": {}}}})
+    assert seen[:7] == ["run_shell_command", "read_file", "edit_file", "write_file",
+                        "find_files", "search_files", "list_directory"]
+    for name in seen:
+        assert "motion graphic" not in humanize_tool_name(name).lower(), name
+
+
+def test_parse_opencode_models_reads_the_real_listing():
+    """opencode_models.txt is `opencode models` with no provider signed in."""
+    from windows.agent_runners import parse_opencode_models
+
+    with open(os.path.join(_FIX, "opencode_models.txt"),
+              encoding="utf-8") as fh:
+        rows = parse_opencode_models(fh.read())
+    assert rows[0]["id"] == "cli-default" and rows[0]["default"] is True
+    assert [r["id"] for r in rows[1:3]] == ["opencode/big-pickle",
+                                           "opencode/ling-3.0-flash-fin-free"]
+    assert rows[1]["name"] == "big-pickle" and rows[1]["provider"] == "opencode"
+    assert [r["id"] for r in rows if r.get("featured")] == ["cli-default"]
+    assert parse_opencode_models("Error: something\n") == []
+
+
+def test_opencode_model_pill_lists_what_the_cli_reports(qapp, fresh_cursor_lineup, monkeypatch):
+    ar = fresh_cursor_lineup
+    monkeypatch.setattr(ar, "_which_cli", lambda name: "/bin/" + name)
+    monkeypatch.setattr(ar.OpenCodeRunner, "list_models", staticmethod(
+        lambda cli: ar.parse_opencode_models("anthropic/claude-sonnet-5\nopencode/big-pickle\n")))
+    assert ar.refresh_cli_models(ar.BACKEND_OPENCODE, "1.18.32") is True
+    ids = [m["id"] for m in ar.models_for_backend(ar.BACKEND_OPENCODE)]
+    assert ids == ["cli-default", "anthropic/claude-sonnet-5", "opencode/big-pickle"]
+
+    runner = ar.OpenCodeRunner()
+    assert runner._coerce_model("opencode/big-pickle") == "opencode/big-pickle"
+    runner._model_id = runner._coerce_model("cli-default")
+    assert "--model" not in runner._build_argv("hi")
+    runner._model_id = "anthropic/claude-sonnet-5"
+    argv = runner._build_argv("hi")
+    assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-5"
+
+
+def test_register_opencode_does_not_rewrite_a_current_entry(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    users = json.dumps({"provider": {"x": {"options": {"apiKey": "sk-secret"}}}})
+    cfg.write_text(users)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+
+    assert ar.register_opencode(7434, "tok")[0] is True
+    written = cfg.read_text()
+    os.utime(cfg, (1, 1))
+    assert ar.register_opencode(7434, "tok")[0] is True
+    assert cfg.read_text() == written and cfg.stat().st_mtime == 1
+    assert ar.register_opencode(7435, "tok")[0] is True     # moved port
+    assert (tmp_path / "opencode.json.zenvi-backup").read_text() == users, "first backup kept"
+    assert not (tmp_path / "opencode.json.zenvi-tmp").exists()
+    assert "tok" not in cfg.read_text().replace("{env:ZENVI_MCP_TOKEN}", "")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_register_opencode_never_leaves_provider_keys_world_readable(monkeypatch, tmp_path):
+    import windows.agent_runners as ar
+
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"provider": {"x": {"options": {"apiKey": "sk-secret"}}}}))
+    cfg.chmod(0o600)
+    monkeypatch.setattr(ar, "_opencode_config_dir", lambda: str(tmp_path))
+    old = os.umask(0o022)
+    try:
+        assert ar.register_opencode(7434, "tok")[0] is True
+    finally:
+        os.umask(old)
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "opencode.json.zenvi-backup").stat().st_mode & 0o777 == 0o600

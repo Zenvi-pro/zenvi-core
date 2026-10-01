@@ -208,3 +208,26 @@ def test_a_cursor_turn_shows_each_message_once(window_cls, keyed_store):
     assert len(replies) == 1
     # Only the prose after the last tool is left to render at the end.
     assert win._final_segment_text(sess, replies[0]) == last
+
+
+def test_an_opencode_turn_shows_each_message_once(window_cls, keyed_store):
+    import json
+    import os
+    from windows.agent_runners import OpenCodeRunner
+
+    win = _window(window_cls)
+    runner = OpenCodeRunner()
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "opencode_mcp_turn.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+    replies.append(runner._final_text)   # what run_request reports at exit
+
+    sess = win._sessions["s1"]
+    assert sess["turn_segments"] == ["I'll list the files first."]
+    tail = win._final_segment_text(sess, replies[0])
+    assert tail.startswith("Added `city.mp4`") and "list the files first" not in tail
