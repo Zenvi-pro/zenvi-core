@@ -912,6 +912,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         daily_limit = int(max_files * 0.7)
         historical_limit = max_files - daily_limit  # Remaining for previous days
 
+        # The zip snapshots the version this save is about to overwrite. A first
+        # save or a Save As to a new path has none yet; opening the archive first
+        # left an empty zip that File > Recovery offered as a previous version.
+        if not os.path.exists(file_path):
+            return
+
         folder_path, file_name = os.path.split(file_path)
         file_name, file_ext = os.path.splitext(file_name)
 
