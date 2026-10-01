@@ -59,6 +59,27 @@ class TestHarnessToolsReadAsProductWork(unittest.TestCase):
                 self.assertTrue(humanize_tool_name(name).strip())
 
 
+class TestClaudeCodeToolsReadAsProductWork(unittest.TestCase):
+    """Claude Code, a CLI chat backend, names its own tools in CamelCase.
+
+    Testing RC v1.2.0 (#216), its ``ToolSearch`` calls showed up in the chat as
+    "Toolsearch": the name had no label, and the fallback's ``capitalize()``
+    mashed the two words into one.
+    """
+
+    def test_tool_search_is_plain_language(self):
+        label = humanize_tool_name("ToolSearch")
+        self.assertNotIn(label, ("Toolsearch", "Tool search", "ToolSearch"))
+        self.assertIn("tools", label.lower())
+
+    def test_tool_search_matches_however_it_is_cased(self):
+        self.assertEqual(humanize_tool_name("ToolSearch"), humanize_tool_name("toolsearch"))
+
+    def test_unlabelled_camel_case_names_keep_their_word_breaks(self):
+        self.assertEqual(humanize_tool_name("NotebookEdit"), "Notebook edit")
+        self.assertEqual(humanize_tool_name("ExitPlanMode"), "Exit plan mode")
+
+
 class TestZenviLabelsAreUnchanged(unittest.TestCase):
     """The harness swap must not rename anything the user already knows."""
 
@@ -92,7 +113,7 @@ class TestHarnessKeysCannotShadowAZenviTool(unittest.TestCase):
 
     HARNESS_KEYS = frozenset({
         "task", "bash", "edit", "write", "read", "glob", "grep",
-        "question", "todowrite",
+        "question", "todowrite", "toolsearch",
     })
 
     def test_no_harness_key_is_a_desktop_tool(self):
