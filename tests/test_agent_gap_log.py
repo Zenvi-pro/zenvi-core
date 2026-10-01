@@ -10,7 +10,10 @@ def gap_log(monkeypatch, tmp_path):
     return gl
 
 
-def test_classify_gap_flags_known_gap(gap_log):
+def test_classify_gap_flags_known_gap(gap_log, monkeypatch):
+    # With Phase 3 tools shipped, live rules self-retire. Simulate a missing
+    # tool to prove the classifier still fires when the registry lacks it.
+    monkeypatch.setattr(gap_log, "_tool_names", lambda: set())
     gap = gap_log.classify_gap("please change the project fps to 24")
     assert gap is not None
     assert "fps" in gap or "resolution" in gap
@@ -19,6 +22,17 @@ def test_classify_gap_flags_known_gap(gap_log):
 def test_classify_gap_no_match_returns_none(gap_log):
     assert gap_log.classify_gap("undo my last edit") is None
     assert gap_log.classify_gap("") is None
+
+
+def test_vision_gap_self_retires_when_inspect_exists(gap_log, monkeypatch):
+    monkeypatch.setattr(gap_log, "_tool_names", lambda: set())
+    gap = gap_log.classify_gap("does the title overlap her face — look at the timeline")
+    assert gap is not None
+    assert "inspect_timeline" in gap
+    monkeypatch.setattr(
+        gap_log, "_tool_names", lambda: {"inspect_timeline_tool"},
+    )
+    assert gap_log.classify_gap("does the title overlap her face — look at the timeline") is None
 
 
 def test_classify_gap_self_retires_once_tool_exists(gap_log, monkeypatch):
