@@ -151,9 +151,10 @@ def zenvi_api_request(method: str = "GET", path: str = "", body: str = "",
 # Harness tools (#150)
 #
 # A scheduled routine cannot click: no file picker, no chat dock, no Cancel
-# button. These three tools give such a run the pieces it is otherwise missing —
-# a liveness probe, a way to prompt the native assistant, and log pointers for
-# when something hangs. They live here rather than in AGENT_TOOL_HANDLERS
+# button. These tools give such a run the pieces it is otherwise missing — a
+# liveness probe, a way to wait out an edit that outlived its tool call, a way
+# to prompt the native assistant, and log pointers for when something hangs.
+# They live here rather than in AGENT_TOOL_HANDLERS
 # because the MCP server calls extras straight on a worker thread instead of
 # marshalling them to the Qt GUI thread, which is exactly what a probe for a
 # wedged GUI thread needs.
@@ -249,6 +250,48 @@ def mcp_health_tool(main_thread_timeout_seconds: int = 5) -> str:
         parts.append("main_thread_error=%s" % exc)
 
     return " ".join(parts)
+
+
+def wait_for_editor_job_tool(job_id: str = "", timeout_seconds: int = 60) -> str:
+    """Wait for an edit that was still running when its tool call stopped waiting.
+
+    A tool that answered MAIN_THREAD_STILL_RUNNING had already started its edit on
+    the Qt GUI thread, and the edit finishes on its own: retrying the tool would
+    apply it twice. Pass the job_id from that error. This waits up to
+    timeout_seconds (default 60, max 600) without touching the GUI thread, then
+    reports status=done with the call's result, status=error, status=running if
+    it is still going (call again to keep waiting), or status=unknown.
+    """
+    from classes.tool_handlers import wait_for_main_thread_job
+
+    jid = str(job_id or "").strip()
+    if not jid:
+        return ("Error: 'job_id' is required -- copy it from the "
+                "MAIN_THREAD_STILL_RUNNING error.")
+    try:
+        budget = min(600, max(0, int(timeout_seconds)))
+    except Exception:
+        budget = 60
+
+    outcome = wait_for_main_thread_job(jid, budget)
+    if outcome["state"] == "unknown":
+        return ("status=unknown job_id=%s\nNo editor call with that id is tracked "
+                "in this session. Check get_timeline_state_tool for the current "
+                "state before editing again." % jid)
+    if outcome["state"] == "running":
+        return ("status=running job_id=%s running_for=%ds\nStill running on the "
+                "editor's GUI thread. Do not retry the original call; call "
+                "wait_for_editor_job_tool again to keep waiting."
+                % (jid, outcome["seconds"]))
+    if outcome["error"] is not None:
+        return ("status=error job_id=%s ran_for=%.1fs\nThe call failed: %s"
+                % (jid, outcome["seconds"], outcome["error"]))
+    text = "" if outcome["result"] is None else str(outcome["result"])
+    status = "error" if text.startswith("Error") else "done"
+    return ("status=%s job_id=%s ran_for=%.1fs\n%s"
+            % (status, jid, outcome["seconds"],
+               text or "The call finished. Check get_timeline_state_tool to see "
+                       "its effect."))
 
 
 def send_assistant_prompt_tool(message: str = "", session_id: str = "",
@@ -357,5 +400,6 @@ MCP_EXTRA_TOOLS = {
     "zenvi_api_request": zenvi_api_request,
     "send_assistant_prompt_tool": send_assistant_prompt_tool,
     "mcp_health_tool": mcp_health_tool,
+    "wait_for_editor_job_tool": wait_for_editor_job_tool,
     "get_log_paths_tool": get_log_paths_tool,
 }
