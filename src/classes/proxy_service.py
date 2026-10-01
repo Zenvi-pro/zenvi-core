@@ -220,58 +220,81 @@ class ProxyService(QObject):
          if not selected_folder:
              return
 
+         matches = self.match_existing_in_folder(files, selected_folder)
+         matched, missing, invalid = self.link_matches(matches)
+         status = "Optimize Preview: linked {} item(s), missing {}".format(matched, missing)
+         if invalid:
+             status += ", invalid {}".format(invalid)
+         self._show_status(status, 4000)
+
+     def match_existing_in_folder(self, files, selected_folder):
+         """Find each file's optimized copy in a folder (file system reads; any thread).
+
+         Returns [(file_obj, proxy_reader, match_path, error)]: a reader for a usable
+         match, a "missing" placeholder reader when nothing matches, or error text
+         for a match that libopenshot cannot open.
+         """
+         results = []
+         folder_index = self._index_existing_optimized_files(selected_folder)
+         for file_obj in files:
+             match_path = self._match_existing_optimized_path(file_obj, selected_folder, folder_index)
+             if match_path and os.path.exists(match_path):
+                 try:
+                     results.append((file_obj, self._reader_json_for_path(match_path, file_obj.id), match_path, ""))
+                 except Exception as exc:
+                     log.warning(
+                         "Optimize Preview use_existing_for_files file_id=%s skipped invalid existing file=%s (%s)",
+                         file_obj.id,
+                         match_path,
+                         exc,
+                     )
+                     results.append((file_obj, None, match_path, str(exc) or "unreadable video"))
+             else:
+                 results.append((file_obj, self._missing_proxy_reader(file_obj, selected_folder), None, ""))
+         return results
+
+     def link_matches(self, matches):
+         """Save the readers from match_existing_in_folder (GUI thread). Returns (matched, missing, invalid)."""
          matched = 0
          missing = 0
          invalid = 0
          changed_file_ids = []
-         folder_index = self._index_existing_optimized_files(selected_folder)
          updates = get_app().updates
          previous_tid = getattr(updates, "transaction_id", None)
-         updates.transaction_id = str(uuid.uuid4())
+         updates.transaction_id = previous_tid or str(uuid.uuid4())
          try:
-             for file_obj in files:
-                 match_path = self._match_existing_optimized_path(file_obj, selected_folder, folder_index)
-                 if match_path and os.path.exists(match_path):
-                     try:
-                         proxy_reader = self._reader_json_for_path(match_path, file_obj.id)
-                         matched += 1
-                         self._save_proxy_reader(file_obj.id, proxy_reader, apply_runtime=False, emit_job_change=False)
-                         changed_file_ids.append(str(file_obj.id or ""))
-                     except Exception as exc:
-                         log.warning(
-                             "Optimize Preview use_existing_for_files file_id=%s skipped invalid existing file=%s (%s)",
-                             file_obj.id,
-                             match_path,
-                             exc,
-                         )
-                         invalid += 1
-                 else:
-                     proxy_reader = self._missing_proxy_reader(file_obj, selected_folder)
-                     self._save_proxy_reader(file_obj.id, proxy_reader, apply_runtime=False, emit_job_change=False)
-                     changed_file_ids.append(str(file_obj.id or ""))
+             for file_obj, proxy_reader, _match_path, error in matches:
+                 if error or not isinstance(proxy_reader, dict):
+                     invalid += 1
+                     continue
+                 if proxy_reader.get("missing"):
                      missing += 1
+                 else:
+                     matched += 1
+                 self._save_proxy_reader(file_obj.id, proxy_reader, apply_runtime=False, emit_job_change=False)
+                 changed_file_ids.append(str(file_obj.id or ""))
          finally:
              updates.transaction_id = previous_tid
 
          self.apply_runtime_updates_for_files(changed_file_ids)
          for file_id in changed_file_ids:
              self._emit_job_change(file_id)
+         return matched, missing, invalid
 
-         status = "Optimize Preview: linked {} item(s), missing {}".format(matched, missing)
-         if invalid:
-             status += ", invalid {}".format(invalid)
-         self._show_status(status, 4000)
+     def remove_for_files(self, files, show_status=True):
+         """Unlink the files' optimized copies (the copies stay on disk).
 
-     def remove_for_files(self, files):
+         Returns the absolute paths of the copies that were linked.
+         """
          files = [f for f in (files or []) if getattr(f, "id", None)]
          if not files:
-             return
+             return []
 
-         removed = 0
+         removed_paths = []
          changed_file_ids = []
          updates = get_app().updates
          previous_tid = getattr(updates, "transaction_id", None)
-         updates.transaction_id = str(uuid.uuid4())
+         updates.transaction_id = previous_tid or str(uuid.uuid4())
          try:
              for file_obj in files:
                  file_id = str(file_obj.id or "")
@@ -280,7 +303,10 @@ class ProxyService(QObject):
                  data = getattr(fresh_file, "data", {}) or {}
                  if "proxy_reader" not in data:
                      continue
-                 data.pop("proxy_reader", None)
+                 if not self.has_proxy_reader(fresh_file):
+                     # {} left by an undone link: nothing is linked
+                     continue
+                 proxy_reader = data.pop("proxy_reader", None)
                  fresh_file.data = data
                  fresh_file.save()
 
@@ -289,7 +315,8 @@ class ProxyService(QObject):
                  if "proxy_reader" in refreshed_data and refreshed and refreshed.key:
                      get_app().updates.delete(refreshed.key + ["proxy_reader"])
                  changed_file_ids.append(file_id)
-                 removed += 1
+                 proxy_path = absolute_media_path(proxy_reader.get("path")) if isinstance(proxy_reader, dict) else ""
+                 removed_paths.append(os.path.abspath(proxy_path) if proxy_path else "")
          finally:
              updates.transaction_id = previous_tid
 
@@ -297,58 +324,36 @@ class ProxyService(QObject):
          for file_id in changed_file_ids:
              self._emit_job_change(file_id)
 
-         if removed:
-             self._show_status("Optimize Preview: removed {} item(s)".format(removed), 3000)
+         if changed_file_ids and show_status:
+             self._show_status("Optimize Preview: removed {} item(s)".format(len(changed_file_ids)), 3000)
+         return removed_paths
+
+     @staticmethod
+     def delete_proxy_paths(paths):
+         """Delete optimized copies from disk (any thread). Returns (deleted, failed_paths)."""
+         deleted = 0
+         failed = []
+         for proxy_path in paths or []:
+             if not proxy_path or not os.path.exists(proxy_path):
+                 continue
+             try:
+                 os.remove(proxy_path)
+                 deleted += 1
+             except Exception:
+                 log.warning("Optimize Preview delete failed for %s", proxy_path, exc_info=1)
+                 failed.append(proxy_path)
+         return deleted, failed
 
      def delete_and_unlink_for_files(self, files):
          files = [f for f in (files or []) if getattr(f, "id", None)]
          if not files:
              return 0
 
-         deleted = 0
-         unlinked = 0
-         changed_file_ids = []
-         updates = get_app().updates
-         previous_tid = getattr(updates, "transaction_id", None)
-         updates.transaction_id = str(uuid.uuid4())
-         try:
-             for file_obj in files:
-                 file_id = str(file_obj.id or "")
-                 self.cancel_job(file_id)
-                 fresh_file = File.get(id=file_id)
-                 data = getattr(fresh_file, "data", {}) or {}
-                 proxy_reader = data.get("proxy_reader")
-                 if not isinstance(proxy_reader, dict):
-                     continue
+         unlinked_paths = self.remove_for_files(files, show_status=False)
+         deleted, _failed = self.delete_proxy_paths(unlinked_paths)
 
-                 proxy_path = absolute_media_path(proxy_reader.get("path"))
-                 if proxy_path and os.path.exists(proxy_path):
-                     proxy_abs = os.path.abspath(proxy_path)
-                     try:
-                         os.remove(proxy_abs)
-                         deleted += 1
-                     except Exception:
-                         log.warning("Optimize Preview delete failed for %s", proxy_abs, exc_info=1)
-
-                 data.pop("proxy_reader", None)
-                 fresh_file.data = data
-                 fresh_file.save()
-
-                 refreshed = File.get(id=file_id)
-                 refreshed_data = getattr(refreshed, "data", {}) or {}
-                 if "proxy_reader" in refreshed_data and refreshed and refreshed.key:
-                     get_app().updates.delete(refreshed.key + ["proxy_reader"])
-                 changed_file_ids.append(file_id)
-                 unlinked += 1
-         finally:
-             updates.transaction_id = previous_tid
-
-         self.apply_runtime_updates_for_files(changed_file_ids)
-         for file_id in changed_file_ids:
-             self._emit_job_change(file_id)
-
-         status = "Optimize Preview: deleted {}, unlinked {}".format(deleted, unlinked)
-         if unlinked:
+         status = "Optimize Preview: deleted {}, unlinked {}".format(deleted, len(unlinked_paths))
+         if unlinked_paths:
              self._show_status(status, 4000)
          return deleted
 
@@ -362,17 +367,32 @@ class ProxyService(QObject):
          return False
 
      def delete_internal_project_proxy_files(self):
+         """Edit > Clear > Optimized Videos: unlink and delete the project's own optimized copies."""
+         proxy_root, unlinked_paths = self.unlink_internal_project_proxies()
+         if not proxy_root:
+             return 0
+         deleted, _failed = self.delete_proxy_paths(unlinked_paths)
+         deleted += self.purge_proxy_root(proxy_root)
+         if deleted or unlinked_paths:
+             self._show_status("Optimize Preview: deleted {}, unlinked {}".format(deleted, len(unlinked_paths)), 4000)
+         return deleted
+
+     def unlink_internal_project_proxies(self):
+         """Unlink every file whose optimized copy lives in this project's assets folder.
+
+         Returns (proxy_root, unlinked_paths); proxy_root is "" when the folder does
+         not exist. Project edits only: the copies are deleted by the caller.
+         """
          proxy_root = os.path.abspath(str(self._proxy_root() or ""))
          proxy_root_prefix = proxy_root + os.sep if proxy_root else ""
          if not proxy_root_prefix or not os.path.isdir(proxy_root):
-             return 0
+             return "", []
 
-         deleted = 0
-         unlinked = 0
+         unlinked_paths = []
          changed_file_ids = []
          updates = get_app().updates
          previous_tid = getattr(updates, "transaction_id", None)
-         updates.transaction_id = str(uuid.uuid4())
+         updates.transaction_id = previous_tid or str(uuid.uuid4())
          try:
              for file_obj in File.filter():
                  file_id = str(getattr(file_obj, "id", "") or "")
@@ -392,13 +412,6 @@ class ProxyService(QObject):
                      continue
 
                  self.cancel_job(file_id)
-                 if os.path.exists(proxy_abs):
-                     try:
-                         os.remove(proxy_abs)
-                         deleted += 1
-                     except Exception:
-                         log.warning("Optimize Preview delete failed for %s", proxy_abs, exc_info=1)
-
                  data.pop("proxy_reader", None)
                  fresh_file.data = data
                  fresh_file.save()
@@ -408,10 +421,19 @@ class ProxyService(QObject):
                  if "proxy_reader" in refreshed_data and refreshed and refreshed.key:
                      get_app().updates.delete(refreshed.key + ["proxy_reader"])
                  changed_file_ids.append(file_id)
-                 unlinked += 1
+                 unlinked_paths.append(proxy_abs)
          finally:
              updates.transaction_id = previous_tid
 
+         self.apply_runtime_updates_for_files(changed_file_ids)
+         for file_id in changed_file_ids:
+             self._emit_job_change(file_id)
+         return proxy_root, unlinked_paths
+
+     @staticmethod
+     def purge_proxy_root(proxy_root):
+         """Delete everything left in the project's optimized folder (any thread). Returns files deleted."""
+         deleted = 0
          try:
              for root, dirs, files in os.walk(proxy_root, topdown=False):
                  for name in files:
@@ -429,13 +451,6 @@ class ProxyService(QObject):
                          pass
          except Exception:
              log.warning("Optimize Preview cleanup failed for %s", proxy_root, exc_info=1)
-
-         self.apply_runtime_updates_for_files(changed_file_ids)
-         for file_id in changed_file_ids:
-             self._emit_job_change(file_id)
-
-         if deleted or unlinked:
-             self._show_status("Optimize Preview: deleted {}, unlinked {}".format(deleted, unlinked), 4000)
          return deleted
 
      def cancel_for_files(self, files):
@@ -653,6 +668,18 @@ class ProxyService(QObject):
          file_obj = File.get(id=file_id)
          if not file_obj:
              return
+         if "proxy_reader" not in file_obj.data and file_obj.key:
+             # An undo merges the old record back, so a key this save adds would survive
+             # it and the file would stay optimized. Seed the neutral {} (no path = no
+             # proxy) outside history first, so undoing the link really unlinks.
+             updates = get_app().updates
+             previous_ignore = updates.ignore_history
+             updates.ignore_history = True
+             try:
+                 updates.update(list(file_obj.key), {"proxy_reader": {}})
+             finally:
+                 updates.ignore_history = previous_ignore
+             file_obj.data["proxy_reader"] = {}
          file_obj.data["proxy_reader"] = copy.deepcopy(proxy_reader or {})
          file_obj.save()
          if apply_runtime:

@@ -28,9 +28,7 @@
 from qt_api import QMimeData, QSize, QPoint, Qt, QUrl, pyqtSlot
 from qt_api import clear_override_cursor
 from qt_api import QDrag, QListView
-import openshot  # Python module for libopenshot (required video editing module installed separately)
-from classes import info
-from classes.query import File
+from classes import emoji_catalog, info
 from classes.app import get_app
 from classes.logger import log
 import json
@@ -103,41 +101,9 @@ class EmojisListView(QListView):
             get_app().updates.transaction_id = None
 
     def add_file(self, filepath, emoji_name=None):
-        # Add file into project
-
-        app = get_app()
-        _ = app._tr
-
-        # Check for this path in our existing project data
-        # ["1F595-1F3FE",
-        # "openshot-qt-git/src/emojis/color/svg/1F595-1F3FE.svg"]
-        file = File.get(path=filepath)
-
-        # If this file is already found, exit
-        if file:
-            return file
-
-        # Load filepath in libopenshot clip object (which will try multiple readers to open it)
-        clip = openshot.Clip(filepath)
-
-        # Get the JSON for the clip's internal reader
+        """Add an emoji to Project Files (once), named after the emoji (shared with add_emoji_tool)."""
         try:
-            reader = clip.Reader()
-            file_data = json.loads(reader.Json())
-
-            # Determine media type
-            file_data["media_type"] = "image"
-
-            # Set friendly emoji name (translated)
-            if emoji_name:
-                file_data["name"] = emoji_name
-
-            # Save new file to the project data
-            file = File()
-            file.data = file_data
-            file.save()
-            return file
-
+            return emoji_catalog.add_emoji_file(filepath, emoji_name)
         except Exception as ex:
             # Log exception
             log.warning("Failed to import file: {}".format(str(ex)))
