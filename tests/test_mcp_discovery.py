@@ -129,7 +129,8 @@ def tool_stub():
 
 @pytest.fixture
 def server(tool_stub, tmp_path, monkeypatch):
-    pytest.importorskip("mcp")
+    # mcp 2.x dropped the FastMCP server the app embeds (requirements pin mcp<2).
+    pytest.importorskip("mcp.server.fastmcp")
     import classes.agent_mcp_server as srv_mod
 
     monkeypatch.setattr(srv_mod, "_token_path", lambda: str(tmp_path / "mcp_token"))

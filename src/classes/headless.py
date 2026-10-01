@@ -286,6 +286,9 @@ class HeadlessRuntime(QObject):
         if not self._app.gui():
             report("the editor did not start; see %s" % _log_path())
             return EXIT_FAILURE
+        # Again: libopenshot installs its own crash handlers with the window's
+        # first Timeline, and the shutdown signals must stay ours.
+        self._claim_signals()
         if not self._open_project():
             # Still through the event loop, so the window shuts down in order.
             self._exit_request = ("the project could not be opened", EXIT_PROJECT)
@@ -326,21 +329,26 @@ class HeadlessRuntime(QObject):
         report("ready: MCP %s (pid %d, project %s, discovery file %s)"
                % (server.url(), os.getpid(), self._project or "untitled", discovery_file))
 
-    def _install_signal_handlers(self):
-        def _on_signal(signum, _frame):
-            # A second signal gets the default action, so Ctrl+C twice still
-            # ends a shutdown that hangs.
-            signal.signal(signum, signal.SIG_DFL)
-            self.request_shutdown(signal.Signals(signum).name)
+    def _on_signal(self, signum, _frame):
+        # A second signal gets the default action, so Ctrl+C twice still ends
+        # a shutdown that hangs.
+        signal.signal(signum, signal.SIG_DFL)
+        self.request_shutdown(signal.Signals(signum).name)
 
+    def _claim_signals(self):
+        if self._exit_request is not None:
+            return  # one already arrived; leave the default for a second one
         for name in ("SIGINT", "SIGTERM", "SIGHUP"):
             signum = getattr(signal, name, None)
             if signum is None:
                 continue
             try:
-                signal.signal(signum, _on_signal)
+                signal.signal(signum, self._on_signal)
             except (OSError, RuntimeError, ValueError):
                 log.debug("Could not handle %s", name, exc_info=True)
+
+    def _install_signal_handlers(self):
+        self._claim_signals()
         self._signal_pump = QTimer(self)
         self._signal_pump.timeout.connect(lambda: None)
         self._signal_pump.start(_SIGNAL_POLL_MS)

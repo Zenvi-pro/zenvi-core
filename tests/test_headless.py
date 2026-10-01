@@ -210,6 +210,27 @@ def test_not_signed_in_exits_with_its_own_code(reported, lock, signed_in):
     assert app.filters == []  # nothing else was set up
 
 
+def _no_real_signals(runtime, monkeypatch, calls=None):
+    # Never touch the test process's own signal handlers.
+    log = calls if calls is not None else []
+    monkeypatch.setattr(runtime, "_install_signal_handlers", lambda: log.append("install"))
+    monkeypatch.setattr(runtime, "_claim_signals", lambda: log.append("claim"))
+    return log
+
+
+def test_signals_are_claimed_again_once_the_window_exists(
+        reported, lock, signed_in, timers, monkeypatch):
+    # libopenshot installs its own handlers with the window's first Timeline.
+    app = FakeApp()
+    order = []
+    app.gui = lambda: order.append("gui") or True
+    app.exec_ = lambda: 0
+    runtime = _runtime(app)
+    _no_real_signals(runtime, monkeypatch, order)
+    runtime.run()
+    assert order == ["install", "gui", "claim"]
+
+
 def test_startup_opens_the_project_and_registers_the_shutdown_tool(
         reported, lock, signed_in, timers, tmp_path, monkeypatch):
     import classes.agent_mcp_server as srv_mod
@@ -221,7 +242,7 @@ def test_startup_opens_the_project_and_registers_the_shutdown_tool(
     app.gui = lambda: True
     app.exec_ = lambda: 0
     runtime = _runtime(app, project_path=str(project))
-    monkeypatch.setattr(runtime, "_install_signal_handlers", lambda: None)
+    _no_real_signals(runtime, monkeypatch)
 
     assert runtime.run() == 0
     assert app.window.opened == [str(project)]
@@ -236,7 +257,7 @@ def test_untitled_session_starts_blank(reported, lock, signed_in, timers, monkey
     app.gui = lambda: True
     app.exec_ = lambda: 0
     runtime = _runtime(app)
-    monkeypatch.setattr(runtime, "_install_signal_handlers", lambda: None)
+    _no_real_signals(runtime, monkeypatch)
     assert runtime.run() == 0
     assert app.window.blank == 1
 
@@ -250,7 +271,7 @@ def test_a_project_that_does_not_load_shuts_down_through_the_loop(
     app.exec_ = lambda: 0
     app.window.open_project = lambda path: None  # load failed; still untitled
     runtime = _runtime(app, project_path=str(project))
-    monkeypatch.setattr(runtime, "_install_signal_handlers", lambda: None)
+    _no_real_signals(runtime, monkeypatch)
 
     runtime.run()
     assert "could not open" in reported[0]
