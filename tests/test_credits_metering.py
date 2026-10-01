@@ -94,6 +94,7 @@ def test_a_charge_that_went_through_logs_nothing(caplog):
 
 def test_the_refusal_is_logged_on_the_real_charge_path(monkeypatch, caplog):
     monkeypatch.setattr(cc.credits, "_rpc", lambda function_name, payload, timeout=8: "standard_mode")
+    monkeypatch.setattr(cc.credits, "balance", lambda: (True, 0))  # the refetch after the charge
     with caplog.at_level(logging.WARNING, logger="classes.credits_client"):
         cc.credits.charge_operation("indexing_per_minute", duration_seconds=6.0)
         for t in threading.enumerate():
