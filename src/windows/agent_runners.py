@@ -881,6 +881,9 @@ class BaseAgentRunner(QObject):
     DISPLAY_NAME = ""    # human label, e.g. "Claude Code"
     BACKEND_ID = ""      # picker/backend id, e.g. BACKEND_CLAUDE
     MODELS: list = []    # built-in model-picker entries; the live lineup wins
+    # Stop whatever the CLI left in its process group once it exits. Off by
+    # default; see CursorCliRunner.
+    REAP_ON_EXIT = False
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -983,6 +986,20 @@ class BaseAgentRunner(QObject):
                     return
                 except Exception:
                     continue
+
+    def _reap_process_group(self):
+        """SIGTERM anything still in the finished CLI's process group.
+
+        run_request starts the CLI in its own session, so the group is ours.
+        POSIX only: on Windows the tree cannot be found once its root exits.
+        """
+        proc = self._proc
+        if proc is None or sys.platform == "win32":
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            pass   # nothing left in the group
 
     @property
     def _aborted(self) -> bool:
@@ -1110,6 +1127,8 @@ class BaseAgentRunner(QObject):
         except Exception:
             log.warning("%s did not exit within 5s of closing stdout",
                         self.DISPLAY_NAME)
+        if self.REAP_ON_EXIT:
+            self._reap_process_group()
 
         if self._aborted:
             return
@@ -1414,6 +1433,9 @@ class CursorCliRunner(BaseAgentRunner):
     # `cursor-agent models` lists (refresh_cursor_models). Until it has, the
     # only choice is to leave the model to the CLI's own config.
     MODELS = [_cli_default_entry()]
+    # cursor-agent exits without stopping the stdio MCP servers and the worker
+    # it started, so every finished turn would leave them running.
+    REAP_ON_EXIT = True
 
     def __init__(self, parent=None):
         super().__init__(parent)

@@ -1485,3 +1485,67 @@ def test_cursor_turn_carries_the_token_and_approves_before_launch(qapp, monkeypa
                     "url": "http://127.0.0.1:7434/mcp"}
     assert runner._build_env()["ZENVI_MCP_TOKEN"] == "tok"
     assert "--approve-mcps" not in runner._build_argv("hi")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX")
+def test_cursor_turn_leaves_nothing_running_after_the_cli_exits(qapp, monkeypatch, tmp_path):
+    """cursor-agent exits without stopping the MCP servers it started; seen in
+    the app as one orphaned stdio server per finished turn."""
+    import signal as _signal
+    import time
+    import windows.agent_runners as ar
+
+    pidfile = tmp_path / "child.pid"
+    cli = (
+        "import json, subprocess, sys\n"
+        # Its stdio goes to the CLI, not to us, as an MCP server's does.
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+        " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "open(%r, 'w').write(str(child.pid))\n"
+        "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
+        " 'result': 'done'}), flush=True)\n" % str(pidfile)
+    )
+
+    class _FakeServer:
+        token, port = "tok", 1
+
+        def start(self):
+            return self
+
+        def url(self):
+            return "http://127.0.0.1:1/mcp"
+
+    monkeypatch.setattr("classes.agent_mcp_server.get_mcp_server", lambda: _FakeServer())
+    monkeypatch.setattr(ar, "_which_cli", lambda name: sys.executable)
+    monkeypatch.setattr(ar.CursorCliRunner, "_ensure_ready", lambda self: None)
+    monkeypatch.setattr(ar.CursorCliRunner, "_build_argv",
+                        lambda self, text: [sys.executable, "-c", cli])
+    monkeypatch.setattr(ar, "_project_cwd", lambda: str(tmp_path))
+
+    runner = ar.CursorCliRunner()
+    replies = []
+    runner.response_ready.connect(replies.append)
+    runner.run_request("hi", "")
+
+    assert replies == ["done"]
+    child = int(pidfile.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        try:
+            os.waitpid(child, os.WNOHANG)   # not ours to reap; ignore
+        except ChildProcessError:
+            pass
+        time.sleep(0.1)
+    else:
+        os.kill(child, _signal.SIGKILL)
+        pytest.fail("the CLI's child outlived the turn")
+
+
+def test_other_clis_keep_their_children(qapp):
+    """Only Cursor reaps: Claude Code and Codex behave as before."""
+    from windows.agent_runners import ClaudeCodeRunner, CodexRunner, CursorCliRunner
+    assert CursorCliRunner.REAP_ON_EXIT is True
+    assert ClaudeCodeRunner.REAP_ON_EXIT is False and CodexRunner.REAP_ON_EXIT is False
