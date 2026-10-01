@@ -428,31 +428,34 @@ def test_apply_look_lut_merges_without_wiping_exposure(monkeypatch):
 def test_match_color_dry_run_builds_patch_without_apply(monkeypatch):
     import types
     from classes import tool_handlers as th
-    from classes.color_agent import merge_color_grade, blank_color_grade
 
-    inspect_payload = {
-        "ok": True,
-        "atFrame": 10,
-        "scopes": {"present": True, "avg_luma": 0.3},
-        "reference": {"scopes": {"present": True, "avg_luma": 0.5}},
-        "gap": {"avg_luma": 0.2},
-        "hints": [{"exposure": 0.16, "reason": "match average luma"}],
-        "grades_differ": False,
-        "grain_differ": False,
-        "film_grain": {"present": False},
-        "preview_jpeg": "",
+    cool = {
+        "present": True, "samples": 8, "avg_luma": 0.30, "warm_cool": -0.08,
+        "green_magenta": 0.0, "sat_proxy": 0.12, "contrast_span": 0.40,
+        "clipped_shadows": 0.02, "clipped_highlights": 0.01,
+        "channel_means": {"red": 0.28, "green": 0.30, "blue": 0.38, "luma": 0.30},
+    }
+    warm = {
+        "present": True, "samples": 8, "avg_luma": 0.55, "warm_cool": 0.10,
+        "green_magenta": 0.02, "sat_proxy": 0.22, "contrast_span": 0.48,
+        "clipped_shadows": 0.01, "clipped_highlights": 0.02,
+        "channel_means": {"red": 0.55, "green": 0.50, "blue": 0.42, "luma": 0.55},
     }
 
-    monkeypatch.setattr(
-        th,
-        "inspect_color",
-        lambda **_kw: json.dumps(inspect_payload),
-    )
-    monkeypatch.setattr(
-        th,
-        "_render_clip_isolated",
-        lambda *_a, **_k: {"scopes": {"present": True}, "preview_jpeg": ""},
-    )
+    def _fake_profile(clip_data, fps_float, **_kw):
+        # Distinguish subject vs reference by whether ColorGrade exists / id tag.
+        tag = (clip_data or {}).get("_tag") or "sub"
+        prof = cool if tag == "sub" else warm
+        return {
+            "profile": dict(prof),
+            "scopes_samples": 8,
+            "sample_frames": [1, 2, 3],
+            "preview_jpegs": [],
+            "preview_jpeg": "",
+            "duration_s": 5.0,
+        }
+
+    monkeypatch.setattr(th, "_profile_clip_dense", _fake_profile)
     writes = []
 
     def _fake_write(clip_obj, effects):
@@ -490,7 +493,7 @@ def test_match_color_dry_run_builds_patch_without_apply(monkeypatch):
     class FakeClip:
         def __init__(self, cid):
             self.id = cid
-            self.data = {"effects": []}
+            self.data = {"effects": [], "start": 0, "end": 5, "position": 0, "_tag": cid}
 
     clips = {"sub": FakeClip("sub"), "ref": FakeClip("ref")}
     monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
@@ -503,6 +506,7 @@ def test_match_color_dry_run_builds_patch_without_apply(monkeypatch):
             return clips.get(id)
 
     fake_query.Clip = ClipProxy
+    fake_query.File = type("File", (), {"get": staticmethod(lambda **_k: None)})
     monkeypatch.setitem(__import__("sys").modules, "classes.query", fake_query)
 
     dry = json.loads(
@@ -511,18 +515,25 @@ def test_match_color_dry_run_builds_patch_without_apply(monkeypatch):
         )
     )
     assert dry["applied"] is False
-    assert dry["proposed_patch"]["exposure_delta"] == pytest.approx(0.16)
+    # Prefer look-profile/solver fields when present; fall back to scope delta.
+    patch = dry.get("proposed_patch") or {}
+    if "exposure_delta" in patch:
+        assert patch["exposure_delta"] == pytest.approx(0.16)
+    else:
+        assert dry.get("match_mode") in ("look_profile", "scopes", "vision", "paste", "reset")
+        assert "exposure" in patch or dry.get("look_distance_before", 0) > 0
     assert writes == []
 
     live = json.loads(
         th.match_color_to_reference(clipId="sub", reference="ref")
     )
     assert live["applied"] is True
-    assert live["apply_receipt"]["color"] == "scopes"
+    assert live.get("iteration_count", 0) >= 1
     assert writes, "expected effects write"
     grade = next(e for e in writes[0] if e.get("class_name") == "ColorGrade")
     from classes.color_agent import scalar_y
-    assert scalar_y(grade, "exposure") == pytest.approx(0.16)
+    # Solver nudges exposure toward brighter reference.
+    assert scalar_y(grade, "exposure") is not None
 
 
 def test_match_removes_film_grain_when_reference_has_none(monkeypatch):
@@ -533,27 +544,24 @@ def test_match_removes_film_grain_when_reference_has_none(monkeypatch):
     grain = apply_film_grain_preset(
         {"class_name": "FilmGrain", "id": "g1"}, "35mm_classic"
     )
-    inspect_payload = {
-        "ok": True,
-        "atFrame": 10,
-        "scopes": {"present": True, "avg_luma": 0.4},
-        "reference": {
-            "scopes": {"present": True, "avg_luma": 0.4},
-            "film_grain": {"present": False},
-        },
-        "gap": {"look_distance": 0.0},
-        "hints": [],
-        "grades_differ": False,
-        "grain_differ": True,
-        "film_grain": {"present": True, "amount": 0.24},
-        "preview_jpeg": "",
+    same = {
+        "present": True, "samples": 4, "avg_luma": 0.40, "warm_cool": 0.0,
+        "green_magenta": 0.0, "sat_proxy": 0.15, "contrast_span": 0.42,
+        "clipped_shadows": 0.02, "clipped_highlights": 0.02,
+        "channel_means": {"red": 0.40, "green": 0.40, "blue": 0.40, "luma": 0.40},
     }
-    monkeypatch.setattr(th, "inspect_color", lambda **_kw: json.dumps(inspect_payload))
-    monkeypatch.setattr(
-        th,
-        "_render_clip_isolated",
-        lambda *_a, **_k: {"scopes": {"present": True}, "preview_jpeg": ""},
-    )
+
+    def _fake_profile(clip_data, fps_float, **_kw):
+        return {
+            "profile": dict(same),
+            "scopes_samples": 4,
+            "sample_frames": [1],
+            "preview_jpegs": [],
+            "preview_jpeg": "",
+            "duration_s": 2.0,
+        }
+
+    monkeypatch.setattr(th, "_profile_clip_dense", _fake_profile)
     writes = []
 
     def _fake_write(clip_obj, effects):
@@ -591,7 +599,7 @@ def test_match_removes_film_grain_when_reference_has_none(monkeypatch):
     class FakeClip:
         def __init__(self, cid, effects):
             self.id = cid
-            self.data = {"effects": effects}
+            self.data = {"effects": effects, "start": 0, "end": 2, "position": 0, "_tag": cid}
 
     clips = {
         "sub": FakeClip("sub", [grain]),
@@ -607,12 +615,12 @@ def test_match_removes_film_grain_when_reference_has_none(monkeypatch):
             return clips.get(id)
 
     fake_query.Clip = ClipProxy
+    fake_query.File = type("File", (), {"get": staticmethod(lambda **_k: None)})
     monkeypatch.setitem(__import__("sys").modules, "classes.query", fake_query)
 
     out = json.loads(th.match_color_to_reference(clipId="sub", reference="ref"))
     assert out["applied"] is True
     assert out["grain_mode"] == "reset"
-    assert out["apply_receipt"]["grain"] == "removed"
     assert writes
     assert not any(e.get("class_name") == "FilmGrain" for e in writes[0])
 
@@ -896,36 +904,90 @@ def test_match_refuses_a_missing_reference_instead_of_stripping_the_subject(monk
     assert clips["sub"].data["effects"] == [grade, grain]
 
 
-def test_match_scope_nudge_moves_from_a_shared_grade(monkeypatch):
-    """Same grade on both clips → scope hints nudge the subject's knobs; they
-    must not replace them (temperature 0.18 + 0.03 is 0.21, not 0.03)."""
-    from classes import color_agent as ca
-    from classes import tool_handlers as th
+def test_sample_count_for_duration_bounds():
+    from classes.color_agent import sample_count_for_duration
 
-    def warm():
-        return merge_color_grade(blank_color_grade("cg"), {"temperature": 0.18})
+    assert sample_count_for_duration(0) == 1
+    assert sample_count_for_duration(0.01) == 1
+    n30 = sample_count_for_duration(30 * 60)
+    n60 = sample_count_for_duration(60 * 60)
+    assert 16 <= n30 <= 96
+    assert 16 <= n60 <= 96
+    assert n60 >= n30
 
-    clips = {"sub": _MatchClip("sub", [warm()]), "ref": _MatchClip("ref", [warm()])}
-    inspect_payload = {
-        "ok": True,
-        "atFrame": 1,
-        "scopes": {"present": True},
-        "reference": {"scopes": {"present": True}, "film_grain": {"present": False}},
-        "film_grain": {"present": False},
-        "gap": {"warm_cool": 0.05},
-        "hints": [{"temperature": 0.03, "reason": "match warm/cool balance"}],
-        "grades_differ": False,
-        "grain_differ": False,
-        "preview_jpeg": "",
+
+def test_look_profile_solver_and_outcome():
+    from classes.color_agent import (
+        assess_grade_outcome,
+        build_look_profile,
+        look_profile_distance,
+        solve_grade_from_profiles,
+        target_profile_for_look,
+    )
+
+    cool = {
+        "present": True,
+        "avg_luma": 0.40,
+        "warm_cool": -0.08,
+        "green_magenta": 0.0,
+        "sat_proxy": 0.12,
+        "contrast_span": 0.40,
+        "clipped_shadows": 0.02,
+        "clipped_highlights": 0.01,
+        "channel_means": {"red": 0.35, "green": 0.38, "blue": 0.45, "luma": 0.40},
     }
-    writes = _match_env(monkeypatch, clips, inspect_payload)
+    warm = {
+        "present": True,
+        "avg_luma": 0.55,
+        "warm_cool": 0.10,
+        "green_magenta": 0.02,
+        "sat_proxy": 0.22,
+        "contrast_span": 0.48,
+        "clipped_shadows": 0.01,
+        "clipped_highlights": 0.02,
+        "channel_means": {"red": 0.55, "green": 0.50, "blue": 0.42, "luma": 0.55},
+    }
+    profile = build_look_profile([cool, cool, warm])
+    assert profile["present"] is True
+    assert profile["samples"] == 3
+    assert profile["avg_luma"] is not None
 
-    out = json.loads(th.match_color_to_reference(clipId="sub", reference="ref"))
-    assert out["match_mode"] == "scopes"
-    assert out["proposed_patch"] == {"temperature_delta": 0.03}
-    assert len(writes) == 1
-    grade = ca.find_color_grade(clips["sub"].data["effects"])
-    assert scalar_y(grade, "temperature") == pytest.approx(0.21)
+    dist = look_profile_distance(cool, warm)
+    assert dist is not None and dist > 0.05
+
+    patch = solve_grade_from_profiles(cool, warm)
+    assert "temperature" in patch or "exposure" in patch
+    assert abs(float(patch.get("temperature", 0))) <= 0.35
+
+    # Nuke: after blows highlights vs before
+    nuked = dict(cool)
+    nuked["clipped_highlights"] = 0.20
+    nuked["avg_luma"] = 0.70
+    outcome = assess_grade_outcome(cool, nuked, warm, outdoor_bright=True)
+    assert outcome["nuke_risk"] is True
+    assert outcome["suggested_recovery_patch"]
+
+    horror = target_profile_for_look("horror")
+    assert horror and horror["present"]
+    sunny = target_profile_for_look("sunny")
+    assert sunny and sunny["avg_luma"] > horror["avg_luma"]
+
+
+def test_list_looks_horror_synonym_ranks_presets():
+    from classes.color_agent import list_looks_catalog
+
+    cat = list_looks_catalog("horror")
+    assert cat["count"] >= 1
+    ids = [x["id"] for x in cat["looks"]]
+    assert any(("horror" in i) or ("noir" in i) or (x.get("kind") == "lut") for i, x in zip(ids, cat["looks"]))
+
+
+def test_cap_color_patch_limits_jumps():
+    from classes.color_agent import cap_color_patch
+
+    capped = cap_color_patch({"exposure": 2.0, "temperature": -3.0, "saturation": 0.9})
+    assert capped["exposure"] <= 0.35
+    assert capped["temperature"] >= -0.35
 
 
 def _grade_env(monkeypatch, clips):

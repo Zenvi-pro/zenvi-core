@@ -446,6 +446,10 @@ DELTA_KEYS = {
     "tint_delta": "tint",
     "exposure_delta": "exposure",
     "vibrance_delta": "vibrance",
+    "contrast_delta": "contrast",
+    "highlights_delta": "highlights",
+    "shadows_delta": "shadows",
+    "saturation_delta": "saturation",
 }
 
 
@@ -777,6 +781,459 @@ def reference_gap_hints(subject: dict, reference: dict) -> dict:
     return {"gap": gap, "hints": hints}
 
 
+# --- LookProfile: dense sample aggregation + inverse grade ---------------------
+
+LOOK_DISTANCE_MATCHED = 0.045
+LOOK_DISTANCE_CLOSE = 0.08
+_MAX_STEP = {
+    "exposure": 0.35,
+    "contrast": 0.25,
+    "highlights": 0.30,
+    "shadows": 0.30,
+    "temperature": 0.35,
+    "tint": 0.25,
+    "saturation": 0.25,
+    "vibrance": 0.25,
+}
+
+
+def sample_count_for_duration(duration_s: float) -> int:
+    """How many full-frame samples to take across a media duration."""
+    try:
+        d = float(duration_s)
+    except (TypeError, ValueError):
+        d = 0.0
+    if d <= 0.05:
+        return 1  # still / tiny
+    # ~1 sample / 25s on long form, denser on short; floor 16, ceil 96.
+    n = int(round(d / 25.0)) + 8
+    return max(16, min(96, n))
+
+
+def _hist_percentile(bins: list, percentile: float) -> Optional[float]:
+    """Approximate percentile (0–1) from a histogram bin list."""
+    if not bins:
+        return None
+    try:
+        p = max(0.0, min(1.0, float(percentile)))
+    except (TypeError, ValueError):
+        return None
+    total = 0.0
+    counts: list[float] = []
+    for count in bins:
+        try:
+            c = float(count)
+        except (TypeError, ValueError):
+            c = 0.0
+        counts.append(c)
+        total += c
+    if total <= 0:
+        return None
+    target = total * p
+    running = 0.0
+    n = len(counts)
+    for i, c in enumerate(counts):
+        running += c
+        if running >= target:
+            return i / max(n - 1, 1)
+    return 1.0
+
+
+def _sat_proxy(channel_means: dict) -> Optional[float]:
+    r = channel_means.get("red")
+    g = channel_means.get("green")
+    b = channel_means.get("blue")
+    if r is None or g is None or b is None:
+        return None
+    try:
+        mx = max(float(r), float(g), float(b))
+        mn = min(float(r), float(g), float(b))
+    except (TypeError, ValueError):
+        return None
+    if mx <= 1e-9:
+        return 0.0
+    return (mx - mn) / mx
+
+
+def _enrich_scope_for_profile(scope: dict) -> dict:
+    """Add sat_proxy onto a summarize_scope_video-style dict."""
+    out = dict(scope) if isinstance(scope, dict) else {"present": False}
+    if not out.get("present"):
+        return out
+    cm = out.get("channel_means") if isinstance(out.get("channel_means"), dict) else {}
+    sat = _sat_proxy(cm)
+    if sat is not None:
+        out["sat_proxy"] = round(sat, 4)
+    return out
+
+
+def scope_from_raw_video(video: Optional[dict]) -> dict:
+    """summarize_scope_video + contrast_span from luma histogram percentiles."""
+    summary = summarize_scope_video(video)
+    if not summary.get("present") or not isinstance(video, dict):
+        return summary
+    hist = video.get("histogram") if isinstance(video.get("histogram"), dict) else {}
+    luma = list(hist.get("luma") or [])
+    p10 = _hist_percentile(luma, 0.10)
+    p90 = _hist_percentile(luma, 0.90)
+    if p10 is not None and p90 is not None:
+        summary["contrast_span"] = round(float(p90) - float(p10), 4)
+        summary["luma_p10"] = round(float(p10), 4)
+        summary["luma_p90"] = round(float(p90), 4)
+    return _enrich_scope_for_profile(summary)
+
+
+def _median(values: list) -> Optional[float]:
+    clean = sorted(v for v in values if v is not None)
+    if not clean:
+        return None
+    mid = len(clean) // 2
+    if len(clean) % 2:
+        return clean[mid]
+    return (clean[mid - 1] + clean[mid]) / 2.0
+
+
+def _percentile_list(values: list, p: float) -> Optional[float]:
+    clean = sorted(v for v in values if v is not None)
+    if not clean:
+        return None
+    if len(clean) == 1:
+        return clean[0]
+    idx = max(0, min(len(clean) - 1, int(round((len(clean) - 1) * p))))
+    return clean[idx]
+
+
+def build_look_profile(scopes) -> dict:
+    """Aggregate one or many scope summaries into a LookProfile.
+
+    ``scopes`` may be a single summary dict or a list of them (dense video).
+    Temporal aggregation uses median + p10/p90 so one flash frame cannot own the look.
+    """
+    if isinstance(scopes, dict):
+        items = [scopes]
+    elif isinstance(scopes, (list, tuple)):
+        items = [s for s in scopes if isinstance(s, dict)]
+    else:
+        return {"present": False, "samples": 0}
+
+    present = [_enrich_scope_for_profile(s) for s in items if s.get("present")]
+    if not present:
+        return {"present": False, "samples": 0}
+
+    def _collect(key: str) -> list:
+        out = []
+        for s in present:
+            v = s.get(key)
+            if v is None:
+                continue
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def _collect_ch(ch: str) -> list:
+        out = []
+        for s in present:
+            cm = s.get("channel_means") if isinstance(s.get("channel_means"), dict) else {}
+            v = cm.get(ch)
+            if v is None:
+                continue
+            try:
+                out.append(float(v))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    profile: dict[str, Any] = {
+        "present": True,
+        "samples": len(present),
+        "avg_luma": _median(_collect("avg_luma")),
+        "warm_cool": _median(_collect("warm_cool")),
+        "green_magenta": _median(_collect("green_magenta")),
+        "sat_proxy": _median(_collect("sat_proxy")),
+        "contrast_span": _median(_collect("contrast_span")),
+        "clipped_shadows": _median(_collect("clipped_shadows")),
+        "clipped_highlights": _median(_collect("clipped_highlights")),
+        "channel_means": {},
+    }
+    for ch in ("red", "green", "blue", "luma"):
+        m = _median(_collect_ch(ch))
+        if m is not None:
+            profile["channel_means"][ch] = round(m, 4)
+
+    luma_vals = _collect("avg_luma")
+    warm_vals = _collect("warm_cool")
+    if len(luma_vals) >= 3:
+        profile["luma_p10"] = _percentile_list(luma_vals, 0.10)
+        profile["luma_p90"] = _percentile_list(luma_vals, 0.90)
+    if len(warm_vals) >= 3:
+        profile["warm_p10"] = _percentile_list(warm_vals, 0.10)
+        profile["warm_p90"] = _percentile_list(warm_vals, 0.90)
+
+    for key in (
+        "avg_luma", "warm_cool", "green_magenta", "sat_proxy", "contrast_span",
+        "clipped_shadows", "clipped_highlights", "luma_p10", "luma_p90",
+        "warm_p10", "warm_p90",
+    ):
+        if profile.get(key) is not None:
+            try:
+                profile[key] = round(float(profile[key]), 4)
+            except (TypeError, ValueError):
+                pass
+    return profile
+
+
+def look_profile_distance(subject: dict, reference: dict) -> Optional[float]:
+    """Weighted LookProfile distance (0 ≈ same look)."""
+    if not isinstance(subject, dict) or not isinstance(reference, dict):
+        return None
+    if not subject.get("present") or not reference.get("present"):
+        return None
+    parts: list[float] = []
+    for key, weight in (
+        ("avg_luma", 1.2),
+        ("warm_cool", 1.4),
+        ("green_magenta", 1.0),
+        ("sat_proxy", 1.1),
+        ("contrast_span", 1.0),
+        ("clipped_highlights", 0.9),
+        ("clipped_shadows", 0.6),
+    ):
+        a, b = subject.get(key), reference.get(key)
+        if a is None or b is None:
+            continue
+        try:
+            parts.append(abs(float(a) - float(b)) * weight)
+        except (TypeError, ValueError):
+            continue
+    sub_cm = subject.get("channel_means") if isinstance(subject.get("channel_means"), dict) else {}
+    ref_cm = reference.get("channel_means") if isinstance(reference.get("channel_means"), dict) else {}
+    for ch in ("red", "green", "blue"):
+        a, b = sub_cm.get(ch), ref_cm.get(ch)
+        if a is None or b is None:
+            continue
+        try:
+            parts.append(abs(float(a) - float(b)) * 0.7)
+        except (TypeError, ValueError):
+            continue
+    if not parts:
+        return scope_look_distance(subject, reference)
+    return round(sum(parts), 4)
+
+
+def cap_color_patch(patch: dict, *, scale: float = 1.0) -> dict:
+    """Clamp per-step ColorGrade merge deltas so one iteration cannot nuke."""
+    if not isinstance(patch, dict):
+        return {}
+    out: dict[str, Any] = {}
+    try:
+        s = max(0.05, min(1.0, float(scale)))
+    except (TypeError, ValueError):
+        s = 1.0
+    for key, value in patch.items():
+        if key not in SCALAR_KEYS and key not in SCALAR_ALIASES:
+            if key in ("lut_path", "lut", "color", "reset", "wheels") or str(key).startswith("curve"):
+                out[key] = value
+            continue
+        canon = SCALAR_ALIASES.get(key, key)
+        try:
+            v = float(value) * s
+        except (TypeError, ValueError):
+            continue
+        limit = _MAX_STEP.get(canon, 0.35)
+        out[canon] = round(max(-limit, min(limit, v)), 4)
+    return out
+
+
+def solve_grade_from_profiles(
+    subject: dict,
+    reference: dict,
+    *,
+    scale: float = 1.0,
+) -> dict:
+    """Map LookProfile gap → ColorGrade merge patch (deltas toward reference)."""
+    if not subject.get("present") or not reference.get("present"):
+        return {}
+    patch: dict[str, float] = {}
+
+    def _delta(key: str) -> Optional[float]:
+        a, b = subject.get(key), reference.get(key)
+        if a is None or b is None:
+            return None
+        try:
+            return float(b) - float(a)
+        except (TypeError, ValueError):
+            return None
+
+    luma = _delta("avg_luma")
+    if luma is not None and abs(luma) >= 0.012:
+        patch["exposure"] = max(-0.5, min(0.5, luma * 0.85))
+
+    warm = _delta("warm_cool")
+    if warm is not None and abs(warm) >= 0.01:
+        patch["temperature"] = max(-0.45, min(0.45, warm * 0.65))
+
+    gm = _delta("green_magenta")
+    if gm is not None and abs(gm) >= 0.008:
+        patch["tint"] = max(-0.35, min(0.35, gm * 0.55))
+
+    sat = _delta("sat_proxy")
+    if sat is not None and abs(sat) >= 0.02:
+        patch["saturation"] = max(-0.35, min(0.35, sat * 0.9))
+        patch["vibrance"] = max(-0.3, min(0.3, sat * 0.55))
+
+    contrast = _delta("contrast_span")
+    if contrast is not None and abs(contrast) >= 0.015:
+        patch["contrast"] = max(-0.35, min(0.35, contrast * 0.7))
+
+    hi = _delta("clipped_highlights")
+    if hi is not None and abs(hi) >= 0.01:
+        patch["highlights"] = max(-0.4, min(0.4, -hi * 1.2))
+
+    sh = _delta("clipped_shadows")
+    if sh is not None and abs(sh) >= 0.01:
+        patch["shadows"] = max(-0.4, min(0.4, sh * 0.9))
+
+    return cap_color_patch(patch, scale=scale)
+
+
+def assess_grade_outcome(
+    before: dict,
+    after: dict,
+    goal: dict,
+    *,
+    outdoor_bright: bool = False,
+) -> dict:
+    """Judge whether AFTER moved toward GOAL without nuking the image."""
+    before_d = look_profile_distance(before, goal)
+    after_d = look_profile_distance(after, goal)
+    nuke_risk = False
+    reasons: list[str] = []
+
+    def _f(d: dict, key: str, default: float = 0.0) -> float:
+        try:
+            v = d.get(key)
+            return float(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
+    after_hi = _f(after, "clipped_highlights")
+    before_hi = _f(before, "clipped_highlights")
+    if after_hi - before_hi >= 0.04 or after_hi >= 0.12:
+        nuke_risk = True
+        reasons.append("clipped_highlights_spike")
+    if outdoor_bright and after_hi >= 0.08:
+        nuke_risk = True
+        reasons.append("outdoor_highlight_blow")
+
+    after_sh = _f(after, "clipped_shadows")
+    before_sh = _f(before, "clipped_shadows")
+    if after_sh - before_sh >= 0.06:
+        nuke_risk = True
+        reasons.append("clipped_shadows_spike")
+
+    if before_d is not None and after_d is not None and after_d > before_d + 0.02:
+        nuke_risk = True
+        reasons.append("look_distance_worse")
+
+    recovery: dict[str, Any] = {}
+    if nuke_risk:
+        recovery = cap_color_patch({
+            "exposure": -0.12 if after_hi > before_hi else -0.06,
+            "highlights": -0.15,
+            "contrast": -0.08,
+            "vibrance": -0.05,
+        })
+        if after_hi > before_hi:
+            recovery["exposure"] = -min(0.25, 0.08 + (after_hi - before_hi))
+            recovery["highlights"] = -min(0.3, 0.1 + (after_hi - before_hi))
+
+    ok = (
+        not nuke_risk
+        and after_d is not None
+        and after_d <= LOOK_DISTANCE_MATCHED
+    )
+    closer = (
+        before_d is not None
+        and after_d is not None
+        and after_d < before_d - 0.005
+    )
+    status = "matched" if ok else (
+        "recovered_needed" if nuke_risk else (
+            "closer_not_exact" if closer else "still_far"
+        )
+    )
+    return {
+        "ok": ok,
+        "nuke_risk": nuke_risk,
+        "look_distance_before": before_d,
+        "look_distance_after": after_d,
+        "status": status,
+        "reasons": reasons,
+        "suggested_recovery_patch": recovery,
+        "outdoor_bright": outdoor_bright,
+    }
+
+
+def is_outdoor_bright_profile(profile: dict) -> bool:
+    """Heuristic: bright outdoor plate that must not get a heavy sunny look."""
+    if not isinstance(profile, dict) or not profile.get("present"):
+        return False
+    try:
+        luma = float(profile.get("avg_luma") or 0.0)
+        hi = float(profile.get("clipped_highlights") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    return luma >= 0.55 or hi >= 0.05
+
+
+def target_profile_for_look(look_id: str) -> Optional[dict]:
+    """Synthetic LookProfile goals for named vibes / soft presets (no media)."""
+    lid = str(look_id or "").strip().lower()
+    presets = {
+        "sunny": {
+            "present": True, "samples": 0, "avg_luma": 0.58, "warm_cool": 0.08,
+            "green_magenta": 0.0, "sat_proxy": 0.22, "contrast_span": 0.45,
+            "clipped_shadows": 0.01, "clipped_highlights": 0.03,
+            "channel_means": {"red": 0.55, "green": 0.52, "blue": 0.47, "luma": 0.58},
+        },
+        "gloomy": {
+            "present": True, "samples": 0, "avg_luma": 0.38, "warm_cool": -0.06,
+            "green_magenta": 0.0, "sat_proxy": 0.10, "contrast_span": 0.40,
+            "clipped_shadows": 0.04, "clipped_highlights": 0.01,
+            "channel_means": {"red": 0.34, "green": 0.36, "blue": 0.40, "luma": 0.38},
+        },
+        "warm_up": {
+            "present": True, "samples": 0, "avg_luma": 0.50, "warm_cool": 0.10,
+            "green_magenta": 0.02, "sat_proxy": 0.20, "contrast_span": 0.42,
+            "clipped_shadows": 0.02, "clipped_highlights": 0.02,
+            "channel_means": {"red": 0.52, "green": 0.48, "blue": 0.42, "luma": 0.50},
+        },
+        "boost_color": {
+            "present": True, "samples": 0, "avg_luma": 0.50, "warm_cool": 0.02,
+            "green_magenta": 0.0, "sat_proxy": 0.32, "contrast_span": 0.48,
+            "clipped_shadows": 0.02, "clipped_highlights": 0.03,
+            "channel_means": {"red": 0.52, "green": 0.48, "blue": 0.46, "luma": 0.50},
+        },
+    }
+    if lid in ("horror", "teal_horror", "noir", "noir_era"):
+        return {
+            "present": True, "samples": 0, "avg_luma": 0.32, "warm_cool": -0.08,
+            "green_magenta": 0.04, "sat_proxy": 0.14, "contrast_span": 0.52,
+            "clipped_shadows": 0.08, "clipped_highlights": 0.02,
+            "channel_means": {"red": 0.26, "green": 0.34, "blue": 0.38, "luma": 0.32},
+        }
+    if lid in ("teal_orange", "teal_&_orange_cinema", "signature_teal_&_orange"):
+        return {
+            "present": True, "samples": 0, "avg_luma": 0.48, "warm_cool": 0.04,
+            "green_magenta": -0.02, "sat_proxy": 0.28, "contrast_span": 0.50,
+            "clipped_shadows": 0.03, "clipped_highlights": 0.03,
+            "channel_means": {"red": 0.50, "green": 0.44, "blue": 0.46, "luma": 0.48},
+        }
+    return presets.get(lid)
+
+
 # --- Looks catalog / resolve / match (Phase 6.3) ---------------------------------
 
 _LOOK_PRESET_META = {
@@ -828,15 +1285,22 @@ _LOOK_QUERY_SYNONYMS = {
     "grey": ("gloomy", "muted", "grey", "gray"),
     "gray": ("gloomy", "muted", "grey", "gray"),
     "candy": ("candy", "boost", "vibrant", "pop", "saturated"),
+    "horror": ("horror", "teal_horror", "noir", "dark", "moody", "cold"),
+    "noir": ("noir", "noir_era", "dark", "moody", "black"),
+    "vhs": ("vhs", "vintage", "super8", "retro", "analog", "film_stock"),
+    "teal": ("teal", "teal_orange", "teal_horror", "cinematic"),
+    "orange": ("teal_orange", "sunset", "warm", "orange"),
+    "overcast": ("gloomy", "overcast", "muted", "cloudy"),
+    "vintage": ("vintage", "film_stock", "analog", "retro", "vhs", "super8"),
 }
 
 _CATEGORY_VIBE_TAGS = {
     "cinematic_&_blockbuster": ["cinematic", "blockbuster", "film"],
     "dark_&_moody": ["dark", "moody", "night", "noir", "horror"],
-    "film_stock_&_vintage": ["vintage", "film_stock", "analog", "retro"],
-    "teal_&_orange_vibes": ["teal_orange", "cinematic", "hollywood"],
+    "film_stock_&_vintage": ["vintage", "film_stock", "analog", "retro", "vhs"],
+    "teal_&_orange_vibes": ["teal_orange", "cinematic", "hollywood", "teal", "orange"],
     "utility_&_correction": ["utility", "correction", "neutral"],
-    "vibrant_&_colorful": ["vibrant", "colorful", "pop"],
+    "vibrant_&_colorful": ["vibrant", "colorful", "pop", "candy"],
 }
 
 _GRAIN_META = {
@@ -893,6 +1357,9 @@ def list_looks_catalog(query: str = "") -> dict:
         if _look_matches(entry, q):
             looks.append(entry)
 
+    # Rank: color presets first for vibe words, then LUTs, then grain.
+    kind_rank = {"color_preset": 0, "lut": 1, "film_grain": 2}
+    looks.sort(key=lambda e: (kind_rank.get(e.get("kind"), 9), str(e.get("id") or "")))
     return {"ok": True, "count": len(looks), "looks": looks, "query": query or ""}
 
 

@@ -883,6 +883,11 @@ class ChatBridge(QObject):
         if self.window:
             self.window._connect_cli(backend_id)
 
+    @guarded_slot(str)
+    def signInCli(self, backend_id: str):
+        if self.window:
+            self.window._sign_in_cli(backend_id)
+
     @guarded_slot(str, result=str)
     def listMentionables(self, query: str = "") -> str:
         if not self.window:
@@ -1061,6 +1066,8 @@ class AIChatWindow(QDockWidget):
         worker.tool_log.connect(self._on_tool_log)
         worker.tool_completed.connect(self._on_tool_completed)
         worker.plan_event.connect(self._on_plan_event)
+        if hasattr(worker, "auth_required"):
+            worker.auth_required.connect(self._on_auth_required)
         # CLI backends only: lets us persist the conversation id they resume from.
         if hasattr(worker, "cli_session_changed"):
             worker.cli_session_changed.connect(self._on_cli_session_changed)
@@ -3319,6 +3326,9 @@ class AIChatWindow(QDockWidget):
         cmd = command_text if command_text is not None else text
         if action == "chat" and shown:
             self._add_user_msg(shown)
+        if action == "chat" and (cmd or text):
+            # Raw text for Sign-in → auto-retry after Claude OAuth recovery.
+            sess["last_user_text"] = (cmd or text or "").strip()
         if action == "chat" and cmd and self._try_local_command(cmd):
             return True
         if action == "chat" and cmd:
@@ -4124,6 +4134,95 @@ class AIChatWindow(QDockWidget):
                 self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
             self._add_system_msg("Error: %s" % text)
             self._set_processing_ui(False)
+
+    @pyqtSlot(str)
+    def _on_auth_required(self, text: str):
+        """Claude Code OAuth missing/expired — guided Sign-in card, not a raw dump."""
+        sid = getattr(self.sender(), "_session_id", self._active_sid)
+        sess = self._sessions.get(sid) if sid else None
+        if sess is not None:
+            sess["processing"] = False
+            self._reset_turn_segments(sess)
+            pending = (sess.get("last_user_text") or "").strip()
+            if pending:
+                sess["pending_retry_text"] = pending
+        if sid != self._active_sid:
+            return
+        if self._user_cancelled:
+            self._user_cancelled = False
+            self._token_buffer.clear()
+            self._token_flush_scheduled = False
+            if self._use_web_ui:
+                self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+            return
+        self._token_buffer.clear()
+        self._token_flush_scheduled = False
+        if self._use_web_ui:
+            self._run_js("if(window.resetStreamingMessage) window.resetStreamingMessage();")
+            self._run_js(
+                "if(window.showCliAuthRecovery) showCliAuthRecovery(%s, %s);"
+                % (json.dumps(BACKEND_CLAUDE), json.dumps(
+                    "Claude Code needs you to sign in again. Your last request was not run."
+                ))
+            )
+        else:
+            self._add_system_msg(
+                "Claude Code needs you to sign in again. "
+                "Run: claude auth login — then retry your message."
+            )
+        self._set_processing_ui(False)
+        self._detect_clis()
+
+    def _sign_in_cli(self, backend_id: str):
+        """Open Claude's browser login; on success auto-retry the pending message."""
+        if backend_id != BACKEND_CLAUDE:
+            if self._use_web_ui:
+                self._run_js(
+                    "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
+                    % (json.dumps(backend_id), json.dumps(False),
+                       json.dumps("Sign-in is only available for Claude Code."))
+                )
+            return
+
+        def run():
+            try:
+                from windows.agent_runners import start_claude_auth_login
+                ok, message = start_claude_auth_login()
+            except Exception as e:
+                log.debug("sign_in_cli failed: %s", e, exc_info=True)
+                ok, message = False, str(e)
+            QMetaObject.invokeMethod(
+                self, "_on_sign_in_result", Qt.QueuedConnection,
+                Q_ARG(str, backend_id), Q_ARG(bool, ok), Q_ARG(str, message or ""),
+            )
+
+        threading.Thread(target=run, daemon=True, name="cli-signin").start()
+
+    @pyqtSlot(str, bool, str)
+    def _on_sign_in_result(self, backend_id: str, ok: bool, message: str):
+        if self._use_web_ui:
+            self._run_js(
+                "if(window.onCliAuthResult) onCliAuthResult(%s, %s, %s);"
+                % (json.dumps(backend_id), json.dumps(ok), json.dumps(message or ""))
+            )
+        # Reuse the Connect-result path so the agent panel clears "connecting…".
+        self._notify_agent_connect_result(backend_id, ok, message or "")
+        self._detect_clis()
+        if not ok:
+            return
+        sess = self._active_session()
+        if not sess or sess.get("backend") != BACKEND_CLAUDE:
+            return
+        pending = (sess.pop("pending_retry_text", None) or "").strip()
+        if not pending or self.is_processing:
+            return
+        model_id = ""
+        if hasattr(self, "model_combo") and self.model_combo:
+            model_id = self.model_combo.currentData() or ""
+        # Avoid duplicating the user bubble — retry silently with the same text.
+        self._dispatch_user_message(
+            pending, model_id, display_text="", command_text=pending,
+        )
 
     def clear_chat(self):
         reply = QMessageBox.question(
