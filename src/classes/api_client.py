@@ -39,6 +39,19 @@ load_zenvi_dotenv()
 _DEFAULT_BACKEND_URL = "https://api.zenvi.pro"
 
 
+def _refresh_credits_after_backend_billing() -> None:
+    """Repaint the credits badge after a request the backend bills itself.
+
+    /generation/video and /generation/morph deduct (or refund) before they
+    answer, so the balance is final by the time the request returns.
+    """
+    try:
+        from classes.credits_client import credits
+        credits.refresh_balance()
+    except Exception as exc:
+        log.debug("credits refresh after a backend-billed request failed: %s", exc)
+
+
 class ZenviBackendClient:
     """HTTP/WebSocket client for the Zenvi backend API."""
 
@@ -1087,6 +1100,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     def generate_tts(
         self,
@@ -1126,6 +1141,8 @@ class ZenviBackendClient:
         except Exception as e:
             log.error("Morph video generation failed: %s", e)
             return {"error": str(e)}
+        finally:
+            _refresh_credits_after_backend_billing()
 
     # ------------------------------------------------------------------
     # Indexing & Pegasus summarize (for files_model)
