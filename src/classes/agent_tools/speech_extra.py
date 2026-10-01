@@ -174,6 +174,48 @@ def remove_silence(
     ).to_json()
 
 
+def _caption_track(app, clip_id: str, cues: list[dict]) -> str:
+    """Layer number for this caption group: one track above everything it covers.
+
+    The track must sit above the captioned clip and above every other clip
+    that overlaps the captions in time, or that video draws over them. The
+    lowest such track is free in that span by construction, so reuse it;
+    when there is none, add a new track on top. Runs on the GUI thread.
+    """
+    from classes.query import Clip
+
+    layers = sorted(
+        int(t.get("number")) for t in (app.project.get("layers") or [])
+        if isinstance(t, dict) and t.get("number") is not None
+    )
+    if not layers or not cues:
+        return ""
+    span_start = min(float(c.get("startSec") or 0.0) for c in cues)
+    span_end = max(float(c.get("endSec") or 0.0) for c in cues)
+
+    floor = None
+    if clip_id:
+        target = Clip.get(id=clip_id)
+        if target is not None:
+            floor = int(target.data.get("layer") or 0)
+    for clip in Clip.filter():
+        data = clip.data
+        start = float(data.get("position") or 0.0)
+        end = start + float(data.get("end") or 0.0) - float(data.get("start") or 0.0)
+        if start < span_end and end > span_start:
+            layer = int(data.get("layer") or 0)
+            floor = layer if floor is None else max(floor, layer)
+    if floor is None:
+        floor = layers[0]
+
+    above = [n for n in layers if n > floor]
+    if above:
+        return str(above[0])
+    new_layer = layers[-1] + 1000000
+    app.window.ensure_tracks_for_layers([new_layer])
+    return str(new_layer)
+
+
 def add_captions(
     clipId: str = "",
     trackIndex=None,
@@ -269,8 +311,12 @@ def add_captions(
 
     placed = []
     warnings = []
-    # Place on top track when possible (empty track arg → add_title default)
-    track = ""
+    # One track for the whole group, above the clip and anything over it.
+    from classes.tool_handlers import QThread, _run_on_main_thread
+    if QThread is not None and QThread.currentThread() is not app.thread():
+        track = _run_on_main_thread(_caption_track, app, str(clipId or ""), cues)
+    else:
+        track = _caption_track(app, str(clipId or ""), cues)
     for cue in cues:
         body = str(cue.get("text") or "").strip()
         if not body:

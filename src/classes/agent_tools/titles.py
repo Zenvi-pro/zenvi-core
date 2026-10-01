@@ -55,6 +55,36 @@ def _set_svg_text(xmldoc, text: str) -> None:
         node.appendChild(xmldoc.createTextNode(text if same_line else ""))
 
 
+# Bold sans glyphs average ~0.6 em; a little more so wide words still fit.
+_CAPTION_EM_PER_CHAR = 0.66
+_CAPTION_WIDTH_FRACTION = 0.83   # the default caption bar spans ~83% of the frame
+_FONT_SIZE_RE = re.compile(r"font-size:\s*([0-9.]+)px")
+
+
+def _fit_text_to_width(xmldoc, text: str) -> None:
+    """Shrink the title line's font so *text* fits the caption bar.
+
+    Templates size their line for a short title; a caption cue can be several
+    times longer and ran off both ends of the bar. Only ever shrinks.
+    """
+    svg = xmldoc.documentElement
+    try:
+        canvas = float(re.sub(r"[^0-9.]", "", svg.getAttribute("width") or "") or 1920)
+    except ValueError:
+        canvas = 1920.0
+    max_width = canvas * _CAPTION_WIDTH_FRACTION
+    length = max(1, len(text))
+    for node in list(xmldoc.getElementsByTagName("tspan")) or list(xmldoc.getElementsByTagName("text")):
+        style = node.getAttribute("style") or ""
+        match = _FONT_SIZE_RE.search(style)
+        if not match:
+            continue
+        size = float(match.group(1))
+        fitted = min(size, max_width / (length * _CAPTION_EM_PER_CHAR))
+        if fitted < size:
+            node.setAttribute("style", _FONT_SIZE_RE.sub("font-size:%.2fpx" % fitted, style, count=1))
+
+
 def _rasterize_svg(svg_path: str, png_path: str, width: int, height: int) -> None:
     """Render a title SVG to a transparent PNG (call on the GUI thread).
 
@@ -146,6 +176,8 @@ def add_title(
         shutil.copyfile(tmpl_path, dest)
         xmldoc = minidom.parse(dest)
         _set_svg_text(xmldoc, body)
+        if _kw.get("raster"):
+            _fit_text_to_width(xmldoc, body)
         with open(dest, "w", encoding="utf-8") as fh:
             xmldoc.writexml(fh)
     except Exception as exc:

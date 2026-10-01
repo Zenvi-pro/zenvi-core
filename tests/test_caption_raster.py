@@ -7,7 +7,6 @@ the GIL in add_captions) waits for that lock: add_captions froze the app.
 A PNG needs no fonts when libopenshot draws it.
 """
 
-import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -111,3 +110,96 @@ def test_rasterize_svg_draws_the_title(tmp_path):
     assert (image.width(), image.height()) == (320, 180)
     opaque = sum(1 for x in range(0, 320, 4) for y in range(0, 180, 4) if image.pixelColor(x, y).alpha() > 0)
     assert opaque > 0
+
+
+# ---------------------------------------------------------------------------
+# Captions go on one track above the captioned clip and anything covering it.
+# ---------------------------------------------------------------------------
+
+def _clip(cid, layer, position, start=0.0, end=5.0):
+    return MagicMock(id=cid, data={"layer": layer, "position": position, "start": start, "end": end})
+
+
+def _caption_track_for(layers, clips, clip_id="speech"):
+    from classes.agent_tools.speech_extra import _caption_track
+
+    app = MagicMock()
+    app.project.get.side_effect = lambda k, d=None: {"layers": [{"number": n} for n in layers]}.get(k, d)
+    by_id = {c.id: c for c in clips}
+    cues = [{"startSec": 1.0, "endSec": 2.0}, {"startSec": 2.0, "endSec": 4.0}]
+    with patch("classes.query.Clip.get", side_effect=lambda id=None: by_id.get(id)), \
+         patch("classes.query.Clip.filter", return_value=clips):
+        track = _caption_track(app, clip_id, cues)
+    return track, app.window.ensure_tracks_for_layers
+
+
+def test_caption_track_reuses_the_free_track_above():
+    track, ensure = _caption_track_for([1000000, 2000000, 3000000], [_clip("speech", 1000000, 0.0)])
+    assert track == "2000000"
+    ensure.assert_not_called()
+
+
+def test_caption_track_goes_above_overlapping_broll():
+    clips = [_clip("speech", 1000000, 0.0), _clip("broll", 2000000, 1.5, end=2.0)]
+    track, ensure = _caption_track_for([1000000, 2000000, 3000000], clips)
+    assert track == "3000000"
+    ensure.assert_not_called()
+
+
+def test_caption_track_ignores_clips_outside_the_span():
+    clips = [_clip("speech", 1000000, 0.0), _clip("late", 2000000, 30.0)]
+    track, _ensure = _caption_track_for([1000000, 2000000], clips)
+    assert track == "2000000"
+
+
+def test_caption_track_creates_a_top_track_when_none_is_free():
+    clips = [_clip("speech", 1000000, 0.0), _clip("broll", 2000000, 0.0)]
+    track, ensure = _caption_track_for([1000000, 2000000], clips)
+    assert track == "3000000"
+    ensure.assert_called_once_with([3000000])
+
+
+def test_add_captions_puts_every_cue_on_the_same_track():
+    from classes.agent_tools.receipt import ToolReceipt
+
+    words = [{"index": i, "text": w, "startSec": i * 0.5, "endSec": i * 0.5 + 0.4,
+              "startFrame": i * 15, "endFrame": i * 15 + 12,
+              "timelineStartSec": i * 0.5, "timelineEndSec": i * 0.5 + 0.4}
+             for i, w in enumerate("one two three four five six seven eight nine ten eleven".split())]
+    transcript = ToolReceipt.applied(
+        "get_transcript_tool", "ok", undo_steps=0,
+        data={"transcriptionSource": "local", "transcriptGeneration": 1,
+              "clips": [{"clipId": "c1", "words": words}]},
+    ).to_json()
+    title = ToolReceipt.applied("add_title_tool", "placed", data={"file_id": "t1"}).to_json()
+    app = MagicMock()
+    app.project.get.side_effect = lambda k, d=None: {"fps": {"num": 30, "den": 1}}.get(k, d)
+    with patch("classes.app.get_app", return_value=app), \
+         patch("classes.tool_handlers.QThread", None), \
+         patch("classes.agent_tools.transcript.get_transcript", return_value=transcript), \
+         patch("classes.agent_tools.speech_extra._caption_track", return_value="2000000"), \
+         patch("classes.agent_tools.titles.add_title", return_value=title) as add_title:
+        from classes.agent_tools.speech_extra import add_captions
+        receipt = parse_receipt(add_captions(clipId="c1", maxWords=4))
+    assert receipt["data"]["count"] >= 2
+    assert {c.kwargs["track"] for c in add_title.call_args_list} == {"2000000"}
+
+
+def test_long_caption_text_shrinks_to_fit_the_bar():
+    from xml.dom import minidom
+    from classes.agent_tools import titles
+
+    doc = minidom.parse(titles._default_template())
+    cue = "basically FlowCut makes cutting fast, thanks for"   # ~48 chars
+    titles._set_svg_text(doc, cue)
+    titles._fit_text_to_width(doc, cue)
+    sizes = {float(titles._FONT_SIZE_RE.search(n.getAttribute("style")).group(1))
+             for n in doc.getElementsByTagName("tspan") if titles._FONT_SIZE_RE.search(n.getAttribute("style") or "")}
+    assert sizes and max(sizes) < 131.25
+    for size in sizes:
+        assert len(cue) * size * titles._CAPTION_EM_PER_CHAR <= 1920 * titles._CAPTION_WIDTH_FRACTION + 0.01
+
+    short = minidom.parse(titles._default_template())
+    titles._set_svg_text(short, "Hi")
+    titles._fit_text_to_width(short, "Hi")
+    assert "font-size:131.25064087px" in short.toxml()
