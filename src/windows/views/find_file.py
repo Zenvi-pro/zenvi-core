@@ -61,12 +61,13 @@ def _deepest_existing_parent(path_value):
     return ""
 
 
-def find_missing_file(file_path, prompt_state=None, parent=None):
+def find_missing_file(file_path, prompt_state=None, parent=None, prompt=True):
     """Find a missing file name or file path, and return valid path.
 
     prompt_state is a shared dict; once the user presses Cancel it is marked
     {"cancelled": True} and later calls skip without prompting.
-    If parent is None, uses main window when available so dialogs stay on top."""
+    If parent is None, uses main window when available so dialogs stay on top.
+    prompt=False never opens a dialog: a file not found in a known folder is skipped."""
     _ = get_app()._tr
     modified = False
     skipped = False
@@ -90,6 +91,9 @@ def find_missing_file(file_path, prompt_state=None, parent=None):
         if os.path.exists(possible_path):
             modified = True
             return (possible_path, modified, skipped)
+
+    if not prompt:
+        return ("", modified, True)
 
     # Check if path exists
     while not os.path.exists(file_path):

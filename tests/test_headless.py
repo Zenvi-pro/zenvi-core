@@ -568,3 +568,15 @@ def test_startup_errors_go_to_stderr_not_a_message_box(monkeypatch, reported):
         app_mod.StartupError("Import Error", "no openshot", level="error").show()
     assert exc.value.code == 1
     assert boxes == []
+
+
+def test_activate_gives_the_session_its_own_title_folder(monkeypatch, tmp_path):
+    """A desktop window clears ~/.openshot_qt/title when it opens a project; an
+    untitled headless project's title SVGs must not be in there."""
+    from classes import info
+    monkeypatch.setattr(info, "USER_PATH", str(tmp_path))
+    monkeypatch.setattr(info, "TITLE_PATH", str(tmp_path / "title"))
+    monkeypatch.setitem(info._path_defaults, "TITLE_PATH", str(tmp_path / "title"))
+    headless.activate({})
+    assert info.TITLE_PATH == os.path.join(str(tmp_path), "title-headless")
+    assert info.get_default_path("TITLE_PATH") == info.TITLE_PATH  # survives reset_userdirs()
