@@ -531,6 +531,10 @@ class OpenShotApp(QApplication):
                 log.info("Auth cancelled by user ΓÇö exiting.")
                 self.window.close()
                 return False
+            # The chat dock's first credits fetch ran signed out; fetch now
+            # instead of leaving the badge on its placeholder for 60 s.
+            if getattr(self.window, "dockAIChat", None):
+                self.window.dockAIChat.refresh_credits_for_account()
 
         # Show main window (Win32 HWND icon needed when host is python.exe on Windows).
         # Headless, it is shown on the offscreen platform: laid out and painted
