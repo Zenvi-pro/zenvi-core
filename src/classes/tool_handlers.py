@@ -4458,28 +4458,14 @@ def _normalize_imported_file_path(file_obj, final_path):
 
 
 def _refresh_imported_file_thumbnail(file_id, file_path):
-    """Pre-generate and refresh the files-panel thumbnail for an imported video."""
-    from classes import info
-    from classes.thumbnail import GenerateThumbnail, preferred_thumbnail_path
+    """Refresh the Project Files thumbnail of a re-encoded import (GUI thread).
 
-    file_path = _canonical_media_path(file_path)
-    if not file_id or not file_path or not os.path.isfile(file_path):
+    FileUpdated has the thumbnail worker regenerate it with a fresh cache, like
+    any other file change. Decoding the frame here held the GUI thread for as
+    long as libopenshot took to seek, a minute on long-GOP media.
+    """
+    if not file_id or not file_path:
         return
-
-    fingerprint = None
-    try:
-        from classes.query import File
-        f = File.get(id=file_id)
-        if f and isinstance(getattr(f, "data", None), dict):
-            fingerprint = f.data.get("fingerprint")
-    except Exception:
-        fingerprint = None
-
-    mask_path = os.path.join(info.IMAGES_PATH, "mask.png")
-    overlay_path = os.path.join(info.IMAGES_PATH, "overlay.png")
-    thumb_path = preferred_thumbnail_path(file_id, 1, fingerprint=fingerprint)
-    GenerateThumbnail(file_path, thumb_path, 1, 98, 64, mask_path, overlay_path)
-
     try:
         _get_app().window.FileUpdated.emit(str(file_id))
     except Exception as exc:
