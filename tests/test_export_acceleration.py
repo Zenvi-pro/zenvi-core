@@ -31,6 +31,7 @@ from classes.export_acceleration.hw_encode import (
     platform_encoder_candidates,
 )
 from classes.export_acceleration.smart_render import (
+    _time_curve_is_identity,
     analyze_smart_render_spans,
     clip_smart_render_reasons,
     clip_transform_reasons,
@@ -452,7 +453,10 @@ def test_time_keyframe_identity_not_speed_change(tmp_path):
     path.write_bytes(b"fake")
     clip = _clip(str(path))
     assert "speed-change" not in clip_transform_reasons(clip)
+    # Y≈X multi-point is forward 1x (post double-reverse).
     clip["time"] = {"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 2, "Y": 2}}]}
+    assert "speed-change" not in clip_transform_reasons(clip)
+    clip["time"] = {"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]}
     assert "speed-change" in clip_transform_reasons(clip)
 
 
@@ -694,3 +698,31 @@ def test_background_manager_budget_eviction(tmp_path):
     mgr._enforce_budget()
     remaining = list(root.iterdir())
     assert sum(f.stat().st_size for f in remaining) <= 250
+
+
+def test_time_identity_accepts_y_equals_x_and_rejects_reverse():
+    assert _time_curve_is_identity({"Points": [{"co": {"X": 1, "Y": 1}}, {"co": {"X": 30, "Y": 30}}]})
+    assert not _time_curve_is_identity({"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]})
+
+
+def test_decide_half_reversed_format_mismatch_uses_normalize_partial(tmp_path):
+    path = tmp_path / "a.mp4"
+    path.write_bytes(b"fake")
+    clean = _clip(str(path), position=1.0, start=1.0, end=2.0, width=1920, height=1080, vcodec="h264")
+    dirty = _clip(str(path), position=0.0, start=0.0, end=1.0, width=1920, height=1080, vcodec="h264")
+    dirty["time"] = {"Points": [{"co": {"X": 1, "Y": 30}}, {"co": {"X": 30, "Y": 1}}]}
+    project = {"fps": {"num": 30, "den": 1}, "clips": [dirty, clean], "effects": [], "transitions": []}
+    decision = decide_smart_render(
+        project,
+        export_width=1280,
+        export_height=720,
+        export_fps=30,
+        export_vcodec="libx264",
+        start_frame=1,
+        end_frame=60,
+        export_file_path=str(tmp_path / "out.mp4"),
+        allow_partial=True,
+    )
+    assert decision.mode == "partial", (decision.mode, decision.detail, decision.reason_counts)
+    assert any(s.kind == "normalize" for s in decision.spans)
+    assert any(s.kind == "encode" and "speed-change" in s.reasons for s in decision.spans)

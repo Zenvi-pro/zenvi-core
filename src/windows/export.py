@@ -483,10 +483,24 @@ class Export(QDialog):
     def updateProgressBar(self, title_message, start_frame, end_frame, current_frame, format_of_progress_string):
         """Update progress bar during exporting"""
         if end_frame - start_frame > 0:
-            percentage_string = format_of_progress_string % (( current_frame - start_frame ) / ( end_frame - start_frame ) * 100)
+            percent = ((current_frame - start_frame) / (end_frame - start_frame) * 100)
+            # Guard against swapped/out-of-range frame args (never show >100%).
+            percent = max(0.0, min(100.0, percent))
+            try:
+                percentage_string = format_of_progress_string % percent
+            except (TypeError, ValueError):
+                # Callers must pass a %-format like "%4.1f%% "; tolerate literals.
+                percentage_string = "%4.1f%% " % percent
         else:
             percentage_string = "100%"
-        self.progressExportVideo.setValue(int(current_frame))
+        # Keep the bar within its configured range even if a caller mis-orders args.
+        try:
+            bar_min = self.progressExportVideo.minimum()
+            bar_max = self.progressExportVideo.maximum()
+            clamped = max(bar_min, min(bar_max, int(current_frame)))
+        except Exception:
+            clamped = int(current_frame)
+        self.progressExportVideo.setValue(clamped)
         self.progressExportVideo.setFormat(percentage_string)
         self.setWindowTitle("%s %s" % (percentage_string, title_message))
 
@@ -1057,21 +1071,48 @@ class Export(QDialog):
         invoke_on_gui(_show, context=self)
 
     def _show_export_finished(self):
-        """Dialog-only success UI. Headless export just returns."""
+        """Dialog-only success UI. Headless export just returns.
+
+        Correct UX: either auto-close, or keep the dialog with Done (not Cancel).
+        Never leave Cancel/Export active after the file is written — that makes
+        close ask to cancel even though the export already finished.
+        """
         if getattr(self, "_headless", False):
             return
-        if hasattr(self, 'cancel_button') and self.cancel_button is not None:
-            if self.s.get("show_finished_window") and self.exporting:
-                self.cancel_button.setVisible(False)
-                self.export_button.setVisible(False)
-                self.close_button.setVisible(True)
-                from qt_api import QPalette
-                p = QPalette()
-                p.setColor(QPalette.Highlight, Qt.green)
-                self.progressExportVideo.setPalette(p)
-                self.show()
-            else:
-                super(Export, self).accept()
+        if not hasattr(self, "cancel_button") or self.cancel_button is None:
+            return
+
+        # Leave "exporting" before swapping buttons so X/Done never prompt cancel.
+        self.exporting = False
+
+        if self.s.get("show_finished_window"):
+            self.cancel_button.setVisible(False)
+            self.export_button.setVisible(False)
+            self.close_button.setVisible(True)
+            from qt_api import QPalette
+            p = QPalette()
+            p.setColor(QPalette.Highlight, Qt.green)
+            self.progressExportVideo.setPalette(p)
+            self.enableControls()
+            self.show()
+            log.info("Export finished UI: Done button ready")
+        else:
+            super(Export, self).accept()
+
+    def _complete_export_success(self, export_file_path):
+        """Emit ExportEnded and show finished UI once (safe after smart render)."""
+        if getattr(self, "_export_success_ui_done", False):
+            return
+        self._export_success_ui_done = True
+        try:
+            self.ExportEnded.emit(export_file_path)
+        except Exception:
+            log.warning("ExportEnded emit failed", exc_info=True)
+        try:
+            self._show_export_finished()
+        except Exception:
+            log.warning("Export finished UI failed", exc_info=True)
+            self.exporting = False
 
     def run_export(self, export_file_path, video_settings, audio_settings, export_type,
                    video_bitrate_text=None, profile_path_for_rescale=None):
@@ -1108,6 +1149,7 @@ class Export(QDialog):
             # which is exactly what owns_pause already distinguishes.
             self._export_cleaned_up = False
             self._fps_rescaled = False
+            self._export_success_ui_done = False
 
         retried_as_video_only = False
         export_ok = False
@@ -1214,6 +1256,39 @@ class Export(QDialog):
                 _ef = int(video_settings.get("end_frame"))
                 _fps_num = int((video_settings.get("fps") or {}).get("num", 30))
                 _fps_den = int((video_settings.get("fps") or {}).get("den", 1) or 1)
+                # Show progress before any smart-render work — encode_span runs on
+                # this thread and used to leave Cancel frozen with no updates.
+                self.ExportStarted.emit(export_file_path, _sf, _ef)
+                try:
+                    from PyQt5.QtWidgets import QApplication
+                except Exception:
+                    QApplication = None
+
+                _smart_t0 = time.time()
+                _smart_last_frame = _sf
+
+                def _smart_progress(frame):
+                    """ExportFrame(title, start, end, current, format) — keep order exact."""
+                    nonlocal _smart_last_frame
+                    frame = int(frame)
+                    _smart_last_frame = frame
+                    title = ""
+                    try:
+                        elapsed = max(0.001, time.time() - _smart_t0)
+                        done = max(0, frame - _sf)
+                        total = max(1, _ef - _sf)
+                        if done > 0:
+                            fps_now = done / elapsed
+                            remain = max(0, int((_ef - frame) / max(0.001, fps_now)))
+                            title = titlestring(remain, fps_now, "Remaining")
+                    except Exception:
+                        title = ""
+                    try:
+                        self.ExportFrame.emit(title, _sf, _ef, frame, "%4.1f%% ")
+                    except Exception:
+                        pass
+                    if QApplication is not None:
+                        QApplication.processEvents()
 
                 def _encode_smart_span(span_start, span_end, out_path):
                     """Encode one timeline span into out_path for partial smart render."""
@@ -1255,11 +1330,16 @@ class Export(QDialog):
                                 audio_bps,
                             )
                         writer.Open()
-                        for frame in range(int(span_start), int(span_end) + 1):
+                        span_start = int(span_start)
+                        span_end = int(span_end)
+                        _smart_progress(span_start)
+                        # Every frame: reverse GetFrame can take long; keep Cancel alive.
+                        for frame in range(span_start, span_end + 1):
                             if not self.exporting:
                                 writer.Close()
                                 return False
                             writer.WriteFrame(self.timeline.GetFrame(frame))
+                            _smart_progress(frame)
                         writer.Close()
                         return os.path.isfile(out_path) and os.path.getsize(out_path) > 0
                     except Exception:
@@ -1282,27 +1362,29 @@ class Export(QDialog):
                     allow_partial=True,
                     # A Video Only export drops the source audio from copies.
                     audio_settings=audio_settings if export_type == _("Video & Audio") else None,
+                    progress_cb=_smart_progress,
+                    cancel_cb=lambda: not self.exporting,
                 )
                 if result:
-                    self.ExportStarted.emit(
-                        export_file_path,
-                        video_settings.get("start_frame"),
-                        video_settings.get("end_frame"),
-                    )
                     max_frame = _ef
                     end_time_export = time.time()
                     start_time_export = end_time_export
                     fps_encode = 0
                     mode = result.get("mode") or "full_copy"
                     log.info("Smart render (%s) succeeded: %s", mode, result)
-                    self.ExportFrame.emit(
-                        "",
-                        video_settings.get("start_frame"),
-                        video_settings.get("end_frame"),
-                        max_frame,
-                        "100.0%% ",
-                    )
+                    # File is already written. Finish UI here so a later cleanup
+                    # hang/exception cannot leave Cancel stuck at 100%.
                     export_ok = True
+                    try:
+                        _smart_progress(max_frame)
+                    except Exception:
+                        log.warning(
+                            "Smart render progress update failed after success",
+                            exc_info=True,
+                        )
+                    self._complete_export_success(export_file_path)
+                    if QApplication is not None:
+                        QApplication.processEvents()
                     return
 
             # Prefer pipelined export when enabled (default on). Kill switch:
@@ -1611,18 +1693,20 @@ class Export(QDialog):
             else:
                 raise
         finally:
-            if not retried_as_video_only:
-                self._cleanup_export_resources()
+            try:
+                if not retried_as_video_only:
+                    self._cleanup_export_resources()
+            except Exception:
+                log.warning("Export cleanup failed", exc_info=True)
             if owns_pause:
-                resume_window_auto_save(getattr(self, "_auto_save_was_active", False))
+                try:
+                    resume_window_auto_save(getattr(self, "_auto_save_was_active", False))
+                except Exception:
+                    log.warning("Failed to resume autosave after export", exc_info=True)
                 self._auto_save_paused = False
 
         if export_ok:
-            try:
-                self.ExportEnded.emit(export_file_path)
-            except Exception:
-                log.warning("ExportEnded emit failed", exc_info=True)
-            self._show_export_finished()
+            self._complete_export_success(export_file_path)
 
     def _setup_toolbox_tab_order(self):
         toolbox = self.toolBox

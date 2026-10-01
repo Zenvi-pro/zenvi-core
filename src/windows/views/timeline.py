@@ -179,7 +179,7 @@ from classes.clip_utils import (
     clamp_timing_to_media, is_single_image_media, apply_file_caption_to_clip, project_fps_fraction,
 )
 from classes.clip_placement import apply_audio_only_clip_overrides
-from .retime import retime_clip
+from .retime import retime_clip, time_curve_is_reversed
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
 
 # Constants used by this file
@@ -4591,8 +4591,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self.AddPoint(clip.data['scale_y'], json.loads(p1.Json()))
 
             else:
+                # Reverse is a toggle: second Reverse clears remapping (Reset),
+                # instead of leaving a forward Y≈X curve that still looked "edited".
+                effective_time_action = action
+                if action == MenuTime.REVERSE and time_curve_is_reversed(clip.data.get("time")):
+                    effective_time_action = MenuTime.NONE
 
-                if action == MenuTime.NONE:
+                if effective_time_action == MenuTime.NONE:
                     # RESET TIME
                     reset_repeat(clip)
                     reader = clip.data.get("reader", {}) or {}
@@ -4640,7 +4645,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Clear the time curve (default identity point)
                     clip.data["time"] = {"Points": [{"co": {"X": 1, "Y": 1}, "interpolation": openshot.LINEAR}]}
 
-                elif action == MenuTime.REVERSE:
+                elif effective_time_action == MenuTime.REVERSE:
                     start_sec = float(clip.data.get("start", 0.0))
                     try:
                         target_end_sec = float(clip.data.get("end", start_sec))
@@ -4669,18 +4674,25 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     original_duration = float(clip.data["end"]) - float(clip.data["start"])
                     new_duration = original_duration / speed_factor
                     new_end_time = float(clip.data["start"]) + new_duration
-                    direction = 1 if action == MenuTime.FORWARD else -1
+                    direction = 1 if effective_time_action == MenuTime.FORWARD else -1
 
                     retime_clip(clip, new_end_time, clip.data.get("position"), direction)
 
-            # Save changes with history
-            self.update_clip_data(
-                clip.data,
-                only_basic_props=False,
-                ignore_reader=True,
-                transaction_id=transaction_id,
-            )
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            # Save with ignore_history so apply_last_action_to_history can
+            # attach the pre-reverse snapshot (same pattern as keyframe drag).
+            updates = get_app().updates
+            prev_ignore = updates.ignore_history
+            updates.ignore_history = True
+            try:
+                self.update_clip_data(
+                    clip.data,
+                    only_basic_props=False,
+                    ignore_reader=True,
+                    transaction_id=transaction_id,
+                )
+                updates.apply_last_action_to_history(original_clip_data)
+            finally:
+                updates.ignore_history = prev_ignore
 
         # Update waveforms of all clips that have them
         if clips_with_waveforms:

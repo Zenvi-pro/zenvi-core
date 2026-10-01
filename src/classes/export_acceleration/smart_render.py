@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from classes.export_acceleration.hw_encode import is_hardware_encoder
-from classes.ffmpeg_cli import run_ffmpeg
+from classes.ffmpeg_cli import run_ffmpeg, run_ffmpeg_with_progress
 from classes.logger import log
 
 # libopenshot defaults (Clip::init_settings) for the other clip properties that
@@ -67,7 +67,7 @@ _COLOR_GRADE_IDENTITY = {
 
 @dataclass(frozen=True)
 class SmartRenderSpan:
-    kind: str  # "copy" | "encode"
+    kind: str  # "copy" | "normalize" | "encode"
     start_frame: int
     end_frame: int
     clip: Optional[dict] = None
@@ -116,6 +116,45 @@ def _deviates_from_identity(obj: Any, identity: float) -> bool:
             return True
         return False
     return False
+
+
+
+def _time_curve_is_identity(obj: Any) -> bool:
+    """True when clip.time is a no-op (forward 1x), including post-double-reverse."""
+    if obj is None:
+        return True
+    if isinstance(obj, str):
+        return obj in ("TIME_MAP_FORWARD", "none", "", "0")
+    if isinstance(obj, (int, float)):
+        return float(obj) in (0.0, 1.0)
+    if not isinstance(obj, dict):
+        return False
+    points = obj.get("Points") or obj.get("points") or []
+    if not points:
+        return True
+    try:
+        coords = []
+        for point in points:
+            co = point.get("co") or {}
+            coords.append(
+                (
+                    float(co.get("X", co.get("x", 0.0))),
+                    float(co.get("Y", co.get("y", 0.0))),
+                )
+            )
+    except (TypeError, ValueError):
+        return False
+    if len(coords) == 1:
+        x, y = coords[0]
+        return abs(y - 1.0) <= 1e-3 or abs(y - x) <= 1.0 + 1e-6
+    coords.sort(key=lambda pair: pair[0])
+    for index in range(1, len(coords)):
+        if coords[index][1] + 1e-6 < coords[index - 1][1]:
+            return False  # reverse / rewind
+    for x, y in coords:
+        if abs(y - x) > 1.0 + 1e-6:
+            return False
+    return True
 
 
 def _keyframe_y(obj: Any, default: float) -> Optional[float]:
@@ -236,7 +275,6 @@ def clip_transform_reasons(
         ("shear_x", "sheared", 0.0),
         ("shear_y", "sheared", 0.0),
         ("alpha", "alpha-change", 1.0),
-        ("time", "speed-change", 1.0),
     ) + _PICTURE_DEFAULTS + (_AUDIO_DEFAULTS if audio_matters else ()):
         if _deviates_from_identity(clip.get(prop), identity):
             if label not in reasons:
@@ -265,13 +303,8 @@ def clip_transform_reasons(
             or abs(end - source_duration) > half_frame):
         reasons.append("trimmed")
 
-    time_prop = clip.get("time")
-    if isinstance(time_prop, str) and time_prop not in ("TIME_MAP_FORWARD", "none", ""):
-        if "speed-change" not in reasons:
-            reasons.append("speed-change")
-    # libopenshot remaps time whenever the curve has two or more points, even a
-    # flat one (that is a freeze frame).
-    if isinstance(time_prop, dict) and len(time_prop.get("Points") or time_prop.get("points") or []) > 1:
+    # Multi-point Y≈X (double-reverse restore) is identity; reverse/speed is not.
+    if not _time_curve_is_identity(clip.get("time")):
         if "speed-change" not in reasons:
             reasons.append("speed-change")
 
@@ -463,11 +496,18 @@ def analyze_smart_render_spans(
             if not reasons:
                 kind = "copy"
 
-        if kind != current_kind or (kind == "copy" and clip is not current_clip):
+        # Keep encode/normalize candidates with different reasons separate so a
+        # clean half (format-only) is not merged into a reversed/effect half.
+        reasons_changed = reasons != current_reasons
+        if (
+            kind != current_kind
+            or (kind == "copy" and clip is not current_clip)
+            or (kind == "encode" and reasons_changed and current_kind is not None)
+        ):
             flush(frame - 1)
             current_kind = kind
             current_start = frame
-            current_clip = clip if kind == "copy" else None
+            current_clip = clip
             current_reasons = reasons
         else:
             current_reasons = reasons
@@ -496,6 +536,41 @@ def _reason_counts(spans: list[SmartRenderSpan]) -> dict[str, int]:
         for reason in span.reasons:
             counts[reason] += 1
     return dict(counts)
+
+
+_NORMALIZE_OK_REASONS = frozenset({
+    "resolution-mismatch",
+    "fps-mismatch",
+    "codec-mismatch",
+    "codec-unknown",
+    "pixel-format-mismatch",
+    "trimmed",
+    "audio-mismatch",
+})
+
+
+def _promote_normalize_spans(spans: list[SmartRenderSpan]) -> list[SmartRenderSpan]:
+    """Turn format-only encode spans into ffmpeg normalize spans."""
+    out: list[SmartRenderSpan] = []
+    for span in spans:
+        if (
+            span.kind == "encode"
+            and span.clip is not None
+            and span.reasons
+            and set(span.reasons) <= _NORMALIZE_OK_REASONS
+        ):
+            out.append(
+                SmartRenderSpan(
+                    kind="normalize",
+                    start_frame=span.start_frame,
+                    end_frame=span.end_frame,
+                    clip=span.clip,
+                    reasons=span.reasons,
+                )
+            )
+        else:
+            out.append(span)
+    return out
 
 
 def decide_smart_render(
@@ -545,12 +620,133 @@ def decide_smart_render(
             detail=f"copy={copy_n} encode={encode_n}",
         )
 
+    # Format mismatch / trimmed: stream-copy is unsafe, but transform-clean
+    # spans can still be ffmpeg-normalized to the export profile (faster than
+    # OpenShot) while dirty spans (reverse, FX) use encode_span.
+    if allow_partial:
+        promoted = _promote_normalize_spans(spans)
+        norm_n = sum(1 for s in promoted if s.kind == "normalize")
+        dirty_n = sum(1 for s in promoted if s.kind == "encode")
+        if norm_n > 0 and dirty_n > 0:
+            return SmartRenderDecision(
+                mode="partial",
+                spans=tuple(promoted),
+                reason_counts=counts,
+                detail=f"normalize={norm_n} encode={dirty_n}",
+            )
+
     return SmartRenderDecision(
         mode="none",
         spans=tuple(spans),
         reason_counts=counts,
         detail="fallback-encode",
     )
+
+
+
+def _span_source_window(
+    clip: dict, *, start_frame: int, end_frame: int, fps: float
+) -> tuple[Optional[str], float, float]:
+    reader = clip.get("reader") or {}
+    path = reader.get("path") or clip.get("path")
+    if not path:
+        return None, 0.0, 0.0
+    clip_start = float(clip.get("start", 0.0))
+    position = float(clip.get("position", 0.0))
+    timeline_start_sec = (start_frame - 1) / fps
+    timeline_end_sec = end_frame / fps
+    source_start = clip_start + max(0.0, timeline_start_sec - position)
+    duration = max(0.001, timeline_end_sec - timeline_start_sec)
+    return path, source_start, duration
+
+
+def _ffmpeg_vcodec(export_vcodec: str) -> str:
+    name = (export_vcodec or "libx264").lower()
+    if "265" in name or "hevc" in name:
+        return "libx265"
+    return "libx264"
+
+
+def _ffmpeg_rate_args(video_bitrate: Any) -> list[str]:
+    if video_bitrate is None:
+        return ["-crf", "20"]
+    if isinstance(video_bitrate, (int, float)):
+        value = int(video_bitrate)
+        if 0 <= value <= 51:
+            return ["-crf", str(value)]
+        return ["-b:v", str(value)]
+    text = str(video_bitrate).strip().lower()
+    parts = text.split()
+    if len(parts) >= 2 and ("crf" in parts[1] or "cqp" in parts[1] or parts[1] == "qp"):
+        try:
+            return ["-crf", str(int(float(parts[0])))]
+        except (TypeError, ValueError):
+            return ["-crf", "20"]
+    return ["-crf", "20"]
+
+
+def _transcode_span_to_export(
+    clip: dict,
+    *,
+    start_frame: int,
+    end_frame: int,
+    fps: float,
+    output_path: str,
+    export_width: int,
+    export_height: int,
+    export_fps: float,
+    export_vcodec: str,
+    video_bitrate: Any = None,
+    include_audio: bool = True,
+    progress_cb: Optional[Callable[[int], None]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+) -> bool:
+    path, source_start, duration = _span_source_window(
+        clip, start_frame=start_frame, end_frame=end_frame, fps=fps
+    )
+    if not path:
+        return False
+    width = max(2, int(export_width))
+    height = max(2, int(export_height))
+    if width % 2:
+        width += 1
+    if height % 2:
+        height += 1
+    out_fps = float(export_fps) if export_fps and export_fps > 0 else fps
+    vf = (
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        f"fps={out_fps:.6f}"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{source_start:.6f}", "-i", path, "-t", f"{duration:.6f}",
+        "-vf", vf, "-c:v", _ffmpeg_vcodec(export_vcodec),
+        *_ffmpeg_rate_args(video_bitrate),
+        "-pix_fmt", "yuv420p",
+    ]
+    if include_audio:
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2"])
+    else:
+        cmd.append("-an")
+    cmd.extend(["-movflags", "+faststart", output_path])
+    frame_span = max(1, int(end_frame) - int(start_frame))
+
+    def _on_frac(frac: float) -> None:
+        if progress_cb is None:
+            return
+        frame = int(start_frame) + int(round(max(0.0, min(1.0, frac)) * frame_span))
+        progress_cb(min(int(end_frame), frame))
+
+    result = run_ffmpeg_with_progress(
+        cmd,
+        on_progress=_on_frac if progress_cb is not None else None,
+        should_cancel=cancel_cb,
+    )
+    if result.returncode != 0:
+        log.warning("Smart-render export-normalize failed: %s", result.stderr)
+        return False
+    return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
 
 
 def _stream_copy_span(
@@ -709,6 +905,8 @@ def try_smart_render_export(
     enabled: bool = True,
     allow_partial: bool = True,
     audio_settings: Any = _KEEP_AUDIO,
+    progress_cb: Optional[Callable[[int], None]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
 ) -> Optional[dict]:
     """Attempt smart render. Returns metrics dict on success, None to fall back.
 
@@ -774,6 +972,11 @@ def try_smart_render_export(
     segment_paths: list[str] = []
     try:
         for index, span in enumerate(spans):
+            if cancel_cb is not None and cancel_cb():
+                log.info("Smart render cancelled before span %s", index)
+                return None
+            if progress_cb is not None:
+                progress_cb(span.start_frame)
             out = os.path.join(tmp_dir, f"seg_{index:04d}.mp4")
             if span.kind == "copy" and span.clip is not None:
                 ok = _stream_copy_span(
@@ -786,6 +989,28 @@ def try_smart_render_export(
                 ) and _has_frames(out, span.end_frame - span.start_frame + 1)
                 if not ok and decision.mode == "partial" and encode_span is not None:
                     ok = encode_span(span.start_frame, span.end_frame, out)
+            elif span.kind == "normalize" and span.clip is not None:
+                log.info(
+                    "Smart render normalizing span %s (%s-%s) to export %sx%s",
+                    index, span.start_frame, span.end_frame, export_width, export_height,
+                )
+                ok = _transcode_span_to_export(
+                    span.clip,
+                    start_frame=span.start_frame,
+                    end_frame=span.end_frame,
+                    fps=fps,
+                    output_path=out,
+                    export_width=export_width,
+                    export_height=export_height,
+                    export_fps=fps,
+                    export_vcodec=export_vcodec,
+                    video_bitrate=video_settings.get("video_bitrate"),
+                    include_audio=include_audio,
+                    progress_cb=progress_cb,
+                    cancel_cb=cancel_cb,
+                )
+                if not ok and encode_span is not None:
+                    ok = encode_span(span.start_frame, span.end_frame, out)
             else:
                 if encode_span is None:
                     ok = False
@@ -794,6 +1019,8 @@ def try_smart_render_export(
             if not ok:
                 log.warning("Smart render aborted; falling back to full encode")
                 return None
+            if progress_cb is not None:
+                progress_cb(span.end_frame)
             segment_paths.append(out)
 
         if not _concat_copy(segment_paths, export_file_path):
@@ -803,11 +1030,13 @@ def try_smart_render_export(
             return None
 
         copy_spans = sum(1 for s in spans if s.kind == "copy")
+        normalize_spans = sum(1 for s in spans if s.kind == "normalize")
         return {
             "mode": decision.mode,
             "spans": len(spans),
             "copy_spans": copy_spans,
-            "encode_spans": len(spans) - copy_spans,
+            "normalize_spans": normalize_spans,
+            "encode_spans": len(spans) - copy_spans - normalize_spans,
             "path": export_file_path,
             "detail": decision.detail,
         }
