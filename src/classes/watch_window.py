@@ -17,6 +17,7 @@ WATCH_PAD_SEC = 2.0
 MAX_FRAMES = 12
 DENSE_WINDOW_SEC = 16.0
 SHOT_SNAP_TOLERANCE = 0.4
+PRE_CUT_SEC = 0.1
 DEFAULT_LONG_EDGE = 512
 TEXT_LONG_EDGE = 1024
 _TEXT_QUERY_RE = re.compile(
@@ -374,12 +375,25 @@ def extract_watch_window(
             win_start, win_end, list(scene_ts) + list(cue_times),
         )
         sparse_pre = False
+        # Cuts outside the narrowed window were never watched: reporting them,
+        # or snapping a match onto one, would describe frames nobody looked at.
+        scene_ts = [t for t in scene_ts if win_start - 1e-3 <= t <= win_end + 1e-3]
+    # Keep a frame on each side of every shot cut: a talking head otherwise
+    # dedupes to one frame and the cut cannot be located.
+    pre_cut = [max(win_start, t - PRE_CUT_SEC) for t in scene_ts]
+    # Keep the edges of the window that was asked about, too: on a static shot
+    # the dedupe keeps the first frames, which are the context padding before
+    # it, and the caller is told what it saw at times it never asked about.
+    asked = [
+        float(t) for t in (start, end)
+        if win_start - 1e-3 <= float(t) <= win_end + 1e-3
+    ]
     times, warning, sparse = plan_sample_times(
         win_start, win_end, transcript_cues,
         max_frames=max(max_frames * 3, 24),
-        extra_times=scene_ts,
+        extra_times=list(scene_ts) + pre_cut + asked,
     )
-    cue_set = {round(t, 2) for t in cue_times}
+    cue_set = {round(t, 2) for t in list(cue_times) + list(scene_ts) + pre_cut + asked}
     tmp = work_dir or tempfile.mkdtemp(prefix="zenvi_watch_")
     os.makedirs(tmp, exist_ok=True)
     records: List[Dict[str, Any]] = []
@@ -483,6 +497,7 @@ def confirm_watch_window(
     win_e = float(extracted.get("window_end") or end)
     warning = str(extracted.get("warning") or "")
     scene_ts = list(extracted.get("scene_times") or [])
+    frame_times = [float(fr.get("timestamp") or 0) for fr in extracted.get("frames") or []]
     sparse = bool(extracted.get("sparse"))
 
     def _soft(reason):
@@ -495,6 +510,9 @@ def confirm_watch_window(
             "confidence": 0.0,
             "reason": reason,
             "warning": warning,
+            "frame_times": frame_times,
+            "scene_times": scene_ts,
+            "visible_at": [],
             "window_start": win_s,
             "window_end": win_e,
             "sparse": sparse,
@@ -566,6 +584,9 @@ def confirm_watch_window(
         "confidence": float(data.get("confidence") or 0),
         "reason": str(data.get("reason") or ""),
         "warning": warning,
+        "frame_times": frame_times,
+        "scene_times": scene_ts,
+        "visible_at": [float(t) for t in data.get("visible_at") or []],
         "window_start": win_s,
         "window_end": win_e,
         "sparse": sparse,

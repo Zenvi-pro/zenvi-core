@@ -6,6 +6,8 @@ import os
 import sys
 import importlib
 
+import pytest
+
 # Allow importing from src/
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
@@ -63,14 +65,14 @@ def test_project_structure():
             raise FileNotFoundError(f"Missing: {rel_path}")
 
 
+TEST_VIDEO = os.path.expanduser("~/Downloads/Feral - Concept Trailer.mp4")
+
+
+# A local asset on one machine: pytest skips without it, the script still fails.
+@pytest.mark.skipif(not os.path.isfile(TEST_VIDEO), reason=f"local test video not present: {TEST_VIDEO}")
 def test_video_file_exists():
     """Optional local fixture used by manual smoke runs — skip in CI."""
-    import pytest
-
-    path = os.path.expanduser("~/Downloads/Feral - Concept Trailer.mp4")
-    if not os.path.isfile(path):
-        pytest.skip(f"Local test video not present: {path}")
-    size = os.path.getsize(path)
+    size = os.path.getsize(TEST_VIDEO)
     if size < 1_000_000:
         raise ValueError(f"Test video too small ({size} bytes) — likely corrupt")
 
