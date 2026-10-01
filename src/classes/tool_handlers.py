@@ -9832,10 +9832,17 @@ def match_color_to_reference(
 
         if QThread is not None and QThread.currentThread() is not app.thread():
             sub_effect, sub_grain, sub_data = _run_on_main_thread(lambda: _effects(ids[0]))
-            ref_effect, ref_grain, _ref_data = _run_on_main_thread(lambda: _effects(ref_id))
+            ref_effect, ref_grain, ref_data = _run_on_main_thread(lambda: _effects(ref_id))
         else:
             sub_effect, sub_grain, sub_data = _effects(ids[0])
-            ref_effect, ref_grain, _ref_data = _effects(ref_id)
+            ref_effect, ref_grain, ref_data = _effects(ref_id)
+        # inspect_color only warns about a missing reference. Matching against
+        # it would read as "reference has no grade and no grain" and strip
+        # both from the subject, so a mistyped id must stop here.
+        if not ref_data or not isinstance(payload.get("reference"), dict):
+            return f"Error: reference clip {ref_id} not found."
+        if not sub_data:
+            return f"Error: clip {ids[0]} not found."
 
         action = ca.match_grade_action(sub_effect, ref_effect)
         grain_action = ca.match_grain_action(sub_grain, ref_grain)

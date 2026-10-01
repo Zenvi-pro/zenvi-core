@@ -808,3 +808,89 @@ def test_implicit_colour_targets_skip_audio_only_clips(monkeypatch):
 
     assert th._all_timeline_clip_ids() == ["video"]
     assert th._playhead_timeline_clip_ids() == ["video"]
+
+
+def _match_env(monkeypatch, clips, inspect_payload):
+    """Fake app / Clip store for match_color_to_reference; returns the writes."""
+    import sys
+    import types
+
+    from classes import tool_handlers as th
+
+    monkeypatch.setattr(th, "inspect_color", lambda **_kw: json.dumps(inspect_payload))
+    monkeypatch.setattr(
+        th,
+        "_render_clip_isolated",
+        lambda *_a, **_k: {"scopes": {"present": True}, "preview_jpeg": ""},
+    )
+    writes = []
+
+    def _fake_write(clip_obj, effects):
+        writes.append((clip_obj.id, list(effects)))
+        clip_obj.data["effects"] = list(effects)
+
+    monkeypatch.setattr(th, "_write_clip_effects", _fake_write)
+
+    class FakeApp:
+        class updates:
+            transaction_id = None
+
+        class window:
+            class refreshFrameSignal:
+                @staticmethod
+                def emit():
+                    return None
+
+        class project:
+            @staticmethod
+            def generate_id():
+                return "effx"
+
+            @staticmethod
+            def get(key, default=None):
+                return {"fps": {"num": 30, "den": 1}}.get(key, default)
+
+    monkeypatch.setattr(th, "_get_app", lambda: FakeApp())
+    monkeypatch.setattr(th, "QThread", None)
+
+    class ClipProxy:
+        @staticmethod
+        def get(id=None, **_kw):
+            return clips.get(id)
+
+    fake_query = types.ModuleType("classes.query")
+    fake_query.Clip = ClipProxy
+    monkeypatch.setitem(sys.modules, "classes.query", fake_query)
+    return writes
+
+
+class _MatchClip:
+    def __init__(self, cid, effects):
+        self.id = cid
+        self.data = {"id": cid, "effects": effects}
+
+
+def test_match_refuses_a_missing_reference_instead_of_stripping_the_subject(monkeypatch):
+    """A mistyped reference id used to read as "reference has no grade or
+    grain" and remove both from the subject."""
+    from classes import tool_handlers as th
+    from classes.film_grain_presets import apply_film_grain_preset
+
+    grade = merge_color_grade(blank_color_grade("cg1"), {"temperature": 0.3})
+    grain = apply_film_grain_preset({"class_name": "FilmGrain", "id": "g1"}, "35mm_classic")
+    clips = {"sub": _MatchClip("sub", [grade, grain])}
+    inspect_payload = {
+        "ok": True,
+        "atFrame": 1,
+        "color": summarize_color_grade(grade),
+        "film_grain": {"present": True},
+        "scopes": {"present": True},
+        "preview_jpeg": "",
+        "warnings": ["reference clip typo not found"],
+    }
+    writes = _match_env(monkeypatch, clips, inspect_payload)
+
+    out = th.match_color_to_reference(clipId="sub", reference="typo")
+    assert out.startswith("Error:") and "typo" in out
+    assert writes == []
+    assert clips["sub"].data["effects"] == [grade, grain]
