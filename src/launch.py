@@ -234,8 +234,8 @@ except Exception:
 
 try:
     # Round fractional display scales (e.g. Windows 125% -> 1.0). PassThrough renders
-    # the whole UI at 1.25x with soft, pixelated icons.
-    os.environ['QT_SCALE_FACTOR_ROUNDING_POLICY'] = "Round"
+    # the whole UI at 1.25x with soft, pixelated icons. A policy the user exported wins.
+    os.environ.setdefault('QT_SCALE_FACTOR_ROUNDING_POLICY', "Round")
 
     # Enable High-DPI resolutions
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
