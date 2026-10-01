@@ -252,6 +252,48 @@ def test_resolve_agent_import_target_missing(tmp_path):
     assert result["status"] == "missing"
 
 
+@pytest.mark.parametrize("alias", ["Downloads", "downloads", "my downloads", "download"])
+def test_resolve_known_folder_alias_downloads(tmp_path, alias):
+    from classes.file_drop import resolve_known_folder_alias, resolve_user_path
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    assert resolve_known_folder_alias(alias, home=str(tmp_path)) == str(downloads)
+    assert resolve_user_path(alias, home=str(tmp_path)) == str(downloads)
+
+
+def test_resolve_user_path_downloads_subfolder_case(tmp_path):
+    from classes.file_drop import resolve_user_path
+
+    wedding = tmp_path / "Downloads" / "wedding"
+    wedding.mkdir(parents=True)
+    assert resolve_user_path("downloads/wedding", home=str(tmp_path)) == str(wedding)
+
+
+def test_is_user_home_directory(tmp_path):
+    from classes.file_drop import is_user_home_directory
+
+    home = tmp_path / "home"
+    nested = home / "Downloads"
+    nested.mkdir(parents=True)
+    assert is_user_home_directory(str(home), home=str(home))
+    assert not is_user_home_directory(str(nested), home=str(home))
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/c/Users/alice/Videos", r"C:\Users\alice\Videos"),
+    ("/cygdrive/c/Users/alice/clip.mp4", r"C:\Users\alice\clip.mp4"),
+])
+def test_msys_path_conversion_gated_on_drive(monkeypatch, raw, expected):
+    from classes import file_drop as fd
+
+    monkeypatch.setattr(fd, "_running_on_windows", lambda: True)
+    monkeypatch.setattr(fd, "_windows_drive_root_exists", lambda drive: drive.upper() == "C:")
+    assert fd._msys_windows_path_if_usable(raw) == expected
+    # Unix-looking /Users must not become U:\...
+    assert fd._msys_windows_path_if_usable("/Users/alice/Desktop") is None
+
+
 def test_mime_has_file_drop_and_urls_from_mime(tmp_path):
     pytest.importorskip("PyQt5.QtCore")
     from PyQt5.QtCore import QMimeData, QUrl

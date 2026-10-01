@@ -900,8 +900,9 @@ def list_files(**_kw) -> str:
             return (
                 "No files in project media bin. "
                 "list_files_tool does not import from disk — call "
-                "import_files_tool with paths= (folder or file; prefer "
-                "C:/Users/... on Windows) and dry_run=true first for folders."
+                "import_files_tool with folder=\"Downloads\" (or a path; prefer "
+                "C:/Users/... on Windows), dry_run=true first for folders, and "
+                "media_types=video when the user asked for videos only."
             )
         lines = []
         visible = 0
@@ -926,7 +927,8 @@ def list_files(**_kw) -> str:
             return (
                 "No files in project media bin. "
                 "list_files_tool does not import from disk — call "
-                "import_files_tool with paths= (folder or file)."
+                "import_files_tool with folder=\"Downloads\" or paths= "
+                "(folder or file), dry_run=true first for folders."
             )
         return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
@@ -1717,13 +1719,41 @@ def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
     )
 
 
-def _expand_import_paths(entries) -> tuple:
+def _import_truthy(value, default=False) -> bool:
+    """Accept bools (backend) and common string forms (MCP / Claude Code)."""
+    if isinstance(value, bool):
+        return value
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return default
+    return text in ("1", "true", "yes", "y", "on")
+
+
+def _allowed_exts_for_media_types(media_types) -> frozenset:
+    """Extension set for dir/glob filtering. Default = all editor media."""
+    text = str(media_types if media_types is not None else "all").strip().lower()
+    if not text or text in ("all", "*", "any", "media"):
+        return _IMPORT_MEDIA_EXTS
+    kinds = {p.strip() for p in re.split(r"[,|\s]+", text) if p.strip()}
+    exts: set[str] = set()
+    if kinds & {"video", "videos"}:
+        exts |= _IMPORT_VIDEO_EXTS
+    if kinds & {"audio", "audios", "sound", "music"}:
+        exts |= _IMPORT_AUDIO_EXTS
+    if kinds & {"image", "images", "photo", "photos", "picture", "pictures"}:
+        exts |= _IMPORT_IMAGE_EXTS
+    return frozenset(exts) if exts else _IMPORT_MEDIA_EXTS
+
+
+def _expand_import_paths(entries, allowed_exts=None) -> tuple:
     """Return (media_paths, missing, skipped_non_media).
 
-    Directories are walked for media files only. Explicit file paths are kept
-    unfiltered. *skipped_non_media* counts non-media files seen during dir walks.
-    Entries must already be absolute existing paths (or missing strings).
+    Directories are walked for allowed media extensions only. Explicit file
+    paths are kept unfiltered. *skipped_non_media* counts files skipped during
+    dir walks (wrong type or non-media).
     """
+    if allowed_exts is None:
+        allowed_exts = _IMPORT_MEDIA_EXTS
     resolved, missing, seen = [], [], set()
     skipped_non_media = 0
     for entry in entries:
@@ -1732,7 +1762,7 @@ def _expand_import_paths(entries) -> tuple:
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
                     full = os.path.join(root, name)
-                    if os.path.splitext(name)[1].lower() in _IMPORT_MEDIA_EXTS:
+                    if os.path.splitext(name)[1].lower() in allowed_exts:
                         if full not in seen:
                             seen.add(full)
                             resolved.append(full)
@@ -1748,25 +1778,27 @@ def _expand_import_paths(entries) -> tuple:
 
 
 def import_files(
-    paths="", path="", folder="", skip_indexing="false", dry_run="false", **_kw
+    paths="",
+    path="",
+    folder="",
+    skip_indexing="false",
+    dry_run="false",
+    media_types="all",
+    **_kw
 ) -> str:
     """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
 
-    Call with the user's path immediately (dry_run=true for folders). Do not
-    preflight with Glob/Read or invent /mnt/c mounts — this tool resolves
-    Windows C:/… and Git Bash /c/… paths. Exact match first; slight typos may
-    resolve adjacently (ask if several). Required: paths, path, folder, or
-    files. Prefer forward-slash Windows paths so JSON backslashes cannot
-    mangle them. Directories are walked recursively for media only.
-
-    dry_run (discoverable): pass dry_run=true to preview would_import /
-    skipped_non_media without changing the media bin; ask the user, then call
-    again with dry_run=false. For vague asks or multiple candidates, ask —
-    do not guess. Indexing starts unless skip_indexing is true (poll via
-    list_files_tool or wait_until_project_indexed_tool).
+    Call with the user's path immediately (dry_run=true for folders). Bare names
+    like folder=Downloads or Desktop work. For “all videos”, pass
+    media_types=video. Do not preflight with Glob/Read or invent /mnt/c mounts —
+    this tool resolves Windows C:/… and Git Bash /c/… paths. Exact match first;
+    slight typos may resolve adjacently (ask if several). Prefer forward-slash
+    Windows paths so JSON backslashes cannot mangle them. Never ask for
+    individual file paths when the user named a folder.
     """
     import glob as _glob
     from classes.file_drop import (
+        is_user_home_directory,
         normalize_agent_fs_path,
         resolve_agent_import_target,
     )
@@ -1777,8 +1809,9 @@ def import_files(
             entries.extend(_coerce_path_list(value))
     if not entries:
         return ("Error: paths is required for MCP/harness import. Pass the media "
-                "files or folders to import, e.g. paths=[\"C:/Users/you/Downloads/clips\"] "
-                "or paths=[\"~/Desktop/clips\"]. This tool never opens a file dialog.")
+                "files or folders to import, e.g. folder=\"Downloads\", "
+                "paths=[\"C:/Users/you/Downloads/clips\"], or "
+                "paths=[\"~/Desktop/clips\"]. This tool never opens a file dialog.")
 
     notes = []
     normalized = []
@@ -1826,7 +1859,18 @@ def import_files(
             % (entry, target.get("tried") or entry)
         )
 
-    resolved, missing, skipped_non_media = _expand_import_paths(normalized)
+    home_hits = [p for p in normalized if is_user_home_directory(p)]
+    if home_hits:
+        return (
+            "Error: Refusing to import the entire home folder. Pass a specific "
+            "subfolder such as Desktop, Downloads, Movies, Videos, Documents, "
+            "or Pictures (e.g. folder=\"Downloads\")."
+        )
+
+    allowed_exts = _allowed_exts_for_media_types(media_types)
+    resolved, missing, skipped_non_media = _expand_import_paths(
+        normalized, allowed_exts=allowed_exts,
+    )
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
@@ -1835,7 +1879,7 @@ def import_files(
             detail = "not found: %s" % ", ".join(missing)
         return f"Error: Nothing to import ({detail})."
 
-    preview = str(dry_run).lower().strip() in ("1", "true", "yes", "y", "on")
+    preview = _import_truthy(dry_run, default=False)
     if preview:
         counts = {"video": 0, "audio": 0, "image": 0, "other": 0}
         for media_path in resolved:
@@ -1858,6 +1902,9 @@ def import_files(
                 len(resolved), counts["video"], counts["audio"], counts["image"],
             )
         )
+        mt = str(media_types or "all").strip() or "all"
+        if mt.lower() not in ("all", "*", "any", "media"):
+            lines.append("media_types=%s" % mt)
         lines.append("sample:")
         sample_body = _format_capped_lines(
             ["  %s" % name for name in sample], cap=_IMPORT_RESULT_LINE_CAP,
@@ -1874,7 +1921,7 @@ def import_files(
         )
         return "\n".join(lines)
 
-    skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
+    skip = _import_truthy(skip_indexing, default=False)
 
     try:
         from classes.query import File as _File

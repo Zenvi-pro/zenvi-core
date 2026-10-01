@@ -28,6 +28,19 @@ _MEDIA_DIR_NAMES = (
     "Pictures",
 )
 
+# Bare names humans type instead of a full path (case-insensitive).
+_KNOWN_FOLDER_ALIASES = {
+    "desktop": "Desktop",
+    "downloads": "Downloads",
+    "download": "Downloads",
+    "movies": "Movies",
+    "videos": "Videos",
+    "documents": "Documents",
+    "document": "Documents",
+    "pictures": "Pictures",
+    "picture": "Pictures",
+}
+
 _FILE_FORMAT_HINTS = (
     "uri-list",
     "file-url",
@@ -173,15 +186,65 @@ def normalize_agent_fs_path(path: str, home: str | None = None) -> str:
     return resolve_user_path(raw, home=home)
 
 
+def _resolved_home(home: str | None = None) -> str:
+    if home:
+        return home
+    home = os.path.expanduser("~")
+    if not home or home == "~":
+        home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+    return home
+
+
+def resolve_known_folder_alias(path: str, home: str | None = None) -> str:
+    """Map bare names like ``downloads`` / ``my Desktop`` to an existing home folder.
+
+    Returns an absolute path when the alias exists, else ``\"\"``.
+    """
+    raw = (path or "").strip().strip("'\"")
+    if not raw:
+        return ""
+    # Only bare names — never rewrite paths that already have separators.
+    posix = raw.replace("\\", "/").rstrip("/")
+    if "/" in posix or (len(posix) >= 2 and posix[1] == ":"):
+        return ""
+    key = posix.lower()
+    if key.startswith("my "):
+        key = key[3:].strip()
+    canon = _KNOWN_FOLDER_ALIASES.get(key)
+    if not canon:
+        return ""
+    home = _resolved_home(home)
+    if not home:
+        return ""
+    candidate = os.path.join(home, canon)
+    if os.path.isdir(candidate):
+        return os.path.abspath(candidate)
+    return ""
+
+
+def is_user_home_directory(path: str, home: str | None = None) -> bool:
+    """True when *path* is exactly the user's home directory (not a subfolder)."""
+    if not path:
+        return False
+    home = _resolved_home(home)
+    if not home:
+        return False
+    try:
+        return os.path.abspath(os.path.expanduser(path)) == os.path.abspath(home)
+    except Exception:
+        return False
+
+
 def resolve_user_path(path: str, home: str | None = None) -> str:
     """Expand ``~`` and, for relative names, look under home / common media dirs."""
     raw = (path or "").strip().strip("'\"")
     if not raw:
         return ""
-    if home is None:
-        home = os.path.expanduser("~")
-        if not home or home == "~":
-            home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
+    home = _resolved_home(home)
+
+    alias = resolve_known_folder_alias(raw, home=home)
+    if alias:
+        return alias
 
     # Native Windows paths with backslashes: normalize separators early so
     # exists/isabs checks are consistent across MSYS and Win32 Python.
@@ -197,6 +260,16 @@ def resolve_user_path(path: str, home: str | None = None) -> str:
 
     candidates = []
     if home:
+        # Prefer known-folder alias spelling first (downloads/wedding →
+        # Downloads/wedding). On case-insensitive volumes, joining home +
+        # the raw lowercase segment also "exists" and would otherwise win.
+        parts = expanded.replace("\\", "/").split("/")
+        if parts:
+            head_alias = resolve_known_folder_alias(parts[0], home=home)
+            if head_alias and len(parts) > 1:
+                candidates.append(os.path.join(head_alias, *parts[1:]))
+            elif head_alias and len(parts) == 1:
+                candidates.append(head_alias)
         candidates.append(os.path.join(home, expanded))
         for folder in media_add_dirs(home):
             candidates.append(os.path.join(folder, expanded))

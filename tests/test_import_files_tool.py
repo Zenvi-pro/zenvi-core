@@ -281,12 +281,90 @@ def test_agent_runners_prompt_source_steers_windows_import():
     ).read_text(encoding="utf-8")
     assert "IMMEDIATELY" in text
     assert "/mnt/c" in text
-    assert "Do NOT use Glob" in text
     assert "import_files_tool" in text
     assert "dry_run=true" in text
+    assert "media_types=video" in text
+    assert 'folder=\\"Downloads\\"' in text
+    assert "individual file paths" in text
     assert "_agent_import_prompt" in text
     # Codex must receive the same steering (no --append-system-prompt).
     assert "steered = _agent_import_prompt()" in text
+
+
+def test_import_files_downloads_alias_and_videos_only(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    (downloads / "a.mp4").write_bytes(b"v")
+    (downloads / "b.mov").write_bytes(b"v")
+    (downloads / "still.png").write_bytes(b"i")
+    (downloads / "song.wav").write_bytes(b"a")
+    (downloads / "notes.txt").write_bytes(b"n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(
+        "os.path.expanduser",
+        lambda p: str(home) if p in ("~", "") else (
+            str(home) + p[1:] if isinstance(p, str) and p.startswith("~/") else p
+        ),
+    )
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(folder="downloads", dry_run="true", media_types="video")
+    assert out.startswith("dry_run=true")
+    assert str(downloads) in out or "Downloads" in out
+    assert "would_import=2" in out
+    assert "video=2" in out
+    assert "audio=0" in out
+    assert "image=0" in out
+    assert "media_types=video" in out
+    assert "skipped_non_media=3" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_import_files_refuses_home_root(monkeypatch, tmp_path):
+    from classes import tool_handlers as th
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "secret.txt").write_bytes(b"x")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(path=str(home), dry_run="true")
+    assert out.startswith("Error:")
+    assert "entire home folder" in out
+    win.files_model.add_files.assert_not_called()
+
+
+def test_import_files_userprofile_downloads_alias(monkeypatch, tmp_path):
+    """Windows-style USERPROFILE home with bare Downloads alias."""
+    from classes import tool_handlers as th
+
+    home = tmp_path / "Users" / "alice"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    (downloads / "clip.mp4").write_bytes(b"v")
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(home) if p == "~" else p)
+
+    win = MagicMock()
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+
+    out = th.import_files(folder="Downloads", dry_run=True, media_types="video")
+    assert "would_import=1" in out
+    assert "clip.mp4" in out
+    win.files_model.add_files.assert_not_called()
 
 
 @pytest.mark.parametrize("url, expected", [
