@@ -5093,7 +5093,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         event.accept()
 
     # Add Clip
-    def _waveform_new_audio_clip(self, new_clip, transaction_id):
+    def _waveform_new_audio_clip(self, new_clip, transaction_id=None):
         """Generate waveform data by default for an audio-only clip just added.
 
         Requested under the caller's transaction: the waveform is saved later, from
@@ -5107,7 +5107,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         has_audio = True if has_audio is None else bool(has_audio)
         clip_id = new_clip.get("id")
         if has_audio and not has_video and clip_id:
-            self.Show_Waveform_Triggered([clip_id], transaction_id=transaction_id)
+            self.Show_Waveform_Triggered(
+                [clip_id], transaction_id=transaction_id or get_app().updates.transaction_id)
 
     def addClip(
         self,
