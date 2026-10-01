@@ -21,7 +21,7 @@ GUARDED_INCLUDE = (
     "#include <opencv2/geometry.hpp>\n"
     "#endif\n"
 )
-OPENCV_INCLUDE = re.compile(r"^#include <opencv2/(?:opencv|core|core/ocl)\.hpp>[ \t]*\n", re.M)
+OPENCV_INCLUDE = re.compile(r"^#include <opencv2/[a-z0-9_/]+\.hpp>[ \t]*\n", re.M)
 
 
 def patch_cmake(src_dir: str) -> None:
@@ -40,8 +40,10 @@ def patch_cmake(src_dir: str) -> None:
 
 def patch_sources(src_dir: str) -> None:
     patched = 0
-    for path in sorted(glob.glob(os.path.join(src_dir, "src", "CV*.h")) +
-                       glob.glob(os.path.join(src_dir, "src", "CV*.cpp"))):
+    # Every file that includes OpenCV: effects reach it through Frame.h / Clip.h.
+    sources = glob.glob(os.path.join(src_dir, "src", "**", "*.h*"), recursive=True)
+    sources += glob.glob(os.path.join(src_dir, "src", "**", "*.cpp"), recursive=True)
+    for path in sorted(sources):
         text = open(path, encoding="utf-8").read()
         if "opencv2/geometry.hpp" in text:
             continue
