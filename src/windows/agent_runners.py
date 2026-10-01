@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
+BACKEND_OPENCODE = "opencode"
 
 
 # Models offered in the chat model picker per backend, in menu order. ``id`` is
@@ -174,11 +175,16 @@ def _cli_install_dirs() -> list:
     if home:
         dirs.append(os.path.join(home, ".local", "bin"))
         dirs.append(os.path.join(home, ".codex", "packages", "standalone", "current", "bin"))
+        # OpenCode's official install script.
+        dirs.append(os.path.join(home, ".opencode", "bin"))
     appdata = os.environ.get("APPDATA") or (
         os.path.join(home, "AppData", "Roaming") if home else ""
     )
     if appdata:
         dirs.append(os.path.join(appdata, "npm"))
+    # nvm-windows keeps npm globals in its node folder, not %APPDATA%/npm.
+    if os.environ.get("NVM_SYMLINK"):
+        dirs.append(os.environ["NVM_SYMLINK"])
     local = os.environ.get("LOCALAPPDATA") or (
         os.path.join(home, "AppData", "Local") if home else ""
     )
@@ -398,8 +404,10 @@ def _which_cli(binary_name: str):
         return found
     names = [binary_name]
     if os.name == "nt":
-        names.extend([binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat"])
-        for name in names[1:]:
+        # Launchers first: npm puts an extension-less sh script beside
+        # ``<name>.cmd`` and Windows cannot run it.
+        names = [binary_name + ".exe", binary_name + ".cmd", binary_name + ".bat", binary_name]
+        for name in names[:3]:
             found = shutil.which(name)
             if found:
                 return found
@@ -476,6 +484,8 @@ def _is_registered(binary_name: str) -> bool:
         return _codex_is_registered()
     if binary_name == "cursor-agent":
         return _cursor_is_registered()
+    if binary_name == "opencode":
+        return _opencode_is_registered()
     return False
 
 
@@ -753,6 +763,101 @@ def register_cursor(port: int, token: str):
     return True, connected
 
 
+def _opencode_config_dir() -> str:
+    """OpenCode's global config folder (it honours ``XDG_CONFIG_HOME`` on every OS)."""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(_resolved_home(), ".config")
+    return os.path.join(base, "opencode")
+
+
+def _opencode_is_registered() -> bool:
+    """OpenCode merges ``opencode.json`` and ``opencode.jsonc``; the latter may
+    carry comments, so look for the server key rather than parse JSON."""
+    for name in ("opencode.json", "opencode.jsonc"):
+        try:
+            with open(os.path.join(_opencode_config_dir(), name), "r", encoding="utf-8") as fh:
+                if re.search(r'"zenvi_editor"\s*:', fh.read()):
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _opencode_server_entry(url: str) -> dict:
+    # ``{env:...}`` is OpenCode's config substitution: the token stays out of
+    # the file and is read from the environment at launch (as Codex does).
+    return {
+        "type": "remote",
+        "url": url,
+        "headers": {"Authorization": "Bearer {env:ZENVI_MCP_TOKEN}"},
+        "enabled": True,
+    }
+
+
+def register_opencode(port: int, token: str):
+    """Upsert ``mcp.zenvi_editor`` in OpenCode's global ``opencode.json`` (Connect).
+
+    Zenvi's own turns do not need this: they pass a scoped ``OPENCODE_CONFIG``
+    (see OpenCodeRunner). This is for running ``opencode`` yourself. OpenCode
+    has no command that adds a remote MCP server non-interactively, and it
+    merges ``opencode.json`` with the user's ``opencode.jsonc``, so only the
+    plain-JSON file is edited and every other key and server is left as it
+    was. Like register_cursor: a file that does not parse is refused, a
+    current entry is not rewritten, and the file (which usually holds
+    provider API keys) keeps its permissions, is replaced atomically, and
+    gets a one-time ``.zenvi-backup``.
+
+    Returns ``(ok, message)``.
+    """
+    path = os.path.realpath(os.path.join(_opencode_config_dir(), "opencode.json"))
+    done = (
+        "Updated %s. Before running opencode, run:\n"
+        "export ZENVI_MCP_TOKEN=%s"
+    ) % (path, token)
+    original = ""
+    data = {}
+    mode = 0o600
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                original = fh.read()
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except Exception as e:
+            return False, "Failed to read %s: %s" % (path, e)
+        try:
+            data = json.loads(original) if original.strip() else {}
+        except Exception as e:
+            return False, "%s is not valid JSON, not touching it: %s" % (path, e)
+        if not isinstance(data, dict):
+            return False, "%s is not a JSON object, not touching it." % path
+
+    mcp = data.get("mcp")
+    if mcp is None:
+        mcp = {}
+        data["mcp"] = mcp
+    if not isinstance(mcp, dict):
+        return False, "%s: \"mcp\" is not an object, not touching it." % path
+    entry = _opencode_server_entry("http://127.0.0.1:%d/mcp" % port)
+    if mcp.get("zenvi_editor") == entry:
+        return True, done
+    mcp["zenvi_editor"] = entry
+
+    staged = path + ".zenvi-tmp"
+    backup = path + ".zenvi-backup"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if original and not os.path.exists(backup):
+            _write_with_mode(backup, original, mode)
+        _write_with_mode(staged, json.dumps(data, indent=2) + "\n", mode)
+        os.replace(staged, path)
+    except Exception as e:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        return False, "Failed to write %s: %s" % (path, e)
+    return True, done
+
+
 # `cursor-agent models` prints "<id> - <name>" per model, flagging the one the
 # CLI uses when no --model is given with "(current)" and Cursor's own pick
 # with "(default)". Some names end in zero-width spaces.
@@ -793,58 +898,86 @@ def parse_cursor_models(text: str) -> list:
     return [_cli_default_entry(current or fallback)] + rows
 
 
-def probe_cursor_models(cli: str) -> list:
-    """Ask ``cursor-agent models`` for this account's lineup.
-
-    A network round trip (about 3 s): never call it on the GUI thread. ``[]``
-    when the CLI is logged out, offline, or prints something unrecognised.
-    """
+def _models_command_output(argv) -> str:
+    """stdout of a CLI's list-models command, or "" when it failed."""
     kwargs = {}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
         result = subprocess.run(
-            [cli, "models"], capture_output=True, encoding="utf-8", errors="replace",
+            argv, capture_output=True, encoding="utf-8", errors="replace",
             timeout=30, env=_cli_child_env(), **kwargs,
         )
     except Exception:
-        log.debug("cursor-agent models failed", exc_info=True)
-        return []
+        log.debug("%s failed", " ".join(argv[1:]), exc_info=True)
+        return ""
     if result.returncode != 0:
-        log.debug("cursor-agent models exited %s", result.returncode)
-        return []
-    return parse_cursor_models(result.stdout or "")
+        log.debug("%s exited %s", " ".join(argv[1:]), result.returncode)
+        return ""
+    return result.stdout or ""
 
 
-# Re-read on this cadence (the same as the backend lineups) or when the CLI
-# binary / version changes. A read that failed (logged out, offline) is retried
-# on the next CLI detection, which runs every 60 s.
-CURSOR_MODELS_TTL_S = 15 * 60
-CURSOR_MODELS_RETRY_S = 55
-_cursor_models_read = {"key": None, "at": 0.0, "ok": False}
-_cursor_models_lock = threading.Lock()
+def probe_cursor_models(cli: str) -> list:
+    """Ask ``cursor-agent models`` for this account's lineup (a network call)."""
+    return parse_cursor_models(_models_command_output([cli, "models"]))
 
 
-def refresh_cursor_models(version) -> bool:
-    """Re-read Cursor's model list if it is due; True when the lineup changed.
+def parse_opencode_models(text: str) -> list:
+    """Picker entries from ``opencode models``: one ``provider/model`` per line.
 
-    Blocking (runs the CLI). A failed read keeps the lineup already shown.
+    The list follows the providers the user signed in to. It marks no default,
+    so "CLI default" (whatever opencode.json picks) leads and is preselected.
     """
-    cli = _which_cursor_cli()
+    rows, seen = [], set()
+    for line in _ANSI.sub("", text or "").splitlines():
+        mid = line.strip()
+        if "/" not in mid or " " in mid or mid in seen:
+            continue
+        seen.add(mid)
+        provider, _, name = mid.partition("/")
+        rows.append({"id": mid, "name": name, "provider": provider,
+                     "rank": len(rows) + 1, "featured": False})
+    return [_cli_default_entry()] + rows if rows else []
+
+
+def probe_opencode_models(cli: str) -> list:
+    """Ask ``opencode models`` which models the signed-in providers offer."""
+    return parse_opencode_models(_models_command_output([cli, "models"]))
+
+
+# A CLI's model list is re-read on this cadence (the same as the backend
+# lineups) or when its binary / version changes. A read that failed (logged
+# out, offline) is retried on the next CLI detection, which runs every 60 s.
+CLI_MODELS_TTL_S = 15 * 60
+CLI_MODELS_RETRY_S = 55
+_cli_models_read: dict = {}     # backend -> {"key", "at", "ok"}
+_cli_models_lock = threading.Lock()
+
+
+def refresh_cli_models(backend: str, version) -> bool:
+    """Re-read *backend*'s model list if it is due; True when the lineup changed.
+
+    For runners with a ``list_models`` hook. Blocking (runs the CLI); a failed
+    read keeps the lineup already shown.
+    """
+    runner = CLI_RUNNERS.get(backend)
+    if runner is None or runner.list_models is None:
+        return False
+    cli = _which_cli(runner.CLI_NAME)
     if not cli:
         return False
     key = (cli, version or "")
     now = time.monotonic()
-    with _cursor_models_lock:
-        last = _cursor_models_read
-        wait = CURSOR_MODELS_TTL_S if last.get("ok") else CURSOR_MODELS_RETRY_S
+    with _cli_models_lock:
+        last = _cli_models_read.setdefault(backend, {"key": None, "at": 0.0, "ok": False})
+        wait = CLI_MODELS_TTL_S if last["ok"] else CLI_MODELS_RETRY_S
         if last["key"] == key and now - last["at"] < wait:
             return False
         last["key"], last["at"] = key, now
-    rows = probe_cursor_models(cli)
-    with _cursor_models_lock:
-        _cursor_models_read["ok"] = bool(rows)
-    return set_cli_lineup(BACKEND_CURSOR, rows)
+    rows = runner.list_models(cli)
+    with _cli_models_lock:
+        _cli_models_read[backend]["ok"] = bool(rows)
+    return set_cli_lineup(backend, rows)
 
 
 # (workspace, server url, token) combinations already approved this session.
@@ -1096,6 +1229,9 @@ class BaseAgentRunner(QObject):
         try:
             argv = self._build_argv(text)
             popen_kwargs = dict(
+                # No stdin: there is no one to type into it, and ``opencode
+                # run`` blocks reading an inherited one before it starts.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 # Explicit UTF-8, not text=True's locale-dependent default: a
                 # GUI-launched app's environment often lacks LANG/LC_ALL, which
@@ -1214,6 +1350,10 @@ class BaseAgentRunner(QObject):
     def register(port: int, token: str):
         """Give this CLI Zenvi's MCP server (Connect). Returns ``(ok, message)``."""
         raise NotImplementedError
+
+    # ``list_models(cli) -> picker entries`` for a CLI that can list its own
+    # models (see refresh_cli_models); None when it cannot.
+    list_models = None
 
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
@@ -1464,8 +1604,9 @@ class CursorCliRunner(BaseAgentRunner):
     DISPLAY_NAME = "Cursor CLI"
     BACKEND_ID = BACKEND_CURSOR
     register = staticmethod(register_cursor)
+    list_models = staticmethod(probe_cursor_models)
     # The models depend on the Cursor account, so the picker shows what
-    # `cursor-agent models` lists (refresh_cursor_models). Until it has, the
+    # `cursor-agent models` lists (refresh_cli_models). Until it has, the
     # only choice is to leave the model to the CLI's own config.
     MODELS = [_cli_default_entry()]
     # cursor-agent exits without stopping the stdio MCP servers and the worker
@@ -1732,12 +1873,144 @@ def _cursor_content_text(content) -> str:
     return _content_to_text(content)
 
 
+# OpenCode's own tools, renamed so the chat reads them as work on the user's
+# files: under their bare names humanize_tool_name labels them as the Zenvi
+# Assistant harness's motion-graphics steps (that harness runs on OpenCode).
+_OPENCODE_TOOL_NAMES = {
+    "bash": "run_shell_command",
+    "read": "read_file",
+    "edit": "edit_file",
+    "multiedit": "edit_file",
+    "patch": "edit_file",
+    "write": "write_file",
+    "glob": "find_files",
+    "grep": "search_files",
+    "list": "list_directory",
+}
+
+
+class OpenCodeRunner(BaseAgentRunner):
+    """Drives SST OpenCode (`opencode run --format json`)."""
+
+    CLI_NAME = "opencode"
+    DISPLAY_NAME = "OpenCode"
+    BACKEND_ID = BACKEND_OPENCODE
+    register = staticmethod(register_opencode)
+    list_models = staticmethod(probe_opencode_models)
+    # The models follow the user's signed-in providers, so the picker shows
+    # what `opencode models` lists; until then only "CLI default".
+    MODELS = [_cli_default_entry()]
+
+    # OpenCode names MCP tools ``<server>_<tool>``.
+    _MCP_PREFIX = "zenvi_editor_"
+
+    def _build_env(self):
+        extra = {}
+        if self._server is not None:
+            # Merged over the user's own config, so their other MCP servers
+            # stay available -- the equivalent of Claude's --mcp-config.
+            extra["OPENCODE_CONFIG"] = _write_opencode_mcp_config(self._server)
+            if self._server.token:
+                extra["ZENVI_MCP_TOKEN"] = self._server.token
+        return _cli_child_env(extra)
+
+    def _build_argv(self, text: str):
+        argv = [
+            _opencode_native(self._cli_path or self.CLI_NAME), "run", "--format", "json",
+            # No terminal to answer a permission prompt (see Claude's
+            # --dangerously-skip-permissions).
+            "--auto", "--thinking",
+        ]
+        if self._model_id:
+            argv += ["--model", self._model_id]
+        # Like Codex, OpenCode mints its own session id ("ses_..."), and
+        # --session with any other id fails with "Session not found".
+        if self._cli_started and self._cli_id_from_cli and self._cli_session_id:
+            argv += ["--session", self._cli_session_id]
+        argv.append(text)
+        return argv
+
+    def _handle_event(self, ev: dict):
+        sid = ev.get("sessionID") or ""
+        if sid and not self._cli_id_from_cli:
+            self._cli_session_id = sid
+            self._cli_id_from_cli = True
+            self._emit_cli_session()
+        etype = ev.get("type")
+        part = ev.get("part") or {}
+        if etype == "text":
+            # Parts arrive whole. The separator is streamed too, so the chat's
+            # copy of the turn matches the joined reply (_final_segment_text).
+            txt = part.get("text") or ""
+            if txt:
+                if self._final_text:
+                    self._final_text += "\n\n"
+                    self.token_received.emit("\n\n")
+                self._final_text += txt
+                self.token_received.emit(txt)
+            return
+        if etype == "reasoning":
+            txt = part.get("text") or ""
+            if txt:
+                rid = "think_%s" % (part.get("id") or "0")
+                self.tool_started.emit(rid, "thinking", "{}")
+                self.tool_log.emit(rid, txt)
+                self.tool_completed.emit(rid, True, "")
+            return
+        if etype == "tool_use":
+            # Emitted once, when the call has already finished.
+            state = part.get("state") or {}
+            call_id = part.get("callID") or part.get("id") or ""
+            name = part.get("tool") or "tool"
+            if name.startswith(self._MCP_PREFIX):
+                name = name[len(self._MCP_PREFIX):]
+            else:
+                name = _OPENCODE_TOOL_NAMES.get(name, name)
+            args = state.get("input")
+            self.tool_started.emit(call_id, name,
+                                   json.dumps(args if isinstance(args, dict) else {}, default=str))
+            ok = state.get("status") != "error"
+            out = state.get("output") if ok else state.get("error")
+            self.tool_completed.emit(call_id, ok, str(out or ""))
+            return
+        if etype == "error":
+            err = ev.get("error") or {}
+            self._last_error = ((err.get("data") or {}).get("message")
+                                or err.get("name") or "The agent reported an error.")
+
+
+def _opencode_native(cli: str) -> str:
+    """The binary behind npm's ``opencode.cmd`` shim, when there is one.
+
+    A ``.cmd`` runs through cmd.exe, which re-parses the prompt argument and
+    mangles quotes, ``&`` and ``%`` in it; the npm package ships a native exe.
+    """
+    if cli.lower().endswith(".cmd"):
+        native = os.path.join(os.path.dirname(cli), "node_modules", "opencode-ai",
+                              "bin", "opencode.exe")
+        if os.path.isfile(native):
+            return native
+    return cli
+
+
+def _write_opencode_mcp_config(server) -> str:
+    """Write the scoped ``OPENCODE_CONFIG`` file pointing at the in-app MCP server.
+
+    It names the token by environment variable only, so it holds no secret.
+    """
+    cfg = {"mcp": {"zenvi_editor": _opencode_server_entry(server.url())}}
+    path = os.path.abspath(os.path.join(_agent_mcp_dir(), "opencode_mcp.json"))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh)
+    return path
+
+
 # Every CLI chat backend, in the order the agent picker lists them. The chat
 # window builds its backend list, worker factory, CLI detection and Connect from
 # this, so adding a CLI is its runner class plus one entry here.
 CLI_RUNNERS = {
     runner.BACKEND_ID: runner
-    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner)
+    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner, OpenCodeRunner)
 }
 
 
