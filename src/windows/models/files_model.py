@@ -580,6 +580,10 @@ class FilesModel(QObject, updates.UpdateInterface):
         log.debug("updating files model.")
         app = get_app()
 
+        # Restored (not forced off) at the end: a cell change below can save a
+        # file and re-enter update_model, and the outer call's remaining cell
+        # changes must still not be taken for user edits.
+        previous_ignore = self.ignore_updates
         self.ignore_updates = True
 
         # Translations
@@ -593,6 +597,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # sanity check
             if not id_index.isValid() or delete_file_id != id_index.data():
                 log.warning("Couldn't remove {} from model!".format(delete_file_id))
+                self.ignore_updates = previous_ignore
                 return
             # Delete row from model
             row_num = id_index.row()
@@ -608,6 +613,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # sanity check
             if not id_index.isValid() or update_file_id != id_index.data():
                 log.warning("Couldn't update {} in model!".format(update_file_id))
+                self.ignore_updates = previous_ignore
                 return
 
             # lookup File object
@@ -618,6 +624,13 @@ class FilesModel(QObject, updates.UpdateInterface):
                 if f.data.get("tags") != self.model.item(row_num, 2).text():
                     self.model.item(row_num, 2).setText(f.data.get("tags"))
                 path, filename = os.path.split(f.data["path"])
+                # Keep the shown name current: the rename handler reads it back.
+                name = f.data.get("name", filename)
+                for col in (0, 1):
+                    item = self.model.item(row_num, col)
+                    if item.text() != name:
+                        item.setText(name)
+                        item.setAccessibleText(name)
                 self.model.item(row_num, 0).setToolTip(self._tooltip_for_file(f, filename))
 
         # Clear all items
@@ -703,7 +716,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             if progressive_ui:
                 get_app().window.resize_contents()
 
-        self.ignore_updates = False
+        self.ignore_updates = previous_ignore
 
         # Single refresh after bulk updates (i.e. opening a project)
         if not progressive_ui:
@@ -1249,6 +1262,7 @@ class FilesModel(QObject, updates.UpdateInterface):
         name = file.data.get("name", filename)
 
         # Refresh thumbnail for updated file
+        previous_ignore = self.ignore_updates
         self.ignore_updates = True
         m = self.model
 
@@ -1256,6 +1270,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # Look up stored index to ID column
             id_index = self.model_ids[file_id]
             if not id_index.isValid():
+                self.ignore_updates = previous_ignore
                 return
 
             thumb_source, _, media_type = self._thumbnail_source_for_file(file, clear_cache=True)
@@ -1278,7 +1293,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # Emit signal when model is updated
             self.ModelRefreshed.emit()
 
-        self.ignore_updates = False
+        self.ignore_updates = previous_ignore
 
     def selected_file_ids(self):
         """ Get a list of file IDs for all selected files """
@@ -1333,6 +1348,9 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def value_updated(self, item):
         """ Table cell change event - when tags are updated on a file"""
+        if self.ignore_updates:
+            # The model itself is refreshing the cell (a file was saved); not a user edit.
+            return
         if item.column() == 2:
             # Get updated tag value
             tags_value = item.data(0)
