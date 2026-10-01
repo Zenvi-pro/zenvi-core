@@ -49,6 +49,7 @@ from qt_api import (
 from qt_api import QtCore
 from qt_api import (
     QPainter,
+    QPen,
     QCursor,
     QIcon,
     QColor,
@@ -155,6 +156,11 @@ class TimelineWidgetBase(QWidget):
         self.new_item = None
         self.item_type = None
         self.setAcceptDrops(True)
+        # Reachable with Tab and by clicking, like the other panels. Edit
+        # shortcuts route by keyboard focus, and a click here must take it
+        # away from the chat. Timeline shortcuts stay window-wide.
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._keyboard_focus = False
 
         # Translate object
         _ = get_app()._tr
@@ -1135,6 +1141,7 @@ class TimelineWidgetBase(QWidget):
             self.playhead_painter.paint(painter)
             self.ruler_painter.paint_overlay(painter)
             self.scrollbar_painter.paint(painter)
+            self._paint_focus_ring(painter)
         finally:
             if painter.isActive():
                 painter.end()
@@ -1142,6 +1149,28 @@ class TimelineWidgetBase(QWidget):
             if self._repaint_after_paint:
                 self._repaint_after_paint = False
                 QTimer.singleShot(0, self.update)
+
+    def _paint_focus_ring(self, painter):
+        """Outline the timeline while it has keyboard focus from Tab (not a click)."""
+        if not (self._keyboard_focus and self.hasFocus()):
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(QPen(QColor("#4d9cf6"), 2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(self.rect()).adjusted(1, 1, -1, -1))
+        painter.restore()
+
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (
+            Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self._keyboard_focus = False
+        super().focusOutEvent(event)
+        self.update()
 
     def _paint_drag_preview(self, painter):
         """Paint transient drag previews without inserting real timeline items."""
