@@ -220,6 +220,13 @@ if ! find "$BINDINGS_DIR" -iname 'openshot.py' 2>/dev/null | grep -q .; then
         echo "WARNING: could not download the FFmpeg 7+ compatibility patch -- build may fail on newer FFmpeg."
     fi
 
+    # Zenvi source fix, not yet upstream: without it the first frame of a
+    # stream-copy trimmed MP4 decodes the whole file and comes back black.
+    # Written against v1.0.0; it also applies to the default branch built here.
+    # Skipped if already applied; the setup stops if upstream changed the code.
+    bash "$REPO_ROOT_UNIX/installer/apply-libopenshot-patches.sh" . \
+        "$REPO_ROOT_UNIX/installer/mac-patches/libopenshot-v1.0.0-discard-preroll.patch"
+
     rm -rf build
     mkdir -p build && cd build
     cmake -G "MSYS Makefiles" -DCMAKE_MAKE_PROGRAM=mingw32-make \

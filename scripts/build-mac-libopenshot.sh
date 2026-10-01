@@ -18,15 +18,16 @@
 #   1. brew install all build deps (cmake, qt@5, swig, ffmpeg, libomp, etc.;
 #      plus opencv@4 + protobuf when ZENVI_OPENCV=ON)
 #   2. Clone OpenShot/libopenshot-audio $LIBOPENSHOT_AUDIO_TAG + apply the
-#      installer/mac-patches/libopenshot-audio-<tag>-*.patch files that apply
+#      installer/mac-patches/libopenshot-audio-<tag>-*.patch files
 #   3. Clone OpenShot/libopenshot $LIBOPENSHOT_TAG + apply the
-#      installer/mac-patches/libopenshot-<tag>-*.patch files that apply, then
+#      installer/mac-patches/libopenshot-<tag>-*.patch files, then
 #      installer/patch-libopenshot-ffmpeg.py (FFmpeg 8/9 AVCodec lists)
 #   4. cmake configure + build + install to $ZENVI_DEPS (default: $HOME/zenvi-deps)
 #   5. install_name_tool: rewrite @rpath for Qt to point at PyQt5's bundled Qt
 #
-# Every patch is optional: it is applied only when `git apply --check` passes,
-# so a tag that already contains a fix upstream just skips that patch.
+# Patches are tag-locked by name, so each one must apply to the tag it names.
+# installer/apply-libopenshot-patches.sh skips a patch that is already applied
+# (re-runs are safe) and fails the build on one that no longer applies.
 #
 # Result: $ZENVI_DEPS/lib/libopenshot.dylib + $ZENVI_DEPS/python/_openshot.so
 # usable by:
@@ -49,6 +50,7 @@
 #   ZENVI_CXX_FLAGS        extra C++ compiler flags for both libraries, e.g.
 #                          "-isystem $HOME/sdk-shim" when the local Command Line
 #                          Tools SDK is missing headers (default: empty)
+#   ZENVI_BUILD_JOBS       parallel compile jobs    (default: all logical CPUs)
 #   SKIP_BREW              set to 1 to skip brew installs
 
 set -euo pipefail
@@ -61,6 +63,7 @@ TAG="${LIBOPENSHOT_TAG:-v0.5.0}"
 AUDIO_TAG="${LIBOPENSHOT_AUDIO_TAG:-$TAG}"
 OPENCV="${ZENVI_OPENCV:-ON}"
 EXTRA_CXX_FLAGS="${ZENVI_CXX_FLAGS:-}"
+JOBS="${ZENVI_BUILD_JOBS:-$(sysctl -n hw.logicalcpu)}"
 case "$OPENCV" in
   ON|OFF) ;;
   *) echo "ERROR: ZENVI_OPENCV must be ON or OFF (got '$OPENCV')"; exit 1 ;;
@@ -75,6 +78,7 @@ echo "  libopenshot tag      : $TAG"
 echo "  libopenshot-audio tag: $AUDIO_TAG"
 echo "  OpenCV effects       : $OPENCV"
 echo "  Extra C++ flags      : ${EXTRA_CXX_FLAGS:-<none>}"
+echo "  Build jobs           : $JOBS"
 echo "  Patch dir            : $PATCH_DIR"
 echo "============================================="
 echo ""
@@ -84,11 +88,11 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
-# Apply every installer/mac-patches/<prefix>-*.patch that still applies to the
-# checked-out sources. Patches are tag-locked by name; a patch that no longer
-# applies (because upstream merged the fix) is skipped with a notice.
+# Apply every installer/mac-patches/<prefix>-*.patch to the checked-out sources.
+# Patches are tag-locked by name. installer/apply-libopenshot-patches.sh skips a
+# patch that is already applied and fails the build on one that does not apply.
 apply_patches() {
-  local src_dir="$1" prefix="$2" patch
+  local src_dir="$1" prefix="$2"
   shopt -s nullglob
   local patches=("$PATCH_DIR/${prefix}"-*.patch)
   shopt -u nullglob
@@ -96,14 +100,7 @@ apply_patches() {
     echo "  No patches named ${prefix}-*.patch; building pristine sources."
     return 0
   fi
-  for patch in "${patches[@]}"; do
-    if git -C "$src_dir" apply --check --whitespace=nowarn "$patch" 2>/dev/null; then
-      echo "  Applying $(basename "$patch")"
-      git -C "$src_dir" apply --whitespace=nowarn "$patch"
-    else
-      echo "  Skipping $(basename "$patch") (does not apply to this tag; likely already upstream)"
-    fi
-  done
+  bash "$REPO_ROOT/installer/apply-libopenshot-patches.sh" "$src_dir" "${patches[@]}"
 }
 
 # ── 1. Homebrew dependencies ────────────────────────────────────────────────
@@ -157,7 +154,7 @@ cmake -S "$SRC_DIR/libopenshot-audio" -B "$SRC_DIR/libopenshot-audio/build" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
   -DCMAKE_CXX_FLAGS="$EXTRA_CXX_FLAGS"
-cmake --build "$SRC_DIR/libopenshot-audio/build" --parallel "$(sysctl -n hw.logicalcpu)"
+cmake --build "$SRC_DIR/libopenshot-audio/build" --parallel "$JOBS"
 cmake --install "$SRC_DIR/libopenshot-audio/build"
 
 # ── 3. Build libopenshot ────────────────────────────────────────────────────
@@ -194,7 +191,7 @@ cmake -S "$SRC_DIR/libopenshot" -B "$SRC_DIR/libopenshot/build" \
   -DCMAKE_CXX_FLAGS="-I$LIBOMP_PREFIX/include -Wno-deprecated-declarations $EXTRA_CXX_FLAGS" \
   -DCMAKE_EXE_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp" \
   -DCMAKE_SHARED_LINKER_FLAGS="-L$LIBOMP_PREFIX/lib -lomp"
-cmake --build "$SRC_DIR/libopenshot/build" --parallel "$(sysctl -n hw.logicalcpu)"
+cmake --build "$SRC_DIR/libopenshot/build" --parallel "$JOBS"
 cmake --install "$SRC_DIR/libopenshot/build"
 
 # ── 4. Rewrite Qt absolute paths → @rpath, add PyQt5 wheel Qt as rpath ──────
