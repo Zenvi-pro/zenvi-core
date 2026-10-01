@@ -23,7 +23,6 @@ select = [
 "src/classes/clip_placement.py" = ["E741"]
 "src/classes/clip_resolver.py" = ["F541"]
 "src/classes/exporters/edl.py" = ["F401"]
-"src/classes/gemini_direct_upload.py" = ["F401"]
 "src/classes/importers/edl.py" = ["F841"]
 "src/classes/info.py" = ["F401"]
 "src/classes/json_data.py" = ["E721"]

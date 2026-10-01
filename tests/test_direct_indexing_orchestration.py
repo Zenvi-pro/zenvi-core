@@ -11,10 +11,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 _REPO = Path(__file__).resolve().parents[1]
 
 
+@patch("classes.gemini_direct_upload._sleep")
 @patch("classes.gemini_direct_upload.requests.post")
 @patch("classes.gemini_direct_upload.os.path.isfile", return_value=True)
 @patch("classes.gemini_direct_upload.os.path.getsize", return_value=4)
-def test_gemini_direct_upload_http_error(mock_size, mock_isfile, mock_post, tmp_path):
+def test_gemini_direct_upload_http_error(mock_size, mock_isfile, mock_post, mock_sleep, tmp_path):
     from classes.gemini_direct_upload import upload_file_to_gemini_resumable
 
     f = tmp_path / "c.mp4"
@@ -27,6 +28,7 @@ def test_gemini_direct_upload_http_error(mock_size, mock_isfile, mock_post, tmp_
     info, err = upload_file_to_gemini_resumable(str(f), "https://upload.example/u")
     assert err
     assert "500" in err
+    assert "gave up after" in err  # a 500 is retried, but not forever
     assert info == {}
 
 
