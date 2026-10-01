@@ -12,7 +12,7 @@ import os
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 log = logging.getLogger("speech.cache")

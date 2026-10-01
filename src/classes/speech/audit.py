@@ -11,7 +11,7 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 log = logging.getLogger("speech.audit")
 _lock = threading.Lock()

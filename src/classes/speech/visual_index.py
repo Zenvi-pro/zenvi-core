@@ -13,7 +13,7 @@ import logging
 import math
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, Sequence
 
 log = logging.getLogger("speech.visual_index")

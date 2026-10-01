@@ -12,7 +12,7 @@ from typing import Callable, Optional, Protocol, Sequence
 
 from classes.speech.cache import Word
 from classes.speech.runtime import CancelToken, inference_slot
-from classes.speech.vad import _read_pcm16_mono, detect_speech_windows
+from classes.speech.vad import _read_pcm16_mono
 from classes.speech.audio_extract import extract_mono_16k_wav
 
 log = logging.getLogger("speech.diarize")
