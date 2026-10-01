@@ -159,6 +159,14 @@ def _resume_player(was_playing):
 
 # How long a marshalled call waits for the GUI thread before giving up.
 MAIN_THREAD_TIMEOUT_SECONDS = 30
+# Once a marshalled call has started on the GUI thread it is waited out for at
+# least this long: reporting a failure for an edit that then lands makes a
+# retrying agent apply it twice.
+MAIN_THREAD_GRACE_SECONDS = 120
+
+
+class _SkippedAfterTimeout(Exception):
+    """A marshalled call reached the GUI thread after its caller gave up."""
 
 
 class MainThreadTimeout(TimeoutError):
@@ -204,7 +212,17 @@ def _run_on_main_thread(func, *args, timeout=None):
     # having to thread a tid through its signature.
     caller_tid = app.updates.transaction_id
 
+    # A queued call that only reaches the GUI thread after its caller gave up
+    # must not run: the caller has already told the agent it failed, and an
+    # edit landing afterwards gets applied twice when the agent retries.
+    state = {"started": False, "cancelled": False}
+    state_lock = threading.Lock()
+
     def _with_caller_transaction(*a):
+        with state_lock:
+            if state["cancelled"]:
+                raise _SkippedAfterTimeout()
+            state["started"] = True
         previous = app.updates.transaction_id
         app.updates.transaction_id = caller_tid
         try:
@@ -222,12 +240,28 @@ def _run_on_main_thread(func, *args, timeout=None):
     )
 
     if not done.wait(timeout=timeout):
-        raise MainThreadTimeout(
-            f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within "
-            f"{timeout}s. The editor is up but its event loop is not draining "
-            f"(a modal dialog, or startup never finished). Read-only tools "
-            f"still work; call mcp_health_tool to confirm."
-        )
+        with state_lock:
+            started = state["started"]
+            if not started:
+                state["cancelled"] = True
+        if not started:
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: the Qt GUI thread did not pick this call up "
+                f"within {timeout}s, so it was cancelled: nothing was changed and it "
+                f"is safe to retry. The editor is up but its event loop is busy or "
+                f"blocked (a modal dialog, a long render, or startup). Read-only "
+                f"tools still work; call mcp_health_tool to check."
+            )
+        # It is running on the GUI thread: wait it out instead of reporting a
+        # failure for an edit that is about to land.
+        grace = max(float(timeout), float(MAIN_THREAD_GRACE_SECONDS))
+        if not done.wait(timeout=grace):
+            raise MainThreadTimeout(
+                f"MAIN_THREAD_TIMEOUT: this call started on the GUI thread but had "
+                f"not finished after {timeout + grace:.0f}s. It may still complete: "
+                f"read the timeline or project state before retrying so the edit "
+                f"is not applied twice."
+            )
 
     if error_box[0] is not None:
         raise error_box[0]
@@ -505,6 +539,10 @@ def _clip_content_digest(data):
     """
     try:
         rest = {k: v for k, v in data.items() if k not in _SIGNATURE_SKIP_KEYS}
+        # The reader is skipped for size, but its path is what swapping a clip's
+        # media changes (an edited title points its clips at the new SVG).
+        reader = data.get("reader")
+        rest["reader_path"] = reader.get("path") if isinstance(reader, dict) else None
         return hash(json.dumps(rest, sort_keys=True, default=str))
     except Exception:
         return None
@@ -1311,8 +1349,12 @@ def _locked_track_error(app, layer_num):
     return ""
 
 
-def _delete_one_clip(app, resolved) -> str:
-    """Delete a single resolved timeline clip. The caller owns the transaction."""
+def _delete_one_clip(app, resolved, ripple=False) -> str:
+    """Delete a single resolved timeline clip. The caller owns the transaction.
+
+    With *ripple*, later clips on the same track move left to close the gap,
+    inside the same undo step (the Shift+Delete rule, timeline_ops.close_gap_at).
+    """
     win = app.window
     clip_obj = resolved.clip
     clip_id = str(getattr(clip_obj, "id", "") or "")
@@ -1326,6 +1368,11 @@ def _delete_one_clip(app, resolved) -> str:
     except (TypeError, ValueError):
         position = 0.0
     title = str(clip_data.get("title") or clip_data.get("label") or "clip")
+    try:
+        length = max(0.0, float(clip_data.get("end", 0.0) or 0.0) - float(clip_data.get("start", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        length = 0.0
+    moved = []
 
     locked = _locked_track_error(app, layer_num)
     if locked:
@@ -1344,6 +1391,9 @@ def _delete_one_clip(app, resolved) -> str:
             except Exception:
                 pass
             clip_obj.delete()
+            if ripple:
+                from classes.timeline_ops import close_gap_at
+                moved.extend(close_gap_at(layer_num, position, length))
 
             # A deleted clip may still be referenced by the preview widget's
             # transform state; clear it before the next paint dereferences a freed
@@ -1362,6 +1412,12 @@ def _delete_one_clip(app, resolved) -> str:
     else:
         _do_delete()
 
+    if ripple:
+        return (
+            f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
+            f"at {position:.2f}s and closed the gap: {len(moved)} later item(s) on "
+            f"that track moved left. 1 undo step."
+        )
     return (
         f"Deleted timeline clip {clip_id} ({title!r}) from track {track_lbl} "
         f"at {position:.2f}s. Other clips on that track are unchanged "
@@ -1440,6 +1496,7 @@ def delete_from_timeline(
     occurrence: str = "0",
     position_near=None,
     include_transitions: bool = True,
+    ripple: bool = False,
     **_kw,
 ) -> str:
     """Delete from the timeline: one clip placement, or an entire track.
@@ -1454,7 +1511,8 @@ def delete_from_timeline(
     scope is normally "auto": a clip id or query deletes ONE placement, a bare
     track clears the track. Pass scope="clip" or scope="track" to force the
     branch. include_transitions also removes transitions sitting on the track
-    (track scope only). Deleting leaves a gap - it never ripples the timeline.
+    (track scope only). Deleting leaves a gap unless ripple=true, which closes
+    it: later clips on the same track move left (one clip only).
 
     The whole call is a single undo step, whether it removes one clip or fifty.
     """
@@ -1521,7 +1579,8 @@ def delete_from_timeline(
             # a track-wide delete.
             return resolved.error or "Error: Could not resolve timeline clip."
 
-        return _delete_one_clip(app, resolved)
+        wants_ripple = ripple is True or str(ripple).strip().lower() in ("1", "true", "yes", "on")
+        return _delete_one_clip(app, resolved, ripple=wants_ripple)
     except Exception as e:
         return f"Error: {e}"
 
@@ -2294,6 +2353,13 @@ def add_clip_to_timeline(
 
 
 def slice_clip_at_playhead(**_kw) -> str:
+    """Slice every unlocked clip and transition under the playhead, keeping both sides.
+
+    slice_clips_tool targets one clip, a track or the selection; this keeps the
+    old everything-under-the-playhead behaviour. Items on locked tracks and
+    items whose edge sits exactly at the playhead (a cut there would leave a
+    zero-length clip) are not sliced and not counted.
+    """
     try:
         from windows.views.timeline_backend.enums import MenuSlice
 
@@ -2307,18 +2373,28 @@ def slice_clip_at_playhead(**_kw) -> str:
             fps = app.project.get("fps") or {}
             fps_float = _project_fps_float(fps)
             playhead_position = float(win.preview_thread.current_frame - 1) / fps_float
-            intersecting_clips = Clip.filter(intersect=playhead_position)
-            intersecting_trans = Transition.filter(intersect=playhead_position)
-            if not intersecting_clips and not intersecting_trans:
-                result_box[0] = "No clip or transition at the playhead."
+            half_frame = 0.5 / fps_float
+            locked = {t.get("number") for t in (app.project.get("layers") or []) if t.get("lock")}
+
+            def _sliceable(item):
+                start = float(item.data.get("position", 0.0) or 0.0)
+                end = start + float(item.data.get("end", 0.0) or 0.0) - float(item.data.get("start", 0.0) or 0.0)
+                return (item.data.get("layer") not in locked
+                        and start + half_frame < playhead_position < end - half_frame)
+
+            clip_ids = [c.id for c in Clip.filter(intersect=playhead_position) if _sliceable(c)]
+            tran_ids = [t.id for t in Transition.filter(intersect=playhead_position) if _sliceable(t)]
+            if not clip_ids and not tran_ids:
+                result_box[0] = (f"Error: no unlocked clip or transition under the playhead "
+                                 f"({playhead_position:.2f} s); nothing was sliced.")
                 return
-            win.slice_clips(MenuSlice.KEEP_BOTH)
-            n = len(intersecting_clips) + len(intersecting_trans)
-            result_box[0] = f"Sliced {n} item(s) at the playhead; both sides kept."
+            win.timeline.Slice_Triggered(MenuSlice.KEEP_BOTH, clip_ids, tran_ids, playhead_position)
+            n = len(clip_ids) + len(tran_ids)
+            result_box[0] = f"Sliced {n} item(s) at the playhead ({playhead_position:.2f} s); both sides kept."
 
         _run_on_main_thread(_do_slice)
 
-        return result_box[0] or "Slice completed."
+        return result_box[0] or "Error: the slice did not run."
     except Exception as e:
         return f"Error: {e}"
 
@@ -8187,9 +8263,12 @@ def set_clip_volume(
     """Set a timeline clip's audio level, over the whole clip or one time window.
 
     Give exactly one of level_db (decibels, negative = quieter) or level
-    (0.0-1.3 linear). mode='replace' sets the level outright; mode='scale'
-    multiplies the clip's existing volume automation. start_seconds/end_seconds
-    are TIMELINE seconds; omit both to set a flat level for the whole clip.
+    (0.0-1.3 linear). mode='replace' sets the level outright and replaces the
+    clip's whole volume curve, fades included; mode='scale' multiplies the
+    existing volume automation and keeps fades -- set levels first and add
+    fades last. start_seconds/end_seconds are TIMELINE seconds; omit both to set
+    a flat level for the whole clip. With no speech in the edit, music stays
+    near full level.
     """
     try:
         from classes import audio_mix as am
@@ -8253,12 +8332,19 @@ def set_clip_volume(
         has_waveform = bool((clip_data.get("ui") or {}).get("audio_data"))
 
         def _do_set():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present; only mint
+            # (and clear) an id when called without one (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 _write_volume_points(clip_obj, points)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, {file_id: [clip_id]} if (has_waveform and file_id) else {}, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():
@@ -8554,15 +8640,21 @@ def duck_under_speech(
                     refreshed.setdefault(fid, []).append(entry["id"])
 
         def _do_duck():
-            tid = str(uuid_module.uuid4())
-            app.updates.transaction_id = tid
+            # Join the outer execute_tool transaction when present (Phase 3 defect E).
+            owned = False
+            tid = app.updates.transaction_id
+            if not tid:
+                tid = _new_transaction_id()
+                app.updates.transaction_id = tid
+                owned = True
             try:
                 for bed_entry, pts, _w, _g in planned:
                     _write_volume_points(bed_entry["clip"], pts)
                 for speech_entry, pts in boosted:
                     _write_volume_points(speech_entry["clip"], pts)
             finally:
-                app.updates.transaction_id = None
+                if owned:
+                    app.updates.transaction_id = None
             _refresh_audio_ui(app, refreshed, tid)
 
         if QThread is not None and QThread.currentThread() is not app.thread():

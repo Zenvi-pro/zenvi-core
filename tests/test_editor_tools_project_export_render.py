@@ -305,3 +305,18 @@ def test_subclip_renders_run_on_a_qthread_not_the_worker(studio, tmp_path, monke
     monkeypatch.setattr(render, "run_on_qthread", lambda func, *a: (seen.append(func), func())[1])
     data = _receipt(studio.call("export_files_to_folder_tool", file_ids=[fid], folder=str(tmp_path / "out")))
     assert data["files"][0]["status"] == "rendered" and len(seen) == 1 and writes == list(range(31, 61))
+
+
+def test_a_second_export_while_one_renders_does_nothing(editor):
+    """A retry after a timed-out call must not queue a second render over the same file."""
+    from classes.editor_tools import project_export_render as per
+
+    assert per._EXPORT_LOCK.acquire(blocking=False)
+    per._RUNNING_EXPORT.update(path="/tmp/out.mp4", started="12:00:00")
+    try:
+        out = editor.call("export_video_tool", preset="MP4 (h.264)", output_path="/tmp/other.mp4")
+    finally:
+        per._RUNNING_EXPORT.clear()
+        per._EXPORT_LOCK.release()
+    assert out.startswith("Error") and "already running" in out and "did nothing" in out, out
+    assert editor.undo_steps_since_mark() == 0
