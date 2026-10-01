@@ -822,3 +822,69 @@ def test_remove_words_matches_ignores_stale_generation(tmp_cache, tmp_path):
         assert any("stale" in w.lower() for w in receipt.get("warnings") or [])
     finally:
         asr_mod.reset_transcriber_factory()
+
+
+def test_remove_words_refuses_stale_indices_even_with_matches(tmp_cache, tmp_path):
+    """wordIndices override matches, so stale ones must refuse, not cut other words."""
+    from classes.speech import asr as asr_mod
+    asr_mod.set_transcriber_factory(_FakeTranscriber)
+    try:
+        media = tmp_path / "talk.wav"
+        media.write_bytes(b"RIFF" + b"\x00" * 64)
+        st = media.stat()
+        tmp_cache.put(TranscriptRecord(
+            path=str(media.resolve()), size=st.st_size, mtimeNs=st.st_mtime_ns,
+            modelId="faster-whisper-base", language="en", requestLanguage="auto",
+            words=[Word("hello", 0.0, 0.4), Word("FlowCut", 0.5, 0.9), Word("world", 1.0, 1.4)],
+            generation=1,
+        ))
+        project = {
+            "fps": {"num": 30, "den": 1},
+            "clips": [{"id": "c1", "file_id": "f1", "position": 0.0, "start": 0.0, "end": 2.0,
+                       "layer": 0, "reader": {"path": str(media)}}],
+            "layers": [{"number": 0}],
+        }
+        app = MagicMock()
+        app.project = MagicMock()
+        app.project.get.side_effect = lambda k, d=None: project.get(k, d)
+        with patch("classes.app.get_app", return_value=app), \
+             patch("classes.agent_tools.inspect_render.snapshot_project", return_value=project), \
+             patch("classes.agent_tools.transcript._file_data_for_clip", return_value={"path": str(media)}), \
+             patch("classes.clip_utils.project_fps_fraction", return_value=Fraction(30, 1)), \
+             patch("classes.agent_tools.transcript.apply_compacted_fragments",
+                   return_value=(["c2"], [])) as apply:
+            from classes.agent_tools.transcript import remove_words
+            raw = remove_words(clipId="c1", wordIndices=[2], matches=["FlowCut"], transcriptGeneration=99)
+        receipt = parse_receipt(raw)
+        assert receipt["status"] == "refused"
+        assert "mismatch" in receipt["summary"]
+        apply.assert_not_called()
+    finally:
+        asr_mod.reset_transcriber_factory()
+
+
+def test_caption_cues_split_on_timeline_gaps_not_source_time():
+    """Source time restarts in each clip; a cue must not span two far-apart clips."""
+    from classes.speech.captions import phrase_words
+
+    fps = Fraction(30, 1)
+    words = [
+        # clip A at 0 s
+        {"index": 0, "text": "first", "startSec": 4.0, "endSec": 4.4,
+         "timelineStartSec": 0.0, "timelineEndSec": 0.4},
+        # clip B placed at 20 s, but its source starts earlier than A's
+        {"index": 0, "text": "second", "startSec": 0.5, "endSec": 0.9,
+         "timelineStartSec": 20.0, "timelineEndSec": 20.4},
+    ]
+    cues = phrase_words(words, fps=fps)
+    assert [c["text"] for c in cues] == ["first", "second"]
+    assert cues[0]["endSec"] <= 0.5 and cues[1]["startSec"] >= 20.0
+
+    # Words a cut brought together on the timeline stay in one cue.
+    joined = [
+        {"index": 0, "text": "hello", "startSec": 0.0, "endSec": 0.4,
+         "timelineStartSec": 0.0, "timelineEndSec": 0.4},
+        {"index": 2, "text": "world", "startSec": 1.5, "endSec": 1.9,
+         "timelineStartSec": 0.45, "timelineEndSec": 0.85},
+    ]
+    assert [c["text"] for c in phrase_words(joined, fps=fps)] == ["hello world"]

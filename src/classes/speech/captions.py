@@ -8,6 +8,17 @@ from typing import Any, Sequence
 from classes.frame_time import snap, to_frame, to_seconds
 
 
+def _timeline_sec(word: dict, edge: str, fps) -> float:
+    """A word's start or end on the timeline (*edge* is "Start" or "End")."""
+    sec = word.get(f"timeline{edge}Sec")
+    if sec is not None:
+        return float(sec)
+    frame = word.get(f"{edge.lower()}Frame")
+    if frame is not None:
+        return float(to_seconds(int(frame), fps))
+    return float(word.get(f"{edge.lower()}Sec") or 0)
+
+
 def phrase_words(
     words: Sequence[dict],
     *,
@@ -38,9 +49,9 @@ def phrase_words(
         s0 = bucket[0]
         s1 = bucket[-1]
         start_f = int(s0.get("startFrame") if s0.get("startFrame") is not None
-                      else to_frame(float(s0.get("timelineStartSec") or s0.get("startSec") or 0), fps))
+                      else to_frame(_timeline_sec(s0, "Start", fps), fps))
         end_f = int(s1.get("endFrame") if s1.get("endFrame") is not None
-                    else to_frame(float(s1.get("timelineEndSec") or s1.get("endSec") or 0), fps))
+                    else to_frame(_timeline_sec(s1, "End", fps), fps))
         if end_f <= start_f:
             end_f = start_f + 1
         cues.append({
@@ -61,7 +72,8 @@ def phrase_words(
             bucket = [w]
             continue
         prev = bucket[-1]
-        gap = float(w.get("startSec") or 0) - float(prev.get("endSec") or 0)
+        # Timeline time: source time restarts in each clip and skips cut words.
+        gap = _timeline_sec(w, "Start", fps) - _timeline_sec(prev, "End", fps)
         chars = len(" ".join(str(x.get("text") or "") for x in bucket) + " " + text)
         if gap > max_gap_sec or len(bucket) >= max_words or chars > max_chars:
             _flush()
