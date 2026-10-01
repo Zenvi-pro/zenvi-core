@@ -69,7 +69,8 @@ class IndexPanel(QDockWidget if QDockWidget is not object else object):
         try:
             from classes.agent_tools.transcript import get_transcript
             from classes.agent_tools.receipt import parse_receipt
-            raw = get_transcript()
+            # The default receipt is compact (script only); the list needs words.
+            raw = get_transcript(includeWords=True)
             receipt = parse_receipt(raw)
         except Exception as exc:
             self._status.setText(f"Refresh failed: {exc}")
