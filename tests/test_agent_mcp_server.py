@@ -23,6 +23,12 @@ import pytest
 from classes.agent_mcp_server import _build_input_schema
 
 
+def _require_fastmcp():
+    # mcp 2.x removed mcp.server.fastmcp; requirements pin mcp<2, but a system
+    # Python can still carry 2.x (or no mcp at all).
+    pytest.importorskip("mcp.server.fastmcp", reason="the server needs mcp>=1.28,<2 (requirements.txt)")
+
+
 # --- schema derivation (no server / no stubs needed) -----------------------
 
 def test_schema_is_strict_for_kwargs_only():
@@ -108,7 +114,7 @@ def test_iter_tool_defs(tool_stub):
 # --- transport: an MCP client can list + call tools ------------------------
 
 def test_server_lists_and_calls_tools(tool_stub):
-    pytest.importorskip("mcp")
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -167,7 +173,7 @@ def test_server_instructions_tell_harnesses_to_inspect_after_edits():
 
 
 def test_initialize_advertises_the_inspect_instruction(tool_stub):
-    pytest.importorskip("mcp")
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -197,6 +203,7 @@ def test_initialize_advertises_the_inspect_instruction(tool_stub):
 
 
 def test_server_requires_bearer_token(tool_stub):
+    _require_fastmcp()
     from classes.agent_mcp_server import ZenviMcpServer
 
     srv = ZenviMcpServer().start()
@@ -269,6 +276,7 @@ def test_load_or_create_token_generates_when_missing(monkeypatch, tmp_path):
     assert os.path.exists(tmp_path / "nested" / "mcp_token")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows guards the token with the profile ACL")
 def test_token_file_is_never_world_readable(monkeypatch, tmp_path):
     """The bearer token is the only thing stopping another local process from
     driving the editor. A plain open() applies the umask first, so the token

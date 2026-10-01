@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from classes import frame_time as ft
 
 WATCH_MAX_WINDOW_SEC = 45.0
@@ -76,6 +78,32 @@ def compute_clip_trim_bounds(
     if end_sec <= start_sec:
         end_sec = start_sec + max(min_duration, 1e-3)
     return start_sec, end_sec
+
+
+# A planned position this close to where the clip before it was planned to end
+# was planned against that clip (agents round their arithmetic).
+PLANNED_POSITION_TOLERANCE_SEC = 0.1
+
+
+def butt_against_previous_clip(
+    position: float, resized, *, tolerance: float = PLANNED_POSITION_TOLERANCE_SEC,
+) -> float:
+    """Timeline position that closes the gap or overlap a resized clip left behind.
+
+    Snapping a placement onto phrase edges (or a watch trimming it) changes its
+    length after the caller already planned where the next clip goes, so that
+    planned position lands a fraction of a second off the clip before it: a
+    black gap, or an overlap. *resized* holds (planned_end, actual_end) timeline
+    seconds for clips on the same track whose length changed that way. A
+    position on one of those planned ends moves to where that clip really ends;
+    any other position - a deliberate gap or overlap included - is kept.
+    """
+    best = None
+    for planned_end, actual_end in resized or ():
+        miss = abs(float(position) - float(planned_end))
+        if miss <= tolerance and (best is None or miss < best[0]):
+            best = (miss, float(actual_end))
+    return best[1] if best is not None else position
 
 
 def default_underlay_layer_number(layers) -> int:
@@ -190,7 +218,7 @@ def parse_seconds_arg(value: object, *, default: float | None = None, field: str
         raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
     if isinstance(value, (int, float)):
         parsed = _seconds_float(value)
-        if parsed is None:
+        if parsed is None or not math.isfinite(parsed):
             raise ValueError(f"{field or 'value'}={value!r} is not a time in seconds")
         return parsed
     text = str(value).strip()
@@ -202,7 +230,7 @@ def parse_seconds_arg(value: object, *, default: float | None = None, field: str
             lowered = lowered[: -len(suffix)].strip()
             break
     parsed = parse_timecode_token(lowered)
-    if parsed is None:
+    if parsed is None or not math.isfinite(parsed):
         raise ValueError(
             f"{field or 'value'}={value!r} is not a time in seconds "
             "(use seconds like 12 or 12.5, or a timecode like 0:12)"
@@ -279,3 +307,60 @@ def should_watch_placement(
     except (TypeError, ValueError):
         span = 0.0
     return 1e-3 < span <= float(max_window_sec) + 1e-6
+
+
+# A duration_seconds this close to end_seconds - start_seconds names the same
+# out-point (agents round), so the two describe one keep window.
+KEEP_WINDOW_AGREE_SEC = 0.05
+
+
+def end_bounds_keep_window(trim_start, trim_dur, trim_end, *, tolerance=KEEP_WINDOW_AGREE_SEC) -> bool:
+    """True when end_seconds sets the out-point of a placement.
+
+    duration_seconds wins when both are given, so an end_seconds it overrides is
+    a leftover argument, not a boundary. One that agrees with start + duration
+    names the same out-point: the caller named both edges, and treating it as
+    overridden rejected the very keep window the error then asked for.
+    """
+    if trim_end is None:
+        return False
+    if trim_dur is None:
+        return True
+    try:
+        return abs((float(trim_end) - float(trim_start or 0.0)) - float(trim_dur)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def blind_trim_rejected(
+    *,
+    trim_dur,
+    watched_start,
+    has_explicit_end: bool = False,
+    has_explicit_start: bool = False,
+    is_audio: bool = False,
+    is_image: bool = False,
+    is_subclip: bool = False,
+) -> bool:
+    """True when a trim has no boundary information behind it at all.
+
+    Only a blind "keep the first N seconds" duration trim on a full file is
+    worth blocking. A watch is not the only source of boundaries: a caller that
+    named an edge (start_seconds or end_seconds) has bounded the window itself,
+    and the watch is deliberately skipped on dialogue-heavy windows because
+    transcript cues are the better boundary. Rejecting those made the error
+    unsatisfiable - it demanded the keep window that armed it.
+
+    Times named in the query text alone do not count: nothing reads them back
+    into the in-point, so honouring them would place the first N seconds while
+    claiming to place the named range.
+    """
+    if watched_start is not None or has_explicit_end or has_explicit_start:
+        return False
+    if is_audio or is_image or is_subclip:
+        return False
+    try:
+        span = float(trim_dur) if trim_dur is not None else 0.0
+    except (TypeError, ValueError):
+        span = 0.0
+    return span > 0

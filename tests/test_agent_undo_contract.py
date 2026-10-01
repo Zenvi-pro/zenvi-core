@@ -108,6 +108,17 @@ def test_project_setting_noop_zero_undo():
     assert manager.actionHistory == []
 
 
+_PROFILES = {}
+
+
+def _fake_resolve(width, height, num, den):
+    from classes.agent_tools.project_settings import _fps_label, _profile_fields
+    desc = "Custom %dx%d %s fps" % (width, height, _fps_label(num, den))
+    fields = _profile_fields(desc, width, height, num, den, (16, 9), (1, 1))
+    _PROFILES[desc] = fields
+    return fields
+
+
 def test_project_setting_change_is_one_undo_step():
     app, manager, store = _app()
     import classes.app as app_module
@@ -115,7 +126,8 @@ def test_project_setting_change_is_one_undo_step():
     with patch.object(tool_handlers, "_get_app", return_value=app), \
          patch.object(updates_module, "get_app", return_value=app), \
          patch.object(app_module, "get_app", return_value=app), \
-         patch("classes.tool_handlers.QThread", None):
+         patch("classes.tool_handlers.QThread", None), \
+         patch("classes.agent_tools.project_settings.resolve_profile", _fake_resolve):
         raw = tool_handlers.execute_tool(
             "set_project_setting_tool",
             {"fps_num": 24, "fps_den": 1},
@@ -128,6 +140,30 @@ def test_project_setting_change_is_one_undo_step():
         assert len(tids) == 1
         manager.undo()
         assert store.fps == {"num": 30, "den": 1}
+
+
+def test_project_setting_names_the_profile_so_reopen_keeps_it():
+    """Reopen re-applies the *named* profile, so the name must move with the values."""
+    app, manager, store = _app()
+    store.profile = "HD 1080p 30 fps"
+    _PROFILES["HD 1080p 30 fps"] = {"width": 1920, "height": 1080, "fps": {"num": 30, "den": 1}}
+    import classes.app as app_module
+    import classes.updates as updates_module
+    with patch.object(tool_handlers, "_get_app", return_value=app), \
+         patch.object(updates_module, "get_app", return_value=app), \
+         patch.object(app_module, "get_app", return_value=app), \
+         patch("classes.tool_handlers.QThread", None), \
+         patch("classes.agent_tools.project_settings.resolve_profile", _fake_resolve):
+        receipt = parse_receipt(tool_handlers.execute_tool(
+            "set_project_setting_tool", {"width": 1280, "height": 720, "fps_num": 24, "fps_den": 1},
+        ))
+    assert receipt["status"] == "applied", receipt
+    assert len({a.transaction for a in manager.actionHistory}) == 1
+    assert store.profile == "Custom 1280x720 24 fps"
+    # "Reopen": what ProjectDataStore.load does with the saved profile name.
+    reopened = _PROFILES[store.profile]
+    assert (reopened["width"], reopened["height"], reopened["fps"]) == (1280, 720, {"num": 24, "den": 1})
+    assert (store.width, store.height, store.fps) == (1280, 720, {"num": 24, "den": 1})
 
 
 def test_two_hundred_edits_fully_undo():

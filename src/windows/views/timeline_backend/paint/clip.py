@@ -43,6 +43,7 @@ from qt_api import QGraphicsBlurEffect, QGraphicsPixmapItem, QGraphicsScene
 import copy
 import json
 import math
+import os
 import time
 
 import openshot
@@ -54,6 +55,7 @@ from classes.time_parts import secondsToTime
 from classes import info
 from classes.clip_utils import is_single_image_media
 from classes.qt_types import font_metrics_horizontal_advance
+from classes.query import Clip
 from classes.waveform import (
     WAVEFORM_RMS_KEY,
     waveform_data_format,
