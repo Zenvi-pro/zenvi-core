@@ -5685,7 +5685,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             if tab_bar.count() == 0:
                 continue
             # Check if this tab bar contains dock titles
-            tabs = [tab_bar.tabText(i) for i in range(tab_bar.count())]
+            tabs = tabstops.tab_titles(tab_bar)
             if any(title in dock_titles for title in tabs):
                 tab_bar.currentChanged.connect(self._schedule_tab_order_update)
                 self._connected_dock_tab_bars.add(tab_bar)
