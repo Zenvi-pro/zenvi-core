@@ -25,33 +25,14 @@
  along with OpenShot Library.  If not, see <http://www.gnu.org/licenses/>.
  """
 
-import signal
 import threading
 import openshot  # Python module for libopenshot (required video editing module installed separately)
 from qt_api import QTimer
 
+from classes import crash_handler
 from classes.updates import UpdateInterface
 from classes.logger import log
 from classes.app import get_app
-
-
-def ignore_sigpipe():
-    """Let a closed socket raise BrokenPipeError instead of killing the editor.
-
-    libopenshot's CrashHandler (installed by the first openshot.Timeline)
-    catches SIGPIPE and aborts the process. The editor serves local HTTP
-    clients -- the in-app MCP server for Claude Code / Codex, the thumbnail
-    server -- and a client that hangs up before the reply is written would
-    take the whole app down. Python ignores SIGPIPE by default and surfaces
-    EPIPE as BrokenPipeError, which those servers already handle.
-    """
-    sigpipe = getattr(signal, "SIGPIPE", None)  # not on Windows
-    if sigpipe is None:
-        return
-    try:
-        signal.signal(sigpipe, signal.SIG_IGN)
-    except (ValueError, OSError):  # not the main thread / not permitted
-        log.debug("could not reset SIGPIPE handling", exc_info=True)
 
 
 class TimelineSync(UpdateInterface):
@@ -78,8 +59,9 @@ class TimelineSync(UpdateInterface):
         self.timeline = openshot.Timeline(width, height, openshot.Fraction(fps["num"], fps["den"]),
                                           sample_rate, channels, channel_layout)
         # The first Timeline installs libopenshot's CrashHandler, which also
-        # traps SIGPIPE; hand it back to Python (see ignore_sigpipe).
-        ignore_sigpipe()
+        # traps SIGPIPE; hand SIGPIPE back to Python so a client that resets
+        # a local socket cannot end the app (see crash_handler.ignore_sigpipe).
+        crash_handler.ignore_sigpipe()
         self.timeline.info.channel_layout = channel_layout
         self.timeline.info.has_audio = True
         self.timeline.info.has_video = True

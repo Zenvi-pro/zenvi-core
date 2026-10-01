@@ -107,7 +107,6 @@ from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
 from classes.path_utils import absolute_media_path
 from classes.clipboard import ClipboardManager
-from classes.thumbnail import GetThumbPath
 from classes.waveform import (
     ABSOLUTE_WAVEFORM_FORMAT,
     WAVEFORM_FORMAT_KEY,
@@ -2115,9 +2114,13 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self, clip_id, thumbnail_frame, force_regen=True
                 )
             else:
-                # Web timeline: refresh disk path, then tell JS to redraw.
-                GetThumbPath(clip.data.get("file_id"), thumbnail_frame, clear_cache=True)
-                self.run_js(JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');")
+                # Web timeline: regenerate on the thumbnail worker (not the GUI
+                # thread), then tell JS to reload the image.
+                self.window.files_model.request_thumbnail(
+                    "web-timeline:%s" % clip_id, clip.data.get("file_id"), thumbnail_frame,
+                    on_ready=lambda _image, clip_id=clip_id: self.run_js(
+                        JS_SCOPE_SELECTOR + ".updateThumbnail('" + clip_id + "');"),
+                    clear_cache=True)
 
     def Split_Audio_Triggered(self, action, clip_ids):
         """Callback for split audio context menus"""
