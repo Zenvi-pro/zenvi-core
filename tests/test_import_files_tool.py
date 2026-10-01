@@ -115,6 +115,35 @@ def test_import_files_dry_run_does_not_call_add_files(monkeypatch, tmp_path):
     win.files_model.add_files.assert_not_called()
 
 
+def test_import_files_dry_run_accepts_the_backend_boolean(monkeypatch, tmp_path):
+    """zenvi-backend types dry_run as a boolean, so the Zenvi Assistant sends
+    True/False rather than the "true" string Claude Code sends over MCP."""
+    from classes import tool_handlers as th
+
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    clip = footage / "a.mp4"
+    clip.write_bytes(b"v")
+    (footage / "notes.txt").write_bytes(b"n")
+
+    win = MagicMock()
+    win.files_model.add_files.return_value = [
+        SimpleNamespace(id="fid1", data={"name": "a.mp4", "path": str(clip)})
+    ]
+    monkeypatch.setattr(th, "_get_app", lambda: SimpleNamespace(window=win))
+    monkeypatch.setattr(th, "_run_on_main_thread", lambda fn, *a, **kw: fn())
+
+    out = th.import_files(paths=str(footage), dry_run=True)
+    assert out.startswith("dry_run=true")
+    assert "would_import=1" in out
+    assert "skipped_non_media=1" in out
+    win.files_model.add_files.assert_not_called()
+
+    out = th.import_files(paths=str(footage), dry_run=False)
+    assert out.startswith("Imported 1 file(s)")
+    win.files_model.add_files.assert_called_once()
+
+
 def test_import_files_real_import_caps_response_at_25(monkeypatch, tmp_path):
     from classes import tool_handlers as th
 
