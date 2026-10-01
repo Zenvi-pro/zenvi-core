@@ -417,7 +417,8 @@ def test_set_export_setting_does_not_leak_ignore_history():
     updates.update = MagicMock(side_effect=RuntimeError("store down"))
     with _patched(app), patch("classes.editor_tools._base.get_app", return_value=app):
         out = tool_handlers.execute_tool("set_export_setting_tool", {"key": "width", "value": "1920"})
-    assert out.startswith("Error:"), out
+    from classes.agent_tools.receipt import is_error_result
+    assert is_error_result(out), out
     assert updates.ignore_history is False
 
 

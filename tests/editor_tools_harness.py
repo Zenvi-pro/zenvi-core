@@ -192,9 +192,25 @@ class EditorHarness:
 
     # -- calling tools ------------------------------------------------------
     def call(self, tool_name, **args) -> str:
-        """Run a tool through execute_tool, exactly like the chat does."""
+        """Run a tool through execute_tool, exactly like the chat does.
+
+        Returns the tool's own text: the contract-3 receipt's summary, then its
+        data as JSON (what an editor tool wrote). call_receipt() returns the
+        receipt itself.
+        """
+        import json
+        receipt = self.call_receipt(tool_name, **args)
+        if receipt.get("data") is None:
+            return receipt["summary"]
+        return receipt["summary"] + "\n" + json.dumps(receipt["data"])
+
+    def call_receipt(self, tool_name, **args) -> dict:
         from classes import tool_handlers
-        return tool_handlers.execute_tool(tool_name, args)
+        from classes.agent_tools.receipt import parse_receipt
+        out = tool_handlers.execute_tool(tool_name, args)
+        receipt = parse_receipt(out)
+        assert receipt is not None, f"{tool_name} did not answer a contract-3 receipt: {out[:200]}"
+        return receipt
 
     # -- undo bookkeeping ---------------------------------------------------
     def mark(self):

@@ -154,6 +154,38 @@ def test_same_profile_is_a_no_op(editor, profiles):
     editor.window.apply_project_profile.assert_not_called()
 
 
+# --- #183's set_project_setting invariants, read off execute_tool's contract-3 receipt ---------------
+# The editor tool serves the name #183 introduced; these were its undo-contract tests.
+
+def _hd30(editor):
+    editor.store._data.update(profile="FHD 1080p 30 fps", width=1920, height=1080, fps={"num": 30, "den": 1},
+                              display_ratio={"num": 16, "den": 9}, pixel_ratio={"num": 1, "den": 1})
+
+
+def test_set_project_setting_noop_is_unchanged_with_zero_undo(editor, profiles):
+    _hd30(editor)
+    editor.mark()
+    r = editor.call_receipt("set_project_setting_tool", fps_num=30, fps_den=1)
+    assert r["status"] == "unchanged" and r["undoSteps"] == 0, r
+    assert editor.undo_steps_since_mark() == 0
+
+
+def test_set_project_setting_is_one_undo_step_and_names_the_profile(editor, profiles):
+    """Reopen re-applies the *named* profile, so the name must move with the values."""
+    from classes.project_profile import profile_catalog
+    _hd30(editor)
+    editor.mark()
+    r = editor.call_receipt("set_project_setting_tool", width=1280, height=720, fps_num=24, fps_den=1)
+    assert r["status"] == "applied" and r["undoSteps"] == 1, r
+    assert (editor.get("width"), editor.get("height"), editor.get("fps")) == (1280, 720, {"num": 24, "den": 1})
+    named = [rec for rec in profile_catalog() if rec["description"] == editor.get("profile")]
+    assert named and (named[0]["width"], named[0]["height"], named[0]["fps_num"], named[0]["fps_den"]) == (
+        1280, 720, 24, 1)
+    assert editor.undo_steps_since_mark() == 1
+    editor.undo()
+    assert (editor.get("fps"), editor.get("profile")) == ({"num": 30, "den": 1}, "FHD 1080p 30 fps")
+
+
 def test_reframe_on_a_locked_track_is_skipped(editor, profiles):
     editor.lock_track(1000000)
     video = _landscape_clip(editor)

@@ -7,7 +7,7 @@ registry into ``AGENT_TOOL_HANDLERS``; the in-app MCP server and the backend
 manifest (``scripts/export_editor_tool_manifest.py``) read the same schemas.
 """
 
-from classes.editor_tools._registry import REGISTRY, ToolSpec, editor_tool  # noqa: F401
+from classes.editor_tools._registry import REGISTRY, ToolSpec, coerce_args, editor_tool, prepare_args  # noqa: F401
 
 # Workstream modules, in listing order. Importing them registers their tools.
 WORKSTREAM_MODULES = (

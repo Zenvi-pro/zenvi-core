@@ -363,12 +363,13 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
     transition_first_clip -- the dialog also wipes the first clip in over what is below it.
 
     """
-    from classes import app
+    from classes import frame_time as ft
     from classes.clip_placement import apply_audio_only_clip_overrides
-    from classes.clip_utils import apply_file_caption_to_clip
+    from classes.clip_utils import apply_file_caption_to_clip, project_fps_fraction
 
-    fps = app.get_app().project.get("fps")
-    fps_float = float(fps["num"]) / float(fps["den"])
+    # Frame-exact like the dialog since #181: positions snap to frames, keyframes use frame_time.
+    fps = project_fps_fraction()
+    fps_float = float(fps)
     position = start_position
     steps = []
 
@@ -378,7 +379,7 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
 
         # Create clip object for this file
         new_clip = read_clip_json(file.absolute_path())
-        new_clip["position"] = position
+        new_clip["position"] = ft.snap(float(position), fps)
         new_clip["layer"] = track_num
         new_clip["file_id"] = file.id
         new_clip["title"] = file.data.get("name", filename)
@@ -427,18 +428,17 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
 
             if fade in (FADE_IN, FADE_IN_OUT):
                 new_clip['alpha']["Points"].append(
-                    _point_json(round(start_time * fps_float) + 1, 0.0, openshot.BEZIER))
+                    _point_json(ft.keyframe_x(start_time, fps), 0.0, openshot.BEZIER))
                 new_clip['alpha']["Points"].append(_point_json(
-                    min(round((start_time + fade_length) * fps_float) + 1, round(end_time * fps_float) + 1),
+                    min(ft.keyframe_x(start_time + fade_length, fps), ft.keyframe_x(end_time, fps)),
                     1.0, openshot.BEZIER))
 
             if fade in (FADE_OUT, FADE_IN_OUT):
                 new_clip['alpha']["Points"].append(_point_json(
-                    max(round((end_time * fps_float) + 1) - (round(fade_length * fps_float) + 1),
-                        round(start_time * fps_float) + 1),
+                    max(ft.keyframe_x(end_time - fade_length, fps), ft.keyframe_x(start_time, fps)),
                     1.0, openshot.BEZIER))
                 new_clip['alpha']["Points"].append(
-                    _point_json(round(end_time * fps_float) + 1, 0.0, openshot.BEZIER))
+                    _point_json(ft.keyframe_x(end_time, fps), 0.0, openshot.BEZIER))
 
         # Adjust zoom amount
         if zoom is not None:
@@ -453,8 +453,8 @@ def plan_placement(entries, start_position, track_num, fade=None, fade_length=2.
                 animate_start_x = animate_end_x = animate_start_y = animate_end_y = 0.0
                 start_scale, end_scale = (1.0, 1.25) if zoom == ZOOM_IN else (1.25, 1.0)
 
-            first_frame = round(start_time * fps_float) + 1
-            last_frame = round(end_time * fps_float) + 1
+            first_frame = ft.keyframe_x(start_time, fps)
+            last_frame = ft.keyframe_x(end_time, fps)
             new_clip["gravity"] = openshot.GRAVITY_CENTER
             for key, (v0, v1) in (("scale_x", (start_scale, end_scale)),
                                   ("scale_y", (start_scale, end_scale)),

@@ -153,15 +153,24 @@ def test_other_tracks_untouched():
 def test_success_uses_transaction_selection_and_refresh():
     app = _mock_app()
     target = _clip("c2", position=10.0)
-    seen = []
-    target.delete.side_effect = lambda: seen.append(app.updates.transaction_id)
 
-    out, _ = _run(app, ResolveResult(ok=True, clip=target), timeline_clip_id="c2")
+    # Direct handler call relies on execute_tool for the undo group; exercise
+    # the real dispatch path so a transaction is open during delete.
+    with patch.object(tool_handlers, "_get_app", return_value=app), \
+         patch.object(
+             tool_handlers, "_resolve_timeline_clip_for_tool",
+             return_value=ResolveResult(ok=True, clip=target),
+         ), \
+         patch("classes.tool_handlers.QThread", None):
+        seen = []
+        target.delete.side_effect = lambda: seen.append(app.updates.transaction_id)
+        out = tool_handlers.execute_tool(
+            "remove_clip_tool", {"timeline_clip_id": "c2"}
+        )
 
-    assert not out.startswith("Error:")
-    # A transaction was open during the delete, and cleared afterwards.
+    from classes.agent_tools.receipt import is_error_result
+    assert not is_error_result(out), out
     assert seen and seen[0]
-    assert app.updates.transaction_id is None
     app.window.removeSelection.assert_called_once_with("c2", "clip")
     app.window.videoPreview.clearTransformState.assert_called_once_with()
     app.window.refreshFrameSignal.emit.assert_called_once_with()

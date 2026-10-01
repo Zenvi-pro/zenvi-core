@@ -278,6 +278,56 @@ def _coerce_kind(path, value, kind, schema):
     return value
 
 
+def coerce_args(name: str, args: dict) -> dict:
+    """Best-effort schema coercion of an editor tool call ("1.5" -> 1.5, "true" -> True).
+
+    execute_tool runs it before the dispatcher's strict JSON Schema validation, so
+    a model's string numbers still validate. A value that cannot be coerced is left
+    as it came, for the validator to report.
+    """
+    spec = REGISTRY.get(name)
+    if spec is None or not isinstance(args, dict):
+        return args
+    props = spec.schema.get("properties") or {}
+    out = dict(args)
+    for key, value in args.items():
+        if key in props:
+            try:
+                out[key] = coerce(key, value, props[key])
+            except ToolArgumentError:
+                pass
+    return out
+
+
+def prepare_args(name: str, args: dict) -> tuple:
+    """(coerced args, refusal message or None) for an editor tool call.
+
+    execute_tool refuses with this message before its strict JSON Schema check, so
+    a bad value gets the registry's wording ("must be one of [...], got 'x'"),
+    which names the argument and what it accepts.
+    """
+    spec = REGISTRY.get(name)
+    if spec is None or not isinstance(args, dict):
+        return args, None
+    props = spec.schema.get("properties") or {}
+    hidden = ("chat_session_id", "transaction_id")
+    unknown = sorted(k for k in args if k not in props and k not in hidden)
+    if unknown:
+        return args, (f"Error: {name}: unknown argument(s) {', '.join(unknown)}; "
+                      f"accepted: {', '.join(props) or 'none'}")
+    missing = [k for k in spec.schema.get("required") or [] if args.get(k) in (None, "")]
+    if missing:
+        return args, f"Error: {name}: missing required argument(s) {', '.join(missing)}"
+    out = dict(args)
+    for key, value in args.items():
+        if key in props:
+            try:
+                out[key] = coerce(key, value, props[key])
+            except ToolArgumentError as exc:
+                return args, f"Error: {name}: {exc}"
+    return out, None
+
+
 def _wrap(name: str, func: Callable, schema: dict) -> Callable[..., str]:
     props = schema.get("properties") or {}
     required = list(schema.get("required") or [])

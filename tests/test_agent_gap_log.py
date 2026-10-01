@@ -11,7 +11,8 @@ def gap_log(monkeypatch, tmp_path):
 
 
 def test_classify_gap_flags_known_gap(gap_log, monkeypatch):
-    # set_project_setting_tool now exists, so simulate a build without it.
+    # set_project_setting_tool exists, so live rules self-retire. Simulate a
+    # build without it to prove the classifier still fires.
     monkeypatch.setattr(gap_log, "_tool_names", lambda: set())
     gap = gap_log.classify_gap("please change the project fps to 24")
     assert gap is not None

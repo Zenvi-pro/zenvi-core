@@ -160,9 +160,13 @@ def test_run_on_main_thread_raises_typed_timeout(monkeypatch):
 
 
 def test_execute_tool_reports_main_thread_timeout_without_hanging(monkeypatch):
+    from classes.agent_tools.receipt import is_error_result
+    import classes.agent_tools.execute as execute_mod
+
     monkeypatch.setattr(tool_handlers, "QThread", _DeadThread, raising=False)
     monkeypatch.setattr(tool_handlers, "MAIN_THREAD_TIMEOUT_SECONDS", 0.2,
                         raising=False)
+    monkeypatch.setattr(execute_mod, "_MAIN_THREAD_TIMEOUT_DEFAULT", 0.2)
     app = MagicMock()
     app.thread.return_value = "gui"
 
@@ -170,7 +174,7 @@ def test_execute_tool_reports_main_thread_timeout_without_hanging(monkeypatch):
         with patch.object(tool_handlers, "_get_dispatcher", _wedged_dispatcher):
             out = tool_handlers.execute_tool("add_track_tool", {})
 
-    assert out.startswith("Error:")
+    assert is_error_result(out), out
     assert "MAIN_THREAD_TIMEOUT" in out
 
 
@@ -388,8 +392,7 @@ def _headless_export_env(monkeypatch, stored_settings, max_frame, export_type):
     monkeypatch.setattr(export_mod, "get_default_export_settings",
                         lambda: (stored_settings, {}, export_type, "/tmp/d.mp4"))
     monkeypatch.setattr(export_mod, "File", MagicMock(get=lambda **k: None))
-    monkeypatch.setattr(export_mod, "get_app",
-                        lambda: fake_app, raising=False)
+    monkeypatch.setattr(export_mod, "get_app", lambda: fake_app, raising=False)
     return export_mod, captured
 
 
@@ -467,5 +470,7 @@ def test_tools_list_advertises_the_harness_tools():
 
     imp = defs["import_files_tool"]
     assert "paths" in imp["inputSchema"]["properties"]
+    assert "dry_run" in imp["inputSchema"]["properties"]
     # A harness must be able to tell from tools/list that this needs no GUI.
     assert "dialog" in imp["description"].lower()
+    assert "dry_run" in imp["description"].lower()

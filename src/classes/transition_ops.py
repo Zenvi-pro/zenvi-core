@@ -42,8 +42,9 @@ def _point(x, y, interpolation=BEZIER):
 
 
 def frames_for(duration, fps_float):
-    """Whole frames in *duration* seconds (at least 0)."""
-    return max(0, int(round(max(0.0, float(duration or 0.0)) * float(fps_float))))
+    """Whole frames in *duration* seconds (at least 0), rounded half-up like frame_time (#181)."""
+    from classes import frame_time as ft
+    return max(0, ft.to_frame(max(0.0, float(duration or 0.0)), fps_float))
 
 
 def duration_of(transition_data):

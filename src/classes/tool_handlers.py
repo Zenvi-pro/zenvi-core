@@ -37,9 +37,11 @@ from classes.clip_placement import (
     parse_seconds_arg,
     parse_timecode_token,
     placement_watch_query,
+    quantize_placement_seconds,
     should_watch_placement,
     source_window_for_file,
 )
+from classes.agent_tools.handlers import PHASE3_HANDLERS, PHASE3_DISPLAY_LABELS
 from classes.image_types import is_audio_only_media
 from classes.track_display import (
     format_track_label_for_llm,
@@ -1039,6 +1041,12 @@ _last_split_file_id_by_chat_session = {}
 # ---------------------------------------------------------------------------
 
 def list_files(**_kw) -> str:
+    """List media already in the project media bin (does not import from disk).
+
+    To add local folders or files into Project Files, call import_files_tool
+    (dry_run=true first for folders). list_files_tool only reports what is
+    already imported.
+    """
     try:
         import os
         from classes.query import File
@@ -1046,7 +1054,13 @@ def list_files(**_kw) -> str:
 
         files = File.filter()
         if not files:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with folder=\"Downloads\" (or a path; prefer "
+                "C:/Users/... on Windows), dry_run=true first for folders, and "
+                "media_types=video when the user asked for videos only."
+            )
         lines = []
         visible = 0
         for f in files:
@@ -1067,7 +1081,12 @@ def list_files(**_kw) -> str:
                 f"path={os.path.basename(d.get('path', ''))}"
             )
         if not lines:
-            return "No files in project."
+            return (
+                "No files in project media bin. "
+                "list_files_tool does not import from disk — call "
+                "import_files_tool with folder=\"Downloads\" or paths= "
+                "(folder or file), dry_run=true first for folders."
+            )
         return f"Media bin files ({visible}):\n" + "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
@@ -1192,7 +1211,32 @@ def list_clips(layer="", **_kw) -> str:
                 f"source_start={source_start} source_end={source_end}"
                 f"{f' audio_role={audio_role}' if audio_role else ''}"
             )
-        return f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)
+        from classes.agent_tools.receipt import ToolReceipt
+        structured = []
+        for c in clips:
+            d = c.data if isinstance(c.data, dict) else {}
+            lid = d.get("layer", "")
+            try:
+                lid_int = int(lid) if lid != "" and lid is not None else None
+            except (TypeError, ValueError):
+                lid_int = None
+            ui = layer_number_to_display_index(lid_int, layers_raw) if lid_int is not None else None
+            structured.append({
+                "id": str(c.id),
+                "file_id": str(d.get("file_id") or ""),
+                "title": str(d.get("title") or d.get("label") or ""),
+                "layer": lid_int,
+                "track": ui,
+                "position": float(d.get("position") or 0),
+                "start": float(d.get("start") or 0),
+                "end": float(d.get("end") or 0),
+            })
+        return ToolReceipt.applied(
+            "list_clips_tool",
+            f"Timeline clips ({len(clips)}).",
+            undo_steps=0,
+            data={"clips": structured, "legacy_text": f"Timeline clips ({len(clips)}):\n" + "\n".join(lines)},
+        ).to_json()
     except Exception as e:
         return f"Error: {e}"
 
@@ -1741,11 +1785,19 @@ def center_on_playhead(**_kw) -> str:
 
 # Extensions collected when a directory is imported. Explicit file paths are
 # passed through unfiltered — libopenshot decides whether it can read them.
-_IMPORT_MEDIA_EXTS = (
+_IMPORT_VIDEO_EXTS = frozenset({
     ".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpg", ".mpeg", ".wmv",
+})
+_IMPORT_AUDIO_EXTS = frozenset({
     ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg",
+})
+_IMPORT_IMAGE_EXTS = frozenset({
     ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp",
-)
+})
+_IMPORT_MEDIA_EXTS = _IMPORT_VIDEO_EXTS | _IMPORT_AUDIO_EXTS | _IMPORT_IMAGE_EXTS
+
+# Cap tool responses so a large folder does not flood the model context.
+_IMPORT_RESULT_LINE_CAP = 25
 
 # A whole folder of media can take minutes to probe; the default 30s budget is
 # for small interactive edits, not a bulk import.
@@ -1775,39 +1827,114 @@ def _coerce_path_list(paths) -> list:
     return [str(p).strip().strip('"').strip("'") for p in items if str(p).strip()]
 
 
-def _expand_import_paths(entries) -> tuple:
-    """Return (media_paths, missing). Directories are walked for media files."""
+def _import_media_kind(path: str) -> str:
+    """Classify a path by extension for dry-run counts (video/audio/image/other)."""
+    ext = os.path.splitext(path or "")[1].lower()
+    if ext in _IMPORT_VIDEO_EXTS:
+        return "video"
+    if ext in _IMPORT_AUDIO_EXTS:
+        return "audio"
+    if ext in _IMPORT_IMAGE_EXTS:
+        return "image"
+    return "other"
+
+
+def _format_capped_lines(lines, cap=_IMPORT_RESULT_LINE_CAP) -> str:
+    """Join lines, truncating after *cap* with a remainder note."""
+    if not lines:
+        return ""
+    if len(lines) <= cap:
+        return "\n".join(lines)
+    rest = len(lines) - cap
+    return (
+        "\n".join(lines[:cap])
+        + "\n... and %d more. Use list_files_tool to see the rest." % rest
+    )
+
+
+def _import_truthy(value, default=False) -> bool:
+    """Accept bools (backend) and common string forms (MCP / Claude Code)."""
+    if isinstance(value, bool):
+        return value
+    text = str(value if value is not None else "").strip().lower()
+    if not text:
+        return default
+    return text in ("1", "true", "yes", "y", "on")
+
+
+def _allowed_exts_for_media_types(media_types) -> frozenset:
+    """Extension set for dir/glob filtering. Default = all editor media."""
+    text = str(media_types if media_types is not None else "all").strip().lower()
+    if not text or text in ("all", "*", "any", "media"):
+        return _IMPORT_MEDIA_EXTS
+    kinds = {p.strip() for p in re.split(r"[,|\s]+", text) if p.strip()}
+    exts: set[str] = set()
+    if kinds & {"video", "videos"}:
+        exts |= _IMPORT_VIDEO_EXTS
+    if kinds & {"audio", "audios", "sound", "music"}:
+        exts |= _IMPORT_AUDIO_EXTS
+    if kinds & {"image", "images", "photo", "photos", "picture", "pictures"}:
+        exts |= _IMPORT_IMAGE_EXTS
+    return frozenset(exts) if exts else _IMPORT_MEDIA_EXTS
+
+
+def _expand_import_paths(entries, allowed_exts=None) -> tuple:
+    """Return (media_paths, missing, skipped_non_media).
+
+    Directories are walked for allowed media extensions only. Explicit file
+    paths are kept unfiltered. *skipped_non_media* counts files skipped during
+    dir walks (wrong type or non-media).
+    """
+    if allowed_exts is None:
+        allowed_exts = _IMPORT_MEDIA_EXTS
     resolved, missing, seen = [], [], set()
+    skipped_non_media = 0
     for entry in entries:
-        path = os.path.expanduser(entry)
-        if os.path.isdir(path):
+        path = os.path.abspath(os.path.expanduser(str(entry))) if entry else ""
+        if path and os.path.isdir(path):
             for root, _dirs, files in os.walk(path):
                 for name in sorted(files):
-                    if os.path.splitext(name)[1].lower() in _IMPORT_MEDIA_EXTS:
-                        full = os.path.join(root, name)
+                    full = os.path.join(root, name)
+                    if os.path.splitext(name)[1].lower() in allowed_exts:
                         if full not in seen:
                             seen.add(full)
                             resolved.append(full)
-        elif os.path.isfile(path):
+                    else:
+                        skipped_non_media += 1
+        elif path and os.path.isfile(path):
             if path not in seen:
                 seen.add(path)
                 resolved.append(path)
         else:
-            missing.append(entry)
-    return resolved, missing
+            missing.append(str(entry))
+    return resolved, missing, skipped_non_media
 
 
-def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> str:
-    """Import media into the project bin by explicit path, without opening a file dialog.
+def import_files(
+    paths="",
+    path="",
+    folder="",
+    skip_indexing="false",
+    dry_run="false",
+    media_types="all",
+    **_kw
+) -> str:
+    """Import local media by path into Project Files — never opens a file dialog; use dry_run=true to preview.
 
-    ``paths`` / ``path`` / ``folder`` / ``files`` accept files, directories, globs, or
-    file URLs. Directories are searched recursively for media. Indexing starts
-    automatically unless ``skip_indexing`` is true — poll ``analyzed`` via
-    list_files_tool, or block with wait_until_project_indexed_tool. Required: an
-    unattended MCP/harness run has no way to complete a file picker.
+    Call with the user's path immediately (dry_run=true for folders). Bare names
+    like folder=Downloads or Desktop work. For “all videos”, pass
+    media_types=video. Do not preflight with Glob/Read or invent /mnt/c mounts —
+    this tool resolves Windows C:/… and Git Bash /c/… paths. Exact match first;
+    slight typos may resolve adjacently (ask if several). Prefer forward-slash
+    Windows paths so JSON backslashes cannot mangle them. Never ask for
+    individual file paths when the user named a folder.
     """
     import glob as _glob
-    from urllib.parse import unquote, urlparse
+    from classes.file_drop import (
+        is_user_home_directory,
+        normalize_agent_fs_path,
+        resolve_agent_import_target,
+    )
 
     entries = []
     for value in (paths, path, folder, _kw.get("files")):
@@ -1815,46 +1942,119 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
             entries.extend(_coerce_path_list(value))
     if not entries:
         return ("Error: paths is required for MCP/harness import. Pass the media "
-                "files or folders to import, e.g. paths=[\"/clips/dialog_test\"]. "
-                "This tool never opens a file dialog.")
-
-    def _normalize_entry(entry: str) -> str:
-        text = str(entry).strip()
-        if text.startswith("file://"):
-            parsed = urlparse(text)
-            path_part = unquote(parsed.path or "")
-            if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
-                path_part = path_part.lstrip("/")
-            elif os.name == "nt" and re.match(r"^[A-Za-z]:", parsed.netloc or ""):
-                # file://C:\clips\a.mp4 - backslashes are not URL separators, so
-                # the whole Windows path parses as the host.
-                path_part = unquote(parsed.netloc) + path_part
-            return path_part or text
-        return text
+                "files or folders to import, e.g. folder=\"Downloads\", "
+                "paths=[\"C:/Users/you/Downloads/clips\"], or "
+                "paths=[\"~/Desktop/clips\"]. This tool never opens a file dialog.")
 
     notes = []
     normalized = []
+    adjacent_notes = []
     for entry in entries:
-        candidate = _normalize_entry(entry)
-        if _glob.has_magic(candidate) or _glob.has_magic(entry):
+        candidate = normalize_agent_fs_path(entry)
+        if _glob.has_magic(candidate) or _glob.has_magic(str(entry)):
             matches = _glob.glob(candidate, recursive=True)
             if not matches:
-                matches = _glob.glob(os.path.expanduser(entry), recursive=True)
+                matches = _glob.glob(os.path.expanduser(str(entry)), recursive=True)
             if not matches:
                 notes.append("No files matched: %s" % entry)
                 continue
             normalized.extend(matches)
-        else:
-            normalized.append(candidate)
+            continue
 
-    resolved, missing = _expand_import_paths(normalized)
+        target = resolve_agent_import_target(entry)
+        if target.get("status") == "ambiguous":
+            cands = target.get("candidates") or []
+            lines = [
+                "Error: Multiple paths match %r — ask the user which one:"
+                % entry,
+            ]
+            for cand in cands:
+                lines.append("  %s" % cand)
+            lines.append(
+                "Call import_files_tool again with the exact path. Do not guess."
+            )
+            return "\n".join(lines)
+        if target.get("status") == "ok":
+            resolved_path = target["path"]
+            normalized.append(resolved_path)
+            if target.get("match") == "adjacent":
+                adjacent_notes.append(
+                    "adjacent: %r → %s" % (entry, resolved_path)
+                )
+            continue
+
+        notes.append(
+            "Not found: %s (tried %s; no adjacent match under parent or "
+            "Desktop/Downloads/Movies/Videos/Documents/Pictures). Ask the "
+            "user for the full path, or Glob those folders then call "
+            "import_files_tool with the path found. Do not invent /mnt/c "
+            "mounts."
+            % (entry, target.get("tried") or entry)
+        )
+
+    home_hits = [p for p in normalized if is_user_home_directory(p)]
+    if home_hits:
+        return (
+            "Error: Refusing to import the entire home folder. Pass a specific "
+            "subfolder such as Desktop, Downloads, Movies, Videos, Documents, "
+            "or Pictures (e.g. folder=\"Downloads\")."
+        )
+
+    allowed_exts = _allowed_exts_for_media_types(media_types)
+    resolved, missing, skipped_non_media = _expand_import_paths(
+        normalized, allowed_exts=allowed_exts,
+    )
     if not resolved:
         detail = "; ".join(notes) if notes else (
             "no media files found in: %s" % ", ".join(entries)
         )
+        if missing and not notes:
+            detail = "not found: %s" % ", ".join(missing)
         return f"Error: Nothing to import ({detail})."
 
-    skip = str(skip_indexing).lower().strip() in ("1", "true", "yes")
+    preview = _import_truthy(dry_run, default=False)
+    if preview:
+        counts = {"video": 0, "audio": 0, "image": 0, "other": 0}
+        for media_path in resolved:
+            counts[_import_media_kind(media_path)] += 1
+        roots = []
+        for item in normalized:
+            abs_item = os.path.abspath(os.path.expanduser(item))
+            if os.path.exists(abs_item) and abs_item not in roots:
+                roots.append(abs_item)
+        sample = [os.path.basename(p) for p in resolved]
+        lines = [
+            "dry_run=true — nothing imported.",
+            "resolved=%s" % (", ".join(roots) if roots else ", ".join(entries)),
+        ]
+        if adjacent_notes:
+            lines.append("match=adjacent")
+            lines.extend(["  %s" % note for note in adjacent_notes])
+        lines.append(
+            "would_import=%d (video=%d audio=%d image=%d)" % (
+                len(resolved), counts["video"], counts["audio"], counts["image"],
+            )
+        )
+        mt = str(media_types or "all").strip() or "all"
+        if mt.lower() not in ("all", "*", "any", "media"):
+            lines.append("media_types=%s" % mt)
+        lines.append("sample:")
+        sample_body = _format_capped_lines(
+            ["  %s" % name for name in sample], cap=_IMPORT_RESULT_LINE_CAP,
+        )
+        if sample_body:
+            lines.append(sample_body)
+        lines.append("skipped_non_media=%d" % skipped_non_media)
+        if missing:
+            lines.append("not found: %s" % ", ".join(missing))
+        if notes:
+            lines.append("Notes: " + "; ".join(notes))
+        lines.append(
+            "Ask the user to confirm, then call again with dry_run=false."
+        )
+        return "\n".join(lines)
+
+    skip = _import_truthy(skip_indexing, default=False)
 
     try:
         from classes.query import File as _File
@@ -1903,11 +2103,15 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
 
     head = "Imported %d file(s). indexing_started=%s" % (
         len(lines), "false" if skip else "true")
+    if adjacent_notes:
+        head += "\n" + "\n".join(adjacent_notes)
+    if skipped_non_media:
+        head += " skipped_non_media=%d" % skipped_non_media
     if missing:
         head += " (not found: %s)" % ", ".join(missing)
     if notes:
         head += "\nNotes: " + "; ".join(notes)
-    return head + "\n" + "\n".join(lines)
+    return head + "\n" + _format_capped_lines(lines)
 
 
 
@@ -2138,8 +2342,9 @@ def split_file_add_clip(
                 new_file.id = None
                 new_file.key = None
                 new_file.type = "insert"
-                new_file.data["start"] = start_sec
-                new_file.data["end"] = end_sec
+                q_start, q_end = quantize_placement_seconds(start_sec, end_sec)
+                new_file.data["start"] = q_start
+                new_file.data["end"] = q_end
                 new_file.data["parent_file_id"] = file_id
 
                 if "ai_metadata" in new_file.data and new_file.data["ai_metadata"].get("analyzed"):
@@ -2149,12 +2354,12 @@ def split_file_add_clip(
                     root_ai, _ = resolve_root_ai_metadata(f.data, file_id=file_id)
                     if root_ai:
                         effective = materialize_clip_ai_metadata(
-                            root_ai, start_sec, end_sec, rebased=True,
+                            root_ai, q_start, q_end, rebased=True,
                         )
                     else:
                         effective = get_effective_ai_metadata(
                             f.data,
-                            clip_data={"start": start_sec, "end": end_sec},
+                            clip_data={"start": q_start, "end": q_end},
                             rebased=True,
                         )
                     new_file.data["ai_metadata"] = effective
@@ -2474,6 +2679,7 @@ def add_clip_to_timeline(
                     start_sec, end_sec, snapped = _snap_window_off_boundaries(
                         file_data, start_sec, end_sec,
                     )
+                    start_sec, end_sec = quantize_placement_seconds(start_sec, end_sec)
                     new_clip["start"] = start_sec
                     new_clip["end"] = end_sec
                     new_clip["duration"] = max(0.0, end_sec - start_sec)
@@ -5838,14 +6044,8 @@ def generate_video_and_add_to_timeline(prompt="", duration_seconds="", position_
         if dl_err:
             return f"Error: {dl_err}"
 
-        from classes.credits_client import charge_operation_on_success, credits
+        from classes.credits_client import credits
 
-        charge_operation_on_success(
-            True,
-            "video_generation",
-            provider="runware",
-            note=f"txt2v: {prompt[:60]}",
-        )
         credits.award_bonus("first_export")   # idempotent — only fires once ever
 
         try:
@@ -6189,15 +6389,6 @@ def insert_v2v_into_clip(
             if not ok:
                 return f"Error: Failed to bake updated clip: {bake_err}"
 
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "video_generation",
-                provider="runware",
-                note=f"v2v insert: {query[:60]}",
-            )
-
             # ---- Step 5: Import the baked clip and place on timeline ----
             f, import_err = _import_generated_video(output_path)
             if not f:
@@ -6334,15 +6525,6 @@ def replace_object_in_clip(
             dl_err = _download_video_url_to_path(video_url, output_path)
             if dl_err:
                 return f"Error: {dl_err}"
-
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "video_generation",
-                provider="runware",
-                note=f"replace object: {description[:60]}",
-            )
 
             gen_duration = _ffprobe_video_duration(output_path)
             if gen_duration < 0.5:
@@ -6577,15 +6759,6 @@ def generate_transition_clip(
                 _run_on_main_thread(_save_merged)
             except Exception as exc:
                 log.warning("generate_transition: could not save merged tags: %s", exc)
-
-            from classes.credits_client import charge_operation_on_success
-
-            charge_operation_on_success(
-                True,
-                "morph_generation",
-                provider="runware",
-                note="transition/morph generation",
-            )
 
             baked_duration = _ffprobe_video_duration(
                 f.absolute_path() if hasattr(f, "absolute_path") else baked_path
@@ -8296,7 +8469,43 @@ def get_timeline_state(**_kw) -> str:
                 lines.append(f"\nTotal timeline duration: {max(all_ends):.2f}s")
 
         lines.append(f"\nTRACK_STACK_JSON={track_stack_json(layers)}")
-        return "\n".join(lines)
+
+        structured_clips = []
+        for c in clips:
+            d = c.data if isinstance(c.data, dict) else {}
+            layer = int(d.get("layer") or 0)
+            ui = layer_number_to_display_index(layer, layers)
+            structured_clips.append({
+                "id": str(c.id),
+                "file_id": str(d.get("file_id") or ""),
+                "title": str(d.get("title") or d.get("label") or ""),
+                "layer": layer,
+                "track": ui,
+                "position": float(d.get("position") or 0),
+                "start": float(d.get("start") or 0),
+                "end": float(d.get("end") or 0),
+            })
+        structured_tracks = []
+        for L in layers_sorted_by_number(layers):
+            layer_num = int(L.get("number") or 0)
+            structured_tracks.append({
+                "id": str(L.get("id") or ""),
+                "layer": layer_num,
+                "track": layer_number_to_display_index(layer_num, layers),
+                "label": str(L.get("label") or L.get("name") or ""),
+            })
+        from classes.agent_tools.receipt import ToolReceipt
+        return ToolReceipt.applied(
+            "get_timeline_state_tool",
+            f"Timeline: {len(structured_clips)} clip(s), {len(structured_tracks)} track(s).",
+            undo_steps=0,
+            data={
+                "clips": structured_clips,
+                "tracks": structured_tracks,
+                "effects": list(effects_raw),
+                "legacy_text": "\n".join(lines),
+            },
+        ).to_json()
     except Exception as e:
         log.error("get_timeline_state: %s", e, exc_info=True)
         return f"Error: {e}"
@@ -9111,16 +9320,24 @@ AGENT_TOOL_HANDLERS = {
 # per workstream). Merged here so dispatch, chat labels, the undo grouping and
 # the MCP listing treat them exactly like the handlers above.
 from classes.editor_tools import REGISTRY as _EDITOR_TOOL_SPECS  # noqa: E402
+from classes.agent_tools.schema import TOOL_SCHEMAS as _TOOL_SCHEMAS  # noqa: E402
 
+# #183's add_effect / add_title / set_keyframes / set_project_setting are served
+# by the editor tools of the same names, whose arguments are a superset of theirs.
+AGENT_TOOL_HANDLERS.update({name: func for name, func in PHASE3_HANDLERS.items()
+                            if name not in _EDITOR_TOOL_SPECS})
 _editor_overlap = set(_EDITOR_TOOL_SPECS) & set(AGENT_TOOL_HANDLERS)
 assert not _editor_overlap, f"editor_tools re-registers {sorted(_editor_overlap)}"
 AGENT_TOOL_HANDLERS.update({name: spec.func for name, spec in _EDITOR_TOOL_SPECS.items()})
+# One source of truth for an editor tool's arguments: its registry schema is the
+# one execute_tool validates against and the MCP server advertises.
+_TOOL_SCHEMAS.update({name: spec.schema for name, spec in _EDITOR_TOOL_SPECS.items()})
 
 TOOL_HANDLERS = dict(AGENT_TOOL_HANDLERS)
 
 # Humanized titles for chat tool-block headers (main agent tools only).
 TOOL_DISPLAY_LABELS = {
-    "list_files_tool": "List files",
+    "list_files_tool": "List project media",
     "list_clips_tool": "List clips",
     "list_layers_tool": "List tracks",
     "watch_clip_tool": "Load and play clip",
@@ -9138,7 +9355,7 @@ TOOL_DISPLAY_LABELS = {
     "zoom_in_tool": "Zoom in",
     "zoom_out_tool": "Zoom out",
     "center_on_playhead_tool": "Center on playhead",
-    "import_files_tool": "Import files",
+    "import_files_tool": "Import files from disk",
     "wait_until_project_indexed_tool": "Wait for indexing",
     "get_file_info_tool": "Read file info",
     "split_file_add_clip_tool": "Split clip and add to timeline",
@@ -9167,6 +9384,7 @@ TOOL_DISPLAY_LABELS = {
     "get_timeline_placements_metadata_tool": "Read timeline placements",
     "get_timeline_state_tool": "Read timeline state",
 }
+TOOL_DISPLAY_LABELS.update(PHASE3_DISPLAY_LABELS)
 TOOL_DISPLAY_LABELS.update({name: spec.label for name, spec in _EDITOR_TOOL_SPECS.items()})
 
 assert set(TOOL_DISPLAY_LABELS) == set(AGENT_TOOL_HANDLERS), (
@@ -9317,49 +9535,27 @@ def _main_thread_timeout(tool_name: str, tool_args: dict) -> int:
 
 
 def execute_tool(tool_name: str, tool_args: dict) -> str:
-    """Execute a tool by name with the given arguments. Returns the result string."""
-    handler = TOOL_HANDLERS.get(tool_name)
-    if not handler:
-        return f"Error: Unknown tool '{tool_name}'."
+    """Execute a tool by name. Returns a contract-3 JSON receipt string."""
+    from classes.agent_tools.execute import bind_runtime, execute_tool as _dispatch
 
-    # chat_session_id is used for tool state isolation (e.g. split/import → add clip chains).
-    # Only pass it through to the relevant handlers.
-    if isinstance(tool_args, dict) and "chat_session_id" in tool_args:
-        if tool_name not in (
-            "split_file_add_clip_tool",
-            "add_clip_to_timeline_tool",
-            "place_motion_graphic_tool",
-            "import_stock_media_tool",
-            "import_files_tool",
-        ):
-            tool_args = dict(tool_args)
-            tool_args.pop("chat_session_id", None)
-
-    def _invoke():
-        try:
-            if tool_name in _UNGROUPED_TOOLS:
-                return handler(**tool_args)
-            # One tool call == one undo step, decided here rather than
-            # annotated on ~60 handlers.  Mutations a handler makes across
-            # several main-thread hops join this group too, because
-            # _run_on_main_thread carries the id across the hop.  A handler
-            # that opens its own _transaction/_atomic joins rather than nests.
-            return _atomic(_get_app(), handler)(**tool_args)
-        except Exception as e:
-            log.error("Tool %s execution failed: %s", tool_name, e, exc_info=True)
-            return f"Error: {e}"
-
-    try:
-        if QThread is None:
-            return _invoke()
-        app = _get_app()
-        if QThread.currentThread() is app.thread():
-            return _invoke()
-        if tool_name in READ_ONLY_TOOLS or tool_name in BACKGROUND_SAFE_TOOLS:
-            return _invoke()
-        return _run_on_main_thread(
-            _invoke, timeout=_main_thread_timeout(tool_name, tool_args)
-        )
-    except Exception as e:
-        log.error("Tool %s dispatch failed: %s", tool_name, e, exc_info=True)
-        return f"Error: {e}"
+    bind_runtime(
+        handlers=TOOL_HANDLERS,
+        read_only=READ_ONLY_TOOLS,
+        background_safe=BACKGROUND_SAFE_TOOLS,
+        ungrouped=_UNGROUPED_TOOLS,
+        main_thread_timeouts=_MAIN_THREAD_TIMEOUTS,
+        get_app=_get_app,
+        run_on_main_thread=_run_on_main_thread,
+        atomic=_atomic,
+        coerce_steps=_coerce_steps,
+        qthread=QThread,
+        main_thread_timeout=_main_thread_timeout,
+    )
+    from classes.editor_tools import prepare_args
+    # Editor tools accept what models send ("1.5", "true"): coerce before the strict
+    # validation, and refuse a value that cannot be in the registry's own words.
+    args, problem = prepare_args(tool_name, tool_args or {})
+    if problem:
+        from classes.agent_tools.receipt import ToolReceipt
+        return ToolReceipt.refused(tool_name, problem).to_json()
+    return _dispatch(tool_name, args)
