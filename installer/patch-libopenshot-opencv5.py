@@ -21,7 +21,8 @@ GUARDED_INCLUDE = (
     "#include <opencv2/geometry.hpp>\n"
     "#endif\n"
 )
-OPENCV_INCLUDE = re.compile(r"^#include <opencv2/[a-z0-9_/]+\.hpp>[ \t]*\n", re.M)
+# Indented inside #ifdef USE_OPENCV in Frame.h / Clip.h, quoted in sort_filter/.
+OPENCV_INCLUDE = re.compile(r'^[ \t]*#include [<"]opencv2/[^>"\n]+[>"][ \t]*\n', re.M)
 
 
 def patch_cmake(src_dir: str) -> None:
