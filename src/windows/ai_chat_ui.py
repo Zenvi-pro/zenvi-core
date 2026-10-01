@@ -1289,10 +1289,18 @@ class AIChatWindow(QDockWidget):
 
     def _close_session(self, session_id: str):
         """Close a session and delete its Pinecone namespace (called from the × on a tab)."""
-        if len(self._sessions) <= 1:
-            return  # never close the last session
         if session_id not in self._sessions:
             return
+        # Closing the last tab closes the dock. The dock is never left without
+        # a tab: an empty chat simply stays, a used one is replaced by a fresh
+        # chat (which becomes active) and then closed below like any other.
+        last = len(self._sessions) <= 1
+        if last:
+            sess = self._sessions[session_id]
+            if not sess.get("messages"):
+                self.hide()
+                return
+            self._create_session("", sess.get("backend", BACKEND_ZENVI))
         # Soft-delete first: the worker's clear_session below wipes the
         # backend's own copy, so this row can end up the only record left.
         from classes import chat_history
@@ -1316,6 +1324,8 @@ class AIChatWindow(QDockWidget):
             else:
                 self._rebuild_widget_tabs()
         self._save_chat_sessions_store()
+        if last:
+            self.hide()
 
     def _closed_session_list(self) -> list:
         """Closed chats for this project that can be restored as tabs."""

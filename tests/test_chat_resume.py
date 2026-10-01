@@ -605,3 +605,76 @@ def test_reopen_closed_session_restores_the_tab(window_cls, keyed_store):
     assert win._sessions["s1"]["title"] == "Bring me back"
     assert keyed_store.load_sessions("P1", include_closed=False)
     assert rendered == ["s1"]
+
+
+# ---------------------------------------------------------------------------
+# Closing the last tab closes the dock
+# ---------------------------------------------------------------------------
+
+class _ClosableWindow:
+    """Just enough of AIChatWindow for _close_session."""
+
+    _history_key = "P1"
+    _use_web_ui = False
+
+    def __init__(self, sessions, active):
+        self._sessions = sessions
+        self._active_sid = active
+        self.hidden = 0
+        self.created = []
+
+    def _shutdown_worker(self, worker, thread, wait_ms=0):
+        pass
+
+    def _create_session(self, model_id="", backend="zenvi"):
+        self.created.append(backend)
+        self._sessions["fresh"] = {"messages": [], "backend": backend}
+        self._active_sid = "fresh"
+
+    def _switch_session(self, session_id):
+        self._active_sid = session_id
+
+    def _rebuild_widget_tabs(self):
+        pass
+
+    def _save_chat_sessions_store(self, project_path=None):
+        pass
+
+    def hide(self):
+        self.hidden += 1
+
+
+def test_closing_the_last_tab_hides_the_dock_and_leaves_a_fresh_chat(window_cls, keyed_store):
+    keyed_store.upsert_session("s1", "P1", title="Only chat", backend="zenvi")
+    keyed_store.record_message("s1", "user", "hello")
+    win = _ClosableWindow(
+        {"s1": {"messages": [("user", "<p>hello</p>", False)], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    # The dock is never left without a tab, and the closed chat is in history.
+    assert list(win._sessions) == ["fresh"]
+    assert win._active_sid == "fresh"
+    assert [r["session_id"] for r in keyed_store.load_closed_sessions("P1")] == ["s1"]
+
+
+def test_closing_an_empty_last_tab_just_hides_the_dock(window_cls, keyed_store):
+    win = _ClosableWindow({"s1": {"messages": [], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 1
+    assert list(win._sessions) == ["s1"]
+    assert win.created == []
+
+
+def test_closing_one_of_several_tabs_keeps_the_dock_open(window_cls, keyed_store):
+    win = _ClosableWindow(
+        {"s1": {"messages": [], "backend": "zenvi"}, "s2": {"messages": [], "backend": "zenvi"}}, "s1")
+
+    window_cls._close_session(win, "s1")
+
+    assert win.hidden == 0
+    assert list(win._sessions) == ["s2"]
+    assert win._active_sid == "s2"

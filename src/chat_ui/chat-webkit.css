@@ -504,3 +504,15 @@ html[data-zenvi-webkit="1"] .chat-gap-log-panel {
     width: 92%;
     max-width: 360px;
 }
+
+/* A press must not shrink the target out from under the pointer: the release
+   then lands outside it and this WebKit drops the click. */
+html[data-zenvi-webkit="1"] #chat-tab-history:active,
+html[data-zenvi-webkit="1"] #chat-tab-add:active,
+html[data-zenvi-webkit="1"] #chat-gap-log-btn:active,
+html[data-zenvi-webkit="1"] .chat-tab-close:active,
+html[data-zenvi-webkit="1"] .chat-model-trigger:active,
+html[data-zenvi-webkit="1"] .chat-send-circle:active:not(:disabled) {
+    -webkit-transform: none;
+    transform: none;
+}

@@ -9,7 +9,8 @@ import os
 import sys
 
 try:
-    from PyQt5.QtCore import QFileInfo, QTimer, QUrl, Qt
+    from PyQt5.QtCore import QFileInfo, QPoint, QTimer, QUrl, Qt
+    from PyQt5.QtTest import QTest
     from PyQt5.QtWebKitWidgets import QWebView
     from PyQt5.QtWidgets import QApplication
 except ImportError:
@@ -75,8 +76,32 @@ html = html.replace("<html ", '<html data-zenvi-webkit="1" ', 1)
 html = html.replace("</head>", '\n    <link rel="stylesheet" href="chat-webkit.css">\n</head>', 1)
 
 
+def click_top_left_edge(selector):
+    """A real press + release 1px inside the element's top-left edge."""
+    box = json.loads(js(
+        "(function(){var b=document.querySelector(%s).getBoundingClientRect();"
+        "return JSON.stringify([b.left,b.top]);})()" % json.dumps(selector)))
+    QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, QPoint(int(box[0]) + 1, int(box[1]) + 1))
+    QTest.qWait(100)
+
+
+def js(code):
+    return view.page().mainFrame().evaluateJavaScript(code)
+
+
 def measure():
-    print(view.page().mainFrame().evaluateJavaScript(PROBE), flush=True)
+    result = json.loads(js(PROBE))
+    # Edge clicks: a button that shrinks on press loses the click on this WebKit.
+    js("document.getElementById('chat-history-overlay').style.display='none';"
+       "document.querySelector('.chat-tab-close').addEventListener('click',"
+       "function(){window.__tabCloseClicked=true;});")
+    click_top_left_edge("#chat-tab-history")
+    result["historyOpensOnEdgeClick"] = js(
+        "document.getElementById('chat-history-overlay').style.display") == "flex"
+    js("document.getElementById('chat-history-overlay').style.display='none';")
+    click_top_left_edge(".chat-tab-close")
+    result["tabCloseFiresOnEdgeClick"] = bool(js("window.__tabCloseClicked === true"))
+    print(json.dumps(result), flush=True)
     app.quit()
 
 

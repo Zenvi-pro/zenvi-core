@@ -70,6 +70,14 @@ def test_history_overlay_covers_the_dock():
     assert 200 < panel["right"] - panel["left"] <= 360
 
 
+def test_clicks_at_a_buttons_edge_are_not_dropped():
+    """Previous-chats and the tab × shrank on press, so a click near their edge
+    released outside the button and did nothing; users had to click again."""
+    m = _probe(420, 620)
+    assert m["historyOpensOnEdgeClick"]
+    assert m["tabCloseFiresOnEdgeClick"]
+
+
 def test_light_theme_is_not_painted_dark():
     m = _probe(420, 620, _LIGHT)
     assert m["bodyBackground"] == "rgb(240, 240, 240)"
