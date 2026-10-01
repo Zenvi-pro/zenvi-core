@@ -28,13 +28,14 @@
  """
 
 import json
+from contextlib import ExitStack
 from copy import deepcopy
 import logging
 import os
 import sys
 import time
 import uuid
-from functools import partial
+from functools import partial, wraps
 from operator import itemgetter
 
 import openshot
@@ -46,14 +47,14 @@ from qt_api import QDialog
 from classes import info, transition_ops, updates
 from classes.app import get_app
 from classes.bridge_guard import guarded_slot, slot_transaction
+from classes.timeline_ops import aligned_positions, close_all_gaps, close_gap
+from classes.updates import nested_transaction
 from classes.color_presets import (
     COLOR_GRADE_CLASS_NAME,
     COLOR_PRESET_AUTO_CONTRAST,
     COLOR_PRESET_BOOST_COLOR,
     COLOR_PRESET_LIFT_SHADOWS,
-    COLOR_PRESET_RESET,
     COLOR_PRESET_WARM_UP,
-    apply_color_grade_preset,
     is_color_grade_effect,
 )
 from classes.film_grain_presets import (
@@ -65,72 +66,19 @@ from classes.film_grain_presets import (
     FILM_GRAIN_PRESET_HIGH_ISO,
     FILM_GRAIN_PRESET_NONE,
     FILM_GRAIN_PRESET_SUPER_8,
-    apply_film_grain_preset,
-    is_film_grain_effect,
 )
 
-LOOK_EFFECT_UI_MENU = "look"
-
-LOOK_RESET_EFFECT_CLASSES = {
-    COLOR_GRADE_CLASS_NAME,
-    FILM_GRAIN_CLASS_NAME,
-}
-
-LOOK_EFFECT_PRESETS = {
-    "AnalogTape": {
-        "none": {},
-        "subtle": {
-            "bleed": 0.25,
-            "noise": 0.18,
-            "softness": 0.15,
-            "static_bands": 0.05,
-            "stripe": 0.06,
-            "tracking": 0.20,
-        },
-        "vhs": {
-            "bleed": 0.55,
-            "noise": 0.35,
-            "softness": 0.35,
-            "static_bands": 0.18,
-            "stripe": 0.20,
-            "tracking": 0.45,
-        },
-        "heavy": {
-            "bleed": 0.85,
-            "noise": 0.60,
-            "softness": 0.55,
-            "static_bands": 0.35,
-            "stripe": 0.40,
-            "tracking": 0.75,
-        },
-    },
-    "Blur": {
-        "none": {},
-        "soft_focus": {"horizontal_radius": 3.0, "vertical_radius": 3.0, "sigma": 1.5, "iterations": 2.0},
-        "medium": {"horizontal_radius": 8.0, "vertical_radius": 8.0, "sigma": 4.0, "iterations": 3.0},
-        "heavy": {"horizontal_radius": 20.0, "vertical_radius": 20.0, "sigma": 8.0, "iterations": 4.0},
-    },
-    "Glow": {
-        "none": {},
-        "soft_white": {"mode": 0, "opacity": 0.35, "blur_radius": 18.0, "spread": 0.15, "color": "#ffffffff"},
-        "warm": {"mode": 0, "opacity": 0.45, "blur_radius": 24.0, "spread": 0.20, "color": "#ffd28cff"},
-        "neon": {"mode": 0, "opacity": 0.65, "blur_radius": 16.0, "spread": 0.35, "color": "#35d7ffff"},
-        "inner": {"mode": 1, "opacity": 0.45, "blur_radius": 12.0, "spread": 0.25, "color": "#ffffffff"},
-    },
-    "Shadow": {
-        "none": {},
-        "subtle": {"opacity": 0.30, "blur_radius": 12.0, "spread": 0.05, "distance": 8.0, "angle": 135.0, "color": "#000000ff"},
-        "soft": {"opacity": 0.45, "blur_radius": 28.0, "spread": 0.10, "distance": 14.0, "angle": 135.0, "color": "#000000ff"},
-        "strong": {"opacity": 0.70, "blur_radius": 18.0, "spread": 0.25, "distance": 16.0, "angle": 135.0, "color": "#000000ff"},
-        "long": {"opacity": 0.45, "blur_radius": 24.0, "spread": 0.12, "distance": 44.0, "angle": 135.0, "color": "#000000ff"},
-    },
-    "Sharpen": {
-        "none": {},
-        "subtle": {"amount": 4.0, "radius": 1.5, "threshold": 0.0},
-        "medium": {"amount": 9.0, "radius": 2.5, "threshold": 0.0},
-        "strong": {"amount": 16.0, "radius": 3.5, "threshold": 0.0},
-    },
-}
+from classes.look_presets import (  # noqa: E402  (shared with the agent look tools)
+    LOOK_EFFECT_PRESETS,
+    LOOK_EFFECT_UI_MENU,
+    apply_color_look_preset,
+    apply_film_grain_look_preset,
+    apply_look_effect_preset,
+    is_look_managed_effect,
+    parse_effect_color,
+    reset_look,
+    set_effect_property_value,
+)
 
 from classes.camera_motion import (
     KEN_BURNS_AUTO,
@@ -153,6 +101,7 @@ from classes.camera_motion import (
     source_dimensions_from_reader,
 )
 from classes.effect_init import effect_options
+from classes.effect_ops import merge_effects_by_class
 from classes.file_drop import os_drop_file_ids
 from classes.logger import log
 from classes.query import File, Clip, Transition, Track, Effect
@@ -176,9 +125,36 @@ from .timeline_backend.qwidget import TimelineWidget
 from .timeline_backend.colors import effect_color_hex
 from .menu import StyledContextMenu
 from classes.clip_utils import clamp_timing_to_media, apply_file_caption_to_clip
+from classes.keyframe_rules import COPY_KEYFRAME_GROUPS, curve_plateau
 from classes.clip_placement import apply_audio_only_clip_overrides
 from .retime import retime_clip
 from .repeat import apply_repeat, reset_repeat, RepeatDialog
+
+# Clip menu > Copy > Keyframes item -> keyframe_rules.COPY_KEYFRAME_GROUPS key
+_COPY_KEYFRAME_GROUP = {
+    MenuCopy.KEYFRAMES_ALL: "all",
+    MenuCopy.KEYFRAMES_ALPHA: "alpha",
+    MenuCopy.KEYFRAMES_SCALE: "scale",
+    MenuCopy.KEYFRAMES_SHEAR: "shear",
+    MenuCopy.KEYFRAMES_ROTATE: "rotation",
+    MenuCopy.KEYFRAMES_LOCATION: "location",
+    MenuCopy.KEYFRAMES_TIME: "time",
+    MenuCopy.KEYFRAMES_VOLUME: "volume",
+}
+
+
+def _one_undo_step(handler):
+    """Group every project change a clip menu handler makes into ONE undo step.
+
+    Joins a transaction already in flight (an agent tool call, No Transform)
+    instead of letting each selected clip become its own step.
+    """
+    @wraps(handler)
+    def grouped(*args, **kwargs):
+        with updates.nested_transaction(get_app().updates):
+            return handler(*args, **kwargs)
+    return grouped
+
 
 # Constants used by this file
 JS_SCOPE_SELECTOR = "$('body').scope()"
@@ -279,6 +255,14 @@ def _event_posf(event):
     if hasattr(event, "posF"):
         return event.posF()
     return event.position()
+
+
+def _save_look_effects(view, clip, effects):
+    """Save a clip's new Look effect list (classes.look_presets) as one history entry."""
+    original_clip_data = json.loads(json.dumps(clip.data))
+    clip.data["effects"] = effects
+    view.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+    get_app().updates.apply_last_action_to_history(original_clip_data)
 
 
 class TimelineView(updates.UpdateInterface, ViewClass):
@@ -611,24 +595,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     if key in excluded_keys:
                         continue
                     if key == "effects" and isinstance(value, list):
-                        existing_effects = target_obj.data.setdefault("effects", [])
-                        effect_map = {
-                            effect.get("class_name"): effect
-                            for effect in existing_effects
-                            if isinstance(effect, dict) and effect.get("class_name")
-                        }
-
-                        for effect in value:
-                            if not isinstance(effect, dict):
-                                continue
-                            effect_copy = deepcopy(effect)
-                            self._assign_new_effect_ids({"effects": [effect_copy]})
-                            effect_type = effect_copy.get("class_name")
-                            if effect_type in effect_map:
-                                effect_map[effect_type].update(effect_copy)
-                            else:
-                                existing_effects.append(effect_copy)
-                        target_obj.data["effects"] = existing_effects
+                        target_obj.data["effects"] = merge_effects_by_class(
+                            target_obj.data.get("effects") or [], value)
                     else:
                         target_obj.data[key] = value
                 target_obj.save()
@@ -2086,11 +2054,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         """Hide the waveform for the selected clip"""
 
         # Loop through each selected clip ID
-        for clip_id in clip_ids:
-            # Get existing clip object & clear audio_data
-            clip = Clip.get(id=clip_id)
-            clip.data = {"ui": {"audio_data": []}}
-            clip.save()
+        with nested_transaction(get_app().updates):
+            for clip_id in clip_ids:
+                # Get existing clip object & clear audio_data
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
+                clip.data = {"ui": {"audio_data": []}}
+                clip.save()
 
     def fileAudioDataReady_Triggered(self, file_id, ui_data, tid):
         log.debug("fileAudioDataReady_Triggered received for file: %s" % file_id)
@@ -2194,169 +2165,130 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get translation method
         _ = get_app()._tr
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight)
+        with nested_transaction(get_app().updates) as tid:
+            # Loop through each selected clip
+            for clip_id in clip_ids:
 
-        # Loop through each selected clip
-        for clip_id in clip_ids:
-
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            # Get # of tracks
-            all_tracks = get_app().project.get("layers")
-
-            reader = clip.data.get("reader", {})
-            has_audio = reader.get("has_audio")
-            has_audio = True if has_audio is None else bool(has_audio)
-            channels_value = reader.get("channels")
-            try:
-                channel_count = int(channels_value) if channels_value is not None else None
-            except (TypeError, ValueError):
-                channel_count = None
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
-            original_layer = clip.data.get("layer")
-
-            if (not has_audio) or (channel_count is not None and channel_count <= 0):
-                log.info("Split audio skipped for clip %s (no audio)", clip_id)
-                continue
-
-            def get_track_below(layer_number):
-                """Return the track number directly below the provided layer, creating one when needed."""
-                window = getattr(get_app(), "window", None)
-                create_below = getattr(window, "create_track_below", None)
-                if callable(create_below):
-                    return create_below(layer_number)
-
-                next_track_number = layer_number
-                found_track = False
-                for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
-                    if found_track:
-                        next_track_number = track.get("number")
-                        break
-                    if track.get("number") == layer_number:
-                        found_track = True
-                        continue
-                return next_track_number
-
-            # Get title of clip
-            clip_title = clip.data["title"]
-
-            # Audio-only clips reuse the source clip instead of deleting it
-            if not has_video:
-                if action == MenuSplitAudio.SINGLE:
-                    # Clear channel filter to all channels and keep the clip
-                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
-                    p_object = json.loads(p.Json())
-                    clip.data["channel_filter"] = {"Points": [p_object]}
-                    clip.save()
-
-                    # Generate waveform for existing clip
-                    log.info("Generate waveform for audio-only clip id: %s" % clip.id)
-                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
                     continue
 
-                if action == MenuSplitAudio.MULTIPLE:
-                    channels = channel_count
+                # Get # of tracks
+                all_tracks = get_app().project.get("layers")
 
-                    separate_clip_ids = []
-                    current_layer = original_layer
-                    for channel in range(0, channels):
-                        log.debug("Adding clip for channel %s" % channel)
+                reader = clip.data.get("reader", {})
+                has_audio = reader.get("has_audio")
+                has_audio = True if has_audio is None else bool(has_audio)
+                channels_value = reader.get("channels")
+                try:
+                    channel_count = int(channels_value) if channels_value is not None else None
+                except (TypeError, ValueError):
+                    channel_count = None
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+                original_layer = clip.data.get("layer")
 
-                        # Each clip is filtered to a different channel
-                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                if (not has_audio) or (channel_count is not None and channel_count <= 0):
+                    log.info("Split audio skipped for clip %s (no audio)", clip_id)
+                    continue
+
+                def get_track_below(layer_number):
+                    """Return the track number directly below the provided layer, creating one when needed."""
+                    window = getattr(get_app(), "window", None)
+                    create_below = getattr(window, "create_track_below", None)
+                    if callable(create_below):
+                        return create_below(layer_number)
+
+                    next_track_number = layer_number
+                    found_track = False
+                    for track in reversed(sorted(all_tracks, key=itemgetter('number'))):
+                        if found_track:
+                            next_track_number = track.get("number")
+                            break
+                        if track.get("number") == layer_number:
+                            found_track = True
+                            continue
+                    return next_track_number
+
+                # Get title of clip
+                clip_title = clip.data["title"]
+
+                # Audio-only clips reuse the source clip instead of deleting it
+                if not has_video:
+                    if action == MenuSplitAudio.SINGLE:
+                        # Clear channel filter to all channels and keep the clip
+                        p = openshot.Point(1, -1.0, openshot.CONSTANT)
                         p_object = json.loads(p.Json())
                         clip.data["channel_filter"] = {"Points": [p_object]}
-
-                        # Explicitly keep video disabled and scale none
-                        p = openshot.Point(1, 0.0, openshot.CONSTANT)
-                        p_object = json.loads(p.Json())
-                        clip.data["has_video"] = {"Points": [p_object]}
-                        clip.data["scale"] = openshot.SCALE_NONE
-
-                        # Keep first clip on the same layer, others below
-                        target_layer = current_layer if channel == 0 else get_track_below(current_layer)
-                        clip.data['layer'] = target_layer
-                        current_layer = clip.data['layer']
-
-                        # Adjust the clip title
-                        channel_label = _("(channel %s)") % (channel + 1)
-                        clip.data["title"] = clip_title + " " + channel_label
-
-                        # Save changes
                         clip.save()
-                        separate_clip_ids.append(clip.id)
 
-                        # Prepare a new clip for the next channel
-                        if channel < channels - 1:
-                            clip.id = None
-                            clip.type = 'insert'
-                            clip.data.pop('id', None)
-                            if clip.key and len(clip.key) > 1:
-                                clip.key.pop(1)
+                        # Generate waveform for existing clip
+                        log.info("Generate waveform for audio-only clip id: %s" % clip.id)
+                        self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
+                        continue
 
-                    # Generate waveform for new clips
-                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
-                    continue
+                    if action == MenuSplitAudio.MULTIPLE:
+                        channels = channel_count
 
-            # Clear audio override
-            p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        separate_clip_ids = []
+                        current_layer = original_layer
+                        for channel in range(0, channels):
+                            log.debug("Adding clip for channel %s" % channel)
 
-            # Remove the ID property from the clip (so it becomes a new one)
-            clip.id = None
-            clip.type = 'insert'
-            clip.data.pop('id')
-            clip.key.pop(1)
+                            # Each clip is filtered to a different channel
+                            p = openshot.Point(1, channel, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["channel_filter"] = {"Points": [p_object]}
 
-            if action == MenuSplitAudio.SINGLE:
-                # Clear channel filter on new clip
-                p = openshot.Point(1, -1.0, openshot.CONSTANT)
+                            # Explicitly keep video disabled and scale none
+                            p = openshot.Point(1, 0.0, openshot.CONSTANT)
+                            p_object = json.loads(p.Json())
+                            clip.data["has_video"] = {"Points": [p_object]}
+                            clip.data["scale"] = openshot.SCALE_NONE
+
+                            # Keep first clip on the same layer, others below
+                            target_layer = current_layer if channel == 0 else get_track_below(current_layer)
+                            clip.data['layer'] = target_layer
+                            current_layer = clip.data['layer']
+
+                            # Adjust the clip title
+                            channel_label = _("(channel %s)") % (channel + 1)
+                            clip.data["title"] = clip_title + " " + channel_label
+
+                            # Save changes
+                            clip.save()
+                            separate_clip_ids.append(clip.id)
+
+                            # Prepare a new clip for the next channel
+                            if channel < channels - 1:
+                                clip.id = None
+                                clip.type = 'insert'
+                                clip.data.pop('id', None)
+                                if clip.key and len(clip.key) > 1:
+                                    clip.key.pop(1)
+
+                        # Generate waveform for new clips
+                        log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                        self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                        continue
+
+                # Clear audio override
+                p = openshot.Point(1, -1.0, openshot.CONSTANT)  # Override has_audio keyframe to False
                 p_object = json.loads(p.Json())
-                clip.data["channel_filter"] = {"Points": [p_object]}
+                clip.data["has_audio"] = {"Points": [p_object]}
 
-                # Filter out video on the new clip
-                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
-                p_object = json.loads(p.Json())
-                clip.data["has_video"] = {"Points": [p_object]}
-                # Also set scale to None
-                # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
-                clip.data["scale"] = openshot.SCALE_NONE
+                # Remove the ID property from the clip (so it becomes a new one)
+                clip.id = None
+                clip.type = 'insert'
+                clip.data.pop('id')
+                clip.key.pop(1)
 
-                # Adjust the layer; place below the parent clip
-                target_layer = get_track_below(original_layer)
-                clip.data['layer'] = target_layer
-
-                # Adjust the clip title
-                channel_label = _("(all channels)")
-                clip.data["title"] = clip_title + " " + channel_label
-                # Save changes
-                clip.save()
-
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip id: %s" % clip.id)
-                self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
-
-            if action == MenuSplitAudio.MULTIPLE:
-                # Get # of channels on clip
-                channels = channel_count
-
-                # Loop through each channel
-                separate_clip_ids = []
-                current_layer = original_layer
-                for channel in range(0, channels):
-                    log.debug("Adding clip for channel %s" % channel)
-
-                    # Each clip is filtered to a different channel
-                    p = openshot.Point(1, channel, openshot.CONSTANT)
+                if action == MenuSplitAudio.SINGLE:
+                    # Clear channel filter on new clip
+                    p = openshot.Point(1, -1.0, openshot.CONSTANT)
                     p_object = json.loads(p.Json())
                     clip.data["channel_filter"] = {"Points": [p_object]}
 
@@ -2368,55 +2300,90 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
                     clip.data["scale"] = openshot.SCALE_NONE
 
-                    # Adjust the layer, so this new audio clip doesn't overlap the parent
-                    target_layer = get_track_below(current_layer)
+                    # Adjust the layer; place below the parent clip
+                    target_layer = get_track_below(original_layer)
                     clip.data['layer'] = target_layer
-                    current_layer = clip.data['layer']
 
                     # Adjust the clip title
-                    channel_label = _("(channel %s)") % (channel + 1)
+                    channel_label = _("(all channels)")
                     clip.data["title"] = clip_title + " " + channel_label
-
                     # Save changes
                     clip.save()
-                    separate_clip_ids.append(clip.id)
 
-                    # Remove the ID property from the clip (so next time, it will create a new clip)
-                    clip.id = None
-                    clip.type = 'insert'
-                    clip.data.pop('id')
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip id: %s" % clip.id)
+                    self.Show_Waveform_Triggered([clip.id], transaction_id=tid)
 
-                # Generate waveform for new clip
-                log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
-                self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+                if action == MenuSplitAudio.MULTIPLE:
+                    # Get # of channels on clip
+                    channels = channel_count
 
-        for clip_id in clip_ids:
+                    # Loop through each channel
+                    separate_clip_ids = []
+                    current_layer = original_layer
+                    for channel in range(0, channels):
+                        log.debug("Adding clip for channel %s" % channel)
 
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+                        # Each clip is filtered to a different channel
+                        p = openshot.Point(1, channel, openshot.CONSTANT)
+                        p_object = json.loads(p.Json())
+                        clip.data["channel_filter"] = {"Points": [p_object]}
 
-            reader = clip.data.get("reader", {})
-            has_video = reader.get("has_video")
-            has_video = True if has_video is None else bool(has_video)
+                        # Filter out video on the new clip
+                        p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_video keyframe to False
+                        p_object = json.loads(p.Json())
+                        clip.data["has_video"] = {"Points": [p_object]}
+                        # Also set scale to None
+                        # Workaround for https://github.com/OpenShot/openshot-qt/issues/2882
+                        clip.data["scale"] = openshot.SCALE_NONE
 
-            if not has_video:
-                continue
+                        # Adjust the layer, so this new audio clip doesn't overlap the parent
+                        target_layer = get_track_below(current_layer)
+                        clip.data['layer'] = target_layer
+                        current_layer = clip.data['layer']
 
-            # Filter out audio on the original clip
-            p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
-            p_object = json.loads(p.Json())
-            clip.data["has_audio"] = {"Points": [p_object]}
+                        # Adjust the clip title
+                        channel_label = _("(channel %s)") % (channel + 1)
+                        clip.data["title"] = clip_title + " " + channel_label
 
-            # Save filter on original clip
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            clip.save()
+                        # Save changes
+                        clip.save()
+                        separate_clip_ids.append(clip.id)
 
-        # Clear transaction
-        get_app().updates.transaction_id = None
+                        # Remove the ID property from the clip (so next time, it will create a new clip)
+                        clip.id = None
+                        clip.type = 'insert'
+                        clip.data.pop('id')
 
+                    # Generate waveform for new clip
+                    log.info("Generate waveform for split audio track clip ids: %s" % str(separate_clip_ids))
+                    self.Show_Waveform_Triggered(separate_clip_ids, transaction_id=tid)
+
+            for clip_id in clip_ids:
+
+                # Get existing clip object
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    # Invalid clip, skip to next item
+                    continue
+
+                reader = clip.data.get("reader", {})
+                has_video = reader.get("has_video")
+                has_video = True if has_video is None else bool(has_video)
+
+                if not has_video:
+                    continue
+
+                # Filter out audio on the original clip
+                p = openshot.Point(1, 0.0, openshot.CONSTANT)  # Override has_audio keyframe to False
+                p_object = json.loads(p.Json())
+                clip.data["has_audio"] = {"Points": [p_object]}
+
+                # Save filter on original clip
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                clip.save()
+
+    @_one_undo_step
     def Crop_Triggered(self, clip_ids, mode):
         """Add/remove/select the Crop effect based on mode"""
         get_app().window.clearSelections()
@@ -2530,107 +2497,30 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         return json.loads(effect.Json())
 
     def _is_look_managed_effect(self, effect_json, class_name=None):
-        if not isinstance(effect_json, dict):
-            return False
-        if effect_json.get("ui-menu") != LOOK_EFFECT_UI_MENU:
-            return False
-        return class_name is None or effect_json.get("class_name") == class_name
+        return is_look_managed_effect(effect_json, class_name)
 
     def _parse_effect_color(self, value):
-        if not isinstance(value, str):
-            return None
-        color = value.strip()
-        if color.startswith("#"):
-            color = color[1:]
-        if len(color) not in (6, 8):
-            return None
-        try:
-            red = int(color[0:2], 16)
-            green = int(color[2:4], 16)
-            blue = int(color[4:6], 16)
-            alpha = int(color[6:8], 16) if len(color) == 8 else 255
-        except ValueError:
-            return None
-        return {
-            "red": red,
-            "green": green,
-            "blue": blue,
-            "alpha": alpha,
-        }
+        return parse_effect_color(value)
 
     def _set_effect_property_value(self, effect_json, property_name, value):
-        property_data = effect_json.get(property_name)
-        color_channels = self._parse_effect_color(value)
-        if color_channels and isinstance(property_data, dict):
-            for channel, channel_value in color_channels.items():
-                channel_data = property_data.get(channel)
-                if isinstance(channel_data, dict) and isinstance(channel_data.get("Points"), list):
-                    channel_data["Points"] = [
-                        json.loads(openshot.Point(1, float(channel_value), openshot.BEZIER).Json())
-                    ]
-        elif isinstance(property_data, dict) and isinstance(property_data.get("Points"), list):
-            property_data["Points"] = [json.loads(openshot.Point(1, float(value), openshot.BEZIER).Json())]
-        elif property_name in effect_json:
-            effect_json[property_name] = value
+        set_effect_property_value(effect_json, property_name, value)
 
     def _apply_effect_preset(self, class_name, preset_name, clip_ids):
         """Apply a simple Look effect preset, or remove the effect for the none preset."""
-        presets = LOOK_EFFECT_PRESETS.get(class_name, {})
-        if preset_name not in presets:
+        if preset_name not in LOOK_EFFECT_PRESETS.get(class_name, {}):
             return
 
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if self._is_look_managed_effect(effect_json, class_name)
-            ]
-
-            if preset_name == "none":
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not self._is_look_managed_effect(effect_json, class_name)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
             try:
-                preset_effect = self._create_effect_json(class_name)
+                effects = apply_look_effect_preset(
+                    clip.data.get("effects"), class_name, preset_name, self._create_effect_json)
             except RuntimeError:
                 continue
-            preset_effect["ui-menu"] = LOOK_EFFECT_UI_MENU
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-
-            for property_name, value in presets[preset_name].items():
-                self._set_effect_property_value(preset_effect, property_name, value)
-
-            if matching_indexes:
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Reset_Look_Triggered(self, clip_ids):
         """Remove all effects managed by the clip Look menu."""
@@ -2638,26 +2528,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                continue
-
-            filtered_effects = [
-                effect_json for effect_json in effects
-                if not isinstance(effect_json, dict)
-                or (
-                    effect_json.get("class_name") not in LOOK_RESET_EFFECT_CLASSES
-                    and not self._is_look_managed_effect(effect_json)
-                )
-            ]
-            if len(filtered_effects) == len(effects):
-                continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            clip.data["effects"] = filtered_effects
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = reset_look(clip.data.get("effects"))
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def _ensure_color_grade_effect(self, clip):
         if not clip or not self._clip_has_visual(clip):
@@ -2691,48 +2564,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_color_grade_effect(effect_json)
-            ]
-
-            if preset_name == COLOR_PRESET_RESET:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_color_grade_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            preset_effect = apply_color_grade_preset(
-                self._create_color_grade_effect_json(),
-                preset_name,
-            )
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                effects[matching_indexes[0]] = preset_effect
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_color_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_color_grade_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Film_Grain_Triggered(self, preset_name, clip_ids):
         """Apply Film Grain presets for selected clips."""
@@ -2740,50 +2576,11 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             clip = Clip.get(id=clip_id)
             if not clip or not self._clip_has_visual(clip):
                 continue
-
-            original_clip_data = json.loads(json.dumps(clip.data))
-            effects = clip.data.get("effects")
-            if not isinstance(effects, list):
-                effects = list(effects) if effects else []
-                clip.data["effects"] = effects
-
-            matching_indexes = [
-                index for index, effect_json in enumerate(effects)
-                if is_film_grain_effect(effect_json)
-            ]
-
-            if preset_name == FILM_GRAIN_PRESET_NONE:
-                if not matching_indexes:
-                    continue
-                clip.data["effects"] = [
-                    effect_json for effect_json in effects
-                    if not is_film_grain_effect(effect_json)
-                ]
-                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-                get_app().updates.apply_last_action_to_history(original_clip_data)
-                continue
-
-            source_effect = (
-                effects[matching_indexes[0]]
-                if matching_indexes
-                else self._create_film_grain_effect_json()
-            )
-            preset_effect = apply_film_grain_preset(source_effect, preset_name)
-
-            if matching_indexes:
-                existing_effect = effects[matching_indexes[0]]
-                if existing_effect.get("id"):
-                    preset_effect["id"] = existing_effect["id"]
-                if "order" in existing_effect:
-                    preset_effect["order"] = existing_effect["order"]
-                for index in reversed(matching_indexes[1:]):
-                    del effects[index]
-                effects[matching_indexes[0]] = preset_effect
-            else:
-                effects.append(preset_effect)
-
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-            get_app().updates.apply_last_action_to_history(original_clip_data)
+            effects = apply_film_grain_look_preset(
+                clip.data.get("effects"), preset_name,
+                lambda _class_name: self._create_film_grain_effect_json())
+            if effects is not None:
+                _save_look_effects(self, clip, effects)
 
     def Adjust_Colors_Triggered(self, clip_ids):
         """Ensure a Color Grade effect exists and open the video scopes."""
@@ -2818,6 +2615,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 get_app().updates.apply_last_action_to_history(original_clip_data)
         return first_effect_id, first_clip_id
 
+    @_one_undo_step
     def Layout_Triggered(self, action, clip_ids):
         """Callback for the layout context menus"""
         log.debug(action)
@@ -2896,7 +2694,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-    def Animate_Triggered(self, action, clip_ids, transaction_id=None):
+    def Animate_Triggered(self, action, clip_ids, transaction_id=None, zone_seconds=None, emphasis_seconds=None):
         """Apply one-click motion presets to selected clips.
 
         Each MenuAnimate action encodes the animation type and its zone:
@@ -2904,6 +2702,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
           Out actions → last 1 second of the clip
           Continuous  → entire clip duration
           Pan actions → entire clip, also sets scale mode to SCALE_CROP
+
+        zone_seconds overrides the 1-second In/Out/Emphasis zone, and
+        emphasis_seconds (timeline seconds) replaces the playhead as the start
+        of an Emphasis zone (agent tools).
 
         Keyframe coordinates follow OpenShot conventions:
           location ±1.0 ≈ one full frame dimension (offscreen)
@@ -2931,7 +2733,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 dur = max(1, e - s)                                     # total frames
 
                 # 1-second enter / exit zones clamped to clip length
-                zone = max(1, round(fps_float))
+                zone = max(1, round(fps_float * (float(zone_seconds) if zone_seconds else 1.0)))
                 in_end    = min(s + zone, e)   # end of "In" zone
                 out_start = max(s, e - zone)   # start of "Out" zone
 
@@ -2939,7 +2741,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # preview_thread.current_frame is timeline-global, while clip
                 # keyframes are stored in the clip's local/source frame space.
                 try:
-                    timeline_frame = int(self.window.preview_thread.current_frame or 1)
+                    if emphasis_seconds is not None:
+                        timeline_frame = int(round(float(emphasis_seconds) * fps_float)) + 1
+                    else:
+                        timeline_frame = int(self.window.preview_thread.current_frame or 1)
                 except Exception:
                     timeline_frame = 1
                 try:
@@ -3114,8 +2919,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     MenuAnimate.WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
                     MenuAnimate.WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
                     MenuAnimate.WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
-                    MenuAnimate.WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
-                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    # Out reverses the reveal order, so an expanding hole needs the
+                    # out-to-in mask (OpenShot ac9621a02)
+                    MenuAnimate.WIPE_OUT_CIRCLE_EXPAND: "circle_out_to_in.svg",
+                    MenuAnimate.WIPE_OUT_CIRCLE_SHRINK: "circle_in_to_out.svg",
                     MenuAnimate.WIPE_OUT_FADE:          "fade.svg",
                     MenuAnimate.WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
                     MenuAnimate.WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
@@ -3127,8 +2934,8 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     MenuAnimate.BLUR_WIPE_IN_RIGHT:          "wipe_right_to_left.svg",
                     MenuAnimate.BLUR_WIPE_IN_TOP:            "wipe_top_to_bottom.svg",
                     MenuAnimate.BLUR_WIPE_IN_BOTTOM:         "wipe_bottom_to_top.svg",
-                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_in_to_out.svg",
-                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_EXPAND: "circle_out_to_in.svg",
+                    MenuAnimate.BLUR_WIPE_OUT_CIRCLE_SHRINK: "circle_in_to_out.svg",
                     MenuAnimate.BLUR_WIPE_OUT_LEFT:          "wipe_left_to_right.svg",
                     MenuAnimate.BLUR_WIPE_OUT_RIGHT:         "wipe_right_to_left.svg",
                     MenuAnimate.BLUR_WIPE_OUT_TOP:           "wipe_top_to_bottom.svg",
@@ -3403,38 +3210,9 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 continue
 
             # Filter data copied (if needed)
-            if action == MenuCopy.KEYFRAMES_ALL:
-                clip.data = {'alpha': clip.data['alpha'],
-                             'gravity': clip.data['gravity'],
-                             'scale_x': clip.data['scale_x'],
-                             'scale_y': clip.data['scale_y'],
-                             'shear_x': clip.data['shear_x'],
-                             'shear_y': clip.data['shear_y'],
-                             'rotation': clip.data['rotation'],
-                             'location_x': clip.data['location_x'],
-                             'location_y': clip.data['location_y'],
-                             'time': clip.data['time'],
-                             'volume': clip.data['volume']}
-            elif action == MenuCopy.KEYFRAMES_ALPHA:
-                clip.data = {'alpha': clip.data['alpha']}
-            elif action == MenuCopy.KEYFRAMES_SCALE:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'scale_x': clip.data['scale_x'],
-                             'scale_y': clip.data['scale_y']}
-            elif action == MenuCopy.KEYFRAMES_SHEAR:
-                clip.data = {'shear_x': clip.data['shear_x'],
-                             'shear_y': clip.data['shear_y']}
-            elif action == MenuCopy.KEYFRAMES_ROTATE:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'rotation': clip.data['rotation']}
-            elif action == MenuCopy.KEYFRAMES_LOCATION:
-                clip.data = {'gravity': clip.data['gravity'],
-                             'location_x': clip.data['location_x'],
-                             'location_y': clip.data['location_y']}
-            elif action == MenuCopy.KEYFRAMES_TIME:
-                clip.data = {'time': clip.data['time']}
-            elif action == MenuCopy.KEYFRAMES_VOLUME:
-                clip.data = {'volume': clip.data['volume']}
+            if action in _COPY_KEYFRAME_GROUP:
+                keys = COPY_KEYFRAME_GROUPS[_COPY_KEYFRAME_GROUP[action]]
+                clip.data = {key: clip.data[key] for key in keys if key in clip.data}
             elif action == MenuCopy.ALL_EFFECTS:
                 clip.data = {'effects': clip.data['effects']}
 
@@ -3479,91 +3257,14 @@ class TimelineView(updates.UpdateInterface, ViewClass):
     def RemoveGap_Triggered(self, found_start, found_end, layer_number):
         """Callback for removing gap context menus"""
         log.info(f"Removing gap from {found_start} to {found_end} on layer {layer_number}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        gap_size = found_end - found_start
-        for clip in Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number):
-            if clip.data.get("position", 0.0) > found_start:
-                clip.data["position"] -= gap_size
-                clip.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with nested_transaction(get_app().updates):
+            close_gap(found_start, found_end, layer_number)
 
     def RemoveAllGaps_Triggered(self, found_start, layer_number):
         """Callback for removing all gaps on a layer starting from the detected gap"""
         log.info(f"Removing all gaps on layer {layer_number} starting from {found_start}")
-
-        # Start transaction
-        tid = str(uuid.uuid4())
-        get_app().updates.transaction_id = tid
-
-        # Combine and sort the clips and transitions by their position
-        clips_and_transitions = sorted(
-            Clip.filter(layer=layer_number) + Transition.filter(layer=layer_number),
-            key=lambda c: c.data.get("position", 0.0)
-        )
-
-        # Build groups of overlapping clips/transitions so overlapping items move together
-        groups = []
-        current_group = []
-        current_group_start = None
-        current_group_end = None
-
-        for item in clips_and_transitions:
-            left_edge = item.data.get("position", 0.0)
-            right_edge = left_edge + (item.data.get("end", 0.0) - item.data.get("start", 0.0))
-
-            if current_group and left_edge <= current_group_end:
-                current_group.append(item)
-                current_group_end = max(current_group_end, right_edge)
-            else:
-                if current_group:
-                    groups.append((current_group_start, current_group_end, current_group))
-                current_group = [item]
-                current_group_start = left_edge
-                current_group_end = right_edge
-
-        if current_group:
-            groups.append((current_group_start, current_group_end, current_group))
-
-        # Track the end of the last processed group (after shifting) and cumulative offset
-        last_end = found_start
-        total_offset = 0.0
-        modified_items = []
-
-        for group_start, group_end, group_items in groups:
-            # Skip groups that end before the first detected gap
-            if group_end <= found_start:
-                last_end = max(last_end, group_end)
-                continue
-
-            # Calculate where this group would start after prior shifts
-            shifted_start = group_start - total_offset
-
-            # If there is still a gap, close it and increase the total offset
-            if shifted_start > last_end:
-                gap_size = shifted_start - last_end
-                total_offset += gap_size
-                shifted_start -= gap_size
-                log.info(f"Removing gap from {last_end} to {last_end + gap_size} on layer {layer_number}")
-
-            # Shift the entire overlapping group together
-            for item in group_items:
-                item.data["position"] -= total_offset
-                modified_items.append(item)
-
-            last_end = group_end - total_offset
-
-        # Save only the modified items
-        for item in modified_items:
-            item.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        with nested_transaction(get_app().updates):
+            close_all_gaps(found_start, layer_number)
 
     def Paste_Triggered(self, action, clip_ids, tran_ids):
         """Callback for paste context menus"""
@@ -3602,119 +3303,61 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         nudge_duration = float(action) / fps_float  # Nudge duration in seconds
         log.debug(f"Nudging by {nudge_duration} seconds")
 
-        # Nudge all selected clips
-        for clip_id in clip_ids:
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                continue
+        with nested_transaction(get_app().updates):
+            # Nudge all selected clips
+            for clip_id in clip_ids:
+                clip = Clip.get(id=clip_id)
+                if not clip:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(clip.data['position'] + nudge_duration, 0.0)
-            clip.data['position'] = new_position
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+                # Apply the nudge and ensure the position doesn't go below 0
+                new_position = max(clip.data['position'] + nudge_duration, 0.0)
+                clip.data['position'] = new_position
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
-        # Nudge all selected transitions
-        for tran_id in tran_ids:
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                continue
+            # Nudge all selected transitions
+            for tran_id in tran_ids:
+                tran = Transition.get(id=tran_id)
+                if not tran:
+                    continue
 
-            # Apply the nudge and ensure the position doesn't go below 0
-            new_position = max(tran.data['position'] + nudge_duration, 0.0)
-            tran.data['position'] = new_position
-            self.update_transition_data(tran.data, only_basic_props=False)
+                # Apply the nudge and ensure the position doesn't go below 0
+                new_position = max(tran.data['position'] + nudge_duration, 0.0)
+                tran.data['position'] = new_position
+                self.update_transition_data(tran.data, only_basic_props=False)
 
     def Align_Triggered(self, action, clip_ids, tran_ids):
         """Callback for alignment context menus"""
         log.debug(action)
 
-        left_edge = -1.0
-        right_edge = -1.0
+        clips = [c for c in (Clip.get(id=clip_id) for clip_id in clip_ids) if c]
+        trans = [t for t in (Transition.get(id=tran_id) for tran_id in tran_ids) if t]
+        positions = aligned_positions(
+            [c.data for c in clips] + [t.data for t in trans], action == MenuAlign.RIGHT)
 
-        # Loop through each selected clip (find furthest left and right edge)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
+        with nested_transaction(get_app().updates):
+            for clip in clips:
+                clip.data['position'] = positions[clip.id]
+                self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
+            for tran in trans:
+                tran.data['position'] = positions[tran.id]
+                self.update_transition_data(tran.data, only_basic_props=False)
 
-            position = float(clip.data["position"])
-            start_of_clip = float(clip.data["start"])
-            end_of_clip = float(clip.data["end"])
+    def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None, fade_seconds=None):
+        """Callback for fade context menus — fades both alpha (video) and volume (audio)
 
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_clip - start_of_clip) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_clip - start_of_clip)
-
-        # Loop through each selected transition (find furthest left and right edge)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            position = float(tran.data["position"])
-            start_of_tran = float(tran.data["start"])
-            end_of_tran = float(tran.data["end"])
-
-            if position < left_edge or left_edge == -1.0:
-                left_edge = position
-            if position + (end_of_tran - start_of_tran) > right_edge or right_edge == -1.0:
-                right_edge = position + (end_of_tran - start_of_tran)
-
-        # Loop through each selected clip (update position to align clips)
-        for clip_id in clip_ids:
-            # Get existing clip object
-            clip = Clip.get(id=clip_id)
-            if not clip:
-                # Invalid clip, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                clip.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(clip.data["position"])
-                start_of_clip = float(clip.data["start"])
-                end_of_clip = float(clip.data["end"])
-                right_clip_edge = position + (end_of_clip - start_of_clip)
-
-                clip.data['position'] = position + (right_edge - right_clip_edge)
-
-            # Save changes
-            self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
-
-        # Loop through each selected transition (update position to align clips)
-        for tran_id in tran_ids:
-            # Get existing transition object
-            tran = Transition.get(id=tran_id)
-            if not tran:
-                # Invalid transition, skip to next item
-                continue
-
-            if action == MenuAlign.LEFT:
-                tran.data['position'] = left_edge
-            elif action == MenuAlign.RIGHT:
-                position = float(tran.data["position"])
-                start_of_tran = float(tran.data["start"])
-                end_of_tran = float(tran.data["end"])
-                right_tran_edge = position + (end_of_tran - start_of_tran)
-
-                tran.data['position'] = position + (right_edge - right_tran_edge)
-
-            # Save changes
-            self.update_transition_data(tran.data, only_basic_props=False)
-
-    def Fade_Triggered(self, action, clip_ids, position="Entire Clip", transaction_id=None):
-        """Callback for fade context menus — fades both alpha (video) and volume (audio)"""
+        fade_seconds overrides the Fast (1 s) / Slow (3 s) fade length (agent tools).
+        """
         log.debug(action)
 
         # Get FPS from project
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        fast_seconds = float(fade_seconds) if fade_seconds else 1.0
+        slow_seconds = float(fade_seconds) if fade_seconds else 3.0
+        # Existing fades inside this zone are replaced, so Fast replaces Slow and vice versa
+        zone_frames = max(3.0, float(fade_seconds or 0.0)) * fps_float
 
         # Create a transaction ID for all operations in this function (if not provided)
         tid = transaction_id or self.get_uuid()
@@ -3740,30 +3383,67 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 end_animation = end_of_clip
                 if position == "Start of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
                     start_animation = start_of_clip
-                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (fast_seconds * fps_float), end_of_clip)
                 elif position == "Start of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
                     start_animation = start_of_clip
-                    end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (slow_seconds * fps_float), end_of_clip)
                 elif position == "End of Clip" and action in [MenuFade.IN_FAST, MenuFade.OUT_FAST]:
-                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (fast_seconds * fps_float))
                     end_animation = end_of_clip
                 elif position == "End of Clip" and action in [MenuFade.IN_SLOW, MenuFade.OUT_SLOW]:
-                    start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (slow_seconds * fps_float))
                     end_animation = end_of_clip
-
-                # Fade in and out (special case) — recurse for start + end independently
-                if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
-                    if action == MenuFade.IN_OUT_FAST:
-                        self.Fade_Triggered(MenuFade.IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Fade_Triggered(MenuFade.OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
-                    elif action == MenuFade.IN_OUT_SLOW:
-                        self.Fade_Triggered(MenuFade.IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Fade_Triggered(MenuFade.OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
-                    return
 
                 reader = clip.data.get("reader", {}) if isinstance(clip.data, dict) else {}
                 fade_alpha = bool(reader.get("has_video", True)) or bool(clip.data.get("waveform", False))
                 fade_volume = bool(reader.get("has_audio", True))
+
+                # Fade in and out (special case). Clear both replacement zones
+                # before adding either fade, so overlapping cleanup ranges on
+                # short clips cannot delete keyframes created by the first fade
+                # (OpenShot 0b5db6493).
+                if position == "Entire Clip" and action in [MenuFade.IN_OUT_FAST, MenuFade.IN_OUT_SLOW]:
+                    in_out_seconds = fast_seconds if action == MenuFade.IN_OUT_FAST else slow_seconds
+                    clip_frames = max(0.0, end_of_clip - start_of_clip)
+                    # Leave room between the two fades, even on clips shorter
+                    # than twice the requested fade duration.
+                    fade_frames = min(in_out_seconds * fps_float, clip_frames / 3.0)
+                    fade_in_end = start_of_clip + fade_frames
+                    fade_out_start = end_of_clip - fade_frames
+
+                    cleanup_end = min(start_of_clip + zone_frames, end_of_clip)
+                    cleanup_start = max(start_of_clip, end_of_clip - zone_frames)
+
+                    # Fade to the level the clip otherwise plays at, not to the value at
+                    # the new fade's end: re-applying Fast over Slow would read a
+                    # mid-fade value there and leave the whole clip dim.
+                    target_alpha = source_alpha = curve_plateau(
+                        clip.data.get('alpha'), start_of_clip, end_of_clip, default=1.0)
+                    target_vol = source_vol = curve_plateau(
+                        clip.data.get('volume'), start_of_clip, end_of_clip, default=1.0)
+
+                    def apply_combined_fade(keyframe, target_value, source_value):
+                        self._remove_keypoints_in_range(keyframe, start_of_clip, cleanup_end)
+                        self._remove_keypoints_in_range(keyframe, cleanup_start, end_of_clip)
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            start_of_clip, 0.0, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            fade_in_end, target_value, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            fade_out_start, source_value, openshot.BEZIER).Json()))
+                        self.AddPoint(keyframe, json.loads(openshot.Point(
+                            end_of_clip, 0.0, openshot.BEZIER).Json()))
+
+                    if fade_alpha:
+                        apply_combined_fade(clip.data['alpha'], target_alpha, source_alpha)
+                    if fade_volume:
+                        apply_combined_fade(clip.data['volume'], target_vol, source_vol)
+
+                    self.update_clip_data(
+                        clip.data, only_basic_props=False, ignore_reader=True, transaction_id=tid)
+                    if clip.data.get("ui", {}).get("audio_data", []):
+                        clips_with_waveforms.append(clip.id)
+                    continue
 
                 if action == MenuFade.NONE:
                     p_object = json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())
@@ -3775,7 +3455,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 elif action in [MenuFade.IN_FAST, MenuFade.IN_SLOW]:
                     # Clear the full slow-fade zone (3 sec from start) so Fast can replace Slow
                     # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
-                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    fade_in_zone_end = min(start_of_clip + zone_frames, end_of_clip)
 
                     # Read the steady-state value at the zone boundary BEFORE clearing —
                     # any previous fade has fully settled there.
@@ -3795,7 +3475,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 elif action in [MenuFade.OUT_FAST, MenuFade.OUT_SLOW]:
                     # Clear the full slow-fade zone (3 sec from end) so Fast can replace Slow
                     # and vice versa. No midpoint cap — it caused short clips to miss the start keypoint.
-                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+                    fade_out_zone_start = max(1.0, end_of_clip - zone_frames)
 
                     # Read the steady-state value at the zone boundary BEFORE clearing —
                     # any previous fade starts at or after this point.
@@ -3889,9 +3569,10 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         # Get locked tracks from project
         locked_layers = [t.get("number") for t in get_app().project.get("layers") if t.get("lock")]
 
-        # Group transactions
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
+        # Group transactions (joining one already in flight, e.g. an agent tool
+        # call that slices twice, so the whole edit stays one undo step)
+        transaction = ExitStack()
+        transaction.enter_context(nested_transaction(get_app().updates))
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -4068,7 +3749,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 # Save changes for the left or right slice
                 self.update_transition_data(trans.data, only_basic_props=False)
         finally:
-            get_app().updates.transaction_id = None
+            transaction.close()
 
             # Emit signal to resume updates (stop ignoring updates)
             get_app().window.IgnoreUpdates.emit(False, True)
@@ -4097,13 +3778,21 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             trans.data["position"] -= ripple_gap
             trans.save()
 
-    def Volume_Triggered(self, action, clip_ids, position="Entire Clip", level=1.0, transaction_id=None):
-        """Callback for volume context menus"""
+    def Volume_Triggered(self, action, clip_ids, position="Entire Clip", level=1.0, transaction_id=None,
+                         fade_seconds=None):
+        """Callback for volume context menus
+
+        fade_seconds overrides the Fast (1 s) / Slow (3 s) fade length (agent tools).
+        """
         log.debug(action)
 
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
+        fast_seconds = float(fade_seconds) if fade_seconds else 1.0
+        slow_seconds = float(fade_seconds) if fade_seconds else 3.0
+        # Existing fades inside this zone are replaced, so Fast replaces Slow and vice versa
+        zone_frames = max(3.0, float(fade_seconds or 0.0)) * fps_float
 
         tid = transaction_id or self.get_uuid()
 
@@ -4122,25 +3811,31 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                 start_animation = start_of_clip
                 end_animation = end_of_clip
                 if position == "Start of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
-                    end_animation = min(start_of_clip + (1.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (fast_seconds * fps_float), end_of_clip)
                 elif position == "Start of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
-                    end_animation = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    end_animation = min(start_of_clip + (slow_seconds * fps_float), end_of_clip)
                 elif position == "End of Clip" and action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_OUT_FAST]:
-                    start_animation = max(1.0, end_of_clip - (1.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (fast_seconds * fps_float))
                 elif position == "End of Clip" and action in [MenuVolume.FADE_IN_SLOW, MenuVolume.FADE_OUT_SLOW]:
-                    start_animation = max(1.0, end_of_clip - (3.0 * fps_float))
+                    start_animation = max(1.0, end_of_clip - (slow_seconds * fps_float))
 
-                # Fade in and out — recurse for start + end independently
+                # Fade in and out: clear both replacement zones before adding either
+                # fade (as Fade_Triggered does), so on short clips the fade-out's
+                # cleanup cannot delete the fade-in it overlaps.
                 if position == "Entire Clip" and action in [MenuVolume.FADE_IN_OUT_FAST, MenuVolume.FADE_IN_OUT_SLOW]:
-                    if action == MenuVolume.FADE_IN_OUT_FAST:
-                        self.Volume_Triggered(MenuVolume.FADE_IN_FAST, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Volume_Triggered(MenuVolume.FADE_OUT_FAST, clip_ids, "End of Clip", transaction_id=tid)
-                    else:
-                        self.Volume_Triggered(MenuVolume.FADE_IN_SLOW, clip_ids, "Start of Clip", transaction_id=tid)
-                        self.Volume_Triggered(MenuVolume.FADE_OUT_SLOW, clip_ids, "End of Clip", transaction_id=tid)
-                    return
+                    in_out_seconds = fast_seconds if action == MenuVolume.FADE_IN_OUT_FAST else slow_seconds
+                    clip_frames = max(0.0, end_of_clip - start_of_clip)
+                    fade_frames = min(in_out_seconds * fps_float, clip_frames / 3.0)
+                    cleanup_end = min(start_of_clip + zone_frames, end_of_clip)
+                    cleanup_start = max(start_of_clip, end_of_clip - zone_frames)
+                    plateau = curve_plateau(clip.data.get('volume'), start_of_clip, end_of_clip, default=1.0)
+                    self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, cleanup_end)
+                    self._remove_keypoints_in_range(clip.data['volume'], cleanup_start, end_of_clip)
+                    for x, y in ((start_of_clip, 0.0), (start_of_clip + fade_frames, plateau),
+                                 (end_of_clip - fade_frames, plateau), (end_of_clip, 0.0)):
+                        self.AddPoint(clip.data['volume'], json.loads(openshot.Point(x, y, openshot.BEZIER).Json()))
 
-                if action == MenuVolume.NONE:
+                elif action == MenuVolume.NONE:
                     clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, 1.0, openshot.BEZIER).Json())]}
 
                 elif action == MenuVolume.LEVEL:
@@ -4148,7 +3843,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     clip.data['volume'] = {"Points": [json.loads(openshot.Point(1, float(level) / 100.0, openshot.BEZIER).Json())]}
 
                 elif action in [MenuVolume.FADE_IN_FAST, MenuVolume.FADE_IN_SLOW]:
-                    fade_in_zone_end = min(start_of_clip + (3.0 * fps_float), end_of_clip)
+                    fade_in_zone_end = min(start_of_clip + zone_frames, end_of_clip)
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     target_vol = c.volume.GetValue(int(round(fade_in_zone_end))) if c else 1.0
                     self._remove_keypoints_in_range(clip.data['volume'], start_of_clip, fade_in_zone_end)
@@ -4156,7 +3851,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
                     self.AddPoint(clip.data['volume'], json.loads(openshot.Point(end_animation, target_vol, openshot.BEZIER).Json()))
 
                 elif action in [MenuVolume.FADE_OUT_FAST, MenuVolume.FADE_OUT_SLOW]:
-                    fade_out_zone_start = max(1.0, end_of_clip - (3.0 * fps_float))
+                    fade_out_zone_start = max(1.0, end_of_clip - zone_frames)
                     c = self.window.timeline_sync.timeline.GetClip(clip_id)
                     source_vol = c.volume.GetValue(int(round(fade_out_zone_start))) if c else 1.0
                     self._remove_keypoints_in_range(clip.data['volume'], fade_out_zone_start, end_of_clip)
@@ -4175,6 +3870,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             if not transaction_id:
                 get_app().updates.transaction_id = None
 
+    @_one_undo_step
     def Rotate_Triggered(self, action, clip_ids, position="Start of Clip"):
         """Callback for rotate context menus"""
         log.debug(action)
@@ -4215,16 +3911,12 @@ class TimelineView(updates.UpdateInterface, ViewClass):
             # Save changes
             self.update_clip_data(clip.data, only_basic_props=False, ignore_reader=True)
 
+    @_one_undo_step
     def No_Transform_Triggered(self, clip_ids):
         """Reset rotation, crop, and layout for all selected clips in a single undo step."""
-        tid = self.get_uuid()
-        get_app().updates.transaction_id = tid
-        try:
-            self.Rotate_Triggered(MenuRotate.NONE, clip_ids)
-            self.Crop_Triggered(clip_ids, 'none')
-            self.Layout_Triggered(MenuLayout.NONE, clip_ids)
-        finally:
-            get_app().updates.transaction_id = None
+        self.Rotate_Triggered(MenuRotate.NONE, clip_ids)
+        self.Crop_Triggered(clip_ids, 'none')
+        self.Layout_Triggered(MenuLayout.NONE, clip_ids)
 
     def Time_Triggered(self, action, clip_ids, speed="1X", playhead_position=0.0):
         """Callback for time context menus"""
@@ -4234,7 +3926,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
 
         # Loop through each selected clip
         for clip_id in clip_ids:
@@ -4424,7 +4116,7 @@ class TimelineView(updates.UpdateInterface, ViewClass):
         fps = get_app().project.get("fps")
         fps_float = float(fps["num"]) / float(fps["den"])
         clips_with_waveforms = []
-        transaction_id = self.get_uuid()
+        transaction_id = get_app().updates.transaction_id or self.get_uuid()
         for clip_id in clip_ids:
             clip = Clip.get(id=clip_id)
             if not clip:

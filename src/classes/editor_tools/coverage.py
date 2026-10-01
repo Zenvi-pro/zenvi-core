@@ -83,7 +83,7 @@ CAPABILITIES = [
     ("effect.process", "effects-color", "Process Effect dialog", "Run analysis effects: Stabilizer (smoothing), Tracker (region, tracker type), Object Detector (model, device, classes), Object Mask (points/boxes, models)"),
     ("look.presets", "effects-color", "Clip menu > Look (Color, Film Grain, Analog Tape, Sharpen, Blur, Shadow, Glow, Reset Look)", "Apply or remove any look preset"),
     ("color.grade", "effects-color", "Color Grade effect + Color Wheels + Curves", "Grade a clip: exposure, contrast, highlights, shadows, saturation, vibrance, temperature, tint, mix, wheels, curves"),
-    ("color.lut", "effects-color", "lut_path choices (49 built-in LUTs + user folder)", "List and apply LUTs with intensity"),
+    ("color.lut", "effects-color", "lut_path choices (50 built-in LUTs + user folder)", "List and apply LUTs with intensity"),
     ("color.analyze", "effects-color", "Scopes (Histogram, Waveform, Vectorscope, Audio Levels)", "Measure a frame/region: luma distribution, clipping, color cast, saturation; audio levels"),
     ("color.chroma_key", "effects-color", "Chroma Key effect", "Key out a green/blue screen with color, fuzz, halo and method, keyed clip above its background"),
     ("audio.effects", "effects-color", "Audio effects (Compressor, Expander, EQ, Delay, Echo, Distortion, Noise, Robotization, Whisperization)", "Apply and tune audio effects"),
@@ -154,6 +154,7 @@ OUT_OF_SCOPE = {
 LEGACY_COVERAGE = {
     "clip.add": ["add_clip_to_timeline_tool"],
     "clip.delete": ["delete_from_timeline_tool"],
+    "clip.ripple_delete": ["delete_from_timeline_tool"],  # ripple=true
     "files.import": ["import_files_tool"],
     "files.subclip": ["split_file_add_clip_tool"],
     "transition.list": ["list_transitions_tool", "search_transitions_tool"],

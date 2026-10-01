@@ -69,6 +69,7 @@ from classes.logger import log
 from classes.metrics import track_metric_session, track_metric_screen
 from classes.path_utils import comparable_local_path, native_display_path, normalized_local_path
 from classes.query import File, Clip, Transition, Marker, Track, Effect
+from classes import track_ops
 from classes.settings import apply_openmp_settings, lib_default_thread_counts
 from classes.clipboard import ClipboardManager
 from classes.proxy_service import ProxyService
@@ -660,6 +661,16 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 # User canceled prompt
                 return
 
+        self.new_project()
+
+    def new_project(self):
+        """Start a new empty project: File > New Project after its unsaved-changes prompt.
+
+        Discards the current project data and undo history; callers decide
+        about unsaved changes first (the menu asks, the agent tool refuses).
+        """
+        app = get_app()
+
         # Stop preview thread
         self.SpeedSignal.emit(0)
         self.PauseSignal.emit()
@@ -799,34 +810,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionClearWaveformData_trigger(self):
         """Clear audio data from current project"""
-        files = File.filter()
-
-        # Transaction id to group all deletes together
-        get_app().updates.transaction_id = str(uuid.uuid4())
-
-        for file in files:
-            if "audio_data" in file.data.get("ui", {}):
-                file_path = file.data.get("path")
-                log.debug("File %s has audio data. Deleting it." % os.path.split(file_path)[1])
-                del file.data["ui"]["audio_data"]
-                file.data["ui"].pop("audio_data_format", None)
-                file.data["ui"].pop("audio_data_rms", None)
-                file.data["ui"].pop("audio_data_rate", None)
-                file.save()
-
-        clips = Clip.filter()
-        for clip in clips:
-            if "audio_data" in clip.data.get("ui", {}):
-                log.debug("Clip %s has audio data. Deleting it." % clip.id)
-                del clip.data["ui"]["audio_data"]
-                clip.data["ui"].pop("audio_data_format", None)
-                clip.data["ui"].pop("audio_data_rms", None)
-                clip.data["ui"].pop("audio_data_rate", None)
-                clip.save()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
-
+        from classes.waveform import clear_waveform_data
+        clear_waveform_data()
         get_app().window.actionClearWaveformData.setEnabled(False)
 
     def actionClearHistory_trigger(self):
@@ -856,8 +841,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         )
         self.actionClearOptimizedFiles.setEnabled(has_internal_optimized)
 
-    def save_project(self, file_path):
-        """ Save a project to a file path, and refresh the screen """
+    def save_project(self, file_path, raise_errors=False):
+        """ Save a project to a file path, and refresh the screen
+
+        With raise_errors the failure is raised to the caller (agent tools)
+        instead of being shown in a warning dialog.
+        """
         with self.lock:
             app = get_app()
             _ = app._tr  # Get translation function
@@ -879,6 +868,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
             except Exception as ex:
                 log.error("Couldn't save project %s", file_path, exc_info=1)
+                if raise_errors:
+                    raise
                 # Capture the message now: invoke_on_gui may defer _warn to run
                 # after this except block exits, and Python auto-deletes the
                 # "as ex" binding at that point, which would make a closure
@@ -919,6 +910,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         recovery_filename = f"{timestamp}-{file_name}.zip"
         recovery_path = os.path.join(info.RECOVERY_PATH, recovery_filename)
 
+        if not os.path.isfile(file_path):
+            # First save / Save As to a new path: nothing on disk to keep yet. Zipping
+            # anyway left an empty archive that Recovery listed but could not restore.
+            return
+
         try:
             with zipfile.ZipFile(recovery_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 zipf.write(file_path, os.path.basename(file_path))
@@ -926,6 +922,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             self.manage_recovery_files(daily_limit, historical_limit, file_name)
         except Exception as e:
             log.error(f"Failed to create zipped recovery file {recovery_path}: {e}")
+            try:
+                os.unlink(recovery_path)
+            except OSError:
+                pass
 
     def manage_recovery_files(self, daily_limit, historical_limit, file_name):
         """Ensures recovery files adhere to the configured daily and historical limits."""
@@ -967,8 +967,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 except Exception as e:
                     log.error(f"Failed to delete file {file_path}: {e}")
 
-    def open_project(self, file_path, clear_thumbnails=True):
-        """ Open a project from a file path, and refresh the screen """
+    def open_project(self, file_path, clear_thumbnails=True, interactive=True):
+        """ Open a project from a file path, and refresh the screen
+
+        interactive=False (agent tools): no "Save changes?" prompt (the caller
+        already decided), no missing-media dialog (missing files stay listed in
+        ``project.last_missing_media``), and a load failure is raised instead of
+        shown in a dialog. Returns True when the project was loaded.
+        """
 
         app = get_app()
         settings = app.get_settings()
@@ -979,7 +985,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # First check for empty file_path (probably user cancellation)
         if not file_path:
             # Ignore the request
-            return
+            return False
 
         # Stop preview thread
         self.SpeedSignal.emit(0)
@@ -995,7 +1001,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         QCoreApplication.processEvents()
 
         # Do we have unsaved changes?
-        if app.project.needs_save():
+        if interactive and app.project.needs_save():
             ret = QMessageBox.question(
                 self,
                 _("Unsaved Changes"),
@@ -1006,7 +1012,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                 self.actionSave_trigger()
             elif ret == QMessageBox.Cancel:
                 # User canceled prompt
-                return
+                return False
 
         # Set cursor to waiting
         app.setOverrideCursor(QCursor(Qt.WaitCursor))
@@ -1025,7 +1031,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
                     self.clear_temporary_files()
 
                 # Load project file
-                app.project.load(file_path, clear_thumbnails)
+                app.project.load(file_path, clear_thumbnails, interactive=interactive)
 
                 # Set Window title
                 self.SetWindowTitle()
@@ -1075,6 +1081,9 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         except Exception as ex:
             log.error("Couldn't open project %s.", file_path, exc_info=1)
+            if not interactive:
+                app.restoreOverrideCursor()
+                raise
             QMessageBox.warning(self, _("Error Opening Project"), str(ex))
         finally:
             self._project_loading = previous_project_loading
@@ -1086,6 +1095,7 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Restore normal cursor
         app.restoreOverrideCursor()
+        return loaded_project
 
     def clear_temporary_files(self):
         """Clear all user thumbnails"""
@@ -1422,7 +1432,10 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionExportFCPXML_trigger(self, checked=True):
         """Export XML (Final Cut Pro) File"""
-        export_xml()
+        try:
+            export_xml()
+        except OSError:
+            log.error("Final Cut Pro XML export failed", exc_info=1)
 
     def actionImportEDL_trigger(self, checked=True):
         """Import EDL File"""
@@ -2057,7 +2070,20 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             framePath = "%s.png" % framePath
 
         s.setDefaultPath(s.actionType.EXPORT, framePath)
-        log.info("Saving frame to %s", framePath)
+        if self.save_frame_to_path(framePath, self.preview_thread.current_frame):
+            self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
+        else:
+            self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
+
+    def save_frame_to_path(self, framePath, frame_number, image_format="PNG"):
+        """Render one timeline frame at full project resolution into an image file.
+
+        image_format is a Qt image format name ("PNG", "JPG"). Returns True when
+        the file was written (File > Save Current Frame core).
+        """
+        app = get_app()
+        log.info("Saving frame %s to %s", frame_number, framePath)
+        saved = False
 
         # Pause playback
         self.SpeedSignal.emit(0)
@@ -2086,13 +2112,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             # (return is void, so we cannot check for success/fail here
             # - must use file modification timestamp)
             openshot.Timeline.GetFrame(
-                self.timeline_sync.timeline, self.preview_thread.current_frame).Save(framePath, 1.0)
-
-            # Show message to user
-            if os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime):
-                self.statusBar.showMessage(_("Saved Frame to %s" % framePath), 5000)
-            else:
-                self.statusBar.showMessage(_("Failed to save image to %s" % framePath), 5000)
+                self.timeline_sync.timeline, int(frame_number)).Save(framePath, 1.0, image_format)
+            saved = os.path.exists(framePath) and (QFileInfo(framePath).lastModified() > framePathTime)
 
             # Reset the MaxSize to match the preview and reset the preview cache
             viewport_rect = self.videoPreview.centeredViewport(self.videoPreview.width(), self.videoPreview.height())
@@ -2105,87 +2126,14 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         finally:
             # Restore caching flag
             lib_settings.ENABLE_PLAYBACK_CACHING = True
+        return saved
 
     def renumber_all_layers(self, insert_at=None, stride=1000000):
         """Renumber all of the project's layers to be equidistant (in
         increments of stride), leaving room for future insertion/reordering.
-        Inserts a new track, if passed an insert_at index"""
-
-        app = get_app()
-
-        # Don't track renumbering in undo history
-        app.updates.ignore_history = True
-
-        tracks = sorted(app.project.get("layers"), key=lambda x: x['number'])
-
-        log.warning("######## RENUMBERING TRACKS ########")
-        log.info("Tracks before: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
-
-        # Leave placeholder for new track, if insert requested
-        if insert_at is not None and int(insert_at) < len(tracks) + 1:
-            tracks.insert(int(insert_at), "__gap__")
-
-        # Statistics for end-of-function logging
-        renum_count = len(tracks)
-        renum_min = stride
-        renum_max = renum_count * stride
-
-        # Collect items to renumber
-        targets = []
-        for (idx, layer) in enumerate(tracks):
-            newnum = (idx + 1) * stride
-
-            # Check for insertion placeholder
-            if isinstance(layer, str) and layer == "__gap__":
-                insert_num = newnum
-                continue
-
-            # Look up track info
-            oldnum = layer.get('number')
-            cur_track = Track.get(number=oldnum)
-            if not cur_track:
-                log.error('Track number %s not found', oldnum)
-                continue
-
-            # Find track elements
-            cur_clips = list(Clip.filter(layer=oldnum))
-            cur_trans = list(Transition.filter(layer=oldnum))
-
-            # Collect items to be updated with new layer number
-            targets.append({
-                "number": newnum,
-                "track": cur_track,
-                "clips": cur_clips,
-                "trans": cur_trans,
-            })
-
-        # Renumber everything
-        for layer in targets:
-            try:
-                num = layer["number"]
-                layer["track"].data["number"] = num
-                layer["track"].save()
-
-                for item in layer["clips"] + layer["trans"]:
-                    item.data["layer"] = num
-                    item.save()
-            except (AttributeError, IndexError, ValueError):
-                # Ignore references to deleted objects
-                continue
-
-        # Re-enable undo tracking for new track insertion
-        app.updates.ignore_history = False
-
-        # Create new track and insert at gap point, if requested
-        if insert_at is not None:
-            track = Track()
-            track.data = {"number": insert_num, "y": 0, "label": "", "lock": False}
-            track.save()
-
-        log.info("Renumbered {} tracks from {} to {}{}".format(
-            renum_count, renum_min, renum_max,
-            " (inserted {} at {})".format(insert_num, insert_at) if insert_at else "")
-        )
+        Inserts a new track, if passed an insert_at index. One undo step
+        (see classes.track_ops.renumber_tracks)."""
+        return track_ops.renumber_tracks(insert_at=insert_at, stride=stride)
 
     def show_audio_recording_dock(self, start_time=None, track_number=None):
         """Show the Recording dock, pre-filling context when provided."""
@@ -2344,113 +2292,34 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
     def actionAddTrack_trigger(self, checked=True):
         log.info("actionAddTrack_trigger")
+        # New track above every existing track
+        track_ops.insert_track("top")
 
-        # Get # of tracks
-        all_tracks = get_app().project.get("layers")
-        all_tracks.sort(key=lambda x: x['number'], reverse=True)
-        track_number = all_tracks[0].get("number") + 1000000
-
-        # Create new track above existing layer(s)
-        track = Track()
-        track.data = {"number": track_number, "y": 0, "label": "", "lock": False}
-        track.save()
+    def _selected_track_layer(self):
+        """Layer number of the track the Track menu was opened on, or None."""
+        selected_layer_id = self.selected_tracks[0] if self.selected_tracks else None
+        existing_track = Track.get(id=selected_layer_id) if selected_layer_id else None
+        if not existing_track:
+            # Log error and fail silently
+            log.error('No track object found with id: %s', selected_layer_id)
+            return None
+        return int(existing_track.data["number"])
 
     def actionAddTrackAbove_trigger(self, checked=True):
-        # Get selected track
-        all_tracks = get_app().project.get("layers")
-        selected_layer_id = self.selected_tracks[0]
-
-        log.info("adding track above %s", selected_layer_id)
-
-        # Get track data for selected track
-        existing_track = Track.get(id=selected_layer_id)
-        if not existing_track:
-            # Log error and fail silently
-            log.error('No track object found with id: %s', selected_layer_id)
+        selected_layer_num = self._selected_track_layer()
+        if selected_layer_num is None:
             return
-        selected_layer_num = int(existing_track.data["number"])
-
-        # Find track above selected track (if any)
-        try:
-            tracks = sorted(all_tracks, key=lambda x: x['number'])
-            existing_index = tracks.index(existing_track.data)
-        except ValueError:
-            log.warning("Could not find track %s", selected_layer_num, exc_info=1)
-            return
-        try:
-            next_index = existing_index + 1
-            next_layer = tracks[next_index]
-            delta = abs(selected_layer_num - next_layer.get('number'))
-        except IndexError:
-            delta = 2000000
-
-        # Calculate new track number (based on gap delta)
-        if delta > 2:
-            # New track number (pick mid point in track number gap)
-            new_track_num = selected_layer_num + int(round(delta / 2.0))
-
-            # Create new track and insert
-            track = Track()
-            track.data = {"number": new_track_num, "y": 0, "label": "", "lock": False}
-            track.save()
-        else:
-            # Track numbering is too tight, renumber them all and insert
-            self.renumber_all_layers(insert_at=next_index)
-
-        tracks = sorted(get_app().project.get("layers"), key=lambda x: x['number'])
-
-        # Temporarily for debugging
-        log.info("Tracks after: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
+        log.info("adding track above %s", selected_layer_num)
+        # Midpoint of the gap above (renumbers every track if it is too small)
+        track_ops.insert_track("above", selected_layer_num)
 
     def actionAddTrackBelow_trigger(self, checked=True):
-        # Get selected track
-        all_tracks = get_app().project.get("layers")
-        selected_layer_id = self.selected_tracks[0]
-
-        log.info("adding track below %s", selected_layer_id)
-
-        # Get track data for selected track
-        existing_track = Track.get(id=selected_layer_id)
-        if not existing_track:
-            # Log error and fail silently
-            log.error('No track object found with id: %s', selected_layer_id)
+        selected_layer_num = self._selected_track_layer()
+        if selected_layer_num is None:
             return
-        selected_layer_num = int(existing_track.data["number"])
-
-        # Get track below selected track (if any)
-        try:
-            tracks = sorted(all_tracks, key=lambda x: x['number'])
-            existing_index = tracks.index(existing_track.data)
-        except ValueError:
-            log.warning("Could not find track %s", selected_layer_num, exc_info=1)
-            return
-
-        if existing_index > 0:
-            prev_index = existing_index - 1
-            prev_layer = tracks[prev_index]
-            delta = abs(selected_layer_num - prev_layer.get('number'))
-        else:
-            delta = selected_layer_num
-
-        # Calculate new track number (based on gap delta)
-        if delta > 2:
-            # New track number (pick mid point in track number gap)
-            new_track_num = selected_layer_num - int(round(delta / 2.0))
-
-            log.info("New track num %s (delta %s)", new_track_num, delta)
-
-            # Create new track and insert
-            track = Track()
-            track.data = {"number": new_track_num, "y": 0, "label": "", "lock": False}
-            track.save()
-        else:
-            # Track numbering is too tight, renumber them all and insert
-            self.renumber_all_layers(insert_at=existing_index)
-
-        tracks = sorted(get_app().project.get("layers"), key=lambda x: x['number'])
-
-        # Temporarily for debugging
-        log.info("Tracks after: {}".format([{x['number']: x['id']} for x in reversed(tracks)]))
+        log.info("adding track below %s", selected_layer_num)
+        # Midpoint of the gap below (renumbers every track if it is too small)
+        track_ops.insert_track("below", selected_layer_num)
 
     def actionSnappingTool_trigger(self, checked=True):
         log.info("actionSnappingTool_trigger")
@@ -2506,228 +2375,71 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Calculate position in seconds
         position = (player.Position() - 1) / fps_float
 
-        # Look for existing Marker
-        marker = Marker()
-        marker.data = {
-            "position": position,
-            "icon": "blue.png",
-            "vector": "blue",
-            }
-        marker.save()
+        # Add a (default blue) marker at the playhead
+        track_ops.add_marker(position)
         self.timeline.setFocus(Qt.OtherFocusReason)
 
     def findAllMarkerPositions(self):
         """Build and return a list of all seekable locations for the currently-selected timeline elements"""
-
-        def getTimelineObjectPositions(obj):
-            """Add clip/transition boundaries & keyframes for timeline navigation"""
-            positions = []
-
-            fps = get_app().project.get("fps")
-            fps_float = float(fps["num"]) / float(fps["den"])
-            frame_duration = float(fps["den"]) / float(fps["num"])
-
-            clip_start_time = obj.data["position"]
-            clip_orig_time = clip_start_time - obj.data["start"]
-            # Last frame on clip is -1 frame's duration
-            clip_stop_time = clip_orig_time + obj.data["end"] - frame_duration
-
-            # add clip boundaries
-            positions.append(clip_start_time)
-            positions.append(clip_stop_time)
-
-            def add_keyframe_positions(value):
-                if isinstance(value, dict):
-                    points = value.get("Points")
-                    if isinstance(points, list):
-                        for point in points:
-                            try:
-                                keyframe_time = (
-                                    (point["co"]["X"] - 1) / fps_float
-                                    - obj.data["start"] + obj.data["position"]
-                                )
-                                if clip_start_time < keyframe_time < clip_stop_time:
-                                    positions.append(keyframe_time)
-                            except (TypeError, KeyError):
-                                pass
-                        return
-                    for child in value.values():
-                        add_keyframe_positions(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        add_keyframe_positions(child)
-
-            # add all object keyframes
-            for property in obj.data:
-                add_keyframe_positions(obj.data[property])
-
-            return positions
-
-        # We can always jump to the beginning of the timeline
-        all_marker_positions = [0]
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        frame_duration = float(fps["den"]) / float(fps["num"])
-
-        # If nothing is selected, also add the end of the last clip
+        last_frame = None
         if not self.selected_clips + self.selected_transitions + self.selected_effects:
             last_frame = get_app().window.timeline_sync.GetLastFrame()
-            all_marker_positions.append((last_frame - 1) / fps_float)
+        return track_ops.navigation_positions(
+            self.selected_clips, self.selected_transitions, self.selected_effects, last_frame)
 
-        # Get list of marker and important positions (like selected clip bounds)
-        for marker in Marker.filter():
-            all_marker_positions.append(marker.data["position"])
+    def _seek_to_marker(self, direction):
+        """Seek to the previous (direction < 0) or next marker / edge / keyframe."""
+        fps = get_app().project.get("fps")
+        fps_float = float(fps["num"]) / float(fps["den"])
+        current_position = (self.preview_thread.current_frame - 1) / fps_float
+        closest_position = track_ops.adjacent_position(
+            self.findAllMarkerPositions(), current_position, direction)
 
-        if self.selected_effects:
-            # Only include keyframes for selected effects
-            for effect_id in self.selected_effects:
-                effect = Effect.get(id=effect_id)
-                if not effect:
-                    continue
-                parent = effect.parent
-                clip_start_time = parent["position"]
-                clip_orig_time = clip_start_time - parent["start"]
-                clip_stop_time = clip_orig_time + parent["end"] - frame_duration
-                # Always include parent clip boundaries
-                all_marker_positions.extend([clip_start_time, clip_stop_time])
+        # Seek to marker position (if any)
+        if closest_position is not None:
+            frame_to_seek = track_ops.seconds_to_seek_frame(
+                closest_position, get_app().window.timeline_sync.GetLastFrame())
+            self.SeekSignal.emit(frame_to_seek)
 
-                def add_effect_keyframe_positions(value):
-                    if isinstance(value, dict):
-                        points = value.get("Points")
-                        if isinstance(points, list):
-                            for point in points:
-                                try:
-                                    keyframe_time = (point["co"]["X"] - 1) / fps_float + clip_orig_time
-                                    if clip_start_time < keyframe_time < clip_stop_time:
-                                        all_marker_positions.append(keyframe_time)
-                                except (TypeError, KeyError):
-                                    pass
-                            return
-                        for child in value.values():
-                            add_effect_keyframe_positions(child)
-                    elif isinstance(value, list):
-                        for child in value:
-                            add_effect_keyframe_positions(child)
-
-                for prop in effect.data:
-                    add_effect_keyframe_positions(effect.data[prop])
-        else:
-            # Loop through selected clips (and add key positions)
-            for clip_id in self.selected_clips:
-                selected_clip = Clip.get(id=clip_id)
-                if selected_clip:
-                    all_marker_positions.extend(getTimelineObjectPositions(selected_clip))
-
-            # Loop through selected transitions (and add key positions)
-            for tran_id in self.selected_transitions:
-                selected_tran = Transition.get(id=tran_id)
-                if selected_tran:
-                    all_marker_positions.extend(getTimelineObjectPositions(selected_tran))
-
-        # remove duplicates
-        all_marker_positions = list(set(all_marker_positions))
-
-        return all_marker_positions
+            # Keep properties in sync with the seek target. Avoid forcing
+            # refreshFrameSignal here: it can queue a stale seek to the old
+            # player position and overwrite this navigation jump.
+            get_app().window.propertyTableView.select_frame(frame_to_seek)
+        self.timeline.setFocus(Qt.OtherFocusReason)
 
     def actionPreviousMarker_trigger(self, checked=True):
         log.info("actionPreviousMarker_trigger")
-
-        # Calculate current position (in seconds)
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        current_position = (self.preview_thread.current_frame - 1) / fps_float
-        all_marker_positions = self.findAllMarkerPositions()
-
-        # Loop through all markers, and find the closest one to the left
-        closest_position = None
-        for marker_position in sorted(all_marker_positions):
-            # Is marker smaller than position?
-            if marker_position < current_position and (abs(marker_position - current_position) > 0.001):
-                # Is marker larger than previous marker
-                if closest_position and marker_position > closest_position:
-                    # Set a new closest marker
-                    closest_position = marker_position
-                elif not closest_position:
-                    # First one found
-                    closest_position = marker_position
-
-        # Seek to marker position (if any)
-        if closest_position is not None:
-            # Seek
-            frame_to_seek = round(closest_position * fps_float) + 1
-            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
-            self.SeekSignal.emit(frame_to_seek)
-
-            # Keep properties in sync with the seek target. Avoid forcing
-            # refreshFrameSignal here: it can queue a stale seek to the old
-            # player position and overwrite this navigation jump.
-            get_app().window.propertyTableView.select_frame(frame_to_seek)
-        self.timeline.setFocus(Qt.OtherFocusReason)
+        self._seek_to_marker(-1)
 
     def actionNextMarker_trigger(self, checked=True):
         log.info("actionNextMarker_trigger")
-
-        # Calculate current position (in seconds)
-        fps = get_app().project.get("fps")
-        fps_float = float(fps["num"]) / float(fps["den"])
-        current_position = (self.preview_thread.current_frame - 1) / fps_float
-        all_marker_positions = self.findAllMarkerPositions()
-
-        # Loop through all markers, and find the closest one to the right
-        closest_position = None
-        for marker_position in sorted(all_marker_positions):
-            # Is marker smaller than position?
-            if marker_position > current_position and (abs(marker_position - current_position) > 0.001):
-                # Is marker larger than previous marker
-                if closest_position and marker_position < closest_position:
-                    # Set a new closest marker
-                    closest_position = marker_position
-                elif not closest_position:
-                    # First one found
-                    closest_position = marker_position
-
-        # Seek to marker position (if any)
-        if closest_position is not None:
-            # Seek
-            frame_to_seek = round(closest_position * fps_float) + 1
-            frame_to_seek = min(frame_to_seek, get_app().window.timeline_sync.GetLastFrame())
-            self.SeekSignal.emit(frame_to_seek)
-
-            # Keep properties in sync with the seek target. Avoid forcing
-            # refreshFrameSignal here: it can queue a stale seek to the old
-            # player position and overwrite this navigation jump.
-            get_app().window.propertyTableView.select_frame(frame_to_seek)
-        self.timeline.setFocus(Qt.OtherFocusReason)
+        self._seek_to_marker(1)
 
     def actionCenterOnPlayhead_trigger(self, checked=True):
         """ Center the timeline on the current playhead position """
         self.timeline.centerOnPlayhead()
 
-    def handleSeekPreviousFrame(self):
-        """Handle previous-frame keypress"""
+    def step_frames(self, delta):
+        """Pause and move the playhead by *delta* frames (the frame-step keys); returns the target frame."""
         player = get_app().window.preview_thread.player
-        frame_num = player.Position() - 1
+        frame_num = max(1, player.Position() + int(delta))
 
-        # Seek to previous frame
+        # Seek to the frame, paused
         get_app().window.PauseSignal.emit()
         get_app().window.SpeedSignal.emit(0)
         get_app().window.previewFrameSignal.emit(frame_num)
 
         # Notify properties dialog
         get_app().window.propertyTableView.select_frame(frame_num)
+        return frame_num
+
+    def handleSeekPreviousFrame(self):
+        """Handle previous-frame keypress"""
+        self.step_frames(-1)
 
     def handleSeekNextFrame(self):
         """Handle next-frame keypress"""
-        player = get_app().window.preview_thread.player
-        frame_num = player.Position() + 1
-
-        # Seek to next frame
-        get_app().window.PauseSignal.emit()
-        get_app().window.SpeedSignal.emit(0)
-        get_app().window.previewFrameSignal.emit(frame_num)
-
-        # Notify properties dialog
-        get_app().window.propertyTableView.select_frame(frame_num)
+        self.step_frames(1)
 
     def handlePlayPauseToggleSignal(self):
         """Handle play-pause-toggle keypress"""
@@ -2874,64 +2586,45 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         # Update profile (if changed)
         if result == QDialog.Accepted and profile:
-            # Clear any selections before changing the project profile
-            # to prevent invalid selection state from causing crashes
-            self.clearSelections()
-
-            proj = get_app().project
-
-            # Group transactions
-            tid = str(uuid.uuid4())
-
-            # Detect whether the project profile is actually changing
-            current_profile_desc = proj.get("profile")
-            current_width = proj.get("width")
-            current_height = proj.get("height")
-            current_fps = proj.get("fps")
-            profile_changed = any([
-                current_profile_desc != profile.info.description,
-                current_width != profile.info.width,
-                current_height != profile.info.height,
-                not current_fps,
-                current_fps.get("num") != profile.info.fps.num,
-                current_fps.get("den") != profile.info.fps.den
-            ])
-
-            # Get current FPS (prior to changing)
-            current_fps_float = float(current_fps["num"]) / float(current_fps["den"])
-            fps_factor = float(profile.info.fps.ToFloat() / current_fps_float)
-
-            # Get current playback frame
-            current_frame = self.preview_thread.current_frame
-            adjusted_frame = round(current_frame * fps_factor)
-
-            # Update timeline settings
-            get_app().updates.transaction_id = tid
-
-            # Apply new profile (and any FPS precision updates)
-            get_app().updates.update(["profile"], profile.info.description)
-            get_app().updates.update(["width"], profile.info.width)
-            get_app().updates.update(["height"], profile.info.height)
-            get_app().updates.update(["display_ratio"], {"num": profile.info.display_ratio.num, "den": profile.info.display_ratio.den})
-            get_app().updates.update(["pixel_ratio"], {"num": profile.info.pixel_ratio.num, "den": profile.info.pixel_ratio.den})
-            get_app().updates.update(["fps"], {"num": profile.info.fps.num, "den": profile.info.fps.den})
-            if profile_changed:
-                # Export dialog settings are profile-dependent; reset cache on profile changes.
-                get_app().updates.update(["export_settings"], None)
-
-            # Clear transaction id
-            get_app().updates.transaction_id = None
-
-            # Seek to the same location, adjusted for new frame rate
-            self.SeekSignal.emit(adjusted_frame)
-
-            # Refresh frame (since size of preview might have changed)
-            QTimer.singleShot(500, lambda: self.refreshFrameSignal.emit())
-            QTimer.singleShot(500, functools.partial(self.MaxSizeChanged.emit,
-                                                     self.videoPreview.size()))
+            from classes.project_profile import record_from_openshot_profile
+            self.apply_project_profile(record_from_openshot_profile(profile))
 
         # Enable video caching
         openshot.Settings.Instance().ENABLE_PLAYBACK_CACHING = True
+
+    def apply_project_profile(self, record, before_seek=None):
+        """Switch the project to a profile record (classes.project_profile) as one undo step.
+
+        Shared by the Choose Profile dialog and the agent tools. Joins the
+        caller's transaction; *before_seek* runs inside it, after the profile
+        keys changed (the tools reframe clips there). Returns whether the
+        profile changed.
+        """
+        from classes.project_profile import apply_profile_values
+        from classes.updates import nested_transaction
+
+        # Clear any selections before changing the project profile
+        # to prevent invalid selection state from causing crashes
+        self.clearSelections()
+
+        # Seek to the same location afterwards, adjusted for the new frame rate
+        current_fps = get_app().project.get("fps") or {"num": 30, "den": 1}
+        current_fps_float = float(current_fps["num"]) / float(current_fps["den"])
+        fps_factor = (float(record["fps_num"]) / float(record["fps_den"])) / current_fps_float
+        adjusted_frame = max(1, round(self.preview_thread.current_frame * fps_factor))
+
+        with nested_transaction(get_app().updates):
+            changed = apply_profile_values(record)
+            if before_seek:
+                before_seek()
+
+        self.SeekSignal.emit(adjusted_frame)
+
+        # Refresh frame (since size of preview might have changed)
+        QTimer.singleShot(500, lambda: self.refreshFrameSignal.emit())
+        QTimer.singleShot(500, functools.partial(self.MaxSizeChanged.emit,
+                                                 self.videoPreview.size()))
+        return changed
 
     def actionSplitFile_trigger(self):
         log.debug("actionSplitFile_trigger")
@@ -3114,8 +2807,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
 
         locked_tracks = [l.get("number") for l in get_app().project.get('layers') if l.get("lock", False)]
 
-        # Set transaction id (if not already set)
-        get_app().updates.transaction_id = get_app().updates.transaction_id or str(uuid.uuid4())
+        # Set transaction id (if not already set; an in-flight one is joined and kept)
+        from contextlib import ExitStack
+        from classes.updates import nested_transaction
+        transaction = ExitStack()
+        transaction.enter_context(nested_transaction(get_app().updates))
 
         # Emit signal to ignore updates (start ignoring updates)
         get_app().window.IgnoreUpdates.emit(True, True)
@@ -3164,23 +2860,19 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             get_app().window.IgnoreUpdates.emit(False, True)
 
             # Clear transaction id
-            get_app().updates.transaction_id = None
+            transaction.close()
 
             # Refresh preview
             get_app().window.refreshFrameSignal.emit()
 
     def ripple_delete_gap(self, ripple_start, layer, total_gap):
-        """Remove the ripple gap and adjust subsequent items on the same layer"""
-        clips = [clip for clip in Clip.filter(layer=layer) if clip.data.get("position", 0.0) > ripple_start]
-        transitions = [tran for tran in Transition.filter(layer=layer) if tran.data.get("position", 0.0) > ripple_start]
+        """Remove the ripple gap and adjust subsequent items on the same layer.
 
-        for clip in clips:
-            clip.data["position"] -= total_gap
-            clip.save()
-
-        for trans in transitions:
-            trans.data["position"] -= total_gap
-            trans.save()
+        Items overlapping the removed one (a crossfade partner) stop where it
+        began instead of being pushed before it (or to a negative position).
+        """
+        from classes.timeline_ops import close_gap_at
+        close_gap_at(layer, ripple_start, total_gap)
 
     def actionRippleSelect(self):
         """Selects ALL clips or transitions to the right of the current selected item"""
@@ -3274,21 +2966,24 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         if refresh:
             self.refreshFrameSignal.emit()
 
+    def deselect_removed_item(self, item_id, item_type):
+        """Drop a clip/transition that is about to be deleted from the selection.
+
+        Updates the properties view and transform handles right away, so nothing
+        keeps a reference to the deleted object.
+        """
+        self.removeSelection(item_id, item_type)
+        self.emit_selection_signal()
+        self.show_property_timeout()
+
     def actionRemoveTrack_trigger(self):
         log.debug('actionRemoveTrack_trigger')
 
         # Get translation function
         _ = get_app()._tr
 
-        # Transaction id to group all deletes together
-        get_app().updates.transaction_id = str(uuid.uuid4())
-
         track_id = self.selected_tracks[0]
         max_track_number = len(get_app().project.get("layers"))
-
-        # Get details of selected track
-        selected_track = Track.get(id=track_id)
-        selected_track_number = int(selected_track.data["number"])
 
         # Don't allow user to delete final track
         if max_track_number == 1:
@@ -3296,26 +2991,8 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
             QMessageBox.warning(self, _("Error Removing Track"), _("You must keep at least 1 track"))
             return
 
-        # Remove all clips on this track first
-        for clip in Clip.filter(layer=selected_track_number):
-            # Clear selected clips (and immediately update properties/handles to avoid stale references)
-            self.removeSelection(clip.id, "clip")
-            self.emit_selection_signal()
-            self.show_property_timeout()
-            clip.delete()
-
-        # Remove all transitions on this track first
-        for trans in Transition.filter(layer=selected_track_number):
-            self.removeSelection(trans.id, "transition")
-            self.emit_selection_signal()
-            self.show_property_timeout()
-            trans.delete()
-
-        # Remove track
-        selected_track.delete()
-
-        # Clear transaction id
-        get_app().updates.transaction_id = None
+        # Remove the track with its clips and transitions (one undo step)
+        track_ops.remove_track(track_id, on_item_removed=self.deselect_removed_item)
 
         # Clear selected track
         self.selected_tracks = []
@@ -3326,26 +3003,12 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
     def actionLockTrack_trigger(self):
         """Callback for locking a track"""
         log.debug('actionLockTrack_trigger')
-
-        # Get details of track
-        track_id = self.selected_tracks[0]
-        selected_track = Track.get(id=track_id)
-
-        # Lock track and save
-        selected_track.data['lock'] = True
-        selected_track.save()
+        track_ops.set_track_lock(self.selected_tracks[0], True)
 
     def actionUnlockTrack_trigger(self):
         """Callback for unlocking a track"""
         log.info('actionUnlockTrack_trigger')
-
-        # Get details of track
-        track_id = self.selected_tracks[0]
-        selected_track = Track.get(id=track_id)
-
-        # Lock track and save
-        selected_track.data['lock'] = False
-        selected_track.save()
+        track_ops.set_track_lock(self.selected_tracks[0], False)
 
     def actionRenameTrack_trigger(self):
         """Callback for renaming track"""
@@ -3371,17 +3034,11 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         text, ok = QInputDialog.getText(self, _('Rename Track'), _('Track Name:'), text=track_name)
         if ok:
             # Update track
-            selected_track.data["label"] = text
-            selected_track.save()
+            track_ops.rename_track(track_id, text)
 
     def actionRemoveMarker_trigger(self):
         log.info('actionRemoveMarker_trigger')
-
-        for marker_id in self.selected_markers:
-            marker = Marker.filter(id=marker_id)
-            for m in marker:
-                # Remove track
-                m.delete()
+        track_ops.remove_markers(list(self.selected_markers))
 
     def actionZoomToTimeline(self):
         self.sliderZoomWidget.zoomToTimeline()
@@ -4482,76 +4139,79 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         # Clear the existing children
         self.restore_menu.clear()
 
-        # Get a list of recovery files matching the current project
-        recovery_files = []
-        if current_filepath:
-            recovery_dir = info.RECOVERY_PATH
-            base_no_ext = os.path.splitext(os.path.basename(current_filepath))[0]
-            recovery_files = [
-                f for f in os.listdir(recovery_dir)
-                if (f.endswith(".zip") or f.endswith(info.ALL_PROJECT_EXTS))
-                and "-" in f
-                and f.split("-", 1)[1].startswith(base_no_ext)
-            ]
+        # Get a list of recovery files matching the current project (latest first)
+        from classes.project_recovery import recovery_files_for
+        recovery_files = recovery_files_for(current_filepath)
 
         # Show just a placeholder menu, if we have no recovery files
         if not recovery_files:
             self.restore_menu.addAction(_("No Previous Versions Available")).setDisabled(True)
             return
 
-        # Sort files in descending order (latest first)
-        recovery_files.sort(reverse=True)
+        for timestamp, file_path in recovery_files:
+            friendly_time = self.time_ago_string(timestamp)
+            full_datetime = datetime.fromtimestamp(timestamp).strftime('%b %d, %H:%M')
 
-        for file_name in recovery_files:
-            # Extract timestamp from file name
-            try:
-                timestamp = int(file_name.split("-", 1)[0])
-                friendly_time = self.time_ago_string(timestamp)
-                full_datetime = datetime.fromtimestamp(timestamp).strftime('%b %d, %H:%M')
-                file_path = os.path.join(recovery_dir, file_name)
-
-                # Add each recovery file with a tooltip
-                new_action = self.restore_menu.addAction(f"{friendly_time} ({full_datetime})")
-                new_action.triggered.connect(functools.partial(self.restore_version_clicked, file_path))
-            except ValueError:
-                continue
+            # Add each recovery file with a tooltip
+            new_action = self.restore_menu.addAction(f"{friendly_time} ({full_datetime})")
+            new_action.triggered.connect(functools.partial(self.restore_version_clicked, file_path))
 
     def restore_version_clicked(self, file_path):
         """Restore a previous project file from the recovery folder"""
+        app = get_app()
+        current_filepath = app.project.current_filepath if app.project else None
+        try:
+            self.restore_recovery_file(file_path)
+            # Open the recovered project
+            self.OpenProjectSignal.emit(current_filepath)
+        except Exception as ex:
+            log.error(f"Error recovering project from `{file_path}` to `{current_filepath}`: {ex}", exc_info=True)
+
+    def restore_recovery_file(self, file_path):
+        """Put a recovery copy in place of the current project file (File > Recovery core).
+
+        The current file is first kept as ``<name>-<timestamp>-backup.zvn`` next
+        to it. Does not reopen the project; raises on failure. Returns
+        (restored_project_path, backup_path_or_None).
+        """
         with self.lock:
             app = get_app()
             current_filepath = app.project.current_filepath if app.project else None
-            _ = get_app()._tr
+            if not current_filepath:
+                raise ValueError("the project has never been saved, so it has no recovery versions")
+
+            # Rename the original project file
+            recovered_filename = (
+                os.path.splitext(os.path.basename(current_filepath))[0]
+                + f"-{int(time())}-backup{info.PROJECT_EXT}"
+            )
+            recovered_filepath = os.path.join(os.path.dirname(current_filepath), recovered_filename)
+            backup_path = None
+            if os.path.exists(current_filepath):
+                shutil.move(current_filepath, recovered_filepath)
+                backup_path = recovered_filepath
+                log.info(f"Backup current project to: {recovered_filepath}")
 
             try:
-                # Rename the original project file
-                recovered_filename = (
-                    os.path.splitext(os.path.basename(current_filepath))[0]
-                    + f"-{int(time())}-backup{info.PROJECT_EXT}"
-                )
-                recovered_filepath = os.path.join(os.path.dirname(current_filepath), recovered_filename)
-                if os.path.exists(current_filepath):
-                    shutil.move(current_filepath, recovered_filepath)
-                    log.info(f"Backup current project to: {recovered_filepath}")
-
                 # Unzip if the selected recovery file is a .zip file
                 if file_path.endswith(".zip"):
                     with zipfile.ZipFile(file_path, 'r') as zipf:
-                        # Extract over top original project file
-                        zipf.extractall(os.path.dirname(current_filepath))
                         extracted_files = zipf.namelist()
                         if len(extracted_files) != 1:
                             raise ValueError("Unexpected number of files in recovery zip.")
+                        # Extract over top original project file
+                        with zipf.open(extracted_files[0]) as src, open(current_filepath, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
                 else:
                     # Replace the original project file with the recovery file
                     shutil.copyfile(file_path, current_filepath)
-                log.info(f"Recovery file `{file_path}` restored to: `{current_filepath}`")
-
-                # Open the recovered project
-                self.OpenProjectSignal.emit(current_filepath)
-
-            except Exception as ex:
-                log.error(f"Error recovering project from `{file_path}` to `{current_filepath}`: {ex}", exc_info=True)
+            except Exception:
+                # Put the original back rather than leave no project file behind
+                if backup_path and not os.path.exists(current_filepath):
+                    shutil.move(backup_path, current_filepath)
+                raise
+            log.info(f"Recovery file `{file_path}` restored to: `{current_filepath}`")
+            return current_filepath, backup_path
 
     def remove_recent_project(self, file_path):
         """Remove a project from the Recent menu if Zenvi can't find it"""
