@@ -80,19 +80,20 @@ class CommitTimeout(ToolError):
 def commit_on_main(func, *args):
     """Run the mutating part on the GUI thread; a timeout becomes a clear, honest error.
 
-    After a timeout the queued work may still run later (in this call's undo step),
-    so callers must not clean up files it uses (catch CommitTimeout before Exception).
+    When the work outlives the wait it keeps running (in this call's undo step), so callers
+    must not clean up files it uses (catch CommitTimeout before Exception).
     """
-    from classes.tool_handlers import MainThreadTimeout
+    from classes.tool_handlers import MainThreadStillRunning, MainThreadTimeout
     try:
         return on_main(func, *args, timeout=COMMIT_TIMEOUT)
-    except MainThreadTimeout as exc:
-        if "nothing was changed" in str(exc):
-            # never picked up, so cancelled: nothing happened and the caller may clean up
-            raise ToolError(f"the editor was too busy to start the change within {COMMIT_TIMEOUT}s; nothing "
-                            "was changed, try again") from None
-        raise CommitTimeout(f"the editor was too busy to finish within {COMMIT_TIMEOUT}s; the change may still "
-                            "appear shortly -- check get_timeline_state_tool before trying again") from None
+    except MainThreadStillRunning:
+        raise CommitTimeout(f"the editor was too busy to finish within {COMMIT_TIMEOUT}s; the change is still "
+                            "running and will land shortly -- check get_timeline_state_tool before trying "
+                            "again") from None
+    except MainThreadTimeout:
+        # withdrawn before it started: nothing happened and the caller may clean up
+        raise ToolError(f"the editor was too busy to start the change within {COMMIT_TIMEOUT}s; nothing "
+                        "was changed, try again") from None
 
 
 def precheck_on_main(func, *args):

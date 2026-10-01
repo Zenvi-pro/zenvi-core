@@ -907,17 +907,18 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         daily_limit = int(max_files * 0.7)
         historical_limit = max_files - daily_limit  # Remaining for previous days
 
+        # The zip snapshots the version this save is about to overwrite. A first
+        # save or a Save As to a new path has none yet; opening the archive first
+        # left an empty zip that File > Recovery offered as a previous version.
+        if not os.path.exists(file_path):
+            return
+
         folder_path, file_name = os.path.split(file_path)
         file_name, file_ext = os.path.splitext(file_name)
 
         timestamp = int(time())
         recovery_filename = f"{timestamp}-{file_name}.zip"
         recovery_path = os.path.join(info.RECOVERY_PATH, recovery_filename)
-
-        if not os.path.isfile(file_path):
-            # First save / Save As to a new path: nothing on disk to keep yet. Zipping
-            # anyway left an empty archive that Recovery listed but could not restore.
-            return
 
         try:
             with zipfile.ZipFile(recovery_path, 'w', zipfile.ZIP_DEFLATED) as zipf:

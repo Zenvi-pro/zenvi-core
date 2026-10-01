@@ -409,8 +409,8 @@ def test_a_commit_timeout_keeps_the_svg_and_says_the_title_may_still_appear(tt, 
 
     def slow_on_main(func, *args, timeout=None):
         if timeout == titles_text_common.COMMIT_TIMEOUT:
-            raise tool_handlers.MainThreadTimeout(
-                "MAIN_THREAD_TIMEOUT: this call started on the GUI thread but had not finished. It may still complete")
+            raise tool_handlers.MainThreadStillRunning(
+                "MAIN_THREAD_STILL_RUNNING: this call started on the Qt GUI thread but was still running", "job1")
         return func(*args)
 
     monkeypatch.setattr(titles_text_common, "on_main", slow_on_main)
@@ -427,8 +427,8 @@ def test_a_commit_that_never_started_cleans_up_and_says_nothing_changed(tt, monk
     def cancelled_on_main(func, *args, timeout=None):
         if timeout == titles_text_common.COMMIT_TIMEOUT:
             raise tool_handlers.MainThreadTimeout(
-                "MAIN_THREAD_TIMEOUT: the Qt GUI thread did not pick this call up within 240s, so it was "
-                "cancelled: nothing was changed and it is safe to retry.")
+                "MAIN_THREAD_TIMEOUT: the Qt GUI thread did not respond within 240s. The call was withdrawn "
+                "before it started and will not run later.")
         return func(*args)
 
     monkeypatch.setattr(titles_text_common, "on_main", cancelled_on_main)
