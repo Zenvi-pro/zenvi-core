@@ -7,6 +7,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -86,3 +88,35 @@ def test_import_files_errors_when_add_files_returns_nothing(monkeypatch, tmp_pat
     out = th.import_files(paths=str(clip))
     assert out.startswith("Error:")
     assert "Nothing was added" in out
+
+
+
+@pytest.mark.parametrize("url, expected", [
+    # Backslashes are not URL separators: the whole path parses as the host.
+    ("file://C:\\clips\\a.mp4", "C:\\clips\\a.mp4"),
+    ("file://C:/clips/a.mp4", "C:/clips/a.mp4"),
+    ("file:///C:/clips/a.mp4", "C:/clips/a.mp4"),
+    ("file://C:%5Cclips%5Cmy%20clip.mp4", "C:\\clips\\my clip.mp4"),
+])
+def test_import_files_resolves_windows_file_urls(monkeypatch, url, expected):
+    from classes import tool_handlers as th
+
+    seen = []
+
+    def fake_expand(entries):
+        seen.extend(entries)
+        return [], list(entries)
+
+    class _WindowsOs:
+        # Only tool_handlers sees "nt" - patching os.name itself breaks pytest's
+        # own reporting if the test fails.
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+
+    monkeypatch.setattr(th, "os", _WindowsOs())
+    monkeypatch.setattr(th, "_expand_import_paths", fake_expand)
+    out = th.import_files(paths=url)
+    assert out.startswith("Error: Nothing to import")  # nothing exists on this box
+    assert seen == [expected]

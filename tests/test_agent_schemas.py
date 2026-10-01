@@ -173,8 +173,6 @@ KWARG_PROPS = {
 BACKEND_ONLY_PROPS = {
     "get_timeline_state_tool": {"detail_level"},
     "list_clips_tool": {"detail_level"},
-    "search_clips_tool": {"look_for"},
-    "slice_clip_at_best_match_tool": {"start_seconds", "end_seconds"},
 }
 
 

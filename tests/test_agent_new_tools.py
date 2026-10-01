@@ -68,6 +68,12 @@ def test_set_keyframes_refuses_unknown_property():
     assert receipt["status"] == "refused"
 
 
+def _fake_resolve(width, height, num, den):
+    from classes.agent_tools.project_settings import _fps_label, _profile_fields
+    desc = "Custom %dx%d %s fps" % (width, height, _fps_label(num, den))
+    return _profile_fields(desc, width, height, num, den, (16, 9), (1, 1))
+
+
 def test_project_setting_noop_and_change():
     app = MagicMock()
 
@@ -82,9 +88,57 @@ def test_project_setting_noop_and_change():
     app.project.get.side_effect = _get
     app.thread.return_value = object()
     with patch("classes.tool_handlers._get_app", return_value=app), \
-         patch("classes.tool_handlers.QThread", None):
+         patch("classes.tool_handlers.QThread", None), \
+         patch("classes.agent_tools.project_settings.resolve_profile", _fake_resolve):
         noop = parse_receipt(set_project_setting(fps_num=30, fps_den=1))
         assert noop["status"] == "unchanged"
         changed = parse_receipt(set_project_setting(fps_num=24, fps_den=1))
         assert changed["status"] == "applied"
         app.updates.update.assert_called()
+
+
+def _real_openshot():
+    import openshot
+    profile_cls = getattr(openshot, "Profile", None)
+    return callable(profile_cls) and not isinstance(profile_cls, MagicMock)
+
+
+def test_project_setting_survives_reopen_with_real_profiles(tmp_path, monkeypatch):
+    """set -> save -> reopen: the project names a profile with the new values.
+
+    Opening a project re-applies its named profile (ProjectDataStore.load ->
+    get_profile); only the profile name survives a save, so the tool must
+    switch it. Runs the real lookup with ZENVI_REAL_QT=1 and libopenshot.
+    """
+    import pytest
+    if not _real_openshot():
+        pytest.skip("needs real libopenshot (ZENVI_REAL_QT=1 with ZENVI_DEPS on PYTHONPATH)")
+    import os
+    from classes import info
+    from classes.agent_tools.project_settings import resolve_profile
+    from classes.project_data import ProjectDataStore
+
+    user_dir = tmp_path / "profiles"
+    monkeypatch.setattr(info, "USER_PROFILES_PATH", str(user_dir))
+
+    def reopen(description):
+        store = ProjectDataStore.__new__(ProjectDataStore)
+        store._data = {"clips": [], "effects": [], "markers": []}
+        assert store.get_profile(profile_desc=description) is not None
+        return store._data
+
+    # A stock combination switches to the stock profile; nothing is written.
+    stock = resolve_profile(1920, 1080, 24, 1)
+    assert not user_dir.exists() or not os.listdir(user_dir)
+    data = reopen(stock["profile"])
+    assert (data["width"], data["height"], data["fps"]) == (1920, 1080, {"num": 24, "den": 1})
+
+    # An unusual one is saved as a user profile the reopen lookup finds.
+    custom = resolve_profile(1234, 566, 24000, 1001)
+    assert custom["profile"] == "Custom 1234x566 23.98 fps"
+    assert len(os.listdir(user_dir)) == 1
+    data = reopen(custom["profile"])
+    assert (data["width"], data["height"], data["fps"]) == (1234, 566, {"num": 24000, "den": 1001})
+    # Asking again reuses that profile instead of writing a second file.
+    assert resolve_profile(1234, 566, 24000, 1001)["profile"] == custom["profile"]
+    assert len(os.listdir(user_dir)) == 1

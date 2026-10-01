@@ -121,6 +121,21 @@ def isdeleted(obj):
     return not mod.isValid(obj)
 
 
+def release_to_cpp(obj):
+    """Give a parentless Qt object's lifetime to C++, so Python never destroys it.
+
+    For a QThread still stuck in a job at shutdown: destroying a running
+    QThread aborts the process ("QThread: Destroyed while thread is still
+    running"), so it is left for process exit instead. Returns True when
+    ownership moved (SIP bindings only).
+    """
+    backend, mod = _load_sip_like()
+    if backend == "sip" and mod is not None:
+        mod.transferto(obj, None)
+        return True
+    return False
+
+
 def modifiers_has(modifiers, flag):
     """Return True if a modifier flag is set on a modifiers bitmask."""
     try:

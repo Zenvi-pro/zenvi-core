@@ -255,7 +255,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "search_clips_tool": _obj({
         "query": _str(),
         "top_k": _str_or_num(),
-        "look_for": _str(description="Sent by the assistant backend; ignored here."),
+        "look_for": _str(description="'on_screen' (what is visible), 'spoken' (what is said); omit for both."),
     }, required=["query"]),
     "search_clip_scenes_tool": _obj({
         "query": _str(),
@@ -273,8 +273,8 @@ TOOL_SCHEMAS: dict[str, dict] = {
         "timeline_clip_id": _str(),
         "clip_query": _str(),
         "track": _str(),
-        "start_seconds": _str_or_num(description="Sent by the assistant backend; ignored here."),
-        "end_seconds": _str_or_num(description="Sent by the assistant backend; ignored here."),
+        "start_seconds": _str_or_num(description="Known cut time in source seconds."),
+        "end_seconds": _str_or_num(description="End of a known range in source seconds."),
     }, required=["query"]),
     "suggest_motion_graphics_placements_tool": _obj({
         "brief": _str(),

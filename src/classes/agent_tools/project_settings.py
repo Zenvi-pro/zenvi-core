@@ -2,6 +2,83 @@
 
 from __future__ import annotations
 
+import os
+from math import gcd
+
+
+def _fps_label(num: int, den: int) -> str:
+    rate = num / den
+    return ("%.2f" % rate).rstrip("0").rstrip(".")
+
+
+def _profile_fields(description, width, height, num, den, dar, par) -> dict:
+    return {
+        "profile": description,
+        "width": width,
+        "height": height,
+        "fps": {"num": num, "den": den},
+        "display_ratio": {"num": dar[0], "den": dar[1]},
+        "pixel_ratio": {"num": par[0], "den": par[1]},
+    }
+
+
+def resolve_profile(width: int, height: int, num: int, den: int) -> dict:
+    """Return the project fields of a named profile with exactly these values.
+
+    Opening a project re-applies its *named* profile (ProjectDataStore.load ->
+    get_profile -> apply_profile), so writing width/height/fps alone reverts
+    on reopen. Like the Profile dialog, switch the project to a stock or user
+    profile with these values; when none exists, save a custom user profile
+    the way the profile editor does.
+    """
+    import openshot
+    from classes import info
+
+    fallback = None
+    for folder in (info.USER_PROFILES_PATH, info.PROFILES_PATH):
+        if not folder or not os.path.isdir(folder):
+            continue
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if os.path.isdir(path):
+                continue
+            try:
+                profile = openshot.Profile(path)
+            except RuntimeError:
+                continue
+            pi = profile.info
+            if (pi.width, pi.height, pi.fps.num, pi.fps.den) != (width, height, num, den):
+                continue
+            fields = _profile_fields(
+                pi.description, width, height, num, den,
+                (pi.display_ratio.num, pi.display_ratio.den),
+                (pi.pixel_ratio.num, pi.pixel_ratio.den),
+            )
+            if pi.pixel_ratio.num == pi.pixel_ratio.den and not pi.interlaced_frame:
+                return fields
+            fallback = fallback or fields
+    if fallback:
+        return fallback
+
+    div = gcd(width, height) or 1
+    dar = (width // div, height // div)
+    description = "Custom %dx%d %s fps" % (width, height, _fps_label(num, den))
+    profile = openshot.Profile()
+    pi = profile.info
+    pi.description = description
+    pi.width = width
+    pi.height = height
+    pi.fps.num = num
+    pi.fps.den = den
+    pi.pixel_ratio.num = 1
+    pi.pixel_ratio.den = 1
+    pi.display_ratio.num = dar[0]
+    pi.display_ratio.den = dar[1]
+    pi.interlaced_frame = False
+    os.makedirs(info.USER_PROFILES_PATH, exist_ok=True)
+    profile.Save(os.path.join(info.USER_PROFILES_PATH, profile.Key()))
+    return _profile_fields(description, width, height, num, den, dar, (1, 1))
+
 
 def set_project_setting(
     fps=None,
@@ -132,6 +209,37 @@ def set_project_setting(
             data={"changed": False},
         ).to_json()
 
+    if {"fps", "width", "height"} & set(updates):
+        target_fps = updates.get("fps") or project.get("fps") or {}
+        try:
+            fields = resolve_profile(
+                int(updates.get("width", project.get("width"))),
+                int(updates.get("height", project.get("height"))),
+                int(target_fps.get("num")),
+                int(target_fps.get("den")),
+            )
+        except Exception as exc:
+            # Writing the raw values would look applied and revert on reopen.
+            return ToolReceipt.error(
+                "set_project_setting_tool",
+                f"Error: could not find or create a project profile for these settings: {exc}",
+            ).to_json()
+        for key in ("width", "height", "fps"):
+            updates.pop(key, None)
+        profile_updates = dict(fields)
+        profile_updates.update(updates)
+        updates = profile_updates
+        if fields["profile"] != project.get("profile"):
+            # Export settings are profile-dependent (same reset as the Profile dialog).
+            updates["export_settings"] = None
+        notes.append(f"profile={fields['profile']}")
+    caveats = []
+    if "sample_rate" in updates:
+        caveats.append(
+            "sample_rate applies to this session; reopening a project uses the "
+            "Preferences default sample rate"
+        )
+
     error_box = [None]
 
     def _do():
@@ -153,5 +261,5 @@ def set_project_setting(
         "set_project_setting_tool",
         "Updated project settings: " + ", ".join(notes) + ".",
         data={"changed": True, "updates": updates},
-        notes=notes,
+        notes=notes + caveats,
     ).to_json()
