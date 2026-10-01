@@ -6826,10 +6826,9 @@ def resummarize_project_file(file_id: str = "", **kwargs) -> str:
                 log.warning("resummarize_project_file: failed to start summarize: %s", exc)
 
         try:
+            # Fire and forget: nothing waits on this job, so nothing withdraws it.
             dispatcher = _get_dispatcher()
-            dispatcher._dispatch.emit(
-                (_kick_off_summarize, (), [None], [None], threading.Event())
-            )
+            dispatcher._dispatch.emit(_MainThreadJob(_kick_off_summarize, ()))
         except Exception:
             _kick_off_summarize()
 

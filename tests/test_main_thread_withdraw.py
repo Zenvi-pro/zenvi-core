@@ -205,6 +205,41 @@ def test_wait_for_editor_job_tool_is_an_mcp_only_tool():
 
 
 # --------------------------------------------------------------------------
+# Fire-and-forget calls share the dispatcher, so they must send jobs too
+# --------------------------------------------------------------------------
+
+def test_resummarize_still_starts_its_summarize_on_the_gui_thread(monkeypatch):
+    """resummarize_project_file_tool queues its kick-off without waiting on it."""
+    gui_threads = []
+
+    def deliver(job):
+        # As in Qt, a slot that fails does so on the GUI thread, not in emit().
+        thread = threading.Thread(target=lambda: job.run(), daemon=True)
+        thread.start()
+        gui_threads.append(thread)
+
+    app = _marshal_through(monkeypatch, deliver)
+    indexed = SimpleNamespace(data={
+        "path": "/media/a.mp4",
+        "duration": 12,
+        "ai_metadata": {"index": {
+            "status": "ready", "index_id": "i1", "video_id": "v1", "provider": "twelvelabs",
+        }},
+    })
+    from classes import query
+    monkeypatch.setattr(
+        query.File, "get", staticmethod(lambda **kw: indexed if kw.get("id") == "f1" else None)
+    )
+
+    out = tool_handlers.resummarize_project_file(file_id="f1")
+    for thread in gui_threads:
+        thread.join(5)
+
+    assert out.startswith("Summarize started for file f1")
+    app.window.files_model._index_file_async.assert_called_once_with("f1", summarize_only=True)
+
+
+# --------------------------------------------------------------------------
 # A GUI thread that answers in time: exactly as before
 # --------------------------------------------------------------------------
 
