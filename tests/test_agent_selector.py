@@ -242,6 +242,26 @@ def test_panel_reports_each_status(qapp):
     assert not panel._rows["zenvi"].action.isVisible()
 
 
+def test_every_cli_backend_comes_from_the_runner_registry(qapp):
+    """One CLI_RUNNERS entry is all a new agent CLI needs on this side."""
+    from windows.agent_panel import CLI_BINARIES
+    from windows.agent_runners import CLI_RUNNERS
+    from windows.ai_chat_ui import BACKENDS
+
+    assert [b["id"] for b in BACKENDS] == ["zenvi", "claude_code", "codex", "cursor_cli"]
+    for row in BACKENDS[1:]:
+        runner = CLI_RUNNERS[row["id"]]
+        assert row == {"id": runner.BACKEND_ID, "name": runner.DISPLAY_NAME,
+                       "cli": runner.CLI_NAME}
+        assert callable(runner.register)
+    assert "cli" not in BACKENDS[0], "the built-in assistant is not a CLI"
+    assert CLI_BINARIES == {b: r.CLI_NAME for b, r in CLI_RUNNERS.items()}
+    # chat.js reads the executable and CLI-ness from that list.
+    source = open(os.path.join(os.path.dirname(__file__), "..", "src", "chat_ui",
+                               "chat.js"), encoding="utf-8").read()
+    assert "claude_code" not in source and "cursor_cli" not in source
+
+
 def test_cursor_cli_row_follows_install_and_connect_status(qapp):
     """Cursor CLI is a selectable backend with the same status dots as Codex."""
     from windows.ai_chat_ui import BACKENDS

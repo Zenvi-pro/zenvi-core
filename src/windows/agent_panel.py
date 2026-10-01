@@ -26,6 +26,7 @@ from qt_api import (
 )
 
 from classes.logger import log
+from windows.agent_runners import CLI_RUNNERS
 
 
 PANEL_WIDTH = 340        # 320 crowds "Zenvi Assistant" against "● not connected"
@@ -56,7 +57,7 @@ COLOR_READY = "#22c55e"     # installed and registered with Zenvi's MCP server
 COLOR_PARTIAL = "#f59e0b"   # installed, not connected yet
 COLOR_MISSING = "#6b7280"   # not installed / not probed yet
 
-CLI_BINARIES = {"claude_code": "claude", "codex": "codex", "cursor_cli": "cursor-agent"}
+CLI_BINARIES = {backend: runner.CLI_NAME for backend, runner in CLI_RUNNERS.items()}
 
 _TOOL_COUNT = None
 

@@ -22,6 +22,7 @@ from classes.bridge_guard import guarded_slot
 from classes.logger import log
 from classes.api_client import get_backend_client
 from classes.tool_handlers import humanize_tool_name
+from windows.agent_runners import CLI_RUNNERS
 from windows.embedded_web import web_embed_backend
 
 # Theme colors for chat CEP UI (match theme QSS). Keys match ThemeName.value.
@@ -461,16 +462,16 @@ class _SharedToolHandler(logging.Handler):
 
 
 # Agent backends selectable from the top of the chat panel. "zenvi" is the
-# built-in WebSocket assistant (unchanged); the others drive external agent CLIs.
+# built-in WebSocket assistant (unchanged); the others drive external agent CLIs,
+# one per agent_runners.CLI_RUNNERS entry. "cli" is the executable the chat's
+# empty state names when it is missing.
 BACKEND_ZENVI = "zenvi"
 BACKEND_CLAUDE = "claude_code"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor_cli"
-BACKENDS = [
-    {"id": BACKEND_ZENVI, "name": "Zenvi Assistant"},
-    {"id": BACKEND_CLAUDE, "name": "Claude Code"},
-    {"id": BACKEND_CODEX, "name": "Codex"},
-    {"id": BACKEND_CURSOR, "name": "Cursor CLI"},
+BACKENDS = [{"id": BACKEND_ZENVI, "name": "Zenvi Assistant"}] + [
+    {"id": backend, "name": runner.DISPLAY_NAME, "cli": runner.CLI_NAME}
+    for backend, runner in CLI_RUNNERS.items()
 ]
 _VALID_BACKENDS = {b["id"] for b in BACKENDS}
 
@@ -1044,17 +1045,8 @@ class AIChatWindow(QDockWidget):
         conversation rather than starting a fresh one.
         """
         thread = QThread()
-        if backend == BACKEND_CLAUDE:
-            from windows.agent_runners import ClaudeCodeRunner
-            worker = ClaudeCodeRunner()
-        elif backend == BACKEND_CODEX:
-            from windows.agent_runners import CodexRunner
-            worker = CodexRunner()
-        elif backend == BACKEND_CURSOR:
-            from windows.agent_runners import CursorCliRunner
-            worker = CursorCliRunner()
-        else:
-            worker = AIChatWorker()
+        runner = CLI_RUNNERS.get(backend)
+        worker = runner() if runner is not None else AIChatWorker()
         worker._session_id = session_id   # used by signal handlers to route responses
         # Keep backend memory namespaced by the same session id as the UI tab.
         worker._backend_session_id = session_id
@@ -3137,14 +3129,13 @@ class AIChatWindow(QDockWidget):
             self._cli_detect_timer.start(60_000)   # refresh every 60 seconds
 
     def _detect_clis(self):
-        """Check claude/codex CLI availability in a background thread; push to JS."""
+        """Check every agent CLI's availability in a background thread; push to JS."""
         def run():
             try:
                 from windows.agent_runners import detect_cli
                 status = {
-                    BACKEND_CLAUDE: detect_cli("claude"),
-                    BACKEND_CODEX: detect_cli("codex"),
-                    BACKEND_CURSOR: detect_cli("cursor-agent"),
+                    backend: detect_cli(runner.CLI_NAME)
+                    for backend, runner in CLI_RUNNERS.items()
                 }
                 QMetaObject.invokeMethod(
                     self,
@@ -3213,22 +3204,16 @@ class AIChatWindow(QDockWidget):
         self._push_gap_list()
 
     def _connect_cli(self, backend_id: str):
-        """Register Zenvi's MCP server with claude/codex (Connect button in
+        """Register Zenvi's MCP server with an agent CLI (Connect button in
         the empty state) so an external terminal session can reach it."""
         def run():
             ok, message = False, "Unknown backend."
             try:
                 from classes.agent_mcp_server import get_mcp_server
-                srv = get_mcp_server().start()
-                if backend_id == BACKEND_CLAUDE:
-                    from windows.agent_runners import register_claude
-                    ok, message = register_claude(srv.port, srv.token)
-                elif backend_id == BACKEND_CODEX:
-                    from windows.agent_runners import register_codex
-                    ok, message = register_codex(srv.port, srv.token)
-                elif backend_id == BACKEND_CURSOR:
-                    from windows.agent_runners import register_cursor
-                    ok, message = register_cursor(srv.port, srv.token)
+                runner = CLI_RUNNERS.get(backend_id)
+                if runner is not None:
+                    srv = get_mcp_server().start()
+                    ok, message = runner.register(srv.port, srv.token)
             except Exception as e:
                 log.debug("connect_cli failed: %s", e, exc_info=True)
                 ok, message = False, str(e)

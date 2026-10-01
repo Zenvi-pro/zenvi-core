@@ -143,13 +143,8 @@ def models_for_backend(backend: str) -> list:
         listed = [dict(m) for m in _cli_lineups.get(backend, [])]
     if listed:
         return listed
-    if backend == BACKEND_CLAUDE:
-        return [dict(m) for m in ClaudeCodeRunner.MODELS]
-    if backend == BACKEND_CODEX:
-        return [dict(m) for m in CodexRunner.MODELS]
-    if backend == BACKEND_CURSOR:
-        return [dict(m) for m in CursorCliRunner.MODELS]
-    return []
+    runner = CLI_RUNNERS.get(backend)
+    return [dict(m) for m in runner.MODELS] if runner else []
 
 
 def _resolved_home() -> str:
@@ -1164,6 +1159,11 @@ class BaseAgentRunner(QObject):
         return model_id if any(m["id"] == model_id for m in offered) else ""
 
     # -- subclass hooks ----------------------------------------------------
+    @staticmethod
+    def register(port: int, token: str):
+        """Give this CLI Zenvi's MCP server (Connect). Returns ``(ok, message)``."""
+        raise NotImplementedError
+
     def _ensure_ready(self):
         """Return an error string if the backend can't run, else None."""
         return None
@@ -1184,6 +1184,7 @@ class ClaudeCodeRunner(BaseAgentRunner):
     CLI_NAME = "claude"
     DISPLAY_NAME = "Claude Code"
     BACKEND_ID = BACKEND_CLAUDE
+    register = staticmethod(register_claude)
 
     # Built-in fallback lineup, used until the backend's live list lands (see
     # ``models_for_backend``). ``rank`` orders the picker, ``featured`` decides
@@ -1306,6 +1307,7 @@ class CodexRunner(BaseAgentRunner):
     CLI_NAME = "codex"
     DISPLAY_NAME = "Codex"
     BACKEND_ID = BACKEND_CODEX
+    register = staticmethod(register_codex)
     # No built-in lineup: we do not track OpenAI's models here. The backend's
     # live list (``set_live_lineups``) fills the picker; until it lands the
     # picker stays hidden and the CLI uses whatever its own config selects.
@@ -1407,6 +1409,7 @@ class CursorCliRunner(BaseAgentRunner):
     CLI_NAME = "cursor-agent"
     DISPLAY_NAME = "Cursor CLI"
     BACKEND_ID = BACKEND_CURSOR
+    register = staticmethod(register_cursor)
     # The models depend on the Cursor account, so the picker shows what
     # `cursor-agent models` lists (refresh_cursor_models). Until it has, the
     # only choice is to leave the model to the CLI's own config.
@@ -1670,6 +1673,15 @@ def _cursor_content_text(content) -> str:
                 parts.append(text)
         return "\n".join(parts)
     return _content_to_text(content)
+
+
+# Every CLI chat backend, in the order the agent picker lists them. The chat
+# window builds its backend list, worker factory, CLI detection and Connect from
+# this, so adding a CLI is its runner class plus one entry here.
+CLI_RUNNERS = {
+    runner.BACKEND_ID: runner
+    for runner in (ClaudeCodeRunner, CodexRunner, CursorCliRunner)
+}
 
 
 # ---------------------------------------------------------------------------
