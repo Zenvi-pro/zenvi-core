@@ -542,10 +542,11 @@ def _clip_content_digest(data):
     """
     try:
         rest = {k: v for k, v in data.items() if k not in _SIGNATURE_SKIP_KEYS}
-        # The reader is skipped for size, but its path is what swapping a clip's
-        # media changes (an edited title points its clips at the new SVG).
-        reader = data.get("reader")
-        rest["reader_path"] = reader.get("path") if isinstance(reader, dict) else None
+        # The reader is mostly cached metadata, but which media it plays is the
+        # clip: a relink, an edited title (its clips point at the new SVG) or a new
+        # image-sequence frame rate changes only this.
+        reader = data.get("reader") if isinstance(data.get("reader"), dict) else {}
+        rest["_media"] = [reader.get(k) for k in ("path", "duration", "fps", "video_length")]
         return hash(json.dumps(rest, sort_keys=True, default=str))
     except Exception:
         return None
@@ -6542,34 +6543,16 @@ def generate_transition_clip(
 # ---------------------------------------------------------------------------
 
 def list_transitions(category="all", **_kw) -> str:
-    """List all available transitions in OpenShot."""
+    """List the transitions of the Transitions dock (common, extra and the user folder)."""
     try:
-        from classes import info
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        common_dir = os.path.join(transitions_dir, "common")
-        extra_dir = os.path.join(transitions_dir, "extra")
+        from classes import transition_ops
 
-        transitions = []
-
-        def process_dir(dir_path, category_name):
-            if not os.path.exists(dir_path):
-                return
-            for filename in sorted(os.listdir(dir_path)):
-                if filename.startswith(".") or "thumbs.db" in filename.lower():
-                    continue
-                path = os.path.join(dir_path, filename)
-                file_base_name = os.path.splitext(filename)[0]
-                trans_name = file_base_name.replace("_", " ").capitalize()
-                transitions.append({
-                    "name": trans_name, "filename": filename,
-                    "category": category_name, "path": path,
-                })
-
-        if category in ("all", "common"):
-            process_dir(common_dir, "common")
-        if category in ("all", "extra"):
-            process_dir(extra_dir, "extra")
-
+        category = str(category or "all").strip().lower()
+        wanted = ("common", "extra", "user") if category == "all" else (category,)
+        transitions = [
+            {k: e[k] for k in ("name", "filename", "category", "path")}
+            for e in transition_ops.catalog(wanted)
+        ]
         if not transitions:
             return "No transitions found."
 
@@ -6578,7 +6561,8 @@ def list_transitions(category="all", **_kw) -> str:
             "transitions": transitions[:50] if len(transitions) > 50 else transitions,
         }
         if len(transitions) > 50:
-            data["note"] = f"Showing first 50 of {len(transitions)} transitions."
+            data["note"] = (f"Showing first 50 of {len(transitions)} transitions; "
+                            "search_transitions_tool finds the rest by name.")
         return json.dumps(data, indent=2)
     except Exception as e:
         log.error("list_transitions: %s", e, exc_info=True)
@@ -6586,33 +6570,16 @@ def list_transitions(category="all", **_kw) -> str:
 
 
 def search_transitions(query="", **_kw) -> str:
-    """Search for transitions by name."""
+    """Search the transitions of the Transitions dock by name (common, extra and the user folder)."""
     try:
-        from classes import info
-        transitions_dir = os.path.join(info.PATH, "transitions")
-        common_dir = os.path.join(transitions_dir, "common")
-        extra_dir = os.path.join(transitions_dir, "extra")
+        from classes import transition_ops
 
         query_lower = (query or "").lower()
-        matches = []
-
-        def search_dir(dir_path, category_name):
-            if not os.path.exists(dir_path):
-                return
-            for filename in os.listdir(dir_path):
-                if filename.startswith(".") or "thumbs.db" in filename.lower():
-                    continue
-                file_base = os.path.splitext(filename)[0]
-                trans_name = file_base.replace("_", " ").capitalize()
-                if query_lower in trans_name.lower() or query_lower in file_base.lower():
-                    matches.append({
-                        "name": trans_name, "filename": filename,
-                        "category": category_name,
-                        "path": os.path.join(dir_path, filename),
-                    })
-
-        search_dir(common_dir, "common")
-        search_dir(extra_dir, "extra")
+        matches = [
+            {k: e[k] for k in ("name", "filename", "category", "path")}
+            for e in transition_ops.catalog()
+            if query_lower in e["name"].lower() or query_lower in e["key"]
+        ]
 
         if not matches:
             return f"No transitions found matching '{query}'."

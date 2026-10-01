@@ -28,7 +28,6 @@
 
 import os
 import json
-import re
 import glob
 import functools
 import uuid
@@ -550,7 +549,12 @@ class FilesModel(QObject, updates.UpdateInterface):
         file_obj = File.get(id=file_id)
         if file_obj:
             path, filename = os.path.split(file_obj.data["path"])
-            self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            previous_ignore = self.ignore_updates
+            self.ignore_updates = True     # a repaint, not a user edit of the row
+            try:
+                self.model.item(row, 0).setToolTip(self._tooltip_for_file(file_obj, filename))
+            finally:
+                self.ignore_updates = previous_ignore
         left = self.model.index(row, 0)
         right = self.model.index(row, self.model.columnCount() - 1)
         self.model.dataChanged.emit(left, right, [Qt.DisplayRole, Qt.ToolTipRole])
@@ -577,12 +581,22 @@ class FilesModel(QObject, updates.UpdateInterface):
                 self.update_model(clear=True, progressive_ui=False)
 
     def update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
+        # Programmatic cell changes must never be read back as user edits. A save made
+        # while a refresh is running re-enters this method; restoring the caller's flag
+        # (rather than clearing it) keeps the outer refresh protected, and an early
+        # return can no longer leave the flag stuck on.
+        previous_ignore = self.ignore_updates
+        try:
+            return self._update_model(clear=clear, delete_file_id=delete_file_id,
+                                      update_file_id=update_file_id, progressive_ui=progressive_ui)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_model(self, clear=True, delete_file_id=None, update_file_id=None, progressive_ui=True):
         log.debug("updating files model.")
         app = get_app()
 
-        # Restored (not forced off) at the end: a cell change below can save a
-        # file and re-enter update_model, and the outer call's remaining cell
-        # changes must still not be taken for user edits.
+        # update_model restores the caller's flag on every return path.
         previous_ignore = self.ignore_updates
         self.ignore_updates = True
 
@@ -597,7 +611,6 @@ class FilesModel(QObject, updates.UpdateInterface):
             # sanity check
             if not id_index.isValid() or delete_file_id != id_index.data():
                 log.warning("Couldn't remove {} from model!".format(delete_file_id))
-                self.ignore_updates = previous_ignore
                 return
             # Delete row from model
             row_num = id_index.row()
@@ -613,7 +626,6 @@ class FilesModel(QObject, updates.UpdateInterface):
             # sanity check
             if not id_index.isValid() or update_file_id != id_index.data():
                 log.warning("Couldn't update {} in model!".format(update_file_id))
-                self.ignore_updates = previous_ignore
                 return
 
             # lookup File object
@@ -1123,6 +1135,7 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def get_image_sequence_details(self, file_path):
         """Inspect a file path and determine if this is an image sequence"""
+        from classes.project_files import detect_image_sequence
 
         # Get just the file name
         (dirName, fileName) = os.path.split(file_path)
@@ -1131,35 +1144,9 @@ class FilesModel(QObject, updates.UpdateInterface):
         if dirName in self.ignore_image_sequence_paths:
             return None
 
-        extensions = ["png", "jpg", "jpeg", "tif", "svg"]
-        match = re.findall(r"(.*[^\d])?(0*)(\d+)\.(%s)" % "|".join(extensions), fileName, re.I)
-
-        if not match:
-            # File name does not match an image sequence
-            return None
-
-        # Get the parts of image name
-        base_name = match[0][0]
-        fixlen = match[0][1] > ""
-        number = int(match[0][2])
-        digits = len(match[0][1] + match[0][2])
-        extension = match[0][3]
-
-        full_base_name = os.path.join(dirName, base_name)
-
-        # Check for images which the file names have the different length
-        fixlen = fixlen or not (
-            glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * (digits + 1), extension))
-            or glob.glob("%s%s.%s" % (full_base_name, "[0-9]" * ((digits - 1) if digits > 1 else 3), extension))
-        )
-
-        # Check for previous or next image
-        for x in range(max(0, number - 100), min(number + 101, 50000)):
-            if x != number and os.path.exists(
-               "%s%s.%s" % (full_base_name, str(x).rjust(digits, "0") if fixlen else str(x), extension)):
-                break  # found one!
-        else:
-            # We didn't discover an image sequence
+        parameters = detect_image_sequence(file_path)
+        if not parameters:
+            # File name does not match an image sequence (or has no neighbouring frames)
             return None
 
         # Found a sequence, ignore this path (no matter what the user answers)
@@ -1173,24 +1160,7 @@ class FilesModel(QObject, updates.UpdateInterface):
             # User said no, don't import as a sequence
             return None
 
-        # generate file glob pattern (for this image sequence)
-        if not fixlen:
-            zero_pattern = "%d"
-        else:
-            zero_pattern = "%%0%sd" % digits
-        pattern = "%s%s.%s" % (base_name, zero_pattern, extension)
-        new_file_path = os.path.join(dirName, pattern)
-
         # Yes, import image sequence
-        parameters = {
-            "folder_path": dirName,
-            "base_name": base_name,
-            "fixlen": fixlen,
-            "digits": digits,
-            "extension": extension,
-            "pattern": pattern,
-            "path": new_file_path
-        }
         return parameters
 
     def process_urls(self, qurl_list, import_quietly=False, prevent_image_seq=False,
@@ -1256,8 +1226,17 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def update_file_thumbnail(self, file_id):
         """Update/re-generate the thumbnail of a specific file"""
+        previous_ignore = self.ignore_updates
+        try:
+            self._update_file_thumbnail(file_id)
+        finally:
+            self.ignore_updates = previous_ignore
+
+    def _update_file_thumbnail(self, file_id):
         self._status_cache.pop(str(file_id), None)
         file = File.get(id=file_id)
+        if not file:
+            return
         path, filename = os.path.split(file.data["path"])
         name = file.data.get("name", filename)
 
@@ -1270,7 +1249,6 @@ class FilesModel(QObject, updates.UpdateInterface):
             # Look up stored index to ID column
             id_index = self.model_ids[file_id]
             if not id_index.isValid():
-                self.ignore_updates = previous_ignore
                 return
 
             thumb_source, _, media_type = self._thumbnail_source_for_file(file, clear_cache=True)
@@ -1348,15 +1326,16 @@ class FilesModel(QObject, updates.UpdateInterface):
 
     def value_updated(self, item):
         """ Table cell change event - when tags are updated on a file"""
-        if self.ignore_updates:
-            # The model itself is refreshing the cell (a file was saved); not a user edit.
+        # Only user edits: the model's own refreshes (a file saved by a tool, a tag
+        # change, undo/redo) must not be written back -- into whichever file is selected.
+        if self.ignore_updates or item.column() != 2:
             return
-        if item.column() == 2:
-            # Get updated tag value
+        id_item = self.model.item(item.row(), 5)
+        f = File.get(id=id_item.text()) if id_item else None
+        if f:
             tags_value = item.data(0)
-            f = self.current_file()
-            if f:
-                # Save tags to file object
+            if f.data.get("tags", "") != tags_value:
+                # Save tags to the edited row's file
                 f.data["tags"] = tags_value
                 f.save()
 

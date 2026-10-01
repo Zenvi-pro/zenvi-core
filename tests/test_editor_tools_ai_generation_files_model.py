@@ -74,7 +74,8 @@ class _Index:
 
 
 _FILES_MODEL = os.path.join(os.path.dirname(__file__), "..", "src", "windows", "models", "files_model.py")
-_METHODS = ("changed", "update_model", "value_updated", "invalidate_indexing_status", "_tooltip_for_file")
+_METHODS = ("changed", "update_model", "_update_model", "value_updated", "invalidate_indexing_status",
+            "_tooltip_for_file")
 
 
 def _files_model_methods(namespace):
