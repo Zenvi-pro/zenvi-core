@@ -28,8 +28,11 @@ from classes.ffmpeg_cli import run_ffmpeg
 from classes.logger import log
 from classes.clip_placement import (
     apply_audio_only_clip_overrides,
+    blind_trim_rejected,
+    butt_against_previous_clip,
     compute_clip_trim_bounds,
     default_underlay_layer_number,
+    end_bounds_keep_window,
     file_looks_like_image,
     parse_seconds_arg,
     parse_timecode_token,
@@ -1716,6 +1719,10 @@ def import_files(paths="", path="", folder="", skip_indexing="false", **_kw) -> 
             path_part = unquote(parsed.path or "")
             if os.name == "nt" and re.match(r"^/[A-Za-z]:", path_part):
                 path_part = path_part.lstrip("/")
+            elif os.name == "nt" and re.match(r"^[A-Za-z]:", parsed.netloc or ""):
+                # file://C:\clips\a.mp4 - backslashes are not URL separators, so
+                # the whole Windows path parses as the host.
+                path_part = unquote(parsed.netloc) + path_part
             return path_part or text
         return text
 
@@ -2147,6 +2154,37 @@ def split_file_add_clip(
         return f"Error: {e}"
 
 
+# Where a placement was planned to end, for each one whose length snapping or a
+# watch changed: {timeline_clip_id: (position placed at, planned timeline end)}.
+# A later position planned on that end is what butt_against_previous_clip fixes.
+_planned_end_by_clip_id = {}
+
+
+def _resized_placements_on_track(track_num) -> list:
+    """(planned_end, actual_end) for clips on *track_num* this tool resized.
+
+    A clip moved since it was placed is skipped: its plan no longer says where
+    the next clip was meant to go. Must run on the main thread.
+    """
+    from classes.query import Clip
+
+    out = []
+    for c in Clip.filter():
+        d = c.data if isinstance(getattr(c, "data", None), dict) else {}
+        plan = _planned_end_by_clip_id.get(str(getattr(c, "id", "") or ""))
+        if not plan or d.get("layer", 0) != track_num:
+            continue
+        placed_at, planned_end = plan
+        try:
+            pos = float(d.get("position", 0) or 0)
+            actual_end = pos + float(d.get("end", 0) or 0) - float(d.get("start", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if abs(pos - placed_at) <= 1e-6:
+            out.append((planned_end, actual_end))
+    return out
+
+
 def add_clip_to_timeline(
     file_id="",
     position_seconds="",
@@ -2201,8 +2239,11 @@ def add_clip_to_timeline(
             pos_arg = parse_seconds_arg(position_seconds, default=None, field="position_seconds")
         except ValueError as exc:
             return f"Error: {exc}"
-        # end_seconds is the keep-window form (place_moment); duration wins if both.
-        if trim_dur is None and trim_end is not None:
+        # end_seconds is the keep-window form (place_moment); duration wins if both
+        # disagree. Only the winner bounds the out-point - an overridden end_seconds
+        # is not a keep window, it is a leftover arg.
+        end_bounds_window = end_bounds_keep_window(trim_start, trim_dur, trim_end)
+        if end_bounds_window:
             if trim_end <= trim_start:
                 return (
                     f"Error: end_seconds {trim_end} must be greater than "
@@ -2221,6 +2262,15 @@ def add_clip_to_timeline(
                 "duration_seconds (how much to use), plus start_seconds for the source in-point. "
                 "Pass full_file=\"true\" only when the user asked for one continuous bed."
             )
+        # start_seconds alone keeps the rest of the file from there. Without a
+        # length nothing below trims, so a long file placed from 0 instead.
+        if trim_dur is None and trim_start > 0 and not _whole_file:
+            if trim_start >= source_len:
+                return (
+                    f"Error: start_seconds {trim_start:g} is past the end of this file "
+                    f"({source_len:.2f}s long)."
+                )
+            trim_dur = source_len - trim_start
 
         watched_start = watched_end = None
         watched_info = {}
@@ -2232,7 +2282,11 @@ def add_clip_to_timeline(
             win_e = min(src_end, win_s + max(float(trim_dur), 4.0))
         else:
             win_e = src_end
-        if should_watch_placement(
+        # No window asked for - no trim at all, or full_file - means the whole
+        # file. A watch refines a window the caller named; it must never invent
+        # one (full_file="true" on a 24.6 s video placed the 1 s it matched).
+        wants_window = bool(trim_dur) and not _whole_file
+        if wants_window and should_watch_placement(
             is_audio=_is_audio_only,
             is_image=_is_image,
             skip_explicit_times=skip_watch,
@@ -2271,18 +2325,30 @@ def add_clip_to_timeline(
                 file_id, in_s, out_s, watched.get("matched"), watch_q[:80],
             )
 
-        if (
-            trim_dur is not None
-            and trim_dur > 0
-            and watched_start is None
-            and not _is_audio_only
-            and not _is_image
-            and not bool(file_data.get("zenvi_subclip"))
+        if blind_trim_rejected(
+            trim_dur=trim_dur,
+            watched_start=watched_start,
+            has_explicit_end=end_bounds_window,
+            has_explicit_start=trim_start > 0,
+            is_audio=_is_audio_only,
+            is_image=_is_image,
+            is_subclip=bool(file_data.get("zenvi_subclip")),
         ):
+            # Never name a remedy the caller already applied - that turns a
+            # recoverable refusal into a retry loop (#167).
+            if trim_end is not None:
+                return (
+                    f"Error: duration_seconds={trim_dur:g} overrides end_seconds={trim_end:g}, so "
+                    f"this would keep the first {trim_dur:g}s of a file nothing has looked at. "
+                    "Drop duration_seconds and pass start_seconds (where the section begins) "
+                    "with end_seconds."
+                )
             return (
-                "Error: cannot trim the first N seconds of an unwatched file. "
-                "Use place_moment with a search keep window (start_seconds/end_seconds) instead of "
-                "add_clip_to_timeline with duration_seconds on the full file."
+                "Error: duration_seconds alone cannot trim the first N seconds of a file "
+                "nothing has looked at. Name both edges of the section you want: pass "
+                "start_seconds and end_seconds (the keep window search_clips returned), "
+                "or place_moment with that window."
+                + (" Times written in query are not read as the window." if skip_watch else "")
             )
 
         result_box = [None]
@@ -2328,8 +2394,12 @@ def add_clip_to_timeline(
                             pos_sec = last_end + _one_frame
                         else:
                             pos_sec = 0.0
-                else:
+                elif _is_audio_only:
                     pos_sec = pos_arg
+                else:
+                    pos_sec = butt_against_previous_clip(
+                        pos_arg, _resized_placements_on_track(track_num),
+                    )
 
                 if QPointF is None:
                     from qt_api import QPointF as _QPointF
@@ -2368,6 +2438,18 @@ def add_clip_to_timeline(
                     win.timeline.update_clip_data(
                         new_clip, only_basic_props=False, ignore_refresh=False
                     )
+                new_id = str((new_clip or {}).get("id") or "")
+                if new_id:
+                    # The caller planned this clip to end at its own position plus
+                    # the length it asked for; snapping, a watch or butting can
+                    # move the real end, and the next planned position with it.
+                    planned_end = (pos_sec if pos_arg is None else pos_arg) + (trim_dur or source_len)
+                    try:
+                        actual_end = pos_sec + float(new_clip.get("end", 0)) - float(new_clip.get("start", 0))
+                    except (TypeError, ValueError):
+                        actual_end = planned_end
+                    if abs(actual_end - planned_end) > 1e-6:
+                        _planned_end_by_clip_id[new_id] = (pos_sec, planned_end)
                 result_box[0] = (new_clip, pos_sec, track_num, snapped)
             except Exception as exc:
                 error_box[0] = str(exc)
@@ -2386,6 +2468,8 @@ def add_clip_to_timeline(
 
         placed, pos_sec, track_num, snapped = result_box[0]
         _snap_note = ", moved off mid-sentence" if snapped else ""
+        if pos_arg is not None and abs(pos_sec - pos_arg) > 1e-9:
+            _snap_note += f", moved from {pos_arg}s to butt against the previous clip"
         _last_split_file_id_by_chat_session.pop(chat_session_id, None)
         layers_out = app.project.get("layers") or []
         track_lbl = format_track_label_for_llm(int(track_num), layers_out)
@@ -2489,6 +2573,14 @@ _ORDINAL_MAP = {
 }
 
 
+def _search_rank_key(hit):
+    """Sort key that puts the best-ranked hit first; unranked hits sort last."""
+    try:
+        return float(hit.get("rank"))
+    except (TypeError, ValueError):
+        return float("inf")
+
+
 def _detect_ordinal(query: str) -> int:
     words = (query or "").lower().split()
     for word in words:
@@ -2497,10 +2589,14 @@ def _detect_ordinal(query: str) -> int:
     return 0
 
 
-def search_clips(query="", top_k="5", **_kw) -> str:
+def search_clips(query="", top_k="5", look_for="", **_kw) -> str:
     """Project-wide video index search on this project's shared index.
+    look_for="on_screen" when the query describes who or what is visible ("the
+    guy with the iPad"), "spoken" when it describes what is said; omit for both.
 
-    Returns media_bin_file_id + timestamp (deeper than Gemini tags).
+    Returns media_bin_file_id + timestamp (deeper than Gemini tags). The first
+    paragraph above is the MCP tool description, the only place an external
+    agent learns what look_for takes.
     """
     q = str(query or "").strip()
     if not q:
@@ -2543,6 +2639,7 @@ def search_clips(query="", top_k="5", **_kw) -> str:
             top_k=page_limit,
             index_id=index_id,
             page_limit=page_limit,
+            look_for=str(look_for or "").strip() or None,
         )
         if resp.get("error"):
             return f"Error: {resp['error']}"
@@ -2609,17 +2706,29 @@ def search_clips(query="", top_k="5", **_kw) -> str:
                 lines.append(
                     f"  • {fname}{id_part}{vid_part} — {len(hits_sorted)} occurrences:"
                 )
-                for i, r in enumerate(hits_sorted[:8], 1):
+                # Pick WHICH occurrences to show by rank, then show them in time
+                # order. Truncating the chronological list drops the best match
+                # whenever it sits late in the file, and an unmarked rank= is easy
+                # to read past - both send the agent to the wrong window.
+                by_rank = sorted(hits, key=_search_rank_key)
+                best = by_rank[0] if by_rank else None
+                # Number each row by its occurrence index in the FULL chronological
+                # list - that is what an ordinal ("the 3rd time") resolves against,
+                # so rank selection must not renumber the rows it kept.
+                nth_of = {id(h): n for n, h in enumerate(hits_sorted, 1)}
+                for r in sorted(by_rank[:8], key=lambda x: float(x.get("start") or 0)):
                     seg_s = float(r.get("start") or 0)
                     seg_e = float(r.get("end") or 0)
                     win = _format_search_window(r, seg_s, seg_e)
+                    marker = "  <-- best match" if r is best else ""
                     lines.append(
-                        f"      {i}. {win} (rank={r.get('rank')})"
+                        f"      {nth_of.get(id(r), '?')}. {win} "
+                        f"(rank={r.get('rank')}){marker}"
                     )
                 if len(hits_sorted) > 1:
                     lines.append(
-                        "      Multiple matches — specify which occurrence "
-                        "(e.g. 'the 1st time', 'the 2nd time')."
+                        "      Place the best match unless the user asked for a "
+                        "different one (e.g. 'the 2nd time')."
                     )
                 shown += 1
 
@@ -2857,6 +2966,14 @@ def search_clip_scenes(
         return f"Error: {e}"
 
 
+# A time written into a watch query ("visible at 72.5 seconds", "45-62s") that
+# belongs in start/end - left there, the tool silently watched a search hit.
+_QUERY_TIME_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:s|secs?|seconds?)\b|\b\d{1,2}:\d{2}\b|\bat\s+\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+
+
 def watch_clip_window(
     query="",
     start="",
@@ -2867,14 +2984,23 @@ def watch_clip_window(
 ) -> str:
     """Vision-check a window of a placed clip: confirm the query is on screen.
     Call this after you place, slice, trim, or modify a clip to verify your own
-    edit. Read-only: reports in/out/peak in source seconds.
+    edit. Read-only: start/end and every reported time are source seconds.
 
-    Layer-3 watch of a candidate window; distinct from watch_clip_tool, which
-    plays the clip in the editor.
+    Reports the frames watched, the shot cuts in the window, and where the query
+    is visible. Put times in start/end, never in query. A shot boundary is in the
+    shot cuts line - do not re-watch to refine it. Distinct from watch_clip_tool,
+    which plays the clip in the editor.
     """
     try:
-        from classes.clip_resolver import _coerce_optional_float
         from classes.timeline_clip_context import build_timeline_clip_context, resolve_parent_file_data
+
+        # A time that does not parse ("0:14" used to) must not silently become
+        # "no window" - that watched a search hit instead of the window asked for.
+        try:
+            t0 = parse_seconds_arg(start, default=None, field="start")
+            t1 = parse_seconds_arg(end, default=None, field="end")
+        except ValueError as exc:
+            return f"Error: {exc}"
 
         resolved = _resolve_timeline_clip_for_tool(
             clip_query=clip_query,
@@ -2896,9 +3022,26 @@ def watch_clip_window(
         if not watch_path:
             watch_path = str(getattr(ctx, "source_path", "") or "")
 
-        t0 = _coerce_optional_float(start)
-        t1 = _coerce_optional_float(end)
-        if t0 is None or t1 is None:
+        if (t0 is None) != (t1 is None):
+            return (
+                "Error: Pass both start and end (source seconds), or neither to watch "
+                "the best search match."
+            )
+        if t0 is None and _QUERY_TIME_RE.search(query or ""):
+            return (
+                "Error: The query names a time but start/end are empty. Put the window in "
+                "start and end (source seconds) and describe only what to look for in query."
+            )
+        if t0 is not None and t1 is not None:
+            lo, hi = min(t0, t1), max(t0, t1)
+            if hi <= ctx.source_start or lo >= ctx.source_end:
+                return (
+                    f"Error: Window {lo:.2f}-{hi:.2f}s is outside this clip's source range "
+                    f"{ctx.source_start:.2f}-{ctx.source_end:.2f}s (start/end are source seconds)."
+                )
+            # Only what this clip plays can confirm an edit to it.
+            t0, t1 = max(lo, ctx.source_start), min(hi, ctx.source_end)
+        else:
             search_query = _semantic_search_query(query)
             hit_start = None
             hit_end = None
@@ -2945,16 +3088,43 @@ def watch_clip_window(
         cut = float(watched.get("cut_source") or t0)
         in_s = float(watched.get("in_source") if watched.get("in_source") is not None else t0)
         out_s = float(watched.get("out_source") if watched.get("out_source") is not None else t1)
-        rel = cut - ctx.source_start
+
+        def _secs(times):
+            return ", ".join(f"{float(t):.2f}" for t in times)
+
+        frame_times = watched.get("frame_times") or []
+        scene_times = watched.get("scene_times") or []
+        clip_lo, clip_hi = float(ctx.source_start), float(ctx.source_end)
         lines = [
-            f"Watch window [{float(watched.get('window_start') or t0):.2f}-"
-            f"{float(watched.get('window_end') or t1):.2f}s] on '{ctx.title or 'clip'}'.",
-            f"Keep {in_s:.3f}s–{out_s:.3f}s source; peak {_fmt_mmss(rel)} (source {cut:.3f}s).",
+            f"Watched {len(frame_times)} frames of '{ctx.title or 'clip'}' "
+            f"(source seconds; this clip plays {clip_lo:.2f}-{clip_hi:.2f}): "
+            f"{_secs(frame_times) or 'none'}.",
+            f"Shot cuts in window (source s): {_secs(scene_times)}."
+            if scene_times else "Shot cuts in window: none.",
         ]
+        # The watch pads its window for context, so a match can sit in frames this
+        # clip never plays. Only what the clip plays confirms (or refutes) an edit.
+        visible = [float(t) for t in watched.get("visible_at") or []]
+        visible_in_clip = [t for t in visible if clip_lo - 1e-3 <= t <= clip_hi + 1e-3]
+        seen = bool(watched.get("matched")) and not watched.get("used_fallback")
+        outside_only = (bool(visible) and not visible_in_clip) or out_s < clip_lo or in_s > clip_hi
+        if seen and not outside_only:
+            in_c, out_c = max(in_s, clip_lo), min(out_s, clip_hi)
+            cut_c = max(in_c, min(cut, out_c))
+            lines.append(
+                f"Visible {in_c:.3f}s–{out_c:.3f}s source; peak {cut_c:.3f}s source "
+                f"({_fmt_mmss(cut_c - clip_lo)} into the clip)."
+                + (f" Seen in frames: {_secs(visible_in_clip)}." if visible_in_clip else "")
+            )
+        elif seen:
+            lines.append(
+                "Not visible in this clip's frames"
+                + (f" - only outside it, at {_secs(visible)}s source." if visible else ".")
+            )
+        else:
+            lines.append("Not visible in these frames.")
         if watched.get("reason"):
             lines.append(str(watched.get("reason")))
-        if watched.get("used_fallback"):
-            lines.append("No visual match; used text-index time as fallback.")
         if watched.get("warning"):
             lines.append(str(watched.get("warning")))
         return "\n".join(lines)
@@ -3487,18 +3657,100 @@ def _slice_timeline_clip_at_source_times(
     )
 
 
+_SIBLING_EPS = 1e-3
+
+
+def _sibling_clips_from_same_file(file_id: str, exclude_clip_id: str = "") -> list:
+    """Other timeline placements cut from the same source file.
+
+    Returns ``[(clip_id, source_start, source_end, position, layer), ...]``
+    sorted by source_start. Must run on the main thread (reads project data).
+    Any failure yields ``[]`` so callers fall back to the single-clip path.
+    """
+    if not str(file_id or "").strip():
+        # No source identity: every other id-less clip would "match", and a cut
+        # outside this clip would land on a clip from a different file.
+        return []
+    try:
+        from classes.query import Clip
+        from classes.ai_metadata_utils import get_source_window
+    except Exception:
+        return []
+    out = []
+    try:
+        for c in Clip.filter():
+            d = c.data if isinstance(getattr(c, "data", None), dict) else {}
+            if str(d.get("file_id") or "") != str(file_id or ""):
+                continue
+            if str(c.id) == str(exclude_clip_id):
+                continue
+            sf = _get_source_file_for_clip(c)
+            fd = sf.data if sf and isinstance(sf.data, dict) else None
+            cs, ce = get_source_window(d, fd)
+            try:
+                layer = int(d.get("layer", 1) or 1)
+            except (TypeError, ValueError):
+                layer = 1
+            out.append((str(c.id), float(cs), float(ce), float(d.get("position", 0.0) or 0.0), layer))
+    except Exception as exc:
+        log.debug("sibling clip scan failed: %s", exc)
+        return []
+    out.sort(key=lambda t: t[1])
+    return out
+
+
+def _sibling_containing(siblings, t0: float, t1: float):
+    """First sibling whose source window contains [t0, t1] with room to cut.
+
+    A point cut (t0 == t1) must be strictly inside the sibling: a cut on its
+    edge would split off nothing. A range may touch one edge but not both.
+    """
+    for sib in siblings or []:
+        _sid, cs, ce, _pos, _layer = sib
+        if t1 - t0 <= _SIBLING_EPS:
+            if cs + _SIBLING_EPS < t0 < ce - _SIBLING_EPS:
+                return sib
+            continue
+        if cs - _SIBLING_EPS <= t0 and t1 <= ce + _SIBLING_EPS:
+            if t0 - cs > _SIBLING_EPS or ce - t1 > _SIBLING_EPS:
+                return sib
+    return None
+
+
+def _describe_siblings(siblings) -> str:
+    if not siblings:
+        return "it is the only clip from this file on the timeline"
+    parts = [
+        f"[{cs:.2f}s–{ce:.2f}s] at {_fmt_mmss(pos)} on track {layer} (timeline_clip_id={sid})"
+        for sid, cs, ce, pos, layer in siblings
+    ]
+    return "other clips from this file cover " + "; ".join(parts)
+
+
 def slice_clip_at_best_match(
     query="",
     occurrence="0",
     clip_query="",
     timeline_clip_id="",
+    start_seconds="",
+    end_seconds="",
     **_kw,
 ) -> str:
     try:
         from classes.api_client import get_backend_client
 
+        # Explicit source seconds (from a watch or the user) skip search + watch.
+        # One that does not parse must refuse, not fall through to a search and
+        # cut wherever the best match happens to be.
+        try:
+            t_in = parse_seconds_arg(start_seconds, default=None, field="start_seconds")
+            t_out = parse_seconds_arg(end_seconds, default=None, field="end_seconds")
+        except ValueError as exc:
+            return f"Error: {exc}"
+
         clip_info_box = [None]
         error_box_pre = [None]
+        siblings_box: list = [[]]
 
         def _read_clip_info():
             try:
@@ -3549,6 +3801,7 @@ def slice_clip_at_best_match(
                 clip_info_box[0] = (
                     str(obj.id), cs, ce, cp, str(iid), str(vid), layer_num, fid, tw_status, tw_err
                 )
+                siblings_box[0] = _sibling_clips_from_same_file(fid, exclude_clip_id=str(obj.id))
             except Exception as exc:
                 error_box_pre[0] = f"Error: {exc}"
 
@@ -3561,23 +3814,69 @@ def slice_clip_at_best_match(
 
         clip_id_str, clip_start, clip_end, clip_pos, index_id, video_id, layer_num, file_id_str, tw_status, tw_error = clip_info_box[0]
 
+        siblings = siblings_box[0] or []
+        if (t_in is None) != (t_out is None):
+            cut_at = t_in if t_out is None else t_out
+            if not clip_start < cut_at < clip_end:
+                # A cut on the clip's own edge splits off nothing. Say so
+                # plainly (not as an error) so the caller does not retry it.
+                if abs(cut_at - clip_start) <= _SIBLING_EPS:
+                    return (
+                        f"Nothing to slice: {cut_at:.2f}s is already the start of this clip "
+                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
+                    )
+                if abs(cut_at - clip_end) <= _SIBLING_EPS:
+                    return (
+                        f"Nothing to slice: {cut_at:.2f}s is already the end of this clip "
+                        f"(source window [{clip_start:.2f}s–{clip_end:.2f}s])."
+                    )
+                sib = _sibling_containing(siblings, cut_at, cut_at)
+                if sib:
+                    sid, s_cs, s_ce, s_pos, _s_layer = sib
+                    return _slice_at_source_cut(
+                        sid, s_cs, s_ce, s_pos, cut_at,
+                        label=f"requested time, on the clip that holds it: timeline_clip_id={sid}",
+                    )
+                return (
+                    f"Error: Requested cut {cut_at:.2f}s is outside this clip's "
+                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
+                    f"{_describe_siblings(siblings)}. Pick a time inside a clip's window, "
+                    f"or pass that clip's timeline_clip_id."
+                )
+            return _slice_at_source_cut(
+                clip_id_str, clip_start, clip_end, clip_pos, cut_at, label="requested time",
+            )
         time_rng = _parse_explicit_source_time_range_sec(query or "")
+        if t_in is not None:
+            time_rng = (min(t_in, t_out), max(t_in, t_out))
         if time_rng is not None:
             t0, t1 = time_rng
             eps = 1e-3
+            target = (clip_id_str, clip_start, clip_end, clip_pos, layer_num)
             if t0 < clip_start - eps or t1 > clip_end + eps:
+                sib = _sibling_containing(siblings, t0, t1)
+                if sib is None:
+                    return (
+                        f"Error: Requested range [{t0:.2f}s–{t1:.2f}s] is outside this clip's "
+                        f"source window [{clip_start:.2f}s–{clip_end:.2f}s], and "
+                        f"{_describe_siblings(siblings)}. Pick a range inside one clip's window, "
+                        f"or pass that clip's timeline_clip_id."
+                    )
+                target = sib
+            elif abs(t0 - clip_start) <= eps and abs(t1 - clip_end) <= eps:
                 return (
-                    f"Error: Requested range [{t0:.2f}s–{t1:.2f}s] is outside this clip's "
-                    f"source window [{clip_start:.2f}s–{clip_end:.2f}s]."
+                    f"Nothing to slice: [{t0:.2f}s–{t1:.2f}s] is already exactly this clip's "
+                    f"source window."
                 )
+            tgt_id, tgt_cs, tgt_ce, tgt_pos, tgt_layer = target
 
             def _do_time_slice():
                 return _slice_timeline_clip_at_source_times(
-                    clip_id_str,
-                    clip_start,
-                    clip_end,
-                    clip_pos,
-                    layer_num,
+                    tgt_id,
+                    tgt_cs,
+                    tgt_ce,
+                    tgt_pos,
+                    tgt_layer,
                     file_id_str,
                     t0,
                     t1,

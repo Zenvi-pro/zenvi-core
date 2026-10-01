@@ -34,6 +34,13 @@ from classes.tool_handlers import (  # noqa: E402
 )
 import classes.tool_handlers as th  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _fresh_import_dedupe(monkeypatch):
+    """The fetch dedupe is process-global; another module's import of the same
+    URL made these tests answer "Already imported" instead of fetching."""
+    monkeypatch.setattr(th, "_MG_IMPORTED_URLS", {})
+
 from motion_graphics.build_vp9 import (  # noqa: E402
     build_vp9_alpha_overlay,
     build_vp9_opaque_plate,
