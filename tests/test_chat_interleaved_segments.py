@@ -161,3 +161,32 @@ def test_unrelated_final_text_and_no_segments_pass_through(window_cls):
     sess["turn_tail"] = "partial"
     assert win._final_segment_text(sess, "Something else entirely") == \
         "Something else entirely"
+
+
+def test_a_cursor_turn_shows_each_message_once(window_cls, keyed_store):
+    """Cursor's `result` glues its messages together with no separator, so the
+    runner reports them joined the way the chat committed them instead."""
+    import json
+    import os
+    from windows.agent_runners import CursorCliRunner
+
+    win = _window(window_cls)
+    runner = CursorCliRunner()
+    replies = []
+    runner.token_received.connect(lambda t: win._on_token(t))
+    runner.tool_started.connect(lambda c, n, a: win._on_tool_started(c, n, a))
+    runner.response_ready.connect(replies.append)
+    path = os.path.join(os.path.dirname(__file__), "fixtures", "cursor_stream.jsonl")
+    with open(path) as fh:
+        for line in fh:
+            if line.strip():
+                runner._handle_event(json.loads(line))
+
+    sess = win._sessions["s1"]
+    first = ("I'll inspect the zenvi-editor tool schemas, then call "
+             "`list_files_tool` and `add_clip_to_timeline_tool` as requested.")
+    last = "`city.mp4` could not be added because Track 1 is locked."
+    assert sess["turn_segments"] == [first]
+    assert len(replies) == 1
+    # Only the prose after the last tool is left to render at the end.
+    assert win._final_segment_text(sess, replies[0]) == last
