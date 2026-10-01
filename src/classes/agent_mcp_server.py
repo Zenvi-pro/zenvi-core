@@ -13,6 +13,9 @@ onto the Qt main thread, so no new thread-safety machinery is required here.
 Security: the server binds to ``127.0.0.1`` and requires a bearer token (persisted
 across restarts, see ``_load_or_create_token``), so only the CLIs we configure
 (with that token) can reach it.
+
+While it listens, the app's server also advertises itself in a discovery file
+(``gui_mcp.json`` / ``headless_mcp.json``, see :mod:`classes.mcp_discovery`).
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ import secrets
 import socket
 import threading
 import time
+
+from classes import mcp_discovery
 
 log = logging.getLogger(__name__)
 
@@ -138,14 +143,28 @@ def iter_tool_defs() -> list:
     return defs
 
 
+# Tools a launch mode adds on top of MCP_EXTRA_TOOLS -- the headless session's
+# shutdown_headless_tool. The advertised tool list is built once in start(), so
+# register before the server starts.
+_REGISTERED_EXTRA_TOOLS: dict = {}
+
+
+def register_extra_tool(name: str, func) -> None:
+    """Expose *func* as MCP tool *name*, called like the other extras (on a
+    worker thread, never through execute_tool)."""
+    _REGISTERED_EXTRA_TOOLS[name] = func
+
+
 def _extra_tools() -> dict:
     """Non-editor tools exposed only over MCP, keyed by tool name."""
+    tools = {}
     try:
         from classes.agent_api_proxy import MCP_EXTRA_TOOLS
-        return MCP_EXTRA_TOOLS
+        tools.update(MCP_EXTRA_TOOLS)
     except Exception:
         log.debug("MCP extra tools unavailable", exc_info=True)
-        return {}
+    tools.update(_REGISTERED_EXTRA_TOOLS)
+    return tools
 
 
 def _free_port(host: str) -> int:
@@ -228,6 +247,34 @@ class _BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
+class _ProjectLoadWatcher:
+    """UpdateManager listener: a ``load`` action means the project was replaced
+    (File > Open, new_project_tool, ...), so the advertised path may be stale."""
+
+    def __init__(self, on_load):
+        self._on_load = on_load
+
+    def changed(self, action):
+        # UpdateManager stops notifying the remaining listeners when one
+        # raises, so this one never does.
+        try:
+            if getattr(action, "type", None) == "load":
+                self._on_load()
+        except Exception:
+            log.debug("Could not refresh the MCP discovery file", exc_info=True)
+
+
+def _current_project_path() -> str | None:
+    try:
+        from classes.app import get_app
+        path = getattr(getattr(get_app(), "project", None), "current_filepath", None)
+    except Exception:
+        log.warning("Could not read the open project's path for the MCP discovery file",
+                    exc_info=True)
+        return None
+    return path if isinstance(path, str) and path else None
+
+
 class ZenviMcpServer:
     """Lazily-started localhost MCP server backed by ``execute_tool``."""
 
@@ -239,6 +286,12 @@ class ZenviMcpServer:
         self._lock = threading.Lock()
         self._uvicorn = None
         self._thread: threading.Thread | None = None
+        # Off unless the app opts in (enable_discovery): a server started by a
+        # test must never overwrite the discovery file of a real running app.
+        self._discovery_file: str | None = None
+        self._discovery_lock = threading.Lock()
+        self._published_project: str | None = None
+        self._watching_project = False
 
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> "ZenviMcpServer":
@@ -284,7 +337,10 @@ class ZenviMcpServer:
             self._connect_shutdown_hook()
             log.info("Zenvi MCP server listening on %s (%d tools)",
                      self.url(), len(iter_tool_defs()))
-            return self
+        if self._discovery_file:
+            self._watch_project()
+            self._publish_discovery(_current_project_path())
+        return self
 
     def _connect_shutdown_hook(self):
         try:
@@ -294,6 +350,84 @@ class ZenviMcpServer:
                 qapp.aboutToQuit.connect(self.stop)
         except Exception:
             pass
+
+    # -- discovery file ----------------------------------------------------
+    def set_discovery_file(self, path: str | None, on_written=None) -> None:
+        """Advertise this server in *path* while it listens (None: don't).
+
+        Set before start() it takes effect when the server comes up; set on a
+        running server it is written right away, and *on_written* is called
+        (on the writer thread) once the file is on disk.
+        """
+        self._discovery_file = path
+        if path and self._started:
+            self._watch_project()
+            self._publish_discovery(_current_project_path(), on_written)
+
+    def refresh_discovery(self) -> None:
+        """Rewrite the discovery file if the open project changed.
+
+        Cheap enough for the GUI thread: it compares one path and hands the
+        write to a worker thread.
+        """
+        if not self._discovery_file or not self._started:
+            return
+        project = _current_project_path()
+        if project != self._published_project:
+            self._publish_discovery(project)
+
+    def _publish_discovery(self, project: str | None, on_written=None) -> None:
+        self._published_project = project
+        # File I/O stays off the GUI thread; the file is tiny, but every
+        # volume counts as slow (AGENTS.md).
+        threading.Thread(target=self._write_discovery, args=(on_written,),
+                         name="zenvi-mcp-discovery", daemon=True).start()
+
+    def _write_discovery(self, on_written=None) -> None:
+        # Serialized with _remove_discovery: a write that loses the race with
+        # stop() finds the server stopped and does nothing, so no file is left
+        # behind pointing at a closed port. The payload is read here, not when
+        # the write was queued, so the last write always carries the latest path.
+        with self._discovery_lock:
+            path = self._discovery_file
+            if not path or not self._started:
+                return
+            from classes import info
+            payload = mcp_discovery.build_payload(
+                self.url(), _token_path(), os.getpid(), _current_project_path(), info.VERSION)
+            try:
+                mcp_discovery.write(path, payload)
+            except OSError:
+                log.warning("Could not write the MCP discovery file %s", path, exc_info=True)
+                return
+        if on_written is not None:
+            on_written(path)
+
+    def _remove_discovery(self) -> None:
+        with self._discovery_lock:
+            path = self._discovery_file
+            if not path:
+                return
+            try:
+                mcp_discovery.remove(path, os.getpid())
+            except OSError:
+                log.warning("Could not remove the MCP discovery file %s", path, exc_info=True)
+
+    def _watch_project(self) -> None:
+        """Keep the file's ``project`` current: a load replaces the project,
+        a Save As renames it (projectChanged)."""
+        if self._watching_project:
+            return
+        self._watching_project = True
+        try:
+            from classes.app import get_app
+            app = get_app()
+            app.updates.add_listener(_ProjectLoadWatcher(self.refresh_discovery))
+            window = getattr(app, "window", None)
+            if window is not None:
+                window.projectChanged.connect(lambda _path: self.refresh_discovery())
+        except Exception:
+            log.debug("MCP discovery file will not follow project changes", exc_info=True)
 
     def _build_app(self):
         import anyio
@@ -340,6 +474,9 @@ class ZenviMcpServer:
                 return
             self._started = False
             thread = self._thread
+        # Withdraw the advertisement before the port closes, so no CLI is
+        # handed a URL that is about to stop answering.
+        self._remove_discovery()
         try:
             if self._uvicorn is not None:
                 self._uvicorn.should_exit = True
@@ -371,3 +508,17 @@ def get_mcp_server() -> ZenviMcpServer:
         if _server is None:
             _server = ZenviMcpServer()
         return _server
+
+
+def enable_discovery(kind: str, on_written=None) -> str:
+    """Have the process-wide server advertise itself in
+    ``~/.openshot_qt/<kind>_mcp.json`` while it listens; returns that path.
+
+    launch.py calls this for the desktop window before the server starts; a
+    headless session calls it once its project is open, with *on_written*
+    to hear when the file is on disk.
+    """
+    from classes import info
+    path = mcp_discovery.discovery_path(info.USER_PATH, kind)
+    get_mcp_server().set_discovery_file(path, on_written)
+    return path
