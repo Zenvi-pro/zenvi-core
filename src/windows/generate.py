@@ -38,8 +38,8 @@ from qt_api import (
 )
 
 from classes import info
+from classes.app import get_app
 from classes.logger import log
-from classes.thumbnail import GetThumbPath
 from classes.query import File
 from windows.region import SelectRegion
 from windows.color_picker import ColorPicker
@@ -348,15 +348,26 @@ class GenerateMediaDialog(QDialog):
             (self.border_color.name(QColor.HexArgb), fg.name())
         )
 
+    @staticmethod
+    def _project_files_icon(file_id):
+        """The icon Project Files shows for a file (made off the GUI thread), or None.
+
+        Asking the thumbnail server from here would block the dialog until it
+        decodes a frame.
+        """
+        files_model = getattr(getattr(get_app(), "window", None), "files_model", None)
+        return files_model.thumbnail_icon(file_id) if files_model is not None else None
+
     def _load_thumbnail(self):
-        path = ""
+        pix = QPixmap()
         media_type = self.source_file.data.get("media_type")
         if media_type in ["video", "image"]:
-            path = GetThumbPath(self.source_file.id, 1)
+            icon = self._project_files_icon(self.source_file.id)
+            if icon is not None and not icon.isNull():
+                pix = icon.pixmap(QSize(self.PREVIEW_WIDTH * 2, self.PREVIEW_HEIGHT * 2))
         elif media_type == "audio":
-            path = os.path.join(info.PATH, "images", "AudioThumbnail.svg")
+            pix = QPixmap(os.path.join(info.PATH, "images", "AudioThumbnail.svg"))
 
-        pix = QPixmap(path) if path else QPixmap()
         if not pix.isNull():
             pix = pix.scaled(
                 self.PREVIEW_WIDTH - 2,
@@ -448,10 +459,7 @@ class GenerateMediaDialog(QDialog):
         for file_obj in image_files:
             data = file_obj.data if isinstance(file_obj.data, dict) else {}
             display_name = str(data.get("name") or os.path.basename(data.get("path", "")) or "Image").strip()
-            icon = QIcon()
-            thumb_path = GetThumbPath(file_obj.id, 1)
-            if thumb_path and os.path.exists(thumb_path):
-                icon = QIcon(thumb_path)
+            icon = self._project_files_icon(file_obj.id) or QIcon()
             self.reference_image_combo.addItem(icon, display_name, file_obj.id)
             self.reference_image_combo.setItemData(self.reference_image_combo.count() - 1, str(data.get("path", "")), Qt.ToolTipRole)
 
