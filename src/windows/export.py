@@ -2072,32 +2072,16 @@ class Export(QDialog):
 
     def calculate_all_formats_bitrate(self, quality_key):
         """Calculate a bitrate using bits-per-pixel guidance for All Formats presets."""
-        quality_bpp = {
-            "Low": 0.055,    # midpoint of 0.045 - 0.055
-            "Med": 0.08,     # midpoint of 0.065 - 0.08
-            "High": 0.12     # midpoint of 0.10 - 0.12
-        }
-        target_bpp = quality_bpp.get(quality_key)
-        if target_bpp is None:
-            return None
-
-        width = self.txtWidth.value()
-        height = self.txtHeight.value()
+        from classes.export_presets import all_formats_bitrate
         fps_den = self.txtFrameRateDen.value() or 1
         fps = self.txtFrameRateNum.value() / fps_den
-
-        if not width or not height or not fps:
-            return None
-
-        bitrate_bits_per_sec = width * height * fps * target_bpp
-        bitrate_mbps = bitrate_bits_per_sec / 1_000_000.0
-        return f"{bitrate_mbps:.2f} Mb/s"
+        return all_formats_bitrate(self.txtWidth.value(), self.txtHeight.value(), fps, quality_key)
 
     @staticmethod
     def _is_quality_mode_rate(rate_text):
         """Return True if a preset rate uses quality-mode units (crf/cqp/qp)."""
-        text = (rate_text or "").strip().lower()
-        return (" crf" in text) or (" cqp" in text) or (" qp" in text)
+        from classes.export_presets import is_quality_mode_rate
+        return is_quality_mode_rate(rate_text)
 
     def update_all_formats_bitrates(self):
         """Refresh dynamic video bitrates when using All Formats presets."""
@@ -2300,6 +2284,9 @@ def get_default_export_settings():
     # Apply chat overrides (set via set_export_setting)
     overrides = project.get("export_overrides") or {}
     for k, v in overrides.items():
+        if v is None:
+            # Cleared override (project data merges dicts, so keys are nulled, not removed)
+            continue
         if k in ("width", "height", "start_frame", "end_frame"):
             video_settings[k] = v
         elif k == "fps_num":
@@ -2318,15 +2305,27 @@ def get_default_export_settings():
             audio_settings["channels"] = v
         elif k in ("output_path", "path"):
             default_path = v
+        elif k == "video_bitrate":
+            video_settings["video_bitrate"] = v
+        elif k == "audio_bitrate":
+            audio_settings["audio_bitrate"] = v
+        elif k == "channel_layout":
+            audio_settings["channel_layout"] = v
+        elif k == "export_type" and v in export_type_options:
+            export_type = v
 
     return video_settings, audio_settings, export_type, default_path
 
 
-def export_video_headless(export_file_path, video_settings=None, audio_settings=None, export_type=None):
+def export_video_headless(export_file_path, video_settings=None, audio_settings=None, export_type=None,
+                          video_bitrate_text=None, profile_path_for_rescale=None):
     """
     Run export without showing the dialog. Call from main thread.
     If video_settings, audio_settings, or export_type is None, use default/last-used from project.
-    Returns None on success; raises or returns error message on failure.
+    video_bitrate_text is the rate as the dialog shows it ("23 crf", "8 Mb/s"); when omitted it
+    comes from a string video_bitrate, so crf/cqp/qp presets encode in quality mode (they were
+    encoded at a literal 23 bits/s before). Returns None on success; raises or returns error
+    message on failure.
     """
     from classes.app import get_app
     app = get_app()
@@ -2346,6 +2345,9 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
         export_file_path = default_path
     if not export_file_path:
         export_file_path = os.path.join(info.DOWNLOADS_PATH, "export.mp4")
+    if video_bitrate_text is None:
+        raw_rate = video_settings.get("video_bitrate")
+        video_bitrate_text = raw_rate.strip().lower() if isinstance(raw_rate, str) else ""
 
     # Ensure directory exists
     export_dir = os.path.dirname(export_file_path)
@@ -2387,8 +2389,8 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
             video_settings,
             audio_settings,
             export_type,
-            video_bitrate_text="",
-            profile_path_for_rescale=None,
+            video_bitrate_text=video_bitrate_text,
+            profile_path_for_rescale=profile_path_for_rescale,
         )
     except Exception as e:
         err = str(e)
@@ -2412,8 +2414,8 @@ def export_video_headless(export_file_path, video_settings=None, audio_settings=
                     video_settings,
                     audio_settings,
                     _("Video Only"),
-                    video_bitrate_text="",
-                    profile_path_for_rescale=None,
+                    video_bitrate_text=video_bitrate_text,
+                    profile_path_for_rescale=profile_path_for_rescale,
                 )
             except Exception:
                 return err

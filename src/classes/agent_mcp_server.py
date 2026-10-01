@@ -135,8 +135,17 @@ def iter_tool_defs() -> list:
     from classes.tool_handlers import AGENT_TOOL_HANDLERS, humanize_tool_name
     from classes.agent_tools.schema import UNSCHEMATIZED, get_schema
 
+    from classes.editor_tools import REGISTRY as editor_specs
+
     defs = []
     for name, func in list(AGENT_TOOL_HANDLERS.items()) + list(_extra_tools().items()):
+        spec = editor_specs.get(name)
+        if spec is not None:
+            # Editor tools carry an explicit schema and a docstring written for
+            # the model; send both whole.
+            defs.append({"name": name, "description": spec.description,
+                         "inputSchema": spec.schema})
+            continue
         description = _first_doc_paragraph(func) or humanize_tool_name(name)
         schema = get_schema(name)
         if schema is None:

@@ -2708,7 +2708,7 @@ class AudioRecordingDockContent(QWidget):
             fps = get_app().project.get("fps")
             fps_float = float(fps["num"]) / float(fps["den"])
             frame_number = max(1, int(round(position * fps_float)) + 1)
-            self.window.SeekSignal.emit(frame_number, True)
+            self.window.SeekSignal.emit(frame_number)
         except Exception:
             log.debug("Unable to seek to recorded audio clip start", exc_info=True)
 

@@ -118,8 +118,10 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     transaction_id = raw_args.pop("transaction_id", None)
 
     # Coerce Assistant stringly stubs (trackIndex="", force="false") before
-    # validation and before the handler sees kwargs.
-    args = normalize_args(tool_name, raw_args)
+    # validation and before the handler sees kwargs. Editor tools were already
+    # coerced by their registry, where "" is a value (name="" clears a track name).
+    from classes.editor_tools import REGISTRY as _editor_tools
+    args = raw_args if tool_name in _editor_tools else normalize_args(tool_name, raw_args)
 
     schema_err = validate_args(tool_name, args)
     if schema_err:
@@ -142,7 +144,8 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
     def _invoke() -> ToolOutput:
         app = _GET_APP()
         before_len = _history_len(app)
-        before_clips = _snapshot_clips(app)
+        # The before/after scan only feeds a mutation receipt: read-only calls skip it.
+        before_clips = None if tool_name in _READ_ONLY else _snapshot_clips(app)
         fps = Fr(30, 1)
         try:
             from classes.clip_utils import project_fps_fraction
@@ -223,6 +226,7 @@ def execute_tool_rich(tool_name: str, tool_args: dict):
                         tool=tool_name,
                         summary=receipt.summary,
                         status="applied",
+                        data=receipt.data,
                         undo_steps=1,
                     )
                     return ToolOutput(receipt=enriched)
