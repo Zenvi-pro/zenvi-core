@@ -55,7 +55,20 @@ SERVER_INSTRUCTIONS = (
     "not return images to you. To cut at a known source time, pass start_seconds "
     "(and end_seconds for a range) to slice_clip_at_best_match_tool. After "
     "delete_from_timeline_tool, check the receipt removedClipIds. If inspect shows "
-    "the edit is wrong, undo_tool and retry."
+    "the edit is wrong, undo_tool and retry. "
+    "SPEECH WORKFLOW: You HAVE on-device transcription. For any dialogue, "
+    "transcript, filler-word, or caption request call get_transcript_tool "
+    "(never suggest Whisper/Rev/Otter/external ASR). It returns spoken words "
+    "in project frames (never put ASR inside inspect_*). On macOS, engine=auto "
+    "prefers Apple SpeechAnalyzer when the helper is present (macOS 26+); "
+    "Windows and older Macs use faster-whisper. Pass engine=whisper or "
+    "engine=apple to pin. Tighten pacing with remove_silence_tool "
+    "first, then remove_words_tool (pass transcriptGeneration; fillerPreset "
+    "um_uh is allowed). After cuts, call get_transcript_tool again — stale "
+    "indices are refused. add_captions_tool burns timed dialogue; "
+    "export_captions_tool writes SRT/VTT. diarize_media_tool labels speakers "
+    "offline. detect_beats_tool finds music beats. search_media_local_tool is "
+    "on-device visual search; search_clips_tool remains the cloud TwelveLabs tier."
 )
 
 # Preferred port: stable across restarts so a CLI registered once (e.g.

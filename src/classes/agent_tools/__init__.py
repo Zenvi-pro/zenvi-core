@@ -7,7 +7,7 @@ from classes.agent_tools.receipt import (
     is_error_result,
     parse_receipt,
 )
-from classes.agent_tools.schema import TOOL_SCHEMAS, get_schema, validate_args
+from classes.agent_tools.schema import TOOL_SCHEMAS, get_schema, normalize_args, validate_args
 
 __all__ = [
     "ToolReceipt",
@@ -16,6 +16,7 @@ __all__ = [
     "parse_receipt",
     "TOOL_SCHEMAS",
     "validate_args",
+    "normalize_args",
     "get_schema",
     "execute_tool",
     "bind_runtime",

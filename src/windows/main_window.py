@@ -6304,9 +6304,28 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         def _start_mcp_server():
             try:
                 from classes.agent_mcp_server import get_mcp_server
-                get_mcp_server().start()
+                srv = get_mcp_server().start()
             except Exception as e:
                 log.warning("Failed to start in-app MCP server: %s", e)
+                return
+
+            # Palmier-style: once the editor is up, Claude Code should already
+            # see Zenvi MCP tools (get_transcript_tool, etc.) without a manual
+            # Connect click. Skip when the CLI is missing or already matching.
+            def _ensure_claude():
+                try:
+                    from windows.agent_runners import ensure_claude_registered
+                    ok, message, changed = ensure_claude_registered(srv.port, srv.token)
+                    if changed and ok:
+                        log.info("Auto-registered Claude Code MCP: %s", message)
+                    elif not ok and "not found" not in (message or "").lower():
+                        log.debug("Claude MCP auto-register: %s", message)
+                except Exception:
+                    log.debug("Claude MCP auto-register failed", exc_info=True)
+
+            threading.Thread(
+                target=_ensure_claude, daemon=True, name="claude-mcp-auto",
+            ).start()
 
         QTimer.singleShot(0, _start_mcp_server)
 
@@ -6403,6 +6422,15 @@ class MainWindow(updates.UpdateWatcher, DockingMixin, QMainWindow):
         self.dockAudioRecording.setMinimumWidth(RECORDING_DOCK_MIN_WIDTH)
         self.dockAudioRecording.hide()
         self.addDockWidget(Qt.RightDockWidgetArea, self.dockAudioRecording)
+
+        # Phase 5 — transcript Index panel (same store as get_transcript_tool)
+        try:
+            from windows.index_panel import IndexPanel
+            self.dockIndex = IndexPanel(self)
+            self.addDockWidget(Qt.RightDockWidgetArea, self.dockIndex)
+            self.dockIndex.setVisible(False)
+        except Exception as e:
+            log.error(f"Failed to initialize Index Dock: {e}", exc_info=True)
 
         # Add Docks submenu to View menu
         self.addViewDocksMenu()
