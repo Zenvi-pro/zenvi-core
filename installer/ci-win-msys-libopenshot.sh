@@ -79,9 +79,8 @@ find "${LOS}" \( -name "CMakeLists.txt" -o -name "*.cmake" \) -print0 | \
   done || true
 
 # MSYS2 ships OpenCV 5; libopenshot asks for find_package(OpenCV 4), which rejects
-# it and silently turns the OpenCV effects off. The modules it links (core, video,
-# highgui, dnn, tracking with tracking_legacy.hpp) are all in OpenCV 5.
-sed -i 's/find_package(OpenCV 4)/find_package(OpenCV)/' "${LOS}/src/CMakeLists.txt"
+# it and silently turns the OpenCV effects off.
+python3 "${GITHUB_WORKSPACE}/installer/patch-libopenshot-opencv5.py" "${LOS}"
 
 # FFmpeg 7/8: FF_PROFILE_*, side-data, and FFmpeg 8 AVCodec field removal
 # (supported_samplerates / ch_layouts / sample_fmts / pix_fmts).

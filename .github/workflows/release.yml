@@ -1122,7 +1122,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .ci-deps/openshot-bundle
-          key: windows-msys2-libopenshot-v1.0.0-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/mac-patches/**') }}
+          key: windows-msys2-libopenshot-v1.0.0-opencv-v2-ucrt-${{ hashFiles('.github/workflows/release.yml', 'installer/ci-win-msys-libopenshot.sh', 'installer/ci-win-msys-packages.sh', 'installer/patch-libopenshot-ffmpeg.py', 'installer/patch-libopenshot-opencv5.py', 'installer/mac-patches/**') }}
 
       - name: Build unittest-cpp, libopenshot-audio, libopenshot (MSYS2 / README)
         if: steps.cache-libopenshot-win.outputs.cache-hit != 'true'

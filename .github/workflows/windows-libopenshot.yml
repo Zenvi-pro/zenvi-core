@@ -11,6 +11,8 @@ on:
       - installer/ci-win-msys-libopenshot.sh
       - installer/ci-win-msys-packages.sh
       - installer/patch-libopenshot-ffmpeg.py
+      - installer/patch-libopenshot-opencv5.py
+      - installer/verify_openshot_bundle.py
       - installer/mac-patches/**
       - .github/workflows/windows-libopenshot.yml
       - .github/workflows/release.yml
