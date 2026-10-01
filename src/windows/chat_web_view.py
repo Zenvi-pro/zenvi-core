@@ -299,7 +299,7 @@ class ChatEditShortcutMixin:
                 if action is not None and pressed in action.shortcuts():
                     return name
         except Exception:
-            log.debug("Could not read the configured Undo/Redo shortcuts", exc_info=True)
+            log.warning("Could not read the configured Undo/Redo shortcuts", exc_info=True)
         return None
 
     def _handle_edit_key(self, event) -> bool:
