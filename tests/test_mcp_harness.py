@@ -289,7 +289,7 @@ def test_wait_until_project_indexed_reports_pending(monkeypatch):
                          b: _fake_file("f2", b, analyzed=False)}, monkeypatch)
     app = _mock_app()
 
-    def waiter(file_id, files_model, timeout_sec=1800):
+    def waiter(file_id, files_model, timeout_sec=1800, **_kw):
         return "" if file_id == "f1" else "timed out after %ss" % timeout_sec
 
     with patch.object(tool_handlers, "_get_app", return_value=app):

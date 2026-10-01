@@ -167,7 +167,7 @@ def test_wait_until_indexed_reports_pending_files_as_an_error(editor, monkeypatc
     done = editor.add_file("video", duration=30)
     slow = editor.add_file("video", path="/media/slow.mp4", duration=30)
     monkeypatch.setattr(th, "_wait_for_file_indexing",
-                        lambda fid, fm, timeout_sec=0: "" if fid == done else "timed out after 30s")
+                        lambda fid, fm, timeout_sec=0, **_kw: "" if fid == done else "timed out after 30s")
     out = editor.call("wait_until_project_indexed_tool", timeout_seconds=30)
     assert out.startswith("Error: indexing did not finish for 1 of 2 project file(s) within 30s (1 indexed)")
     assert f"{slow} (timed out after 30s)" in out
@@ -185,6 +185,37 @@ def test_wait_for_one_file_respects_a_short_budget(monkeypatch):
     started = time.monotonic()
     err = th._wait_for_file_indexing("f1", files_model, timeout_sec=1)
     assert err.startswith("timed out") and time.monotonic() - started < 5
+
+
+def test_a_file_nothing_is_indexing_is_not_waited_on(monkeypatch):
+    """Found live: with indexing skipped on import, the assistant sat out the whole wait (135 s)."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import classes.query as query
+    files_model = MagicMock(_indexing_queue=[], _active_indexers=[])
+    files_model.is_file_indexing.return_value = False
+    monkeypatch.setattr(query.File, "get", classmethod(lambda cls, **kw: SimpleNamespace(data={"ai_metadata": {}})))
+    started = time.monotonic()
+    err = th._wait_for_file_indexing("f1", files_model, timeout_sec=60, idle_grace=0.2)
+    assert err == th._NOT_BEING_INDEXED and time.monotonic() - started < 5
+
+
+def test_wait_until_indexed_returns_at_once_when_nothing_is_indexing(editor, monkeypatch):
+    a = editor.add_file("video", duration=30)
+    b = editor.add_file("video", path="/media/b.mp4", duration=30)
+    graces = []
+
+    def waiter(fid, fm, timeout_sec=0, idle_grace=10.0):
+        graces.append(idle_grace)
+        return th._NOT_BEING_INDEXED
+
+    monkeypatch.setattr(th, "_wait_for_file_indexing", waiter)
+    out = editor.call("wait_until_project_indexed_tool", timeout_seconds=600)
+    assert out.startswith("Error: 2 of 2 project file(s) are not indexed and nothing is indexing them")
+    assert a in out and b in out and "reindex_project_file_tool" in out
+    assert graces == [10.0, 1.0]
 
 
 # --- import from a URL ----------------------------------------------------------------------------------

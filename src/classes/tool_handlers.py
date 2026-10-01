@@ -1844,12 +1844,15 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
 
         deadline = time.time() + budget
         done, pending = [], []
+        idle_grace = 10.0
         for f in targets:
             fid = str(getattr(f, "id", "") or f.data.get("id") or "")
             remaining = int(max(1, deadline - time.time()))
-            err = _wait_for_file_indexing(fid, files_model, timeout_sec=remaining)
+            err = _wait_for_file_indexing(fid, files_model, timeout_sec=remaining, idle_grace=idle_grace)
             if err:
                 pending.append((fid, err))
+                if err == _NOT_BEING_INDEXED:
+                    idle_grace = 1.0  # the queue had its chance; don't wait 10 s per file
             else:
                 done.append(fid)
     except Exception as e:
@@ -1857,6 +1860,13 @@ def wait_until_project_indexed(timeout_seconds=1800, **_kw) -> str:
 
     if not pending:
         return "All %d project file(s) indexed." % len(done)
+    if all(err == _NOT_BEING_INDEXED for _fid, err in pending):
+        return (
+            "Error: %d of %d project file(s) are not indexed and nothing is indexing them (their import "
+            "skipped indexing, or indexing is off), so there is nothing to wait for. Not indexed: %s. "
+            "reindex_project_file_tool indexes one; captions can also come from an .srt or cues." % (
+                len(pending), len(targets), ", ".join(fid for fid, _err in pending))
+        )
     # Not an answer the caller can plan on: say which files and why.
     return (
         "Error: indexing did not finish for %d of %d project file(s) within %ss "
@@ -7048,8 +7058,16 @@ def add_stock_media_to_project(local_path: str = "", **kwargs) -> str:
         return f"Error: {e}"
 
 
-def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) -> str:
-    """Block until Gemini indexing for file_id finishes. Returns error string or ''."""
+_NOT_BEING_INDEXED = "not being indexed"
+
+
+def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800, idle_grace: float = 10.0) -> str:
+    """Block until Gemini indexing for file_id finishes. Returns error string or ''.
+
+    A file that stays unindexed with no queued or running indexer for *idle_grace* seconds is
+    reported as not being indexed (its import skipped indexing, or indexing is off) instead of
+    being waited on until the timeout.
+    """
     import time
     from classes.query import File
     from classes.twelvelabs_match import twelvelabs_is_indexed, get_index_block
@@ -7058,6 +7076,7 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) 
     if not fid:
         return "missing file_id"
     deadline = time.time() + max(1, int(timeout_sec))
+    idle_since = None
     # Give the queue a moment to start the worker
     time.sleep(0.5)
     while time.time() < deadline:
@@ -7092,8 +7111,13 @@ def _wait_for_file_indexing(file_id: str, files_model, timeout_sec: int = 1800) 
                     if status in ("failed", "skipped"):
                         return str((idx or {}).get("error") or status)
                     # Media type may not have been queued yet; small grace then fail soft
+                    now = time.time()
+                    idle_since = idle_since or now
+                    if now - idle_since >= idle_grace:
+                        return _NOT_BEING_INDEXED
                     time.sleep(1.0)
                     continue
+                idle_since = None
         except Exception as exc:
             log.debug("wait indexing poll: %s", exc)
         time.sleep(1.0)
