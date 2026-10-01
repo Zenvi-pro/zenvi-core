@@ -3,6 +3,15 @@ Zenvi billing client — thin Supabase RPC wrapper.
 
 Pricing and point amounts live in Supabase (operation_pricing, llm_model_tiers).
 Clients pass operation keys only, never raw point values.
+
+The backend bills AI video and morph generation itself (/generation/video and
+/generation/morph deduct after success), so the desktop must not charge those
+keys a second time; check_operation remains for preflight UX.
+
+Indexing and stock downloads never pass through a billed backend route: the
+/indexing routes are unauthenticated and their Gemini calls are not metered,
+and Pexels / Freesound files download straight from the CDN. The desktop's
+charge is the only one for those, so they are not in BACKEND_METERED_OPS.
 """
 
 import json
@@ -15,6 +24,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from classes import info
 
 log = logging.getLogger(__name__)
+
+# Ops the backend already bills. Desktop charge_operation is a no-op for these.
+# Add a key here only in the same release that makes a backend route charge it.
+BACKEND_METERED_OPS = frozenset({
+    "video_generation",
+    "morph_generation",
+})
+
 
 # Last known balance, so the badge can paint instantly on the next launch.
 CREDITS_FILE = os.path.join(info.USER_PATH, "zenvi_credits.json")
@@ -171,7 +188,9 @@ class CreditsClient:
 
     def _rpc_then_refresh(self, function_name: str, payload: dict) -> None:
         """Run a spend/refund RPC, then refetch so the badge repaints right away."""
-        self._rpc(function_name, payload)
+        result = self._rpc(function_name, payload)
+        if function_name == "charge_operation":
+            self._log_charge_result(str(payload.get("p_operation") or ""), result)
         self.balance()
 
     def _fire(self, function_name: str, payload: dict) -> None:
@@ -188,6 +207,56 @@ class CreditsClient:
         if isinstance(result, list) and result:
             return result[0] if isinstance(result[0], dict) else {}
         return {}
+
+    def _log_charge_result(self, operation: str, result: Optional[Any]) -> None:
+        """Surface charge failures (tier_limit / insufficient) instead of discarding them."""
+        if result is None:
+            log.warning(
+                "credits_client: charge_operation failed for %s (no RPC result)",
+                operation,
+            )
+            return
+        if isinstance(result, str):
+            # The live RPC returns a bare status: 'ok', or 'tier_limit' /
+            # 'insufficient' / 'standard_mode' when nothing was deducted.
+            status = result.strip().lower()
+            if status != "ok":
+                log.warning(
+                    "credits_client: charge_operation %s returned %s",
+                    operation,
+                    status or "an empty status",
+                )
+            return
+        row = self._row(result)
+        status = str(
+            row.get("status")
+            or row.get("reason")
+            or row.get("block_reason")
+            or row.get("error")
+            or ""
+        ).lower()
+        denied = (
+            row.get("success") is False
+            or row.get("ok") is False
+            or row.get("charged") is False
+            or row.get("allowed") is False
+        )
+        if any(
+            token in status
+            for token in ("tier_limit", "insufficient", "standard_mode", "denied", "failed")
+        ):
+            log.warning(
+                "credits_client: charge_operation %s returned %s: %s",
+                operation,
+                status or "denied",
+                row,
+            )
+        elif denied:
+            log.warning(
+                "credits_client: charge_operation %s denied: %s",
+                operation,
+                row,
+            )
 
     def cached_balance(self) -> Optional[int]:
         """Signed-in account's last known balance, this launch or the previous one.
@@ -242,6 +311,15 @@ class CreditsClient:
         self._store_balance(total, user_id)
         return True, total
 
+    def refresh_balance(self) -> None:
+        """Refetch the balance in the background; the listeners repaint the badge.
+
+        For requests the backend bills itself (BACKEND_METERED_OPS): the
+        desktop fires no charge for those, so nothing else would refetch
+        before the 60 s refresh.
+        """
+        threading.Thread(target=self.balance, daemon=True, name="billing-refresh").start()
+
     def check(self, points_needed: int = 0) -> Tuple[bool, int]:
         """Legacy balance check by raw points (prefer check_operation)."""
         authed, total = self.balance()
@@ -270,6 +348,9 @@ class CreditsClient:
         note: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> None:
+        if operation in BACKEND_METERED_OPS:
+            log.debug("skipped desktop charge — backend meters %s", operation)
+            return
         payload: Dict[str, Any] = {
             "p_operation": operation,
             "p_units": units,
@@ -381,12 +462,16 @@ def charge_operation_on_success(
     duration_seconds: Optional[float] = None,
     idempotency_key: Optional[str] = None,
 ) -> None:
-    if success:
-        credits.charge_operation(
-            operation,
-            units=units,
-            duration_seconds=duration_seconds,
-            provider=provider,
-            note=note,
-            idempotency_key=idempotency_key,
-        )
+    if not success:
+        return
+    if operation in BACKEND_METERED_OPS:
+        log.debug("skipped desktop charge — backend meters %s", operation)
+        return
+    credits.charge_operation(
+        operation,
+        units=units,
+        duration_seconds=duration_seconds,
+        provider=provider,
+        note=note,
+        idempotency_key=idempotency_key,
+    )

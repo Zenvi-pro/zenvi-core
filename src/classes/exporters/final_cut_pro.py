@@ -41,6 +41,8 @@ from classes.app import get_app
 from classes.logger import log
 from classes.path_utils import absolute_media_path, relative_export_path, normalize_path
 from classes.query import Clip, Track, File
+from classes import frame_time as ft
+from fractions import Fraction
 
 INTERPOLATION_EXPORT_MAP = {
     openshot.LINEAR: "linear",
@@ -66,7 +68,7 @@ def _is_ntsc_rate(fps_num, fps_den):
 def _seconds_to_frames(value, fps_num, fps_den):
     if value is None:
         value = 0.0
-    return int(round(float(value) * fps_num / fps_den))
+    return ft.to_frame(float(value), Fraction(int(fps_num), int(fps_den)))
 
 
 def _format_timebase(fps_num, fps_den):
